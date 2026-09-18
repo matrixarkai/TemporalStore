@@ -932,6 +932,35 @@ pub fn reset_live_block_scan_entries() {
     LIVE_BLOCK_SCAN_ENTRIES.store(0, std::sync::atomic::Ordering::Relaxed);
 }
 
+/// Live-page entries MATERIALIZED by the two bucket-scoped model-map walks, across every call.
+///
+/// [`release_bucket_blocks`] and [`reload_released_bucket`] each ask one question of the model
+/// maps about a NAMED set of buckets. Nothing indexes the model maps by routing bucket, so both
+/// have to walk them to ask it -- but neither has to build an owned entry for every live page in
+/// the store on the way past, and until this counter existed nothing said which they did.
+///
+/// Distinct from [`LIVE_BLOCK_SCAN_ENTRIES`], which counts only what the wrapper
+/// `collect_live_block_entries` materializes. Both of these paths call
+/// `collect_model_live_block_entries` DIRECTLY and are invisible to that counter, which is why a
+/// round whose release allocated four times per object in the store could report zero entries
+/// scanned.
+///
+/// COUNTED, not timed, and independent of the counting allocator: a guard can assert this number
+/// tracks the victims without `alloc-probe` being on. Process-wide, so a reader must reset it
+/// immediately before the call it is measuring, and the suite it is read in runs single-threaded.
+static BUCKET_SCOPED_MODEL_ENTRIES: std::sync::atomic::AtomicU64 =
+    std::sync::atomic::AtomicU64::new(0);
+
+/// Entries materialized by the bucket-scoped model-map walks since the last reset.
+pub fn bucket_scoped_model_entries() -> u64 {
+    BUCKET_SCOPED_MODEL_ENTRIES.load(std::sync::atomic::Ordering::Relaxed)
+}
+
+/// Reset the bucket-scoped walk counter. Pairs with [`bucket_scoped_model_entries`].
+pub fn reset_bucket_scoped_model_entries() {
+    BUCKET_SCOPED_MODEL_ENTRIES.store(0, std::sync::atomic::Ordering::Relaxed);
+}
+
 /// Running total of bucket `page_index` entries visited by the bucket-maintenance walks.
 ///
 /// Distinct from [`LIVE_BLOCK_SCAN_ENTRIES`], which counts materialized live-page entries. This
@@ -1316,10 +1345,29 @@ fn released_block_identity(
     component: Option<&str>,
     address: &BlockAddress,
 ) -> ReleasedBlockIdentity {
-    (
+    released_block_identity_owned(
         model_id.to_string(),
         object_key.to_string(),
         component.map(str::to_string),
+        address,
+    )
+}
+
+/// The same identity, for a caller that already owns its strings.
+///
+/// The derivation below is handed owned keys by the walk and would otherwise copy each one a
+/// second time to hand it to the borrowing form. One definition of the tuple, so the resident side
+/// and the derived side cannot drift into comparing differently-ordered fields.
+fn released_block_identity_owned(
+    model_id: String,
+    object_key: String,
+    component: Option<String>,
+    address: &BlockAddress,
+) -> ReleasedBlockIdentity {
+    (
+        model_id,
+        object_key,
+        component,
         address.block_slab_id,
         address.offset,
         address.length,
@@ -1596,24 +1644,14 @@ pub(super) fn release_bucket_blocks(
     // One model-map walk for the whole batch, not one per bucket. This is the set a reload would
     // rebuild from, so comparing the resident pages against it is the proof the release is
     // reversible.
-    let mut derived: BTreeMap<u32, BTreeSet<ReleasedBlockIdentity>> = BTreeMap::new();
-    for entry in collect_model_live_block_entries(shard) {
-        let Some(routing_bucket) = entry.address.routing_bucket() else {
-            continue;
-        };
-        if !wanted.contains(&routing_bucket) {
-            continue;
-        }
-        derived
-            .entry(routing_bucket)
-            .or_default()
-            .insert(released_block_identity(
-                &entry.kind,
-                &entry.object_key,
-                entry.component.as_deref(),
-                &entry.address,
-            ));
-    }
+    // WHAT A RELOAD WOULD REBUILD for each wanted bucket, and nothing else. Comparing the
+    // resident pages against it is the proof the release is reversible.
+    //
+    // This walks the model maps and it has to: the maps are keyed by object, the routing bucket
+    // is a field of the ADDRESS, and no index runs the other way. What the walk no longer does is
+    // build an owned entry for every live page in the store before throwing all but the wanted
+    // ones away -- four allocations per object in the store, to release four buckets.
+    let derived = derive_released_block_identities(shard, &wanted);
     let lookup_established = !shard.bucket_index.object_block_lookup.is_empty();
     for routing_bucket in wanted {
         let Some(bucket) = shard.bucket_index.bucket_map.get(&routing_bucket) else {
@@ -1754,10 +1792,10 @@ pub(super) fn reload_released_bucket(
         return false;
     }
     let mut pages: Vec<(BlockIndex, u64)> = Vec::new();
-    for entry in collect_model_live_block_entries(shard) {
-        if entry.address.routing_bucket() != Some(routing_bucket) {
-            continue;
-        }
+    // ONE bucket's pages, filtered inside the walk. This used to materialize every live page in
+    // the shard and then drop all but this bucket's, which `reload_all_released_buckets` paid once
+    // per released bucket -- the store multiplied by the batch.
+    for entry in collect_model_live_block_entries_in_bucket(shard, routing_bucket) {
         let object_id = entry.address.object_id().unwrap_or_else(|| {
             stable_block_object_id(
                 shard_id,
@@ -2149,124 +2187,219 @@ pub(super) fn sync_context_blocks_for_object(
     true
 }
 
-pub(super) fn collect_model_live_block_entries(shard: &ShardState) -> Vec<LiveBlockEntry> {
-    let mut entries = Vec::new();
-    entries.extend(
-        shard
-            .strings
-            .iter()
-            .map(|(key, address)| live_block_entry(key.clone(), "string", None, address.clone())),
-    );
+/// Offer every live model-map page in the shard to `accept`, and hand the accepted ones to
+/// `emit`.
+///
+/// ONE arm list, for every caller that asks the model maps what pages are live.
+/// `collect_model_live_block_entries` is this walk with `accept` always true; the release and
+/// reload paths pass a routing-bucket filter. Sharing the arms matters more than it looks: a kind
+/// present in one hand-written arm list and missing from another would make the release's "what a
+/// reload would rebuild" derivation disagree with what the reload actually rebuilds, and it would
+/// disagree in the direction that silently ALLOWS a release rather than refusing one.
+///
+/// `accept` is given the ADDRESS, which is all a routing-bucket filter needs and is a field read.
+/// Everything owned is built after it: several arms compose their component with `format!` or
+/// `hex::encode`, and a `LiveBlockEntry` costs four allocations -- an owned key and an owned kind,
+/// each built as a `String` and then copied into an `Arc<str>`. None of that runs for a page the
+/// caller is not going to keep.
+///
+/// The timestamped-series kinds dedup and sort their addresses, and that helper allocates, so the
+/// series is first asked -- without allocating -- whether ANY of its addresses is accepted. The
+/// addresses emitted, and their order within a series, are unchanged.
+fn visit_model_live_blocks(
+    shard: &ShardState,
+    accept: impl Fn(&BlockAddress) -> bool,
+    mut emit: impl FnMut(&'static str, &str, Option<&str>, &BlockAddress),
+) {
+    for (key, address) in &shard.strings {
+        if accept(address) {
+            emit("string", key, None, address);
+        }
+    }
     for (key, fields) in &shard.hashes {
-        entries.extend(fields.iter().map(|(field, address)| {
-            live_block_entry(key.clone(), "hash", Some(field.clone()), address.clone())
-        }));
+        for (field, address) in fields.iter() {
+            if accept(address) {
+                emit("hash", key, Some(field.as_str()), address);
+            }
+        }
     }
     for (key, members) in &shard.zsets {
-        entries.extend(members.iter().map(|(member, (biased, address))| {
-            live_block_entry(
-                key.clone(),
-                "zset",
-                Some(format!("{biased:016x}{}", hex::encode(member))),
-                address.clone(),
-            )
-        }));
+        for (member, (biased, address)) in members.iter() {
+            if accept(address) {
+                let component = format!("{biased:016x}{}", hex::encode(member));
+                emit("zset", key, Some(component.as_str()), address);
+            }
+        }
     }
     for (key, elements) in &shard.lists {
-        entries.extend(elements.iter().map(|(seq, address)| {
-            live_block_entry(
-                key.clone(),
-                "list",
-                Some(format!("{:016x}", (*seq as u64).wrapping_sub(i64::MIN as u64))),
-                address.clone(),
-            )
-        }));
+        for (seq, address) in elements.iter() {
+            if accept(address) {
+                let component = format!("{:016x}", (*seq as u64).wrapping_sub(i64::MIN as u64));
+                emit("list", key, Some(component.as_str()), address);
+            }
+        }
     }
     for (key, members) in &shard.sets {
-        entries.extend(members.iter().map(|(member, address)| {
-            live_block_entry(
-                key.clone(),
-                "set",
-                Some(hex::encode(member)),
-                address.clone(),
-            )
-        }));
+        for (member, address) in members.iter() {
+            if accept(address) {
+                let component = hex::encode(member);
+                emit("set", key, Some(component.as_str()), address);
+            }
+        }
     }
-    for (key, series) in &shard.features {
-        entries.extend(
-            unique_timestamped_kv_block_addresses(series)
-                .into_iter()
-                .map(|address| live_block_entry(key.clone(), "feature", None, address)),
-        );
+    visit_timestamped_series(&shard.features, "feature", &accept, &mut emit);
+    for (key, address) in &shard.control_state_blocks {
+        if accept(address) {
+            emit("control_state", key, None, address);
+        }
     }
-    entries.extend(
-        shard
-            .control_state_blocks
-            .iter()
-            .map(|(key, address)| live_block_entry(key.clone(), "control_state", None, address.clone())),
-    );
-    entries.extend(
-        shard.context_nodes.iter().map(|(key, address)| {
-            live_block_entry(key.clone(), "context_node", None, address.clone())
-        }),
-    );
-    for (key, series) in &shard.context_events {
-        entries.extend(
-            unique_timestamped_kv_block_addresses(series)
-                .into_iter()
-                .map(|address| live_block_entry(key.clone(), "context_event", None, address)),
-        );
+    for (key, address) in &shard.context_nodes {
+        if accept(address) {
+            emit("context_node", key, None, address);
+        }
     }
-    for (key, series) in &shard.context_indexes {
-        entries.extend(
-            unique_timestamped_kv_block_addresses(series)
-                .into_iter()
-                .map(|address| live_block_entry(key.clone(), "context_index", None, address)),
-        );
-    }
-    for (key, series) in &shard.context_audits {
-        entries.extend(
-            unique_timestamped_kv_block_addresses(series)
-                .into_iter()
-                .map(|address| live_block_entry(key.clone(), "context_audit", None, address)),
-        );
-    }
+    visit_timestamped_series(&shard.context_events, "context_event", &accept, &mut emit);
+    visit_timestamped_series(&shard.context_indexes, "context_index", &accept, &mut emit);
+    visit_timestamped_series(&shard.context_audits, "context_audit", &accept, &mut emit);
     // Entities live grouped by node in memory but persist one entry per entity, under the same
     // `ctx:entity:{tenant}:{node}:{entity_hash}` key as before the fold -- the collection key
     // plus the BTree key reproduce it exactly. Keeping the on-disk key per entity is what makes
     // this change format-compatible in both directions.
     for (collection_key, series) in &shard.context_entities {
-        entries.extend(series.iter().map(|(entity_hash, address)| {
-            live_block_entry(
-                format!("{collection_key}:{entity_hash}"),
-                "context_entity",
-                None,
+        for (entity_hash, address) in series.iter() {
+            if accept(address) {
+                let composed = format!("{collection_key}:{entity_hash}");
+                emit("context_entity", composed.as_str(), None, address);
+            }
+        }
+    }
+    visit_timestamped_series(&shard.context_children, "context_child", &accept, &mut emit);
+    visit_timestamped_series(&shard.context_summaries, "context_summary", &accept, &mut emit);
+    visit_timestamped_series(
+        &shard.context_compressions,
+        "context_compression",
+        &accept,
+        &mut emit,
+    );
+}
+
+/// One timestamped-series map's arm of [`visit_model_live_blocks`].
+///
+/// `unique_timestamped_kv_block_addresses` builds a set and a sorted `Vec` for the series, so it
+/// is reached only once the series is known to hold at least one accepted address. Asking that
+/// first costs a field read per point and no allocation, and the answer it gates on is exactly the
+/// answer the caller would otherwise reach after allocating.
+fn visit_timestamped_series(
+    map: &HashMap<String, BTreeMap<u64, BlockAddress>>,
+    kind: &'static str,
+    accept: &impl Fn(&BlockAddress) -> bool,
+    emit: &mut impl FnMut(&'static str, &str, Option<&str>, &BlockAddress),
+) {
+    for (key, series) in map {
+        if !series.values().any(accept) {
+            continue;
+        }
+        for address in unique_timestamped_kv_block_addresses(series) {
+            if accept(&address) {
+                emit(kind, key, None, &address);
+            }
+        }
+    }
+}
+
+pub(super) fn collect_model_live_block_entries(shard: &ShardState) -> Vec<LiveBlockEntry> {
+    let mut entries = Vec::new();
+    visit_model_live_blocks(
+        shard,
+        |_| true,
+        |kind, object_key, component, address| {
+            entries.push(live_block_entry(
+                object_key.to_string(),
+                kind,
+                component.map(str::to_string),
                 address.clone(),
-            )
-        }));
-    }
-    for (key, series) in &shard.context_children {
-        entries.extend(
-            unique_timestamped_kv_block_addresses(series)
-                .into_iter()
-                .map(|address| live_block_entry(key.clone(), "context_child", None, address)),
-        );
-    }
-    for (key, series) in &shard.context_summaries {
-        entries.extend(
-            unique_timestamped_kv_block_addresses(series)
-                .into_iter()
-                .map(|address| live_block_entry(key.clone(), "context_summary", None, address)),
-        );
-    }
-    for (key, series) in &shard.context_compressions {
-        entries.extend(
-            unique_timestamped_kv_block_addresses(series)
-                .into_iter()
-                .map(|address| live_block_entry(key.clone(), "context_compression", None, address)),
-        );
-    }
+            ));
+        },
+    );
     entries
+}
+
+/// The live model-map pages routing to ONE bucket.
+///
+/// What [`reload_released_bucket`] needs, and all it ever needed: it walked the whole shard into
+/// owned entries and then dropped every one that did not route here. The walk is still the whole
+/// shard -- see [`visit_model_live_blocks`] for why nothing can answer this from an index -- but
+/// what it MATERIALIZES is this bucket's pages.
+pub(super) fn collect_model_live_block_entries_in_bucket(
+    shard: &ShardState,
+    routing_bucket: u32,
+) -> Vec<LiveBlockEntry> {
+    let mut entries = Vec::new();
+    visit_model_live_blocks(
+        shard,
+        |address| address.routing_bucket() == Some(routing_bucket),
+        |kind, object_key, component, address| {
+            entries.push(live_block_entry(
+                object_key.to_string(),
+                kind,
+                component.map(str::to_string),
+                address.clone(),
+            ));
+        },
+    );
+    BUCKET_SCOPED_MODEL_ENTRIES
+        .fetch_add(entries.len() as u64, std::sync::atomic::Ordering::Relaxed);
+    entries
+}
+
+/// What a reload would rebuild for each of the WANTED buckets, and nothing else.
+///
+/// The set [`release_bucket_blocks`] compares each candidate's resident pages against. Two
+/// directions are being asked at once, and only one of them is answerable per victim:
+///
+///   * resident is contained in derived -- every resident page is still live in the model maps at
+///     the same address. A per-victim question: look each resident page up in its own map.
+///   * derived is contained in resident -- no live model-map page routes to this bucket without
+///     being resident in it. NOT a per-victim question. The maps are keyed by object key; the
+///     routing bucket is a field of the address; `object_block_lookup` is derived from the very
+///     block index being checked and so answers with it rather than about it. Finding a page that
+///     routes here and is absent from the block index means looking at pages the block index does
+///     not name, and the only place they are is the maps.
+///
+/// So the walk stays. What goes is materializing the store to do it: `accept` runs on the address,
+/// before any key, component or entry is built, and only a wanted page is ever turned into an
+/// identity.
+fn derive_released_block_identities(
+    shard: &ShardState,
+    wanted: &BTreeSet<u32>,
+) -> BTreeMap<u32, BTreeSet<ReleasedBlockIdentity>> {
+    let mut derived: BTreeMap<u32, BTreeSet<ReleasedBlockIdentity>> = BTreeMap::new();
+    let mut materialized = 0u64;
+    visit_model_live_blocks(
+        shard,
+        |address| {
+            address
+                .routing_bucket()
+                .is_some_and(|routing_bucket| wanted.contains(&routing_bucket))
+        },
+        |kind, object_key, component, address| {
+            let routing_bucket = address
+                .routing_bucket()
+                .expect("accepted only with a routing bucket");
+            materialized += 1;
+            derived
+                .entry(routing_bucket)
+                .or_default()
+                .insert(released_block_identity_owned(
+                    kind.to_string(),
+                    object_key.to_string(),
+                    component.map(str::to_string),
+                    address,
+                ));
+        },
+    );
+    BUCKET_SCOPED_MODEL_ENTRIES.fetch_add(materialized, std::sync::atomic::Ordering::Relaxed);
+    derived
 }
 
 pub(super) fn block_physical_identity_key(
@@ -3759,7 +3892,7 @@ mod release_refusal_guards {
     /// One bucket that satisfies every precondition: resident, not loading, clean, undeleted,
     /// holding one clean, undeleted, correctly routed `string` block that the model maps derive
     /// exactly. Anything a guard changes is a change from THIS.
-    fn releasable_bucket(shard: &mut ShardState, routing_bucket: u32, key: &str) {
+    pub(super) fn releasable_bucket(shard: &mut ShardState, routing_bucket: u32, key: &str) {
         let held = address(routing_bucket, 64);
         shard.strings.insert(key.to_string(), held.clone());
         shard
@@ -4021,6 +4154,193 @@ mod release_refusal_guards {
             outcome.refusals.total(),
             outcome.refused_buckets,
             "the breakdown and the total disagree, so one of them is not counting refusals",
+        );
+    }
+}
+
+
+/// What releasing four buckets MATERIALIZES as the store grows.
+///
+/// Counted, not timed, and counted without the counting allocator: `BUCKET_SCOPED_MODEL_ENTRIES`
+/// is a number the release path publishes about itself, so these guards run on the ordinary gate
+/// rather than only under `alloc-probe`. That separation is the point. The eviction round's
+/// allocation table in `storage_lifecycle_methods` MEASURES this cost; it asserts its own
+/// apparatus and a vacuity floor, and it passes whether the release walks the store or not. These
+/// two assert the behaviour.
+///
+/// The fixture is the refusal guards' own `releasable_bucket`, so every candidate here really is
+/// released -- a store of refusals would derive the same entries and release nothing, and the
+/// control below fails on exactly that.
+#[cfg(test)]
+mod release_walk_scale {
+    use super::release_refusal_guards::releasable_bucket;
+    use super::{
+        bucket_scoped_model_entries, release_bucket_blocks, reload_released_bucket,
+        reset_bucket_scoped_model_entries,
+    };
+    use crate::engine::state::ShardState;
+
+    /// `buckets` releasable buckets, one live `string` page each, numbered from 1.
+    fn shard_with(buckets: u32) -> ShardState {
+        let mut shard = ShardState::default();
+        let mut routing_bucket = 1u32;
+        while routing_bucket <= buckets {
+            releasable_bucket(
+                &mut shard,
+                routing_bucket,
+                &format!("walk-scale-key-{routing_bucket}"),
+            );
+            routing_bucket += 1;
+        }
+        shard
+    }
+
+    /// What one release of the SAME four victims costs out of a store of `buckets`.
+    ///
+    /// Returns `(entries materialized, live pages in the store, blocks released, buckets
+    /// released)`. The live-page count is the denominator: it is what the walk used to
+    /// materialize, and a fixture whose two sizes did not differ in it would make the claim below
+    /// a comparison of a store with itself.
+    fn release_four_of(buckets: u32) -> (u64, usize, usize, usize) {
+        let mut shard = shard_with(buckets);
+        let live_pages = shard.strings.len();
+        let candidates = [1u32, 2, 3, 4];
+
+        reset_bucket_scoped_model_entries();
+        let outcome = release_bucket_blocks(&mut shard, &candidates);
+        let materialized = bucket_scoped_model_entries();
+
+        assert_eq!(
+            outcome.refused_buckets, 0,
+            "a refused candidate makes this a different measurement: {outcome:?}",
+        );
+        (
+            materialized,
+            live_pages,
+            outcome.released_blocks,
+            outcome.released_buckets.len(),
+        )
+    }
+
+    /// THE CONTROL, and it runs as its own test so a failure here cannot stop the claim below
+    /// being made.
+    ///
+    /// The derivation must materialize the four victims' pages. A counter wired to nothing, and a
+    /// derivation that built nothing at all, both read zero at every store size -- and zero
+    /// satisfies "does not grow with the store" perfectly while measuring nothing.
+    #[test]
+    fn the_release_derivation_materializes_the_four_victims_pages() {
+        let (materialized, live_pages, released_blocks, released_buckets) = release_four_of(64);
+
+        assert_eq!(
+            released_buckets, 4,
+            "the four victims must have been released, or there was nothing to derive for",
+        );
+        assert_eq!(released_blocks, 4, "one page per victim");
+        assert!(
+            live_pages > released_blocks,
+            "the store must hold more than the victims, or the claim below is untestable; \
+             {live_pages} live pages against {released_blocks} released",
+        );
+        assert_eq!(
+            materialized, 4,
+            "the derivation must materialize the four victims' pages; it materialized \
+             {materialized} out of {live_pages} live in the store",
+        );
+    }
+
+    /// THE CLAIM: releasing four buckets costs the four buckets, not the store.
+    ///
+    /// EXACT EQUALITY across an eight-fold store, not "sublinear" and not "fewer than the store".
+    /// The defect this replaces materialized one entry per live page in the shard and then threw
+    /// all but the victims' away, so a bound like "under the live-page count" would have passed on
+    /// a walk that had merely got cheaper per entry.
+    ///
+    /// The whole-shard WALK remains, and remains necessary: `derive_released_block_identities`
+    /// says why. What is asserted here is what it materializes.
+    #[test]
+    fn releasing_four_buckets_materializes_the_same_entries_however_large_the_store() {
+        const SMALL: u32 = 500;
+        const LARGE: u32 = 4_000;
+
+        let (small, small_live, small_blocks, small_buckets) = release_four_of(SMALL);
+        let (large, large_live, large_blocks, large_buckets) = release_four_of(LARGE);
+
+        // VACUITY FLOOR, on the measured denominator rather than on the constants.
+        assert!(
+            large_live > small_live,
+            "the two stores must differ in live pages, got {small_live} and {large_live}",
+        );
+        assert_eq!(
+            (small_buckets, large_buckets),
+            (4, 4),
+            "both sizes must release the same four victims to be compared at all",
+        );
+        assert_eq!(
+            (small_blocks, large_blocks),
+            (4, 4),
+            "both sizes must release the same four pages",
+        );
+        assert!(
+            small > 0 && large > 0,
+            "a derivation that materializes nothing at either size measured nothing",
+        );
+        assert_eq!(
+            small, large,
+            "releasing four buckets materialized {small} entries out of {small_live} live pages \
+             and {large} out of {large_live}; the release must cost the victims, not the store",
+        );
+    }
+
+    /// The same claim for the other half of the pair.
+    ///
+    /// `reload_released_bucket` walked the whole shard into owned entries for ONE bucket, and
+    /// `reload_all_released_buckets` calls it once per released bucket -- the store multiplied by
+    /// the batch. The control is inside the assertion: a reload that installed nothing would
+    /// materialize nothing, and the released-page count it is compared against is 1.
+    #[test]
+    fn reloading_one_bucket_materializes_only_that_buckets_pages() {
+        const SMALL: u32 = 500;
+        const LARGE: u32 = 4_000;
+
+        fn reload_one_of(buckets: u32) -> (u64, usize) {
+            let mut shard = shard_with(buckets);
+            let live_pages = shard.strings.len();
+            let outcome = release_bucket_blocks(&mut shard, &[1]);
+            assert_eq!(outcome.released_buckets, vec![1], "{outcome:?}");
+
+            reset_bucket_scoped_model_entries();
+            let reloaded = reload_released_bucket(&mut shard, 1, 1);
+            let materialized = bucket_scoped_model_entries();
+
+            assert!(reloaded, "the bucket must have been reloaded, or nothing was walked for");
+            assert_eq!(
+                shard
+                    .bucket_index
+                    .bucket_map
+                    .get(&1)
+                    .map(|bucket| bucket.block_index.len()),
+                Some(1),
+                "the reload must have installed the page it released",
+            );
+            (materialized, live_pages)
+        }
+
+        let (small, small_live) = reload_one_of(SMALL);
+        let (large, large_live) = reload_one_of(LARGE);
+
+        assert!(
+            large_live > small_live,
+            "the two stores must differ in live pages, got {small_live} and {large_live}",
+        );
+        assert_eq!(
+            small, 1,
+            "reloading one bucket materialized {small} entries out of {small_live} live pages",
+        );
+        assert_eq!(
+            small, large,
+            "reloading one bucket materialized {small} entries out of {small_live} live pages and \
+             {large} out of {large_live}; a reload must cost the bucket, not the store",
         );
     }
 }

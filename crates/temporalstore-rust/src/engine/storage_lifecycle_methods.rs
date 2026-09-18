@@ -28,6 +28,20 @@ pub(crate) static DIRTY_DRAIN_VISITS: std::sync::atomic::AtomicU64 =
 pub(crate) static EVICTION_RECENCY_ENTRIES_CLONED: std::sync::atomic::AtomicU64 =
     std::sync::atomic::AtomicU64::new(0);
 
+/// WAL records a `delete_drop` eviction round appends WHILE HOLDING the shard-table write guard.
+///
+/// The round's index flush was already moved out of the guard -- a stamped clone carries the
+/// state out and the encode and both file writes happen unlocked. The per-key WAL tombstones were
+/// not, and the comment beside them says so. This counts them, because the shape has been
+/// mis-read twice in this engine by argument and settled twice by a counter.
+///
+/// Incremented at the append itself, which is lexically inside the `shards.write()` block and
+/// before the `drop(shards)` below it, so a record counted here was appended under the guard by
+/// construction rather than by reading. Process-wide: a reader resets it immediately before the
+/// round it is measuring, and the suite it is read in runs single-threaded.
+pub(crate) static EVICTION_DELETE_DROP_WAL_APPENDS_UNDER_GUARD: std::sync::atomic::AtomicU64 =
+    std::sync::atomic::AtomicU64::new(0);
+
 /// How many O(shard) plans one round builds, counted rather than timed.
 ///
 /// A round builds these in several stages and each walks the shard. Whether that is duplicated
@@ -1931,6 +1945,9 @@ impl TemporalEngine {
                             let appended =
                                 self.wal_store
                                     .append_with_sync(shard_id, command.clone(), false);
+                            // COUNTED HERE, under the guard, one per dropped key.
+                            EVICTION_DELETE_DROP_WAL_APPENDS_UNDER_GUARD
+                                .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
                             // Same reasoning as the expiry sweep: a drop that deletes is a
                             // deletion, and it has to reach every log a successor may replay.
                             if appended.is_ok() {
@@ -2174,7 +2191,20 @@ mod eviction_round_scale {
         }
 
         // The two ACTUATOR phases, on a fresh store each time so neither has already run.
-        fn actuator_cost(objects: usize) -> (u64, u64, usize) {
+        // The release's own outcome comes back with the cost, and the two sizes are asserted to
+        // agree on it below: an actuator that released four buckets and one that refused four
+        // both cost something, and a table that did not say which would report the second as
+        // progress.
+        fn actuator_cost(
+            objects: usize,
+        ) -> (
+            u64,
+            u64,
+            usize,
+            usize,
+            usize,
+            crate::engine::storage_bucket_internals::BucketReleaseRefusals,
+        ) {
             let (_dir, engine) = engine_with(objects);
             engine.use_sampled_eviction_for_test();
             let cache_report = engine.storage_cache_inspection_report(1);
@@ -2196,18 +2226,33 @@ mod eviction_round_scale {
             }
             let invalidate = invalidate.stop().allocs;
 
+            let mut outcome = None;
             let release = crate::alloc_probe::Probe::start();
             {
                 let mut shards = engine.shards.write().expect("shards lock poisoned");
                 if let Some(shard) = shards.get_mut(&1) {
-                    let _ = crate::engine::storage_bucket_internals::release_bucket_blocks(
+                    outcome = Some(crate::engine::storage_bucket_internals::release_bucket_blocks(
                         shard,
                         &candidates,
-                    );
+                    ));
                 }
             }
             let release = release.stop().allocs;
-            (invalidate, release, candidates.len())
+            let outcome = outcome.expect("the shard must be present to release anything");
+            assert_eq!(
+                outcome.released_buckets.len() + outcome.refused_buckets,
+                candidates.len(),
+                "every candidate must have been acted on, or the probe timed a release that \
+                 returned early: {outcome:?}",
+            );
+            (
+                invalidate,
+                release,
+                candidates.len(),
+                outcome.released_buckets.len(),
+                outcome.refused_buckets,
+                outcome.refusals.clone(),
+            )
         }
 
         const SMALL: usize = 500;
@@ -2236,11 +2281,40 @@ mod eviction_round_scale {
             large_map,
             large_select,
         ) = round_cost(LARGE);
-        let (small_invalidate, small_release, small_candidates) = actuator_cost(SMALL);
-        let (large_invalidate, large_release, large_candidates) = actuator_cost(LARGE);
+        let (
+            small_invalidate,
+            small_release,
+            small_candidates,
+            small_released,
+            small_refused,
+            small_refusals,
+        ) = actuator_cost(SMALL);
+        let (
+            large_invalidate,
+            large_release,
+            large_candidates,
+            large_released,
+            large_refused,
+            large_refusals,
+        ) = actuator_cost(LARGE);
         assert_eq!(
             small_candidates, large_candidates,
             "both actuator probes must act on the same number of victims"
+        );
+        // WHICH TERM, named rather than inferred. Eleven terms share `refused_buckets`, so a
+        // table saying only that four candidates were refused says nothing about why.
+        println!("  release outcome, {SMALL} objects: {small_refusals:?}");
+        println!("  release outcome, {LARGE} objects: {large_refusals:?}");
+        assert_eq!(
+            small_refusals, large_refusals,
+            "the two release probes refused on different terms, so their costs are not comparable",
+        );
+        assert_eq!(
+            (small_released, small_refused),
+            (large_released, large_refused),
+            "the two release probes did different things -- {small_released} released and \
+             {small_refused} refused at {SMALL} objects against {large_released} and \
+             {large_refused} at {LARGE} -- so their costs are not comparable",
         );
         let small_named = small_inspect
             + small_resident
@@ -2281,6 +2355,7 @@ mod eviction_round_scale {
                sampled victim selection    {small_select:>10} {large_select:>18}   {:>8.2}x\n\
                cache invalidate, 4 victims {small_invalidate:>10} {large_invalidate:>18}   {:>8.2}x\n\
                bucket release, 4 victims   {small_release:>10} {large_release:>18}   {:>8.2}x\n\
+               (of {small_candidates} candidates: {small_released} released, {small_refused} refused, at both sizes)\n\
                RESIDUAL (unattributed)     {small_residual:>10} {large_residual:>18}\n",
             ratio(small_buckets as u64, large_buckets as u64),
             ratio(small_scanned, large_scanned),
@@ -2304,6 +2379,87 @@ mod eviction_round_scale {
         assert!(
             small_allocs > 0 && large_allocs > 0,
             "a round that allocates nothing at either size means the probe measured nothing"
+        );
+    }
+
+    /// WHAT A `delete_drop` ROUND APPENDS TO THE WAL WHILE HOLDING THE SHARD WRITE GUARD.
+    ///
+    /// Counted, not argued, and not inferred from the shape of the loop: this engine has had two
+    /// "N under a guard" findings settled by a counter after being mis-read by argument, and the
+    /// comment beside the loop acknowledging the hold is not a measurement of how many.
+    ///
+    /// `delete_drop` is OFF by default in both places it can be set. It is not unreachable: both
+    /// are `#[serde(default)]` fields on deserialized structs -- `StorageManagerRequest`
+    /// (`engine/reports.rs`), which the on-demand cycle takes from a caller, and the data node's
+    /// own options (`data_node.rs`), which a deployment configures. Either can turn it on with no
+    /// code change, so what it costs when on is worth a number.
+    ///
+    /// `batch_limit` 0 is "no limit", documented as such on the request and read that way by both
+    /// selection arms since it was corrected. A round at that setting takes every bucket, so the
+    /// loop runs once per key in the shard -- which is what makes this a term that tracks the
+    /// store rather than the batch.
+    ///
+    /// REPORTED, NOT FIXED. Moving the appends out would have to carry `applied_wal_sequence` and
+    /// the index snapshot with them, in an order this measurement does not establish.
+    #[test]
+    fn what_a_delete_drop_round_appends_to_the_wal_under_the_shard_write_guard() {
+        use super::EVICTION_DELETE_DROP_WAL_APPENDS_UNDER_GUARD as APPENDS;
+
+        /// `(appends under the guard, objects written, keys the round dropped)`
+        fn round(objects: usize) -> (u64, usize, usize) {
+            let (_dir, engine) = engine_with(objects);
+            engine.use_sampled_eviction_for_test();
+            APPENDS.store(0, Ordering::Relaxed);
+            // threshold 0 so the gate admits; batch_limit 0 is "no limit", so every bucket is a
+            // victim and the drop loop covers the shard.
+            let report = engine.apply_storage_eviction(1, 0, 0, false, true);
+            let appends = APPENDS.load(Ordering::Relaxed);
+            assert!(
+                report.pressure_gate_open,
+                "the round must have got past the pressure gate, or nothing was measured"
+            );
+            (appends, objects, report.dropped_object_count)
+        }
+
+        const SMALL: usize = 500;
+        const LARGE: usize = 4000;
+        let (small_appends, small_objects, small_dropped) = round(SMALL);
+        let (large_appends, large_objects, large_dropped) = round(LARGE);
+        let ratio = if small_appends == 0 {
+            0.0
+        } else {
+            large_appends as f64 / small_appends as f64
+        };
+        println!(
+            "\n  A delete_drop EVICTION ROUND, WAL records appended INSIDE the shard write guard\n\
+             \n                                {SMALL:>10} objects {LARGE:>10} objects      ratio\n\
+               objects written             {small_objects:>10} {large_objects:>18}\n\
+               keys the round dropped      {small_dropped:>10} {large_dropped:>18}\n\
+               WAL appends UNDER the guard {small_appends:>10} {large_appends:>18}   {ratio:>8.2}x\n",
+        );
+
+        // VACUITY FLOOR, on the measured denominator: a round that dropped nothing appends
+        // nothing, and nothing over nothing is a flat that means the probe never ran.
+        assert!(
+            small_dropped > 0 && large_dropped > 0,
+            "the round must have dropped keys at both sizes to have appended anything; \
+             dropped {small_dropped} and {large_dropped}",
+        );
+        assert!(
+            large_dropped > small_dropped,
+            "the two corpora must differ in dropped keys, got {small_dropped} and {large_dropped}",
+        );
+        // ONE RECORD PER DROPPED KEY, asserted as equality rather than as a bound: the claim is
+        // that this loop appends per key, and "at least one" would also pass on a single record.
+        assert_eq!(
+            small_appends, small_dropped as u64,
+            "a delete_drop round appended {small_appends} WAL records under the guard for \
+             {small_dropped} dropped keys",
+        );
+        assert_eq!(
+            large_appends, large_dropped as u64,
+            "a delete_drop round appended {large_appends} WAL records under the guard for \
+             {large_dropped} dropped keys",
         );
     }
 }

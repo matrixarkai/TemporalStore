@@ -51,9 +51,9 @@ pub(crate) use command_validation::{command_object_keys, is_write_command};
 pub(crate) use storage_bucket_internals::uncovered_maintenance;
 mod storage_bucket_internals;
 pub use storage_bucket_internals::{
-    bucket_block_index_visits, bucket_visit_sites, layout_by_caller, live_block_scan_entries,
-    live_block_scan_sites_snapshot, reset_bucket_block_index_visits,
-    reset_live_block_scan_entries, reset_live_block_scan_sites,
+    bucket_block_index_visits, bucket_scoped_model_entries, bucket_visit_sites, layout_by_caller,
+    live_block_scan_entries, live_block_scan_sites_snapshot, reset_bucket_block_index_visits,
+    reset_bucket_scoped_model_entries, reset_live_block_scan_entries, reset_live_block_scan_sites,
     BLOCK_SLAB_LIVE_DRIFTS, BLOCK_SLAB_LIVE_RECONCILES,
 };
 pub use state::{block_slab_live_charges, reset_block_slab_live_charges};
