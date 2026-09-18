@@ -2,84 +2,84 @@
 // Copyright 2026 MatrixArkAI
 
 use matrixraft::{
-    rustraft_parity_contract as library_matrixraft_parity_contract,
-    rustraft_parity_report as library_matrixraft_parity_report,
-    rustraft_baseline_raft_runtime_capability_prometheus as library_matrixraft_reference_raft_runtime_capability_prometheus,
+    matrixraft_parity_contract as library_matrixraft_parity_contract,
+    matrixraft_parity_report as library_matrixraft_parity_report,
+    matrixraft_baseline_raft_runtime_capability_prometheus as library_matrixraft_reference_raft_runtime_capability_prometheus,
 };
 
 use super::{distributed_raft_readiness, RaftDistributedReadiness};
 
 pub use matrixraft::{
-    rustraft_admin_status_surface_evidence as matrixraft_admin_status_surface_evidence,
-    rustraft_capability_evidence_from_fields as matrixraft_capability_evidence_from_fields,
-    rustraft_cross_plane_process_readiness_blocker_report as matrixraft_cross_plane_process_readiness_blocker_report,
-    rustraft_data_node_process_rollout_blockers as matrixraft_data_node_process_rollout_blockers,
-    rustraft_data_node_strict_process_rollout_validated as matrixraft_data_node_strict_process_rollout_validated,
-    rustraft_meta_process_rollout_blockers as matrixraft_meta_process_rollout_blockers,
-    rustraft_meta_strict_process_rollout_validated as matrixraft_meta_strict_process_rollout_validated,
-    rustraft_named_readiness_blockers as matrixraft_named_readiness_blockers,
-    rustraft_peer_pipeline_status_from_observed as matrixraft_peer_pipeline_status_from_observed,
-    rustraft_pipeline_evidence as matrixraft_pipeline_evidence,
-    rustraft_production_readiness_report as matrixraft_production_readiness_report,
-    rustraft_read_safety_runtime_decision as matrixraft_read_safety_runtime_decision,
-    rustraft_baseline_raft_runtime_capability_report as matrixraft_reference_raft_runtime_capability_report,
-    rustraft_runtime_capability_report_from_evidence as matrixraft_runtime_capability_report_from_evidence,
-    rustraft_snapshot_lifecycle_evidence as matrixraft_snapshot_lifecycle_evidence,
-    rustraft_validate_deployment_mode as matrixraft_validate_deployment_mode,
-    rustraft_validate_deployment_readiness as matrixraft_validate_deployment_readiness,
-    rustraft_wal_lifecycle_evidence as matrixraft_wal_lifecycle_evidence, RaftCapabilityEvidence,
-    RustRaftAdminStatusSurfaceEvidence as MatrixRaftAdminStatusSurfaceEvidence,
-    RustRaftAdminStatusSurfaceInput as MatrixRaftAdminStatusSurfaceInput,
-    RustRaftCrossPlaneProcessReadinessBlockerReport as MatrixRaftCrossPlaneProcessReadinessBlockerReport,
-    RustRaftDataNodeProcessRolloutReport as MatrixRaftDataNodeProcessRolloutReport,
-    RustRaftDeploymentMode as MatrixRaftDeploymentMode,
-    RustRaftMetaProcessRolloutReport as MatrixRaftMetaProcessRolloutReport,
-    RustRaftObservedPeerPipeline as MatrixRaftObservedPeerPipeline,
-    RustRaftParityContract as MatrixRaftParityContract,
-    RustRaftParityReport as MatrixRaftParityReport,
-    RustRaftPeerPipelineStatus as MatrixRaftPeerPipelineStatus,
-    RustRaftPipelineEvidence as MatrixRaftPipelineEvidence,
-    RustRaftPipelineLimits as MatrixRaftPipelineLimits,
-    RustRaftProcessNodeEvidence as MatrixRaftProcessNodeEvidence,
-    RustRaftProcessOperationalSemanticsEvidence as MatrixRaftProcessOperationalSemanticsEvidence,
-    RustRaftProcessReadinessBlocker as MatrixRaftProcessReadinessBlocker,
-    RustRaftProductionReadinessError as MatrixRaftProductionReadinessError,
-    RustRaftProductionReadinessInput as MatrixRaftProductionReadinessInput,
-    RustRaftProductionReadinessReport as MatrixRaftProductionReadinessReport,
-    RustRaftPrometheusMetricSet as MatrixRaftPrometheusMetricSet,
-    RustRaftReadSafetyOperation as MatrixRaftReadSafetyOperation,
-    RustRaftReadSafetyRuntimeDecision as MatrixRaftReadSafetyRuntimeDecision,
-    RustRaftReadSafetyRuntimeInput as MatrixRaftReadSafetyRuntimeInput,
-    RustRaftReadinessEvidence as MatrixRaftReadinessEvidence,
-    RustRaftReadinessSnapshot as MatrixRaftReadinessSnapshot,
-    RustRaftBaselineRaftRuntimeCapabilityReport as MatrixRaftReferenceRaftRuntimeCapabilityReport,
-    RustRaftSemanticRequirement as MatrixRaftSemanticRequirement,
-    RustRaftSnapshotLifecycleEvidence as MatrixRaftSnapshotLifecycleEvidence,
-    RustRaftWalLifecycleEvidence as MatrixRaftWalLifecycleEvidence,
-    RustRaftWalLifecycleStatus as MatrixRaftWalLifecycleStatus,
+    matrixraft_admin_status_surface_evidence,
+    matrixraft_capability_evidence_from_fields,
+    matrixraft_cross_plane_process_readiness_blocker_report,
+    matrixraft_data_node_process_rollout_blockers,
+    matrixraft_data_node_strict_process_rollout_validated,
+    matrixraft_meta_process_rollout_blockers,
+    matrixraft_meta_strict_process_rollout_validated,
+    matrixraft_named_readiness_blockers,
+    matrixraft_peer_pipeline_status_from_observed,
+    matrixraft_pipeline_evidence,
+    matrixraft_production_readiness_report,
+    matrixraft_read_safety_runtime_decision,
+    matrixraft_baseline_raft_runtime_capability_report as matrixraft_reference_raft_runtime_capability_report,
+    matrixraft_runtime_capability_report_from_evidence,
+    matrixraft_snapshot_lifecycle_evidence,
+    matrixraft_validate_deployment_mode,
+    matrixraft_validate_deployment_readiness,
+    matrixraft_wal_lifecycle_evidence, CapabilityEvidence,
+    AdminStatusSurfaceEvidence as MatrixRaftAdminStatusSurfaceEvidence,
+    AdminStatusSurfaceInput as MatrixRaftAdminStatusSurfaceInput,
+    CrossPlaneProcessReadinessBlockerReport as MatrixRaftCrossPlaneProcessReadinessBlockerReport,
+    DataNodeProcessRolloutReport as MatrixRaftDataNodeProcessRolloutReport,
+    DeploymentMode as MatrixRaftDeploymentMode,
+    MetaProcessRolloutReport as MatrixRaftMetaProcessRolloutReport,
+    ObservedPeerPipeline as MatrixRaftObservedPeerPipeline,
+    ParityContract as MatrixRaftParityContract,
+    ParityReport as MatrixRaftParityReport,
+    PeerProgress as MatrixRaftPeerPipelineStatus,
+    PipelineEvidence as MatrixRaftPipelineEvidence,
+    PipelineLimits as MatrixRaftPipelineLimits,
+    ProcessNodeEvidence as MatrixRaftProcessNodeEvidence,
+    ProcessOperationalSemanticsEvidence as MatrixRaftProcessOperationalSemanticsEvidence,
+    ProcessReadinessBlocker as MatrixRaftProcessReadinessBlocker,
+    ProductionReadinessError as MatrixRaftProductionReadinessError,
+    ProductionReadinessInput as MatrixRaftProductionReadinessInput,
+    ProductionReadinessReport as MatrixRaftProductionReadinessReport,
+    PrometheusMetricSet as MatrixRaftPrometheusMetricSet,
+    ReadSafetyOperation as MatrixRaftReadSafetyOperation,
+    ReadSafetyRuntimeDecision as MatrixRaftReadSafetyRuntimeDecision,
+    ReadSafetyRuntimeInput as MatrixRaftReadSafetyRuntimeInput,
+    ReadinessEvidence as MatrixRaftReadinessEvidence,
+    ReadinessSnapshot as MatrixRaftReadinessSnapshot,
+    BaselineRaftRuntimeCapabilityReport as MatrixRaftReferenceRaftRuntimeCapabilityReport,
+    SemanticRequirement as MatrixRaftSemanticRequirement,
+    SnapshotLifecycleEvidence as MatrixRaftSnapshotLifecycleEvidence,
+    WalLifecycleEvidence as MatrixRaftWalLifecycleEvidence,
+    WalLifecycleStatus as MatrixRaftWalLifecycleStatus,
 };
 
 impl From<&RaftDistributedReadiness> for MatrixRaftReadinessSnapshot {
     fn from(readiness: &RaftDistributedReadiness) -> Self {
         Self {
-            rustraft_leader_write_authority_present: readiness
+            matrixraft_leader_write_authority_present: readiness
                 .matrixraft_leader_write_authority_present,
-            rustraft_operator_observability_present: readiness
+            matrixraft_operator_observability_present: readiness
                 .matrixraft_operator_observability_present,
-            rustraft_rpc_transport_contract_present: readiness
+            matrixraft_rpc_transport_contract_present: readiness
                 .matrixraft_rpc_transport_contract_present,
-            rustraft_log_retention_snapshot_trigger_present: readiness
+            matrixraft_log_retention_snapshot_trigger_present: readiness
                 .matrixraft_log_retention_snapshot_trigger_present,
-            rustraft_apply_snapshot_fence_present: readiness
+            matrixraft_apply_snapshot_fence_present: readiness
                 .matrixraft_apply_snapshot_fence_present,
             raft_storage_apply_fence_present: readiness.raft_storage_apply_fence_present,
-            rustraft_snapshot_floor_log_matching_present: readiness
+            matrixraft_snapshot_floor_log_matching_present: readiness
                 .matrixraft_snapshot_floor_log_matching_present,
-            rustraft_snapshot_tail_catchup_present: readiness
+            matrixraft_snapshot_tail_catchup_present: readiness
                 .matrixraft_snapshot_tail_catchup_present,
-            rustraft_compacted_entry_rejection_present: readiness
+            matrixraft_compacted_entry_rejection_present: readiness
                 .matrixraft_compacted_entry_rejection_present,
-            rustraft_metaserver_snapshot_floor_election_present: readiness
+            matrixraft_metaserver_snapshot_floor_election_present: readiness
                 .matrixraft_metaserver_snapshot_floor_election_present,
             learner_catchup_promotion_present: readiness.learner_catchup_promotion_present,
             metaserver_membership_workflow_present: readiness

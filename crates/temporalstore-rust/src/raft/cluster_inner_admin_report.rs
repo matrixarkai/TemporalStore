@@ -328,6 +328,11 @@ impl RaftClusterInner {
                 last_log_index: wal_last_log_index,
                 released_segment_count: wal_released_segment_count,
                 slow_fsync_backpressure_observed: wal_slow_fsync_backpressure_observed,
+                // Zero like the four siblings below it. This WAL is TemporalStore's own and its
+                // segment report carries no fsync counters at all. The library added the field
+                // to say whether batching amortised anything in ITS WAL; nothing here can answer
+                // that, and a made-up number in an evidence report is worse than a zero.
+                fsync_count: 0,
                 slow_fsync_threshold_ms: 0,
                 slow_fsync_count: 0,
                 consecutive_slow_fsync_count: 0,
