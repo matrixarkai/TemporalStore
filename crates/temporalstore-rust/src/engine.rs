@@ -37,6 +37,7 @@ mod persistence;
 mod bucket_dump_io;
 pub use self::bucket_dump_io::{
     bucket_dump_manifest_io_counts, bucket_dump_manifest_listing_sites,
+    bucket_dump_manifest_memo_len,
     reset_bucket_dump_manifest_io_counts, BucketDumpManifestIoCounts,
 };
 mod command_validation;
@@ -1835,7 +1836,7 @@ impl TemporalEngine {
             .map(|info| info.end_routing_bucket)
             .unwrap_or(u32::MAX);
         let summaries = bucket_storage_summaries(shard, start, end);
-        if let Some(manifest) = latest_bucket_dump_manifest_at(&self.index_dir, shard_id) {
+        if let Some(manifest) = latest_bucket_dump_manifest_shared_at(&self.index_dir, shard_id) {
             merge_last_dump_sequence(summaries, &manifest)
         } else {
             summaries
@@ -1867,7 +1868,7 @@ impl TemporalEngine {
             .unwrap_or(u32::MAX);
         let summaries = bucket_storage_summaries(shard, start, end);
         let summaries =
-            if let Some(manifest) = latest_bucket_dump_manifest_at(&self.index_dir, shard_id) {
+            if let Some(manifest) = latest_bucket_dump_manifest_shared_at(&self.index_dir, shard_id) {
                 merge_last_dump_sequence(summaries, &manifest)
             } else {
                 summaries

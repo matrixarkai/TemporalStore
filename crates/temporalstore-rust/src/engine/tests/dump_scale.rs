@@ -11,15 +11,23 @@
 //!
 //! ```text
 //!   records   manifest on disk   bytes ONE round reads back   re-serialised for checksum
-//!     2,000            338 KB                       10.2 MB                      10.9 MB
-//!    20,000          3,810 KB                      114.9 MB                     122.6 MB
+//!     2,000            338 KB           10.2 MB -> 1.0 MB           10.9 MB -> 1.7 MB
+//!    20,000          3,810 KB          114.9 MB -> 11.5 MB         122.6 MB -> 19.2 MB
 //! ```
 //!
-//! 11.28x over a 10.00x corpus, with ONE manifest on disk in both arms. The multiplier is not the
-//! store -- it is that one round takes 27 manifest-directory listings, and every listing reads
-//! every manifest file whole, parses it whole, and re-serialises it whole to verify its checksum.
-//! What the round then reads off the result is `wal_sequence`, `index_log_sequence`, `bucket_ids`
-//! and `block_slab_ids`: four small fields, none of which needs the index image.
+//! The left-hand numbers were 11.28x over a 10.00x corpus, with ONE manifest on disk in both
+//! arms. The multiplier was never the store -- it was that one round takes 27
+//! manifest-directory listings, and every listing read every manifest file whole, parsed it
+//! whole, and re-serialised it whole to verify its checksum, to get `wal_sequence`,
+//! `index_log_sequence`, `bucket_ids` and `block_slab_ids`: four small fields, none of which
+//! needs the index image.
+//!
+//! WHAT CHANGED. A round still takes 27 listings -- that is control flow and nothing here
+//! touches it -- but it now reads THREE manifest files instead of thirty, because a listing
+//! reuses a manifest it has already read and checksum-verified for as long as the directory
+//! entry still describes the same bytes. Three is the number of distinct manifest FILES the
+//! round sees: the one already on disk, plus the two it writes itself. The other 27 file-opens
+//! were the same documents over again.
 //!
 //! WHAT IS FIXED HERE: the re-serialisation used to COPY the manifest first, once per manifest per
 //! listing, to clear one string field. `bucket_dump_manifest_checksum_in_place` empties the field
@@ -27,10 +35,21 @@
 //! `a_listing_no_longer_copies_every_manifest_to_check_its_checksum` drives both arms in one
 //! process on one fixture.
 //!
-//! WHAT IS NOT FIXED: the 27 listings, and the fact that a listing materialises an index image
-//! nobody asked for. Both are reported with their numbers and their call sites. Collapsing the
-//! listings needs an invalidation rule that survives a round which writes a manifest half way
-//! through, and that is a durability decision, not a tuning one.
+//! THE ROUND REALLY DOES WRITE A MANIFEST HALF WAY THROUGH ITS OWN LISTINGS, so a memo scoped to
+//! "one round" would be wrong. Traced in order, the 27 listings fall into three epochs: twelve
+//! see the manifest that was already there, then the round writes one; three see both; then the
+//! round writes again and the prune removes the first, and the last twelve see only the newest.
+//! That is why the memo is keyed on what `read_dir` and `stat` report about each entry rather
+//! than on a round boundary or on mutation sites agreeing to announce themselves --
+//! `a_listing_reuses_the_manifest_it_already_read_and_verified` states the rule in four
+//! directions and `a_manifest_deleted_behind_the_memos_back_stops_being_listed` holds it to the
+//! one that decides soundness.
+//!
+//! WHAT IS STILL NOT FIXED: the 27 listings themselves, and the fact that reading a manifest at
+//! all materialises an index image nobody asked for. Parsing only the head would drop the
+//! checksum verification that stops a corrupt manifest being chosen as newest, and this does not
+//! do that: every manifest the memo serves was read whole and verified whole when its bytes were
+//! first seen.
 #![allow(clippy::all)]
 use super::*;
 use crate::engine::reports::StorageManagerCycleRequest;
@@ -197,16 +216,22 @@ fn a_dump_serialises_its_whole_manifest_more_than_once_at_every_corpus_size() {
 ///
 /// Nothing in a round needs a manifest's index image. The round reads `wal_sequence`,
 /// `index_log_sequence`, `bucket_ids` and `block_slab_ids` -- four small fields. It gets them by
-/// listing the directory, reading every manifest file whole, parsing every one whole, and
-/// re-serialising every one whole to verify its checksum. So the cost of the round's manifest
-/// questions is |manifests| x |corpus|, and neither factor is in the question.
+/// listing the directory 27 times, and it used to read every manifest file whole, parse every one
+/// whole and re-serialise every one whole to verify its checksum on every one of those listings:
+/// |listings| x |corpus|, with neither factor in the question.
 ///
-/// Two halves, asserted separately: how many times a round lists the directory (a count, and a
-/// property of control flow, so FLAT in the store), and how many bytes that costs (proportional
-/// to the store).
+/// It now reads each distinct manifest FILE once. The listings are unchanged; what is gone is
+/// reading the same document twenty-seven times to answer the same four questions.
+///
+/// Halves, asserted separately and in this order: how many times a round lists the directory (a
+/// count, and a property of control flow, so FLAT in the store); how many files it reads to
+/// serve them (also flat, and now far below the listing count); what that costs in bytes (still
+/// proportional to the store, because a manifest still embeds one); and what the memo COSTS,
+/// which is counted beside what it saves so a version that only moved the cost could not read as
+/// a win.
 #[test]
-fn a_round_reads_every_manifest_whole_to_answer_four_small_questions() {
-    fn one_size(records: usize) -> (u64, u64, u64, u64, u64, u64) {
+fn a_round_reads_each_distinct_manifest_once_to_answer_four_small_questions() {
+    fn one_size(records: usize) -> (u64, u64, u64, u64, u64, u64, u64, u64) {
         let dir = tempfile::tempdir().expect("tempdir");
         let engine = dump_engine(dir.path());
         seed_in_batches(&engine, 1, records, 100);
@@ -232,6 +257,11 @@ fn a_round_reads_every_manifest_whole_to_answer_four_small_questions() {
             counts.checksum_bytes,
             report.errors.len()
         );
+        println!(
+            "     memo: {} hit(s), {} miss(es); COST {} owned copy/copies carrying {} B of index \
+             image",
+            counts.parse_hits, counts.parse_misses, counts.owned_copies, counts.owned_copy_bytes
+        );
         if records == LARGE {
             println!("  WHO ASKS FOR A LISTING, and how many each round:");
             for (site, times) in crate::engine::bucket_dump_manifest_listing_sites() {
@@ -245,13 +275,31 @@ fn a_round_reads_every_manifest_whole_to_answer_four_small_questions() {
             counts.bytes_read,
             counts.checksum_bytes,
             counts.reads_under_guard,
+            counts.owned_copies,
+            counts.owned_copy_bytes,
         )
     }
 
-    let (small_manifests, small_listings, small_reads, small_bytes, small_checksum, small_guarded) =
-        one_size(SMALL);
-    let (large_manifests, large_listings, large_reads, large_bytes, large_checksum, large_guarded) =
-        one_size(LARGE);
+    let (
+        small_manifests,
+        small_listings,
+        small_reads,
+        small_bytes,
+        small_checksum,
+        small_guarded,
+        small_copies,
+        small_copy_bytes,
+    ) = one_size(SMALL);
+    let (
+        large_manifests,
+        large_listings,
+        large_reads,
+        large_bytes,
+        large_checksum,
+        large_guarded,
+        large_copies,
+        large_copy_bytes,
+    ) = one_size(LARGE);
 
     // DENOMINATOR.
     assert_eq!(
@@ -283,6 +331,16 @@ fn a_round_reads_every_manifest_whole_to_answer_four_small_questions() {
         "whole-manifest file reads per round changed with the corpus ({small_reads} -> \
          {large_reads}) with the same number of manifests on disk"
     );
+    // HALF ONE B, ASSERTED SEPARATELY: a listing no longer re-reads a manifest it has already
+    // read and verified, so the reads are the count of distinct manifest FILES the round saw --
+    // the one on disk plus the two it writes -- and not one per listing.
+    assert!(
+        small_reads < small_listings && large_reads < large_listings,
+        "a round read {small_reads} / {large_reads} manifest files for {small_listings} / \
+         {large_listings} listings. With one manifest on disk at the start and two written during \
+         the round, a listing that consults the memo reads each distinct FILE once; one read per \
+         listing means it is not being consulted"
+    );
 
     // HALF TWO, ASSERTED SEPARATELY: the bytes, which are NOT flat.
     let read_ratio = large_bytes as f64 / small_bytes.max(1) as f64;
@@ -297,6 +355,27 @@ fn a_round_reads_every_manifest_whole_to_answer_four_small_questions() {
         "the bytes a round reads back off the manifest directory grew only {read_ratio:.2}x over \
          a {size_ratio:.2}x corpus. If a round stopped materialising the embedded index to answer \
          its four small questions, that is the fix this test exists to notice -- update it."
+    );
+
+    // HALF TWO B, ASSERTED SEPARATELY: WHAT THE MEMO COSTS. A memo that stopped a round reading
+    // 115 MB and made it copy 115 MB instead would move the cost, not remove it, and every byte
+    // count above would still read as a win. The copies are the manifests handed to callers that
+    // want a value they can keep; the round's own read sites take theirs shared.
+    println!(
+        "  owned copies a round takes off the memo: {small_copies} = {small_copy_bytes} B, \
+         {large_copies} = {large_copy_bytes} B, against {small_bytes} / {large_bytes} B of \
+         reading removed"
+    );
+    assert!(
+        large_copy_bytes < large_bytes,
+        "the round copied {large_copy_bytes} B out of the memo to avoid reading {large_bytes} B. \
+         That is moving the cost rather than removing it -- a read site that needs to OWN a \
+         manifest should take the shared listing instead"
+    );
+    assert!(
+        small_copies <= small_listings && large_copies <= large_listings,
+        "more owned copies ({small_copies} / {large_copies}) than listings ({small_listings} / \
+         {large_listings}); a listing is handing out more than one copy"
     );
 
     // HALF THREE: none of that reading is taken under a shard-table guard.
@@ -619,5 +698,315 @@ fn the_dump_budget_moves_with_batching_in_records_and_in_bytes_but_not_in_object
         overwrite_objects, RECORDS as u64,
         "object mutations read {overwrite_objects} after {RECORDS} writes to one key; a budget \
          counting them would be as blind to overwrite as one counting dirty objects"
+    );
+}
+
+
+/// A LISTING REUSES THE MANIFEST IT ALREADY READ AND VERIFIED, AND NOTICES WHEN THE DIRECTORY
+/// CHANGES UNDER IT.
+///
+/// THE RULE, IN FOUR DIRECTIONS.
+///
+///   * RAISED by a listing that read a manifest file whole, parsed it whole and verified its
+///     checksum -- the same work the listing always did. Only a manifest that PASSED is kept.
+///   * LOWERED by the directory itself, not by mutation sites agreeing to cooperate. Every
+///     listing still calls `read_dir` and re-stats every entry, and an entry whose length, mtime
+///     or inode differs from the bytes the memo was built from is a MISS. This matters because
+///     the set of things that change this directory is not closed: the prune removes manifests
+///     from two sites, the detach phase from a third, and three test helpers delete manifest
+///     files directly. `a_manifest_deleted_behind_the_memos_back_stops_being_listed` below is
+///     exactly that case.
+///   * WITHDRAWN by a `read_dir` error, by an entry that cannot be stat-ed, by an entry that
+///     fails to parse or fails its checksum -- each skipped exactly as before and never kept --
+///     and by `reset_bucket_dump_manifest_io_counts`, so a probe measures one operation.
+///   * A RESTART IS COVERED because nothing is persisted. The first listing in a fresh process
+///     reads and verifies every manifest on disk, so no crash-orphaned or externally-edited
+///     manifest can be inherited across one.
+///
+/// WHICH DIRECTION IT FAILS: stale-EARLY, in every one of those cases, and stale-early costs a
+/// wasted read -- today's behaviour. It cannot fail stale-LATE unless the filesystem reports the
+/// same length, mtime AND inode for different bytes at one path, and a manifest is never
+/// rewritten in place: `persist_bucket_dump_manifest` writes temp+rename under an id containing
+/// its own creation time.
+///
+/// TWO ARMS IN ONE PROCESS ON ONE FIXTURE. "One file read" is satisfied just as well by a listing
+/// that stopped reading, or by a fixture with nothing on disk, so the control arm forces the
+/// old behaviour back on and must read one file PER LISTING -- and both arms must return the same
+/// manifests, which is what makes this a change of cost and not of meaning.
+#[test]
+fn a_listing_reuses_the_manifest_it_already_read_and_verified() {
+    const LISTINGS: usize = 8;
+    let dir = tempfile::tempdir().expect("tempdir");
+    let engine = dump_engine(dir.path());
+    seed_in_batches(&engine, 1, SMALL, 100);
+    engine
+        .create_bucket_dump_manifest(1, Vec::<u32>::new())
+        .expect("dump");
+
+    fn list_n_times(engine: &TemporalEngine, times: usize) -> Vec<BucketDumpManifest> {
+        let mut listed = Vec::new();
+        let mut done = 0usize;
+        while done < times {
+            listed = engine.list_bucket_dump_manifests(1);
+            done += 1;
+        }
+        listed
+    }
+
+    // CONTROL ARM: the same listings, the way they ran before the memo existed.
+    let (control_counts, control_manifests) = {
+        let _memo_off = crate::engine::bucket_dump_io::ManifestParseMemoOff::new();
+        crate::engine::reset_bucket_dump_manifest_io_counts();
+        let listed = list_n_times(&engine, LISTINGS);
+        (crate::engine::bucket_dump_manifest_io_counts(), listed)
+    };
+
+    // TREATMENT ARM, same process, same fixture.
+    crate::engine::reset_bucket_dump_manifest_io_counts();
+    let treatment_manifests = list_n_times(&engine, LISTINGS);
+    let treatment_counts = crate::engine::bucket_dump_manifest_io_counts();
+
+    println!(
+        "  control:   {} listing(s), {} file read(s) = {} B, {} checksum re-serialise(s)",
+        control_counts.dir_listings,
+        control_counts.file_reads,
+        control_counts.bytes_read,
+        control_counts.checksum_serializes
+    );
+    println!(
+        "  treatment: {} listing(s), {} file read(s) = {} B, {} checksum re-serialise(s), \
+         {} memo hit(s), COST {} owned copy/copies = {} B",
+        treatment_counts.dir_listings,
+        treatment_counts.file_reads,
+        treatment_counts.bytes_read,
+        treatment_counts.checksum_serializes,
+        treatment_counts.parse_hits,
+        treatment_counts.owned_copies,
+        treatment_counts.owned_copy_bytes
+    );
+
+    // DENOMINATOR FIRST. A control arm that did no work would make every number below a win.
+    assert_eq!(
+        control_counts.dir_listings, LISTINGS as u64,
+        "the control arm did not take the listings it was asked for ({} of {LISTINGS}); every \
+         comparison below would then be against nothing",
+        control_counts.dir_listings
+    );
+    assert_eq!(
+        control_counts.file_reads, LISTINGS as u64,
+        "the control arm must read the manifest file once per listing -- that is the behaviour \
+         this memo replaces. It read {} for {LISTINGS} listings",
+        control_counts.file_reads
+    );
+
+    // HALF ONE: the listing count is UNCHANGED. This memo does not touch control flow.
+    assert_eq!(
+        treatment_counts.dir_listings, control_counts.dir_listings,
+        "the memo changed how often the directory is listed ({} vs {}); it is meant to change \
+         what a listing costs, not how many there are",
+        treatment_counts.dir_listings, control_counts.dir_listings
+    );
+
+    // HALF TWO, ASSERTED SEPARATELY: what a listing costs.
+    assert_eq!(
+        treatment_counts.file_reads, 1,
+        "a manifest that has not changed was read {} times over {LISTINGS} listings; the memo is \
+         not being consulted",
+        treatment_counts.file_reads
+    );
+    assert_eq!(
+        (treatment_counts.parse_hits, treatment_counts.parse_misses),
+        ((LISTINGS - 1) as u64, 1),
+        "every listing after the first must be served from the memo: hits {} misses {}",
+        treatment_counts.parse_hits,
+        treatment_counts.parse_misses
+    );
+    assert!(
+        treatment_counts.bytes_read * (LISTINGS as u64) <= control_counts.bytes_read,
+        "the treatment read {} B against the control's {} B over {LISTINGS} listings",
+        treatment_counts.bytes_read,
+        control_counts.bytes_read
+    );
+
+    // HALF THREE, ASSERTED SEPARATELY: a change of COST, not of MEANING.
+    assert_eq!(
+        control_manifests, treatment_manifests,
+        "the two arms returned different manifests, so this is not the same listing done cheaper"
+    );
+    assert_eq!(
+        control_manifests.len(),
+        1,
+        "the fixture must hold exactly one manifest, or 'read once' says nothing: {}",
+        control_manifests.len()
+    );
+}
+
+/// THE MEMO NOTICES A MANIFEST THAT WAS WRITTEN, AND ONE THAT WAS DELETED BEHIND ITS BACK.
+///
+/// The second half is the one that decides whether this memo is sound. A rule that depended on
+/// every site which removes a manifest remembering to say so would already be wrong in this tree:
+/// `engine/tests/part4.rs`, `engine/tests/part2.rs` and `engine/tests/prune_crash_window.rs` all
+/// delete manifest files with `fs::remove_file` and tell nobody. The key is what `read_dir` and
+/// `stat` report, so none of them has to.
+#[test]
+fn a_manifest_deleted_behind_the_memos_back_stops_being_listed() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let engine = dump_engine(dir.path());
+    seed_in_batches(&engine, 1, SMALL, 100);
+    engine
+        .create_bucket_dump_manifest(1, Vec::<u32>::new())
+        .expect("first dump");
+
+    // Warm the memo, then measure everything below as a DIFFERENCE -- resetting the counters
+    // would also clear the memo, which is the one thing this test must not do.
+    let warmed = engine.list_bucket_dump_manifests(1);
+    assert_eq!(warmed.len(), 1, "fixture should hold one manifest");
+    let first_id = warmed[0].manifest_id.clone();
+
+    // A NEW MANIFEST IS SEEN, and only it is read.
+    let before = crate::engine::bucket_dump_manifest_io_counts();
+    engine
+        .create_bucket_dump_manifest(1, Vec::<u32>::new())
+        .expect("second dump");
+    let after_write = engine.list_bucket_dump_manifests(1);
+    let after = crate::engine::bucket_dump_manifest_io_counts();
+    println!(
+        "  after a second dump: {} manifest(s) listed, {} file read(s) since",
+        after_write.len(),
+        after.file_reads - before.file_reads
+    );
+    assert_eq!(
+        after_write.len(),
+        2,
+        "a manifest written while the memo was warm was not listed: {:?}",
+        after_write
+            .iter()
+            .map(|manifest| manifest.manifest_id.clone())
+            .collect::<Vec<_>>()
+    );
+    assert_eq!(
+        after.file_reads - before.file_reads,
+        1,
+        "only the NEW manifest should have been read; {} files were",
+        after.file_reads - before.file_reads
+    );
+
+    // A MANIFEST DELETED WITH NOBODY TOLD STOPS BEING LISTED.
+    let before_delete = crate::engine::bucket_dump_manifest_io_counts();
+    fs::remove_file(bucket_dump_manifest_path(&engine.index_dir, 1, &first_id))
+        .expect("delete the older manifest behind the memo's back");
+    let after_delete = engine.list_bucket_dump_manifests(1);
+    let counts = crate::engine::bucket_dump_manifest_io_counts();
+    println!(
+        "  after deleting {first_id} directly: {} manifest(s) listed, {} file read(s) since",
+        after_delete.len(),
+        counts.file_reads - before_delete.file_reads
+    );
+    assert_eq!(
+        after_delete.len(),
+        1,
+        "a manifest deleted behind the memo's back was still served from it"
+    );
+    assert!(
+        after_delete
+            .iter()
+            .all(|manifest| manifest.manifest_id != first_id),
+        "the deleted manifest {first_id} was still listed"
+    );
+    assert_eq!(
+        counts.file_reads - before_delete.file_reads,
+        0,
+        "the surviving manifest had not changed and should not have been re-read; {} reads",
+        counts.file_reads - before_delete.file_reads
+    );
+
+    // AND IT IS NOT STILL HELD. Serving the right answer is not enough: a memo that never drops
+    // what the directory dropped keeps a whole manifest, index image and all, alive for the life
+    // of the process -- one per pruned dump, for ever.
+    let held = crate::engine::bucket_dump_manifest_memo_len();
+    println!("  manifests still held by the memo: {held}");
+    assert_eq!(
+        held, 1,
+        "the memo holds {held} manifest(s) for a directory that now contains 1; a listing that \
+         saw the whole directory must drop what the directory no longer has"
+    );
+}
+
+
+/// A MANIFEST REWRITTEN AT THE SAME PATH IS READ AGAIN, NOT SERVED FROM THE MEMO.
+///
+/// This is the branch the memo's soundness rests on, and the only one whose failure is
+/// stale-LATE: every other way it can go wrong produces an unnecessary read. A memo that keyed on
+/// the path alone -- or that looked up the entry and then served it without comparing what the
+/// filesystem now says about those bytes -- would answer with a document that is no longer on
+/// disk, and no test that only ADDS or DELETES manifests would notice.
+#[test]
+fn a_manifest_rewritten_at_the_same_path_is_read_again() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let engine = dump_engine(dir.path());
+    seed_in_batches(&engine, 1, SMALL, 100);
+    engine
+        .create_bucket_dump_manifest(1, Vec::<u32>::new())
+        .expect("dump");
+
+    // Warm the memo on the manifest as written.
+    let warmed = engine.list_bucket_dump_manifests(1);
+    assert_eq!(warmed.len(), 1, "fixture should hold one manifest");
+    let original = warmed[0].clone();
+    let rewritten_wal_sequence = original.wal_sequence.wrapping_add(7_000_000);
+
+    // Rewrite THE SAME manifest id -- so the same path -- with different contents, checksummed
+    // the way the writer would checksum it, so the listing has no reason to reject it.
+    let mut replacement = original.clone();
+    replacement.wal_sequence = rewritten_wal_sequence;
+    replacement.checksum.clear();
+    let checksum = crate::engine::bucket_dump_io::bucket_dump_manifest_checksum_in_place(
+        &mut replacement,
+    )
+    .expect("checksum the replacement");
+    replacement.checksum = checksum;
+    engine
+        .persist_bucket_dump_manifest(&replacement)
+        .expect("rewrite the manifest at its own path");
+
+    let before = crate::engine::bucket_dump_manifest_io_counts();
+    let listed = engine.list_bucket_dump_manifests(1);
+    let after = crate::engine::bucket_dump_manifest_io_counts();
+    println!(
+        "  rewrote {} in place: listed {} manifest(s), wal_sequence {} -> {}, {} file read(s)",
+        original.manifest_id,
+        listed.len(),
+        original.wal_sequence,
+        listed.first().map(|m| m.wal_sequence).unwrap_or_default(),
+        after.file_reads - before.file_reads
+    );
+
+    // DENOMINATOR: the rewrite has to have actually changed something, or "the new value was
+    // served" is satisfied by serving the old one.
+    assert_ne!(
+        original.wal_sequence, rewritten_wal_sequence,
+        "the replacement must differ from the original or this test asserts nothing"
+    );
+    assert_eq!(
+        listed.len(),
+        1,
+        "the rewrite replaced one manifest at its own path and should still list one"
+    );
+
+    // HALF ONE: the NEW bytes are served.
+    assert_eq!(
+        listed[0].wal_sequence, rewritten_wal_sequence,
+        "the memo served a manifest that is no longer the one on disk: wal_sequence {} where the \
+         file now says {rewritten_wal_sequence}. The memo must compare what the filesystem \
+         reports about an entry, not merely find its path",
+        listed[0].wal_sequence
+    );
+
+    // HALF TWO, ASSERTED SEPARATELY: it was served by READING, which is what makes it fresh.
+    assert_eq!(
+        after.file_reads - before.file_reads,
+        1,
+        "the changed manifest should have been read again; {} files were read",
+        after.file_reads - before.file_reads
     );
 }

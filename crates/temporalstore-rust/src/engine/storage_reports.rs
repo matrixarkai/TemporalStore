@@ -587,7 +587,8 @@ impl TemporalEngine {
         shard_id: ShardId,
         readable_probe_limit: usize,
     ) -> StorageRecoveryBoundaryReport {
-        let manifests = self.list_bucket_dump_manifests(shard_id);
+        let manifests =
+            list_bucket_dump_manifests_shared_at(&self.index_dir, shard_id).unwrap_or_default();
         let latest_dump_wal_sequence = manifests
             .iter()
             .map(|manifest| manifest.wal_sequence)

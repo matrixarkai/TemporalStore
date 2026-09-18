@@ -169,7 +169,7 @@ impl TemporalEngine {
             .map(|summary| summary.routing_bucket)
             .collect::<Vec<_>>();
         let latest_bucket_dump_manifest =
-            latest_bucket_dump_manifest_at(&self.index_dir, request.shard_id);
+            latest_bucket_dump_manifest_shared_at(&self.index_dir, request.shard_id);
         let latest_dump_wal_sequence = latest_bucket_dump_manifest
             .as_ref()
             .map(|manifest| manifest.wal_sequence)
@@ -423,7 +423,8 @@ impl TemporalEngine {
             .iter()
             .copied()
             .collect::<BTreeSet<_>>();
-        let manifests = self.list_bucket_dump_manifests(shard_id);
+        let manifests =
+            list_bucket_dump_manifests_shared_at(&self.index_dir, shard_id).unwrap_or_default();
         let mut manifest_block_slab_ids = manifests
             .iter()
             .flat_map(|manifest| manifest.block_slab_ids.iter().copied())
@@ -771,7 +772,10 @@ impl TemporalEngine {
             // refs across every loaded shard, widened by every slab a retained manifest's index
             // can install -- so the two reclaim paths cannot disagree about what is still needed.
             let mut purge_live_block_slab_ids = self.live_block_slab_ids_all_shards();
-            for manifest in self.list_bucket_dump_manifests(request.shard_id) {
+            for manifest in
+                list_bucket_dump_manifests_shared_at(&self.index_dir, request.shard_id)
+                    .unwrap_or_default()
+            {
                 purge_live_block_slab_ids.extend(manifest.block_slab_ids.iter().copied());
             }
             self.block_store
@@ -942,7 +946,8 @@ impl TemporalEngine {
                     .collect::<std::collections::HashMap<u32, (u64, u64)>>()
             })
             .unwrap_or_default();
-        let manifests = self.list_bucket_dump_manifests(shard_id);
+        let manifests =
+            list_bucket_dump_manifests_shared_at(&self.index_dir, shard_id).unwrap_or_default();
         let mut missing_bucket_generations = Vec::new();
         let mut retained_manifest_ids = BTreeSet::<String>::new();
         let mut durable_wal_frontier = u64::MAX;

@@ -22,6 +22,14 @@ thread_local! {
     static MANIFEST_CHECKSUM_SERIALIZES: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
     static MANIFEST_CHECKSUM_BYTES: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
     static MANIFEST_CHECKSUM_CLONES: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+    /// Listings served from the memo below, and listings that had to read and verify a file.
+    static MANIFEST_PARSE_HITS: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+    static MANIFEST_PARSE_MISSES: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+    /// What the memo COSTS: owned copies handed to callers that need a value they can keep, and
+    /// the bytes of index image in them. A memo that traded 115 MB of parsing for 115 MB of
+    /// copying would be no fix at all, so the copies are counted beside the reads they replace.
+    static MANIFEST_OWNED_COPIES: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+    static MANIFEST_OWNED_COPY_BYTES: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
     static MANIFEST_FILE_WRITES: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
     static MANIFEST_BYTES_WRITTEN: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
     static MANIFEST_WRITES_UNDER_GUARD: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
@@ -41,6 +49,10 @@ pub struct BucketDumpManifestIoCounts {
     pub checksum_serializes: u64,
     pub checksum_bytes: u64,
     pub checksum_clones: u64,
+    pub parse_hits: u64,
+    pub parse_misses: u64,
+    pub owned_copies: u64,
+    pub owned_copy_bytes: u64,
     pub file_writes: u64,
     pub bytes_written: u64,
     pub writes_under_guard: u64,
@@ -56,6 +68,10 @@ pub fn bucket_dump_manifest_io_counts() -> BucketDumpManifestIoCounts {
         checksum_serializes: MANIFEST_CHECKSUM_SERIALIZES.with(|cell| cell.get()),
         checksum_bytes: MANIFEST_CHECKSUM_BYTES.with(|cell| cell.get()),
         checksum_clones: MANIFEST_CHECKSUM_CLONES.with(|cell| cell.get()),
+        parse_hits: MANIFEST_PARSE_HITS.with(|cell| cell.get()),
+        parse_misses: MANIFEST_PARSE_MISSES.with(|cell| cell.get()),
+        owned_copies: MANIFEST_OWNED_COPIES.with(|cell| cell.get()),
+        owned_copy_bytes: MANIFEST_OWNED_COPY_BYTES.with(|cell| cell.get()),
         file_writes: MANIFEST_FILE_WRITES.with(|cell| cell.get()),
         bytes_written: MANIFEST_BYTES_WRITTEN.with(|cell| cell.get()),
         writes_under_guard: MANIFEST_WRITES_UNDER_GUARD.with(|cell| cell.get()),
@@ -76,6 +92,13 @@ pub fn reset_bucket_dump_manifest_io_counts() {
     MANIFEST_CHECKSUM_SERIALIZES.with(|cell| cell.set(0));
     MANIFEST_CHECKSUM_BYTES.with(|cell| cell.set(0));
     MANIFEST_CHECKSUM_CLONES.with(|cell| cell.set(0));
+    MANIFEST_PARSE_HITS.with(|cell| cell.set(0));
+    MANIFEST_PARSE_MISSES.with(|cell| cell.set(0));
+    MANIFEST_OWNED_COPIES.with(|cell| cell.set(0));
+    MANIFEST_OWNED_COPY_BYTES.with(|cell| cell.set(0));
+    // A probe measures ONE operation, so it starts with nothing remembered. Clearing only ever
+    // costs a re-read, which is the direction this whole memo is built to fail in.
+    clear_bucket_dump_manifest_parse_memo();
     MANIFEST_FILE_WRITES.with(|cell| cell.set(0));
     MANIFEST_BYTES_WRITTEN.with(|cell| cell.set(0));
     MANIFEST_WRITES_UNDER_GUARD.with(|cell| cell.set(0));
@@ -275,15 +298,19 @@ pub(super) fn bucket_dump_install_phase_rank(phase: &str) -> u8 {
     }
 }
 
-pub(super) fn bucket_dump_manifest_chain_issues(
-    manifests: &[BucketDumpManifest],
-) -> Vec<BucketDumpManifestChainIssue> {
+pub(super) fn bucket_dump_manifest_chain_issues<M>(
+    manifests: &[M],
+) -> Vec<BucketDumpManifestChainIssue>
+where
+    M: std::borrow::Borrow<BucketDumpManifest>,
+{
     let manifest_ids = manifests
         .iter()
-        .map(|manifest| manifest.manifest_id.clone())
+        .map(|manifest| manifest.borrow().manifest_id.clone())
         .collect::<BTreeSet<_>>();
     manifests
         .iter()
+        .map(std::borrow::Borrow::borrow)
         .filter_map(|manifest| {
             let parent = manifest.parent_manifest_id.as_ref()?;
             (!manifest_ids.contains(parent)).then(|| BucketDumpManifestChainIssue {
@@ -309,7 +336,10 @@ pub(super) fn bucket_dump_manifest_chain_issues(
 ///
 /// Anything older is now prunable unless a follower cursor or raft snapshot ref pins it, which
 /// is exactly what those cursors are for.
-pub(super) fn retained_bucket_dump_manifest_ids(manifests: &[BucketDumpManifest]) -> BTreeSet<String> {
+pub(super) fn retained_bucket_dump_manifest_ids<M>(manifests: &[M]) -> BTreeSet<String>
+where
+    M: std::borrow::Borrow<BucketDumpManifest>,
+{
     // The newest manifest, PLUS any older one that is still the only dump covering some bucket.
     //
     // Reclaim advances its frontier only for buckets that have a manifest matching their current
@@ -321,7 +351,10 @@ pub(super) fn retained_bucket_dump_manifest_ids(manifests: &[BucketDumpManifest]
     //
     // Self-limiting: walking newest first, once a manifest covers everything, older ones add no
     // coverage and are pruned exactly as before.
-    let mut ordered = manifests.iter().collect::<Vec<_>>();
+    let mut ordered = manifests
+        .iter()
+        .map(std::borrow::Borrow::borrow)
+        .collect::<Vec<_>>();
     ordered.sort_by_key(|manifest| {
         std::cmp::Reverse((manifest.index_log_sequence, manifest.created_unix_ms))
     });
@@ -356,7 +389,7 @@ pub(super) fn bucket_dump_manifest_prune_plan_at(
     follower_cursors: &[BucketDumpFollowerReplayCursor],
     raft_snapshot_refs: &[BucketDumpRaftSnapshotRef],
 ) -> Result<BucketDumpManifestPrunePlan, std::io::Error> {
-    let manifests = list_bucket_dump_manifests_at(index_dir, shard_id)?;
+    let manifests = list_bucket_dump_manifests_shared_at(index_dir, shard_id)?;
     let mut retained = retained_bucket_dump_manifest_ids(&manifests);
     let mut follower_blocks = Vec::new();
     let mut raft_snapshot_blocks = Vec::new();
@@ -515,11 +548,192 @@ pub(super) fn bucket_dump_manifest_prune_plan_at(
     })
 }
 
+/// WHICH BYTES A PARSED MANIFEST CAME FROM.
+///
+/// The memo below is keyed on this rather than on a generation number that mutation sites are
+/// trusted to bump, because the set of things that change this directory is NOT closed: the prune
+/// removes manifests from two sites, the detach phase from a third, and three test helpers delete
+/// manifest files directly. A key the FILESYSTEM reports needs none of them to cooperate -- an
+/// add, a removal and a rewrite each change what `read_dir` yields or what a `stat` says about it.
+#[derive(Clone, Copy, PartialEq, Eq)]
+struct ManifestFileIdentity {
+    len: u64,
+    mtime: std::time::SystemTime,
+    ino: u64,
+}
+
+fn manifest_file_identity(metadata: &std::fs::Metadata) -> Option<ManifestFileIdentity> {
+    #[cfg(unix)]
+    let ino = {
+        use std::os::unix::fs::MetadataExt;
+        metadata.ino()
+    };
+    #[cfg(not(unix))]
+    let ino = 0u64;
+    Some(ManifestFileIdentity {
+        len: metadata.len(),
+        mtime: metadata.modified().ok()?,
+        ino,
+    })
+}
+
+struct MemoisedManifest {
+    identity: ManifestFileIdentity,
+    manifest: std::sync::Arc<BucketDumpManifest>,
+}
+
+/// MANIFESTS THIS THREAD HAS ALREADY READ WHOLE, PARSED WHOLE AND CHECKSUM-VERIFIED.
+///
+/// Keyed manifest directory -> file path -> the bytes it was parsed from.
+///
+/// PER THREAD, like the counters above and for a stronger reason than they have: nothing about
+/// this memo's soundness comes from sharing it. Every listing re-reads the directory and re-stats
+/// every entry, so a thread that has never seen a manifest simply reads it, and a thread that has
+/// re-checks it against the filesystem before serving it. Keeping it thread-local costs a warm-up
+/// per thread and buys three things -- no lock on the listing path, no poisoning case to reason
+/// about, and no way for one thread's probe to clear or inflate another's while the suite runs
+/// them side by side.
+///
+/// NOT PERSISTED, and deliberately: the first listing on a fresh thread in a fresh process reads
+/// and verifies every manifest on disk, so nothing about a crash-orphaned or externally-edited
+/// manifest can be inherited across a restart.
+thread_local! {
+    static MANIFEST_PARSE_MEMO: std::cell::RefCell<
+        BTreeMap<PathBuf, BTreeMap<PathBuf, MemoisedManifest>>,
+    > = std::cell::RefCell::new(BTreeMap::new());
+}
+
+/// Serve a manifest ONLY if the directory entry still describes the bytes it was parsed from.
+fn memoised_manifest(
+    dir: &std::path::Path,
+    path: &std::path::Path,
+    identity: ManifestFileIdentity,
+) -> Option<std::sync::Arc<BucketDumpManifest>> {
+    if !manifest_parse_memo_enabled() {
+        return None;
+    }
+    MANIFEST_PARSE_MEMO.with(|memo| {
+        let memo = memo.borrow();
+        let entry = memo.get(dir)?.get(path)?;
+        (entry.identity == identity).then(|| entry.manifest.clone())
+    })
+}
+
+/// RAISE the claim, and only for a manifest that passed the same checksum the listing always ran.
+fn remember_manifest(
+    dir: &std::path::Path,
+    path: &std::path::Path,
+    identity: ManifestFileIdentity,
+    manifest: &std::sync::Arc<BucketDumpManifest>,
+) {
+    if !manifest_parse_memo_enabled() {
+        return;
+    }
+    MANIFEST_PARSE_MEMO.with(|memo| {
+        memo.borrow_mut()
+            .entry(dir.to_path_buf())
+            .or_default()
+            .insert(
+                path.to_path_buf(),
+                MemoisedManifest {
+                    identity,
+                    manifest: manifest.clone(),
+                },
+            );
+    });
+}
+
+/// Bound the memo by the directory it describes, so a pruned manifest cannot be remembered for
+/// ever: a listing that saw the whole directory drops everything the directory no longer holds.
+fn retain_memoised_manifests(dir: &std::path::Path, present: &std::collections::BTreeSet<PathBuf>) {
+    MANIFEST_PARSE_MEMO.with(|memo| {
+        let mut memo = memo.borrow_mut();
+        if let Some(entries) = memo.get_mut(dir) {
+            entries.retain(|path, _| present.contains(path));
+            if entries.is_empty() {
+                memo.remove(dir);
+            }
+        }
+    });
+}
+
+/// How many manifests THIS THREAD's memo is holding, across every directory.
+///
+/// Each one keeps a whole manifest alive, index image included, so "the memo is bounded by what
+/// is on disk" is a memory claim and not only a tidiness one -- without it a store that prunes a
+/// manifest an hour would keep every one of them resident for the life of the process.
+pub fn bucket_dump_manifest_memo_len() -> usize {
+    MANIFEST_PARSE_MEMO.with(|memo| memo.borrow().values().map(BTreeMap::len).sum())
+}
+
+pub(super) fn clear_bucket_dump_manifest_parse_memo() {
+    MANIFEST_PARSE_MEMO.with(|memo| memo.borrow_mut().clear());
+}
+
+#[cfg(test)]
+thread_local! {
+    static MANIFEST_PARSE_MEMO_OFF: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+fn manifest_parse_memo_enabled() -> bool {
+    #[cfg(test)]
+    {
+        !MANIFEST_PARSE_MEMO_OFF.with(|cell| cell.get())
+    }
+    #[cfg(not(test))]
+    {
+        true
+    }
+}
+
+/// THE CONTROL ARM. "The round read two manifests" is satisfied just as well by a round that
+/// stopped listing, or by a fixture with nothing on disk, so a test has to be able to run the
+/// same round in the same process on the same fixture the way it ran before the memo existed.
+#[cfg(test)]
+pub struct ManifestParseMemoOff;
+
+#[cfg(test)]
+impl ManifestParseMemoOff {
+    pub fn new() -> Self {
+        clear_bucket_dump_manifest_parse_memo();
+        MANIFEST_PARSE_MEMO_OFF.with(|cell| cell.set(true));
+        Self
+    }
+}
+
+#[cfg(test)]
+impl Drop for ManifestParseMemoOff {
+    fn drop(&mut self) {
+        MANIFEST_PARSE_MEMO_OFF.with(|cell| cell.set(false));
+        clear_bucket_dump_manifest_parse_memo();
+    }
+}
+
+/// EVERY VALID MANIFEST IN THE SHARD'S DUMP DIRECTORY, SHARED.
+///
+/// The directory is still listed on every call -- that is control flow and this does not change
+/// it. What it stops repeating is the part that is proportional to the STORE: reading a whole
+/// manifest off disk, parsing it whole, and re-serialising it whole to verify its checksum, for a
+/// file this process already read and verified and that has not changed since.
+///
+/// WHICH DIRECTION IT FAILS. Stale-EARLY, in every case. An entry that cannot be stat-ed, an
+/// entry whose length, mtime or inode differs by so much as a nanosecond, a thread that has not
+/// seen it before, a cleared memo and a fresh process all produce a full read, parse and verify
+/// -- which is exactly
+/// what this function did before, and costs a wasted read. It cannot fail stale-LATE unless the
+/// filesystem reports the same length, mtime AND inode for different bytes at the same path, and
+/// a manifest is never rewritten in place: `persist_bucket_dump_manifest` writes temp+rename
+/// under an id containing its own creation time.
+///
+/// WHY THE CHECKSUM OBJECTION DOES NOT APPLY. Nothing here parses less of a manifest than before.
+/// Every manifest this returns was read whole and had its checksum verified whole, on the listing
+/// that first saw those bytes; a manifest that failed either is skipped exactly as before AND is
+/// never remembered. The on-disk format is untouched.
 #[track_caller]
-pub(super) fn list_bucket_dump_manifests_at(
+pub(super) fn list_bucket_dump_manifests_shared_at(
     index_dir: &std::path::Path,
     shard_id: ShardId,
-) -> Result<Vec<BucketDumpManifest>, std::io::Error> {
+) -> Result<Vec<std::sync::Arc<BucketDumpManifest>>, std::io::Error> {
     MANIFEST_DIR_LISTINGS.with(|cell| cell.set(cell.get().saturating_add(1)));
     {
         let caller = std::panic::Location::caller();
@@ -533,10 +747,11 @@ pub(super) fn list_bucket_dump_manifests_at(
     if !dir.exists() {
         return Ok(manifests);
     }
-    for entry in fs::read_dir(dir)? {
+    let mut present = std::collections::BTreeSet::new();
+    for entry in fs::read_dir(&dir)? {
         let entry = entry?;
-        if !entry
-            .path()
+        let path = entry.path();
+        if !path
             .extension()
             .and_then(|ext| ext.to_str())
             .map(|ext| ext == "json")
@@ -544,11 +759,31 @@ pub(super) fn list_bucket_dump_manifests_at(
         {
             continue;
         }
+        present.insert(path.clone());
+        // STAT BEFORE READ, and not the other way round. Stat-after would key bytes read at T
+        // under an identity taken at T+1, so a file rewritten in between would be served from the
+        // memo for ever after -- stale-LATE. Stat-before can only key NEW bytes under an OLD
+        // identity, which the next listing sees as a miss and re-reads.
+        let identity = entry
+            .metadata()
+            .ok()
+            .as_ref()
+            .and_then(manifest_file_identity);
+        if let Some(identity) = identity {
+            if let Some(manifest) = memoised_manifest(&dir, &path, identity) {
+                MANIFEST_PARSE_HITS.with(|cell| cell.set(cell.get().saturating_add(1)));
+                manifests.push(manifest);
+                continue;
+            }
+        }
+        // Counted HERE rather than after the read, so an entry that is unreadable or unparseable
+        // still registers as work this listing had to do -- `continue` below must not skip it.
+        MANIFEST_PARSE_MISSES.with(|cell| cell.set(cell.get().saturating_add(1)));
         // A torn (crash-interrupted) or bit-rotted manifest must NOT fail the whole
         // listing -- previously `?` on parse turned one bad file into an empty listing,
         // which on load silently dropped all dumped state. Skip unreadable/unparseable
         // files and reject checksum mismatches, keeping every valid manifest.
-        let bytes = match fs::read(entry.path()) {
+        let bytes = match fs::read(&path) {
             Ok(bytes) => bytes,
             Err(_) => continue,
         };
@@ -571,10 +806,44 @@ pub(super) fn list_bucket_dump_manifests_at(
                 _ => continue,
             }
         }
+        let manifest = std::sync::Arc::new(manifest);
+        if let Some(identity) = identity {
+            remember_manifest(&dir, &path, identity, &manifest);
+        }
         manifests.push(manifest);
     }
+    retain_memoised_manifests(&dir, &present);
     manifests.sort_by_key(|manifest| (manifest.index_log_sequence, manifest.created_unix_ms));
     Ok(manifests)
+}
+
+/// The same listing as OWNED values, for callers that keep or mutate one.
+///
+/// This is what the memo costs, and it is counted: a caller that needs a value it can keep takes
+/// a copy of the whole document, index image included. `try_unwrap` makes that copy only when the
+/// memo really is holding the manifest -- an uncached listing hands over the one it just parsed.
+#[track_caller]
+pub(super) fn list_bucket_dump_manifests_at(
+    index_dir: &std::path::Path,
+    shard_id: ShardId,
+) -> Result<Vec<BucketDumpManifest>, std::io::Error> {
+    Ok(list_bucket_dump_manifests_shared_at(index_dir, shard_id)?
+        .into_iter()
+        .map(own_memoised_manifest)
+        .collect())
+}
+
+/// Take an owned manifest out of a shared one, counting the copy when one is made.
+fn own_memoised_manifest(manifest: std::sync::Arc<BucketDumpManifest>) -> BucketDumpManifest {
+    match std::sync::Arc::try_unwrap(manifest) {
+        Ok(manifest) => manifest,
+        Err(shared) => {
+            MANIFEST_OWNED_COPIES.with(|cell| cell.set(cell.get().saturating_add(1)));
+            MANIFEST_OWNED_COPY_BYTES
+                .with(|cell| cell.set(cell.get().saturating_add(shared.index_bytes.len() as u64)));
+            (*shared).clone()
+        }
+    }
 }
 
 /// The NEWEST manifest, where newest means furthest along the INDEX LOG.
@@ -588,7 +857,21 @@ pub(super) fn latest_bucket_dump_manifest_at(
     index_dir: &std::path::Path,
     shard_id: ShardId,
 ) -> Option<BucketDumpManifest> {
-    list_bucket_dump_manifests_at(index_dir, shard_id)
+    latest_bucket_dump_manifest_shared_at(index_dir, shard_id).map(own_memoised_manifest)
+}
+
+/// The same manifest, SHARED -- for the round's read sites, which only read fields off it.
+///
+/// A caller that takes this owned forces a copy of the whole document out of the memo, index
+/// image and all, which is the one cost the memo adds. Measured over one round at 20,000 records,
+/// the owned form cost 19 copies carrying 25,064,325 B; every site that moves to this one
+/// removes its share of that.
+#[track_caller]
+pub(super) fn latest_bucket_dump_manifest_shared_at(
+    index_dir: &std::path::Path,
+    shard_id: ShardId,
+) -> Option<std::sync::Arc<BucketDumpManifest>> {
+    list_bucket_dump_manifests_shared_at(index_dir, shard_id)
         .ok()?
         .into_iter()
         .last()
