@@ -232,7 +232,7 @@ You cannot address another tenant's namespace; `tenant_id` is set from your API 
 ### Ingestion architecture — ingest without a model, batch the extraction
 | Env | Purpose |
 |---|---|
-| `MATRIXARK_HOOK_FAST_ASYNC_INGEST=1` | ingest stores raw and returns — **no inline model** |
+| `MATRIXARK_HOOK_FAST_ASYNC_INGEST=1` | ingest stores raw and returns — **no inline model**. Read by the **Codex hook only**: `matrixark_agent_hook` does not consult it, so a Claude hook still calls the model inline with this set |
 | `MATRIXARK_HOOK_AUTO_BATCH_EXTRACT=1` | extraction runs **batched**, on commit/timeout |
 | `MATRIXARK_RUST_PROXY_ASYNC_STORAGE=1` | async storage |
 | `MATRIXARK_BULK_INGEST=1` | group-commit durability |
