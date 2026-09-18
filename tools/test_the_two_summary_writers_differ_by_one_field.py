@@ -85,14 +85,23 @@ class TheTwoSummaryWritersDifferByOneFieldTest(unittest.TestCase):
                            % len(self.other))
 
     def test_the_live_writer_is_the_adapter_copy(self) -> None:
-        """Which copy RUNS, asked of the bound attribute rather than of the imports."""
+        """Which copy RUNS, asked of the bound attribute rather than of the imports.
+
+        Compared on the LAST segment, because `__module__` carries the entry style: run from the
+        repository root the same function reports `tools.matrixark_local_adapter_summaries`, and
+        run from `tools/` it reports `matrixark_local_adapter_summaries`. The first version of
+        this asserted the bare spelling, passed where it was written and failed in CI, which is
+        the very `tools.`-prefix trap the docstring above is about -- one line up from the line
+        that warns about it.
+        """
         import matrixark_mcp_local_adapter as adapter
 
         bound = getattr(adapter.MatrixArkLocalAdapter, "refresh_dirty_node_summaries", None)
+        home = getattr(bound, "__module__", "")
         self.assertEqual(
-            "matrixark_local_adapter_summaries", getattr(bound, "__module__", ""),
-            "the adapter now binds a different copy, so the direction recorded below -- which "
-            "writer is the live one -- may have inverted.")
+            "matrixark_local_adapter_summaries", home.rpartition(".")[2],
+            "the adapter now binds a different copy (%r), so the direction recorded below -- "
+            "which writer is the live one -- may have inverted." % (home,))
 
     def test_the_difference_is_exactly_what_is_recorded(self) -> None:
         missing_from_live = self.other - self.live
