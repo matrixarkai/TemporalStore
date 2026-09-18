@@ -615,7 +615,7 @@
       "id": 17,
       "type": "stat",
       "title": "Workers",
-      "description": "How many workers this deployment was started with, as each one reports it. A live configuration write reaches the environment of whichever worker served the request and no other, so this is what says whether that matters here. More than one worker on a store that is not shared splits a tenant's memory across separate copies.",
+      "description": "How many workers this deployment was started with -- read from the command line or WEB_CONCURRENCY, so it is what was asked for rather than what is running. A live configuration write reaches the environment of whichever worker served the request and no other, so this is what says whether that matters here. More than one worker on a store that is not shared splits a tenant's memory across separate copies.",
       "datasource": {
         "type": "prometheus",
         "uid": "${DS_PROMETHEUS}"
@@ -644,7 +644,7 @@
       "targets": [
         {
           "refId": "A",
-          "expr": "max(matrixark_gateway_workers)",
+          "expr": "max(matrixark_gateway_workers{instance=~\"$instance\"})",
           "legendFormat": "workers"
         }
       ]
@@ -676,7 +676,7 @@
       "id": 16,
       "type": "timeseries",
       "title": "Worker resident memory",
-      "description": "Resident and peak memory of each gateway worker. Per worker, and deliberately not summed: resident sets share pages, so adding the workers together produces a figure larger than the machine is using. The `source` label says how the number was read -- /proc/self/status is exact, ru_maxrss is a peak only, and a series that switches between them is not comparable across the switch. Several gateway settings ask an operator to trade memory for speed -- the page and block index caches, the hot record cache, whether embeddings are stored at all -- and this is the half of that trade you can watch.",
+      "description": "Resident and peak memory of the worker that answered the scrape. One sample per scrape, not one per worker: each worker keeps its own counters and reads its own /proc/self/status, and the scrape reaches whichever one the edge routed it to. So with more than one worker this line moves between workers, and a step in it is a different process rather than growth in the one before it. Read it against the Workers stat beside it: at one worker it is that worker's memory, and above one it is a sample of the fleet. The `source` label says how the number was read -- /proc/self/status is exact, ru_maxrss is a peak only, and a series that switches between them is not comparable across the switch. Several gateway settings ask an operator to trade memory for speed -- the page and block index caches, the hot record cache, whether embeddings are stored at all -- and this is the half of that trade you can watch.",
       "datasource": {
         "type": "prometheus",
         "uid": "${DS_PROMETHEUS}"
@@ -700,12 +700,12 @@
       "targets": [
         {
           "refId": "A",
-          "expr": "matrixark_gateway_worker_resident_bytes",
+          "expr": "matrixark_gateway_worker_resident_bytes{instance=~\"$instance\"}",
           "legendFormat": "resident {{source}} {{instance}}"
         },
         {
           "refId": "B",
-          "expr": "matrixark_gateway_worker_peak_bytes",
+          "expr": "matrixark_gateway_worker_peak_bytes{instance=~\"$instance\"}",
           "legendFormat": "peak {{source}} {{instance}}"
         }
       ]

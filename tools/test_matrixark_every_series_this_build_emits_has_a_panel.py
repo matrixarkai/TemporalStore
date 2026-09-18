@@ -120,13 +120,24 @@ class TheDashboardShowsThemTest(unittest.TestCase):
     def test_all_three_are_charted(self) -> None:
         self.assertEqual(set(FOOTPRINT), self.queried())
 
-    def test_the_panels_explain_why_they_are_not_summed(self) -> None:
-        """Per worker, and the panel has to say so: adding resident sets together produces a
-        number larger than the machine is using."""
+    def test_the_panels_say_which_worker_the_number_is_from(self) -> None:
+        """This used to require the wording "not summed", warning that adding workers' resident
+        sets together overcounts shared pages.
+
+        There is nothing to add. `worker_lines()` runs in the process that answered the scrape and
+        renders ONE resident figure however many workers are configured -- the series carries no
+        worker dimension, so the hazard that wording warned about cannot arise from this data, and
+        the panel it was holding in place described a chart that does not exist.
+
+        What is load-bearing, and what an edit could quietly drop, is that the panel says whose
+        number it is: with more than one worker the line moves between processes, so a step in it
+        is a different worker rather than growth in the one before it.
+        """
         with open(DASHBOARD, encoding="utf-8") as handle:
             doc = json.load(handle)
         text = " ".join(panel.get("description", "") for panel in doc["panels"]).lower()
-        self.assertIn("not summed", text)
+        self.assertIn("answered the scrape", text)
+        self.assertIn("one sample per scrape", text)
 
 
 if __name__ == "__main__":

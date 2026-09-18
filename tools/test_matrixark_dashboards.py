@@ -37,6 +37,10 @@ ALERTS = os.path.join(TOOLS, "temporalstore-prometheus", "matrixark-gateway-aler
 # derivation rather than by name, and the histogram's three suffixes come from one HELP line.
 _NOT_A_PANEL: Set[str] = set()
 
+# What a query has to carry to be answering about the selected deployment
+# rather than about every deployment scraped.
+INSTANCE_VARIABLE = 'instance=~"$instance"'
+
 
 def _read_json(path: str):
     """Read and CLOSE. `json.load(io.open(...))` leaks the handle, and a suite that prints
@@ -172,6 +176,77 @@ class DashboardMetricsTest(unittest.TestCase):
         # Every assertion above passes perfectly over zero panels, and a renamed file or a
         # restructured "rows hold their own panels" layout is what produces zero.
         self.assertGreaterEqual(checked, 25, "only %d panels were examined" % checked)
+
+    def test_every_panel_honours_the_deployment_selector(self) -> None:
+        """A dashboard that offers a selector has to mean it.
+
+        The gateway dashboard declares an `instance` variable so an operator can narrow to one
+        deployment. A panel whose query does not constrain `instance` keeps answering for every
+        deployment scraped, with nothing on screen to say it is doing so -- and it sits in the
+        same grid as nineteen panels that do narrow, which is what makes it read as an answer
+        about the selection.
+
+        `route` is deliberately not checked the same way: it is a per-panel choice (the "Routes,
+        ranked" table exists to rank all of them), whereas `instance` is what the dashboard is
+        scoped to.
+        """
+        checked = 0
+        for label, path in (("gateway", GATEWAY_DASHBOARD), ("ingestion", INGESTION_DASHBOARD)):
+            doc = _read_json(path)
+            variables = {variable.get("name")
+                         for variable in doc.get("templating", {}).get("list", [])}
+            if "instance" not in variables:
+                continue
+            for panel in doc["panels"]:
+                if panel.get("type") in ("row", "text"):
+                    continue
+                for target in panel.get("targets") or []:
+                    expr = str(target.get("expr") or "")
+                    if not expr.strip():
+                        continue
+                    checked += 1
+                    with self.subTest(dashboard=label, panel=panel.get("title")):
+                        self.assertIn(
+                            INSTANCE_VARIABLE, expr,
+                            "%r answers for every deployment while the dashboard offers a "
+                            "selector" % panel.get("title"))
+        # A renamed variable makes every dashboard skip, and skipping is indistinguishable from
+        # passing unless the count is asserted.
+        self.assertGreaterEqual(checked, 25, "only %d expressions were examined" % checked)
+
+    def test_the_worker_memory_series_is_one_sample_per_scrape(self) -> None:
+        """The panel beside this says so; this is what makes that true.
+
+        Each worker keeps its own counters and reads its own /proc/self/status, and the scrape
+        reaches whichever worker the edge routed it to. There is no worker dimension on the
+        series, so a scrape carries exactly one resident figure however many workers are running
+        -- which is why the panel cannot describe itself as per-worker.
+
+        If a worker label is ever added, this fails, and the panel's description is then the thing
+        to change. That is the point: the wording and the emission have to move together.
+        """
+        import os as _os
+        before = _os.environ.get("WEB_CONCURRENCY")
+        _os.environ["WEB_CONCURRENCY"] = "4"
+        try:
+            lines = [line for line in gwm.worker_lines() if not line.startswith("#")]
+            # Read while the environment is still set: a control asserted after the restore is a
+            # control on the restored value, which is not the condition under test.
+            configured = gwm.worker_count(argv=[])
+        finally:
+            if before is None:
+                _os.environ.pop("WEB_CONCURRENCY", None)
+            else:
+                _os.environ["WEB_CONCURRENCY"] = before
+        self.assertEqual(4, configured, "the four-worker control did not take")
+        for series in ("matrixark_gateway_worker_resident_bytes",
+                       "matrixark_gateway_worker_peak_bytes"):
+            samples = [line for line in lines if line.startswith(series)]
+            with self.subTest(series=series):
+                self.assertEqual(1, len(samples),
+                                 "%d samples for %s with four workers configured; the panel "
+                                 "describes one" % (len(samples), series))
+                self.assertNotIn("worker=", samples[0])
 
     def test_panels_do_not_overlap(self) -> None:
         # Grafana will render overlapping panels; it just looks broken.
