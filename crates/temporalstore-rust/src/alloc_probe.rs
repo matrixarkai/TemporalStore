@@ -79,6 +79,34 @@ impl AllocCounts {
     }
 }
 
+/// The allocation counters, or `None` when the counting allocator is not installed.
+///
+/// `Probe` and the statics behind it are for a `#[test]` that is itself gated on `alloc-probe`,
+/// and `every_counting_allocator_probe_is_gated_on_the_feature_that_installs_it` enforces exactly
+/// that -- because a test reading them without the feature measures a process where they never
+/// move and reports a table of zeros.
+///
+/// A probe that lives at a PRODUCTION call site and is read by tests on both sides of the feature
+/// cannot take that shape: it has no enclosing `#[test]` to gate. What it needs instead is to be
+/// able to tell "this span allocated nothing" from "nothing was counting", and reading the
+/// statics directly cannot -- both answer zero. This says which, so the caller can record it
+/// alongside its numbers and a reader is never shown a zero that means the opposite.
+///
+/// `restore_phase_probe` in `engine/lifecycle.rs` is the caller this exists for.
+pub fn counted_now() -> Option<(u64, u64)> {
+    #[cfg(feature = "alloc-probe")]
+    {
+        Some((
+            ALLOC_CALLS.load(Ordering::Relaxed),
+            ALLOC_BYTES.load(Ordering::Relaxed),
+        ))
+    }
+    #[cfg(not(feature = "alloc-probe"))]
+    {
+        None
+    }
+}
+
 /// Span counter. Single-threaded use only: the counters are process-global, so a probe running
 /// while another thread allocates attributes that thread's work to this span.
 pub struct Probe {

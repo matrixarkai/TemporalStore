@@ -51,6 +51,273 @@ pub(crate) static LAST_REPLAY_WATERMARK: std::sync::atomic::AtomicU64 =
 pub(crate) static REPLAY_ENTERED_WITH_SERVING_GATE_SHUT: std::sync::atomic::AtomicBool =
     std::sync::atomic::AtomicBool::new(false);
 
+/// WHAT EACH PHASE OF A RESTORE COST, recorded where `load_shard_with` moves between them.
+///
+/// A restore is four jobs in a row -- read the durable checkpoint, publish the shard, replay the
+/// WAL tail, fold that tail back into the index -- and from outside it is one call that either
+/// answers `Ok` or does not. Nothing said which of the four an expensive restart spent its
+/// syscalls in, so nothing could say where to look when a shard takes too long to come back.
+///
+/// Two quantities are recorded at each boundary:
+///
+///   * allocations and elapsed nanoseconds, in process, from the counting allocator and the
+///     monotonic clock. Neither costs a syscall, so the probe does not perturb the syscall count
+///     it sits beside.
+///   * a MARKER: one `statx` of a path that does not exist and never will, naming the phase that
+///     just ended. `strace -c` reports one total for a process and offers no way to attribute it
+///     to a phase; an ordered trace SPLIT at these markers gives per-phase sections whose counts
+///     sum to that total by construction, which is the only attribution with a residual of zero.
+///
+/// Test-only, and inert until `begin()` arms it -- the ordinary suite loads shards constantly and
+/// pays one relaxed atomic load per boundary for this.
+#[cfg(test)]
+pub(crate) mod restore_phase_probe {
+    use std::cell::RefCell;
+    use std::sync::atomic::{AtomicBool, Ordering};
+
+    /// What one phase of one restore cost.
+    #[derive(Clone, Debug, Default)]
+    pub(crate) struct PhaseCost {
+        pub(crate) phase: String,
+        pub(crate) allocs: u64,
+        pub(crate) alloc_bytes: u64,
+        pub(crate) nanos: u64,
+    }
+
+    /// Records the walk decoded, and of those, the ones dropped because the checkpoint
+    /// already covers them. Counted where the walk hands each record over -- BEFORE the
+    /// sequence test branches, so neither arm can be the one that misses the increment.
+    pub(crate) static RECORDS_DECODED: std::sync::atomic::AtomicU64 =
+        std::sync::atomic::AtomicU64::new(0);
+    pub(crate) static RECORDS_BEHIND_CHECKPOINT: std::sync::atomic::AtomicU64 =
+        std::sync::atomic::AtomicU64::new(0);
+
+    /// One record came off the walk. `behind` is whether the checkpoint already covers it.
+    pub(crate) fn record_decoded(behind: bool) {
+        if !ARMED.load(Ordering::Relaxed) {
+            return;
+        }
+        RECORDS_DECODED.fetch_add(1, Ordering::Relaxed);
+        if behind {
+            RECORDS_BEHIND_CHECKPOINT.fetch_add(1, Ordering::Relaxed);
+        }
+    }
+
+    struct ProbeState {
+        at: std::time::Instant,
+        allocs: u64,
+        alloc_bytes: u64,
+        phases: Vec<PhaseCost>,
+        /// Write syscalls counted while the engine write lock was held over the index fold,
+        /// and after it was released. See `lock_held_begin`.
+        writes_under_engine_lock: u64,
+        writes_after_engine_lock: u64,
+        lock_entry_writes: u64,
+        lock_exit_writes: u64,
+    }
+
+    thread_local! {
+        static STATE: RefCell<Option<ProbeState>> = const { RefCell::new(None) };
+    }
+
+    /// Armed process-wide so the cheap path is a relaxed load rather than a thread-local access.
+    /// A restore runs on the thread that called it, so the state itself stays thread-local and two
+    /// concurrent loads cannot mix their phases.
+    static ARMED: AtomicBool = AtomicBool::new(false);
+
+    /// Where the allocation numbers come from, and what a zero from here means.
+    ///
+    /// `counted_now` answers `None` when the counting allocator is not installed, which is every
+    /// build without `alloc-probe`. That is folded to zero here so the phase arithmetic stays one
+    /// shape, and the FACT is carried out separately on `RestoreCost::allocations_were_counted`
+    /// -- so a zero in a phase row can always be told apart from a build that was not counting.
+    /// The tests that read these numbers assert that flag before reading them.
+    fn allocs_now() -> (u64, u64) {
+        crate::alloc_probe::counted_now().unwrap_or((0, 0))
+    }
+
+    /// Write syscalls this process has issued, from `/proc/self/io`.
+    ///
+    /// `syscw` and not `wchar`: the question this answers is how many times the durable write
+    /// path was ENTERED under a lock, which a byte count cannot distinguish from one large write.
+    /// Reading this file costs a read syscall and no write syscall, so sampling it does not move
+    /// the number being sampled.
+    fn write_syscalls_now() -> u64 {
+        let Ok(text) = std::fs::read_to_string("/proc/self/io") else {
+            return 0;
+        };
+        for line in text.lines() {
+            if let Some(value) = line.strip_prefix("syscw:") {
+                return value.trim().parse().unwrap_or(0);
+            }
+        }
+        0
+    }
+
+    /// One `statx` naming a path that cannot exist, so an external trace can be cut here.
+    ///
+    /// The path is absolute and rooted at a name no store directory uses, so the call resolves
+    /// to ENOENT in one syscall without touching anything the restore is reading.
+    fn marker(phase: &str) {
+        let _ = std::fs::symlink_metadata(format!("/ts-restore-phase-marker/{phase}"));
+    }
+
+    /// Arm the probe and open the first phase. Idempotent per thread.
+    pub(crate) fn begin() {
+        let (allocs, alloc_bytes) = allocs_now();
+        STATE.with(|cell| {
+            *cell.borrow_mut() = Some(ProbeState {
+                at: std::time::Instant::now(),
+                allocs,
+                alloc_bytes,
+                phases: Vec::new(),
+                writes_under_engine_lock: 0,
+                writes_after_engine_lock: 0,
+                lock_entry_writes: 0,
+                lock_exit_writes: 0,
+            });
+        });
+        RECORDS_DECODED.store(0, Ordering::Relaxed);
+        RECORDS_BEHIND_CHECKPOINT.store(0, Ordering::Relaxed);
+        ARMED.store(true, Ordering::Relaxed);
+        marker("restore_begin");
+    }
+
+    /// Close the phase that just ran and open the next.
+    ///
+    /// The marker is emitted AFTER the in-process sample, so the syscalls a trace attributes to a
+    /// phase are exactly the ones the allocation and time deltas cover.
+    pub(crate) fn mark(phase: &str) {
+        if !ARMED.load(Ordering::Relaxed) {
+            return;
+        }
+        let (allocs, alloc_bytes) = allocs_now();
+        let now = std::time::Instant::now();
+        let mut emit = false;
+        STATE.with(|cell| {
+            let mut slot = cell.borrow_mut();
+            let Some(state) = slot.as_mut() else {
+                return;
+            };
+            state.phases.push(PhaseCost {
+                phase: phase.to_string(),
+                allocs: allocs.saturating_sub(state.allocs),
+                alloc_bytes: alloc_bytes.saturating_sub(state.alloc_bytes),
+                nanos: now.duration_since(state.at).as_nanos() as u64,
+            });
+            state.at = now;
+            state.allocs = allocs;
+            state.alloc_bytes = alloc_bytes;
+            emit = true;
+        });
+        if emit {
+            marker(phase);
+        }
+    }
+
+    /// The engine write lock has just been taken over the post-replay index fold.
+    ///
+    /// The fold rebuilds the bucket index and SERIALISES the whole shard under this lock, and the
+    /// durable write of those bytes happens after it is released. Whether that is still true is
+    /// not visible from the call site -- the lock is a block scope and the persist is the next
+    /// statement -- so it is counted here instead of argued about.
+    pub(crate) fn lock_held_begin() {
+        if !ARMED.load(Ordering::Relaxed) {
+            return;
+        }
+        let writes = write_syscalls_now();
+        STATE.with(|cell| {
+            if let Some(state) = cell.borrow_mut().as_mut() {
+                state.lock_entry_writes = writes;
+            }
+        });
+    }
+
+    /// The engine write lock has just been released.
+    pub(crate) fn lock_held_end() {
+        if !ARMED.load(Ordering::Relaxed) {
+            return;
+        }
+        let writes = write_syscalls_now();
+        STATE.with(|cell| {
+            if let Some(state) = cell.borrow_mut().as_mut() {
+                state.writes_under_engine_lock = writes.saturating_sub(state.lock_entry_writes);
+                state.lock_exit_writes = writes;
+            }
+        });
+    }
+
+    /// The durable write that follows the fold has finished.
+    pub(crate) fn after_engine_lock() {
+        if !ARMED.load(Ordering::Relaxed) {
+            return;
+        }
+        let writes = write_syscalls_now();
+        STATE.with(|cell| {
+            if let Some(state) = cell.borrow_mut().as_mut() {
+                state.writes_after_engine_lock = writes.saturating_sub(state.lock_exit_writes);
+            }
+        });
+    }
+
+    /// What the restore cost, phase by phase, and the two halves of the lock span.
+    pub(crate) fn finish() -> RestoreCost {
+        marker("restore_end");
+        ARMED.store(false, Ordering::Relaxed);
+        STATE.with(|cell| {
+            let taken = cell.borrow_mut().take();
+            match taken {
+                Some(state) => RestoreCost {
+                    allocations_were_counted: crate::alloc_probe::counted_now().is_some(),
+                    phases: state.phases,
+                    writes_under_engine_lock: state.writes_under_engine_lock,
+                    writes_after_engine_lock: state.writes_after_engine_lock,
+                    records_decoded: RECORDS_DECODED.load(Ordering::Relaxed),
+                    records_behind_checkpoint: RECORDS_BEHIND_CHECKPOINT
+                        .load(Ordering::Relaxed),
+                },
+                None => RestoreCost::default(),
+            }
+        })
+    }
+
+    #[derive(Clone, Debug, Default)]
+    pub(crate) struct RestoreCost {
+        /// Whether the counting allocator was installed for this restore. False means every
+        /// `allocs` and `alloc_bytes` below is a placeholder, not a measurement.
+        pub(crate) allocations_were_counted: bool,
+        pub(crate) phases: Vec<PhaseCost>,
+        pub(crate) writes_under_engine_lock: u64,
+        pub(crate) writes_after_engine_lock: u64,
+        /// Records the windowed walk decoded during this restore.
+        pub(crate) records_decoded: u64,
+        /// Of those, the ones the durable checkpoint already covers, decoded and then dropped.
+        pub(crate) records_behind_checkpoint: u64,
+    }
+
+    impl RestoreCost {
+        pub(crate) fn allocs(&self) -> u64 {
+            self.phases.iter().map(|phase| phase.allocs).sum()
+        }
+
+        pub(crate) fn alloc_bytes(&self) -> u64 {
+            self.phases.iter().map(|phase| phase.alloc_bytes).sum()
+        }
+
+        pub(crate) fn nanos(&self) -> u64 {
+            self.phases.iter().map(|phase| phase.nanos).sum()
+        }
+
+        pub(crate) fn phase(&self, name: &str) -> PhaseCost {
+            self.phases
+                .iter()
+                .find(|phase| phase.phase == name)
+                .cloned()
+                .unwrap_or_default()
+        }
+    }
+}
+
 impl TemporalEngine {
     pub fn new(cache: MultiLayerCache) -> Self {
         Self::with_cache_and_block_store(cache, BlockStore::default())
@@ -354,6 +621,8 @@ impl TemporalEngine {
                 status: Status::error("already_exists", "shard already exists"),
             };
         }
+        #[cfg(test)]
+        restore_phase_probe::begin();
         let (loaded, replay_watermark) = if wal_single_barrier() {
             // SINGLE-BARRIER RECOVERY TRUST (base-only). The data-page + delta fdatasyncs are
             // deferred, so neither the served-index delta nor the anchor it advances can be
@@ -482,6 +751,8 @@ impl TemporalEngine {
         // is returned, and the value is simply absent afterwards. Recorded so a failing test can
         // say which watermark it was rather than leaving it to be guessed at.
         #[cfg(test)]
+        restore_phase_probe::mark("manifest_and_base_index");
+        #[cfg(test)]
         LAST_REPLAY_WATERMARK.store(replay_watermark, std::sync::atomic::Ordering::SeqCst);
         // MANIFEST-CONFORMANCE FOLD recovery (gate on only): seed the slab catalog from the folded
         // slab-catalog anchor recovered from the index-log. This is applied AFTER the block
@@ -568,6 +839,8 @@ impl TemporalEngine {
         // only durable copy is a WAL record stays unreadable by address after a reload -- the
         // served index points at a synthetic address and the resolver's table starts empty.
         self.rehydrate_wal_resident_blocks(request.shard_id);
+        #[cfg(test)]
+        restore_phase_probe::mark("publish_and_seed");
         if let Err(status) = self.replay_wal_into_shard(request.shard_id, replay_watermark) {
             // ReplayWal returns DataLoss on a WAL hole and aborts Load. Unwind the
             // partially-loaded shard and refuse the load rather than serve truncated
@@ -607,6 +880,8 @@ impl TemporalEngine {
         // reconcile reads to rebuild the secondary views are promoted into the cache
         // tier in the same pass, so we avoid a second warm pass re-reading every page
         // under the mutex-serialized block store. No-op on a fresh/empty shard.
+        #[cfg(test)]
+        restore_phase_probe::mark("open_for_serving");
         LoadShardResponse {
             status: Status::ok(),
         }
@@ -1792,6 +2067,11 @@ impl TemporalEngine {
             let mut scanned_any = false;
             for (log_id, record) in scanned {
                 scanned_any = true;
+                // Before the branch, deliberately. Counting inside either arm would leave the
+                // other arm's records uncounted, and the whole point of this pair is the
+                // RELATION between the two -- how much of what the walk decoded is thrown away.
+                #[cfg(test)]
+                restore_phase_probe::record_decoded(record.sequence <= watermark);
                 if record.sequence > watermark {
                     log_id_by_sequence.insert(record.sequence, log_id);
                     pending.push(record);
@@ -1988,7 +2268,13 @@ impl TemporalEngine {
             }
             window_start = resume_at;
         }
+        #[cfg(test)]
+        restore_phase_probe::mark("wal_replay");
         if !replayed_any {
+            // Nothing to fold. Closed anyway, so the phases still account for the whole
+            // restore on a load that had no tail to replay.
+            #[cfg(test)]
+            restore_phase_probe::mark("index_fold");
             return Ok(());
         }
         if !wal_resident_updates.is_empty() {
@@ -2017,6 +2303,8 @@ impl TemporalEngine {
             // this reconstruct handles just the replayed tail.
             let index_bytes = {
                 let mut shards = self.shards.write().expect("engine lock poisoned");
+                #[cfg(test)]
+                restore_phase_probe::lock_held_begin();
                 match shards.get_mut(&shard_id) {
                     Some(shard) => {
                         // The per-command model-map -> bucket-index promotion and
@@ -2046,6 +2334,8 @@ impl TemporalEngine {
                     None => None,
                 }
             };
+            #[cfg(test)]
+            restore_phase_probe::lock_held_end();
             if let Some(index_bytes) = index_bytes {
                 // Discarding this result is safe, and the reason is not local, so: nothing here
                 // truncates the WAL. `shard.applied_wal_sequence` was advanced in MEMORY a few
@@ -2060,8 +2350,12 @@ impl TemporalEngine {
                 // What would make it unsafe is a WAL truncation keyed on the in-memory anchor.
                 // If one is ever added, this result has to be handled.
                 let _ = self.persist_index_bytes(shard_id, &index_bytes);
+                #[cfg(test)]
+                restore_phase_probe::after_engine_lock();
             }
         }
+        #[cfg(test)]
+        restore_phase_probe::mark("index_fold");
         Ok(())
     }
 
