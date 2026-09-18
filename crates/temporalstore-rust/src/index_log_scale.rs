@@ -56,6 +56,12 @@ struct AppendCost {
     dir_listings: u64,
     /// Piece paths those listings handed back, summed -- the per-piece quantity.
     piece_paths: u64,
+    /// Times the append phase asked the filesystem to CREATE the log directory. One `mkdir`
+    /// each, plus the `statx` behind an `EEXIST`.
+    root_creates: u64,
+    /// Times the append phase resolved WHICH FILE the log is being written to. At least one
+    /// `statx` each.
+    path_probes: u64,
     pieces: usize,
 }
 
@@ -105,6 +111,8 @@ fn append_phase(
     // Read the counters BEFORE anything that would enumerate the pieces again.
     let dir_listings = probe::dir_listings();
     let piece_paths = probe::piece_paths();
+    let root_creates = probe::append_root_creates();
+    let path_probes = probe::append_path_probes();
     let stats = store.stats(shard_id);
     let pieces = store.piece_count(shard_id);
     let cost = AppendCost {
@@ -113,6 +121,8 @@ fn append_phase(
         bytes_written: stats.bytes_written,
         dir_listings,
         piece_paths,
+        root_creates,
+        path_probes,
         pieces,
     };
     (store, cost)
@@ -885,5 +895,96 @@ fn what_the_round_report_reads_at_two_corpus_sizes() {
     assert!(
         large_bytes > small_bytes * 5,
         "bytes read did not grow with the corpus: {small_bytes} against {large_bytes}"
+    );
+}
+
+/// WHAT AN APPEND ASKS THE FILESYSTEM FOR, PER RECORD -- and the two questions it stopped asking.
+///
+/// Counted at two record counts and taken as a DIFFERENCE, so everything that happens once per
+/// store -- `new`'s own directory creation, the first append's sequence probe, the piece
+/// enumeration behind it -- cancels and what is left is the per-record cost alone. That is the
+/// same shape the `strace -f -c` arms take, in a quantity that does not move with the load on
+/// the box.
+///
+/// Two quantities, and the append used to pay both on every record:
+///
+/// - a directory creation, which returned `EEXIST` 10,001 times in 10,002 because `new` had
+///   already made the directory and nothing removes it under a live store;
+/// - a path resolution, run TWICE -- once so the roll could learn the piece's length, once so
+///   the open could learn its name -- of the same path, when one `metadata()` answers both.
+///
+/// Between them they were 4 of the append's 9.033 syscalls.
+#[test]
+fn what_an_append_asks_the_filesystem_for_per_record() {
+    let _rolling = roll_at(DEFAULT_INDEX_LOG_SEGMENT_BYTES);
+    let small = tempfile::tempdir().unwrap();
+    let large = tempfile::tempdir().unwrap();
+    let (_small_store, small_cost) = append_phase(small.path(), 1_000, 1, 3);
+    let (_large_store, large_cost) = append_phase(large.path(), 10_000, 1, 3);
+
+    // THE DENOMINATOR, before anything is divided by it. A phase that quietly appended nothing
+    // would report a per-record cost of zero and read exactly like a fix.
+    assert_eq!(
+        small_cost.writes, 1_000,
+        "the small arm wrote {} records, not 1,000",
+        small_cost.writes
+    );
+    assert_eq!(
+        large_cost.writes, 10_000,
+        "the large arm wrote {} records, not 10,000",
+        large_cost.writes
+    );
+
+    let extra_records = large_cost.records - small_cost.records;
+    let extra_root_creates = large_cost.root_creates - small_cost.root_creates;
+    let extra_path_probes = large_cost.path_probes - small_cost.path_probes;
+    println!(
+        "index-log append: 1k = {} root-creates / {} path-probes / {} pieces | 10k = {} / {} / {} \
+         | per extra record: {:.4} root-creates, {:.4} path-probes over {} records",
+        small_cost.root_creates,
+        small_cost.path_probes,
+        small_cost.pieces,
+        large_cost.root_creates,
+        large_cost.path_probes,
+        large_cost.pieces,
+        extra_root_creates as f64 / extra_records as f64,
+        extra_path_probes as f64 / extra_records as f64,
+        extra_records,
+    );
+
+    // Half one: nine thousand more appends create the directory NO MORE TIMES. Not fewer --
+    // none. `new` made it and the store remembers, so the question is never asked again.
+    assert_eq!(
+        extra_root_creates, 0,
+        "{extra_root_creates} directory creations for {extra_records} extra appends -- the \
+         per-append create_dir_all is back"
+    );
+    // Half two, ORDERED after it and reading none of its values: ONE resolution per record,
+    // plus ONE MORE for each roll. Both terms are the claim and the equality pins both.
+    //
+    // The per-record term is the whole of it in the steady state: the roll and the open share
+    // the one answer. The per-roll term is the re-resolve after the seal, and it belongs here
+    // rather than being rounded away -- the rename is what invalidates the answer, so a roll is
+    // the one place the append is entitled to ask twice. Every piece after the first arrived by
+    // a roll, so the piece counts give that term without a counter of its own.
+    //
+    // An equality, not a bound, so it fails in BOTH directions: an append that resolves twice
+    // per record lands at 2x, and one that never re-resolves after a roll lands at exactly
+    // `extra_records` -- which is the defect `a_roll_of_a_legacy_named_log_puts_the_next_record_
+    // on_the_current_name` names.
+    let extra_rolls = (large_cost.pieces - small_cost.pieces) as u64;
+    assert!(
+        extra_rolls > 0,
+        "neither arm rolled more than the other ({} pieces against {}) -- the per-roll term \
+         below is untested",
+        small_cost.pieces,
+        large_cost.pieces
+    );
+    assert_eq!(
+        extra_path_probes,
+        extra_records as u64 + extra_rolls,
+        "{extra_path_probes} path resolutions for {extra_records} extra appends and \
+         {extra_rolls} extra rolls -- an append resolves the active piece once, for the roll \
+         and the open together, and once more only when the seal has renamed it away"
     );
 }

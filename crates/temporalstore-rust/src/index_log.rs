@@ -40,12 +40,20 @@ pub(crate) mod probe {
     /// Sealed pieces that fold DECLINED TO OPEN because their name said the retain floor
     /// already covers every record in them.
     pub(crate) static FOLD_PIECES_DECLINED: AtomicU64 = AtomicU64::new(0);
+    /// Times an append actually asked the filesystem to create the log directory -- one
+    /// `mkdir` and, when it returns `EEXIST`, one `statx` behind it.
+    pub(crate) static APPEND_ROOT_CREATES: AtomicU64 = AtomicU64::new(0);
+    /// Times an append resolved WHICH FILE the shard's log is being written to. Each pass is
+    /// at least one `statx`, and the append used to make two of them per record.
+    pub(crate) static APPEND_PATH_PROBES: AtomicU64 = AtomicU64::new(0);
 
     pub(crate) fn reset() {
         DIR_LISTINGS.store(0, Ordering::Relaxed);
         PIECE_PATHS.store(0, Ordering::Relaxed);
         FOLD_FRAMES_READ.store(0, Ordering::Relaxed);
         FOLD_PIECES_DECLINED.store(0, Ordering::Relaxed);
+        APPEND_ROOT_CREATES.store(0, Ordering::Relaxed);
+        APPEND_PATH_PROBES.store(0, Ordering::Relaxed);
     }
 
     pub(crate) fn dir_listings() -> u64 {
@@ -59,6 +67,12 @@ pub(crate) mod probe {
     }
     pub(crate) fn fold_pieces_declined() -> u64 {
         FOLD_PIECES_DECLINED.load(Ordering::Relaxed)
+    }
+    pub(crate) fn append_root_creates() -> u64 {
+        APPEND_ROOT_CREATES.load(Ordering::Relaxed)
+    }
+    pub(crate) fn append_path_probes() -> u64 {
+        APPEND_PATH_PROBES.load(Ordering::Relaxed)
     }
 }
 
@@ -1174,6 +1188,45 @@ struct IndexLogInner {
     // Set only by Default: the store owns its minted scratch directory, and the last
     // clone's drop removes it. Never set for a caller-supplied root.
     scratch: Option<std::sync::Arc<crate::scratch::ScratchDirGuard>>,
+    /// Whether the log directory is known to exist, so an append need not ask again.
+    ///
+    /// `new` creates it. This records whether that SUCCEEDED, so the one case the per-append
+    /// `create_dir_all` genuinely covered -- a root `new` could not make, whose creation the
+    /// constructor discards because it cannot return an error -- is still retried, once, by the
+    /// first append instead of by every append.
+    ///
+    /// It is never set back to false, and that is deliberate. An append whose directory has
+    /// gone must FAIL, not re-create it: re-creating it turns "someone removed the log
+    /// directory" into "the log quietly began again, empty", which is lost durable state
+    /// wearing the costume of resilience. `an_append_fails_loudly_when_the_log_directory_is_
+    /// removed_underneath_it` is that behaviour, asserted.
+    root_created: bool,
+}
+
+impl IndexLogInner {
+    /// Make the log directory if `new` could not, and then never ask again.
+    ///
+    /// `new` already created it, and NOTHING IN THIS TREE REMOVES IT UNDER A LIVE STORE: the
+    /// scratch guard's drop runs when the last clone is gone, the scratch sweep keeps every
+    /// directory whose owning process is still alive (its own included), and the crash
+    /// harness removes the directory from a SEPARATE process, after the writer has aborted and
+    /// before the next one constructs its store. So the `create_dir_all` this replaces asked
+    /// the kernel, on every single append, a question whose answer it already had -- 10,001
+    /// `EEXIST` mkdirs in 10,002 at the measured size.
+    ///
+    /// If the directory IS gone, this no longer puts it back: the append's own `open` fails
+    /// with the directory named in the error. That is the intended direction. See the note on
+    /// `root_created`.
+    fn ensure_root(&mut self) -> Result<(), IndexLogError> {
+        if self.root_created {
+            return Ok(());
+        }
+        #[cfg(test)]
+        probe::APPEND_ROOT_CREATES.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        fs::create_dir_all(&self.root)?;
+        self.root_created = true;
+        Ok(())
+    }
 }
 
 fn indexlog_enabled() -> bool {
@@ -1318,7 +1371,10 @@ impl LocalIndexLogStore {
 
     pub fn new(root: impl Into<PathBuf>) -> Self {
         let root = root.into();
-        let _ = fs::create_dir_all(&root);
+        // The RESULT, not `let _`. This is the store's one directory creation; every append
+        // then trusts it rather than repeating it. Keeping the answer is what lets an append
+        // skip the `mkdir` + `statx` pair while still retrying the one case that mattered.
+        let root_created = fs::create_dir_all(&root).is_ok();
         Self {
             inner: Arc::new(Mutex::new(IndexLogInner {
                 root,
@@ -1327,6 +1383,7 @@ impl LocalIndexLogStore {
                 last_dumped_len_by_shard: HashMap::new(),
                 last_dumped_at_by_shard: HashMap::new(),
                 scratch: None,
+                root_created,
             })),
             flush_gates: Arc::new(crate::flush_gate::FlushRegistry::default()),
         }
@@ -1355,7 +1412,7 @@ impl LocalIndexLogStore {
             });
         }
         let mut inner = self.inner.lock().expect("index log lock poisoned");
-        fs::create_dir_all(&inner.root)?;
+        inner.ensure_root()?;
         let last_sequence = match inner.last_sequence_by_shard.get(&shard_id).copied() {
             Some(sequence) => sequence,
             None => {
@@ -1374,7 +1431,17 @@ impl LocalIndexLogStore {
         // left half-written, and only the piece being written is ever trimmed -- so rolling first
         // would seal the torn bytes into a piece nothing trims again, and the piece's recorded
         // end would be taken from the last record before them.
-        roll_index_log_segment_if_due(&inner.root, shard_id)?;
+        // ONE probe, for both questions. This resolves which file the shard's log is being
+        // written to and how long it is; the roll needs the length, the open needs the name,
+        // and asking separately is what made the append probe the same path twice per record.
+        let (mut active, active_len) = active_index_log(&inner.root, shard_id);
+        if roll_index_log_segment_at(&inner.root, shard_id, &active, active_len)? {
+            // Re-resolve ONLY here. The seal RENAMES the piece away, and that rename is the one
+            // event that can change which name the next record belongs under -- so the answer is
+            // taken again exactly when it has been invalidated, and never cached past it. A roll
+            // is 1 append in 1,000 at the rolling default, so this costs nothing per record.
+            active = active_index_log(&inner.root, shard_id).0;
+        }
         let next_sequence = last_sequence.saturating_add(1);
         let record = IndexLogRecord {
             shard_id,
@@ -1388,7 +1455,7 @@ impl LocalIndexLogStore {
         let mut file = OpenOptions::new()
             .create(true)
             .append(true)
-            .open(index_log_path(&inner.root, shard_id))?;
+            .open(&active)?;
         file.write_all(&bytes)?;
         file.flush()?;
         // Ack-path index-log append. Under the single-barrier default defer this fsync (bytes
@@ -1423,7 +1490,7 @@ impl LocalIndexLogStore {
             index_bytes.len()
         );
         let mut inner = self.inner.lock().expect("index log lock poisoned");
-        fs::create_dir_all(&inner.root)?;
+        inner.ensure_root()?;
         let last_sequence = match inner.last_sequence_by_shard.get(&shard_id).copied() {
             Some(sequence) => sequence,
             None => {
@@ -1442,7 +1509,17 @@ impl LocalIndexLogStore {
         // left half-written, and only the piece being written is ever trimmed -- so rolling first
         // would seal the torn bytes into a piece nothing trims again, and the piece's recorded
         // end would be taken from the last record before them.
-        roll_index_log_segment_if_due(&inner.root, shard_id)?;
+        // ONE probe, for both questions. This resolves which file the shard's log is being
+        // written to and how long it is; the roll needs the length, the open needs the name,
+        // and asking separately is what made the append probe the same path twice per record.
+        let (mut active, active_len) = active_index_log(&inner.root, shard_id);
+        if roll_index_log_segment_at(&inner.root, shard_id, &active, active_len)? {
+            // Re-resolve ONLY here. The seal RENAMES the piece away, and that rename is the one
+            // event that can change which name the next record belongs under -- so the answer is
+            // taken again exactly when it has been invalidated, and never cached past it. A roll
+            // is 1 append in 1,000 at the rolling default, so this costs nothing per record.
+            active = active_index_log(&inner.root, shard_id).0;
+        }
         let next_sequence = last_sequence.saturating_add(1);
         // Record WHICH index this checkpoint anchors, not a second copy of it.
         //
@@ -1477,7 +1554,7 @@ impl LocalIndexLogStore {
         let mut file = OpenOptions::new()
             .create(true)
             .append(true)
-            .open(index_log_path(&inner.root, shard_id))?;
+            .open(&active)?;
         file.write_all(&bytes)?;
         file.flush()?;
         // Ack-path index-log append. Under the single-barrier default defer this fsync (bytes
@@ -1519,7 +1596,7 @@ impl LocalIndexLogStore {
             return Ok(0);
         }
         let mut inner = self.inner.lock().expect("index log lock poisoned");
-        fs::create_dir_all(&inner.root)?;
+        inner.ensure_root()?;
         let last_sequence = match inner.last_sequence_by_shard.get(&shard_id).copied() {
             Some(sequence) => sequence,
             None => {
@@ -1538,7 +1615,17 @@ impl LocalIndexLogStore {
         // left half-written, and only the piece being written is ever trimmed -- so rolling first
         // would seal the torn bytes into a piece nothing trims again, and the piece's recorded
         // end would be taken from the last record before them.
-        roll_index_log_segment_if_due(&inner.root, shard_id)?;
+        // ONE probe, for both questions. This resolves which file the shard's log is being
+        // written to and how long it is; the roll needs the length, the open needs the name,
+        // and asking separately is what made the append probe the same path twice per record.
+        let (mut active, active_len) = active_index_log(&inner.root, shard_id);
+        if roll_index_log_segment_at(&inner.root, shard_id, &active, active_len)? {
+            // Re-resolve ONLY here. The seal RENAMES the piece away, and that rename is the one
+            // event that can change which name the next record belongs under -- so the answer is
+            // taken again exactly when it has been invalidated, and never cached past it. A roll
+            // is 1 append in 1,000 at the rolling default, so this costs nothing per record.
+            active = active_index_log(&inner.root, shard_id).0;
+        }
         let next_sequence = last_sequence.saturating_add(1);
         // Do not write what the item already says. Each item carries `object_id` and
         // `routing_bucket`, and the address it points at repeats both -- 18 bytes of a 142-byte
@@ -1586,7 +1673,7 @@ impl LocalIndexLogStore {
         let mut file = OpenOptions::new()
             .create(true)
             .append(true)
-            .open(index_log_path(&inner.root, shard_id))?;
+            .open(&active)?;
         file.write_all(&bytes)?;
         file.flush()?;
         inner.stats.writes += 1;
@@ -2315,6 +2402,11 @@ const INDEX_LOG_SUFFIX: &str = "bin";
 const LEGACY_INDEX_LOG_SUFFIX: &str = "jsonl";
 
 fn index_log_path(root: &Path, shard_id: ShardId) -> PathBuf {
+    // Counted here as well as in `active_index_log`, and BEFORE the branches, so the probe is
+    // "how many times was the active piece resolved, by any route" rather than "by the new
+    // route". A change that put the append back on this function would otherwise read as free.
+    #[cfg(test)]
+    probe::APPEND_PATH_PROBES.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     let renamed = root.join(format!("shard-{shard_id}.indexlog.{INDEX_LOG_SUFFIX}"));
     if renamed.exists() {
         return renamed;
@@ -2326,6 +2418,33 @@ fn index_log_path(root: &Path, shard_id: ShardId) -> PathBuf {
         return legacy;
     }
     renamed
+}
+
+/// The file the shard's log is being written to, AND how many bytes are in it, in ONE probe.
+///
+/// [`index_log_path`] answers the first question with `exists()`, and the roll then asked
+/// `metadata()` for the second -- of the same path, a syscall later. `Path::exists()` IS
+/// `metadata().is_ok()`, so the existence answer was already inside the length answer and the
+/// append was buying it twice. This asks once and returns both.
+///
+/// The three-way answer is [`index_log_path`]'s, unchanged: the current name when it is there,
+/// the legacy name when only that is, and the current name when neither is -- so one shard's
+/// log is still never split across two names.
+///
+/// A length of 0 means an empty file OR no file, and both are "nothing to seal", which is the
+/// only thing the caller asks the length for.
+fn active_index_log(root: &Path, shard_id: ShardId) -> (PathBuf, u64) {
+    #[cfg(test)]
+    probe::APPEND_PATH_PROBES.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let renamed = root.join(format!("shard-{shard_id}.indexlog.{INDEX_LOG_SUFFIX}"));
+    if let Ok(metadata) = fs::metadata(&renamed) {
+        return (renamed, metadata.len());
+    }
+    let legacy = root.join(format!("shard-{shard_id}.indexlog.{LEGACY_INDEX_LOG_SUFFIX}"));
+    if let Ok(metadata) = fs::metadata(&legacy) {
+        return (legacy, metadata.len());
+    }
+    (renamed, 0)
 }
 
 fn last_sequence_at(root: &Path, shard_id: ShardId) -> Result<u64, IndexLogError> {
@@ -2609,17 +2728,30 @@ fn index_log_segment_span_of(path: &Path) -> Result<Option<IndexSegmentSpan>, In
 /// pointing at a piece across the rename, and the record about to be written lands in the new
 /// piece rather than growing the one just sealed.
 fn roll_index_log_segment_if_due(root: &Path, shard_id: ShardId) -> Result<bool, IndexLogError> {
+    let (path, length) = active_index_log(root, shard_id);
+    roll_index_log_segment_at(root, shard_id, &path, length)
+}
+
+/// The roll, given a piece the caller has ALREADY resolved and measured.
+///
+/// The append resolves the piece anyway -- it is about to open it -- so handing the answer in
+/// removes the probe this function used to make for itself. Neither the name nor the length is
+/// remembered across appends: each append resolves once, under the lock, and uses that answer
+/// for both the roll decision and the open.
+fn roll_index_log_segment_at(
+    root: &Path,
+    shard_id: ShardId,
+    path: &Path,
+    length: u64,
+) -> Result<bool, IndexLogError> {
     let threshold = index_log_segment_bytes();
     if threshold == 0 {
         return Ok(false);
     }
-    let path = index_log_path(root, shard_id);
-    // A stat, not a read. This runs on EVERY append and is the whole per-append cost of rolling.
-    let length = path.metadata().map(|metadata| metadata.len()).unwrap_or(0);
     if length < threshold {
         return Ok(false);
     }
-    let Some(span) = index_log_segment_span_of(&path)? else {
+    let Some(span) = index_log_segment_span_of(path)? else {
         return Ok(false);
     };
 
@@ -2629,7 +2761,7 @@ fn roll_index_log_segment_if_due(root: &Path, shard_id: ShardId) -> Result<bool,
     // first would leave those bytes with no barrier that ever covers them, on a write that has
     // already been acked.
     {
-        let file = OpenOptions::new().write(true).open(&path)?;
+        let file = OpenOptions::new().write(true).open(path)?;
         crate::durability_metrics::record_barrier("engine_index_log_seal");
         file.sync_all()?;
     }
@@ -2637,7 +2769,7 @@ fn roll_index_log_segment_if_due(root: &Path, shard_id: ShardId) -> Result<bool,
     // Seal by rename: atomic, so the piece is either being written or sealed, never neither. The
     // next append finds no file under the active name and creates an empty one.
     let sealed = sealed_index_log_path(root, shard_id, span);
-    fs::rename(&path, &sealed)?;
+    fs::rename(path, &sealed)?;
     sync_parent_dir(&sealed)?;
     Ok(true)
 }
@@ -2840,6 +2972,168 @@ mod tests {
     }
 
     use super::*;
+
+    /// A removed log directory must STOP an append, not be quietly rebuilt under it.
+    ///
+    /// The per-append `create_dir_all` this replaced made the directory again and the append
+    /// then created an empty log beside it, so "someone removed the log directory" arrived as
+    /// "the shard's log began again, empty" -- every delta before it gone, with a success
+    /// returned to the caller. Nothing in this tree removes the directory under a live store
+    /// (the scratch guard's drop runs when the last clone is gone, the scratch sweep keeps
+    /// every directory whose owner is alive, and the crash harness removes it from a separate
+    /// process), so this is not a case an append has to recover from -- it is one an append
+    /// has to REPORT.
+    #[test]
+    fn an_append_fails_loudly_when_the_log_directory_is_removed_underneath_it() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().join("indexlogs");
+        let store = LocalIndexLogStore::new(&root);
+        let item = IndexItem {
+            kind: IndexItemKind::Page,
+            routing_bucket: 0,
+            block_ref_key: "k".to_string(),
+            object_key: "k".to_string(),
+            model_id: "m".to_string(),
+            component: None,
+            object_id: 1,
+            block_id: 0,
+            address: None,
+            size: 8,
+            in_log: false,
+            deleted: false,
+        };
+        store
+            .append_delta(3, vec![item.clone()], Vec::new(), None, None, false, false)
+            .expect("the first append must land");
+        // THE DENOMINATOR: there is a log here to lose. Without this the removal below could be
+        // removing an empty directory and the assertions would hold vacuously.
+        assert!(
+            index_log_path(&root, 3).exists(),
+            "the first append wrote no log, so there is nothing for this test to protect"
+        );
+
+        std::fs::remove_dir_all(&root).expect("remove the log directory underneath the store");
+        let result = store.append_delta(3, vec![item], Vec::new(), None, None, false, false);
+        // FIRST, and reading nothing from `result`: the directory must still be gone. A mutant
+        // that puts it back fails here whatever it returns to the caller.
+        assert!(
+            !root.exists(),
+            "the append re-created the log directory -- a removed log would silently start again \
+             empty, which is lost durable state dressed as resilience"
+        );
+        // Second: and it must say so.
+        assert!(
+            result.is_err(),
+            "the append reported success with no log directory to write into"
+        );
+    }
+
+    /// A root `new` could not make is made ONCE, by the first append -- and not again.
+    ///
+    /// `new` creates the log directory and cannot report a failure: it returns `Self`. So it
+    /// keeps the ANSWER instead, and an append trusts it. This pins both halves of that: the
+    /// one case the removed per-append `create_dir_all` genuinely covered is still covered, and
+    /// covering it does not put the per-append cost back.
+    #[test]
+    fn a_root_new_could_not_create_is_made_by_the_first_append_and_not_the_second() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().join("indexlogs");
+        // A FILE where the directory belongs, so `new`'s own creation cannot succeed.
+        std::fs::write(&root, b"in the way").unwrap();
+        let store = LocalIndexLogStore::new(&root);
+        std::fs::remove_file(&root).expect("take the obstruction away again");
+        // THE DENOMINATOR: nothing has created the directory, so the append below is genuinely
+        // the first thing that can.
+        assert!(
+            !root.exists(),
+            "the fixture left a root behind -- the first append has nothing to create"
+        );
+
+        probe::reset();
+        store
+            .append_json(4, b"{\"a\":1}")
+            .expect("the first append must make the root that `new` could not");
+        // Half one: it made it, and said so.
+        assert_eq!(
+            probe::append_root_creates(),
+            1,
+            "the first append made the log directory {} times, expected once",
+            probe::append_root_creates()
+        );
+        assert!(root.is_dir(), "the first append did not make the log directory");
+
+        // Half two, ORDERED after it: the second append does NOT ask again. This is the whole
+        // per-append cost the change removes, asserted on the one path that still pays it once.
+        store.append_json(4, b"{\"a\":2}").expect("the second append must land");
+        assert_eq!(
+            probe::append_root_creates(),
+            1,
+            "the log directory was created {} times over two appends -- the per-append \
+             create_dir_all is back",
+            probe::append_root_creates()
+        );
+    }
+
+    /// Sealing a legacy-named piece moves the next record onto the CURRENT name.
+    ///
+    /// An append resolves the active piece once and uses that answer for both the roll and the
+    /// open. The rename inside the roll is the one event that changes which name the next record
+    /// belongs under, so the answer is taken again there and only there. Without that, the
+    /// record would be written back to the name the roll had just sealed away -- re-creating it,
+    /// and splitting one shard's log across two names, which is exactly what `index_log_path`
+    /// exists to prevent.
+    #[test]
+    fn a_roll_of_a_legacy_named_log_puts_the_next_record_on_the_current_name() {
+        struct Threshold;
+        impl Drop for Threshold {
+            fn drop(&mut self) {
+                set_index_log_segment_bytes_for_test(None);
+            }
+        }
+
+        let dir = tempfile::tempdir().unwrap();
+        let shard: ShardId = 77;
+        let store = LocalIndexLogStore::new(dir.path());
+        let current = dir
+            .path()
+            .join(format!("shard-{shard}.indexlog.{INDEX_LOG_SUFFIX}"));
+        let legacy = dir
+            .path()
+            .join(format!("shard-{shard}.indexlog.{LEGACY_INDEX_LOG_SUFFIX}"));
+
+        store
+            .append_json(shard, b"{\"a\":1}")
+            .expect("seed the log under the current name");
+        std::fs::rename(&current, &legacy).expect("give the log the name an older store carries");
+        // THE DENOMINATOR: from here the active piece really is the legacy-named one, and it
+        // really does hold a record. Both halves below are vacuous without it.
+        assert!(
+            legacy.exists() && !current.exists(),
+            "the fixture did not produce a legacy-named active log"
+        );
+        let legacy_len = legacy.metadata().unwrap().len();
+        assert!(legacy_len > 0, "the legacy-named log is empty");
+
+        // A threshold the legacy piece is already over, so the next append rolls it.
+        set_index_log_segment_bytes_for_test(Some(legacy_len));
+        let _threshold = Threshold;
+        store
+            .append_json(shard, b"{\"a\":2}")
+            .expect("the append that rolls must still land");
+
+        // Half one: the record went onto the current name.
+        assert!(
+            current.exists(),
+            "after sealing the legacy piece the next record did not land on the current name"
+        );
+        // Half two, ORDERED after it and reading none of its values: the sealed piece did not
+        // come back under the name it was sealed from.
+        assert!(
+            !legacy.exists(),
+            "the legacy name was re-created after the roll -- one shard's log is now split \
+             across two names, and only one of them is ever read"
+        );
+    }
 
     #[test]
     fn default_store_scratch_dir_dies_with_the_last_clone() {
