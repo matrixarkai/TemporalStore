@@ -153,7 +153,11 @@ impl RaftCluster {
             node.pipeline_state.snapshot_install_received_chunks = 0;
             node.pipeline_state.snapshot_install_total_chunks = 1;
         }
-        let result = self.install_snapshot(request.target_id, request.snapshot.clone());
+        // The request owns the snapshot and the snapshot owns the whole state image, so
+        // hand it to the install by MOVE. Cloning it here made a second copy of the entire
+        // shard, sized by the store rather than by anything about this request.
+        let installed_index = request.snapshot.last_included_index;
+        let result = self.install_snapshot(request.target_id, request.snapshot);
         {
             let mut inner = self.inner.write().expect("raft cluster lock poisoned");
             if let Some(node) = inner.nodes.get_mut(&request.target_id) {
@@ -161,7 +165,7 @@ impl RaftCluster {
                 node.pipeline_state.snapshot_sending = false;
                 node.pipeline_state.snapshot_send_started_ms = None;
                 node.pipeline_state.snapshot_send_elapsed_ms = 0;
-                node.pipeline_state.snapshot_installed_index = request.snapshot.last_included_index;
+                node.pipeline_state.snapshot_installed_index = installed_index;
                 node.pipeline_state.snapshot_install_received_chunks = 1;
                 node.pipeline_state.snapshot_install_total_chunks = 1;
                 if result.is_ok() {
@@ -193,7 +197,7 @@ impl RaftCluster {
             Ok(()) => Ok(InstallSnapshotResponse {
                 term,
                 success: true,
-                last_included_index: request.snapshot.last_included_index,
+                last_included_index: installed_index,
                 reject_reason: None,
             }),
             Err(err) => Ok(InstallSnapshotResponse {
@@ -237,7 +241,7 @@ impl RaftCluster {
         target_id: RaftNodeId,
         max_entries_per_chunk: usize,
     ) -> Result<Vec<InstallSnapshotChunkRequest>, RaftError> {
-        let snapshot = self.create_snapshot()?;
+        let mut snapshot = self.create_snapshot()?;
         let mut inner = self.inner.write().expect("raft cluster lock poisoned");
         let leader = inner
             .nodes
@@ -299,6 +303,10 @@ impl RaftCluster {
         inner.persist_configured_wal()?;
         let mut chunks = Vec::new();
         if snapshot.entries.is_empty() {
+            // An image snapshot carries no entries, so this is the only chunk and it is the
+            // only thing that will ever want the image. TAKE it: cloning here duplicated the
+            // whole shard for the length of this call, on the send side of every install.
+            let state_image = snapshot.state_image.take();
             chunks.push(InstallSnapshotChunkRequest {
                 rpc: None,
                 shard_id: snapshot.shard_id,
@@ -311,7 +319,7 @@ impl RaftCluster {
                 chunk_index: 0,
                 chunk_count: 1,
                 entries: Vec::new(),
-                state_image: snapshot.state_image.clone(),
+                state_image,
             });
             return Ok(chunks);
         }
@@ -336,7 +344,7 @@ impl RaftCluster {
 
     pub fn receive_install_snapshot_chunk(
         &self,
-        request: InstallSnapshotChunkRequest,
+        mut request: InstallSnapshotChunkRequest,
     ) -> Result<InstallSnapshotChunkResponse, RaftError> {
         let mut inner = self.inner.write().expect("raft cluster lock poisoned");
         if request.shard_id != inner.shard_id {
@@ -430,7 +438,10 @@ impl RaftCluster {
         let duplicate_chunk = pending.chunks[request.chunk_index as usize].is_some();
         // S2: the state image rides on chunk 0; retain it for the reassembled snapshot.
         if request.state_image.is_some() {
-            pending.state_image = request.state_image.clone();
+            // Nothing reads the image off the request after this, so move it into the
+            // pending buffer rather than copying the whole shard a second time -- and this
+            // copy ran while the cluster write lock was held.
+            pending.state_image = request.state_image.take();
         }
         pending.chunks[request.chunk_index as usize] = Some(request.entries);
         let received_chunks = pending
@@ -987,7 +998,11 @@ impl RaftCluster {
             checksum: snapshot_ref.checksum.clone(),
             byte_size: snapshot_ref.byte_size,
         });
-        self.install_snapshot(target_id, snapshot.clone())?;
+        // Only two scalars are wanted after the install, so keep those and MOVE the
+        // snapshot rather than copying a downloaded whole-shard image to read them.
+        let snapshot_shard_id = snapshot.shard_id;
+        let last_included_index = snapshot.last_included_index;
+        self.install_snapshot(target_id, snapshot)?;
         {
             let mut inner = self.inner.write().expect("raft cluster lock poisoned");
             inner.latest_external_snapshot_ref = Some(RaftExternalSnapshotRef {
@@ -999,7 +1014,7 @@ impl RaftCluster {
         }
         self.catch_up(target_id)?;
         Ok(RaftReplicaBootstrapPlan {
-            shard_id: snapshot.shard_id,
+            shard_id: snapshot_shard_id,
             target_id,
             transfer: RaftSnapshotTransferDecision {
                 mode: RaftSnapshotTransferMode::ExternalStore,
@@ -1011,8 +1026,8 @@ impl RaftCluster {
                     byte_size: snapshot_ref.byte_size,
                 }),
             },
-            last_included_index: snapshot.last_included_index,
-            catch_up_from_index: snapshot.last_included_index.saturating_add(1),
+            last_included_index,
+            catch_up_from_index: last_included_index.saturating_add(1),
         })
     }
 
