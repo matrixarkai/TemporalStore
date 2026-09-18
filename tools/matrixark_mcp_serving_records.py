@@ -212,7 +212,6 @@ def _record_debug_ref(record: Json) -> tuple[str, Any]:
 
 def attach_storage_route(record: Json) -> Json:
     route_source = storage_options_for_record(record)
-    envelope = record.get("envelope") if isinstance(record.get("envelope"), dict) else {}
     record_kind = storage_record_kind(record)
     if "storage_route" not in record or not isinstance(record.get("storage_route"), dict):
         if route_source:

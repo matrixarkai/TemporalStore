@@ -6618,7 +6618,6 @@ class MatrixArkLocalAdapter(_LocalAdapterRetrieveMixin, _LocalAdapterIngestMixin
             return self._event_member_index
 
     def _invalidate_event_member_index(self) -> None:
-        index = getattr(self, "_event_member_index", None)
         lock = getattr(self, "_event_member_index_lock", None)
         if lock is None:
             self._event_member_index = None

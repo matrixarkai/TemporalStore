@@ -401,8 +401,6 @@ def ingest_resource_or_skill_if_needed(
             skill_metadata=parsed_skill.metadata if skill_hash is not None else {},
             secondary_index_budget=secondary_index_budget,
         )
-        resource_kind = str(summary_result["resource_kind"])
-        resource_summary_hash = int(summary_result["resource_summary_hash"])
         resource_dirty_hashes = list(summary_result["resource_dirty_hashes"])
         index_candidate_count += int(summary_result["index_candidate_count"])
         index_write_count += int(summary_result["index_write_count"])

@@ -1528,7 +1528,6 @@ def oss_encoder_memory_segments(messages: list[Json]) -> list[Json]:
 def extract_batch_entities(messages: list[Json], envelope: Json) -> list[Json]:
     entities: list[Json] = []
     text = text_from_messages(messages)
-    lower = text.lower()
     feature_scope_memory_only = feature_scope_excludes_outcome_evidence(text)
     source_event_ids = envelope.get("source_event_ids", [])
     source_refs = [str(ref) for ref in source_event_ids] if isinstance(source_event_ids, list) and source_event_ids else [str(index) for index, _ in enumerate(messages)]
@@ -4248,7 +4247,6 @@ def compact_context_pack_audit_record(record: Json, *, include_debug: bool = Fal
     recall_summary = compact_recall_policy_for_audit(record.get("recall_policy", {}))
     if recall_summary:
         compact["recall_policy_summary"] = recall_summary
-    memory_hierarchy = memory_hierarchy_contract_from_recall_policy(record.get("recall_policy", {}))
     memory_layer_budget = record.get("memory_layer_budget")
     if not isinstance(memory_layer_budget, dict):
         recall_policy = record.get("recall_policy") if isinstance(record.get("recall_policy"), dict) else {}

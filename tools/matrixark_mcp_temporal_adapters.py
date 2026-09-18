@@ -5453,7 +5453,6 @@ class MatrixArkTemporalStoreRustAdapter(MatrixArkTemporalStoreDirectAdapter):
         except Exception as exc:
             prometheus = self._backend_neutral_prometheus(rust_client_metrics) + f"# matrixark_rust_proxy_metrics_error {json.dumps(str(exc))}\n"
         gateway_mode = str(rust_client_metrics.get("gateway_mode") or "rust_proxy")
-        proxy_mode = str(rust_client_metrics.get("proxy_mode") or "rust_proxy_stdio")
         sdk_mode = str(rust_client_metrics.get("sdk_mode") or getattr(self._client, "sdk_mode", "proxy"))
         return {
             "backend": self._backend_label(),
