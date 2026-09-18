@@ -2077,8 +2077,12 @@ impl LocalIndexLogStore {
     /// - a delta a concurrent writer appended between the dump's serialization and its anchor
     ///   append: its WAL anchor is above `wal_anchor`, so the base does not reflect it, and
     ///   removing it would lose an eviction/removal that lives only in the delta stream;
-    /// - nothing else -- a legacy whole-index line carries no anchor and is read by no load
-    ///   path, so it is treated as reflected and removed.
+    /// - a record carrying NO anchor that still holds items, a meta item or key-states. The
+    ///   fold applies those whatever the anchor says, so nothing shows the base reflects them.
+    ///   A legacy whole-index line also carries no anchor, but holds nothing the fold applies
+    ///   and is read by no load path, so it IS treated as reflected and removed. Reading a
+    ///   missing anchor as 0 made the two indistinguishable, and 0 is at or below every
+    ///   anchor -- so every anchor-less record was removed, the content-bearing ones included.
     ///
     /// The folded catalog anchor itself is at `meta_sequence`, above the removal window, so the
     /// load-time catalog seed always survives. Position (`sequence < meta_sequence`) still
@@ -2136,7 +2140,24 @@ impl LocalIndexLogStore {
                 // Decode verifies the integrity envelope; the retained raw payload is re-framed
                 // on write-out below, so a retained delta record keeps its exact on-disk bytes.
                 let probe: IndexRecordHead = decode_index_payload(&payload)?;
-                let reflected = probe.applied_wal_sequence.unwrap_or(0) <= wal_anchor;
+                // THREE clauses, not two: below the position bound, AND the base PROVABLY
+                // reflects it. `unwrap_or(0)` was not a proof -- it read a missing anchor as
+                // anchor 0, which is at or below every anchor, so every anchor-less record was
+                // classified reflected and removed. That is right for the legacy whole-index
+                // lines named above and wrong for a DELTA that carries no anchor:
+                // `for_each_delta_record` still folds its items and key-states, so removing it
+                // loses exactly the eviction the fold would have applied. The expiry sweep
+                // writes such a record whenever it reaches its checkpoint while
+                // `shard.applied_wal_sequence` is still `None` -- no items, and every tombstone
+                // of the round in its key-states.
+                //
+                // The missing clause is the FOLD'S OWN predicate, asked of the same record, so
+                // the sweep and the walk cannot drift about which records matter. It costs a
+                // second decode only for an anchor-less record, which is the rare one.
+                let reflected = match probe.applied_wal_sequence {
+                    Some(anchor) => anchor <= wal_anchor,
+                    None => !delta_record_carries_content(&payload)?,
+                };
                 if probe.sequence >= meta_sequence || !reflected {
                     retained.push(payload);
                 } else {
@@ -2595,6 +2616,26 @@ fn drop_reflected_index_segments(
         sync_parent_dir(&active)?;
     }
     Ok((dropped, freed, records))
+}
+
+/// Whether this payload holds anything [`LocalIndexLogStore::for_each_delta_record`] would fold.
+///
+/// The same three content fields that walk decides on, read from the same decode, so the sweep
+/// and the load-time fold cannot disagree about which records are worth keeping. `applied_wal_
+/// sequence` is deliberately NOT one of the terms here: the only caller asks this question of a
+/// record that has none, so testing it would be a clause that can never fire.
+///
+/// A payload that SAYS it is a whole-index record is answered without decoding it -- no load path
+/// reads one, which is the whole reason the sweep may remove it.
+fn delta_record_carries_content(payload: &[u8]) -> Result<bool, IndexLogError> {
+    if index_payload_shape(payload) == Some(INDEX_LOG_SHAPE_WHOLE) {
+        return Ok(false);
+    }
+    // A legacy whole-index line carries no container to say so, and decodes here into an
+    // IndexDeltaRecord with every delta field empty -- which is the same answer, reached by
+    // reading it rather than by trusting a byte that is not there.
+    let record: IndexDeltaRecord = decode_index_payload(payload)?;
+    Ok(!record.items.is_empty() || record.meta.is_some() || !record.key_states.is_empty())
 }
 
 fn sync_parent_dir(path: &Path) -> std::io::Result<()> {
@@ -3190,6 +3231,108 @@ mod tests {
             .append_delta(7, vec![block_item(1, "later", false)], Vec::new(), Some(6), None, false, true)
             .unwrap();
         assert_eq!(next, meta_sequence + 1);
+    }
+
+    /// An anchor-less delta that still carries content must SURVIVE the post-dump sweep.
+    ///
+    /// The sweep read a missing anchor as anchor 0 and 0 is at or below every anchor, so a delta
+    /// written while `shard.applied_wal_sequence` was still `None` -- which is what the expiry
+    /// round writes when it reaches its checkpoint under WAL replay -- was removed although the
+    /// dumped base reflects none of it. Its key-states are the only record of those expiries in
+    /// the delta stream, so the fold would then restore what the round deleted.
+    ///
+    /// Both halves are asserted separately: the content-bearing anchor-less record stays, AND
+    /// the reflected record still goes. Asserting only the first would pass just as well against
+    /// a sweep that had stopped removing anything at all.
+    #[test]
+    fn an_anchor_less_delta_that_carries_content_survives_the_post_dump_sweep() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = LocalIndexLogStore::new(dir.path());
+        // seq 1: reflected by the dump (anchor 2 <= dump anchor 2). Must GO.
+        store
+            .append_delta(3, vec![block_item(1, "covered", false)], Vec::new(), Some(2), None, false, true)
+            .unwrap();
+        // seq 2: no anchor at all, and it carries page items. Must STAY.
+        store
+            .append_delta(3, vec![block_item(1, "anchorless", false)], Vec::new(), None, None, false, true)
+            .unwrap();
+        // seq 3: no anchor, no items -- key-states only, which is the shape the expiry round
+        // writes. Must STAY: those key-states are the tombstones.
+        store
+            .append_delta(
+                3,
+                Vec::new(),
+                vec![serde_json::json!({"key": "expired"})],
+                None,
+                None,
+                false,
+                true,
+            )
+            .unwrap();
+        // seq 4: the dump's folded catalog anchor, above the removal window.
+        let meta_sequence = store
+            .append_delta(3, Vec::new(), Vec::new(), Some(2), Some(MetaItem::default()), false, true)
+            .unwrap();
+
+        let report = store.gc_reflected_before_anchor(3, 2, meta_sequence, 0).unwrap();
+        // The denominator, with a floor: a sweep over an empty log would pass everything below.
+        assert_eq!(report.records_before, 4, "denominator: {report:?}");
+        assert_eq!(
+            report.records_removed, 1,
+            "only the reflected record may go: {report:?}"
+        );
+        assert_eq!(report.records_after, 3, "{report:?}");
+
+        let survivors = store.read_delta_records(3, 0).unwrap();
+        assert_eq!(survivors.len(), 3, "{survivors:?}");
+        // HALF ONE: the anchor-less record carrying items is still there.
+        assert!(
+            survivors
+                .iter()
+                .any(|record| record.items.iter().any(|item| item.block_ref_key == "anchorless")),
+            "an anchor-less delta carrying items was swept: {survivors:?}"
+        );
+        // HALF TWO: the anchor-less record carrying only key-states is still there.
+        assert!(
+            survivors
+                .iter()
+                .any(|record| !record.key_states.is_empty()),
+            "an anchor-less delta carrying key-states was swept: {survivors:?}"
+        );
+        // HALF THREE, the control: the reflected record really did go, so this is not a sweep
+        // that has simply stopped sweeping.
+        assert!(
+            !survivors
+                .iter()
+                .any(|record| record.items.iter().any(|item| item.block_ref_key == "covered")),
+            "the reflected delta must still be removed: {survivors:?}"
+        );
+    }
+
+    /// The positive control for the clause above: an anchor-less record that carries NOTHING the
+    /// fold would apply is still removed, in both spellings a whole-index record has.
+    #[test]
+    fn an_anchor_less_record_with_no_content_is_still_swept() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = LocalIndexLogStore::new(dir.path());
+        // seq 1: a whole-index line, which is anchor-less by construction.
+        store.append_json(8, b"{\"value\":1}").unwrap();
+        // seq 2: a delta record with no anchor and no content.
+        store
+            .append_delta(8, Vec::new(), Vec::new(), None, None, false, true)
+            .unwrap();
+        // seq 3: the catalog anchor.
+        let meta_sequence = store
+            .append_delta(8, Vec::new(), Vec::new(), Some(1), Some(MetaItem::default()), false, true)
+            .unwrap();
+
+        let report = store.gc_reflected_before_anchor(8, 1, meta_sequence, 0).unwrap();
+        assert_eq!(report.records_before, 3, "denominator: {report:?}");
+        assert_eq!(
+            report.records_removed, 2,
+            "an anchor-less record holding nothing the fold applies must still go: {report:?}"
+        );
+        assert_eq!(report.records_after, 1, "{report:?}");
     }
 
     #[test]
