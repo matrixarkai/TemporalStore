@@ -5098,8 +5098,15 @@ fn open_engine(request: &RecordLogRequest) -> Result<RecordStore, String> {
     // 100K-record ingest left a multi-GB index log that nothing ever truncated. Poll the
     // threshold-dump cadence in the background: when the undumped index-log gap crosses
     // `TS_INDEX_DUMP_WAL_GAP_BYTES`, dump the catalog and reclaim the log prefixes the dump
-    // made redundant. The poll itself is one file-length stat per interval; the dump/reclaim
-    // runs off the request path so no client write pays for the base-index materialization.
+    // made redundant. The dump/reclaim runs off the request path, so no client write pays for
+    // the base-index materialization.
+    //
+    // THE POLL ITSELF IS NOT ONE FILE-LENGTH STAT, which this said until it was counted.
+    // `undumped_len_since_dump` sums EVERY piece of the log, so each interval costs one listing
+    // of the store directory plus one `stat` per piece -- flat in listings, linear in pieces, and
+    // paid on the timer whether or not anything has been written since the last one. At the
+    // 64 KiB rolling default a large store is in many pieces. Measured in
+    // `index_log_scale::what_the_undumped_length_probe_enumerates`.
     // No-op (thread not spawned) with the interval set to 0.
     let reclaim_interval_ms = env::var("MATRIXARK_RUST_PROXY_LOG_RECLAIM_INTERVAL_MS")
         .ok()

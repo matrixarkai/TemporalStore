@@ -281,35 +281,62 @@ impl TemporalEngine {
         // silently-skipped delta advances the reconstructed anchor past a removal/eviction that
         // lives ONLY in the delta (not the WAL), so it is recovered from neither source -- a
         // silent loss / dangling ref. The caller (load_shard_with) refuses the load on Err.
-        let records = match self.index_log_store.read_delta_records(shard_id, 0) {
-            Ok(records) => records,
-            Err(err) => {
-                return Err(Status::error(
-                    "index_log_delta_corruption",
-                    format!(
-                        "served-index delta log for shard {shard_id} is corrupt; refusing load: {err}"
-                    ),
-                ));
-            }
-        };
-        if records.is_empty() {
-            return Ok(());
-        }
         let base_anchor = shard.applied_wal_sequence.unwrap_or(0);
         let mut max_anchor = base_anchor;
         let mut applied = false;
-        for record in &records {
-            let record_anchor = record.applied_wal_sequence.unwrap_or(0);
-            // A present base already reflects everything at/below its anchor; fold only the
-            // suffix. An absent base (anchor 0) folds the whole log.
-            if base_anchor > 0 && record_anchor <= base_anchor {
-                continue;
-            }
-            let covered = delta_record_covered_keys(record);
-            fold_delta_block_items(&mut shard.bucket_index, &covered, &record.items, record.upsert);
-            apply_key_states(shard, &record.key_states);
-            max_anchor = max_anchor.max(record_anchor);
-            applied = true;
+        // STREAM the records rather than collecting them.
+        //
+        // `read_delta_records` decodes the whole log into a vector and hands it over. This caller
+        // folds each record into `shard` and drops it, so that vector was the ENTIRE DECODED LOG
+        // held live for the length of the fold -- which is larger than the file, because a
+        // decoded record carries its items as owned values. `for_each_delta_record` was written
+        // for this caller and its own note says the folding caller is the load path; it simply
+        // was never wired to it. Measured over 10,000 one-item records, the collecting shape
+        // leaves the whole log outstanding and the streaming shape leaves one record; see
+        // `index_log_scale::what_the_two_fold_shapes_hold_at_two_corpus_sizes`.
+        //
+        // Nothing else moves. The walk, the decode, the per-record integrity check and the
+        // sequence-continuity refusal are the same code either way -- `read_delta_records` is
+        // that same walk with a vector on top -- so a corrupt or holed stream is still refused
+        // here, below, exactly as it was.
+        //
+        // The old `records.is_empty()` early return is gone rather than translated: with no
+        // record the closure never runs, `applied` stays false, and the block below is skipped.
+        //
+        // ONE DIFFERENCE IS REAL AND IS WHY THIS IS SAFE HERE RATHER THAN IN GENERAL. Collecting
+        // first meant a corrupt stream was refused before a single record had been folded;
+        // streaming folds records into `shard` as it goes and can be refused part-way through, so
+        // `shard` may be half-folded when the error is returned. It never escapes: `shard` is a
+        // local of `load_shard_with`, the `?` at that call site returns before it is published,
+        // and the load then falls back to replay exactly as a refusal always did. A caller that
+        // folded into something it did not own would not have this property.
+        if let Err(err) = self
+            .index_log_store
+            .for_each_delta_record(shard_id, 0, |record| {
+                let record_anchor = record.applied_wal_sequence.unwrap_or(0);
+                // A present base already reflects everything at/below its anchor; fold only the
+                // suffix. An absent base (anchor 0) folds the whole log.
+                if base_anchor > 0 && record_anchor <= base_anchor {
+                    return;
+                }
+                let covered = delta_record_covered_keys(&record);
+                fold_delta_block_items(
+                    &mut shard.bucket_index,
+                    &covered,
+                    &record.items,
+                    record.upsert,
+                );
+                apply_key_states(shard, &record.key_states);
+                max_anchor = max_anchor.max(record_anchor);
+                applied = true;
+            })
+        {
+            return Err(Status::error(
+                "index_log_delta_corruption",
+                format!(
+                    "served-index delta log for shard {shard_id} is corrupt; refusing load: {err}"
+                ),
+            ));
         }
         if applied {
             for bucket in shard.bucket_index.bucket_map.values_mut() {

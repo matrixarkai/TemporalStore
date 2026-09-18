@@ -13,6 +13,55 @@ use thiserror::Error;
 use crate::block_store::BlockAddress;
 use crate::types::ShardId;
 
+/// Counters for the scale probes, tests only.
+///
+/// Every quantity here is a COUNT, not a duration. This box sits between load 2 and load 30 for
+/// hours at a time, and a duration taken on it says as much about the neighbours as about the
+/// code -- the same round has been measured at 490 ms and at 1,077 ms. A count does not move.
+///
+/// Each counter sits where EVERY path through the thing it counts must pass:
+/// `index_log_segment_paths` is the only enumeration of a shard's pieces, and the frame counter
+/// is incremented before the whitespace `continue` rather than after it, so a frame skipped by
+/// the fold is still a frame the fold read.
+///
+/// Process-global, so the probes that read them require `--test-threads=1` -- which is how this
+/// suite is run. Each probe resets immediately before the call it measures.
+#[cfg(test)]
+pub(crate) mod probe {
+    use std::sync::atomic::{AtomicU64, Ordering};
+
+    /// Calls to [`super::index_log_segment_paths`] -- one directory listing each.
+    pub(crate) static DIR_LISTINGS: AtomicU64 = AtomicU64::new(0);
+    /// Piece paths those listings HANDED BACK, summed. This is the per-piece quantity: every
+    /// caller of the enumeration then stats, opens or compares each path it got.
+    pub(crate) static PIECE_PATHS: AtomicU64 = AtomicU64::new(0);
+    /// Frames [`super::LocalIndexLogStore::for_each_delta_record`] read off disk.
+    pub(crate) static FOLD_FRAMES_READ: AtomicU64 = AtomicU64::new(0);
+    /// Sealed pieces that fold DECLINED TO OPEN because their name said the retain floor
+    /// already covers every record in them.
+    pub(crate) static FOLD_PIECES_DECLINED: AtomicU64 = AtomicU64::new(0);
+
+    pub(crate) fn reset() {
+        DIR_LISTINGS.store(0, Ordering::Relaxed);
+        PIECE_PATHS.store(0, Ordering::Relaxed);
+        FOLD_FRAMES_READ.store(0, Ordering::Relaxed);
+        FOLD_PIECES_DECLINED.store(0, Ordering::Relaxed);
+    }
+
+    pub(crate) fn dir_listings() -> u64 {
+        DIR_LISTINGS.load(Ordering::Relaxed)
+    }
+    pub(crate) fn piece_paths() -> u64 {
+        PIECE_PATHS.load(Ordering::Relaxed)
+    }
+    pub(crate) fn fold_frames_read() -> u64 {
+        FOLD_FRAMES_READ.load(Ordering::Relaxed)
+    }
+    pub(crate) fn fold_pieces_declined() -> u64 {
+        FOLD_PIECES_DECLINED.load(Ordering::Relaxed)
+    }
+}
+
 #[derive(Debug, Error)]
 pub enum IndexLogError {
     #[error("io error: {0}")]
@@ -1616,6 +1665,10 @@ impl LocalIndexLogStore {
             // records unchanged, so one loop reads every shape the log has ever held. Streaming
             // rather than reading the file whole keeps memory bounded by the largest record.
             while let Some((_, payload)) = crate::log_framing::read_frame(&mut reader)? {
+                // Before the `continue` below, not after it: a frame this walk passes over is
+                // still a frame this walk read off the disk, and that is what the probe counts.
+                #[cfg(test)]
+                probe::FOLD_FRAMES_READ.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
                 if payload.iter().all(|byte| byte.is_ascii_whitespace()) {
                     continue;
                 }
@@ -2471,6 +2524,8 @@ fn sealed_index_log_span(path: &Path, shard_id: ShardId) -> Option<IndexSegmentS
 /// A log that has never rolled is one file, and this returns just that -- the same path the rest
 /// of the code has always used, which is what makes a store written before pieces still load.
 fn index_log_segment_paths(root: &Path, shard_id: ShardId) -> Vec<PathBuf> {
+    #[cfg(test)]
+    probe::DIR_LISTINGS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     let mut sealed = fs::read_dir(root)
         .into_iter()
         .flatten()
@@ -2481,6 +2536,8 @@ fn index_log_segment_paths(root: &Path, shard_id: ShardId) -> Vec<PathBuf> {
     sealed.sort_by_key(|(start, _)| *start);
     let mut paths = sealed.into_iter().map(|(_, path)| path).collect::<Vec<_>>();
     paths.push(index_log_path(root, shard_id));
+    #[cfg(test)]
+    probe::PIECE_PATHS.fetch_add(paths.len() as u64, std::sync::atomic::Ordering::Relaxed);
     paths
 }
 
@@ -2714,6 +2771,10 @@ fn sync_parent_dir(path: &Path) -> std::io::Result<()> {
     }
     Ok(())
 }
+
+#[cfg(test)]
+#[path = "index_log_scale.rs"]
+mod index_log_scale;
 
 #[cfg(test)]
 mod tests {
