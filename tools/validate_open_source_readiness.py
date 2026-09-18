@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import subprocess
 import sys
 from pathlib import Path
@@ -114,6 +115,40 @@ FALLBACK_SCAN_SKIP_DIRS = {
     "benchmark_reports",
     "thirdparty",
     "__pycache__",
+}
+
+# Names of products, toolchains and internal systems that do not belong in an
+# open-source repository. Nothing else in CI has an opinion about prose, so a
+# change can add hundreds of occurrences and still pass every other gate.
+#
+# `matrixobjectstore` is deliberately NOT here: validate_no_enterprise_object_store
+# already distinguishes the enterprise implementation and the private dependency,
+# which must never ship, from the sanctioned feature-gated bridge, whose name is
+# published API. A blanket match would fail on the bridge.
+FOREIGN_VOCABULARY: list[tuple[str, str, int]] = [
+    (
+        "language and toolchain names",
+        r"c\+\+|cplusplus|c_plus_plus|(?<![A-Za-z])cxx(?![A-Za-z])"
+        r"|(?<![A-Za-z])cpp(?![A-Za-z])|(?<![A-Za-z])gtest(?![A-Za-z])",
+        re.IGNORECASE,
+    ),
+    (
+        "third-party product names",
+        r"(?<![A-Za-z])(lark|feishu|wukong|bytedance|byteraft|bytestore|mtcache"
+        r"|openviking|vikingmem)(?![A-Za-z])|volcano engine",
+        re.IGNORECASE,
+    ),
+    # "abase" is a substring of "database", so it only counts on a token boundary.
+    ("internal datastore name", r"(?<![A-Za-z])abase(?![A-Za-z])", re.IGNORECASE),
+    # The C-FFI spelling is CIpsFoo, which a token-start-only pattern misses, and
+    # this one is case-sensitive on purpose: "ips" alone is ordinary English.
+    ("retired data-model name", r"(?<![A-Za-z0-9])(C?Ips[A-Z]|ips_|IPS(?![a-zA-Z]))", 0),
+]
+
+# These files carry the patterns above as fixtures or as the check itself, in the
+# same way PRIVATE_PATH_FIXTURE_FILES carries the private-path patterns.
+FOREIGN_VOCABULARY_FIXTURE_FILES = {
+    "tools/validate_open_source_readiness.py",
 }
 
 PRIVATE_PATH_FIXTURE_FILES = {
@@ -248,6 +283,47 @@ def validate_no_enterprise_object_store() -> None:
         )
 
 
+def validate_no_foreign_vocabulary() -> None:
+    """Fails if a tracked file names a product, toolchain or internal system.
+
+    Scanning the whole tree rather than a diff, so that a name cannot arrive by
+    a route the diff check misses -- a rename, a merge, a file added before the
+    check existed.
+    """
+    tracked = [path for path in repository_files() if path not in FOREIGN_VOCABULARY_FIXTURE_FILES]
+    skipped = len(repository_files()) - len(tracked)
+    if skipped != len(FOREIGN_VOCABULARY_FIXTURE_FILES):
+        # A renamed fixture would silently stop being skipped, or worse, a typo
+        # here would skip nothing and the scan would fail on its own patterns.
+        raise SystemExit(
+            f"expected to skip {len(FOREIGN_VOCABULARY_FIXTURE_FILES)} vocabulary "
+            f"fixture file(s), skipped {skipped}"
+        )
+    if not tracked:
+        raise SystemExit("no tracked files to scan for vocabulary")
+
+    offenders: list[str] = []
+    for relative_path in tracked:
+        path = ROOT / relative_path
+        if not path.is_file():
+            continue
+        try:
+            text = path.read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            continue
+        for label, pattern, flags in FOREIGN_VOCABULARY:
+            for match in re.finditer(pattern, text, flags):
+                line = text.count("\n", 0, match.start()) + 1
+                offenders.append(f"{relative_path}:{line}: {label}: {match.group(0)!r}")
+                break
+
+    if offenders:
+        raise SystemExit(
+            "names that must not appear in this repository "
+            "(use the project's own vocabulary):\n" + "\n".join(offenders[:50])
+        )
+
+
 def repository_files() -> list[str]:
     try:
         return subprocess.run(
@@ -277,6 +353,7 @@ def main() -> int:
     validate_no_tracked_local_codex_config()
     validate_no_private_paths()
     validate_no_enterprise_object_store()
+    validate_no_foreign_vocabulary()
     require_tokens("README.md", README_TOKENS)
     require_tokens("docs/SECURITY.md", SECURITY_TOKENS)
     require_tokens("docs/CONTRIBUTING.md", CONTRIBUTING_TOKENS)
