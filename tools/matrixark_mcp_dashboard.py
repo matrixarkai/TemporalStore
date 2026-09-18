@@ -93,7 +93,21 @@ def dashboard_message_rows(records: list[Json], scope: Json) -> list[Json]:
 
 
 def latest_async_pipeline_rows(rows: list[Json]) -> list[Json]:
-    status_rank = {"pending": 0, "extraction_committed": 1, "summary_completed": 2}
+    # Identical to `matrixark_mcp_async_readiness.latest_async_pipeline_rows`, and
+    # `test_the_two_pipeline_row_rankings_agree` asserts that rather than trusting this comment.
+    # This copy used to rank three statuses, so every `idle_commit_*` was unknown to it and ranked
+    # -1 -- including the terminal ones, which therefore lost to the `idle_commit_scheduled` they
+    # complete whenever their record carried the earlier stamp. The task read as still scheduled.
+    status_rank = {
+        "pending": 0,
+        "idle_commit_scheduled": 0,
+        "idle_commit_failed": 1,
+        "idle_commit_attempted": 1,
+        "idle_commit_committed": 1,
+        "idle_commit_skipped": 1,
+        "extraction_committed": 2,
+        "summary_completed": 3,
+    }
     latest_by_task: dict[int, Json] = {}
     for row in rows:
         try:
