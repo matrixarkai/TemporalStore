@@ -2948,11 +2948,17 @@ def context_source_lineage(envelope: Json, hook: Json | None = None) -> Json:
         except (TypeError, ValueError):
             pass
         try:
-            selection_retained_text_ratio_sum += float(selection.get("retained_text_ratio"))
-            selection_retained_line_ratio_sum += float(selection.get("retained_line_ratio"))
-            selection_stats_count += 1
+            # Both conversions first: advancing a sum and then failing to convert the second value
+            # would leave that sum holding a sample `selection_stats_count` never counts, and the
+            # average below divides by that count.
+            selection_text_ratio = float(selection.get("retained_text_ratio"))
+            selection_line_ratio = float(selection.get("retained_line_ratio"))
         except (TypeError, ValueError):
             pass
+        else:
+            selection_retained_text_ratio_sum += selection_text_ratio
+            selection_retained_line_ratio_sum += selection_line_ratio
+            selection_stats_count += 1
         if bool(selection.get("selection_lossy")):
             selection_lossy_count += 1
         else:
@@ -3334,11 +3340,14 @@ def source_event_lineage_summary(records: list[Json]) -> Json:
                 except (TypeError, ValueError):
                     pass
                 try:
-                    memory_selection_retained_text_ratio_sum += float(source.get("retained_text_ratio"))
-                    memory_selection_retained_line_ratio_sum += float(source.get("retained_line_ratio"))
-                    memory_selection_retained_ratio_count += 1
+                    source_text_ratio = float(source.get("retained_text_ratio"))
+                    source_line_ratio = float(source.get("retained_line_ratio"))
                 except (TypeError, ValueError):
                     pass
+                else:
+                    memory_selection_retained_text_ratio_sum += source_text_ratio
+                    memory_selection_retained_line_ratio_sum += source_line_ratio
+                    memory_selection_retained_ratio_count += 1
         for field, accumulator in [
             ("source_memory_selection_dropped_text_chars", "text"),
             ("source_memory_selection_dropped_line_count", "line"),
@@ -3353,11 +3362,14 @@ def source_event_lineage_summary(records: list[Json]) -> Json:
                 memory_selection_dropped_line_count += amount
         if "source_memory_selection_retained_text_ratio_avg" in record:
             try:
-                memory_selection_retained_text_ratio_sum += float(record.get("source_memory_selection_retained_text_ratio_avg"))
-                memory_selection_retained_line_ratio_sum += float(record.get("source_memory_selection_retained_line_ratio_avg", 1.0))
-                memory_selection_retained_ratio_count += 1
+                record_text_ratio = float(record.get("source_memory_selection_retained_text_ratio_avg"))
+                record_line_ratio = float(record.get("source_memory_selection_retained_line_ratio_avg", 1.0))
             except (TypeError, ValueError):
                 pass
+            else:
+                memory_selection_retained_text_ratio_sum += record_text_ratio
+                memory_selection_retained_line_ratio_sum += record_line_ratio
+                memory_selection_retained_ratio_count += 1
 
         add_values(memory_scopes, record.get("source_memory_scopes"))
         add_values(memory_scopes, record.get("memory_scope"))
