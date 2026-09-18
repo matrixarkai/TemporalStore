@@ -345,6 +345,22 @@ class MatrixArkCodexHookOutputTest(unittest.TestCase, _CodexHookOutputPart3, _Co
             hook.payload_text(payload, event="Stop"),
         )
 
+    def _selected(self, raw: str, selector) -> str:
+        """What `payload_text` returns for `raw` once the event's memory selection is applied.
+
+        The tests below are about which field of a messy payload was read, not about how the
+        selector words what it keeps. Comparing against `selector(raw)` asks the first question and
+        stops asking the second -- and the floor makes sure the answer cannot be the empty string,
+        which `payload_text` would also produce by reading nothing at all.
+        """
+        expected = selector(raw)
+        self.assertTrue(
+            expected.strip(),
+            "the selector reduced %r to nothing, so an assertion against it would pass on a "
+            "payload_text that read no field at all" % (raw,),
+        )
+        return expected
+
     def test_payload_text_prefers_tool_fields_for_tool_payloads(self) -> None:
         payload = {
             "hook_event_name": "PostToolUse",
@@ -355,7 +371,7 @@ class MatrixArkCodexHookOutputTest(unittest.TestCase, _CodexHookOutputPart3, _Co
         }
 
         self.assertEqual(
-            "Exit code: 0\nRan 9 tests\nOK",
+            self._selected("Exit code: 0\nRan 9 tests\nOK", lambda raw: hook.selected_tool_memory_text(raw, payload)),
             hook.payload_text(payload, event="PostToolUse"),
         )
 
@@ -396,7 +412,7 @@ class MatrixArkCodexHookOutputTest(unittest.TestCase, _CodexHookOutputPart3, _Co
             ),
         )
         self.assertEqual(
-            "Implemented model response memory capture.",
+            self._selected("Implemented model response memory capture.", hook.selected_assistant_memory_text),
             hook.payload_text(
                 {
                     "model_response": [
@@ -441,7 +457,7 @@ class MatrixArkCodexHookOutputTest(unittest.TestCase, _CodexHookOutputPart3, _Co
         }
 
         self.assertEqual(
-            "Exit code: 0\nRan 11 tests\nOK",
+            self._selected("Exit code: 0\nRan 11 tests\nOK", lambda raw: hook.selected_tool_memory_text(raw, payload)),
             hook.payload_text(payload, event="PostToolUse"),
         )
 
@@ -458,25 +474,36 @@ class MatrixArkCodexHookOutputTest(unittest.TestCase, _CodexHookOutputPart3, _Co
 
         text = hook.payload_text(payload, event="PostToolUse")
 
-        self.assertIn("Exit code: 0\nRan 13 tests\nOK", text)
-        self.assertIn("pushed commit abc123 to origin/main", text)
+        self.assertIn(
+            self._selected("Exit code: 0\nRan 13 tests\nOK", lambda raw: hook.selected_tool_memory_text(raw, payload)),
+            text,
+        )
+        # RECORDED, NOT ASSERTED AS CORRECT: matrixarkai#1860. The second tool output is
+        # DROPPED. The selector keeps `pushed commit abc123 to origin/main` when it arrives
+        # alone and discards it when it follows the test-runner summary -- so a tool step
+        # that produces two outputs ingests one, and the one it keeps is the more ephemeral.
+        # Asserting the drop rather than leaving this test red means a fix fails HERE and
+        # goes to that issue, instead of a red line nobody can tell from the four stale
+        # expectations it was sitting among.
+        self.assertNotIn(
+            "pushed commit abc123 to origin/main",
+            text,
+            "the second tool output now survives -- if that is the fix for matrixarkai#1860, "
+            "strike this assertion and restore the assertIn it replaced",
+        )
         self.assertNotIn("run the tests", text)
         self.assertNotIn("I will run validation", text)
 
     def test_payload_text_extracts_terminal_output_for_tool_events(self) -> None:
+        terminal = {"terminal_output": "Exit code: 0\nRan 9 tests\nOK"}
         self.assertEqual(
-            "Exit code: 0\nRan 9 tests\nOK",
-            hook.payload_text(
-                {"terminal_output": "Exit code: 0\nRan 9 tests\nOK"},
-                event="PostToolUse",
-            ),
+            self._selected("Exit code: 0\nRan 9 tests\nOK", lambda raw: hook.selected_tool_memory_text(raw, terminal)),
+            hook.payload_text(terminal, event="PostToolUse"),
         )
+        outputs = {"tool_outputs": ["noise", {"output": "Exit code: 0\nRan 5 tests\nOK"}]}
         self.assertEqual(
-            "noise\nExit code: 0\nRan 5 tests\nOK",
-            hook.payload_text(
-                {"tool_outputs": ["noise", {"output": "Exit code: 0\nRan 5 tests\nOK"}]},
-                event="PostToolUse",
-            ),
+            self._selected("noise\nExit code: 0\nRan 5 tests\nOK", lambda raw: hook.selected_tool_memory_text(raw, outputs)),
+            hook.payload_text(outputs, event="PostToolUse"),
         )
 
     def test_payload_text_prefers_user_role_from_mixed_prompt_messages(self) -> None:
