@@ -47,6 +47,7 @@ use record::{
 };
 use self::slab_manifest::*;
 pub(crate) use slab_ids::*;
+pub(crate) use slab_manifest::{manifest_file_writes, slab_descriptors_summarised};
 #[cfg(test)]
 use record::{BLOCK_RECORD_COMPRESSION_NONE, BLOCK_RECORD_COMPRESSION_ZSTD};
 
@@ -3413,7 +3414,7 @@ const RETIRED_NAMES: &[&str] = &[
         assert!(matches!(err, BlockStoreError::ChecksumMismatch { .. }));
     }
 
-    // shared-corpus: storage_object_page_bucket_parity_surfaces;
+    // shared-corpus: storage_object_page_bucket_agreement_surfaces;
     #[test]
     fn block_address_matches_compact_slab_metadata_contract_and_checksum_alias() {
         let dir = tempfile::tempdir().unwrap();
@@ -6837,5 +6838,210 @@ const RETIRED_NAMES: &[&str] = &[
             b"second-slab".to_vec(),
             "and its records still read"
         );
+    }
+
+    /// One manifest persist costs the same number of `write(2)` calls at ten times the slabs.
+    ///
+    /// THIS PINS THE HALF OF THE PERSIST THAT IS NOW FLAT. `persist_slab_manifest` used to hand
+    /// `serde_json` a bare `File`, and `serde_json` writes a document in fragments -- a key, a
+    /// colon, a number, a comma -- one syscall each. Measured under `strace` at 8,000 slabs, two
+    /// persists of a 2,813,816-byte manifest cost 1,600,144 `write` calls, 3.5 bytes apiece and
+    /// 97.8% of the process's syscall time. The BYTES of a manifest are linear in the slab count
+    /// and will stay linear; the SYSCALLS no longer are, because a buffer absorbs the fragments.
+    ///
+    /// Counted rather than timed, for the reason the directory-fsync guard above is: the count
+    /// reads the same on a loaded box as on an idle one, and it is the shape that regressed.
+    ///
+    /// The way this regresses is someone unwrapping the buffer -- writing at the `File` again, or
+    /// serialising to it before the buffer is in place -- and at these sizes the count goes from a
+    /// handful to tens of thousands, so it is not a close call.
+    #[test]
+    fn a_manifest_persist_costs_the_same_writes_at_ten_times_the_slabs() {
+        let small_dir = tempfile::tempdir().unwrap();
+        let small = rolled_store_fixture(small_dir.path(), 40);
+        let large_dir = tempfile::tempdir().unwrap();
+        let large = rolled_store_fixture(large_dir.path(), 400);
+
+        // DENOMINATOR, both halves: the two fixtures really differ by the factor the claim rests
+        // on. Without it this passes on two stores of the same size, which compares nothing.
+        let small_slabs = small.slab_ids().unwrap().len();
+        let large_slabs = large.slab_ids().unwrap().len();
+        assert_eq!(small_slabs, 40, "the small fixture really holds forty slabs");
+        assert_eq!(large_slabs, 400, "the large fixture really holds four hundred");
+
+        let before = manifest_file_writes();
+        small.roll_slab().unwrap();
+        let small_writes = manifest_file_writes() - before;
+
+        let before = manifest_file_writes();
+        large.roll_slab().unwrap();
+        let large_writes = manifest_file_writes() - before;
+
+        // A VACUITY FLOOR. A persist that issued no write at all would satisfy the equality below
+        // while leaving the manifest empty, which is the opposite of the property being pinned.
+        assert!(
+            small_writes >= 1,
+            "a persist must write the manifest at least once, not {small_writes}"
+        );
+
+        // AND A SECOND DENOMINATOR: the document really is made of thousands of fragments, so an
+        // unbuffered writer would have issued thousands of syscalls here. Without this the counts
+        // could both be 1 because the manifest is trivially small, and the guard would pin
+        // nothing. Four hundred descriptors at ~350 bytes each is >= 100,000 bytes.
+        let large_manifest_bytes = fs::metadata(slab_manifest_path(large_dir.path()))
+            .unwrap()
+            .len();
+        assert!(
+            large_manifest_bytes >= 100_000,
+            "the larger manifest must be a document worth buffering, not {large_manifest_bytes} \
+             bytes"
+        );
+
+        assert_eq!(
+            small_writes, large_writes,
+            "ten times the slabs must not cost more manifest writes: {small_writes} at \
+             {small_slabs} slabs against {large_writes} at {large_slabs}"
+        );
+        // And an absolute ceiling, so the equality cannot be satisfied by both sides regressing
+        // together. The buffer is 256 KiB and the larger manifest is well under it.
+        assert!(
+            large_writes <= 4,
+            "one persist must cost a handful of syscalls, not {large_writes}"
+        );
+    }
+
+    /// The manifest is written COMPACT, and nothing outside this crate wants it otherwise.
+    ///
+    /// Pretty-printing cost bytes on a file that is rewritten on every roll and read by no person:
+    /// `load_slab_manifest_at` parses it with `from_slice`, and the one tool outside this crate
+    /// that opens it -- `tools/matrixark_merge_rust_hook_stores.py` -- parses it with
+    /// `json.loads`. Both are whitespace-insensitive, so the indentation was bytes and fragments
+    /// spent for nothing.
+    ///
+    /// Asserted on the NEWLINE COUNT rather than on the byte total: a size assertion drifts every
+    /// time a descriptor gains a field, whereas a pretty-printed document puts every one of its
+    /// tens of thousands of tokens on a line of its own, so the newline count separates the two
+    /// arrangements by four orders of magnitude and will keep doing so.
+    #[test]
+    fn the_manifest_is_written_as_one_compact_line() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = rolled_store_fixture(dir.path(), 40);
+        store.roll_slab().unwrap();
+
+        let bytes = fs::read(slab_manifest_path(dir.path())).unwrap();
+
+        // DENOMINATOR: there really is a manifest here, holding the descriptors this asserts
+        // about. An empty or absent file has one newline too, and would pass the claim below
+        // while proving nothing.
+        let manifest: BlockStoreSlabManifest = serde_json::from_slice(&bytes).unwrap();
+        assert!(
+            manifest.slabs.len() >= 41,
+            "the manifest must hold the forty seeded slabs and the rolled one, not {}",
+            manifest.slabs.len()
+        );
+        assert!(
+            bytes.len() >= 10_000,
+            "and it must be a real document, not {} bytes",
+            bytes.len()
+        );
+
+        let newlines = bytes.iter().filter(|byte| **byte == b'\n').count();
+        assert_eq!(
+            newlines, 1,
+            "a compact manifest is one line plus the trailing newline; {newlines} newlines over \
+             {} descriptors is a pretty-printed one",
+            manifest.slabs.len()
+        );
+    }
+
+    /// What each of the four ways to write the manifest costs, at one slab count. Prints.
+    ///
+    ///   cargo test -p temporalstore-rust --lib what_the_manifest_arrangements_cost \
+    ///       -- --ignored --nocapture --test-threads=1
+    ///
+    /// The point is to separate the two halves of the change rather than ship them as one number:
+    /// COMPACT saves bytes and fragments, BUFFERING saves syscalls, and only a measurement says
+    /// which of the two the roll was actually paying for.
+    ///
+    /// Each arm serialises the SAME descriptor set -- the one the fixture's own manifest holds --
+    /// to a fresh file with the same barrier the real persist takes, so the arms differ in
+    /// exactly the writer and the formatter and in nothing else.
+    fn manifest_arrangement_arm(slabs: u64) {
+        let dir = tempfile::tempdir().unwrap();
+        let store = rolled_store_fixture(dir.path(), slabs);
+
+        // DENOMINATOR: the manifest being re-serialised really holds `slabs` descriptors. An arm
+        // timed against a short manifest is measuring a smaller store than it claims.
+        let manifest_path = slab_manifest_path(dir.path());
+        let manifest: BlockStoreSlabManifest =
+            serde_json::from_slice(&fs::read(&manifest_path).unwrap()).unwrap();
+        assert_eq!(
+            manifest.slabs.len() as u64, slabs,
+            "every slab must carry a descriptor before the arms are timed"
+        );
+        drop(store);
+
+        use std::io::BufWriter;
+
+        fn arm(
+            label: &str,
+            path: &std::path::Path,
+            manifest: &BlockStoreSlabManifest,
+            buffered: bool,
+            pretty: bool,
+        ) {
+            let writes_before = manifest_file_writes();
+            let started = std::time::Instant::now();
+            {
+                let file = File::create(path).unwrap();
+                if buffered {
+                    let mut out =
+                        BufWriter::with_capacity(256 * 1024, CountedFileWrites(file));
+                    if pretty {
+                        serde_json::to_writer_pretty(&mut out, manifest).unwrap();
+                    } else {
+                        serde_json::to_writer(&mut out, manifest).unwrap();
+                    }
+                    out.write_all(b"\n").unwrap();
+                    out.flush().unwrap();
+                    let Ok(inner) = out.into_inner() else {
+                        panic!("the buffer must flush before the barrier");
+                    };
+                    inner.0.sync_all().unwrap();
+                } else {
+                    let mut out = CountedFileWrites(file);
+                    if pretty {
+                        serde_json::to_writer_pretty(&mut out, manifest).unwrap();
+                    } else {
+                        serde_json::to_writer(&mut out, manifest).unwrap();
+                    }
+                    out.write_all(b"\n").unwrap();
+                    out.flush().unwrap();
+                    out.0.sync_all().unwrap();
+                }
+            }
+            let ms = started.elapsed().as_secs_f64() * 1e3;
+            let writes = manifest_file_writes() - writes_before;
+            let bytes = fs::metadata(path).unwrap().len();
+            println!("      {label:<24} {ms:>9.2} ms   {writes:>9} writes   {bytes:>10} bytes");
+        }
+
+        println!("  {slabs} slabs:");
+        arm("File + pretty (was)", &dir.path().join("a.json"), &manifest, false, true);
+        arm("File + compact", &dir.path().join("b.json"), &manifest, false, false);
+        arm("BufWriter + pretty", &dir.path().join("c.json"), &manifest, true, true);
+        arm("BufWriter + compact (is)", &dir.path().join("d.json"), &manifest, true, false);
+    }
+
+    #[test]
+    #[ignore]
+    fn what_the_manifest_arrangements_cost() {
+        manifest_arrangement_arm(8_000);
+    }
+
+    #[test]
+    #[ignore]
+    fn what_the_manifest_arrangements_cost_at_eighty_thousand_slabs() {
+        manifest_arrangement_arm(80_000);
     }
 }

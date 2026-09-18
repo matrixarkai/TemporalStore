@@ -743,3 +743,108 @@ fn a_batch_of_reads_is_charged_against_the_read_limit() {
     );
     assert_eq!(counters.write_refused, 0);
 }
+
+/// THE STORAGE CEILING WALKS EVERY SLAB DESCRIPTOR, ON EVERY WRITE COMMAND.
+///
+/// `execute` gates a write on `block_store.slab_summary().total_known_physical_bytes >= limit`.
+/// `slab_summary` takes the block-store mutex and summarises the whole descriptor map to produce
+/// twenty fields, of which the gate reads one. So the comparison of a single total against a
+/// single limit is charged the length of the manifest, under the lock, per command -- and the
+/// manifest is the thing that grows for the life of the shard.
+///
+/// COUNTED, NOT ARGUED, AND WITH A CONTROL. Reading the call site says the walk is there; it does
+/// not say the gate is reached, that the summary is not memoised somewhere between, or that the
+/// count scales with the slab count rather than with something else. The counter sits on the walk
+/// itself, so it reports what was actually walked whoever asked for it.
+///
+/// THE CONTROL IS THE SAME WRITES WITH `maxmemory_bytes` UNSET. `Option::map` does not call its
+/// closure on `None`, so an unconfigured shard must walk NOTHING -- and if the control also walked
+/// the descriptors, the walk would be coming from somewhere else in the write path and the fix
+/// would be aimed at the wrong function.
+#[test]
+fn the_storage_ceiling_walks_every_slab_descriptor_on_every_write() {
+    const WRITES: usize = 10;
+    const SLABS: usize = 40;
+
+    let dir = tempfile::tempdir().unwrap();
+    let engine = engine_at(dir.path());
+    assert!(write(&engine, "seed").ok);
+
+    // Give the store a manifest worth walking. Rolling seals the active slab and mints a fresh
+    // one each time, which is the state a long-running shard reaches by accumulating -- without
+    // writing the bytes it would take to get there.  is the wrong
+    // lever for this: it no-ops while the active slab is under target, and a slab that was just
+    // rolled to is empty, so it rolls exactly once however many times it is called.
+    let block_store = engine.block_store();
+    let mut rolled = 0;
+    while rolled < SLABS {
+        block_store.roll_slab().unwrap();
+        rolled += 1;
+    }
+
+    // HOW MANY DESCRIPTORS ONE SUMMARY WALKS, measured rather than assumed: the counter's own
+    // delta across a single `slab_summary` call IS the width of the walk.
+    let before = crate::block_store::slab_descriptors_summarised();
+    let summary = block_store.slab_summary();
+    let descriptors = crate::block_store::slab_descriptors_summarised() - before;
+
+    // DENOMINATOR: the store really did accumulate a manifest, so a per-write walk of it is a
+    // cost worth naming. Against a one-slab store every count below is 1 and the test is vacuous.
+    assert!(
+        descriptors >= SLABS as u64,
+        "the store must hold at least {SLABS} descriptors before the walk is charged for them, \
+         not {descriptors}"
+    );
+    assert!(
+        summary.active_slabs + summary.sealed_slabs >= SLABS as u64,
+        "and they must be live slabs, not purged ones"
+    );
+
+    // CONTROL FIRST, so a mutant that kills the treatment assertion cannot stop it running:
+    // `maxmemory_bytes` unset, the same commands, on the same store.
+    let before = crate::block_store::slab_descriptors_summarised();
+    for index in 0..WRITES {
+        assert!(
+            write(&engine, &format!("unconfigured{index}")).ok,
+            "the control writes must succeed, or they are not the same path"
+        );
+    }
+    let control_walked = crate::block_store::slab_descriptors_summarised() - before;
+
+    // TREATMENT: a ceiling far above anything this store holds, so the writes still SUCCEED and
+    // the only difference between the halves is that the gate's closure runs.
+    engine.set_config(SetConfigRequest {
+        shard_id: 1,
+        config: Config {
+            version: 2,
+            maxmemory_bytes: Some(u64::MAX),
+            ..Config::default()
+        },
+    });
+    let before = crate::block_store::slab_descriptors_summarised();
+    for index in 0..WRITES {
+        assert!(
+            write(&engine, &format!("configured{index}")).ok,
+            "a ceiling of u64::MAX must not refuse a write, or the halves differ by more than \
+             the walk"
+        );
+    }
+    let treatment_walked = crate::block_store::slab_descriptors_summarised() - before;
+
+    println!(
+        "  storage ceiling: {descriptors} descriptors, {WRITES} writes -- unset walked \
+         {control_walked}, set walked {treatment_walked}"
+    );
+
+    assert_eq!(
+        control_walked, 0,
+        "an unconfigured shard must not summarise the slab manifest on the write path at all; \
+         {control_walked} descriptors walked over {WRITES} writes means the walk is not the \
+          ceiling's"
+    );
+    assert!(
+        treatment_walked >= WRITES as u64 * descriptors,
+        "a configured shard walks the whole manifest per write: expected at least {WRITES} x \
+         {descriptors}, got {treatment_walked}"
+    );
+}
