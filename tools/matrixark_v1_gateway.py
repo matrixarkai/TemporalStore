@@ -3208,6 +3208,9 @@ async def _embedding_models_in_store(server: Any, cfg: GatewayConfig, key: Optio
         "dimensions": result.get("dimensions") or [],
         "mixed_dimensions": bool(result.get("mixed_dimensions")),
         "model_dimensions": paired,
+        # Nothing else reports this, and its absence is what makes `impossible` above undetectable
+        # by the serving path: model_hash lives only on these rows.
+        "model_registry_rows": result.get("model_registry_rows"),
         "impossible": _impossible_model_widths(paired),
         "total": result.get("total") or 0,
     }

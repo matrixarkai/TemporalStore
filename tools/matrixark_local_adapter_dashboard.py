@@ -758,6 +758,9 @@ class _LocalAdapterDashboardMixin:
         # names appear or which widths appear, but whether a name appears at a width it could not
         # have written.
         model_dimensions: dict[tuple, int] = {}
+        # The only carrier of model_hash. Counted here because its ABSENCE is what makes the
+        # mislabelled-vector check inert, and nothing else reports it.
+        model_registry_rows = 0
         oldest_pending_ms = 0
         newest_pending_ms = 0
         deferred_tasks = 0
@@ -769,6 +772,9 @@ class _LocalAdapterDashboardMixin:
 
         for record in records:
             record_type = str(record.get("record_type") or "")
+            if record_type == "context_model_registry":
+                model_registry_rows += 1
+                continue
             if record_type == "matrixark_async_pipeline_task":
                 if not scope_matches(candidate_access_scope(record), scope):
                     continue
@@ -840,6 +846,10 @@ class _LocalAdapterDashboardMixin:
             "model_dimensions": [{"model": name, "dim": dim, "count": count}
                                  for (name, dim), count
                                  in sorted(model_dimensions.items(), key=lambda kv: -kv[1])],
+            # Rows carrying model_hash, which is what the retrieve path compares against the
+            # active model before scoring an embedding. Zero of them with vectors present means
+            # every hash is unknown, so that comparison never rejects anything.
+            "model_registry_rows": model_registry_rows,
             "oldest_pending_ms": oldest_pending_ms,
             "newest_pending_ms": newest_pending_ms,
             "deferred_tasks": deferred_tasks,

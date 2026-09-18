@@ -3948,7 +3948,24 @@ ONEBOX_JS = r"""<script>
       return '<div class="msg err"><b>' + esc(f.model) + " at " + esc(f.dim)
         + " dimensions</b><br>" + esc(f.detail) + "</div>";
     }).join("");
-    return bad + table
+    /* Whether the check that is supposed to catch the row above can fire at all.
+
+       A context_model_registry row is the only carrier of model_hash, and the retrieve path
+       compares that hash against the active model before scoring an embedding. An unknown hash is
+       scored anyway -- correct for an older store, and what makes the comparison safe to add. So
+       with vectors present and no registry rows, every hash is unknown and the comparison never
+       rejects anything: the mislabelled vectors above are scored exactly as if they were real.
+
+       Said only when there are vectors and no rows. On a store with rows the machinery is armed
+       and there is nothing to report. */
+    var rows = store.model_registry_rows;
+    var inert = (rows === 0 && (store.total || 0) > 0)
+      ? '<div class="msg err"><b>Nothing records which model produced these vectors.</b> '
+        + "The check that would reject an embedding made by a different encoder compares a model "
+        + "hash that only exists on a registry row, and this scope has none \u2014 so every hash "
+        + "is unknown and nothing is ever rejected.</div>"
+      : "";
+    return bad + inert + table
       + (store.mixed_dimensions
          ? '<div class="hint">This store holds more than one width. Vectors of different widths '
            + 'cannot be compared, so some memories can never match a query.</div>'

@@ -74,6 +74,67 @@ class ANarrowVectorIsCalledOutTest(unittest.TestCase):
         self.assertEqual([], gw._impossible_model_widths([]))
 
 
+class TheCheckThatWouldCatchItCannotFireTest(unittest.TestCase):
+    """Why nothing downstream objects to the rows reported above.
+
+    ``model_hash`` is carried on ``context_model_registry`` rows and nowhere else. The retrieve
+    path compares it against the active model before scoring an embedding, and treats ``0`` as
+    "unknown" and scores it anyway -- which is correct for a store written before the hash existed,
+    and is what makes the comparison safe to add at all.
+
+    It also means that with no registry rows, every hash is unknown and the comparison never
+    rejects anything. ``materialize_serving_record_batch`` has two live copies differing by one
+    statement, and the DEFAULT backend resolves the one that omits those rows, so this is the
+    ordinary state rather than an edge case.
+
+    Reported, not repaired: which copy the default backend should resolve is a serving-path change
+    with its own measurement. What this pins is that the page says so.
+    """
+
+    def test_the_scan_counts_registry_rows(self) -> None:
+        import io as _io
+        import re as _re
+        with _io.open(os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                                   "matrixark_local_adapter_dashboard.py"), encoding="utf-8") as h:
+            source = h.read()
+        body = source[source.index("def embedding_status"):]
+        body = body[:body.index("\n    def ")]
+        self.assertIn('"context_model_registry"', body,
+                      "the scan no longer counts the rows that carry model_hash, so the page "
+                      "cannot say whether the model check is armed")
+        self.assertTrue(_re.search(r"model_registry_rows\s*\+=", body),
+                        "model_registry_rows is returned but nothing fills it")
+        # And that it LEAVES the function. Counting it and dropping it reads as no rows at all
+        # downstream, which is the same silence this disclosure exists to break -- and a mutation
+        # removing exactly that line survived the first run of this guard.
+        self.assertIn(chr(34) + "model_registry_rows" + chr(34) + ":", body,
+                      "the scan counts the rows and never returns them, so every caller sees "
+                      "nothing and the page cannot tell an unarmed check from an armed one")
+
+    def test_the_count_is_reported_to_the_page(self) -> None:
+        import io as _io
+        with _io.open(os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                                   "matrixark_v1_gateway.py"), encoding="utf-8") as h:
+            self.assertIn('"model_registry_rows"', h.read(),
+                          "the gateway drops the count, so the page cannot render it")
+
+    def test_the_page_warns_only_when_there_are_vectors_and_no_rows(self) -> None:
+        """Three states, and only one of them is a finding.
+
+        Rows present: the machinery is armed, nothing to say. No vectors at all: no evidence
+        either way, and warning there would be the empty-store equivalent of a clean bill of
+        health. Vectors and no rows: the check cannot fire.
+        """
+        import io as _io
+        with _io.open(os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                                   "portal", "onebox_portal.html"), encoding="utf-8") as h:
+            page = h.read()
+        self.assertIn("rows === 0 && (store.total || 0) > 0", page,
+                      "the page warns on the wrong condition: it must need BOTH no registry rows "
+                      "and some vectors")
+        self.assertIn("Nothing records which model produced these vectors", page)
+
+
 class TheStoreCanAnswerTheQuestionTest(unittest.TestCase):
     """The pairing this rests on. Without it the check has nothing to read, and every assertion
     above would pass against a store that could not answer."""
