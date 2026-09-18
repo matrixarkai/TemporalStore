@@ -42,10 +42,39 @@ SEVERITIES = {"critical", "warning", "info"}
 
 
 def rule_files() -> list:
-    if not os.path.isdir(RULES_DIR):
+    """The rule files the stack LOADS, not the ones that happen to sit in one directory.
+
+    Listing `RULES_DIR` missed a third of them. `prometheus.yml` loads three files and the compose
+    mounts the third from `docs/ops/temporalstore-alerts.yml`, outside this directory -- so 38 of
+    the 82 alerting rules were never checked here, and `test_no_two_alerts_share_a_name` could not
+    see across the boundary that the duplicate it was written for actually straddled.
+
+    Derived from the same two documents the mount guard beside this reads. Deliberately not
+    imported from it: a test importing another test file is its own hazard and there is a guard
+    against it. Both derivations read `prometheus.yml` and the compose, so neither can drift
+    without the other failing on the same edit.
+    """
+    prom = os.path.join(RULES_DIR, "prometheus.yml")
+    compose = os.path.join(RULES_DIR, "docker-compose.yml")
+    if not (os.path.isfile(prom) and os.path.isfile(compose)):
         return []
-    return sorted(os.path.join(RULES_DIR, name) for name in os.listdir(RULES_DIR)
-                  if name.endswith((".yml", ".yaml")))
+    with io.open(prom, encoding="utf-8") as handle:
+        config = handle.read()
+    if "rule_files:" not in config:
+        return []
+    block = config.split("rule_files:", 1)[1].split("scrape_configs:", 1)[0]
+    listed = re.findall(r"-\s+(\S+\.ya?ml)\s*$", block, re.MULTILINE)
+    with io.open(compose, encoding="utf-8") as handle:
+        sources = dict(re.findall(r"-\s+(\S+?):(/etc/prometheus/[^\s:]+)", handle.read()))
+    out = []
+    for container_path in listed:
+        for source, target in sources.items():
+            if target != container_path:
+                continue
+            resolved = os.path.normpath(os.path.join(RULES_DIR, source))
+            if os.path.isfile(resolved) and resolved not in out:
+                out.append(resolved)
+    return sorted(out)
 
 
 def every_rule() -> list:
@@ -68,6 +97,23 @@ class EveryAlertIsWellFormedTest(unittest.TestCase):
         if yaml is None:
             raise unittest.SkipTest("pyyaml is not available")
         cls.rules = every_rule()
+
+    def test_the_files_it_reads_are_the_files_the_stack_loads(self) -> None:
+        """The floor on the DENOMINATOR, which is what was wrong here.
+
+        Every check below passes perfectly over a short list, and a short list is what a mount
+        that stops resolving produces -- silently, because a file that is listed and not mounted
+        simply contributes no rules.
+        """
+        found = rule_files()
+        self.assertGreaterEqual(len(found), 3,
+                                "only %d of the loaded rule files resolved: %s"
+                                % (len(found), [os.path.basename(p) for p in found]))
+        outside = [p for p in found if os.path.dirname(p) != RULES_DIR]
+        self.assertTrue(outside,
+                        "every resolved rule file is inside %s; the one the stack mounts from "
+                        "docs/ops is missing, which is the case this check exists for"
+                        % os.path.basename(RULES_DIR))
 
     def test_there_are_rules_to_check(self) -> None:
         """The vacuity guard. Every assertion below passes perfectly over an empty list, and a

@@ -101,14 +101,19 @@ groups:
           summary: "TemporalStore raft gate has failed cases"
           description: "The latest raft gate summary contains failed cases."
 
-      - alert: TemporalStoreIngestionDeadLetters
+      # Named for the surface it watches. The engine rule file loaded beside this one carries
+      # an alert of its own for dead letters, on the engine's own gauge and with a different
+      # `for`, and the two shared a name until this was renamed -- so Alertmanager, which
+      # groups by alertname, showed them as one alert with two sets of instructions, and a
+      # silence on the name silenced both.
+      - alert: TemporalStoreOneBoxIngestionDeadLetters
         expr: temporalstore_ingestion_dead_letters_total > 0
         for: 1m
         labels:
           severity: warning
           component: ingestion
         annotations:
-          summary: "TemporalStore ingestion dead letters detected"
+          summary: "One-box ingestion dead letters detected"
           description: "Queue ingestion replay or worker metrics reported dead-lettered records."
 
       - alert: TemporalStoreIngestionLagHigh
