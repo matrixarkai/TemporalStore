@@ -2402,15 +2402,36 @@ pub fn set_index_log_segment_bytes_for_test(threshold: Option<u64>) {
 struct IndexSegmentSpan {
     /// The first sequence in the piece.
     start: u64,
-    /// One PAST the last sequence in the piece: the piece holds `start..end`. Sequences are
-    /// assigned `last + 1` with no gaps, so `end - start` is also how many records it holds --
-    /// which is what lets a round report what it removed without reading what it removed.
+    /// One PAST the last sequence in the piece: the piece holds `start..end`.
+    ///
+    /// NOT the record count, though it used to be. Sequences are assigned `last + 1` with no
+    /// holes, but the post-dump sweep rewrites the piece being WRITTEN and keeps an interior
+    /// subset of it, so once that piece is sealed its span is wider than its contents. `end -
+    /// start` is therefore an UPPER BOUND on how many records the piece holds -- see the note on
+    /// the two sweeps that report it.
     end: u64,
-    /// The highest WAL anchor any record in the piece carries, 0 when none does. The post-dump
-    /// sweep keeps a record the dumped base does not reflect, and this is what says at a glance
-    /// whether a whole piece is reflected.
+    /// The highest WAL anchor the dumped base must reach before this whole piece is reflected.
+    ///
+    /// Normally the highest anchor any record in the piece carries. [`INDEX_SEGMENT_UNREFLECTED`]
+    /// when some record in the piece carries NO anchor and still carries content the fold would
+    /// apply: no dump reflects such a record, so no anchor makes the piece droppable and the
+    /// piece must say so in the one number the sweep reads.
     max_applied_wal: u64,
 }
+
+/// The anchor a piece names when nothing can prove the dumped base reflects it.
+///
+/// A SATURATED anchor rather than a fourth field in the name, and the difference is a
+/// compatibility window. `max_applied_wal` has exactly one consumer -- the `>` in
+/// [`drop_reflected_index_segments`] -- and `u64::MAX` is 20 digits, which is what `{:020}`
+/// already writes, so the name keeps its shape, its length and its three-field parse. A binary
+/// that predates this reads the name, finds the piece, folds it, and asks the SAME comparison,
+/// so it declines to unlink it too. A fourth field would instead make the piece fail
+/// [`sealed_index_log_span`]'s `if parts.next().is_some()` check on such a binary, and a piece
+/// that does not parse is not stale -- it is INVISIBLE, which loses more than the hole this
+/// closes. The saturation is safe in the other direction as well: a piece that named this by
+/// some other route is merely retained.
+const INDEX_SEGMENT_UNREFLECTED: u64 = u64::MAX;
 
 fn sealed_index_log_path(root: &Path, shard_id: ShardId, span: IndexSegmentSpan) -> PathBuf {
     // Zero-padded so the names sort into log order, which is the order the pieces are read in.
@@ -2486,6 +2507,19 @@ fn index_log_segment_span_of(path: &Path) -> Result<Option<IndexSegmentSpan>, In
     let mut first = None;
     let mut last = 0_u64;
     let mut max_applied_wal = 0_u64;
+    // A MISSING anchor is not anchor 0. `unwrap_or(0)` made one, and 0 loses every max it takes
+    // part in, so an anchor-less record was invisible in the name: a piece of nothing but
+    // anchor-less deltas named 0 -- at or below every anchor -- and a single anchored record
+    // beside them hid them behind ITS anchor. Either way the post-dump sweep unlinked the piece
+    // whole, WITHOUT READING IT, which is past the point where #1832's record walk can save it.
+    //
+    // The question asked here is the walk's own predicate (`delta_record_carries_content`), of
+    // the same record, so the seal and the walk cannot drift about which records matter. It is
+    // asked only of an anchor-less record, and only at a ROLL -- which already reads every frame
+    // in the piece -- so it costs a second decode of the rare record, once per thousands of
+    // appends. Deciding the same question by reading the piece at SWEEP time instead was measured
+    // at 95.261 ms against 0.014 ms for the name, over 14 pieces holding 917,718 bytes.
+    let mut unreflected = false;
     while let Some((_, payload)) = crate::log_framing::read_frame(&mut reader)? {
         if payload.iter().all(|byte| byte.is_ascii_whitespace()) {
             continue;
@@ -2493,12 +2527,22 @@ fn index_log_segment_span_of(path: &Path) -> Result<Option<IndexSegmentSpan>, In
         let head: IndexRecordHead = decode_index_payload(&payload)?;
         first.get_or_insert(head.sequence);
         last = last.max(head.sequence);
-        max_applied_wal = max_applied_wal.max(head.applied_wal_sequence.unwrap_or(0));
+        match head.applied_wal_sequence {
+            Some(anchor) => max_applied_wal = max_applied_wal.max(anchor),
+            // A whole-index line carries no anchor either, and carries nothing the fold applies.
+            // It answers false here, so the legacy shape this sweep exists to reclaim keeps
+            // naming its real anchor and keeps being droppable.
+            None => unreflected = unreflected || delta_record_carries_content(&payload)?,
+        }
     }
     Ok(first.map(|start| IndexSegmentSpan {
         start,
         end: last.saturating_add(1),
-        max_applied_wal,
+        max_applied_wal: if unreflected {
+            INDEX_SEGMENT_UNREFLECTED
+        } else {
+            max_applied_wal
+        },
     }))
 }
 
@@ -2547,7 +2591,8 @@ fn roll_index_log_segment_if_due(root: &Path, shard_id: ShardId) -> Result<bool,
 /// that number is at or below it -- decided without opening the file. Stops at the first piece
 /// that still holds something: the pieces are in order, so everything after it does too.
 ///
-/// Returns how many pieces went, what they held on disk, and how many records they held.
+/// Returns how many pieces went, what they held on disk, and an UPPER BOUND on how many records
+/// they held. The bound, not the count: see the note on the `records` line below.
 fn drop_covered_index_segments(
     root: &Path,
     shard_id: ShardId,
@@ -2568,8 +2613,21 @@ fn drop_covered_index_segments(
             break;
         }
         freed = freed.saturating_add(path.metadata().map(|meta| meta.len()).unwrap_or(0));
-        // Sequences are assigned with no gaps, so the span IS the record count. Counting them by
-        // reading the piece would put the cost of a round back on the bytes it removes.
+        // AN UPPER BOUND, NOT THE COUNT, and the difference reaches Prometheus.
+        //
+        // Sequences are assigned with no holes, so the span WAS the record count. #1832 put holes
+        // in: the post-dump sweep rewrites the piece being written and keeps an interior subset
+        // of it, by design, so a piece sealed after such a rewrite spans more sequences than it
+        // holds records. This number therefore never understates what went and can overstate it,
+        // and it surfaces as the `index_log_records_removed` reclaim metric -- which is told the
+        // same thing at its own call site rather than being left to imply exactness.
+        //
+        // Counting exactly means opening every piece being unlinked. Measured over 14 pieces
+        // holding 917,718 bytes -- 64 KiB each, the rolling default -- a framing walk that counts
+        // records without parsing any of them took 17.033 ms against 0.014 ms for the names: a
+        // reclaim round would pay roughly a thousand times its present cost to make a reported
+        // number exact, on the path whose whole point is that a piece goes by `stat` and
+        // `unlink`. So the number stays a bound and says so.
         records = records.saturating_add(span.end.saturating_sub(span.start) as usize);
         fs::remove_file(&path)?;
         dropped += 1;
@@ -2584,9 +2642,17 @@ fn drop_covered_index_segments(
 /// Drop whole pieces a completed catalog dump has made redundant.
 ///
 /// Two conditions, and a piece's name carries both: every sequence in it is below the sweep's
-/// position bound, and the highest WAL anchor it holds is one the dumped base already reflects.
+/// position bound, and the anchor it names is one the dumped base already reflects.
 /// Anything unclear leaves the piece alone -- unlinking a piece that still holds the only record
 /// of an eviction cannot be undone.
+///
+/// The named anchor is [`INDEX_SEGMENT_UNREFLECTED`] when the piece holds a record no dump can
+/// reflect, which no `wal_anchor` is above, so such a piece is never unlinked here. That is the
+/// whole of this function's part in it: the name is made to carry the answer at SEAL time, where
+/// the piece is being read anyway, rather than read again here per round.
+///
+/// The record count returned is the same UPPER BOUND `drop_covered_index_segments` returns, for
+/// the same reason and at the same measured cost -- the note there is the long form.
 fn drop_reflected_index_segments(
     root: &Path,
     shard_id: ShardId,
@@ -2608,6 +2674,7 @@ fn drop_reflected_index_segments(
             break;
         }
         freed = freed.saturating_add(path.metadata().map(|meta| meta.len()).unwrap_or(0));
+        // The upper bound, not the count. See `drop_covered_index_segments`.
         records = records.saturating_add(span.end.saturating_sub(span.start) as usize);
         fs::remove_file(&path)?;
         dropped += 1;
@@ -3333,6 +3400,567 @@ mod tests {
             "an anchor-less record holding nothing the fold applies must still go: {report:?}"
         );
         assert_eq!(report.records_after, 1, "{report:?}");
+    }
+
+    /// THE INSTRUMENT. A sealed piece made only of anchor-less deltas is unlinked WHOLE.
+    ///
+    /// #1832 fixed this reasoning inside the record walk: `applied_wal_sequence.unwrap_or(0)`
+    /// read a missing anchor as anchor 0, which is at or below every anchor, so an anchor-less
+    /// record was classified reflected and removed. The piece NAME is built from a max over the
+    /// same `unwrap_or(0)`, so a piece holding nothing but anchor-less deltas names 0 -- and the
+    /// post-dump sweep unlinks it without ever opening it, which the record walk can no longer
+    /// reach to save.
+    ///
+    /// The records here are the shape the expiry round writes when it reaches its checkpoint
+    /// under WAL replay: no items, key-states only, no anchor. Those key-states are the only
+    /// description of the round's deletions in the delta stream.
+    #[test]
+    fn a_sealed_piece_of_anchor_less_deltas_is_unlinked_without_being_read() {
+        let _rolling = roll_at(0);
+        let dir = tempfile::tempdir().unwrap();
+        let store = LocalIndexLogStore::new(dir.path());
+        // 24 expiry-shape checkpoints: no items, no anchor, one key-state each.
+        const ROUNDS: usize = 24;
+        for round in 0..ROUNDS {
+            store
+                .append_delta(
+                    3,
+                    Vec::new(),
+                    vec![serde_json::json!({ "key": format!("expired-{round:03}") })],
+                    None,
+                    None,
+                    false,
+                    true,
+                )
+                .unwrap();
+        }
+        // Seal them into pieces: roll at the length they already occupy, so the next append
+        // starts a fresh piece and everything written so far is sealed behind it.
+        let active_len = index_log_path(dir.path(), 3)
+            .metadata()
+            .unwrap()
+            .len();
+        assert!(active_len > 0, "fixture wrote nothing");
+        set_index_log_segment_bytes_for_test(Some(active_len));
+        // The dump's folded catalog anchor, which lands in the new active piece.
+        let meta_sequence = store
+            .append_delta(
+                3,
+                Vec::new(),
+                Vec::new(),
+                Some(9),
+                Some(MetaItem::default()),
+                false,
+                true,
+            )
+            .unwrap();
+
+        // DENOMINATOR, with a vacuity floor: there must be a sealed piece for this to be about
+        // anything, and it must name anchor 0.
+        let sealed: Vec<IndexSegmentSpan> = index_log_segment_paths(dir.path(), 3)
+            .iter()
+            .filter_map(|path| sealed_index_log_span(path, 3))
+            .collect();
+        assert_eq!(sealed.len(), 1, "fixture must seal exactly one piece: {sealed:?}");
+        // Not one record in the piece carries an anchor, so a max over `unwrap_or(0)` named it
+        // 0 -- at or below every anchor, which is what made it look reflected. It must now name
+        // the saturated anchor instead.
+        assert_eq!(
+            sealed[0].max_applied_wal, INDEX_SEGMENT_UNREFLECTED,
+            "a piece of nothing but anchor-less content must name an anchor no dump reaches: \
+             {sealed:?}"
+        );
+
+        let report = store.gc_reflected_before_anchor(3, 9, meta_sequence, 0).unwrap();
+
+        let survivors = store.read_delta_records(3, 0).unwrap();
+        let tombstones = survivors
+            .iter()
+            .filter(|record| !record.key_states.is_empty())
+            .count();
+        // HALF ONE: every expiry checkpoint is still there. The dumped base reflects none of
+        // them -- they carry no anchor at all -- so none of them may go.
+        assert_eq!(
+            tombstones, ROUNDS,
+            "a sealed piece of anchor-less expiry checkpoints was unlinked whole: \
+             {tombstones} of {ROUNDS} survive, report {report:?}"
+        );
+        // HALF TWO, asserted separately: the sweep still reports honestly about what it did.
+        // A sweep that had simply stopped removing anything would pass half one alone.
+        assert_eq!(
+            report.dropped_segments, 0,
+            "no piece here is provably reflected: {report:?}"
+        );
+    }
+
+    /// The positive control for the instrument above: a sealed piece that IS provably reflected
+    /// is still unlinked whole, and still without being read.
+    ///
+    /// Without this, a sweep that had stopped dropping pieces at all would pass the test above.
+    #[test]
+    fn a_sealed_piece_the_dump_reflects_is_still_unlinked_whole() {
+        let _rolling = roll_at(0);
+        let dir = tempfile::tempdir().unwrap();
+        let store = LocalIndexLogStore::new(dir.path());
+        const RECORDS: usize = 12;
+        for value in 0..RECORDS {
+            store
+                .append_delta(
+                    4,
+                    vec![block_item(1, &format!("covered-{value:03}"), false)],
+                    Vec::new(),
+                    Some(2),
+                    None,
+                    false,
+                    true,
+                )
+                .unwrap();
+        }
+        let active_len = index_log_path(dir.path(), 4).metadata().unwrap().len();
+        set_index_log_segment_bytes_for_test(Some(active_len));
+        let meta_sequence = store
+            .append_delta(
+                4,
+                Vec::new(),
+                Vec::new(),
+                Some(2),
+                Some(MetaItem::default()),
+                false,
+                true,
+            )
+            .unwrap();
+        let sealed: Vec<IndexSegmentSpan> = index_log_segment_paths(dir.path(), 4)
+            .iter()
+            .filter_map(|path| sealed_index_log_span(path, 4))
+            .collect();
+        assert_eq!(sealed.len(), 1, "fixture must seal exactly one piece: {sealed:?}");
+        assert_eq!(sealed[0].max_applied_wal, 2, "{sealed:?}");
+
+        let report = store.gc_reflected_before_anchor(4, 2, meta_sequence, 0).unwrap();
+        assert_eq!(
+            report.dropped_segments, 1,
+            "a piece every record of which the dump reflects must still go: {report:?}"
+        );
+        let survivors = store.read_delta_records(4, 0).unwrap();
+        assert!(
+            !survivors
+                .iter()
+                .any(|record| record.items.iter().any(|item| item.block_ref_key.starts_with("covered-"))),
+            "the reflected piece was kept: {survivors:?}"
+        );
+    }
+
+    /// The piece NAME cannot see an anchor-less record that shares a piece with anchored ones.
+    ///
+    /// This is why "never unlink a piece whose name says 0" does not close the hole. The name
+    /// carries a MAX over `unwrap_or(0)`, and 0 loses every max it takes part in -- so a single
+    /// anchored record anywhere in the piece hides every anchor-less one beside it, and the piece
+    /// names a number the dump reflects.
+    #[test]
+    fn an_anchor_less_record_is_hidden_by_any_anchored_record_in_the_same_piece() {
+        let _rolling = roll_at(0);
+        let dir = tempfile::tempdir().unwrap();
+        let store = LocalIndexLogStore::new(dir.path());
+        // PIECE ONE: reflected through and through. The control -- it must still go.
+        store
+            .append_delta(6, vec![block_item(1, "alone", false)], Vec::new(), Some(2), None, false, true)
+            .unwrap();
+        let first_len = index_log_path(dir.path(), 6).metadata().unwrap().len();
+        set_index_log_segment_bytes_for_test(Some(first_len));
+        // PIECE TWO: an anchored record AND an anchor-less one carrying the round's tombstones.
+        store
+            .append_delta(6, vec![block_item(1, "mixed", false)], Vec::new(), Some(2), None, false, true)
+            .unwrap();
+        set_index_log_segment_bytes_for_test(Some(0));
+        store
+            .append_delta(
+                6,
+                Vec::new(),
+                vec![serde_json::json!({ "key": "hidden-tombstone" })],
+                None,
+                None,
+                false,
+                true,
+            )
+            .unwrap();
+        let second_len = index_log_path(dir.path(), 6).metadata().unwrap().len();
+        set_index_log_segment_bytes_for_test(Some(second_len));
+        let meta_sequence = store
+            .append_delta(6, Vec::new(), Vec::new(), Some(2), Some(MetaItem::default()), false, true)
+            .unwrap();
+
+        let sealed: Vec<IndexSegmentSpan> = index_log_segment_paths(dir.path(), 6)
+            .iter()
+            .filter_map(|path| sealed_index_log_span(path, 6))
+            .collect();
+        assert_eq!(sealed.len(), 2, "fixture must seal two pieces: {sealed:?}");
+        // THE FIXTURE'S WHOLE POINT. The mixed piece holds one record anchored at 2, so a max
+        // over `unwrap_or(0)` named the piece 2 -- a number this very dump reflects, identical to
+        // the name of the piece beside it that really IS reflected. Nothing about that name said
+        // an anchor-less record was in there, which is why "decline to unlink a piece naming 0"
+        // does not reach this: the piece does not name 0.
+        assert_eq!(
+            sealed[0].max_applied_wal, 2,
+            "fixture: the reflected piece names the anchor the dump reaches: {sealed:?}"
+        );
+        assert_eq!(
+            sealed[1].max_applied_wal, INDEX_SEGMENT_UNREFLECTED,
+            "a piece holding an anchor-less record must say so however many anchored records \
+             sit beside it: {sealed:?}"
+        );
+
+        let report = store.gc_reflected_before_anchor(6, 2, meta_sequence, 0).unwrap();
+        let survivors = store.read_delta_records(6, 0).unwrap();
+        // HALF ONE: the hidden tombstone survives.
+        assert!(
+            survivors.iter().any(|record| !record.key_states.is_empty()),
+            "an anchor-less record sharing a piece with an anchored one was unlinked: \
+             {survivors:?}, report {report:?}"
+        );
+        // HALF TWO, separately: the piece that really is reflected still goes, so this is not a
+        // sweep that has stopped unlinking.
+        assert_eq!(
+            report.dropped_segments, 1,
+            "exactly the provably reflected piece may go: {report:?}"
+        );
+        assert!(
+            !survivors
+                .iter()
+                .any(|record| record.items.iter().any(|item| item.block_ref_key == "alone")),
+            "the reflected piece was kept: {survivors:?}"
+        );
+    }
+
+    /// The name a piece gets when nothing can reflect it is one an OLDER binary still parses.
+    ///
+    /// This is the whole argument for saturating the existing field instead of adding a fourth
+    /// one. A fourth field fails `sealed_index_log_span`'s "no more parts" check on a binary that
+    /// predates it, and a piece whose name does not parse is not stale -- it is absent from
+    /// `index_log_segment_paths`, so it is neither read, nor folded, nor reclaimed. This asserts
+    /// the shape the old parser requires: the same three fields, each the same width.
+    #[test]
+    fn an_unreflectable_piece_keeps_the_name_shape_an_older_binary_parses() {
+        let _rolling = roll_at(0);
+        let dir = tempfile::tempdir().unwrap();
+        let store = LocalIndexLogStore::new(dir.path());
+        store
+            .append_delta(
+                2,
+                Vec::new(),
+                vec![serde_json::json!({ "key": "tombstone" })],
+                None,
+                None,
+                false,
+                true,
+            )
+            .unwrap();
+        let len = index_log_path(dir.path(), 2).metadata().unwrap().len();
+        set_index_log_segment_bytes_for_test(Some(len));
+        store
+            .append_delta(2, Vec::new(), Vec::new(), Some(4), None, false, true)
+            .unwrap();
+
+        let sealed: Vec<PathBuf> = index_log_segment_paths(dir.path(), 2)
+            .into_iter()
+            .filter(|path| sealed_index_log_span(path, 2).is_some())
+            .collect();
+        assert_eq!(sealed.len(), 1, "fixture must seal one piece: {sealed:?}");
+        let name = sealed[0].file_name().unwrap().to_str().unwrap().to_string();
+        let middle = name
+            .strip_prefix("shard-2.indexlog.")
+            .and_then(|rest| rest.strip_suffix(&format!(".{INDEX_LOG_SUFFIX}")))
+            .unwrap_or_else(|| panic!("unexpected piece name: {name}"));
+        let fields: Vec<&str> = middle.split('-').collect();
+        // HALF ONE: the shape the old parser requires -- three fields, each 20 digits.
+        assert_eq!(fields.len(), 3, "a fourth field would make this piece invisible: {name}");
+        assert!(
+            fields.iter().all(|field| field.len() == 20 && field.bytes().all(|b| b.is_ascii_digit())),
+            "every field must stay a 20-digit number: {name}"
+        );
+        // HALF TWO, asserted separately: the field actually carries the saturated anchor, so an
+        // old binary asking `max_applied_wal > wal_anchor` declines to unlink it exactly as the
+        // new one does. Half one would pass just as well against a piece named with a real
+        // anchor, which is the bug.
+        let span = sealed_index_log_span(&sealed[0], 2).unwrap();
+        assert_eq!(
+            span.max_applied_wal, INDEX_SEGMENT_UNREFLECTED,
+            "an unreflectable piece must name the saturated anchor: {name}"
+        );
+        assert_eq!(fields[2], format!("{:020}", u64::MAX), "{name}");
+    }
+
+    /// How many pieces in a store name anchor 0, and what "never unlink a piece naming 0" costs.
+    ///
+    /// Printed with its denominator. The answer decides whether the cheap conservative sweep is
+    /// a fix or a refusal to reclaim: a whole-index record carries no anchor BY CONSTRUCTION, so
+    /// a log written in that shape names 0 in every piece -- and that shape is exactly the
+    /// legacy one the sweep exists to reclaim.
+    #[test]
+    fn how_many_sealed_pieces_name_anchor_zero() {
+        // Enough records that both shapes roll several times at the 64 KiB default -- a shape
+        // that seals no piece measures nothing, which the floor below enforces rather than
+        // prints.
+        const RECORDS: usize = 6_000;
+        let mut reported = 0usize;
+        for (label, anchored) in [("anchored deltas", true), ("whole-index records", false)] {
+            let _rolling = roll_at(DEFAULT_INDEX_LOG_SEGMENT_BYTES);
+            let dir = tempfile::tempdir().unwrap();
+            let store = LocalIndexLogStore::new(dir.path());
+            for value in 0..RECORDS {
+                if anchored {
+                    store
+                        .append_delta(
+                            5,
+                            vec![block_item(1, &format!("k{value:04}"), false)],
+                            Vec::new(),
+                            Some(value as u64 + 1),
+                            None,
+                            false,
+                            true,
+                        )
+                        .unwrap();
+                } else {
+                    store
+                        .append_json(5, format!("{{\"value\":{value}}}").as_bytes())
+                        .unwrap();
+                }
+            }
+            let sealed: Vec<IndexSegmentSpan> = index_log_segment_paths(dir.path(), 5)
+                .iter()
+                .filter_map(|path| sealed_index_log_span(path, 5))
+                .collect();
+            let naming_zero = sealed
+                .iter()
+                .filter(|span| span.max_applied_wal == 0)
+                .count();
+            assert!(
+                sealed.len() >= 2,
+                "{label}: the shape must seal pieces or this measures nothing: {}",
+                sealed.len()
+            );
+            println!(
+                "  {label:<22} {naming_zero:>4} of {:>4} sealed pieces name anchor 0",
+                sealed.len()
+            );
+            if anchored {
+                assert_eq!(
+                    naming_zero, 0,
+                    "{label}: an anchored log should name no piece 0"
+                );
+            } else {
+                assert_eq!(
+                    naming_zero,
+                    sealed.len(),
+                    "{label}: every whole-index piece names 0, so declining to unlink a piece \
+                     naming 0 declines to reclaim this shape at all"
+                );
+            }
+            reported += 1;
+        }
+        assert_eq!(reported, 2, "both shapes must be measured");
+    }
+
+    /// What it costs to DECIDE a piece by reading it, at the size pieces actually reach.
+    ///
+    /// Three routes to the same decision, measured on 64 KiB pieces -- the rolling default:
+    /// the name alone (a `stat`), a framing walk that counts records without parsing any of
+    /// them, and a full decode of every payload. The framing walk is what an exact dropped-record
+    /// count would cost; the full decode is what deciding reflectedness by reading would cost.
+    #[test]
+    fn what_it_costs_to_decide_a_piece_by_reading_it() {
+        let _rolling = roll_at(DEFAULT_INDEX_LOG_SEGMENT_BYTES);
+        let dir = tempfile::tempdir().unwrap();
+        let store = LocalIndexLogStore::new(dir.path());
+        const RECORDS: usize = 20_000;
+        for value in 0..RECORDS {
+            store
+                .append_delta(
+                    5,
+                    vec![block_item(1, &format!("k{value:05}"), false)],
+                    Vec::new(),
+                    Some(value as u64 + 1),
+                    None,
+                    false,
+                    true,
+                )
+                .unwrap();
+        }
+        let pieces: Vec<PathBuf> = index_log_segment_paths(dir.path(), 5)
+            .into_iter()
+            .filter(|path| sealed_index_log_span(path, 5).is_some())
+            .collect();
+        assert!(pieces.len() >= 8, "too few pieces to measure: {}", pieces.len());
+        let bytes: u64 = pieces
+            .iter()
+            .filter_map(|path| path.metadata().ok())
+            .map(|meta| meta.len())
+            .sum();
+
+        let at = std::time::Instant::now();
+        let mut named = 0usize;
+        for path in &pieces {
+            if sealed_index_log_span(path, 5).is_some() {
+                named += 1;
+            }
+        }
+        let name_ms = at.elapsed().as_secs_f64() * 1000.0;
+
+        let at = std::time::Instant::now();
+        let mut framed = 0usize;
+        for path in &pieces {
+            let mut reader = BufReader::new(File::open(path).unwrap());
+            while let Some((_, payload)) = crate::log_framing::read_frame(&mut reader).unwrap() {
+                if !payload.iter().all(|byte| byte.is_ascii_whitespace()) {
+                    framed += 1;
+                }
+            }
+        }
+        let frame_ms = at.elapsed().as_secs_f64() * 1000.0;
+
+        let at = std::time::Instant::now();
+        let mut decoded = 0usize;
+        for path in &pieces {
+            let mut reader = BufReader::new(File::open(path).unwrap());
+            while let Some((_, payload)) = crate::log_framing::read_frame(&mut reader).unwrap() {
+                if payload.iter().all(|byte| byte.is_ascii_whitespace()) {
+                    continue;
+                }
+                let head: IndexRecordHead = decode_index_payload(&payload).unwrap();
+                if head.applied_wal_sequence.is_none() {
+                    let _ = delta_record_carries_content(&payload).unwrap();
+                }
+                decoded += 1;
+            }
+        }
+        let decode_ms = at.elapsed().as_secs_f64() * 1000.0;
+
+        println!(
+            "\n  {} pieces, {bytes} bytes, {framed} records\n  \
+             name-only {name_ms:>8.3} ms   framing {frame_ms:>8.3} ms   \
+             full decode {decode_ms:>8.3} ms",
+            pieces.len()
+        );
+        assert_eq!(named, pieces.len(), "the name route must decide every piece");
+        assert_eq!(framed, decoded, "the two reading routes must see the same records");
+        assert!(framed > 0, "vacuity floor: nothing was read");
+    }
+
+    /// A dropped piece reports its sequence SPAN, which is an upper bound on what it held.
+    ///
+    /// The span was the record count while sequences had no holes. #1832's fix puts holes in: the
+    /// post-dump sweep rewrites the piece being written and keeps an INTERIOR subset of it, so
+    /// once that piece is sealed its span is wider than its contents. The number reaches
+    /// Prometheus as `index_log_records_removed`.
+    ///
+    /// Counting exactly costs opening every piece being unlinked -- 17.033 ms against 0.014 ms
+    /// over 14 pieces of 917,718 bytes, measured by the test above -- on the one path whose
+    /// design is that a piece goes by `stat` and `unlink`. So the bound is kept and published as
+    /// a bound, and this pins it: visible, one-directional, and impossible to quietly widen.
+    #[test]
+    fn a_dropped_piece_reports_its_sequence_span_as_an_upper_bound() {
+        let _rolling = roll_at(0);
+        let dir = tempfile::tempdir().unwrap();
+        let store = LocalIndexLogStore::new(dir.path());
+        // Three reflected records the post-dump sweep will remove from the middle of the piece,
+        // between two that carry no anchor and so must stay.
+        store
+            .append_delta(
+                7,
+                Vec::new(),
+                vec![serde_json::json!({ "key": "first" })],
+                None,
+                None,
+                false,
+                true,
+            )
+            .unwrap();
+        for value in 0..3 {
+            store
+                .append_delta(
+                    7,
+                    vec![block_item(1, &format!("reflected-{value}"), false)],
+                    Vec::new(),
+                    Some(2),
+                    None,
+                    false,
+                    true,
+                )
+                .unwrap();
+        }
+        store
+            .append_delta(
+                7,
+                Vec::new(),
+                vec![serde_json::json!({ "key": "last" })],
+                None,
+                None,
+                false,
+                true,
+            )
+            .unwrap();
+        let meta_sequence = store
+            .append_delta(7, Vec::new(), Vec::new(), Some(2), Some(MetaItem::default()), false, true)
+            .unwrap();
+
+        // The sweep takes the interior three, leaving holes in the piece being written.
+        let swept = store.gc_reflected_before_anchor(7, 2, meta_sequence, 0).unwrap();
+        assert_eq!(swept.records_removed, 3, "fixture: {swept:?}");
+        let held = store.record_count(7).unwrap();
+        assert_eq!(held, 3, "fixture: three records survive the sweep");
+
+        // Seal the holed piece.
+        set_index_log_segment_bytes_for_test(Some(1));
+        assert!(
+            roll_index_log_segment_if_due(dir.path(), 7).unwrap(),
+            "fixture must seal the piece"
+        );
+        let sealed: Vec<IndexSegmentSpan> = index_log_segment_paths(dir.path(), 7)
+            .iter()
+            .filter_map(|path| sealed_index_log_span(path, 7))
+            .collect();
+        assert_eq!(sealed.len(), 1, "{sealed:?}");
+        // The span is WIDER than the piece: that difference is the over-report.
+        assert_eq!(
+            sealed[0].end.saturating_sub(sealed[0].start),
+            6,
+            "fixture: the span still spells the removed records: {sealed:?}"
+        );
+
+        // Drop the whole piece and read what the round says it removed.
+        let report = store
+            .gc_before_sequence_limited(7, sealed[0].end, 0)
+            .unwrap();
+        assert_eq!(
+            report.dropped_segments, 1,
+            "fixture: the piece must be dropped whole: {report:?}"
+        );
+        // HALF ONE, and FIRST because it is the property the metric is read for: the bound is an
+        // UPPER one. It may exceed what the piece held; it may never fall short. A round that
+        // reported nothing at all would satisfy half two's shape in some other fixture and would
+        // die right here.
+        assert!(
+            report.records_removed >= held,
+            "a reclaim count must never understate what went: {} < {held}, {report:?}",
+            report.records_removed
+        );
+        assert!(
+            report.records_removed > held,
+            "fixture: this piece must actually be over-reported, or the bound is untested \
+             here: {} vs {held}",
+            report.records_removed
+        );
+        // HALF TWO, asserted separately and reached only when half one holds: the number is the
+        // SPAN exactly, which is what makes the bound a stated one rather than a vague promise.
+        assert_eq!(
+            report.records_removed,
+            sealed[0].end.saturating_sub(sealed[0].start) as usize,
+            "the round reports the piece's sequence span: {report:?}"
+        );
+        println!(
+            "  dropped piece: span {} records, held {held}, over-reported by {}",
+            report.records_removed,
+            report.records_removed - held
+        );
     }
 
     #[test]

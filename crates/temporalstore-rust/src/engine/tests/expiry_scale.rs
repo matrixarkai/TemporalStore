@@ -3578,3 +3578,105 @@ fn a_committed_read_resolves_its_deadline_against_the_leader_clock() {
          each replica a different remaining time.",
     );
 }
+
+/// THE COUNTER AT THE ENTRY POINT: an expiry round under WAL replay really does write a delta
+/// that carries no anchor and carries the round's tombstones.
+///
+/// Every claim about what the index log's reclaim does to such a record rests on this record
+/// existing, and the code reads both ways: `if !replaying_wal()` wraps the WAL tombstones AND the
+/// line that anchors `shard.applied_wal_sequence`, while the checkpoint that carries the round's
+/// key-states is built OUTSIDE it. That is a reading, and a reading of this shape has been valid,
+/// clean and wrong here before. So this counts the record instead of arguing about it.
+///
+/// The shard has seen no write outside the guard, so nothing has ever anchored it: this is a
+/// store recovering from its log, which is when the round below runs in production.
+///
+/// TWO COUNTERS, asserted separately, because each one alone is satisfied by a record that proves
+/// nothing. A record with no anchor and no content is the legacy whole-index shape, which the
+/// sweep is SUPPOSED to remove. A record with content and an anchor is the ordinary write path.
+/// Only both together describe the record the sweep must not drop.
+#[test]
+fn an_expiry_round_under_replay_writes_a_delta_with_no_anchor() {
+    const DUE_KEYS: usize = 8;
+
+    let engine = TemporalEngine::default();
+    engine.load_shard(1);
+
+    let records_before;
+    let report;
+    {
+        let _replaying = crate::engine::WalReplayGuard::enter();
+        // ONE COMMAND AT A TIME, not `write_keys`. The BATCH path anchors
+        // `applied_wal_sequence` under `if !config.async_storage && !bulk_ingest_mode()` alone --
+        // it does not ask `replaying_wal()` the way the single-command path does -- so seeding
+        // through it leaves the shard anchored and this fixture would be measuring the wrong
+        // writer. Measured, before this line was what it is: the round's delta then carries
+        // Some(1) rather than no anchor at all.
+        for index in 0..DUE_KEYS {
+            let response = engine.execute(ExecuteRequest {
+                shard_id: 1,
+                command: Command::StringSetEx {
+                    key: format!("due-{index:04}"),
+                    value: vec![b'v'; 16],
+                    ttl_ms: 1,
+                },
+            });
+            assert!(response.status.ok, "seed write failed: {:?}", response.status);
+        }
+        std::thread::sleep(std::time::Duration::from_millis(20));
+
+        // DENOMINATOR, with a floor: a round that finds nothing due writes no record at all, and
+        // every assertion below would then be about the absence of a record rather than about
+        // its contents.
+        let (held, due) = deadline_census(&engine, 1);
+        assert_eq!(held, DUE_KEYS, "the fixture did not land: {held} deadlines");
+        assert_eq!(due, DUE_KEYS, "{due} of {DUE_KEYS} keys are due");
+
+        records_before = engine
+            .index_log_store
+            .read_delta_records(1, 0)
+            .expect("the index log should read back")
+            .len();
+        report = sweep_once(&engine, 1);
+    }
+
+    assert_eq!(
+        report.expired_records_removed, DUE_KEYS,
+        "the round removed {} of {DUE_KEYS}, so the record below is not the record of a removal",
+        report.expired_records_removed
+    );
+
+    let records = engine
+        .index_log_store
+        .read_delta_records(1, 0)
+        .expect("the index log should read back");
+    assert_eq!(
+        records.len(),
+        records_before + 1,
+        "the round appended {} delta records, expected exactly one",
+        records.len().saturating_sub(records_before)
+    );
+    let record = records.last().expect("the round appended a record");
+
+    // COUNTER ONE: no anchor. The `unwrap_or(0)` this is about reads exactly this `None` as
+    // anchor 0 -- at or below every anchor -- and calls the record reflected.
+    assert!(
+        record.applied_wal_sequence.is_none(),
+        "the round under replay anchored its delta at {:?}, so the anchor-less record the \
+         reclaim paths are guarded against is not produced here after all",
+        record.applied_wal_sequence
+    );
+    // COUNTER TWO, separately: it carries content the fold applies. Without this the record
+    // would be the legacy whole-index shape, which the sweep removes on purpose.
+    assert!(
+        !record.key_states.is_empty(),
+        "the anchor-less delta carries no key-states, so it describes none of the {DUE_KEYS} \
+         deletions this round made and losing it would lose nothing"
+    );
+    assert!(
+        record.items.is_empty(),
+        "fixture: the expiry delta describes its removals with key-states alone, and this one \
+         carries {} page items",
+        record.items.len()
+    );
+}
