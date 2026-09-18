@@ -532,6 +532,31 @@ impl BlockStore {
                         block_slab_id,
                         BlockStoreSlabState::DelayedDestroy,
                     );
+                    // THE ONLY PLACE A SLAB ENTERS QUARANTINE, so the only place the purge's
+                    // earliest-arrival can be made to under-state the truth.
+                    //
+                    // `set_slab_state` stamps `now`, and `now` cannot precede an arrival already
+                    // counted, so under a clock that only moves forwards this `min` never changes
+                    // anything. It is written as a `min` anyway because the alternative is a
+                    // cache whose correctness rests on the clock being monotonic -- and the one
+                    // direction this cache must never be wrong in is LATE, which is exactly what
+                    // a backwards step would make it. `None` stays `None`: a round that was not
+                    // entitled to an opinion is not given one by a new arrival.
+                    //
+                    // Removing this whole block survives the suite, and that is what an
+                    // EQUIVALENT mutant looks like rather than a hole in the guards: under a
+                    // clock that only moves forwards there is no input on which the `min` changes
+                    // the value, and the crate has no seam for stepping the clock backwards
+                    // between two quarantines. It is kept for the case that seam would expose.
+                    if let Some(arrived_at) =
+                        inner.slabs.get(&block_slab_id).and_then(|s| s.updated_unix_ms)
+                    {
+                        inner.delayed_destroy_earliest_unix_ms = inner
+                            .delayed_destroy_earliest_unix_ms
+                            .map(|earliest| earliest.min(arrived_at));
+                    } else {
+                        inner.delayed_destroy_earliest_unix_ms = None;
+                    }
                     delayed_destroy_ids.push(block_slab_id);
                     delayed_destroy_physical_bytes += slab_physical_bytes;
                 } else {

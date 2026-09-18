@@ -111,6 +111,12 @@ pub(crate) fn delayed_destroy_slab_reports_at(
     if !trash_dir.exists() {
         return Ok(reports);
     }
+    // COUNTED BECAUSE NOBODY COULD SAY HOW MANY OF THESE A ROUND TAKES. This walk stats every
+    // entry and builds a `Vec` of owned reports; one periodic storage round reaches it twice
+    // before the purge opens the same directory for itself. Attributing the walks by reading the
+    // call graph is how the number was arrived at, and a read is a hypothesis -- so each walk
+    // says so instead. The lock is nanoseconds against a directory read.
+    crate::durability_metrics::record_scan("block_store_trash_dir_walk", 1);
     for entry in fs::read_dir(trash_dir)? {
         let entry = entry?;
         if let Some(id) = delayed_destroy_slab_id_from_name(&entry.file_name()) {

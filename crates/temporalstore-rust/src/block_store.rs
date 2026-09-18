@@ -759,6 +759,38 @@ pub struct BlockStorePurgeDelayedDestroyReport {
     /// that ran under a smaller cap than the caller thought.
     #[serde(default)]
     pub max_slabs_per_round: usize,
+    /// Directory entries this round PULLED FROM THE LISTING -- what the walk actually cost.
+    ///
+    /// EVERY OTHER COUNT IN THIS REPORT IS OF A CLASSIFICATION, AND AN ENTRY WALKED PAST WITHOUT
+    /// BEING CLASSIFIED APPEARS IN NONE OF THEM. That hole is not academic. The budget check at
+    /// the top of the loop STOPS the round rather than advancing to the next entry, and until
+    /// this field existed nothing in the crate could tell the two apart: turning that `break`
+    /// into a `continue` leaves a round that walks the whole directory to do nothing, reports
+    /// exactly the same four lists and the same `processed_block_slabs`, and passes every test
+    /// there was. This is the number that moves -- a budget's worth under a `break`, the whole
+    /// directory under a `continue`.
+    ///
+    /// AN ITERATION COUNT, NOT A CLASSIFICATION COUNT, and the two differ by one at the budget:
+    /// a round that stops reports `max_slabs_per_round + 1`, because the entry that finds the
+    /// budget already spent was pulled off the listing before it could be turned away. The same
+    /// boundary `budget_exhausted` documents, for the same reason -- knowing the directory holds
+    /// nothing more means looking, and not looking is the point. A round that ends because the
+    /// listing ran out reports exactly what the listing held.
+    #[serde(default)]
+    pub examined_block_slabs: usize,
+    /// The round returned WITHOUT opening the trash directory, because no quarantined slab could
+    /// have matured yet.
+    ///
+    /// This is what makes the four lists above readable when they are all empty. Without it an
+    /// empty `retained_too_young_block_slab_ids` says "the round walked and held nothing back",
+    /// and a round that declined in advance would say the same thing while meaning the opposite:
+    /// every entry would have been held back, which is precisely why walking to say so was not
+    /// worth the store-wide lock.
+    ///
+    /// `true` implies `examined_block_slabs == 0` and every list empty. It never implies the
+    /// quarantine is empty -- read `delayed_destroy_slab_ids()` for that.
+    #[serde(default)]
+    pub declined_without_examining: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -1193,6 +1225,34 @@ struct BlockStoreInner {
     // attach_shared_slab_source() after a metadata-only restore. When present, a
     // read that misses a slab locally fetches it from here, caches it, then serves.
     shared_slab_source: Option<Arc<dyn SharedSlabSource>>,
+    /// The earliest moment any slab now in quarantine was set aside -- when this process KNOWS it.
+    ///
+    /// WHAT IT BUYS. A quarantined slab waits `DELAYED_DESTROY_MIN_AGE_MS` -- an hour -- and for
+    /// that whole hour the purge has nothing it may act on. It found that out by opening the trash
+    /// directory and stat-ing every file in it, under the store-wide lock, once per round. Knowing
+    /// the earliest arrival turns the question into one comparison: if the oldest thing in there is
+    /// not old enough, nothing in there is, and the round can decline without the walk.
+    ///
+    /// TWO STATES, AND ONLY ONE OF THEM IS A CLAIM. `Some(t)` asserts that every slab still in
+    /// quarantine arrived at or after `t`. `None` asserts nothing and forces the walk, which is
+    /// the behaviour this whole field is an optimisation of -- so every uncertainty collapses to
+    /// `None` and costs at worst what the round cost before.
+    ///
+    /// WHICH WAY IT MAY BE WRONG. Stale EARLY -- holding a `t` before the true earliest -- makes
+    /// `now - t` larger, so the round walks when it need not: a wasted walk, exactly today's cost.
+    /// Stale LATE would make the round decline while something had in fact matured, which costs a
+    /// delayed destroy. The write rules exist to permit only the first: `t` is only ever RAISED by
+    /// a round that walked the whole directory and read a manifest stamp for every entry that was
+    /// still in it when the round ended, and it is lowered to `min(t, arrival)` by every new
+    /// quarantine. Removing entries can only raise the true earliest, so a `t` left behind by a
+    /// destroy or a restore is stale early, which is why neither has to clear it.
+    ///
+    /// NOT PERSISTED, AND THAT IS LOAD-BEARING. A crash can leave files in quarantine that the
+    /// manifest never learned about, and those have no descriptor for the liveness test that
+    /// guards the decline. They can only be introduced by a crash, a crash ends the process, and a
+    /// fresh process starts here at `None` -- so the first round after any restart walks, and it
+    /// is that round which decides whether a `Some` is justified.
+    delayed_destroy_earliest_unix_ms: Option<u64>,
     // Set only by Default: the store owns its minted scratch directory, and the last
     // clone's drop removes it. Never set for a caller-supplied root.
     scratch: Option<Arc<crate::scratch::ScratchDirGuard>>,
@@ -1204,6 +1264,53 @@ struct BlockStoreInner {
 /// manifests. Deferring trades that for a rebuild after a crash, which the load does for itself
 /// when what it reads does not match the slabs on disk.
 const SLABS_UNWRITTEN_BEFORE_PERSIST: usize = 64;
+
+/// Fold one still-quarantined entry into the earliest arrival a purge round may publish.
+///
+/// `arrived_at` is the entry's MANIFEST stamp and nothing else. `None` withdraws the round's
+/// opinion outright rather than leaving the entry out of the minimum, and the difference is the
+/// whole safety of the thing: an entry left out would be an entry the published earliest does not
+/// cover, so a later round could decline while that entry was already old enough. There is no
+/// weaker answer available here -- either the round can account for every entry that stayed, or it
+/// publishes nothing and the next round walks.
+fn observe_quarantined_arrival(
+    arrived_at: Option<u64>,
+    earliest: &mut Option<u64>,
+    may_publish: &mut bool,
+) {
+    match arrived_at {
+        Some(arrived_at) => {
+            *earliest = Some(match *earliest {
+                Some(current) => current.min(arrived_at),
+                None => arrived_at,
+            })
+        }
+        None => *may_publish = false,
+    }
+}
+
+/// Does the caller's live set name any slab this store has in quarantine?
+///
+/// THE ONE THING A DECLINE CANNOT GUESS. The purge restores a quarantined slab the caller still
+/// calls live, at any age, before the age is consulted at all -- so a round that declines in
+/// advance must first rule that out, and the age cache says nothing about it. Reading the state
+/// off `slabs` is what makes the answer free: the map is already in memory and already holds the
+/// state the quarantine set, so this is a lookup per live id and no system call.
+///
+/// A slab in the trash directory with NO descriptor is invisible here, which is why an entry
+/// without a manifest stamp stops the round publishing an earliest at all: with nothing published
+/// there is no decline, and with no decline there is nothing for this to have missed.
+fn live_set_names_a_quarantined_slab(
+    slabs: &BTreeMap<u64, BlockStoreSlabDescriptor>,
+    live_block_slab_ids: &BTreeSet<u64>,
+) -> bool {
+    live_block_slab_ids.iter().any(|id| {
+        slabs
+            .get(id)
+            .map(|slab| slab.state == BlockStoreSlabState::DelayedDestroy)
+            .unwrap_or(false)
+    })
+}
 
 impl BlockStore {
     pub fn new(root: impl Into<PathBuf>) -> Self {
@@ -1301,6 +1408,10 @@ impl BlockStore {
                 live_block_bytes: None,
                 stats,
                 shared_slab_source: None,
+                // A FRESH PROCESS KNOWS NOTHING ABOUT THE QUARANTINE IT INHERITED, and that is
+                // the state this has to open in: the directory on disk may hold slabs this
+                // manifest never learned about, so the first purge round must walk.
+                delayed_destroy_earliest_unix_ms: None,
                 scratch: None,
             })),
         }
@@ -1715,6 +1826,36 @@ impl BlockStore {
     /// restores one slab completely, and the manifest written after the loop records exactly the
     /// slabs whose state actually changed. A slab the round never reached is still quarantined,
     /// which is the state it was already in.
+    ///
+    /// AND A ROUND WITH NOTHING IT MAY ACT ON DOES NOT OPEN THE DIRECTORY AT ALL. The cap above
+    /// bounds a round that is doing work; it cannot bound a round in the grace window, because a
+    /// too-young slab is passed over and passing over is free, so `processed` never reaches the
+    /// budget and the `break` never fires. Measured, one round, budget 1,000: eight thousand
+    /// quarantined slabs cost eight thousand examined entries and eighty thousand cost eighty
+    /// thousand, against a flat thousand once the same slabs are actionable -- the walk is linear
+    /// in the quarantine and the cap is not in it. `DELAYED_DESTROY_MIN_AGE_MS` is an hour, so
+    /// that was every round for an hour after any reclaim, each one holding the store-wide lock
+    /// for the length of the walk.
+    ///
+    /// `delayed_destroy_earliest_unix_ms` is what lets the round know this without looking: if the
+    /// oldest slab in quarantine is not yet old enough, no slab in quarantine is. Two conditions
+    /// have to hold before the round may decline on it, and they are not the same condition:
+    ///
+    ///   * NOTHING CAN HAVE MATURED. `now - earliest < min_age_ms`. At `min_age_ms == 0` this is
+    ///     false whatever the clock says, so a caller asking for an immediate purge always walks.
+    ///   * AND NOTHING NEEDS RESCUING. The liveness re-check restores a quarantined slab the
+    ///     caller still calls live, and it does that at ANY age -- it runs before the age is even
+    ///     consulted, because a live slab is not too young to destroy, it is not for destroying.
+    ///     Declining in advance would defer that restore, so the decline asks first whether any
+    ///     id in the caller's live set is a slab this store has marked `DelayedDestroy`. That is
+    ///     a lookup per live id in a map already in memory, and it issues no system call.
+    ///
+    /// The decline is therefore not a heuristic about a round that probably would have done
+    /// nothing. It fires only in a state where the walk provably would have destroyed nothing,
+    /// restored nothing, synced nothing and rewritten no manifest -- every entry classified
+    /// `retained_too_young` and the round returning with `processed_block_slabs == 0`. What it
+    /// does change is that the `retained_too_young` list comes back empty rather than naming all
+    /// eighty thousand, which is what `declined_without_examining` is on the report to say.
     pub fn purge_delayed_destroy_slabs_capped(
         &self,
         min_age_ms: u64,
@@ -1733,6 +1874,7 @@ impl BlockStore {
         let mut restored_physical_bytes = 0;
         let mut restore_blocked = Vec::new();
         let mut processed = 0usize;
+        let mut examined = 0usize;
         let mut budget_exhausted = false;
         if !trash_dir.exists() {
             return Ok(BlockStorePurgeDelayedDestroyReport {
@@ -1740,10 +1882,41 @@ impl BlockStore {
                 ..Default::default()
             });
         }
+        // THE ROUND THAT DOES NOT HAPPEN. See the note above the signature for why this is an
+        // equivalence rather than an approximation; both halves of the condition are required and
+        // neither costs a system call.
+        if let Some(earliest) = inner.delayed_destroy_earliest_unix_ms {
+            if now_unix_ms().saturating_sub(earliest) < min_age_ms
+                && !live_set_names_a_quarantined_slab(&inner.slabs, &live_block_slab_ids)
+            {
+                return Ok(BlockStorePurgeDelayedDestroyReport {
+                    max_slabs_per_round,
+                    declined_without_examining: true,
+                    ..Default::default()
+                });
+            }
+        }
+        // WHAT THIS ROUND LEARNS ABOUT THE EARLIEST ARRIVAL, which it may only publish if it ends
+        // up having seen every entry that is still in the directory when it finishes. `None` here
+        // is not "no entries"; it is "this round is not entitled to an opinion", and it is the
+        // value every uncertainty resolves to.
+        let mut earliest_seen: Option<u64> = None;
+        let mut may_publish_earliest = true;
         let root = inner.root.clone();
+        // The purge's OWN walk of the same directory, counted under the same name as the two the
+        // storage round takes through `delayed_destroy_slab_reports_at` before reaching here --
+        // the point of the tally is the total per round, and which of the three is which is a
+        // question for a profile rather than a counter.
+        crate::durability_metrics::record_scan("block_store_trash_dir_walk", 1);
         for entry in fs::read_dir(&trash_dir)? {
+            // COUNTED HERE, AT THE TOP, AND NOT WHERE THE ENTRY GETS A NAME. What this number is
+            // for is telling a round that STOPPED from a round that walked on, and those two
+            // differ in iterations, not in classifications -- put the increment after the budget
+            // check below and both readings come back equal to the budget, which is the hole this
+            // field exists to close.
+            examined += 1;
             // THE BUDGET IS CHECKED BEFORE THE ENTRY IS EVEN NAMED, and it stops the round rather
-            // than skipping to the next entry. Continuing would walk the remaining eighty
+            // than advancing to the next entry. Continuing would walk the remaining eighty
             // thousand directory entries to do no work; stopping is what makes a capped round
             // cost the budget rather than the directory. The unexamined entries stay exactly as
             // they are, and `budget_exhausted` tells the caller there are more.
@@ -1755,6 +1928,13 @@ impl BlockStore {
             let Some(id) = delayed_destroy_slab_id_from_name(&entry.file_name()) else {
                 continue;
             };
+            // THE MANIFEST STAMP, READ ONCE AND USED TWICE. The age test below needs it, and so
+            // does the earliest-arrival this round may publish -- which has to account for the
+            // entries the age test never reaches, or a round narrowed by a caller's list could
+            // never publish anything, and that list is exactly what the periodic cycle passes.
+            // It is a lookup in a map already in memory, so reading it before the branch that
+            // passes over the entry adds no system call and decides nothing.
+            let stamped_at = inner.slabs.get(&id).and_then(|slab| slab.updated_unix_ms);
             let bytes = entry
                 .metadata()
                 .map(|metadata| metadata.len())
@@ -1768,6 +1948,12 @@ impl BlockStore {
                 .map(|selected| !selected.contains(&id))
                 .unwrap_or(false)
             {
+                // It stays in the directory, so it bounds what the next round may decline on.
+                observe_quarantined_arrival(
+                    stamped_at,
+                    &mut earliest_seen,
+                    &mut may_publish_earliest,
+                );
                 continue;
             }
             // THE LAST-CHANCE RE-CHECK, before the age is even consulted: a live slab is not
@@ -1786,6 +1972,13 @@ impl BlockStore {
                     // have.
                     processed += 1;
                 } else {
+                    // A blocked restore moved nothing, so the slab is still in the directory and
+                    // still bounds the next round.
+                    observe_quarantined_arrival(
+                        stamped_at,
+                        &mut earliest_seen,
+                        &mut may_publish_earliest,
+                    );
                     restore_blocked.push(id);
                 }
                 continue;
@@ -1802,13 +1995,20 @@ impl BlockStore {
             // round with the full hour of grace skipped. The mtime is a weaker clock (a rename
             // keeps the mtime of the last append, so it runs EARLY and the window it grants is
             // shorter than the real one) but it is a clock, and a short window beats none.
-            let quarantined_at = inner
-                .slabs
-                .get(&id)
-                .and_then(|slab| slab.updated_unix_ms)
-                .or_else(|| file_modified_unix_ms(&entry.path()));
+            let quarantined_at = stamped_at.or_else(|| file_modified_unix_ms(&entry.path()));
             if let Some(quarantined_at) = quarantined_at {
                 if now_unix_ms().saturating_sub(quarantined_at) < min_age_ms {
+                    // HELD, SO STILL IN THE DIRECTORY -- and `stamped_at`, not `quarantined_at`.
+                    // The mtime this may have fallen back to belongs to a slab the manifest does
+                    // not know about, and an entry the manifest does not know about is one the
+                    // decline's liveness test cannot see either. Passing the weaker clock on
+                    // would be publishing an earliest that a later round could not defend, so the
+                    // absent stamp withdraws this round's opinion instead.
+                    observe_quarantined_arrival(
+                        stamped_at,
+                        &mut earliest_seen,
+                        &mut may_publish_earliest,
+                    );
                     retained_too_young.push(id);
                     retained_too_young_physical_bytes += bytes;
                     continue;
@@ -1820,6 +2020,38 @@ impl BlockStore {
             purged.push(id);
             processed += 1;
         }
+        // WHAT THIS ROUND IS ENTITLED TO SAY ABOUT THE EARLIEST ARRIVAL.
+        //
+        // A round that stopped on its budget saw a prefix of the directory, and the entries
+        // behind the `break` are exactly the ones it knows nothing about -- so it publishes
+        // nothing, and the next round walks. Every other round reached the end of `read_dir` and
+        // observed every entry that was still in the directory when it finished: the ones it
+        // destroyed and the ones it restored had left, and the ones that stayed each went through
+        // `observe_quarantined_arrival` on the way out of the loop body.
+        //
+        // `None` -- no entry stayed, or one that stayed had no manifest stamp -- means the next
+        // round walks, which is the behaviour this replaces and therefore cannot be worse than.
+        //
+        // THE `budget_exhausted` ARM IS NOT PINNED BY A MUTANT, and saying so is better than
+        // letting the next reader assume it is. Removing it survives the suite. The reason is
+        // that a round only ever charges its budget to entries that LEAVE the directory, so in
+        // every fixture whose directory order can be pinned the round that stops has observed no
+        // stayer at all, `earliest_seen` is already `None`, and both arms return the same value.
+        // Telling them apart needs a stayer in the walked prefix AND an older entry behind the
+        // `break`, which needs control over the order `read_dir` returns -- an order that is not
+        // the order of the ids, and that was measured here NOT to match what a separate listing
+        // of the same directory reports. A guard resting on it would be measuring the filesystem.
+        // `what_a_round_may_publish_about_the_earliest_arrival` asserts the arm's rule directly
+        // and passes under the mutant for the reason just given. The arm stays because the case
+        // it covers is real: an arrival behind the break can be older than anything in front of
+        // it, and publishing the prefix's earliest would name a moment LATER than the truth.
+        inner.delayed_destroy_earliest_unix_ms = if budget_exhausted {
+            None
+        } else if may_publish_earliest {
+            earliest_seen
+        } else {
+            None
+        };
         purged.sort_unstable();
         restored.sort_unstable();
         restore_blocked.sort_unstable();
@@ -1871,6 +2103,8 @@ impl BlockStore {
             processed_block_slabs: processed,
             budget_exhausted,
             max_slabs_per_round,
+            examined_block_slabs: examined,
+            declined_without_examining: false,
         })
     }
 
@@ -1887,9 +2121,42 @@ impl BlockStore {
     /// Returns how many descriptors moved, and a caller MUST assert that count before reading a
     /// purge result. A purge reporting zero because nothing was backdated looks exactly like a
     /// purge reporting zero because the mechanism is broken.
+    /// The earliest quarantined arrival this store is currently prepared to claim.
+    ///
+    /// `None` is the state that forces a walk. Read directly rather than through a decline,
+    /// because the rule being guarded is about WHAT A ROUND IS ENTITLED TO PUBLISH, and the
+    /// consequences of publishing wrongly depend on the order the directory listing happens to
+    /// return -- which is not the order of the ids, is not stable across the writes a test makes
+    /// between two rounds, and is no basis for a guard. The rule itself has neither problem.
+    #[cfg(test)]
+    pub(crate) fn delayed_destroy_earliest_for_test(&self) -> Option<u64> {
+        self.inner
+            .lock()
+            .expect("block store lock poisoned")
+            .delayed_destroy_earliest_unix_ms
+    }
+
     #[cfg(test)]
     pub(crate) fn backdate_delayed_destroy_stamps_for_test(
         &self,
+        age_ms: u64,
+    ) -> Result<usize, BlockStoreError> {
+        self.backdate_named_delayed_destroy_stamps_for_test(None, age_ms)
+    }
+
+    /// As above, but only for the quarantined slabs `only` names.
+    ///
+    /// A quarantine whose slabs all arrived at the same moment cannot tell an earliest arrival
+    /// from a latest one, and the difference between those two is the difference between a cache
+    /// that is stale EARLY -- which costs a wasted walk -- and one that is stale LATE, which costs
+    /// a delayed destroy. Giving part of a quarantine a different age is what makes the two
+    /// distinguishable without an hour of wall clock or a sleep in a test, and naming the part by
+    /// id rather than by range lets a caller pick it out of the order the directory listing
+    /// actually returns -- which is the order the round will walk and is not the order of the ids.
+    #[cfg(test)]
+    pub(crate) fn backdate_named_delayed_destroy_stamps_for_test(
+        &self,
+        only: Option<&BTreeSet<u64>>,
         age_ms: u64,
     ) -> Result<usize, BlockStoreError> {
         let mut inner = self.inner.lock().expect("block store lock poisoned");
@@ -1897,12 +2164,23 @@ impl BlockStore {
         let quarantined = delayed_destroy_slab_ids_at(&root)?;
         let mut moved = 0usize;
         for block_slab_id in quarantined {
+            if only.map(|only| !only.contains(&block_slab_id)).unwrap_or(false) {
+                continue;
+            }
             if let Some(slab) = inner.slabs.get_mut(&block_slab_id) {
                 let stamp = slab.updated_unix_ms.unwrap_or_else(now_unix_ms);
                 slab.updated_unix_ms = Some(stamp.saturating_sub(age_ms));
                 moved += 1;
             }
         }
+        // THE ONE THING IN THE CRATE THAT MOVES AN ARRIVAL BACKWARDS, and therefore the one thing
+        // that can leave `delayed_destroy_earliest_unix_ms` holding a moment LATER than the truth
+        // -- the single direction that cache is not allowed to be wrong in. Every other write of
+        // `updated_unix_ms` either stamps `now`, which cannot precede an arrival already counted,
+        // or runs while the store is being opened, when the cache is `None` regardless. This is
+        // what a clock stepping backwards would look like from the cache's side, and the answer
+        // is the same in both cases: withdraw the claim and let the next round walk.
+        inner.delayed_destroy_earliest_unix_ms = None;
         inner.persist_slab_manifest_counted()?;
         Ok(moved)
     }
