@@ -11709,6 +11709,69 @@ mod tests {
         );
     }
 
+    /// The index hint is accepted, plumbed, weighted -- and cannot bite.
+    ///
+    /// `candidate_score` takes an `index_hinted` closure, and on the production pack path it is
+    /// `candidate.selected_ref.get("node_hash")`. A serving ref does not carry `node_hash`: the
+    /// field is in `LINEAGE_ONLY_FIELDS`, the list of things a served ref deliberately withholds.
+    /// So the lookup is `None` for every candidate and the closure returns false always, while
+    /// `selected_node_hashes` is still hashed into a set, carried the length of the function and
+    /// multiplied by `weights.index_hint`. A caller that prefilters and sends its chosen nodes
+    /// gets no ranking benefit and no error.
+    ///
+    /// NOT REPAIRED HERE, and the guard is the point. Making the hint bite changes what ranks on
+    /// every request that sends hints, which is a retrieval-quality decision rather than a bug
+    /// fix. Two ways to do it when it is wanted: emit `node_hash` on the serving ref -- it is
+    /// lineage-only for a reason, so check why first -- or read `record_node_hash(record)` at
+    /// scoring time, which is available because scoring already has the record.
+    ///
+    /// Recorded in both directions: if a ref starts carrying `node_hash`, or the field leaves the
+    /// lineage list, this fails and asks for that decision rather than letting the hint start
+    /// biting unannounced.
+    #[test]
+    fn the_index_hint_cannot_reach_a_serving_ref() {
+        let record = json!({
+            "record_type": "context_event",
+            "node_hash": 4242u64,
+            "text": "a record that does carry a node hash",
+        });
+
+        // The floor: the fixture really has one, and the function a fix would use finds it.
+        // Without this the two assertions below would pass on a record with no node hash at all,
+        // which is a different statement.
+        assert_eq!(
+            Some(4242u64),
+            record_node_hash(&record),
+            "the fixture carries no node hash, so nothing below is being checked"
+        );
+
+        assert!(
+            LINEAGE_ONLY_FIELDS.contains(&"node_hash"),
+            "node_hash has left the lineage-only list. If a serving ref is now meant to carry it, \
+             the index hint starts biting on every request that sends hints -- say so"
+        );
+
+        let served = selected_ref_from_record(&record, "a record that does carry a node hash".to_string());
+        assert!(
+            served.get("node_hash").is_none(),
+            "a serving ref now carries node_hash, so the production closure's lookup can succeed \
+             and the index hint has started to bite: {served}"
+        );
+
+        // Which is what the production closure does, spelled out: the lookup it performs returns
+        // nothing, so the weight is multiplied by false for every candidate.
+        let hinted: HashSet<u64> = [4242u64].into_iter().collect();
+        let hint_fires = served
+            .get("node_hash")
+            .and_then(Value::as_u64)
+            .map(|h| hinted.contains(&h))
+            .unwrap_or(false);
+        assert!(
+            !hint_fires,
+            "the hint fired, so this record's node is now reachable from its serving ref"
+        );
+    }
+
     #[test]
     fn native_forget_removes_only_matching_scope_records() {
         let _guard = env_guard();
