@@ -146,6 +146,75 @@ def _module_level_shard_sizes():
     return scanned, found
 
 
+def _inline_shard_arithmetic():
+    """Every `:records:` key built with a bare number as the divisor or the modulus.
+
+    Returned with the file count for the same reason as above: a scan that stopped recognising
+    the shape reports what a clean directory reports.
+    """
+    found = []
+    keys_seen = 0
+    scanned = 0
+    for filename in sorted(os.listdir(HERE)):
+        if not filename.endswith(".py"):
+            continue
+        try:
+            tree = ast.parse(_body(filename))
+        except SyntaxError:
+            continue
+        scanned += 1
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.JoinedStr):
+                continue
+            literal = "".join(
+                part.value for part in node.values
+                if isinstance(part, ast.Constant) and isinstance(part.value, str)
+            )
+            if ":records:" not in literal:
+                continue
+            keys_seen += 1
+            for inner in ast.walk(node):
+                if not isinstance(inner, ast.BinOp):
+                    continue
+                if not isinstance(inner.op, (ast.FloorDiv, ast.Mod)):
+                    continue
+                right = inner.right
+                if isinstance(right, ast.Constant) and isinstance(right.value, int) \
+                        and not isinstance(right.value, bool):
+                    found.append((filename, ast.unparse(inner)))
+    return scanned, keys_seen, found
+
+
+def no_records_key_is_built_from_a_bare_number():
+    """A copy of the shard size does not have to be a named constant to be a copy.
+
+    Three of them lived inline in the ingestion report as `sequence // <number>` and
+    `sequence % <number>`, which the named sweep above cannot see: there is no name to find.
+    Correct by value and unreachable by the environment variable, which is the whole failure --
+    the value being right today is what makes a copy look harmless.
+
+    A retired layout may still be addressed, but through a name that says so, so that this
+    check and a reader can both tell it from the writer's number.
+    """
+    scanned, keys_seen, found = _inline_shard_arithmetic()
+    check(
+        scanned > 100,
+        "the sweep parsed only %d files under tools/ and its silence means nothing" % scanned,
+    )
+    check(
+        keys_seen >= 5,
+        "only %d sharded record keys were recognised; the scan has stopped seeing the shape it "
+        "looks for, so a new inline copy would read as clean" % keys_seen,
+    )
+    offenders = ["%s: %s" % (filename, source) for filename, source in found]
+    check(
+        not offenders,
+        "these compute a record's shard or field from a literal, so the environment variable "
+        "cannot reach them: %s. Use %s, or a named constant that says the value is deliberately "
+        "not the writer's" % (", ".join(offenders), CONSTANT),
+    )
+
+
 def no_module_holds_its_own_copy_of_the_shard_size():
     """The list above cannot be the whole guard, because the list is what goes stale.
 
@@ -277,6 +346,7 @@ for test in (
     the_engine_does_not_guess_a_larger_size,
     the_engines_two_names_for_the_shard_size_agree,
     no_module_holds_its_own_copy_of_the_shard_size,
+    no_records_key_is_built_from_a_bare_number,
 ):
     test()
     print("  ran %s" % test.__name__)

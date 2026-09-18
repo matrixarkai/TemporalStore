@@ -20,6 +20,20 @@ OUT_JSON = OUT_DIR / "codex_recent_ingestion_workflow.json"
 OUT_MD = OUT_DIR / "codex_recent_ingestion_workflow.md"
 OUT_HTML = OUT_DIR / "codex_recent_ingestion_workflow.html"
 
+# The writer's shard size, from the module the writer reads it from. It used to be spelled
+# inline as a literal 256 in the divisor and the modulus: correct by value and unreachable by
+# the environment variable, so a deployment that set MATRIXARK_DIRECT_RECORD_LOG_SHARD_SIZE
+# would have had this report address a different shard for every sequence and quietly find
+# nothing.
+try:  # package path
+    from tools.matrixark_mcp_runtime_config import DIRECT_RECORD_LOG_SHARD_SIZE
+except ModuleNotFoundError:  # direct execution from tools/
+    from matrixark_mcp_runtime_config import DIRECT_RECORD_LOG_SHARD_SIZE
+
+#: A retired layout, kept only as a read fallback for a store written that way. Deliberately not
+#: the writer's number, and named so that the guard on shard sizes can tell the difference.
+LEGACY_RECORD_LOG_SHARD_SIZE = 10000
+
 NATIVE_LIB = "/opt/github-services/TemporalStore/output-ubuntu22/release/sdk/lib/libtemporalstore.so"
 NATIVE_PREFIX = "matrixark:codex-hook:native-live-v2"
 RUST_PREFIX = "matrixark:codex-hook:rust-live-v2"
@@ -642,8 +656,14 @@ def scan_rust(base: str, limit: int = 500) -> tuple[int, int, list[dict[str, Any
     rows: list[dict[str, Any]] = []
     for sequence in range(count - 1, max(-1, count - limit - 1), -1):
         candidates = (
-            (f"{base}:records:{sequence // 256:06d}", f"{sequence % 256:020d}"),
-            (f"{base}:records:{sequence // 10000:06d}", f"{sequence:020d}"),
+            (
+                f"{base}:records:{sequence // DIRECT_RECORD_LOG_SHARD_SIZE:06d}",
+                f"{sequence % DIRECT_RECORD_LOG_SHARD_SIZE:020d}",
+            ),
+            (
+                f"{base}:records:{sequence // LEGACY_RECORD_LOG_SHARD_SIZE:06d}",
+                f"{sequence:020d}",
+            ),
             (f"{base}:records", f"{sequence:020d}"),
         )
         raw = ""
@@ -687,7 +707,13 @@ def scan_native(base: str, limit: int = 500) -> tuple[int, int, list[dict[str, A
     rows = []
     for sequence in range(count - 1, max(-1, count - limit - 1), -1):
         try:
-            raw = client.hget(f"{base}:records:{sequence // 256:06d}", f"{sequence % 256:020d}") or ""
+            raw = (
+                client.hget(
+                    f"{base}:records:{sequence // DIRECT_RECORD_LOG_SHARD_SIZE:06d}",
+                    f"{sequence % DIRECT_RECORD_LOG_SHARD_SIZE:020d}",
+                )
+                or ""
+            )
         except Exception:
             raw = ""
         if not raw:
