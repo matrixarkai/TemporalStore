@@ -54,6 +54,68 @@ def one(status: int = 200, body=None, headers=None, ms: int = 12) -> dict:
                        "text": json.dumps(body or {"results": []}, indent=2), "body": body or {"results": []}}}
 
 
+class ATwoHundredThatCarriedNothingSaysSoTest(unittest.TestCase):
+    """`search` runs against the retrieve path, which is the call that sheds.
+
+    A shed response is HTTP 200 with an empty pack and a backpressure warning, answered in about
+    100 ms -- so "search answered 200 in 104 ms" is exactly what a WORKING search looks like, only
+    faster. The body is on screen and a careful reader can see the empty groups; the sentence a
+    reader actually takes away said the opposite.
+
+    What the console reports is what the body already carries. The served/empty/shed rule stays in
+    the gateway, where it is measured against both dispatch paths -- a second copy of it in browser
+    JavaScript would be one more rule to drift from the first.
+    """
+
+    def setUp(self) -> None:
+        if subprocess.run(["node", "--version"], capture_output=True).returncode != 0:
+            self.skipTest("node is not available")
+        self.notes = run([])
+
+    def test_a_shed_pack_is_called_empty_and_its_warnings_named(self) -> None:
+        note = self.notes["shed"]
+        self.assertIn("The pack was empty", note)
+        self.assertIn("service_backpressure", note,
+                      "the warning is the difference between load that clears and a store that "
+                      "answers nothing, and it is already in the body")
+
+    def test_an_empty_pack_with_no_warning_still_says_it_was_empty(self) -> None:
+        """The condition that does not clear on its own. Nothing said why, which is the whole
+        difference, and it must not be silent for that reason."""
+        self.assertIn("The pack was empty", self.notes["emptyNoWarning"])
+        self.assertNotIn("Warnings", self.notes["emptyNoWarning"])
+
+    def test_a_pack_that_carried_something_says_nothing(self) -> None:
+        """A note on every successful call is a note nobody reads."""
+        self.assertEqual("", self.notes["served"])
+
+    def test_the_console_actually_uses_it(self) -> None:
+        """The positive control.
+
+        Every assertion above runs the function directly, so it could be perfect and never
+        reached. A mutation cutting the call out of runOp survived the first run of this guard for
+        exactly that reason -- the sentence existed, was correct, and nobody would ever see it.
+        """
+        import io as _io
+        with _io.open(PAGE, encoding="utf-8") as handle:
+            page = handle.read()
+        # Anchored on the ASSIGNMENT. `assertIn("emptyPackNote(parsed)")` is satisfied by the
+        # function's own declaration -- `function emptyPackNote(parsed) {` contains it -- so the
+        # first version of this control passed a page where the only call had been removed.
+        self.assertIn("res.ok ? emptyPackNote(parsed)", page,
+                      "the sentence is built and nothing calls it")
+        self.assertGreater(page.count("emptyPackNote"), 1,
+                           "the name appears once, which is the definition alone")
+        self.assertIn("+ nothing", page,
+                      "the sentence is computed and never reaches the message a reader sees")
+
+    def test_an_answer_with_no_groups_at_all_is_left_alone(self) -> None:
+        """Most operations here do not return a pack. Calling their answers empty would be
+        inventing a fault out of a shape this does not apply to."""
+        self.assertEqual("", self.notes["notAPack"])
+        self.assertEqual("", self.notes["notAnObject"])
+
+
 class TheExchangeIsShownTest(unittest.TestCase):
 
     def setUp(self) -> None:

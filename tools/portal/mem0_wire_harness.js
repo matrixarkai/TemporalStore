@@ -33,7 +33,12 @@ const scope = {
 const names = Object.keys(scope);
 const api = new Function(...names, [
   fn("headerRows"), fn("renderWire"), "var calls = [];", fn("recordCall"),
-  "return { renderWire: renderWire, recordCall: recordCall, calls: function () { return calls; } };",
+  // The sentence the console puts above the exchange. A 200 carrying an empty pack is what a
+  // WORKING search looks like, only faster, so this is the line that has to say otherwise.
+  fn("emptyPackNote"),
+  "return { renderWire: renderWire, recordCall: recordCall,",
+  "         emptyPackNote: emptyPackNote,",
+  "         calls: function () { return calls; } };",
 ].join("\n"))(...names.map((k) => scope[k]));
 
 (input.calls || []).forEach((c) => {
@@ -45,4 +50,14 @@ process.stdout.write(JSON.stringify({
   wire: (nodes.opWire || { innerHTML: "" }).innerHTML,
   log: (nodes.opLog || { innerHTML: "" }).innerHTML,
   count: api.calls().length,
+  // The shed shape measured on this stack, and the three it must stay quiet about.
+  shed: api.emptyPackNote({
+    context_pack_id: "p", groups: [], tokens: {},
+    warnings: ["retrieval_deadline_exceeded:service_backpressure", "service_backpressure"],
+    partial: true, insufficient_context: true,
+  }),
+  emptyNoWarning: api.emptyPackNote({ context_pack_id: "p", groups: [] }),
+  served: api.emptyPackNote({ context_pack_id: "p", groups: [{ refs: [1] }] }),
+  notAPack: api.emptyPackNote({ ok: true }),
+  notAnObject: api.emptyPackNote("nope"),
 }));
