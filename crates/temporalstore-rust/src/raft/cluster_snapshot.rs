@@ -799,26 +799,43 @@ impl RaftCluster {
         let Some(image) = build_state_image(&engine, shard_id) else {
             return Ok(None);
         };
-        let mut inner = self.inner.write().expect("raft cluster lock poisoned");
-        let Some(node) = inner.nodes.get_mut(&node_id) else {
-            return Ok(None);
-        };
-        if node.applied_index != watermark {
-            // Something applied while the image was building; the next tick tries again.
-            return Ok(None);
-        }
-        let last_included_term = node_term_at_log_or_snapshot_index(node, watermark)
-            .unwrap_or(node.current_term);
-        let snapshot = RaftSnapshot {
+        // And the engine this compaction publishes is rebuilt here too, still holding nothing.
+        // It is a pure function of the snapshot, and the snapshot is fully determined by the
+        // image and the watermark -- both already in hand -- so nothing about it needs the guard.
+        // The watermark re-check below is unchanged and still decides everything; all that moves
+        // is where the rebuild happens. Worth one whole engine per compaction tick on every
+        // deployed follower: 1 of 1 rebuilds and 140 slab bytes per record, all of it previously
+        // inside the write guard.
+        let mut snapshot = RaftSnapshot {
             shard_id,
-            last_included_term,
+            // Filled under the guard below, from the log as it stands once the watermark has been
+            // re-checked. The rebuild does not read it, so it costs nothing to leave until then,
+            // and leaving it until then is what keeps this identical to the always-locked form.
+            last_included_term: 0,
             last_included_index: watermark,
             external_snapshot_ref: None,
             entries: Vec::new(),
             state_image: Some(image),
             state_image_externalized: false,
         };
-        install_snapshot_state(node, snapshot);
+        #[cfg(test)]
+        self.perform_armed_follower_window_interleaving(node_id, watermark);
+        let rebuilt = rebuild_snapshot_engine(&snapshot);
+        let mut inner = self.inner.write().expect("raft cluster lock poisoned");
+        #[cfg(test)]
+        let _guard_mark = crate::snapshot_probe::GuardMark::new();
+        let Some(node) = inner.nodes.get_mut(&node_id) else {
+            return Ok(None);
+        };
+        if node.applied_index != watermark {
+            // Something applied while the image was building; the next tick tries again. The
+            // engine rebuilt above is dropped with it -- the safe-but-wasteful direction, and the
+            // only one this check can fail in.
+            return Ok(None);
+        }
+        snapshot.last_included_term =
+            node_term_at_log_or_snapshot_index(node, watermark).unwrap_or(node.current_term);
+        publish_snapshot_state(node, snapshot, rebuilt);
         inner.persist_configured_wal()?;
         Ok(Some(RaftSnapshotTriggerReport {
             triggered: true,
@@ -917,45 +934,72 @@ impl RaftCluster {
 
         if should_trigger {
             let snapshot = self.create_snapshot()?;
+
+            // The engines are built HERE, holding NOTHING.
+            //
+            // An install is two halves. The expensive half rebuilds a whole engine from the image
+            // -- every slab written again, the served index read back in, 140 bytes per record per
+            // engine -- and it reads nothing but the snapshot. The cheap half moves one node's
+            // bookkeeping onto that engine. Only the cheap half has to be atomic with the check
+            // that says the node may take the snapshot, so only the cheap half needs the cluster
+            // write guard, which is the half of the lock every `propose` needs. Before this, both
+            // halves ran under it: three whole engine rebuilds and 420,000 slab bytes at 1,000
+            // records, 1,680,000 at 4,000 -- 100% of the install, at both sizes.
+            //
+            // The targets are chosen twice. This first pass only sizes the build: it decides how
+            // many engines to make and for whom, and it is allowed to be wrong.
+            let provisional = {
+                let inner = self.inner.read().expect("raft cluster lock poisoned");
+                install_targets(&inner, snapshot.last_included_index)
+            };
+            #[cfg(test)]
+            self.perform_armed_install_window_interleaving();
+            let mut prebuilt = provisional
+                .iter()
+                .map(|node_id| (*node_id, rebuild_snapshot_engine(&snapshot)))
+                .collect::<Vec<_>>();
+            // The per-node COPY of the image is a pure function of the snapshot for exactly the
+            // same reason the engine is, so it is made here too. One fewer than the targets: the
+            // last install takes the original, which is dropped when the loop ends anyway.
+            let mut spare_images = (1..provisional.len())
+                .map(|_| snapshot.clone())
+                .collect::<Vec<_>>();
+
             let mut inner = self.inner.write().expect("raft cluster lock poisoned");
             #[cfg(test)]
             let _guard_mark = crate::snapshot_probe::GuardMark::new();
-            // A deployed process owns ONE node and keeps shadows of its peers, so most entries
-            // here are not nodes this process runs. Installing the snapshot into a peer's shadow
-            // advances its recorded commit and applied indices and truncates its log, which
-            // credits a follower with a snapshot it was never sent -- and everything downstream
-            // that asks how far behind that peer is then reads a fabricated answer. A peer learns
-            // about a snapshot by being sent one and acknowledging it; until then its recorded
-            // position must not move.
+            // And this second pass is the authoritative one, read under the guard the publish
+            // happens under, so nothing it saw can have changed by the time it is acted on. Both
+            // things it reads can move while the engines build: a node's `commit_index` and
+            // `applied_index` advance with every apply, and `alive` is flipped by `set_alive`,
+            // which takes this same write guard. So the set is recomputed rather than carried.
             //
-            // With no local node id set -- the in-process cluster, where every entry IS a node
-            // this process runs -- they are all local and all get installed, as before.
-            let local_only = inner.local_node_id;
-            // The snapshot carries the whole shard as a state image, and it is dropped the moment
-            // this loop ends, so the LAST install had no need of a copy -- it can have the
-            // original. Cloning for every install spent one whole shard per node inside the
-            // cluster write guard, which is the half of the lock every `propose` needs; a
-            // deployed process installs into exactly one node, so there the clone was the only
-            // one and all of it was waste.
+            // The direction that matters is one-way. A node that has DROPPED out -- it applied
+            // past the snapshot while the engine was building -- must not be published into:
+            // `publish_snapshot_state` sets `applied_index` back to the snapshot's index rather
+            // than raising it to it, so it would serve a shard that had gone backwards until the
+            // retained entries were applied again. A node that has newly JOINED the set -- it was
+            // dead and was revived -- has no engine waiting for it, and is simply built for here,
+            // under the guard. That arm keeps the installed set exactly what it would have been
+            // without any of this, which is worth more than the rebuild it costs; it is priced and
+            // forced in `a_node_revived_while_the_engines_build_is_still_installed_into`.
             //
-            // Choosing the targets first is what makes the last one nameable. It changes nothing
-            // about WHICH nodes install: the guard is held across both passes, and
-            // `install_snapshot_state` touches only the node it is handed, so no install can move
-            // another node's `commit_index` and change the predicate for it.
-            let targets = inner
-                .nodes
-                .values()
-                .filter(|node| node.alive)
-                .filter(|node| local_only.map_or(true, |local| local == node.id))
-                .filter(|node| snapshot.last_included_index >= node.commit_index)
-                .map(|node| node.id)
-                .collect::<Vec<_>>();
+            // Whatever is left over -- an engine built for a node that has since dropped out, a
+            // spare copy of the image -- is NOT discarded here. `prebuilt` and `spare_images` are
+            // declared above `inner`, so they are dropped after it: freeing a whole engine is
+            // itself work, and it happens once the guard has been released.
+            let targets = install_targets(&inner, snapshot.last_included_index);
             let mut carried = Some(snapshot);
             let mut targets = targets.into_iter().peekable();
             while let Some(node_id) = targets.next() {
                 let is_last = targets.peek().is_none();
-                let Some(node) = inner.nodes.get_mut(&node_id) else {
-                    continue;
+                // Both halves of what this node needs come off the guard where one was built for
+                // it. The `None` arms are the newly-qualified node -- nothing was built for it,
+                // and it is built for here, under the guard, so that WHICH nodes install is the
+                // same set it has always been.
+                let engine = match prebuilt.iter().position(|(id, _)| *id == node_id) {
+                    Some(position) => prebuilt.swap_remove(position).1,
+                    None => rebuild_snapshot_engine(carried.as_ref().expect("held below")),
                 };
                 let Some(held) = carried.as_ref() else {
                     break;
@@ -963,13 +1007,73 @@ impl RaftCluster {
                 let for_this_node = if is_last {
                     carried.take().expect("held above")
                 } else {
-                    held.clone()
+                    spare_images.pop().unwrap_or_else(|| held.clone())
                 };
-                install_snapshot_state(node, for_this_node);
+                let Some(node) = inner.nodes.get_mut(&node_id) else {
+                    continue;
+                };
+                publish_snapshot_state(node, for_this_node, engine);
             }
             inner.persist_configured_wal()?;
         }
         Ok(report)
+    }
+
+    /// Perform whatever interleaving a test armed for the window in which the install loop holds
+    /// no cluster guard. Compiled out of everything but the test build.
+    #[cfg(test)]
+    fn perform_armed_install_window_interleaving(&self) {
+        match crate::snapshot_probe::take_install_window() {
+            None => {}
+            Some(crate::snapshot_probe::InstallWindow::ApplyOneMoreEntry) => {
+                let _ = self.propose(Command::StringSet {
+                    key: "an-entry-applied-while-the-engines-build".to_string(),
+                    value: vec![b'z'; 16],
+                });
+            }
+            Some(crate::snapshot_probe::InstallWindow::ReviveNode(node_id)) => {
+                let _ = self.set_alive(node_id, true);
+            }
+        }
+    }
+
+    /// The same, for the window a deployed FOLLOWER's own compaction holds nothing across. A
+    /// follower does not propose -- it learns by RPC -- so the interleaving is delivered as one
+    /// more append, committed, which is what advances its applied index past the watermark.
+    #[cfg(test)]
+    fn perform_armed_follower_window_interleaving(&self, node_id: RaftNodeId, watermark: u64) {
+        let Some(crate::snapshot_probe::InstallWindow::ApplyOneMoreEntry) =
+            crate::snapshot_probe::take_install_window()
+        else {
+            return;
+        };
+        let (term, shard_id, leader_id) = {
+            let inner = self.inner.read().expect("raft cluster lock poisoned");
+            let Some(node) = inner.nodes.get(&node_id) else {
+                return;
+            };
+            (node.current_term, inner.shard_id, inner.leader_id)
+        };
+        let _ = self.receive_append_entries(AppendEntriesRequest {
+            rpc: None,
+            shard_id,
+            term,
+            leader_id,
+            target_id: node_id,
+            prev_log_index: watermark,
+            prev_log_term: term,
+            entries: vec![RaftLogEntry {
+                leader_time_ms: 0,
+                term,
+                index: watermark + 1,
+                shard_id,
+                command: Command::StringSet {
+                    key: "an-entry-applied-while-the-follower-engine-builds".to_string(),
+                    value: vec![b'z'; 16],
+                },
+            }],
+            leader_commit: watermark + 1,
+        });
     }
 
     pub async fn publish_leader_snapshot_to_store<O>(
@@ -1308,6 +1412,51 @@ impl RaftCluster {
         }
         report
     }
+}
+
+/// Whether a routine snapshot ending at `snapshot_index` may be published into this node.
+///
+/// Three terms, and they fail for three different reasons.
+///
+/// `alive` and the local-node filter are about WHOSE bookkeeping this process owns. A deployed
+/// process owns ONE node and keeps shadows of its peers; installing into a shadow advances its
+/// recorded commit and applied indexes and truncates its log, crediting a follower with a snapshot
+/// it was never sent, so everything downstream that asks how far behind that peer is reads a
+/// fabricated answer. With no local node id -- the in-process cluster, where every entry IS a node
+/// this process runs -- they are all local, as before.
+///
+/// `snapshot_index >= commit_index` and `snapshot_index >= applied_index` are the DIRECTION check,
+/// and they are the reason this is a function rather than a closure in the install loop. Publishing
+/// sets `applied_index` to `snapshot_index` unconditionally rather than raising it, and truncates
+/// the log below it, so a node that has already applied past `snapshot_index` would be moved
+/// BACKWARDS: until the retained entries were applied again it would serve a shard missing writes
+/// it had acknowledged. The two indexes are read separately because only `applied_index` is what
+/// publishing overwrites and only `commit_index` is what the install loop has always filtered on;
+/// asserting one and assuming the other holds is how a check like this stops being one.
+///
+/// This is a pure read of the node, so it costs nothing to evaluate twice -- which is exactly what
+/// the install loop does: once off the guard to size the engine build, and once under the guard
+/// that the publish happens under. Only the second reading decides anything.
+pub(super) fn node_accepts_snapshot(
+    node: &RaftNode,
+    snapshot_index: u64,
+    local_only: Option<RaftNodeId>,
+) -> bool {
+    node.alive
+        && local_only.map_or(true, |local| local == node.id)
+        && snapshot_index >= node.commit_index
+        && snapshot_index >= node.applied_index
+}
+
+/// The nodes a routine snapshot ending at `snapshot_index` would be published into, right now.
+fn install_targets(inner: &RaftClusterInner, snapshot_index: u64) -> Vec<RaftNodeId> {
+    let local_only = inner.local_node_id;
+    inner
+        .nodes
+        .values()
+        .filter(|node| node_accepts_snapshot(node, snapshot_index, local_only))
+        .map(|node| node.id)
+        .collect()
 }
 
 /// Read the served index and THIS SHARD's slabs out of the engine. `None` when the engine

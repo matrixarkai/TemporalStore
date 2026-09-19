@@ -16,34 +16,41 @@
 //! asserted with both denominators printed, so a counter that has quietly stopped incrementing
 //! reads as a failure and not as a perfect result.
 //!
-//! The in-order trace of one `maybe_trigger_snapshot` on a 3-node in-process cluster, measured
-//! here at 2,000 and 8,000 records of 128 bytes:
+//! The in-order trace of one `maybe_trigger_snapshot` on a 3-node in-process cluster, at the two
+//! sizes `SMALL` and `LARGE` below actually run -- 1,000 and 4,000 records of 128 bytes:
 //!
 //! ```text
-//!                                       2,000        8,000     ratio   per record
+//!                                       1,000        4,000     ratio   per record
 //!   BUILD, holding no cluster guard
 //!     state image builds                    1            1      1.00
 //!     corpus walks for live slab ids        1            1      1.00
-//!     block addresses visited           2,000        8,000      4.00        1.000
+//!     block addresses visited           1,000        4,000      4.00        1.000
 //!     served-index encodes                  1            1      1.00
-//!     index bytes                     100,875      498,593      4.94
+//!     index bytes                      48,552      215,013      4.43
 //!     slab directory listings               1            1      1.00
-//!     slab reads                            1            1      1.00
-//!     slab bytes read                 280,000    1,120,000      4.00          140
+//!     slab reads                            4            4      1.00
+//!     slab bytes read                 140,000      560,000      4.00          140
 //!     encodes under a shard guard           0            0         -
-//!   INSTALL, all of it under the cluster WRITE guard
-//!     whole-shard image copies              3            3      1.00
-//!     image bytes copied            1,142,625    4,855,779      4.25
+//!   INSTALL
 //!     engine rebuilds                       3            3      1.00
-//!     slab bytes re-installed         840,000    3,360,000      4.00
+//!     slab writes                          12           12      1.00
+//!     slab bytes re-installed         420,000    1,680,000      4.00          420
+//!     whole-shard image copies              2            2      1.00
+//!     image bytes copied              377,104    1,550,026      4.11
+//!     ... of the above, UNDER THE CLUSTER WRITE GUARD
+//!     engine rebuilds                       0            0         -
+//!     slab bytes re-installed               0            0         -
+//!     image bytes copied                    0            0         -
 //! ```
 //!
 //! The build is one pass: one walk, one encode, one listing, one read per slab, nothing under any
-//! guard. The INSTALL was three whole copies of the shard and three whole engine rebuilds, every
-//! byte of it inside the cluster write guard. One of those three copies was pure waste -- the
-//! snapshot is dropped the moment the loop ends, so the last install can have the original -- and
-//! in a DEPLOYED process, which installs into exactly one node, that one was the only copy there
-//! was. Moving it is what `the_last_install_takes_the_image_instead_of_copying_it` guards.
+//! guard. The INSTALL used to be all of it under the guard -- three whole engine rebuilds and
+//! 420,000 / 1,680,000 slab bytes, 100% at both sizes. An engine rebuild is a pure function of the
+//! snapshot, so it is built before the guard is taken; what is left under the guard is the
+//! bookkeeping, and the eligibility check that has to be atomic with it. Which nodes install is
+//! unchanged. One copy of the image was pure waste too -- the snapshot is dropped the moment the
+//! loop ends, so the last install can have the original -- and in a DEPLOYED process, which
+//! installs into exactly one node, that one was the only copy there was.
 
 use super::*;
 use crate::snapshot_probe::{self, SnapshotCounts};
@@ -308,11 +315,18 @@ fn a_snapshot_build_walks_the_corpus_once_and_holds_no_guard() {
 /// The INSTALL half, and what it holds the cluster write guard across.
 ///
 /// This is the row the whole file exists for. `maybe_trigger_snapshot` is the ROUTINE snapshot --
-/// the periodic compaction tick a deployed node runs, not the rare catch-up send -- and it does
-/// its installs inside the cluster write guard. Each install rebuilds a whole engine from the
-/// image, and each install but the last needs its own copy of it.
+/// the periodic compaction tick a deployed node runs, not the rare catch-up send. Each install
+/// rebuilds a whole engine from the image, and it USED to do that inside the cluster write guard:
+/// 3 of 3 rebuilds and 420,000 of 420,000 slab bytes at 1,000 records, 1,680,000 of 1,680,000 at
+/// 4,000 -- 100% of the install work, at both sizes, inside the half of the lock every `propose`
+/// needs.
+///
+/// The rebuild reads nothing but the snapshot, so it is built before the guard is taken. What is
+/// asserted here is the identity in both directions: every rebuild still HAPPENS (a path that
+/// stopped installing would also stop rebuilding under the guard), and none of them happens under
+/// the guard.
 #[test]
-fn a_routine_snapshot_rebuilds_the_whole_shard_under_the_cluster_write_guard() {
+fn a_routine_snapshot_rebuilds_no_engine_under_the_cluster_write_guard() {
     let mut rows = Vec::new();
     for records in [SMALL, LARGE] {
         let cluster = cluster_with(records);
@@ -355,18 +369,40 @@ fn a_routine_snapshot_rebuilds_the_whole_shard_under_the_cluster_write_guard() {
             counts.slab_installs
         );
 
-        // THE FINDING, stated as an identity rather than as a bound: every engine rebuild a
-        // routine snapshot performs happens inside the cluster write guard.
+        // THE FINDING. Stated as a pair, because either half alone is satisfiable by a path that
+        // does nothing: the install work still happens in full, and none of it is under the guard.
         assert_eq!(
-            counts.engine_rebuilds_under_guard, counts.engine_rebuilds,
-            "every engine rebuild on this path is under the cluster write guard: {} of {}",
+            counts.engine_publishes, fixture.alive_nodes as u64,
+            "every alive node must still be published into: {} publishes for {} nodes",
+            counts.engine_publishes, fixture.alive_nodes
+        );
+        assert!(
+            counts.slab_install_bytes > 0,
+            "vacuity floor: no slab was installed, so the two zeroes below are satisfied by an \
+             install that did not run"
+        );
+        assert_eq!(
+            counts.engine_rebuilds_under_guard, 0,
+            "no engine rebuild on this path may happen under the cluster write guard: {} of {}",
             counts.engine_rebuilds_under_guard, counts.engine_rebuilds
         );
         assert_eq!(
-            counts.slab_install_bytes_under_guard, counts.slab_install_bytes,
-            "every slab re-installed by a routine snapshot is written under the cluster write \
+            counts.slab_install_bytes_under_guard, 0,
+            "no slab a routine snapshot re-installs may be written under the cluster write \
              guard: {} of {} bytes",
             counts.slab_install_bytes_under_guard, counts.slab_install_bytes
+        );
+        // A copy of the image is as pure a function of the snapshot as the engine is, so it is
+        // made off the guard for the same reason. With this row the guard-held install work is
+        // zero rather than merely smaller.
+        assert!(
+            counts.image_clone_bytes > 0,
+            "vacuity floor: no image was copied at all, so the zero below audits nothing"
+        );
+        assert_eq!(
+            counts.image_clone_bytes_under_guard, 0,
+            "no copy of the shard image may be made under the cluster write guard: {} of {} bytes",
+            counts.image_clone_bytes_under_guard, counts.image_clone_bytes
         );
         rows.push((records, fixture, counts));
     }
@@ -461,6 +497,11 @@ fn the_last_install_takes_the_image_instead_of_copying_it() {
         counts.image_clones,
         counts.engine_rebuilds
     );
+    assert_eq!(
+        counts.image_clone_bytes_under_guard, 0,
+        "and none of those n-1 copies may be made under the cluster write guard: {} of {} bytes",
+        counts.image_clone_bytes_under_guard, counts.image_clone_bytes
+    );
     // The direction that matters. This check can only fail one way -- a copy too MANY -- because
     // a path that lost the image would also copy less; so the image is read back out of every
     // node that installed it, which is what stops "copied nothing" from passing.
@@ -548,6 +589,23 @@ fn a_deployed_node_copies_the_image_not_at_all() {
         counts.slab_install_bytes > 0,
         "no slab was installed, so the zero-copy assertion above is satisfied by an install that \
          did not run"
+    );
+    // And the whole of that one install -- the only one a deployed process performs -- is built
+    // before the cluster write guard is taken.
+    assert_eq!(
+        counts.engine_publishes, 1,
+        "the single install must publish exactly once: {} publishes",
+        counts.engine_publishes
+    );
+    assert_eq!(
+        counts.engine_rebuilds_under_guard, 0,
+        "a deployed node must rebuild no engine under the cluster write guard: {} of {}",
+        counts.engine_rebuilds_under_guard, counts.engine_rebuilds
+    );
+    assert_eq!(
+        counts.slab_install_bytes_under_guard, 0,
+        "a deployed node must write no slab under the cluster write guard: {} of {} bytes",
+        counts.slab_install_bytes_under_guard, counts.slab_install_bytes
     );
     let inner = cluster.inner.read().expect("raft cluster lock poisoned");
     let installed = inner
@@ -706,5 +764,579 @@ fn the_unattributed_remainder_of_a_snapshot_does_not_grow_with_the_corpus() {
          over a {:.2}x corpus: something that scales with the store is no longer being counted by \
          the rows this file attributes",
         large_records as f64 / small_records as f64
+    );
+}
+
+// ---------------------------------------------------------------------------------------------
+// The engines are built holding NOTHING, so between choosing the install targets and publishing
+// into them the cluster is open for writes. Everything below is about that window.
+//
+// The hazard is ONE-WAY. Publishing sets `applied_index` to the snapshot's index rather than
+// raising it to it, so publishing a snapshot OLDER than what a node has applied moves that node
+// backwards: the retained entries are re-applied on the next tick, but a reader in between is
+// served a shard missing writes it had acknowledged. Publishing a fresher snapshot, or refusing to
+// publish at all, is safe and merely wasteful. A check that can only fail one way has to be
+// attacked in that direction specifically, so the interleaving is CONSTRUCTED here rather than
+// raced for: `snapshot_probe::arm_install_window` asks the install path to perform one, at the one
+// point where it holds no cluster guard, and `install_window_firings` is the floor that says it
+// happened. A lost race would read exactly like a check that fired.
+// ---------------------------------------------------------------------------------------------
+
+/// An entry applied while the engines build must NOT be rolled back by the publish.
+///
+/// The constructed interleaving, in order: the compaction tick chooses its targets and releases
+/// the guard; a `propose` applies entry 1,001 on every node; the engines finish building at
+/// watermark 1,000; the guard is retaken. The snapshot is now older than every node it was about
+/// to be published into, so nothing is published -- and no node's applied index moves down to
+/// 1,000.
+#[test]
+fn an_entry_applied_while_the_engines_build_is_not_published_over() {
+    let cluster = cluster_with(SMALL);
+    println!("=== BACKWARDS INTERLEAVING ===");
+    let fixture = assert_the_fixture_is_populated(&cluster, SMALL);
+    force_the_threshold(&cluster);
+
+    let watermark = cluster
+        .inner
+        .read()
+        .expect("raft cluster lock poisoned")
+        .nodes
+        .get(&1)
+        .expect("node 1")
+        .applied_index;
+    println!("  watermark before   = {watermark}");
+    assert_eq!(
+        watermark, SMALL as u64,
+        "the fixture must have applied every record before the window opens"
+    );
+
+    snapshot_probe::reset();
+    snapshot_probe::arm_install_window(snapshot_probe::InstallWindow::ApplyOneMoreEntry);
+    let report = cluster
+        .maybe_trigger_snapshot()
+        .expect("maybe_trigger_snapshot must succeed");
+    let counts = snapshot_probe::counts();
+    let firings = snapshot_probe::install_window_firings();
+    println!("  report: {report:?}");
+    print_counts("interleaved", &counts);
+    println!("  window firings     = {firings}");
+
+    // APPARATUS FLOOR, before any conclusion. An interleaving that did not happen leaves a run
+    // that is indistinguishable from a clean one, and every assertion below would pass on it.
+    assert_eq!(
+        firings, 1,
+        "the armed interleaving did not run, so this test measured an ordinary install"
+    );
+    assert!(
+        report.triggered,
+        "the trigger did not fire ({}), so the window never opened",
+        report.reason
+    );
+    assert_eq!(
+        counts.engine_rebuilds, fixture.alive_nodes as u64,
+        "the engines must have been BUILT for the check below to have refused anything: {} \
+         rebuilds for {} nodes",
+        counts.engine_rebuilds, fixture.alive_nodes
+    );
+    assert_eq!(
+        counts.engine_rebuilds_under_guard, 0,
+        "the engines are built off the guard even on the path that discards them: {} of {}",
+        counts.engine_rebuilds_under_guard, counts.engine_rebuilds
+    );
+
+    // THE FINDING: nothing was published, and nothing went backwards.
+    assert_eq!(
+        counts.engine_publishes, 0,
+        "a snapshot older than every node it was chosen for must be published into none of them: \
+         {} publishes",
+        counts.engine_publishes
+    );
+    let inner = cluster.inner.read().expect("raft cluster lock poisoned");
+    let shard_id = inner.shard_id;
+    let mut checked = 0usize;
+    for node in inner.nodes.values() {
+        assert!(
+            node.applied_index > watermark,
+            "node {} went BACKWARDS: applied index {} against the {watermark} it had passed",
+            node.id,
+            node.applied_index
+        );
+        assert!(
+            node.installed_snapshot.is_none(),
+            "node {} installed the stale snapshot",
+            node.id
+        );
+        checked += 1;
+    }
+    println!("  nodes checked      = {checked}");
+    assert!(
+        checked > 1,
+        "only {checked} node was checked: a per-node conclusion cannot be drawn from one"
+    );
+
+    // And the entry that was applied in the window is still SERVED. The counter assertions above
+    // are all satisfied by a path that lost the entry as well as the snapshot; this is not.
+    assert_eq!(
+        inner
+            .nodes
+            .get(&1)
+            .expect("node 1")
+            .engine
+            .execute(ExecuteRequest {
+                shard_id,
+                command: Command::StringGet {
+                    key: "an-entry-applied-while-the-engines-build".to_string(),
+                },
+            })
+            .response,
+        CommandResponse::Bytes {
+            value: Some(vec![b'z'; 16])
+        },
+        "the leader must still serve the record written while the engines were building"
+    );
+}
+
+/// A node revived while the engines build is still installed into, at the cost of ONE rebuild
+/// under the guard.
+///
+/// This is step 4, and it is the arm that runs when the re-check finds the target set has GROWN
+/// rather than shrunk. `alive` is flipped by `set_alive`, which takes the same write guard, so a
+/// node can qualify after the engines were sized. Skipping it would be safe and would cost
+/// nothing -- and would also change WHICH nodes a compaction tick installs into, which is a
+/// behaviour change hidden inside a performance change. It is built for instead, under the guard,
+/// and the price is stated here rather than reasoned about: one engine rebuild and one shard's
+/// worth of slab bytes, on the rare tick where a node comes back inside the window.
+#[test]
+fn a_node_revived_while_the_engines_build_is_still_installed_into() {
+    let cluster = cluster_with(SMALL);
+    println!("=== REVIVED IN THE WINDOW ===");
+    assert_the_fixture_is_populated(&cluster, SMALL);
+    cluster.set_alive(3, false).expect("set_alive must succeed");
+    force_the_threshold(&cluster);
+
+    snapshot_probe::reset();
+    snapshot_probe::arm_install_window(snapshot_probe::InstallWindow::ReviveNode(3));
+    let report = cluster
+        .maybe_trigger_snapshot()
+        .expect("maybe_trigger_snapshot must succeed");
+    let counts = snapshot_probe::counts();
+    let firings = snapshot_probe::install_window_firings();
+    println!("  report: {report:?}");
+    print_counts("revived", &counts);
+    println!("  window firings     = {firings}");
+
+    assert_eq!(
+        firings, 1,
+        "the armed revival did not run, so this test measured an ordinary install"
+    );
+    assert!(report.triggered, "the trigger did not fire: {}", report.reason);
+
+    // Three nodes installed, though only two were alive when the engines were sized.
+    assert_eq!(
+        counts.engine_publishes, 3,
+        "the revived node must be installed into as well: {} publishes",
+        counts.engine_publishes
+    );
+    assert_eq!(
+        counts.engine_rebuilds, 3,
+        "three installs need three engines: {} rebuilds",
+        counts.engine_rebuilds
+    );
+    // THE PRICE, named. Two engines were built off the guard for the two nodes alive when the set
+    // was sized; the third had to be built under it.
+    assert_eq!(
+        counts.engine_rebuilds_under_guard, 1,
+        "exactly the revived node's engine is rebuilt under the guard: {} of {}",
+        counts.engine_rebuilds_under_guard, counts.engine_rebuilds
+    );
+    assert!(
+        counts.slab_install_bytes_under_guard > 0
+            && counts.slab_install_bytes_under_guard * 3 == counts.slab_install_bytes,
+        "the guard-held slab bytes must be exactly one install's worth: {} of {}",
+        counts.slab_install_bytes_under_guard,
+        counts.slab_install_bytes
+    );
+    // The same for the image copy the extra install needs: one was made off the guard for the two
+    // nodes that were alive, and the third install's copy has to be made under it.
+    assert_eq!(
+        counts.image_clones, 2,
+        "three installs must cost two copies of the image: {} copies",
+        counts.image_clones
+    );
+    assert!(
+        counts.image_clone_bytes_under_guard > 0
+            && counts.image_clone_bytes_under_guard * 2 == counts.image_clone_bytes,
+        "exactly one of the two image copies must be made under the guard: {} of {} bytes",
+        counts.image_clone_bytes_under_guard,
+        counts.image_clone_bytes
+    );
+
+    // And the revived node genuinely SERVES from what it was given -- the counters above are all
+    // satisfied by an install that built an engine and dropped it.
+    let inner = cluster.inner.read().expect("raft cluster lock poisoned");
+    let shard_id = inner.shard_id;
+    assert_eq!(
+        inner
+            .nodes
+            .get(&3)
+            .expect("node 3")
+            .engine
+            .execute(ExecuteRequest {
+                shard_id,
+                command: Command::StringGet {
+                    key: "key-00000777".to_string(),
+                },
+            })
+            .response,
+        CommandResponse::Bytes {
+            value: Some(vec![b'x'; 128])
+        },
+        "the revived node must serve a record from the image it installed"
+    );
+}
+
+/// Every term of the eligibility check, attacked on its own.
+///
+/// The forced interleavings above exercise the check through the install path, where the terms
+/// move together -- an apply advances `commit_index` and `applied_index` at once, so neither test
+/// can tell which term refused. This builds the nodes by hand so each term is the only thing
+/// wrong, including the one case the install path cannot produce: a node whose applied index has
+/// passed its commit index.
+#[test]
+fn each_term_of_the_snapshot_eligibility_check_refuses_on_its_own() {
+    fn node_at(id: RaftNodeId, commit_index: u64, applied_index: u64, alive: bool) -> RaftNode {
+        let mut node = new_node(id, RaftRole::Follower, 1);
+        node.alive = alive;
+        node.commit_index = commit_index;
+        node.applied_index = applied_index;
+        node
+    }
+
+    // The baseline. Everything below changes ONE thing about it, so a check that had stopped
+    // refusing anything would fail here rather than pass everywhere.
+    let ordinary = node_at(2, 1_000, 1_000, true);
+    assert!(
+        crate::raft::cluster_snapshot::node_accepts_snapshot(&ordinary, 1_000, None),
+        "a node exactly at the snapshot's index must accept it"
+    );
+    assert!(
+        crate::raft::cluster_snapshot::node_accepts_snapshot(&node_at(2, 900, 900, true), 1_000, None),
+        "a node BEHIND the snapshot must accept it: that is what an install is for"
+    );
+
+    // Not alive.
+    assert!(
+        !crate::raft::cluster_snapshot::node_accepts_snapshot(&node_at(2, 1_000, 1_000, false), 1_000, None),
+        "a node that is not alive must be refused"
+    );
+    // Not this process's node.
+    assert!(
+        !crate::raft::cluster_snapshot::node_accepts_snapshot(&ordinary, 1_000, Some(1)),
+        "with a local node id set, a peer's shadow must be refused"
+    );
+    assert!(
+        crate::raft::cluster_snapshot::node_accepts_snapshot(&ordinary, 1_000, Some(2)),
+        "with a local node id set, this process's own node must still be accepted"
+    );
+    // Committed past the snapshot.
+    assert!(
+        !crate::raft::cluster_snapshot::node_accepts_snapshot(&node_at(2, 1_001, 1_000, true), 1_000, None),
+        "a node whose commit index has passed the snapshot must be refused"
+    );
+    // APPLIED past the snapshot -- the direction that matters, isolated from the commit index so
+    // that removing the applied-index term is not covered by the commit-index one.
+    assert!(
+        !crate::raft::cluster_snapshot::node_accepts_snapshot(&node_at(2, 1_000, 1_001, true), 1_000, None),
+        "a node whose APPLIED index has passed the snapshot must be refused: publishing sets \
+         applied_index back to the snapshot's index, so this is the term that stops a shard being \
+         served backwards"
+    );
+}
+
+/// A deployed follower, 400 entries over `SLABS` slabs, committed and applied by RPC. `total` is
+/// asserted applied, because a follower that rejected an append compacts nothing and every count
+/// taken from it is a zero for the wrong reason.
+fn deployed_follower_with(total: u64) -> (tempfile::TempDir, RaftCluster) {
+    let dir = tempfile::tempdir().unwrap();
+    let follower = RaftCluster::new_single_shard_with_wal(
+        dir.path(),
+        1,
+        [1, 2, 3],
+        RaftConfig {
+            max_applied_log_bytes: 4096,
+            max_retained_log_bytes: 0,
+            ..RaftConfig::default()
+        },
+    )
+    .unwrap();
+    // This process owns node 2, and node 2 is a follower: the deployed shape.
+    follower.set_local_node_id(2);
+
+    let roll_every = total / SLABS as u64;
+    for index in 1..=total {
+        if index > 1 && index % roll_every == 1 {
+            assert!(
+                follower
+                    .node_engine_for_test(2)
+                    .expect("node 2 serves an engine")
+                    .block_store()
+                    .prepare_next_slab_with_target(1)
+                    .expect("rolling onto a fresh slab must succeed")
+                    .is_some(),
+                "the slab did not roll at entry {index}, so the image would land in one slab"
+            );
+        }
+        let response = follower
+            .receive_append_entries(AppendEntriesRequest {
+                rpc: None,
+                shard_id: 1,
+                term: 1,
+                leader_id: 1,
+                target_id: 2,
+                prev_log_index: index - 1,
+                prev_log_term: if index == 1 { 0 } else { 1 },
+                entries: vec![RaftLogEntry {
+                    leader_time_ms: 0,
+                    term: 1,
+                    index,
+                    shard_id: 1,
+                    command: Command::StringSet {
+                        key: format!("follower-{index:04}"),
+                        value: vec![b'y'; 128],
+                    },
+                }],
+                leader_commit: index,
+            })
+            .expect("append must succeed");
+        assert!(response.success, "append {index} was rejected");
+    }
+    let live = follower
+        .node_engine_for_test(2)
+        .expect("node 2 serves an engine")
+        .live_block_slab_ids(1);
+    println!("  follower live slab ids = {live:?}");
+    assert!(
+        live.len() > 1,
+        "the follower's live slab set is {live:?}: with fewer than two ids a per-slab cost and a \
+         per-snapshot cost are the same number"
+    );
+    (dir, follower)
+}
+
+fn follower_applied_index(follower: &RaftCluster) -> u64 {
+    follower
+        .inner
+        .read()
+        .expect("raft cluster lock poisoned")
+        .nodes
+        .get(&2)
+        .expect("node 2")
+        .applied_index
+}
+
+/// An entry applied while a FOLLOWER's compaction engine builds must not be rolled back either.
+///
+/// The same one-way hazard as the leader's install loop, on the path that already had its
+/// watermark re-check: `applied_index != watermark`. What moved is only where the engine is
+/// rebuilt, so the re-check is the thing that has to keep working -- and the interleaving it
+/// refuses had no test in the tree at all. Constructed: the image and the engine are built at
+/// watermark 400, one more append is committed and applied inside the window, the guard is
+/// retaken, the watermark no longer matches, and nothing is published.
+#[test]
+fn an_entry_applied_while_a_follower_engine_builds_is_not_published_over() {
+    let total = 400u64;
+    println!("=== FOLLOWER BACKWARDS INTERLEAVING ===");
+    let (_dir, follower) = deployed_follower_with(total);
+    assert_eq!(
+        follower_applied_index(&follower),
+        total,
+        "the follower must have applied every entry before the window opens"
+    );
+
+    snapshot_probe::reset();
+    snapshot_probe::arm_install_window(snapshot_probe::InstallWindow::ApplyOneMoreEntry);
+    let report = follower
+        .maybe_trigger_snapshot()
+        .expect("maybe_trigger_snapshot must succeed");
+    let counts = snapshot_probe::counts();
+    let firings = snapshot_probe::install_window_firings();
+    println!("  report: {report:?}");
+    print_counts("follower interleaved", &counts);
+    println!("  window firings     = {firings}");
+    println!("  applied after      = {}", follower_applied_index(&follower));
+
+    // APPARATUS FLOOR.
+    assert_eq!(
+        firings, 1,
+        "the armed interleaving did not run, so this test measured an ordinary compaction"
+    );
+    assert_eq!(
+        counts.engine_rebuilds, 1,
+        "the engine must have been BUILT for the re-check below to have refused it: {} rebuilds",
+        counts.engine_rebuilds
+    );
+    assert_eq!(
+        counts.engine_rebuilds_under_guard, 0,
+        "the engine is built off the guard even on the path that discards it: {} of {}",
+        counts.engine_rebuilds_under_guard, counts.engine_rebuilds
+    );
+
+    // THE FINDING: refused, and not backwards.
+    assert_eq!(
+        counts.engine_publishes, 0,
+        "a follower whose applied index moved inside the window must publish nothing: {} publishes",
+        counts.engine_publishes
+    );
+    assert_ne!(
+        report.reason, "follower_applied_log_bytes_threshold",
+        "the follower compaction must have REFUSED, not completed"
+    );
+    assert_eq!(
+        follower_applied_index(&follower),
+        total + 1,
+        "the follower went BACKWARDS: applied index {} against the {} it had passed",
+        follower_applied_index(&follower),
+        total + 1
+    );
+    assert_eq!(
+        follower
+            .node_engine_for_test(2)
+            .expect("node 2 serves an engine")
+            .execute(ExecuteRequest {
+                shard_id: 1,
+                command: Command::StringGet {
+                    key: "an-entry-applied-while-the-follower-engine-builds".to_string(),
+                },
+            })
+            .response,
+        CommandResponse::Bytes {
+            value: Some(vec![b'z'; 16])
+        },
+        "the follower must still serve the record applied while its engine was building"
+    );
+}
+
+/// A DEPLOYED FOLLOWER compacting its own log rebuilds its engine off the guard too.
+///
+/// The leader's compaction tick is not the only install under the cluster write guard: a deployed
+/// follower compacts itself, and that path rebuilt one whole engine inside the guard as well. It
+/// already re-checks its watermark under the guard -- `applied_index != watermark` -- so all that
+/// moves is where the rebuild happens. Worth 1 of 1 rebuilds and every slab byte with it.
+#[test]
+fn a_deployed_follower_compacts_without_rebuilding_under_the_guard() {
+    println!("=== DEPLOYED FOLLOWER COMPACTION ===");
+    let total = 400u64;
+    let (_dir, follower) = deployed_follower_with(total);
+
+    snapshot_probe::reset();
+    let report = follower
+        .maybe_trigger_snapshot()
+        .expect("maybe_trigger_snapshot must succeed");
+    let counts = snapshot_probe::counts();
+    println!("  report: {report:?}");
+    print_counts("follower", &counts);
+
+    // VACUITY FLOOR: the follower-compaction branch is the one under test, and every bound below
+    // is satisfied by a tick that took the leader branch or no branch at all.
+    assert!(
+        report.triggered,
+        "the follower compaction did not fire ({}), so every count below is zero for the wrong \
+         reason",
+        report.reason
+    );
+    assert_eq!(
+        report.reason, "follower_applied_log_bytes_threshold",
+        "this must be the FOLLOWER compaction branch, not the leader's tick"
+    );
+    assert_eq!(
+        counts.engine_publishes, 1,
+        "a follower compacts exactly its own node: {} publishes",
+        counts.engine_publishes
+    );
+    assert_eq!(
+        counts.engine_rebuilds, 1,
+        "one install needs one engine: {} rebuilds",
+        counts.engine_rebuilds
+    );
+    assert!(
+        counts.slab_install_bytes > 0,
+        "vacuity floor: no slab was installed, so the zeroes below are satisfied by an install \
+         that did not run"
+    );
+
+    // THE FINDING on this path.
+    assert_eq!(
+        counts.engine_rebuilds_under_guard, 0,
+        "a follower must rebuild no engine under the cluster write guard: {} of {}",
+        counts.engine_rebuilds_under_guard, counts.engine_rebuilds
+    );
+    assert_eq!(
+        counts.slab_install_bytes_under_guard, 0,
+        "a follower must write no slab under the cluster write guard: {} of {} bytes",
+        counts.slab_install_bytes_under_guard, counts.slab_install_bytes
+    );
+
+    // WHAT IS LEFT, named with its number rather than left as a silent non-zero. A node that keeps
+    // a WAL persists its record under this same guard, and building that record copies every
+    // node's installed image: 3 copies and 225,705 bytes here, on a 400-record follower. That is a
+    // different mechanism from the install -- the record has to describe the state as PUBLISHED,
+    // so unlike the engine and the image copy it cannot simply be made before the publish -- and
+    // it is not touched here. Asserted so that it is measured rather than assumed, and so that it
+    // reads as a failure if it grows.
+    assert_eq!(
+        counts.image_clones, 3,
+        "the WAL record build copies one image per node: {} copies, {} bytes, all under the guard",
+        counts.image_clones, counts.image_clone_bytes
+    );
+    assert_eq!(
+        counts.image_clone_bytes_under_guard, counts.image_clone_bytes,
+        "every one of those copies is under the guard: {} of {} bytes",
+        counts.image_clone_bytes_under_guard, counts.image_clone_bytes
+    );
+
+    // The snapshot the follower installed into itself, read back. The term is filled AFTER the
+    // watermark re-check now rather than before it, so it is asserted rather than assumed: a term
+    // of zero would be a snapshot claiming to end at an index no term ever covered, and every
+    // count above is satisfied by one.
+    let installed = follower
+        .inner
+        .read()
+        .expect("raft cluster lock poisoned")
+        .nodes
+        .get(&2)
+        .expect("node 2")
+        .installed_snapshot
+        .clone()
+        .expect("the follower must have installed its own snapshot");
+    println!(
+        "  installed: index={} term={}",
+        installed.last_included_index, installed.last_included_term
+    );
+    assert_eq!(
+        installed.last_included_index, total,
+        "the follower must compact to its applied index"
+    );
+    assert_eq!(
+        installed.last_included_term, 1,
+        "the snapshot must carry the term of the entry it ends at, not {}",
+        installed.last_included_term
+    );
+
+    // And it still serves what it compacted.
+    assert_eq!(
+        follower
+            .node_engine_for_test(2)
+            .expect("node 2 serves an engine")
+            .execute(ExecuteRequest {
+                shard_id: 1,
+                command: Command::StringGet {
+                    key: "follower-0201".to_string(),
+                },
+            })
+            .response,
+        CommandResponse::Bytes {
+            value: Some(vec![b'y'; 128])
+        },
+        "the follower must serve a record from the image it installed into itself"
     );
 }

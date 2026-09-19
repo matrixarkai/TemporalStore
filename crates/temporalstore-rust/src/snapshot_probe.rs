@@ -46,6 +46,47 @@ thread_local! {
 
     static ENGINE_REBUILDS: Cell<u64> = const { Cell::new(0) };
     static ENGINE_REBUILDS_UNDER_GUARD: Cell<u64> = const { Cell::new(0) };
+
+    static ENGINE_PUBLISHES: Cell<u64> = const { Cell::new(0) };
+
+    static WINDOW_ARMED: Cell<Option<InstallWindow>> = const { Cell::new(None) };
+    static WINDOW_FIRINGS: Cell<u64> = const { Cell::new(0) };
+}
+
+/// An interleaving a test asks to happen in the window where the install loop builds its engines
+/// holding NO cluster guard.
+///
+/// A test cannot get inside that window by racing for it -- the window is microseconds wide and a
+/// lost race reads exactly like a check that fired -- so the interleaving is REQUESTED here and
+/// performed by the install path itself, once, at the point where it holds nothing. The arm being
+/// attacked can only fail in one direction, so it is constructed rather than waited for.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum InstallWindow {
+    /// Apply one more entry, so every node's commit and applied indexes pass the snapshot's.
+    /// The snapshot is now OLDER than the nodes it was about to be published into.
+    ApplyOneMoreEntry,
+    /// Bring a node back, so it qualifies for the snapshot without an engine having been built
+    /// for it.
+    ReviveNode(u64),
+}
+
+/// Ask the next install window on this thread to perform `window`. Consumed by the first window
+/// that reaches it, so one arming is one interleaving.
+pub fn arm_install_window(window: InstallWindow) {
+    WINDOW_ARMED.with(|armed| armed.set(Some(window)));
+}
+
+/// Taken by the install path at the point where it holds no cluster guard.
+pub fn take_install_window() -> Option<InstallWindow> {
+    WINDOW_ARMED.with(|armed| armed.take()).inspect(|_| {
+        bump(&WINDOW_FIRINGS, 1);
+    })
+}
+
+/// How many armed interleavings were actually performed. A test that armed one and reads zero
+/// here did not test what it thinks it tested.
+pub fn install_window_firings() -> u64 {
+    WINDOW_FIRINGS.with(Cell::get)
 }
 
 /// Armed while this thread holds the raft cluster write guard.
@@ -116,6 +157,14 @@ pub fn note_engine_rebuild() {
     }
 }
 
+/// One engine moved onto a node. Counted separately from the rebuild because the two stopped
+/// being the same event: an engine can be built and then NOT published, which is what happens
+/// when the eligibility check finds the node moved on while the engine was building. Without
+/// this counter, "built nothing" and "built and discarded everything" are the same reading.
+pub fn note_engine_publish() {
+    bump(&ENGINE_PUBLISHES, 1);
+}
+
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct SnapshotCounts {
     pub image_builds: u64,
@@ -132,6 +181,7 @@ pub struct SnapshotCounts {
     pub image_clone_bytes_under_guard: u64,
     pub engine_rebuilds: u64,
     pub engine_rebuilds_under_guard: u64,
+    pub engine_publishes: u64,
 }
 
 pub fn reset() {
@@ -150,9 +200,12 @@ pub fn reset() {
         &IMAGE_CLONE_BYTES_UNDER_GUARD,
         &ENGINE_REBUILDS,
         &ENGINE_REBUILDS_UNDER_GUARD,
+        &ENGINE_PUBLISHES,
+        &WINDOW_FIRINGS,
     ] {
         counter.with(|value| value.set(0));
     }
+    WINDOW_ARMED.with(|armed| armed.set(None));
 }
 
 pub fn counts() -> SnapshotCounts {
@@ -171,5 +224,6 @@ pub fn counts() -> SnapshotCounts {
         image_clone_bytes_under_guard: IMAGE_CLONE_BYTES_UNDER_GUARD.with(Cell::get),
         engine_rebuilds: ENGINE_REBUILDS.with(Cell::get),
         engine_rebuilds_under_guard: ENGINE_REBUILDS_UNDER_GUARD.with(Cell::get),
+        engine_publishes: ENGINE_PUBLISHES.with(Cell::get),
     }
 }

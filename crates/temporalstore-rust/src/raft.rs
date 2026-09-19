@@ -6032,7 +6032,18 @@ fn apply_committed(node: &mut RaftNode) -> Option<CommandResponse> {
     last_response
 }
 
-fn install_snapshot_state(node: &mut RaftNode, snapshot: RaftSnapshot) {
+/// Build the engine a snapshot installs, WITHOUT touching the node it is destined for.
+///
+/// This is the expensive half of an install: every slab in the image written again and the served
+/// index read back in -- 140 bytes per record re-installed per engine, measured -- or, on the
+/// entry-carrying form, every carried command replayed. It is a pure function of the SNAPSHOT. It
+/// reads no node, no membership and no cluster state, so a caller holding the cluster write guard
+/// gains nothing from holding it here, and a caller that can build before taking the guard may.
+///
+/// Splitting it out is what lets `maybe_trigger_snapshot` build one engine per install target
+/// while holding NOTHING. The publish that follows is the cheap half, and it is the only half
+/// that has to be atomic with the eligibility check -- see `node_accepts_snapshot`.
+fn rebuild_snapshot_engine(snapshot: &RaftSnapshot) -> TemporalEngine {
     let engine = TemporalEngine::default();
     if let Some(image) = &snapshot.state_image {
         #[cfg(test)]
@@ -6063,6 +6074,21 @@ fn install_snapshot_state(node: &mut RaftNode, snapshot: RaftSnapshot) {
             );
         }
     }
+    engine
+}
+
+/// Move a node onto a snapshot, given an engine already rebuilt from that same snapshot.
+///
+/// Every write here is O(1) or O(retained log) -- no slab is written and no index is read in --
+/// and this is the half that MUST be atomic with whatever decided the node may take the snapshot.
+/// `applied_index` is set to `last_included_index` unconditionally rather than raised to it, so a
+/// node whose applied index has passed `last_included_index` would be moved BACKWARDS here: it
+/// would serve, until the retained entries were applied again, a shard missing writes it had
+/// already acknowledged. `node_accepts_snapshot` is the check that forbids exactly that, and it is
+/// only a check if it is read under the same guard as this call.
+fn publish_snapshot_state(node: &mut RaftNode, snapshot: RaftSnapshot, engine: TemporalEngine) {
+    #[cfg(test)]
+    crate::snapshot_probe::note_engine_publish();
     node.engine = engine;
     // votedFor is per-term (Raft Fig-2): clear a stale vote when a snapshot raises the term,
     // so a same-new-term candidate is not wrongly rejected as already_voted.
@@ -6079,6 +6105,12 @@ fn install_snapshot_state(node: &mut RaftNode, snapshot: RaftSnapshot) {
     node.applied_index = snapshot.last_included_index;
     node.max_applied_index = node.max_applied_index.max(snapshot.last_included_index);
     node.installed_snapshot = Some(snapshot);
+}
+
+/// Rebuild and publish in one step, for the callers that hold a guard across both anyway.
+fn install_snapshot_state(node: &mut RaftNode, snapshot: RaftSnapshot) {
+    let engine = rebuild_snapshot_engine(&snapshot);
+    publish_snapshot_state(node, snapshot, engine);
 }
 
 fn install_snapshot_state_for_role(node: &mut RaftNode, snapshot: RaftSnapshot) {
