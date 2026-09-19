@@ -1654,6 +1654,13 @@ impl BlockStore {
             .write_offset
     }
 
+    /// Every slab id in the store root, read from the directory.
+    ///
+    /// DELEGATES rather than repeats. This was a second, inline copy of `slab_ids_at`'s loop --
+    /// same prefix, same suffix, same parse, same sort -- so the two walks could drift, and a
+    /// counter or a guard placed on one of them saw none of the other's callers. That is the
+    /// shape this crate has been bitten by before: a guard covering one of two live copies lets
+    /// the other keep the defect.
     pub fn slab_ids(&self) -> Result<Vec<u64>, BlockStoreError> {
         #[cfg(test)]
         crate::snapshot_probe::note_slab_dir_listing();
@@ -1663,25 +1670,7 @@ impl BlockStore {
             .expect("block store lock poisoned")
             .root
             .clone();
-        let mut ids = Vec::new();
-        if !root.exists() {
-            return Ok(ids);
-        }
-        for entry in fs::read_dir(root)? {
-            let entry = entry?;
-            let Some(name) = entry.file_name().to_str().map(str::to_string) else {
-                continue;
-            };
-            if let Some(id) = name
-                .strip_prefix("block_segment_")
-                .and_then(|name| name.strip_suffix(".seg"))
-                .and_then(|id| id.parse::<u64>().ok())
-            {
-                ids.push(id);
-            }
-        }
-        ids.sort_unstable();
-        Ok(ids)
+        slab_ids_at(&root)
     }
 
     pub fn slab_usage(&self) -> Vec<BlockStoreSlabUsage> {
@@ -2610,6 +2599,10 @@ mod address_size_tests {
         );
     }
 }
+
+#[cfg(test)]
+#[path = "block_store/large_store_scale.rs"]
+mod large_store_scale;
 
 #[cfg(test)]
 mod tests {

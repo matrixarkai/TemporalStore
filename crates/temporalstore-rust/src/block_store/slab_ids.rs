@@ -161,13 +161,33 @@ pub(crate) fn compact_extract_slab_offset(address: u64) -> u32 {
     (address & 0xFFFF_FFFF) as u32
 }
 
+/// Every slab id the store root holds, by READING THE DIRECTORY.
+///
+/// COUNTED, BECAUSE THE COST IS THE DIRECTORY AND NOT THE CALL. This is O(entries in the store
+/// root) every time it is asked, and eleven places ask -- the slab roll among them, where the
+/// directory being walked is the set of slabs the rolls before it created. A count of CALLS
+/// cannot see that shape; a count of ENTRIES WALKED can, and it is what
+/// `what_a_large_store_costs_at_two_slab_counts` divides by the slab count.
+///
+/// The counters sit INSIDE the walk rather than at any call site, for the reason
+/// `slab_manifest_writes` gives at length: this crate has already shipped one counter that saw
+/// two of nine sites. A new caller of this function is counted because it called this function.
+///
+/// `block_store_root_dir_walk` is recorded BEFORE the loop, so a walk that fails part way
+/// through is still visible; `block_store_root_dir_entries` is recorded after it and is
+/// therefore the entry count of a COMPLETED walk. Two sites rather than one for exactly that
+/// reason -- a walk with no entry count beside it died in the middle, which is a different thing
+/// from a walk over an empty directory.
 pub(crate) fn slab_ids_at(root: &Path) -> Result<Vec<u64>, BlockStoreError> {
     let mut ids = Vec::new();
     if !root.exists() {
         return Ok(ids);
     }
+    crate::durability_metrics::record_scan("block_store_root_dir_walk", 1);
+    let mut entries_walked = 0u64;
     for entry in fs::read_dir(root)? {
         let entry = entry?;
+        entries_walked += 1;
         let Some(name) = entry.file_name().to_str().map(str::to_string) else {
             continue;
         };
@@ -179,6 +199,7 @@ pub(crate) fn slab_ids_at(root: &Path) -> Result<Vec<u64>, BlockStoreError> {
             ids.push(id);
         }
     }
+    crate::durability_metrics::record_scan("block_store_root_dir_entries", entries_walked);
     ids.sort_unstable();
     Ok(ids)
 }
