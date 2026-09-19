@@ -44,6 +44,96 @@ pub(crate) fn reset_compaction_flush_publish_observation_for_test() {
     FLUSH_PUBLISHED_UNDER_GUARD.with(|cell| cell.set(None));
 }
 
+/// WHERE AN EXPIRY ROUND'S SHARD-TABLE WRITE HOLD GOES, phase by phase.
+///
+/// The sibling logged-deletion path has had `DeleteDropGuardNanos` since #1907, and it is what
+/// made "the cache sweep is most of the hold" a number instead of a guess. This sweep had no such
+/// seam, so the same question could not be asked of it at all -- the round reports what it
+/// REMOVED, never what it HELD.
+///
+/// THE RESIDUAL IS THE POINT, and it is why `total` is timed by its own clock rather than summed
+/// from the rows. `unattributed` is the hold minus every phase below it, so work that belongs to
+/// no phase -- or that drifts out of one -- lands there and is visible. A table that summed its
+/// own rows would balance no matter what the round actually did.
+///
+/// Every row is nanoseconds, process-wide, and reset by the reader immediately before the round it
+/// measures; the suite that reads them runs `--test-threads=1`.
+pub(crate) struct ExpiryGuardNanos {
+    /// The whole hold, from the moment the guard is acquired to the moment before it drops.
+    pub total: std::sync::atomic::AtomicU64,
+    /// `ensure_expiry_order` + both `due_window` reads: choosing what the round will expire.
+    pub select: std::sync::atomic::AtomicU64,
+    /// `delete_record`, once per due key: the in-memory removal from the shard index. This is the
+    /// only part of the removal that actually needs the shard guard.
+    pub delete: std::sync::atomic::AtomicU64,
+    /// The record-cache pass. ONE `invalidate_records_all_batched` per round; it is handed
+    /// `&MultiLayerCache` and a key slice and touches NOTHING on the shard.
+    pub invalidate: std::sync::atomic::AtomicU64,
+    /// The per-key WAL tombstone loop, including the one mirror lookup it takes first.
+    pub wal_append: std::sync::atomic::AtomicU64,
+    /// Building the checkpoint the unlocked flush is handed: once per round.
+    pub checkpoint: std::sync::atomic::AtomicU64,
+}
+
+impl ExpiryGuardNanos {
+    const fn zeroed() -> Self {
+        Self {
+            total: std::sync::atomic::AtomicU64::new(0),
+            select: std::sync::atomic::AtomicU64::new(0),
+            delete: std::sync::atomic::AtomicU64::new(0),
+            invalidate: std::sync::atomic::AtomicU64::new(0),
+            wal_append: std::sync::atomic::AtomicU64::new(0),
+            checkpoint: std::sync::atomic::AtomicU64::new(0),
+        }
+    }
+
+    fn cells(&self) -> [&std::sync::atomic::AtomicU64; 6] {
+        [
+            &self.total,
+            &self.select,
+            &self.delete,
+            &self.invalidate,
+            &self.wal_append,
+            &self.checkpoint,
+        ]
+    }
+
+    pub(crate) fn reset(&self) {
+        for cell in self.cells() {
+            cell.store(0, std::sync::atomic::Ordering::Relaxed);
+        }
+    }
+
+    /// `(total, select, delete, invalidate, wal_append, checkpoint)` in nanoseconds.
+    pub(crate) fn read(&self) -> (u64, u64, u64, u64, u64, u64) {
+        let [total, select, delete, invalidate, wal_append, checkpoint] = self
+            .cells()
+            .map(|cell| cell.load(std::sync::atomic::Ordering::Relaxed));
+        (total, select, delete, invalidate, wal_append, checkpoint)
+    }
+
+    /// The hold this round did not attribute to any phase above. Saturating, so an ordering
+    /// surprise reads as zero rather than as an enormous number.
+    pub(crate) fn unattributed(&self) -> u64 {
+        let (total, select, delete, invalidate, wal_append, checkpoint) = self.read();
+        total
+            .saturating_sub(select)
+            .saturating_sub(delete)
+            .saturating_sub(invalidate)
+            .saturating_sub(wal_append)
+            .saturating_sub(checkpoint)
+    }
+
+    fn add_since(&self, cell: &std::sync::atomic::AtomicU64, since: std::time::Instant) {
+        cell.fetch_add(
+            since.elapsed().as_nanos() as u64,
+            std::sync::atomic::Ordering::Relaxed,
+        );
+    }
+}
+
+pub(crate) static EXPIRY_GUARD_NANOS: ExpiryGuardNanos = ExpiryGuardNanos::zeroed();
+
 /// The same predicate the seam reads, exposed so a test can show it is capable of saying `false`.
 #[cfg(test)]
 pub(crate) fn shard_write_guard_held_for_test() -> bool {
@@ -856,6 +946,8 @@ fn expiry_scan_budget(limit: usize) -> usize {
         request: ShardExpirySweepRequest,
     ) -> Result<ShardExpirySweepReport, Status> {
         let mut shards = self.shards_write_marked();
+        // Started AFTER the guard is acquired, so this is the HOLD and not the wait for it.
+        let guard_held = std::time::Instant::now();
         let Some(shard) = shards.get_mut(&request.shard_id) else {
             return Err(Status::error("shard_not_loaded", "shard is not loaded"));
         };
@@ -877,6 +969,7 @@ fn expiry_scan_budget(limit: usize) -> usize {
         // PREFIX and the walk stops at the first one in the future. The cursors are no longer
         // needed for correctness -- a due key is at the front, not somewhere ahead of a cursor --
         // and the request/report fields are kept so the wire format does not change.
+        let phase = std::time::Instant::now();
         crate::engine::ensure_expiry_order(shard);
         let hot_selected =
             crate::engine::due_window(shard, now, hot_limit, scan_budget, |key| {
@@ -886,6 +979,7 @@ fn expiry_scan_budget(limit: usize) -> usize {
             crate::engine::due_window(shard, now, cold_limit, scan_budget, |key| {
                 !record_exists(shard, key)
             });
+        EXPIRY_GUARD_NANOS.add_since(&EXPIRY_GUARD_NANOS.select, phase);
         let next_hot_cursor: Option<String> = None;
         let next_cold_cursor: Option<String> = None;
         let mut expired_records_removed = 0;
@@ -895,8 +989,10 @@ fn expiry_scan_budget(limit: usize) -> usize {
         let mut pending_index_flush: Option<ExpiryIndexCheckpoint> = None;
         for (key, expires_at) in hot_selected.iter() {
             if *expires_at <= now {
-                if delete_record(shard, key) {
-                    invalidate_record_all(&self.cache, request.shard_id, key, &CACHE_SWEEP_COUNTS);
+                let phase = std::time::Instant::now();
+                let removed = delete_record(shard, key);
+                EXPIRY_GUARD_NANOS.add_since(&EXPIRY_GUARD_NANOS.delete, phase);
+                if removed {
                     expired_records_removed += 1;
                     expired_keys.push(key.clone());
                 }
@@ -908,8 +1004,10 @@ fn expiry_scan_budget(limit: usize) -> usize {
             if *expires_at <= now {
                 if request.load_cold_buckets {
                     loaded_for_expire = loaded_for_expire.saturating_add(1);
-                    if delete_record(shard, key) {
-                        invalidate_record_all(&self.cache, request.shard_id, key, &CACHE_SWEEP_COUNTS);
+                    let phase = std::time::Instant::now();
+                    let removed = delete_record(shard, key);
+                    EXPIRY_GUARD_NANOS.add_since(&EXPIRY_GUARD_NANOS.delete, phase);
+                    if removed {
                         expired_records_removed += 1;
                         expired_keys.push(key.clone());
                     } else {
@@ -921,6 +1019,45 @@ fn expiry_scan_budget(limit: usize) -> usize {
             } else {
                 skipped_records = skipped_records.saturating_add(1);
             }
+        }
+        // ONE PASS OVER THE RECORD CACHE FOR THE WHOLE ROUND, and STILL INSIDE THIS GUARD.
+        //
+        // This was `invalidate_record_all` per expired key, in both loops above. Each of those
+        // makes two `MultiLayerCache::invalidate_record` calls, and each of THOSE chains the key
+        // sets of all three cache tiers and filters them -- so a round expiring N keys stepped
+        // over the whole cache 2N times, inside the one guard that excludes every reader and
+        // every writer on the shard.
+        //
+        // MEASURED ON THIS PATH, not inherited from the sibling one.
+        // `what_an_expiry_rounds_cache_sweep_walks_cold_and_warm` on the per-key shape:
+        // 704,548 cache-entry visits for a 250-key round on a warm 500-object store and
+        // 44,134,298 for a 2,000-key round on a warm 4,000-object store -- 2,818 and 22,067 PER
+        // EXPIRED KEY. The per-key figure moves 7.83x over an eightfold corpus, because each key
+        // walks two whole cache lengths: the cost of expiring one key is a property of the STORE,
+        // not of the round.
+        //
+        // The swept namespaces do not vary by key, so the walk does not have to be repeated:
+        // `invalidate_records_all_batched` lists the shard's cache ONCE and tests each entry
+        // against this round's expired-key set. It removes exactly the same entries --
+        // `one_expiry_pass_walks_the_cache_once_instead_of_twice_per_expired_key` proves that as a
+        // whole-listing set equality against the per-key arm on matched fixtures, and asserts that
+        // a key the round did NOT expire keeps exactly the entry count it had.
+        //
+        // NOT DEFERRED PAST THE GUARD, and that door stays closed. `cached_response` is
+        // cache-first and a record `CacheKey` carries no generation, sequence or version stamp, so
+        // a reader in the window is answered with a value the shard has already deleted. The pass
+        // moved; the guard did not.
+        // `a_key_the_expiry_round_has_removed_is_never_still_answered_out_of_the_cache` is what
+        // holds that, and it is the only test in the suite that does.
+        {
+            let phase = std::time::Instant::now();
+            invalidate_records_all_batched(
+                &self.cache,
+                request.shard_id,
+                &expired_keys,
+                &CACHE_SWEEP_COUNTS,
+            );
+            EXPIRY_GUARD_NANOS.add_since(&EXPIRY_GUARD_NANOS.invalidate, phase);
         }
         if expired_records_removed > 0 {
             // Expiry IS a logged,
@@ -939,6 +1076,7 @@ fn expiry_scan_budget(limit: usize) -> usize {
                 // N keys took N of them in the worst place to take a lock. One lookup also gives
                 // the whole run ONE destination, where a sink swapped mid-loop would split a
                 // single round's tombstones across two mirrors and leave neither complete.
+                let phase = std::time::Instant::now();
                 let mirror = self.maintenance_mirror_sink();
                 for key in &expired_keys {
                     let command = Command::CommonDelete { key: key.clone() };
@@ -953,6 +1091,7 @@ fn expiry_scan_budget(limit: usize) -> usize {
                         }
                     }
                 }
+                EXPIRY_GUARD_NANOS.add_since(&EXPIRY_GUARD_NANOS.wal_append, phase);
                 // Anchor off the O(1) CACHED last sequence, not `stats()` -- the same change, for
                 // the same reason, as the `delete_drop` round's anchor in
                 // `storage_lifecycle_methods.rs`. `stats()` takes a full-file rescan plus a walk
@@ -966,6 +1105,7 @@ fn expiry_scan_budget(limit: usize) -> usize {
                     self.wal_store.stats(request.shard_id).last_sequence
                 });
             }
+            let phase = std::time::Instant::now();
             // The checkpoint is BUILT under this lock and WRITTEN after it drops. The lock is
             // needed for the deletes and for anchoring `applied_wal_sequence`; it is not needed
             // for the write, and the write used to be the expensive part of the round -- the
@@ -1059,6 +1199,7 @@ fn expiry_scan_budget(limit: usize) -> usize {
                     }))
                 },
             );
+            EXPIRY_GUARD_NANOS.add_since(&EXPIRY_GUARD_NANOS.checkpoint, phase);
         }
         // The control arm of `the_expiry_sweep_flush_waits_for_the_write_guard_to_drop` keeps the
         // flush inside the region, so the guard has a positive control to compare against.
@@ -1070,6 +1211,7 @@ fn expiry_scan_budget(limit: usize) -> usize {
                 self.flush_expiry_index(request.shard_id, checkpoint)?;
             }
         }
+        EXPIRY_GUARD_NANOS.add_since(&EXPIRY_GUARD_NANOS.total, guard_held);
         drop(shards);
         if let Some(checkpoint) = pending_index_flush {
             self.flush_expiry_index(request.shard_id, checkpoint)?;

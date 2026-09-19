@@ -4876,6 +4876,17 @@ fn invalidate_record_all(
 
 /// ONE PASS OVER THE CACHE FOR A WHOLE ROUND OF DROPPED KEYS, instead of two per key.
 ///
+/// BOTH LOGGED-DELETION ROUNDS USE THIS ONE BODY. `delete_drop` in `storage_lifecycle_methods.rs`
+/// (#1911) and the expiry sweep in `recovery_sweep_compact.rs` had the same per-key shape under the
+/// same `shards` write guard, and a pass that lived in only one of them would have left the other
+/// copy keeping the cost -- the way the anchor's `stats()` fallback did until one of the two was
+/// guarded and the other was not. The expiry sweep's own figures are in
+/// `what_an_expiry_rounds_cache_sweep_walks_cold_and_warm` and
+/// `one_expiry_pass_walks_the_cache_once_instead_of_twice_per_expired_key`, measured on that path
+/// rather than inherited from this one: 704,548 cache-entry visits for a 250-key round on a warm
+/// 500-object store and 44,134,298 for a 2,000-key round on a warm 4,000-object one, against 1,548
+/// and 12,048 for the one pass.
+///
 /// WHAT IT REPLACES. `invalidate_record_all` above, called once per dropped key, makes two
 /// `MultiLayerCache::invalidate_record` calls, and each of those chains the key sets of all three
 /// cache tiers and filters:
@@ -4916,10 +4927,16 @@ fn invalidate_record_all(
 /// `what_one_listing_of_the_shards_cache_costs_in_syscalls` measures C from outside the process
 /// and `one_batched_pass_walks_the_cache_once_instead_of_twice_per_dropped_key` puts it next to
 /// the entry visits it removes.
-fn invalidate_records_all_batched(
+/// GENERIC OVER THE KEY TYPE, and only because its two call sites hold their round's keys in
+/// different containers: `delete_drop` collects `Arc<str>` object keys off the live block entries,
+/// and the expiry sweep collects `String` keys out of `due_window`. Converting either one to suit
+/// the other would allocate a second copy of every key in the round for no reason. `AsRef<str>` is
+/// all this body ever asks of them -- it reads each key once, as a `&str`, to build the
+/// dropped-key set and the named cache keys -- so both callers hand it what they already have.
+fn invalidate_records_all_batched<K: AsRef<str>>(
     cache: &MultiLayerCache,
     shard_id: ShardId,
-    keys: &[std::sync::Arc<str>],
+    keys: &[K],
     counts: &CacheSweepCounts,
 ) -> usize {
     if keys.is_empty() {

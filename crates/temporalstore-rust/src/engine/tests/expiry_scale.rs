@@ -3680,3 +3680,1204 @@ fn an_expiry_round_under_replay_writes_a_delta_with_no_anchor() {
         record.items.len()
     );
 }
+
+// ===========================================================================================
+// THE EXPIRY ROUND'S RECORD-CACHE PASS
+//
+// PR #1911 rewrote the `delete_drop` round's per-key cache sweep into one batched pass and named
+// this sweep as the next one -- "the same per-key shape under the same guard", NAMED, not
+// measured. Everything below is measured HERE, on this path, on its own fixtures, at two corpus
+// sizes. The two paths turn out to agree closely, which is a result and not an assumption: the
+// per-key figures below were produced by running these tests against the unmodified tree first.
+// ===========================================================================================
+
+/// The corpus for the cache-pass fixtures. Zero-padded so key order and index order agree.
+fn cache_pass_key(index: usize) -> String {
+    format!("expiry-cache-key-{index:06}")
+}
+
+/// Keys the fixture gives SEVERAL cache entries in every namespace the invalidation covers.
+///
+/// Two of them are inside the due set and one is OUTSIDE it, so the over-invalidation direction --
+/// the one a batched predicate can fail and a per-key sweep cannot -- has a subject.
+fn cache_pass_marked(objects: usize) -> Vec<String> {
+    vec![
+        cache_pass_key(3),
+        cache_pass_key(17),
+        cache_pass_key(objects - 1),
+    ]
+}
+
+/// The keys the round will find due: the first half of the corpus.
+fn cache_pass_due(objects: usize) -> Vec<String> {
+    (0..objects / 2).map(cache_pass_key).collect()
+}
+
+/// A corpus whose keys all carry a deadline, READ BACK, with several cache entries per marked key
+/// in every namespace the invalidation covers.
+///
+/// WHY THE DEADLINES ARE BACK-DATED RATHER THAN SHORT, and this is the single most expensive
+/// mistake available here. A record cache is populated by READS -- `the_cache_namespaces_a_record_
+/// can_actually_use` (engine/tests/part4.rs) says so in as many words -- and a read of a key whose
+/// deadline has already passed caches nothing. Writing with a one-millisecond TTL and then warming
+/// would therefore produce an EMPTY cache, the sweep would walk zero entries, and the cost would
+/// measure at its floor, which reads exactly like a cheap operation. So every key is written with
+/// an hour-long deadline, the cache is warmed against live keys through the ordinary command path,
+/// and only then are the due keys' deadlines moved into the past with `set_expiry`, which touches
+/// both expiry indexes and nothing else -- no cache, no shard records.
+///
+/// The cold arm omits the warming loop and nothing else, so it is the same corpus with an empty
+/// record cache. Its zero is reported rather than hidden: it is what an unwarmed fixture measures
+/// this at.
+fn cache_pass_fixture(
+    objects: usize,
+    warm: bool,
+    due: &[String],
+) -> (tempfile::TempDir, TemporalEngine) {
+    let dir = tempfile::tempdir().unwrap();
+    let engine = TemporalEngine::with_local_dirs(
+        1024 * 1024,
+        dir.path().join("cache"),
+        dir.path().join("pages"),
+        dir.path().join("indexes"),
+    );
+    engine.load_shard(1);
+    write_keys(
+        &engine,
+        1,
+        (0..objects)
+            .map(|index| (cache_pass_key(index), 3_600_000u64))
+            .collect(),
+    );
+    if warm {
+        for index in 0..objects {
+            let out = engine.execute(ExecuteRequest {
+                shard_id: 1,
+                command: Command::StringGet {
+                    key: cache_pass_key(index),
+                },
+            });
+            assert!(out.status.ok, "a warming read failed: {:?}", out.status);
+        }
+        // Three hash fields and three feature windows per marked key, because the namespaces that
+        // get SWEPT are exactly the ones that hold more than one entry per key: a hash caches one
+        // entry per field and a feature one per query window. A fixture with one entry each would
+        // make "drop the entry" and "drop every entry" the same assertion. The read follows the
+        // write in every case, because the write is what invalidates.
+        for key in cache_pass_marked(objects) {
+            let mut run = |command: Command| {
+                let out = engine.execute(ExecuteRequest {
+                    shard_id: 1,
+                    command,
+                });
+                assert!(out.status.ok, "fixture command failed: {:?}", out.status);
+            };
+            for field in ["alpha", "beta", "gamma"] {
+                run(Command::HashSet {
+                    key: key.clone(),
+                    field: field.to_string(),
+                    value: b"hash-value".to_vec(),
+                });
+                run(Command::HashGet {
+                    key: key.clone(),
+                    field: field.to_string(),
+                });
+            }
+            run(Command::SetAdd {
+                key: key.clone(),
+                member: b"sweep-member".to_vec(),
+            });
+            run(Command::SetMembers { key: key.clone() });
+            run(Command::FeatureAppend {
+                key: key.clone(),
+                points: vec![crate::types::FeaturePoint {
+                    timestamp_ms: 1_000,
+                    value: b"feature-value".to_vec(),
+                }],
+            });
+            for (start_ms, end_ms) in [(0u64, 10_000u64), (0, 20_000), (500, 9_000)] {
+                run(Command::FeatureQuery {
+                    key: key.clone(),
+                    start_ms,
+                    end_ms,
+                    count: None,
+                });
+            }
+            run(Command::StringGet { key: key.clone() });
+        }
+    }
+    let now = now_ms();
+    {
+        let mut shards = engine.shards.write().expect("engine lock poisoned");
+        let shard = shards.get_mut(&1).expect("shard 1 is loaded");
+        for key in due {
+            crate::engine::set_expiry(shard, key.clone(), now.saturating_sub(1_000));
+        }
+    }
+    (dir, engine)
+}
+
+/// The shard's whole record cache, `namespace/record_key/selector`, in listing order.
+/// `entries_for_shard` already sorts by those three fields, so two of these compare directly.
+fn cache_pass_listing(engine: &TemporalEngine) -> Vec<String> {
+    engine
+        .cache
+        .entries_for_shard(1)
+        .into_iter()
+        .map(|entry| format!("{}/{}/{}", entry.namespace, entry.record_key, entry.selector))
+        .collect()
+}
+
+/// An order-sensitive fingerprint of a whole listing. FNV-1a over the joined entries, so two
+/// listings of the same length holding different entries do not collide the way a count does.
+fn cache_pass_fingerprint(listing: &[String]) -> u64 {
+    let mut hash: u64 = 0xcbf2_9ce4_8422_2325;
+    for entry in listing {
+        for byte in entry.as_bytes().iter().chain(std::iter::once(&b'\n')) {
+            hash ^= *byte as u64;
+            hash = hash.wrapping_mul(0x1000_0000_01b3);
+        }
+    }
+    hash
+}
+
+fn cache_pass_occupied(listing: &[String], namespace: &str, key: &str) -> usize {
+    let prefix = format!("{namespace}/{key}/");
+    listing
+        .iter()
+        .filter(|entry| entry.starts_with(&prefix))
+        .count()
+}
+
+/// THE NAMESPACES BOTH ARMS COVER, DERIVED FROM THE PRODUCTION AUTHORITY.
+///
+/// `SWEPT_RECORD_NAMESPACES` and `named_record_keys` are read by the per-key primitive and by the
+/// batched pass alike, so this is one list read twice rather than two lists that happen to agree
+/// today. It is derived AND floored by its caller -- see the floor at the top of the equivalence
+/// test, and the mutant that exists to prove the floor is not decoration.
+fn cache_pass_namespaces() -> Vec<String> {
+    crate::engine::SWEPT_RECORD_NAMESPACES
+        .iter()
+        .map(|namespace| namespace.to_string())
+        .chain(
+            crate::engine::named_record_keys(1, "probe")
+                .iter()
+                .map(|key| key.namespace.to_string()),
+        )
+        .collect()
+}
+
+/// One expiry round, measured for what its cache pass walks and for where its hold went.
+#[derive(Debug)]
+struct ExpiryRound {
+    objects: usize,
+    warm: bool,
+    /// What `sweep_expired_records_with_request` RETURNS to its caller. Independent of every
+    /// counter below, all of which are read from inside the cache primitives.
+    expired: usize,
+    scanned: usize,
+    /// Counted inside `invalidate_record_all` -- the PER-KEY primitive. Zero here is what says the
+    /// round stopped calling it; the primitive itself is still live at six other call sites.
+    calls: u64,
+    sweeps: u64,
+    entries_walked: u64,
+    named: u64,
+    /// Counted inside `invalidate_records_all_batched` -- the ONE pass the round now makes.
+    batched_calls: u64,
+    keys_batched: u64,
+    listings: u64,
+    entries_listed: u64,
+    entries_returned: u64,
+    /// Read OUTSIDE, off the cache itself, either side of the whole call.
+    cache_entries_before: usize,
+    cache_entries_after: usize,
+    /// A fingerprint of the WHOLE shard listing the round left behind, in
+    /// `namespace/record_key/selector` form. This is what makes the ROUND's end state comparable
+    /// across two BUILDS -- the A/B/B/A slots below swap the production shape and rebuild between
+    /// them, so no single process can hold both arms. A count alone would not distinguish two
+    /// caches of the same size holding different entries.
+    cache_after_fingerprint: u64,
+    hold_ns: u64,
+    select_ns: u64,
+    delete_ns: u64,
+    invalidate_ns: u64,
+    wal_ns: u64,
+    checkpoint_ns: u64,
+    unattributed_ns: u64,
+}
+
+impl ExpiryRound {
+    fn walked_per_key(&self) -> f64 {
+        if self.expired == 0 {
+            0.0
+        } else {
+            self.entries_walked as f64 / self.expired as f64
+        }
+    }
+
+    /// Cache entries the round's ONE pass stepped over, per key it expired. The quantity that was
+    /// 2,818 and 22,067 under the per-key shape -- twice the cache, growing with the store.
+    fn listed_per_key(&self) -> f64 {
+        if self.expired == 0 {
+            0.0
+        } else {
+            self.entries_listed as f64 / self.expired as f64
+        }
+    }
+
+    /// Keys the round's cache pass was handed that its own expired count does not explain.
+    ///
+    /// INDEPENDENT, and that is the whole point of it: `keys_batched` is counted inside
+    /// `invalidate_records_all_batched`, the primitive that does the invalidating, and `expired`
+    /// is the number `sweep_expired_records_with_request` RETURNS to its caller. Neither is
+    /// derived from the other, so this is not an identity -- a second invalidating path inside the
+    /// round, or a key invalidated that the round did not report expiring, would show here. It is
+    /// asserted ACROSS the two corpus sizes rather than against a constant.
+    fn pass_residual(&self) -> u64 {
+        self.calls
+            .saturating_add(self.keys_batched)
+            .saturating_sub(self.expired as u64)
+    }
+
+    fn pct(&self, part: u64) -> f64 {
+        if self.hold_ns == 0 {
+            0.0
+        } else {
+            part as f64 * 100.0 / self.hold_ns as f64
+        }
+    }
+}
+
+/// `armed` turns on the per-walk tier-length read that produces `entries_walked` /
+/// `entries_listed`. Every arm that reports a TIME is run disarmed, so the apparatus that explains
+/// the hold is never inside the hold it explains.
+fn expiry_round_limited(
+    objects: usize,
+    warm: bool,
+    armed: bool,
+    hot_limit: usize,
+    cold_limit: usize,
+) -> ExpiryRound {
+    let sweep = &crate::engine::CACHE_SWEEP_COUNTS;
+    let nanos = &crate::engine::recovery_sweep_compact::EXPIRY_GUARD_NANOS;
+    let (_dir, engine) = cache_pass_fixture(objects, warm, &cache_pass_due(objects));
+    let cache_entries_before = engine.cache.entries_for_shard(1).len();
+    sweep.reset();
+    sweep.set_armed(armed);
+    nanos.reset();
+    let report = engine
+        .sweep_expired_records_with_request(ShardExpirySweepRequest {
+            shard_id: 1,
+            load_cold_buckets: true,
+            max_hot_buckets_per_round: hot_limit,
+            max_cold_buckets_per_round: cold_limit,
+            ..ShardExpirySweepRequest::default()
+        })
+        .expect("shard 1 is loaded");
+    sweep.set_armed(false);
+    let after_listing = cache_pass_listing(&engine);
+    let cache_entries_after = after_listing.len();
+    let cache_after_fingerprint = cache_pass_fingerprint(&after_listing);
+    let (calls, sweeps, entries_walked, named) = sweep.read();
+    let (batched_calls, keys_batched, listings, entries_listed, entries_returned) =
+        sweep.read_batched();
+    let (hold_ns, select_ns, delete_ns, invalidate_ns, wal_ns, checkpoint_ns) = nanos.read();
+    ExpiryRound {
+        objects,
+        warm,
+        expired: report.expired_records_removed,
+        scanned: report.scanned_records,
+        calls,
+        sweeps,
+        entries_walked,
+        named,
+        batched_calls,
+        keys_batched,
+        listings,
+        entries_listed,
+        entries_returned,
+        cache_entries_before,
+        cache_entries_after,
+        cache_after_fingerprint,
+        hold_ns,
+        select_ns,
+        delete_ns,
+        invalidate_ns,
+        wal_ns,
+        checkpoint_ns,
+        unattributed_ns: nanos.unattributed(),
+    }
+}
+
+/// The unbounded round: 0 means no limit, which is what `sweep_expired_records` -- and therefore
+/// `sweep_all_expired_records` -- passes in production.
+fn expiry_round(objects: usize, warm: bool, armed: bool) -> ExpiryRound {
+    expiry_round_limited(objects, warm, armed, 0, 0)
+}
+
+/// WHAT AN EXPIRY ROUND'S CACHE PASS WALKS, COLD AND WARM, AT TWO CORPUS SIZES.
+///
+/// WHAT THIS MEASURED BEFORE THE CHANGE, on the unmodified tree, same fixtures, same arms:
+///
+/// ```text
+///                                   cold 500     WARM 500    cold 4000    WARM 4000
+/// cache entries BEFORE (outer)             0        1,036            0        8,036
+/// keys the round expired                 250          250        2,000        2,000
+/// PER-KEY invalidate_record_all          250          250        2,000        2,000
+/// walks (invalidate_record)              500          500        4,000        4,000
+/// CACHE ENTRIES WALKED                     0      704,548            0   44,134,298
+///  .. walked per expired key             0.0      2,818.2          0.0     22,067.1
+/// cache entries AFTER  (outer)             0          772            0        6,022
+/// ```
+///
+/// TWO SIZES AND THE RATIO, which is the whole shape claim. The per-key cost goes 2,818.2 to
+/// 22,067.1 over an eightfold corpus -- 7.83x -- because each expired key walks two whole cache
+/// lengths. What one key costs to expire was a property of the STORE, not of the round. One pass
+/// spreads a single cache length over every key the round expires instead, so the same column
+/// reads 6.2 and 6.0: flat, and asserted flat below in both directions.
+///
+/// WHY THIS IS A COUNT AND NOT A TIME. `MultiLayerCache::invalidate_record` chains the key sets of
+/// all three cache tiers and filters, so the work is ENTRIES WALKED and it is exactly the sum of
+/// the three tier lengths. `note_sweep` reads those three lengths immediately before each walk and
+/// `note_listing` reads the SAME three before each listing, so the two arms are measured in one
+/// unit and the ratio between them is a ratio. A time on this box is a fact about the box: the
+/// nanosecond rows are printed, with the load, and nothing is asserted about them.
+///
+/// THE COLD ARM LISTS NONE, and that is a finding rather than a nuisance. A fixture that writes a
+/// corpus and never reads it back has an EMPTY record cache, so it measures this sweep at zero --
+/// which reads exactly like a cheap operation. Every arm that makes a claim here is warm, the
+/// cache size is read from OUTSIDE the round either side of it, and the warm arm is asserted to
+/// hold more entries than the cold one before anything else is asserted.
+// rust-internal: cache-entry visit counts inside the Rust MultiLayerCache primitives
+#[test]
+fn what_an_expiry_rounds_cache_sweep_walks_cold_and_warm() {
+    const SMALL: usize = 500;
+    const LARGE: usize = 4000;
+
+    // COUNTS from the armed runs; TIMINGS from the disarmed ones. Same fixture, same round.
+    let cold_small = expiry_round(SMALL, false, true);
+    let warm_small = expiry_round(SMALL, true, true);
+    let cold_large = expiry_round(LARGE, false, true);
+    let warm_large = expiry_round(LARGE, true, true);
+
+    println!(
+        "\n  THE EXPIRY ROUND'S CACHE PASS, cold cache vs warm cache\n\
+         \n                                  {:>12} {:>12} {:>12} {:>12}\n\
+           corpus objects              {:>12} {:>12} {:>12} {:>12}\n\
+           cache entries BEFORE (outer){:>12} {:>12} {:>12} {:>12}\n\
+           keys the round expired      {:>12} {:>12} {:>12} {:>12}\n\
+           records scanned             {:>12} {:>12} {:>12} {:>12}\n\
+           PER-KEY invalidate_record_all{:>11} {:>12} {:>12} {:>12}\n\
+           PER-KEY walks               {:>12} {:>12} {:>12} {:>12}\n\
+           CACHE ENTRIES WALKED        {:>12} {:>12} {:>12} {:>12}\n\
+           .. walked per expired key   {:>12.1} {:>12.1} {:>12.1} {:>12.1}\n\
+           named-key invalidations     {:>12} {:>12} {:>12} {:>12}\n\
+           BATCHED passes              {:>12} {:>12} {:>12} {:>12}\n\
+           keys handed to the pass     {:>12} {:>12} {:>12} {:>12}\n\
+           .. residual, keys - expired {:>12} {:>12} {:>12} {:>12}\n\
+           listings those passes made  {:>12} {:>12} {:>12} {:>12}\n\
+           CACHE ENTRIES LISTED        {:>12} {:>12} {:>12} {:>12}\n\
+           .. listed per expired key   {:>12.1} {:>12.1} {:>12.1} {:>12.1}\n\
+           entries the listing RETURNED{:>12} {:>12} {:>12} {:>12}\n\
+           cache entries AFTER  (outer){:>12} {:>12} {:>12} {:>12}\n",
+        "cold 500", "WARM 500", "cold 4000", "WARM 4000",
+        cold_small.objects, warm_small.objects, cold_large.objects, warm_large.objects,
+        cold_small.cache_entries_before, warm_small.cache_entries_before,
+        cold_large.cache_entries_before, warm_large.cache_entries_before,
+        cold_small.expired, warm_small.expired, cold_large.expired, warm_large.expired,
+        cold_small.scanned, warm_small.scanned, cold_large.scanned, warm_large.scanned,
+        cold_small.calls, warm_small.calls, cold_large.calls, warm_large.calls,
+        cold_small.sweeps, warm_small.sweeps, cold_large.sweeps, warm_large.sweeps,
+        cold_small.entries_walked, warm_small.entries_walked,
+        cold_large.entries_walked, warm_large.entries_walked,
+        cold_small.walked_per_key(), warm_small.walked_per_key(),
+        cold_large.walked_per_key(), warm_large.walked_per_key(),
+        cold_small.named, warm_small.named, cold_large.named, warm_large.named,
+        cold_small.batched_calls, warm_small.batched_calls,
+        cold_large.batched_calls, warm_large.batched_calls,
+        cold_small.keys_batched, warm_small.keys_batched,
+        cold_large.keys_batched, warm_large.keys_batched,
+        cold_small.pass_residual(), warm_small.pass_residual(),
+        cold_large.pass_residual(), warm_large.pass_residual(),
+        cold_small.listings, warm_small.listings, cold_large.listings, warm_large.listings,
+        cold_small.entries_listed, warm_small.entries_listed,
+        cold_large.entries_listed, warm_large.entries_listed,
+        cold_small.listed_per_key(), warm_small.listed_per_key(),
+        cold_large.listed_per_key(), warm_large.listed_per_key(),
+        cold_small.entries_returned, warm_small.entries_returned,
+        cold_large.entries_returned, warm_large.entries_returned,
+        cold_small.cache_entries_after, warm_small.cache_entries_after,
+        cold_large.cache_entries_after, warm_large.cache_entries_after,
+    );
+
+    // THE FIXTURE HAS A POPULATED CACHE, asserted BEFORE anything else, because a pass over an
+    // empty cache measures at its floor and that reads exactly like a cheap operation.
+    assert!(
+        warm_small.cache_entries_before > cold_small.cache_entries_before,
+        "the warm fixture must hold more cache entries than the cold one before the round, or \
+         nothing below is measuring a cache pass at all: {} warm vs {} cold",
+        warm_small.cache_entries_before, cold_small.cache_entries_before,
+    );
+    assert!(
+        warm_large.cache_entries_before > cold_large.cache_entries_before,
+        "the warm fixture must hold more cache entries than the cold one before the round: \
+         {} warm vs {} cold",
+        warm_large.cache_entries_before, cold_large.cache_entries_before,
+    );
+    assert!(
+        warm_large.cache_entries_before > warm_small.cache_entries_before,
+        "the warm cache must grow with the corpus, or a per-key cost could not have been a \
+         property of the store: {} at {SMALL} objects vs {} at {LARGE}",
+        warm_small.cache_entries_before, warm_large.cache_entries_before,
+    );
+    for round in [&cold_small, &warm_small, &cold_large, &warm_large] {
+        assert!(
+            round.expired > 0,
+            "the round expired nothing, so nothing was measured: {round:?}",
+        );
+        // ONE PASS, whatever the round expired, and NO per-key sweeps left in this path.
+        assert_eq!(
+            round.batched_calls, 1,
+            "a round that expired {} keys must make exactly ONE batched cache pass, not {}",
+            round.expired, round.batched_calls,
+        );
+        assert_eq!(
+            round.listings, 1,
+            "a round that expired {} keys must list the cache exactly ONCE, not {} times",
+            round.expired, round.listings,
+        );
+        assert_eq!(
+            round.calls, 0,
+            "the expiry round must no longer call the PER-KEY invalidate_record_all; it made {} \
+             calls, so the per-key loop is back",
+            round.calls,
+        );
+        assert_eq!(
+            round.sweeps, 0,
+            "the expiry round must make no per-key cache walks at all; it made {}",
+            round.sweeps,
+        );
+    }
+
+    // THE PER-KEY QUANTITY NO LONGER MOVES WITH THE CORPUS, in both directions. Under the per-key
+    // shape this column was 2,818.2 and 22,067.1; a regression to anything that grows with the
+    // store fails here on the number.
+    assert!(
+        warm_large.listed_per_key() <= warm_small.listed_per_key(),
+        "cache entries listed PER EXPIRED KEY must not grow with the corpus: {:.1} at {SMALL} \
+         objects and {:.1} at {LARGE}. Under the per-key shape this was 2,818.2 and 22,067.1.",
+        warm_small.listed_per_key(), warm_large.listed_per_key(),
+    );
+    assert!(
+        warm_small.listed_per_key() < 100.0 && warm_large.listed_per_key() < 100.0,
+        "cache entries listed PER EXPIRED KEY must be a small constant, not a cache length: \
+         {:.1} and {:.1}",
+        warm_small.listed_per_key(), warm_large.listed_per_key(),
+    );
+
+    // THE RESIDUAL, INDEPENDENT AND ACROSS THE SIZES. `keys handed to the pass` is counted inside
+    // the cache primitive; `keys the round expired` is what the sweep returns to its caller.
+    // Asserted EQUAL BETWEEN THE TWO SIZES, not against a constant, so a second invalidating path
+    // in no row of the table above would show as a residual that scaled.
+    assert_eq!(
+        warm_small.pass_residual(), warm_large.pass_residual(),
+        "the residual between what the cache pass was handed and what the round reports expiring \
+         moved with the corpus: {} at {SMALL} objects and {} at {LARGE}",
+        warm_small.pass_residual(), warm_large.pass_residual(),
+    );
+    assert_eq!(
+        warm_large.pass_residual(), 0,
+        "the cache pass was handed {} keys the round does not report expiring",
+        warm_large.pass_residual(),
+    );
+    // The named-key invalidations are two per expired key in both shapes -- they are O(1) and were
+    // never the cost. A pass that stopped naming them would fail here rather than silently leave
+    // `string` and `set` entries behind.
+    assert_eq!(
+        warm_large.named as usize, warm_large.expired * 2,
+        "every expired key must still name its two O(1) cache entries: {} named for {} keys",
+        warm_large.named, warm_large.expired,
+    );
+}
+
+/// THE ROUND THE STORAGE MANAGER ACTUALLY RUNS, at the default bounds, also makes ONE pass.
+///
+/// `sweep_expired_records` is unbounded and that is a real production path, but the periodic
+/// stage in `data_node.rs` passes `DEFAULT_MAX_EXPIRE_HOT_BUCKETS_PER_ROUND` / `..COLD..` -- 128
+/// and 8. A bounded round expires fewer keys, so it had FEWER per-key walks to remove; what does
+/// not change is that each of those walks was a whole cache length. At the bound, on the warm
+/// 4,000-object fixture, the per-key shape cost 128 keys x 2 walks x ~8,000 entries. The batched
+/// shape costs one listing whatever the bound is, and this is what says so.
+// rust-internal: Rust storage-manager round bounds against the Rust cache listing
+#[test]
+fn a_bounded_expiry_round_makes_one_cache_pass_too() {
+    const OBJECTS: usize = 4000;
+    let round = expiry_round_limited(OBJECTS, true, true, HOT_LIMIT, COLD_LIMIT);
+    // AND THE SMALLEST ROUND THERE IS, because that is where the trade runs closest. One listing
+    // costs the same whatever the round expires, so a round of ONE key pays a whole listing plus
+    // its `statx` to remove what two per-key walks would have removed. The entry-visit column
+    // still favours the pass -- one cache length against two -- and the syscalls are what is
+    // bought with it. Printed, not asserted: it is the price of the choice, not a claim.
+    let single = expiry_round_limited(OBJECTS, true, true, 1, 0);
+    println!(
+        "  BOUNDED ROUND (hot {HOT_LIMIT}, cold {COLD_LIMIT}) on a warm {OBJECTS}-object store: \
+         expired {} scanned {} cache_before {} batched_passes {} listings {} entries_listed {} \
+         per_key {:.1} per_key_sweeps {} entries_walked {}",
+        round.expired, round.scanned, round.cache_entries_before, round.batched_calls,
+        round.listings, round.entries_listed, round.listed_per_key(), round.sweeps,
+        round.entries_walked,
+    );
+    println!(
+        "  ONE-KEY ROUND on the same warm {OBJECTS}-object store: expired {} cache_before {} \
+         batched_passes {} listings {} entries_listed {} entries_returned {} \
+         (the per-key shape would have stepped {} and made no syscall)",
+        single.expired, single.cache_entries_before, single.batched_calls, single.listings,
+        single.entries_listed, single.entries_returned,
+        single.cache_entries_before.saturating_mul(2),
+    );
+    assert_eq!(
+        single.batched_calls, 1,
+        "even a one-key round makes exactly one pass, not {}",
+        single.batched_calls,
+    );
+    assert!(
+        round.cache_entries_before > 0,
+        "the bounded round's fixture must have a populated cache, or it measures nothing",
+    );
+    assert_eq!(
+        round.expired, HOT_LIMIT,
+        "a bounded round must expire exactly its hot bound from a corpus with more due than that; \
+         it expired {}",
+        round.expired,
+    );
+    assert_eq!(
+        round.batched_calls, 1,
+        "a bounded round must make exactly ONE cache pass, not {}",
+        round.batched_calls,
+    );
+    assert_eq!(
+        round.sweeps, 0,
+        "a bounded round must make no per-key cache walks; it made {}",
+        round.sweeps,
+    );
+}
+
+/// WHERE AN EXPIRY ROUND'S SHARD-TABLE WRITE HOLD GOES.
+///
+/// The round reports what it REMOVED and never what it HELD, and the `shards` write guard is the
+/// one lock that excludes every reader and every writer on the shard -- so "how long" is the
+/// question a serving operator actually has. `ExpiryGuardNanos` is the seam; this prints it.
+///
+/// ASSERTS ALMOST NOTHING ON PURPOSE. A time on this box is a fact about the box: the same arm was
+/// seen to vary by more than 2x within one session at different loads, so this test exists to be
+/// READ, and to be runnable unchanged against a mutant that restores the per-key shape so the two
+/// can be compared A/B/B/A with a rebuild between slots. What it does assert is that the apparatus
+/// produced numbers at all -- a hold of zero, or a round that expired nothing, would make every
+/// printed share meaningless.
+///
+/// The load is printed with the numbers, because a hold measured above load ~24 on this box is not
+/// a measurement of anything.
+// rust-internal: phase timings of the Rust shard-table write guard
+#[test]
+fn where_an_expiry_rounds_write_hold_goes() {
+    const SMALL: usize = 500;
+    const LARGE: usize = 4000;
+
+    // DISARMED: the tier-length reads that size the pass are apparatus, and apparatus does not
+    // belong inside the hold it explains.
+    let small = expiry_round(SMALL, true, false);
+    let large = expiry_round(LARGE, true, false);
+
+    println!(
+        "\n  WHERE AN EXPIRY ROUND'S WRITE HOLD WENT (load {})\n\
+         \n                            {:>14} {:>14}\n\
+           corpus objects        {:>14} {:>14}\n\
+           cache entries before  {:>14} {:>14}\n\
+           keys expired          {:>14} {:>14}\n\
+           GUARD HELD, total us  {:>14} {:>14}\n\
+           .. select (due_window){:>14} {:>14}   {:>5.1}% {:>5.1}%\n\
+           .. delete_record      {:>14} {:>14}   {:>5.1}% {:>5.1}%\n\
+           .. CACHE PASS         {:>14} {:>14}   {:>5.1}% {:>5.1}%\n\
+           .. wal tombstones     {:>14} {:>14}   {:>5.1}% {:>5.1}%\n\
+           .. checkpoint build   {:>14} {:>14}   {:>5.1}% {:>5.1}%\n\
+           .. UNATTRIBUTED       {:>14} {:>14}   {:>5.1}% {:>5.1}%\n",
+        std::fs::read_to_string("/proc/loadavg")
+            .unwrap_or_default()
+            .split_whitespace()
+            .next()
+            .unwrap_or("?")
+            .to_string(),
+        "WARM 500", "WARM 4000",
+        small.objects, large.objects,
+        small.cache_entries_before, large.cache_entries_before,
+        small.expired, large.expired,
+        small.hold_ns / 1_000, large.hold_ns / 1_000,
+        small.select_ns / 1_000, large.select_ns / 1_000,
+        small.pct(small.select_ns), large.pct(large.select_ns),
+        small.delete_ns / 1_000, large.delete_ns / 1_000,
+        small.pct(small.delete_ns), large.pct(large.delete_ns),
+        small.invalidate_ns / 1_000, large.invalidate_ns / 1_000,
+        small.pct(small.invalidate_ns), large.pct(large.invalidate_ns),
+        small.wal_ns / 1_000, large.wal_ns / 1_000,
+        small.pct(small.wal_ns), large.pct(large.wal_ns),
+        small.checkpoint_ns / 1_000, large.checkpoint_ns / 1_000,
+        small.pct(small.checkpoint_ns), large.pct(large.checkpoint_ns),
+        small.unattributed_ns / 1_000, large.unattributed_ns / 1_000,
+        small.pct(small.unattributed_ns), large.pct(large.unattributed_ns),
+    );
+    // THE ROUND'S END STATE, AS A FINGERPRINT OF THE WHOLE LISTING. The A/B/B/A slots swap the
+    // production shape and REBUILD between them, so no single process can hold both arms and no
+    // assertion inside this process can compare them. Printing the fingerprint makes the ROUND's
+    // end state -- not just its entry count, and not just the primitive's -- comparable across the
+    // four slots: the per-key arm and the batched arm must leave caches that are equal entry for
+    // entry, and two different caches of the same size would collide on a count and not on this.
+    println!(
+        "  PROBE-EXPIRY-HOLD small_hold_us={} small_pass_us={} large_hold_us={} \
+         large_pass_us={} small_expired={} large_expired={} \
+         small_after={} small_fingerprint={:016x} large_after={} large_fingerprint={:016x} \
+         load={}",
+        small.hold_ns / 1_000, small.invalidate_ns / 1_000,
+        large.hold_ns / 1_000, large.invalidate_ns / 1_000,
+        small.expired, large.expired,
+        small.cache_entries_after, small.cache_after_fingerprint,
+        large.cache_entries_after, large.cache_after_fingerprint,
+        std::fs::read_to_string("/proc/loadavg")
+            .unwrap_or_default()
+            .split_whitespace()
+            .next()
+            .unwrap_or("?")
+            .to_string(),
+    );
+
+    for round in [&small, &large] {
+        assert!(
+            round.expired > 0,
+            "the round expired nothing, so the hold below describes an empty round: {round:?}",
+        );
+        assert!(
+            round.hold_ns > 0,
+            "the guard-hold clock produced zero, so every share printed above is meaningless",
+        );
+        assert!(
+            round.cache_entries_before > 0,
+            "the fixture's cache is empty, so the cache pass's share is its floor and not its \
+             value",
+        );
+        // THE POSITIVE CONTROL FOR THE SEAM ITSELF. A phase timer that never fires reads as a
+        // phase that costs nothing, which is indistinguishable from a phase that got cheaper --
+        // and it would make every share above wrong in the flattering direction.
+        assert!(
+            round.invalidate_ns > 0,
+            "the cache pass's phase timer produced zero for a round that expired {} keys against \
+             {} cache entries; the seam is not wired, so the table above is measuring nothing",
+            round.expired, round.cache_entries_before,
+        );
+        assert!(
+            round.delete_ns > 0 && round.select_ns > 0,
+            "the delete and select phase timers must also produce numbers, or the cache pass's \
+             share is being compared against absent rows: {round:?}",
+        );
+        // The residual is what a phase table cannot fake: `total` is timed by its own clock, not
+        // summed from the rows, so work belonging to no phase lands here and is visible.
+        assert!(
+            round.unattributed_ns < round.hold_ns,
+            "the unattributed remainder cannot exceed the hold it is a remainder of",
+        );
+    }
+}
+
+/// What one arm of the comparison did, and what it left in the cache.
+#[derive(Debug)]
+struct ExpiryCachePassArm {
+    arm: &'static str,
+    objects: usize,
+    expired: usize,
+    /// Cache entries the arm stepped over. SAME DEFINITION in both arms -- the sum of the three
+    /// tier lengths, read inside the primitive immediately before each walk, by `note_sweep` in
+    /// one arm and `note_listing` in the other.
+    stepped: u64,
+    /// `invalidate_record` calls in the per-key arm, `entries_for_shard` listings in the batched
+    /// one.
+    walks: u64,
+    /// Entries the batched arm's listing RETURNED; zero in the per-key arm, which lists nothing.
+    /// This is the upper bound on the arm's filesystem `metadata()` calls.
+    returned: u64,
+    before: Vec<String>,
+    after: Vec<String>,
+}
+
+impl ExpiryCachePassArm {
+    fn stepped_per_key(&self) -> f64 {
+        if self.expired == 0 {
+            0.0
+        } else {
+            self.stepped as f64 / self.expired as f64
+        }
+    }
+}
+
+/// The two arms, on two fixtures built by the same function from the same corpus size, handed the
+/// same set of expired keys.
+fn expiry_cache_pass_arms(objects: usize) -> (ExpiryCachePassArm, ExpiryCachePassArm) {
+    let sweep = &crate::engine::CACHE_SWEEP_COUNTS;
+    let expired_keys = cache_pass_due(objects);
+
+    let per_key = {
+        let (_dir, engine) = cache_pass_fixture(objects, true, &expired_keys);
+        let before = cache_pass_listing(&engine);
+        sweep.reset();
+        sweep.set_armed(true);
+        for key in &expired_keys {
+            crate::engine::invalidate_record_all(&engine.cache, 1, key, sweep);
+        }
+        sweep.set_armed(false);
+        let (_calls, walks, stepped, _named) = sweep.read();
+        ExpiryCachePassArm {
+            arm: "N per-key sweeps",
+            objects,
+            expired: expired_keys.len(),
+            stepped,
+            walks,
+            returned: 0,
+            before,
+            after: cache_pass_listing(&engine),
+        }
+    };
+
+    let batched = {
+        let (_dir, engine) = cache_pass_fixture(objects, true, &expired_keys);
+        let before = cache_pass_listing(&engine);
+        sweep.reset();
+        sweep.set_armed(true);
+        crate::engine::invalidate_records_all_batched(&engine.cache, 1, &expired_keys, sweep);
+        sweep.set_armed(false);
+        let (_batched_calls, _keys_batched, walks, stepped, returned) = sweep.read_batched();
+        ExpiryCachePassArm {
+            arm: "ONE batched pass",
+            objects,
+            expired: expired_keys.len(),
+            stepped,
+            walks,
+            returned,
+            before,
+            after: cache_pass_listing(&engine),
+        }
+    };
+
+    (per_key, batched)
+}
+
+/// ONE PASS OVER THE CACHE, PRICED AGAINST THE N IT REPLACES, AND PROVED TO REMOVE THE SAME SET.
+///
+/// THE TWO ARMS, ON MATCHED FIXTURES. Both are built by `cache_pass_fixture` from the same corpus
+/// size with the same warming and handed the same expired-key set, and both are measured in the
+/// SAME unit -- cache entries stepped over, read from the three tier lengths inside the primitive
+/// immediately before each walk -- so the ratio between the arms is a ratio and not a comparison
+/// of two different quantities.
+///
+/// EXACTLY THE SAME SET, and this is the correctness core rather than a sanity check. What is
+/// compared is not "did the expired keys go" -- an arm that emptied the whole cache would satisfy
+/// that -- but the WHOLE shard listing afterwards, entry for entry, in
+/// `namespace/record_key/selector` form. Both arms match exactly four things:
+///
+///   - `CacheKey::string(shard, key)`, selector "value"        -- NAMED, O(1), per expired key
+///   - `CacheKey::set_members(shard, key)`, selector "members" -- NAMED, O(1), per expired key
+///   - namespace `hash`, ANY selector, expired record key      -- SWEPT
+///   - namespace `feature`, ANY selector, expired record key   -- SWEPT
+///
+/// and nothing else. Both take the named pair from `named_record_keys` and the swept list from
+/// `SWEPT_RECORD_NAMESPACES`, so the enumeration is one list read twice rather than two lists that
+/// happen to agree today.
+///
+/// KEYS THE ROUND DID NOT EXPIRE KEEP THEIR ENTRIES. `expiry-cache-key-{objects - 1}` is marked,
+/// so it is cached in every namespace, and its deadline is NOT back-dated. Both arms must leave
+/// every one of its entries alone, and the count is asserted EQUAL to what it was before the arm
+/// ran -- not merely non-zero, because an arm that removed two of three hash fields would pass a
+/// non-zero check. This is the OVER-invalidation direction: the one a batched predicate can fail
+/// and a per-key sweep cannot.
+///
+/// THE POSITIVE CONTROL RUNS FIRST, per namespace, per arm, per size. Everything asserted after
+/// the arms is an emptiness or an equality claim, and two empty listings are equal.
+// rust-internal: set equality between two Rust cache-invalidation primitives
+#[test]
+fn one_expiry_pass_walks_the_cache_once_instead_of_twice_per_expired_key() {
+    const SMALL: usize = 500;
+    const LARGE: usize = 4000;
+
+    let namespaces = cache_pass_namespaces();
+    // THE FLOOR ON THE DERIVED LIST, and it is not decoration. Deriving the subject list from the
+    // production authority is what stops it going stale -- but deriving cuts both ways: a change
+    // that REMOVES a namespace from the authority removes it from this test at the same moment,
+    // and the test then passes by checking one thing fewer. So the list is derived AND floored.
+    // Adding a namespace is free; losing one fails here. The mutant that removes `feature` from
+    // `SWEPT_RECORD_NAMESPACES` exists to prove this floor bites.
+    for required in ["hash", "feature", "string", "set"] {
+        assert!(
+            namespaces.iter().any(|namespace| namespace == required),
+            "`{required}` is no longer in the namespace list this test derives from \
+             SWEPT_RECORD_NAMESPACES and named_record_keys, so nothing here checks it any more; \
+             the list is {namespaces:?}",
+        );
+    }
+    assert!(
+        namespaces.len() >= 4,
+        "the derived namespace list must cover at least the four this sweep has always covered; \
+         it is {namespaces:?}",
+    );
+
+    let (small_per_key, small_batched) = expiry_cache_pass_arms(SMALL);
+    let (large_per_key, large_batched) = expiry_cache_pass_arms(LARGE);
+
+    let ratio = |per_key: &ExpiryCachePassArm, batched: &ExpiryCachePassArm| {
+        if batched.stepped == 0 {
+            0.0
+        } else {
+            per_key.stepped as f64 / batched.stepped as f64
+        }
+    };
+    println!(
+        "\n  ONE PASS OVER THE CACHE vs N PER-KEY SWEEPS, same fixture, same expired keys\n\
+         \n                              {:>13} {:>13} {:>13} {:>13}\n\
+           corpus objects          {:>13} {:>13} {:>13} {:>13}\n\
+           cache entries BEFORE    {:>13} {:>13} {:>13} {:>13}\n\
+           keys expired            {:>13} {:>13} {:>13} {:>13}\n\
+           walks over the cache    {:>13} {:>13} {:>13} {:>13}\n\
+           ENTRIES STEPPED OVER    {:>13} {:>13} {:>13} {:>13}\n\
+           .. per expired key      {:>13.1} {:>13.1} {:>13.1} {:>13.1}\n\
+           listing RETURNED        {:>13} {:>13} {:>13} {:>13}\n\
+           cache entries AFTER     {:>13} {:>13} {:>13} {:>13}\n\
+         \n           ENTRY VISITS REMOVED{:>26.1}x{:>27.1}x\n",
+        "per-key 500", "BATCHED 500", "per-key 4000", "BATCHED 4000",
+        small_per_key.objects, small_batched.objects, large_per_key.objects, large_batched.objects,
+        small_per_key.before.len(), small_batched.before.len(),
+        large_per_key.before.len(), large_batched.before.len(),
+        small_per_key.expired, small_batched.expired, large_per_key.expired, large_batched.expired,
+        small_per_key.walks, small_batched.walks, large_per_key.walks, large_batched.walks,
+        small_per_key.stepped, small_batched.stepped, large_per_key.stepped, large_batched.stepped,
+        small_per_key.stepped_per_key(), small_batched.stepped_per_key(),
+        large_per_key.stepped_per_key(), large_batched.stepped_per_key(),
+        small_per_key.returned, small_batched.returned,
+        large_per_key.returned, large_batched.returned,
+        small_per_key.after.len(), small_batched.after.len(),
+        large_per_key.after.len(), large_batched.after.len(),
+        ratio(&small_per_key, &small_batched), ratio(&large_per_key, &large_batched),
+    );
+
+    for (per_key, batched, objects) in [
+        (&small_per_key, &small_batched, SMALL),
+        (&large_per_key, &large_batched, LARGE),
+    ] {
+        let kept = cache_pass_key(objects - 1);
+        let expired_marked = [cache_pass_key(3), cache_pass_key(17)];
+
+        // THE POSITIVE CONTROL, FIRST. Per namespace, per arm.
+        for arm in [per_key, batched] {
+            assert!(
+                !arm.before.is_empty(),
+                "{} at {objects} objects started with an EMPTY cache, so every emptiness claim \
+                 below would pass against anything",
+                arm.arm,
+            );
+            for namespace in &namespaces {
+                for key in expired_marked.iter().chain(std::iter::once(&kept)) {
+                    assert!(
+                        cache_pass_occupied(&arm.before, namespace, key) > 0,
+                        "{} at {objects} objects: `{namespace}` holds no entry for `{key}` before \
+                         the arm ran, so nothing here tests that namespace",
+                        arm.arm,
+                    );
+                }
+            }
+        }
+        // Both arms start from the same cache, or nothing they end with can be compared.
+        assert_eq!(
+            per_key.before, batched.before,
+            "the two fixtures at {objects} objects did not start identical: {} vs {} entries",
+            per_key.before.len(), batched.before.len(),
+        );
+
+        // EXACTLY THE SAME SET: the WHOLE listing afterwards, entry for entry.
+        assert_eq!(
+            per_key.after, batched.after,
+            "at {objects} objects the two arms left DIFFERENT caches behind: {} entries after the \
+             per-key sweeps and {} after the batched pass. Only in per-key: {:?}. Only in \
+             batched: {:?}",
+            per_key.after.len(),
+            batched.after.len(),
+            per_key.after.iter().filter(|e| !batched.after.contains(e)).collect::<Vec<_>>(),
+            batched.after.iter().filter(|e| !per_key.after.contains(e)).collect::<Vec<_>>(),
+        );
+
+        // The expired keys are GONE from every namespace, in both arms.
+        for arm in [per_key, batched] {
+            for namespace in &namespaces {
+                for key in &expired_marked {
+                    assert_eq!(
+                        cache_pass_occupied(&arm.after, namespace, key), 0,
+                        "{} at {objects} objects left `{namespace}` entries cached for the \
+                         expired key `{key}`",
+                        arm.arm,
+                    );
+                }
+            }
+        }
+
+        // AND THE KEY THE ROUND DID NOT EXPIRE KEEPS EXACTLY WHAT IT HAD -- equal, not non-zero.
+        for arm in [per_key, batched] {
+            for namespace in &namespaces {
+                let before = cache_pass_occupied(&arm.before, namespace, &kept);
+                let after = cache_pass_occupied(&arm.after, namespace, &kept);
+                assert_eq!(
+                    before, after,
+                    "{} at {objects} objects OVER-INVALIDATED: `{kept}` was never expired, but \
+                     its `{namespace}` entry count went {before} -> {after}",
+                    arm.arm,
+                );
+            }
+        }
+
+        // ONE WALK, NOT 2N.
+        assert_eq!(
+            batched.walks, 1,
+            "the batched arm at {objects} objects made {} walks over the cache, not one",
+            batched.walks,
+        );
+        assert_eq!(
+            per_key.walks as usize, per_key.expired * 2,
+            "the per-key arm at {objects} objects must make two walks per expired key; it made {}",
+            per_key.walks,
+        );
+        assert!(
+            batched.stepped < per_key.stepped,
+            "the batched arm stepped over {} cache entries and the per-key arm {} at {objects} \
+             objects -- the pass is not cheaper",
+            batched.stepped, per_key.stepped,
+        );
+    }
+
+    // THE SHAPE, ACROSS THE SIZES. The per-key arm's cost PER EXPIRED KEY grows with the corpus;
+    // the batched arm's does not. That, not the multiple, is the finding.
+    assert!(
+        large_per_key.stepped_per_key() > small_per_key.stepped_per_key() * 4.0,
+        "the per-key arm's cost per expired key must grow with the corpus -- that is what makes it \
+         a property of the store: {:.1} at {SMALL} objects and {:.1} at {LARGE}",
+        small_per_key.stepped_per_key(), large_per_key.stepped_per_key(),
+    );
+    assert!(
+        large_batched.stepped_per_key() <= small_batched.stepped_per_key(),
+        "the batched arm's cost per expired key must NOT grow with the corpus: {:.1} at {SMALL} \
+         objects and {:.1} at {LARGE}",
+        small_batched.stepped_per_key(), large_batched.stepped_per_key(),
+    );
+}
+
+/// THE READ-VISIBILITY ARGUMENT FOR THIS PATH, as a test rather than as prose.
+///
+/// The obvious way to get the cache pass out of the `shards` write guard is to hoist it past
+/// `drop(shards)`. It compiles unchanged -- the pass is handed `&MultiLayerCache` and a key slice
+/// and borrows nothing from `shard` -- and it takes the whole pass out of the hold.
+///
+/// It is still wrong, for the reason #1907 established on the sibling path, and this is the test
+/// that makes it wrong HERE rather than by inheritance. A `StringGet` is served by
+/// `cached_response`, which is CACHE-FIRST and consults the shard only on a miss, and
+/// `CacheKey::string(shard_id, key)` carries no generation, sequence or version stamp -- so
+/// nothing in the key or the read path can notice that the shard has moved on. With the pass
+/// deferred, `delete_record` removes the key under the guard, the tombstone is appended and
+/// `applied_wal_sequence` anchored past it, the guard drops -- and until the deferred pass reaches
+/// that key, a reader asking for it is answered out of the cache with the value the shard no
+/// longer has.
+///
+/// IN WHICH DIRECTION IT FAILS. Deferring an invalidation can only ever leave the cache MORE
+/// populated than the shard, never less. So the single observable failure is STALE-ALIVE, and a
+/// check that only asked "is the cache eventually empty of this key" would pass under the unsafe
+/// mutant, because that is a question about the END STATE and the defect is entirely in the
+/// middle. This attacks the observable direction: it reads keys the shard has ALREADY removed,
+/// while the round is still running.
+///
+/// WHY IT NEEDS A SECOND THREAD. The window opens and closes inside one call. The reader takes the
+/// `shards` lock to decide a key is gone, so under the shipped code it cannot observe that until
+/// the guarded section that both deletes and sweeps has completed; under the mutant it observes it
+/// the moment the guard drops.
+///
+/// WARM, because a cold cache holds nothing to serve stale -- on the cold fixture this test would
+/// be looking for a stale answer that could not exist, and would pass against any mutant at all.
+/// The cache entry count is asserted non-zero before the threads start.
+// rust-internal: Rust cache-first read visibility under the Rust shard write guard
+#[test]
+fn a_key_the_expiry_round_has_removed_is_never_still_answered_out_of_the_cache() {
+    use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+    use std::sync::Arc;
+
+    const OBJECTS: usize = 800;
+
+    // EVERY key due, so the round has the longest hold this fixture can give it.
+    let all: Vec<String> = (0..OBJECTS).map(cache_pass_key).collect();
+    let (_dir, engine) = cache_pass_fixture(OBJECTS, true, &all);
+    let cached_before = engine.cache.entries_for_shard(1).len();
+    assert!(
+        cached_before > 0,
+        "the fixture's cache is empty, so no stale answer could exist and this test would pass \
+         against any mutant at all",
+    );
+
+    let stop = Arc::new(AtomicBool::new(false));
+    let stale_answers = Arc::new(AtomicU64::new(0));
+    let removed_keys_read = Arc::new(AtomicU64::new(0));
+
+    let reader = {
+        let engine = engine.clone();
+        let stop = Arc::clone(&stop);
+        let stale_answers = Arc::clone(&stale_answers);
+        let removed_keys_read = Arc::clone(&removed_keys_read);
+        std::thread::spawn(move || {
+            while !stop.load(Ordering::Relaxed) {
+                // Which keys the SHARD has already let go of, read under the shard lock.
+                let gone = {
+                    let shards = engine.shards.read().expect("engine lock poisoned");
+                    match shards.get(&1) {
+                        Some(shard) => (0..OBJECTS)
+                            .map(cache_pass_key)
+                            .filter(|key| !shard.strings.contains_key(key.as_str()))
+                            .collect::<Vec<_>>(),
+                        None => break,
+                    }
+                };
+                for key in gone {
+                    if stop.load(Ordering::Relaxed) {
+                        break;
+                    }
+                    // The shard has removed this key. Ask for it anyway.
+                    removed_keys_read.fetch_add(1, Ordering::Relaxed);
+                    let out = engine.execute(ExecuteRequest {
+                        shard_id: 1,
+                        command: Command::StringGet { key },
+                    });
+                    if let CommandResponse::Bytes { value: Some(_) } = out.response {
+                        stale_answers.fetch_add(1, Ordering::Relaxed);
+                    }
+                }
+            }
+        })
+    };
+
+    let report = engine
+        .sweep_expired_records_with_request(ShardExpirySweepRequest {
+            shard_id: 1,
+            load_cold_buckets: true,
+            max_hot_buckets_per_round: 0,
+            max_cold_buckets_per_round: 0,
+            ..ShardExpirySweepRequest::default()
+        })
+        .expect("shard 1 is loaded");
+    // Let the reader keep going for a moment after the round, so the window a deferred pass opens
+    // is sampled rather than raced past.
+    std::thread::sleep(std::time::Duration::from_millis(50));
+    stop.store(true, Ordering::Relaxed);
+    reader.join().expect("the reader thread must not panic");
+
+    let stale = stale_answers.load(Ordering::Relaxed);
+    let read = removed_keys_read.load(Ordering::Relaxed);
+    println!(
+        "  CONCURRENT READER over an expiry round: {} reads of keys the shard had already \
+         removed, {stale} of them answered out of the cache with a value; the round expired {} \
+         keys and the cache held {cached_before} entries before it",
+        read, report.expired_records_removed,
+    );
+
+    assert!(
+        report.expired_records_removed > 0,
+        "the round expired nothing, so the reader had no removed key to ask about",
+    );
+    // THE DENOMINATOR. Without reads of already-removed keys there is no opportunity for a stale
+    // answer, and zero stale answers would mean nothing.
+    assert!(
+        read > 0,
+        "the reader never saw a key the shard had removed, so it never had the chance to be \
+         answered stale; the round expired {}",
+        report.expired_records_removed,
+    );
+    assert_eq!(
+        stale, 0,
+        "{stale} of {read} reads of keys the shard had ALREADY removed were answered out of the \
+         cache with a value. The record-cache pass must stay inside the `shards` write guard: a \
+         record CacheKey carries no generation, sequence or version stamp, so a cache-first read \
+         in that window cannot tell that the shard has moved on.",
+    );
+}
+
+/// WHAT ONE LISTING OF AN EXPIRY FIXTURE'S CACHE COSTS IN SYSCALLS.
+///
+/// The batched pass trades N cache walks for one cache walk plus C syscalls, and C is a property
+/// of the fixture rather than a constant: `entries_for_shard` falls through to a filesystem
+/// `metadata()` for every entry it returns that the disk index does not hold, and for no others.
+///
+/// THIS PATH'S C IS NOT THE SIBLING PATH'S C, and that is the reason for measuring it again. A
+/// `delete_drop` round calls `invalidate_slot` before its cache pass, so by the time it lists, the
+/// `page` half of the shard's cache is already gone and the listing returns about half the warm
+/// cache. THIS round calls no such thing -- `delete_record` touches shard state only -- so its one
+/// listing returns the WHOLE warm cache.
+///
+/// HOW. The count is a DIFFERENCE taken from OUTSIDE the process: the same test binary is run
+/// under `strace -f -c` twice, once with `TS_EXPIRY_PROBE_LIST_REPEATS=0` and once with a positive
+/// repeat count, and one listing's cost is the difference over the repeats. Everything else the
+/// process does -- the corpus, the warming reads, the probe's own first listing -- is identical in
+/// both arms and cancels. Nothing in this process counts its own syscalls.
+///
+/// THE CACHE MUST BE POPULATED, or the listing costs nothing and this reports a free operation.
+/// The entry count is asserted non-zero and printed with its namespace census.
+// rust-internal: syscall cost of the Rust MultiLayerCache shard listing
+#[test]
+fn what_one_listing_of_an_expiry_fixtures_cache_costs_in_syscalls() {
+    let objects: usize = std::env::var("TS_EXPIRY_PROBE_OBJECTS")
+        .ok()
+        .and_then(|value| value.parse().ok())
+        .unwrap_or(500);
+    let repeats: usize = std::env::var("TS_EXPIRY_PROBE_LIST_REPEATS")
+        .ok()
+        .and_then(|value| value.parse().ok())
+        .unwrap_or(0);
+
+    let (_dir, engine) = cache_pass_fixture(objects, true, &cache_pass_due(objects));
+    let listing = engine.cache.entries_for_shard(1);
+    let entries = listing.len();
+    assert!(
+        entries > 0,
+        "the fixture's cache is empty, so a listing of it would cost nothing and this probe would \
+         report a free operation; objects {objects}",
+    );
+    let mut by_namespace = std::collections::BTreeMap::<String, usize>::new();
+    for entry in &listing {
+        *by_namespace.entry(entry.namespace.clone()).or_default() += 1;
+    }
+    println!(
+        "PROBE-EXPIRY-LISTING objects={objects} entries={entries} repeats={repeats} \
+         namespaces={by_namespace:?} load={}",
+        std::fs::read_to_string("/proc/loadavg")
+            .unwrap_or_default()
+            .split_whitespace()
+            .next()
+            .unwrap_or("?")
+            .to_string(),
+    );
+    let started = std::time::Instant::now();
+    let mut listed = 0usize;
+    for _ in 0..repeats {
+        listed = listed.saturating_add(engine.cache.entries_for_shard(1).len());
+    }
+    let elapsed = started.elapsed().as_micros();
+    // The listing must be deterministic, or the syscall difference this probe is driven for is a
+    // difference between two different listings.
+    assert_eq!(
+        engine.cache.entries_for_shard(1).len(),
+        entries,
+        "two listings of an untouched cache returned different lengths",
+    );
+    println!(
+        "PROBE-EXPIRY-LISTING listed_total={listed} elapsed_us={elapsed} per_listing_us={:.1}",
+        if repeats == 0 {
+            0.0
+        } else {
+            elapsed as f64 / repeats as f64
+        },
+    );
+}
