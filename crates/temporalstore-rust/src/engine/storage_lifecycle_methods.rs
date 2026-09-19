@@ -2040,12 +2040,37 @@ impl TemporalEngine {
                     DELETE_DROP_GUARD_NANOS.add_since(&DELETE_DROP_GUARD_NANOS.delete, phase);
                     if removed {
                         dropped_object_count = dropped_object_count.saturating_add(1);
-                        let phase = std::time::Instant::now();
-                        invalidate_record_all(&self.cache, shard_id, &key, &CACHE_SWEEP_COUNTS);
-                        DELETE_DROP_GUARD_NANOS
-                            .add_since(&DELETE_DROP_GUARD_NANOS.invalidate, phase);
                         deleted_keys.push(key);
                     }
+                }
+                // ONE PASS OVER THE CACHE FOR THE WHOLE ROUND, and STILL INSIDE THIS GUARD.
+                //
+                // This used to be `invalidate_record_all` per dropped key, and each of those
+                // made two `MultiLayerCache::invalidate_record` calls, each of which chains the
+                // key sets of all three cache tiers and filters -- so the loop above walked the
+                // whole cache twice per key. #1907 measured that at 15,996,000 cache-entry visits
+                // for one 4,000-key round on a warm store, inside this guard.
+                //
+                // The swept namespaces do not vary by key, so the walk does not have to be
+                // repeated: `invalidate_records_all_batched` lists the shard's cache once and
+                // tests each entry against this round's dropped-key set. It drops exactly the
+                // same entries -- `one_batched_pass_walks_the_cache_once_instead_of_twice_per_\
+                // dropped_key` proves that as a set equality against the per-key arm on a matched
+                // fixture.
+                //
+                // NOT DEFERRED PAST THE GUARD. #1907 priced that and refused it: `cached_response`
+                // is cache-first and a record `CacheKey` carries no generation, sequence or
+                // version stamp, so a reader in the window is answered with a value the shard has
+                // already deleted -- 8 of 533 reads, measured. The pass moved; the guard did not.
+                {
+                    let phase = std::time::Instant::now();
+                    invalidate_records_all_batched(
+                        &self.cache,
+                        shard_id,
+                        &deleted_keys,
+                        &CACHE_SWEEP_COUNTS,
+                    );
+                    DELETE_DROP_GUARD_NANOS.add_since(&DELETE_DROP_GUARD_NANOS.invalidate, phase);
                 }
                 if dropped_object_count > 0 {
                     // A delete_drop eviction is a LOGICAL delete, so it must follow the same
@@ -3090,11 +3115,19 @@ mod eviction_round_scale {
         objects: usize,
         warm: bool,
         dropped: usize,
-        /// Counted INSIDE `invalidate_record_all`.
+        /// Counted INSIDE `invalidate_record_all` -- the PER-KEY primitive, which the drop
+        /// loop no longer calls. Kept because eight other call sites still do, and because zero
+        /// here is what says the drop loop stopped.
         calls: u64,
         sweeps: u64,
         entries_walked: u64,
         named: u64,
+        /// Counted INSIDE `invalidate_records_all_batched` -- the ONE pass the round now makes.
+        batched_calls: u64,
+        keys_batched: u64,
+        listings: u64,
+        entries_listed: u64,
+        entries_returned: u64,
         /// Counted OUTSIDE, off the cache itself, either side of the whole call.
         cache_entries_before: usize,
         cache_entries_after: usize,
@@ -3106,14 +3139,16 @@ mod eviction_round_scale {
     }
 
     impl SweepRound {
-        /// Sweeping calls this round made that its own dropped-key count does not explain.
+        /// Keys this round's cache pass was handed that its own dropped-key count does not
+        /// explain.
         ///
-        /// INDEPENDENT: `calls` is kept inside `invalidate_record_all`, the primitive that does
-        /// the sweeping, and `dropped` is the number `apply_storage_eviction` RETURNS to its
-        /// caller. Neither is derived from the other, so this is not an identity -- a second
-        /// sweeping path inside the round would show up here.
+        /// INDEPENDENT: `keys_batched` is counted inside `invalidate_records_all_batched`, the
+        /// primitive that does the invalidating, and `dropped` is the number
+        /// `apply_storage_eviction` RETURNS to its caller. Neither is derived from the other, so
+        /// this is not an identity -- a second invalidating path inside the round would show up
+        /// here. It is asserted ACROSS the two corpus sizes, not against a constant.
         fn sweep_residual(&self) -> u64 {
-            self.calls.saturating_sub(self.dropped as u64)
+            self.keys_batched.saturating_sub(self.dropped as u64)
         }
 
         fn pct(&self, part: u64) -> f64 {
@@ -3129,6 +3164,16 @@ mod eviction_round_scale {
                 0.0
             } else {
                 self.entries_walked as f64 / self.dropped as f64
+            }
+        }
+
+        /// Cache entries the round's ONE pass stepped over, per key it dropped. The quantity
+        /// #1907 measured at 499 and 3,999 -- twice the cache size, growing with the store.
+        fn listed_per_key(&self) -> f64 {
+            if self.dropped == 0 {
+                0.0
+            } else {
+                self.entries_listed as f64 / self.dropped as f64
             }
         }
 
@@ -3166,6 +3211,8 @@ mod eviction_round_scale {
             "the round must have got past the pressure gate, or nothing was measured"
         );
         let (calls, sweeps, entries_walked, named) = SWEEP.read();
+        let (batched_calls, keys_batched, listings, entries_listed, entries_returned) =
+            SWEEP.read_batched();
         let (hold_ns, _collect_ns, delete_ns, invalidate_ns, wal_ns, _anchor_ns, _snapshot_ns) =
             NANOS.read();
         SweepRound {
@@ -3176,6 +3223,11 @@ mod eviction_round_scale {
             sweeps,
             entries_walked,
             named,
+            batched_calls,
+            keys_batched,
+            listings,
+            entries_listed,
+            entries_returned,
             cache_entries_before,
             cache_entries_after,
             hold_ns,
@@ -3231,12 +3283,17 @@ mod eviction_round_scale {
                cache entries BEFORE (outer){:>12} {:>12} {:>12} {:>12}\n\
                cache entries AFTER  (outer){:>12} {:>12} {:>12} {:>12}\n\
                keys the round dropped      {:>12} {:>12} {:>12} {:>12}\n\
-               invalidate_record_all calls {:>12} {:>12} {:>12} {:>12}\n\
-               .. residual, calls - dropped{:>12} {:>12} {:>12} {:>12}\n\
-               invalidate_record SWEEPS    {:>12} {:>12} {:>12} {:>12}\n\
+               batched cache passes        {:>12} {:>12} {:>12} {:>12}\n\
+               keys handed to the pass     {:>12} {:>12} {:>12} {:>12}\n\
+               .. residual, keys - dropped {:>12} {:>12} {:>12} {:>12}\n\
+               listings those passes made  {:>12} {:>12} {:>12} {:>12}\n\
+               PER-KEY invalidate_record_all{:>11} {:>12} {:>12} {:>12}\n\
+               PER-KEY invalidate_record   {:>12} {:>12} {:>12} {:>12}\n\
                named-key invalidations     {:>12} {:>12} {:>12} {:>12}\n\
-               CACHE ENTRIES WALKED        {:>12} {:>12} {:>12} {:>12}\n\
-               .. walked per dropped key   {:>12.0} {:>12.0} {:>12.0} {:>12.0}\n",
+               CACHE ENTRIES LISTED        {:>12} {:>12} {:>12} {:>12}\n\
+               .. listed per dropped key   {:>12.1} {:>12.1} {:>12.1} {:>12.1}\n\
+               entries the listing RETURNED{:>12} {:>12} {:>12} {:>12}\n\
+               CACHE ENTRIES WALKED        {:>12} {:>12} {:>12} {:>12}\n",
             "cold 500", "WARM 500", "cold 4000", "WARM 4000",
             cold_small.objects, warm_small.objects, cold_large.objects, warm_large.objects,
             cold_small.cache_entries_before, warm_small.cache_entries_before,
@@ -3244,15 +3301,24 @@ mod eviction_round_scale {
             cold_small.cache_entries_after, warm_small.cache_entries_after,
             cold_large.cache_entries_after, warm_large.cache_entries_after,
             cold_small.dropped, warm_small.dropped, cold_large.dropped, warm_large.dropped,
-            cold_small.calls, warm_small.calls, cold_large.calls, warm_large.calls,
+            cold_small.batched_calls, warm_small.batched_calls,
+            cold_large.batched_calls, warm_large.batched_calls,
+            cold_small.keys_batched, warm_small.keys_batched,
+            cold_large.keys_batched, warm_large.keys_batched,
             cold_small.sweep_residual(), warm_small.sweep_residual(),
             cold_large.sweep_residual(), warm_large.sweep_residual(),
+            cold_small.listings, warm_small.listings, cold_large.listings, warm_large.listings,
+            cold_small.calls, warm_small.calls, cold_large.calls, warm_large.calls,
             cold_small.sweeps, warm_small.sweeps, cold_large.sweeps, warm_large.sweeps,
             cold_small.named, warm_small.named, cold_large.named, warm_large.named,
+            cold_small.entries_listed, warm_small.entries_listed,
+            cold_large.entries_listed, warm_large.entries_listed,
+            cold_small.listed_per_key(), warm_small.listed_per_key(),
+            cold_large.listed_per_key(), warm_large.listed_per_key(),
+            cold_small.entries_returned, warm_small.entries_returned,
+            cold_large.entries_returned, warm_large.entries_returned,
             cold_small.entries_walked, warm_small.entries_walked,
             cold_large.entries_walked, warm_large.entries_walked,
-            cold_small.walked_per_key(), warm_small.walked_per_key(),
-            cold_large.walked_per_key(), warm_large.walked_per_key(),
         );
 
         println!(
@@ -3261,14 +3327,14 @@ mod eviction_round_scale {
              \n                                  {:>12} {:>12} {:>12} {:>12}\n\
                guard held, total us        {:>12.0} {:>12.0} {:>12.0} {:>12.0}\n\
                delete_record (NEEDS guard) {:>11.1}% {:>11.1}% {:>11.1}% {:>11.1}%\n\
-               invalidate_record_all       {:>11.1}% {:>11.1}% {:>11.1}% {:>11.1}%\n\
+               the round's cache pass      {:>11.1}% {:>11.1}% {:>11.1}% {:>11.1}%\n\
                WAL tombstone loop          {:>11.1}% {:>11.1}% {:>11.1}% {:>11.1}%\n\
                unattributed (independent)  {:>11.1}% {:>11.1}% {:>11.1}% {:>11.1}%\n\
-             \n  WARM / COLD on the sweep's share of the hold:  {:>5.2}x at {SMALL}, \
+             \n  WARM / COLD on the pass's share of the hold:   {:>5.2}x at {SMALL}, \
              {:>5.2}x at {LARGE}\n\
-               entries walked at {SMALL:>4}, cold -> WARM  {:>9} -> {:<10}\n\
-               entries walked at {LARGE:>4}, cold -> WARM  {:>9} -> {:<10}\n\
-               (no ratio is printed: the cold arm walks NONE, and that is the finding)\n",
+               entries listed at {SMALL:>4}, cold -> WARM  {:>9} -> {:<10}\n\
+               entries listed at {LARGE:>4}, cold -> WARM  {:>9} -> {:<10}\n\
+               (no ratio is printed: the cold arm lists NONE, and that is the finding)\n",
             "cold 500", "WARM 500", "cold 4000", "WARM 4000",
             t_cold_small.hold_ns as f64 / 1000.0, t_warm_small.hold_ns as f64 / 1000.0,
             t_cold_large.hold_ns as f64 / 1000.0, t_warm_large.hold_ns as f64 / 1000.0,
@@ -3292,10 +3358,10 @@ mod eviction_round_scale {
                 t_cold_large.pct(t_cold_large.invalidate_ns),
                 t_warm_large.pct(t_warm_large.invalidate_ns)
             ),
-            cold_small.entries_walked,
-            warm_small.entries_walked,
-            cold_large.entries_walked,
-            warm_large.entries_walked,
+            cold_small.entries_listed,
+            warm_small.entries_listed,
+            cold_large.entries_listed,
+            warm_large.entries_listed,
         );
 
         let armed = [&cold_small, &warm_small, &cold_large, &warm_large];
@@ -3335,88 +3401,151 @@ mod eviction_round_scale {
             );
         }
 
-        // THE COUNTER COUNTS WHERE THE WORK IS ASKED FOR. One call per dropped key, two sweeps
-        // and two named invalidations per call. Equalities, not bounds: "at least one sweep"
-        // would also pass on a function that had stopped making the second one.
+        // THE COUNTER COUNTS WHERE THE WORK IS ASKED FOR. ONE pass per round, one listing in
+        // it, one entry in the dropped set per dropped key, and two named invalidations per key.
+        // Equalities, not bounds: "at least one listing" would also pass on a pass that had gone
+        // back to listing per key, which is the whole thing this change removes.
         for round in armed {
             assert_eq!(
-                round.calls, round.dropped as u64,
-                "{}: the drop loop must sweep once per dropped key; {} calls for {} keys",
+                round.batched_calls, 1,
+                "{}: the round must make exactly ONE batched cache pass, whatever it dropped; \
+                 it made {} for {} keys",
                 round.label(),
-                round.calls,
+                round.batched_calls,
                 round.dropped,
             );
             assert_eq!(
-                round.sweeps,
-                round.calls.saturating_mul(2),
-                "{}: each call makes two full-cache sweeps (hash, feature); {} sweeps for {} calls",
+                round.listings, round.batched_calls,
+                "{}: the pass must list the cache exactly once; {} listings in {} passes",
                 round.label(),
-                round.sweeps,
-                round.calls,
+                round.listings,
+                round.batched_calls,
+            );
+            assert_eq!(
+                round.keys_batched, round.dropped as u64,
+                "{}: every dropped key must reach the pass; {} keys for {} dropped",
+                round.label(),
+                round.keys_batched,
+                round.dropped,
             );
             assert_eq!(
                 round.named,
-                round.calls.saturating_mul(2),
-                "{}: each call makes two named invalidations (string, set/members); {} for {} calls",
+                round.keys_batched.saturating_mul(2),
+                "{}: each key names two entries (string, set/members); {} for {} keys",
                 round.label(),
                 round.named,
+                round.keys_batched,
+            );
+            // AND THE PER-KEY SWEEP IS GONE FROM THIS PATH. `invalidate_record_all` is still
+            // reached from eight other call sites -- six single-key command paths in
+            // execute_on_shard.rs and the expiry sweep's own two in recovery_sweep_compact.rs --
+            // so this is a claim about the drop loop, not about the function: a round that still
+            // made one call per key would fail here.
+            assert_eq!(
+                round.calls, 0,
+                "{}: the drop loop must make no PER-KEY invalidate_record_all calls at all; \
+                 it made {}",
+                round.label(),
                 round.calls,
+            );
+            assert_eq!(
+                round.sweeps, 0,
+                "{}: the drop loop must make no PER-KEY invalidate_record sweeps at all; \
+                 it made {}",
+                round.label(),
+                round.sweeps,
+            );
+            assert_eq!(
+                round.entries_walked, 0,
+                "{}: with no per-key sweeps there is nothing for the sweep sizer to size; \
+                 it walked {}",
+                round.label(),
+                round.entries_walked,
             );
         }
 
         // THE INDEPENDENT RESIDUAL, asserted ACROSS THE SIZES rather than against a constant.
-        // `calls` comes from inside `invalidate_record_all`; `dropped` is what
-        // `apply_storage_eviction` returns. Equal across the sizes means whatever sweeping the
-        // round does beyond its drop loop is fixed per round. A residual that GREW with the
-        // corpus would be a second per-key sweeping path in no row of this table, which is
+        // `keys_batched` comes from inside `invalidate_records_all_batched`; `dropped` is what
+        // `apply_storage_eviction` returns. Equal across the sizes means whatever invalidating
+        // the round does beyond its drop loop is fixed per round. A residual that GREW with the
+        // corpus would be a second per-key invalidating path in no row of this table, which is
         // exactly the drift an assertion against a constant would have absorbed.
         assert_eq!(
             cold_small.sweep_residual(),
             cold_large.sweep_residual(),
-            "cold: sweeping calls beyond the drop loop must be fixed per round, not per key: \
-             {} at {SMALL} and {} at {LARGE}",
+            "cold: keys reaching the cache pass beyond the drop loop must be fixed per round, \
+             not per key: {} at {SMALL} and {} at {LARGE}",
             cold_small.sweep_residual(),
             cold_large.sweep_residual(),
         );
         assert_eq!(
             warm_small.sweep_residual(),
             warm_large.sweep_residual(),
-            "warm: sweeping calls beyond the drop loop must be fixed per round, not per key: \
-             {} at {SMALL} and {} at {LARGE}",
+            "warm: keys reaching the cache pass beyond the drop loop must be fixed per round, \
+             not per key: {} at {SMALL} and {} at {LARGE}",
             warm_small.sweep_residual(),
             warm_large.sweep_residual(),
         );
 
-        // THE CLAIM. A sweep walks the cache, so a warm cache is walked and a cold one is not.
-        // The cold arm is the FLOOR the earlier split reported; the warm arm is what a serving
-        // store pays. Asserted as a strict inequality on a COUNT at both sizes -- the timings
-        // above only illustrate it.
+        // THE CLAIM, FIRST HALF. A pass steps over the cache, so a warm cache is stepped over
+        // and a cold one is not. The cold arm is the FLOOR the earlier split reported; the warm
+        // arm is what a serving store pays. Asserted as a strict inequality on a COUNT at both
+        // sizes -- the timings above only illustrate it.
         for (cold, warm) in [(&cold_small, &warm_small), (&cold_large, &warm_large)] {
             assert!(
-                warm.entries_walked > cold.entries_walked,
-                "the sweep must walk more of a warm cache than of a cold one at {} objects: \
-                 cold walked {} entries, warm walked {}",
+                warm.entries_listed > cold.entries_listed,
+                "the pass must step over more of a warm cache than of a cold one at {} objects: \
+                 cold listed {} entries, warm listed {}",
                 cold.objects,
-                cold.entries_walked,
-                warm.entries_walked,
+                cold.entries_listed,
+                warm.entries_listed,
             );
         }
 
-        // AND THE WALK IS THE CACHE, TWICE. Entries walked per dropped key must be two cache
-        // lengths, which is what makes this cost a property of the STORE rather than of the
-        // round. Bounded by the cache size read from outside: the round removes entries as it
-        // goes, so the per-key figure lands between two tier-length readings taken either side.
+        // AND THE WALK IS THE CACHE, ONCE PER ROUND, whatever the round dropped. Bounded by
+        // the cache size read from OUTSIDE the round, either side of it.
+        //
+        // WHY THE UPPER BOUND IS THREE CACHE LENGTHS AND NOT ONE. `entries_listed` is the sum of
+        // the three TIER lengths -- the same definition `entries_walked` uses, which is what
+        // makes the two commensurable -- while `cache_entries_before` is the DEDUPLICATED listing
+        // of the shard, and an entry present in two tiers is counted twice in the first and once
+        // in the second. Three tiers is the ceiling on that. What the bound excludes is the shape
+        // this change removed: one listing per dropped key would put `entries_listed` at N cache
+        // lengths, and N is in the hundreds at {SMALL} objects and the thousands at {LARGE}.
         for round in armed {
-            let after_bound = 2.0 * round.cache_entries_after as f64;
-            let before_bound = 2.0 * round.cache_entries_before as f64;
+            let ceiling = 3u64.saturating_mul(round.cache_entries_before as u64);
             assert!(
-                round.walked_per_key() >= after_bound && round.walked_per_key() <= before_bound,
-                "{}: entries walked per key ({:.0}) must lie between twice the cache size after \
-                 ({after_bound:.0}) and twice the cache size before ({before_bound:.0})",
+                round.entries_listed >= round.cache_entries_after as u64
+                    && round.entries_listed <= ceiling,
+                "{}: entries listed ({}) must lie between the cache size after ({}) and three \
+                 cache lengths ({ceiling}) -- ONE pass over the cache, not one per dropped key \
+                 ({} of them)",
                 round.label(),
-                round.walked_per_key(),
+                round.entries_listed,
+                round.cache_entries_after,
+                round.dropped,
             );
         }
+
+        // THE CLAIM, SECOND HALF, AND IT IS THE POINT OF THE CHANGE. What #1907 measured was a
+        // per-key cost that GREW WITH THE STORE: 499 entries walked per dropped key at 500
+        // objects and 3,999 at 4,000, because each key walked two whole cache lengths. One pass
+        // spreads a single cache length over every key the round drops, so the per-key figure
+        // stops tracking the corpus. An eightfold corpus must not bring an eightfold per-key
+        // cost with it.
+        let small_per_key = warm_small.listed_per_key();
+        let large_per_key = warm_large.listed_per_key();
+        assert!(
+            small_per_key > 0.0 && large_per_key > 0.0,
+            "both warm arms must have listed something per key, or the ratio below is a ratio \
+             of zeroes: {small_per_key:.2} at {SMALL} and {large_per_key:.2} at {LARGE}",
+        );
+        assert!(
+            large_per_key <= small_per_key * 1.5,
+            "entries listed per dropped key must not grow with the corpus: {small_per_key:.2} \
+             at {SMALL} objects and {large_per_key:.2} at {LARGE}; the per-key shape this \
+             replaced went from 499 to 3,999 over the same two sizes",
+        );
     }
 
     /// THE CONTROL FOR THE APPARATUS, and it can fail in both directions.
@@ -3435,26 +3564,31 @@ mod eviction_round_scale {
         let disarmed = sweep_round(300, true, false);
 
         assert!(
-            armed.sweeps > 0 && disarmed.sweeps > 0,
-            "both arms must have swept, or the flag is being tested on nothing: {armed:?} \
-             {disarmed:?}",
+            armed.listings > 0 && disarmed.listings > 0,
+            "both arms must have listed the cache, or the flag is being tested on nothing: \
+             {armed:?} {disarmed:?}",
         );
         assert_eq!(
-            armed.sweeps, disarmed.sweeps,
-            "arming must not change how many sweeps happen, only whether they are sized: \
+            armed.listings, disarmed.listings,
+            "arming must not change how many listings happen, only whether they are sized: \
              {} armed vs {} disarmed",
-            armed.sweeps, disarmed.sweeps,
+            armed.listings, disarmed.listings,
+        );
+        assert_eq!(
+            armed.entries_returned, disarmed.entries_returned,
+            "arming must not change what the listings return either: {} armed vs {} disarmed",
+            armed.entries_returned, disarmed.entries_returned,
         );
         assert!(
-            armed.entries_walked > 0,
-            "the armed arm must size its walks; walked {}",
-            armed.entries_walked,
+            armed.entries_listed > 0,
+            "the armed arm must size its pass; listed {}",
+            armed.entries_listed,
         );
         assert_eq!(
-            disarmed.entries_walked, 0,
+            disarmed.entries_listed, 0,
             "the disarmed arm must do no sizing at all, or the timings it is used for include \
-             the apparatus that explains them; walked {}",
-            disarmed.entries_walked,
+             the apparatus that explains them; listed {}",
+            disarmed.entries_listed,
         );
     }
 
@@ -3687,8 +3821,29 @@ mod eviction_round_scale {
         };
 
         let before = engine.cache.entries_for_shard(1);
-        let swept = ["hash", "feature"];
-        let named = ["string", "set"];
+        // DERIVED FROM THE AUTHORITY, not written out beside it. `SWEPT_RECORD_NAMESPACES` and
+        // `named_record_keys` are what both the per-key primitive and the batched pass read, so a
+        // namespace added to either is covered by this test the moment it is added -- a
+        // hand-written copy of the list goes stale and nothing fails.
+        let swept: Vec<String> = super::SWEPT_RECORD_NAMESPACES
+            .iter()
+            .map(|namespace| namespace.to_string())
+            .collect();
+        let named: Vec<String> = super::named_record_keys(1, "probe")
+            .iter()
+            .map(|key| key.namespace.to_string())
+            .collect();
+        // AND FLOORED, because deriving cuts both ways: a change that removes a namespace from
+        // the authority removes it from this test in the same moment, and the test then passes
+        // by checking one thing fewer. Adding a namespace is free; losing one fails here.
+        for required in ["hash", "feature", "string", "set"] {
+            assert!(
+                swept.iter().chain(named.iter()).any(|name| name == required),
+                "`{required}` is no longer in the namespace list this test derives from the \
+                 production authority, so nothing here checks it any more: swept {swept:?}, \
+                 named {named:?}",
+            );
+        }
         println!(
             "\n  CACHE ENTRIES FOR THE MARKED KEYS, BEFORE THE ROUND\n    \
                hash    {:>4}\n    feature {:>4}\n    string  {:>4}\n    set     {:>4}\n",
@@ -3750,6 +3905,555 @@ mod eviction_round_scale {
                 "the round dropped {dropped_marked:?} but left {} `{namespace}` entries cached \
                  for them: {left:?}",
                 left.len(),
+            );
+        }
+    }
+
+    /// WHAT ONE LISTING OF THE SHARD'S CACHE COSTS IN SYSCALLS.
+    ///
+    /// #1907 measured the shipped sweep at 3,999 cache entries walked PER DROPPED KEY on a warm
+    /// 4,000-object store -- 15,996,000 entry visits for one round, inside the `shards` write
+    /// guard. One batched pass would visit the cache once instead of twice per key, but the only
+    /// listing `MultiLayerCache` exposes is `entries_for_shard`, and for every entry that is NOT
+    /// in the disk index it falls through to a filesystem call:
+    ///
+    ///     let disk_bytes = inner.disk_index.get(&key).copied().unwrap_or_else(|| {
+    ///         inner.disk_path(&key).metadata().map(|m| m.len()).unwrap_or_default()
+    ///     });
+    ///
+    /// So the batched pass trades N cache walks for one cache walk plus C syscalls, and C is a
+    /// property of the fixture, not a constant. This measures C.
+    ///
+    /// HOW. The count is a DIFFERENCE taken from outside the process: the same test binary is run
+    /// under `strace -f -c` twice, once with `TS_PROBE_LIST_REPEATS=0` and once with a positive
+    /// repeat count, and the per-listing syscall count is the difference divided by the repeats.
+    /// Everything else the test does -- building the corpus, warming the cache, the assertion's
+    /// own listing -- is identical in both arms and cancels. Nothing in this process counts its
+    /// own syscalls.
+    ///
+    /// THE CACHE MUST BE POPULATED. `engine_with` writes a corpus and never reads it back, and a
+    /// READ is what populates a record cache, so the cold fixture lists ZERO entries -- which
+    /// would put C at zero and read exactly like a free listing. The fixture here is the warm one
+    /// and the entry count is asserted non-zero and printed.
+    #[test]
+    fn what_one_listing_of_the_shards_cache_costs_in_syscalls() {
+        let objects: usize = std::env::var("TS_PROBE_OBJECTS")
+            .ok()
+            .and_then(|value| value.parse().ok())
+            .unwrap_or(500);
+        let repeats: usize = std::env::var("TS_PROBE_LIST_REPEATS")
+            .ok()
+            .and_then(|value| value.parse().ok())
+            .unwrap_or(0);
+
+        let (_dir, engine) = engine_with_warm_cache(objects);
+        let listing = engine.cache.entries_for_shard(1);
+        let entries = listing.len();
+        assert!(
+            entries > 0,
+            "the fixture's cache is empty, so a listing of it would cost nothing and this probe \
+             would report a free operation; objects {objects}",
+        );
+        let mut by_namespace = std::collections::BTreeMap::<String, usize>::new();
+        for entry in &listing {
+            *by_namespace.entry(entry.namespace.clone()).or_default() += 1;
+        }
+        let load = std::fs::read_to_string("/proc/loadavg").unwrap_or_default();
+        println!(
+            "PROBE-LISTING objects={objects} entries={entries} repeats={repeats} \
+             namespaces={by_namespace:?} load={}",
+            load.split_whitespace().next().unwrap_or("?"),
+        );
+        let started = std::time::Instant::now();
+        let mut listed = 0usize;
+        for _ in 0..repeats {
+            listed = listed.saturating_add(engine.cache.entries_for_shard(1).len());
+        }
+        let elapsed = started.elapsed().as_micros();
+        // The listing must be deterministic, or the syscall difference this probe is driven for
+        // is a difference between two different listings.
+        assert_eq!(
+            engine.cache.entries_for_shard(1).len(),
+            entries,
+            "two listings of an untouched cache returned different lengths",
+        );
+        println!(
+            "PROBE-LISTING listed_total={listed} elapsed_us={elapsed} per_listing_us={:.1}",
+            if repeats == 0 {
+                0.0
+            } else {
+                elapsed as f64 / repeats as f64
+            },
+        );
+    }
+
+    /// A warm cache with SEVERAL entries per marked key in every namespace the invalidation
+    /// covers, so the two arms below have something to disagree about.
+    ///
+    /// A READ is what populates a record cache -- `the_cache_namespaces_a_record_can_actually_use`
+    /// (engine/tests/part4.rs) says so in as many words -- so every write here is followed by the
+    /// read that caches it. Three hash fields and three feature windows per key, because the
+    /// namespaces that get SWEPT are exactly the ones that hold more than one entry per key: a
+    /// hash caches one entry per field and a feature one per query window. A fixture with one
+    /// entry each would make "drop the entry" and "drop every entry" the same assertion.
+    fn engine_with_marked_record_entries(
+        objects: usize,
+        marked: &[String],
+    ) -> (tempfile::TempDir, TemporalEngine) {
+        let (dir, engine) = engine_with_warm_cache(objects);
+        let mut run = |command: Command| {
+            let out = engine.execute(ExecuteRequest {
+                shard_id: 1,
+                command,
+            });
+            assert!(out.status.ok, "fixture command failed: {:?}", out.status);
+        };
+        for key in marked {
+            for field in ["alpha", "beta", "gamma"] {
+                run(Command::HashSet {
+                    key: key.clone(),
+                    field: field.to_string(),
+                    value: b"hash-value".to_vec(),
+                });
+                run(Command::HashGet {
+                    key: key.clone(),
+                    field: field.to_string(),
+                });
+            }
+            run(Command::SetAdd {
+                key: key.clone(),
+                member: b"sweep-member".to_vec(),
+            });
+            run(Command::SetMembers { key: key.clone() });
+            run(Command::FeatureAppend {
+                key: key.clone(),
+                points: vec![crate::types::FeaturePoint {
+                    timestamp_ms: 1_000,
+                    value: b"feature-value".to_vec(),
+                }],
+            });
+            for (start_ms, end_ms) in [(0u64, 10_000u64), (0, 20_000), (500, 9_000)] {
+                run(Command::FeatureQuery {
+                    key: key.clone(),
+                    start_ms,
+                    end_ms,
+                    count: None,
+                });
+            }
+            run(Command::StringGet { key: key.clone() });
+        }
+        (dir, engine)
+    }
+
+    /// What one arm of the comparison did, and what it left in the cache.
+    #[derive(Debug)]
+    struct CachePassArm {
+        arm: &'static str,
+        objects: usize,
+        dropped: usize,
+        /// Cache entries the arm stepped over. SAME DEFINITION in both arms -- the sum of the
+        /// three tier lengths, read inside the primitive immediately before each walk, by
+        /// `note_sweep` in one arm and `note_listing` in the other.
+        stepped: u64,
+        /// Walks: `invalidate_record` calls in the per-key arm, `entries_for_shard` listings in
+        /// the batched one.
+        walks: u64,
+        /// Entries the batched arm's listing RETURNED. Zero in the per-key arm, which lists
+        /// nothing at all. This is the upper bound on the arm's filesystem `metadata()` calls:
+        /// `entries_for_shard` makes one for every entry it returns that the disk index does not
+        /// hold, and for no others.
+        returned: u64,
+        /// The shard's whole cache, `namespace/record_key/selector`, before and after the arm.
+        /// `entries_for_shard` already sorts by those three fields, so these compare directly.
+        before: Vec<String>,
+        after: Vec<String>,
+    }
+
+    impl CachePassArm {
+        fn stepped_per_key(&self) -> f64 {
+            if self.dropped == 0 {
+                0.0
+            } else {
+                self.stepped as f64 / self.dropped as f64
+            }
+        }
+
+        fn occupied(&self, listing: &[String], namespace: &str, key: &str) -> usize {
+            let prefix = format!("{namespace}/{key}/");
+            listing
+                .iter()
+                .filter(|entry| entry.starts_with(&prefix))
+                .count()
+        }
+    }
+
+    fn cache_listing(engine: &TemporalEngine) -> Vec<String> {
+        engine
+            .cache
+            .entries_for_shard(1)
+            .into_iter()
+            .map(|entry| format!("{}/{}/{}", entry.namespace, entry.record_key, entry.selector))
+            .collect()
+    }
+
+    /// The two arms, on two fixtures built by the same function from the same corpus size, handed
+    /// the same set of dropped keys.
+    fn cache_pass_arms(objects: usize) -> (CachePassArm, CachePassArm, Vec<String>, Vec<String>) {
+        use super::CACHE_SWEEP_COUNTS as SWEEP;
+
+        let marked: Vec<String> = [3usize, 17, objects - 1]
+            .iter()
+            .map(|index| format!("evict-scale-key-{index}"))
+            .collect();
+        // The keys a round would have dropped: the first half of the corpus. That holds two of
+        // the three marked keys and leaves the third -- the last key in the corpus -- alone, so
+        // the OVER-invalidation direction has a subject.
+        let drop_keys: Vec<String> = (0..objects / 2)
+            .map(|index| format!("evict-scale-key-{index}"))
+            .collect();
+
+        let per_key = {
+            let (_dir, engine) = engine_with_marked_record_entries(objects, &marked);
+            let before = cache_listing(&engine);
+            SWEEP.reset();
+            SWEEP.set_armed(true);
+            for key in &drop_keys {
+                super::invalidate_record_all(&engine.cache, 1, key, &SWEEP);
+            }
+            SWEEP.set_armed(false);
+            let (_calls, walks, stepped, _named) = SWEEP.read();
+            CachePassArm {
+                arm: "N per-key sweeps",
+                objects,
+                dropped: drop_keys.len(),
+                stepped,
+                walks,
+                returned: 0,
+                before,
+                after: cache_listing(&engine),
+            }
+        };
+
+        let batched = {
+            let (_dir, engine) = engine_with_marked_record_entries(objects, &marked);
+            let before = cache_listing(&engine);
+            let keys: Vec<std::sync::Arc<str>> = drop_keys
+                .iter()
+                .map(|key| std::sync::Arc::from(key.as_str()))
+                .collect();
+            SWEEP.reset();
+            SWEEP.set_armed(true);
+            super::invalidate_records_all_batched(&engine.cache, 1, &keys, &SWEEP);
+            SWEEP.set_armed(false);
+            let (_batched_calls, _keys_batched, walks, stepped, returned) = SWEEP.read_batched();
+            CachePassArm {
+                arm: "ONE batched pass",
+                objects,
+                dropped: drop_keys.len(),
+                stepped,
+                walks,
+                returned,
+                before,
+                after: cache_listing(&engine),
+            }
+        };
+
+        (per_key, batched, marked, drop_keys)
+    }
+
+    /// ONE PASS OVER THE CACHE, PRICED AGAINST THE N IT REPLACES, AND PROVED TO DROP THE SAME SET.
+    ///
+    /// #1907 established what the shipped shape costs and refused the obvious way out of it. Its
+    /// closing paragraph names this change and states the obstacle: one batched pass inside the
+    /// guard needs no visibility argument, but the only listing `MultiLayerCache` exposes is
+    /// `entries_for_shard`, which does a filesystem `metadata()` per entry the disk index does not
+    /// hold -- so it trades N cache walks for one cache walk plus C syscalls, inside the guard.
+    /// This is that measurement, and the equivalence that has to come with it.
+    ///
+    /// THE TWO ARMS, ON MATCHED FIXTURES. Both are built by `engine_with_marked_record_entries`
+    /// from the same corpus size and handed the same dropped-key set, and both are measured in
+    /// the SAME unit: cache entries stepped over, read from the three tier lengths inside the
+    /// primitive immediately before each walk. `note_sweep` does it for `invalidate_record` and
+    /// `note_listing` does it for `entries_for_shard`, from the same three counters, so the ratio
+    /// between the two arms is a ratio and not a comparison of two different quantities.
+    ///
+    /// EXACTLY THE SAME SET, and this is the correctness core rather than a sanity check. What is
+    /// compared is not "did the dropped keys go" -- an arm that emptied the whole cache would pass
+    /// that -- but the WHOLE shard listing afterwards, entry for entry, in `namespace/record_key/
+    /// selector` form. Both arms match:
+    ///
+    ///   - `CacheKey::string(shard, key)`, selector "value"        -- named, O(1), per dropped key
+    ///   - `CacheKey::set_members(shard, key)`, selector "members" -- named, O(1), per dropped key
+    ///   - namespace `hash`, any selector, dropped record key      -- SWEPT
+    ///   - namespace `feature`, any selector, dropped record key   -- SWEPT
+    ///
+    /// and nothing else. Both take the named pair from `named_record_keys` and the swept list
+    /// from `SWEPT_RECORD_NAMESPACES`, so the enumeration is one list read twice rather than two
+    /// lists that agree today.
+    ///
+    /// The set the batched arm builds is the same set because `entries_for_shard` chains the SAME
+    /// three tier key sets that `invalidate_record` chains and applies the SAME shard filter,
+    /// leaving the namespace and record-key halves of the filter to the predicate here; and
+    /// because `CacheEntryInfo` carries `shard_id`, `namespace`, `record_key` and `selector`,
+    /// which is every field of a `CacheKey`, so a matched entry is rebuilt into the key that was
+    /// in the tier. At the layer below, `MultiLayerCache::invalidate` and `invalidate_batch` both
+    /// end in `invalidate_keys_locked` -- the single-key form calls it with a one-element slice --
+    /// so a batch is the same per-key removal under one lock acquisition instead of 4N.
+    ///
+    /// KEYS THE ROUND DID NOT DROP KEEP THEIR ENTRIES. `evict-scale-key-{objects - 1}` is marked,
+    /// so it is cached in every namespace, and it is NOT in the dropped set. Both arms must leave
+    /// every one of its entries alone, and the count is asserted equal to what it was before the
+    /// arm ran -- not merely non-zero. This is the OVER-invalidation direction, and it is the one
+    /// a batched predicate can fail: a pass that matched on namespace and forgot the record key
+    /// would empty the whole namespace and still satisfy every "the dropped keys are gone" claim.
+    ///
+    /// THE POSITIVE CONTROL RUNS FIRST. Everything asserted after the arms is an emptiness or an
+    /// equality claim, and two empty listings are equal. The entries have to be there first, per
+    /// namespace, in both fixtures.
+    #[test]
+    fn one_batched_pass_walks_the_cache_once_instead_of_twice_per_dropped_key() {
+        const SMALL: usize = 500;
+        const LARGE: usize = 4000;
+
+        let (small_per_key, small_batched, small_marked, small_dropped) = cache_pass_arms(SMALL);
+        let (large_per_key, large_batched, large_marked, large_dropped) = cache_pass_arms(LARGE);
+
+        let namespaces: Vec<String> = super::SWEPT_RECORD_NAMESPACES
+            .iter()
+            .map(|namespace| namespace.to_string())
+            .chain(
+                super::named_record_keys(1, "probe")
+                    .iter()
+                    .map(|key| key.namespace.to_string()),
+            )
+            .collect();
+
+
+        // THE FLOOR ON THE DERIVED LIST, and it is not optional. Deriving the subject list from
+        // the production authority is what stops it going stale -- but it also means a change
+        // that REMOVES a namespace from the authority removes it from this test at the same
+        // moment, and the test then passes by checking one thing fewer. So the list is derived
+        // AND floored: these four have to be in it, and the count has to be at least four.
+        // Adding a namespace is free; losing one fails here.
+        for required in ["hash", "feature", "string", "set"] {
+            assert!(
+                namespaces.iter().any(|namespace| namespace == required),
+                "`{required}` is no longer in the namespace list this test derives from \
+                 SWEPT_RECORD_NAMESPACES and named_record_keys, so nothing here checks it any \
+                 more; the list is {namespaces:?}",
+            );
+        }
+        assert!(
+            namespaces.len() >= 4,
+            "the derived namespace list must cover at least the four the round has always \
+             covered; it is {namespaces:?}",
+        );
+
+        let ratio = |per_key: &CachePassArm, batched: &CachePassArm| {
+            if batched.stepped == 0 {
+                0.0
+            } else {
+                per_key.stepped as f64 / batched.stepped as f64
+            }
+        };
+
+        println!(
+            "\n  ONE PASS OVER THE CACHE vs N PER-KEY SWEEPS, same fixture, same dropped keys\n\
+             \n                                  {:>12} {:>12} {:>12} {:>12}\n\
+               corpus objects              {:>12} {:>12} {:>12} {:>12}\n\
+               cache entries BEFORE (outer){:>12} {:>12} {:>12} {:>12}\n\
+               keys dropped                {:>12} {:>12} {:>12} {:>12}\n\
+               walks over the cache        {:>12} {:>12} {:>12} {:>12}\n\
+               CACHE ENTRIES STEPPED OVER  {:>12} {:>12} {:>12} {:>12}\n\
+               .. per dropped key          {:>12.1} {:>12.1} {:>12.1} {:>12.1}\n\
+               entries the listing RETURNED{:>12} {:>12} {:>12} {:>12}\n\
+               cache entries AFTER  (outer){:>12} {:>12} {:>12} {:>12}\n\
+             \n  ENTRY VISITS REMOVED: {:>8.1}x at {SMALL} objects, {:>8.1}x at {LARGE}\n",
+            "per-key 500", "BATCHED 500", "per-key 4000", "BATCHED 4000",
+            small_per_key.objects, small_batched.objects,
+            large_per_key.objects, large_batched.objects,
+            small_per_key.before.len(), small_batched.before.len(),
+            large_per_key.before.len(), large_batched.before.len(),
+            small_per_key.dropped, small_batched.dropped,
+            large_per_key.dropped, large_batched.dropped,
+            small_per_key.walks, small_batched.walks, large_per_key.walks, large_batched.walks,
+            small_per_key.stepped, small_batched.stepped,
+            large_per_key.stepped, large_batched.stepped,
+            small_per_key.stepped_per_key(), small_batched.stepped_per_key(),
+            large_per_key.stepped_per_key(), large_batched.stepped_per_key(),
+            small_per_key.returned, small_batched.returned,
+            large_per_key.returned, large_batched.returned,
+            small_per_key.after.len(), small_batched.after.len(),
+            large_per_key.after.len(), large_batched.after.len(),
+            ratio(&small_per_key, &small_batched),
+            ratio(&large_per_key, &large_batched),
+        );
+
+        let arms = [
+            (&small_per_key, &small_batched, &small_marked, &small_dropped, SMALL),
+            (&large_per_key, &large_batched, &large_marked, &large_dropped, LARGE),
+        ];
+
+        // THE POSITIVE CONTROL, per namespace, per arm, BEFORE anything is claimed about
+        // emptiness. Two empty listings are equal, and a fixture that cached nothing would make
+        // every claim below hold whatever either arm did.
+        for (per_key, batched, marked, dropped, objects) in arms {
+            for arm in [per_key, batched] {
+                for namespace in &namespaces {
+                    let held = arm.occupied(&arm.before, namespace, &marked[0]);
+                    assert!(
+                        held > 0,
+                        "{objects} objects, {}: no `{namespace}` entry was cached for {}, so the \
+                         claims below would hold whatever this arm did",
+                        arm.arm,
+                        marked[0],
+                    );
+                }
+            }
+            assert!(
+                !dropped.is_empty() && dropped.contains(&marked[0]) && dropped.contains(&marked[1]),
+                "the dropped set must contain the marked keys the emptiness claims are about",
+            );
+            assert!(
+                !dropped.contains(&marked[2]),
+                "the marked key {} must NOT be in the dropped set, or the over-invalidation \
+                 direction has no subject",
+                marked[2],
+            );
+        }
+
+        // THE EQUIVALENCE. Not "the dropped keys are gone" -- an arm that emptied the cache would
+        // satisfy that -- but the whole shard listing afterwards, entry for entry.
+        for (per_key, batched, _marked, _dropped, objects) in arms {
+            assert_eq!(
+                per_key.before, batched.before,
+                "{objects} objects: the two fixtures must start identical, or the listings \
+                 compared below are of two different caches",
+            );
+            assert_eq!(
+                per_key.after, batched.after,
+                "{objects} objects: one batched pass must leave the cache in exactly the state \
+                 {} per-key sweeps leave it in; {} entries vs {}",
+                per_key.dropped,
+                per_key.after.len(),
+                batched.after.len(),
+            );
+            assert!(
+                per_key.after.len() < per_key.before.len(),
+                "{objects} objects: the arms must have removed something, or the equality above \
+                 is an equality between two untouched caches: {} before, {} after",
+                per_key.before.len(),
+                per_key.after.len(),
+            );
+        }
+
+        // WHAT WENT: every namespace the invalidation covers, for every dropped key, in BOTH
+        // arms. Checked on the marked keys, which are the ones the fixture cached more than one
+        // entry for.
+        for (per_key, batched, marked, _dropped, objects) in arms {
+            for arm in [per_key, batched] {
+                for dropped_key in [&marked[0], &marked[1]] {
+                    for namespace in &namespaces {
+                        let left = arm.occupied(&arm.after, namespace, dropped_key);
+                        assert_eq!(
+                            left, 0,
+                            "{objects} objects, {}: {left} `{namespace}` entries left cached for \
+                             {dropped_key}, which the round dropped",
+                            arm.arm,
+                        );
+                    }
+                }
+            }
+        }
+
+        // AND WHAT STAYED. The over-invalidation direction: a key the round did NOT drop keeps
+        // every entry it had, in every namespace, in both arms. Asserted as EQUAL to the count
+        // before the arm ran, not as non-zero -- an arm that dropped two of its three hash fields
+        // would pass a non-zero check.
+        for (per_key, batched, marked, _dropped, objects) in arms {
+            for arm in [per_key, batched] {
+                for namespace in &namespaces {
+                    let before = arm.occupied(&arm.before, namespace, &marked[2]);
+                    let after = arm.occupied(&arm.after, namespace, &marked[2]);
+                    assert_eq!(
+                        before, after,
+                        "{objects} objects, {}: {} was not dropped, so its `{namespace}` entries \
+                         must survive untouched; {before} before and {after} after",
+                        arm.arm, marked[2],
+                    );
+                }
+            }
+        }
+
+        // THE COST. One walk per round against two per dropped key, in the same unit, on matched
+        // fixtures. Asserted as counts at both sizes; no time is involved.
+        for (per_key, batched, _marked, _dropped, objects) in arms {
+            assert_eq!(
+                per_key.walks,
+                (per_key.dropped as u64).saturating_mul(2),
+                "{objects} objects: the per-key arm walks the cache twice per dropped key; \
+                 {} walks for {} keys",
+                per_key.walks,
+                per_key.dropped,
+            );
+            assert_eq!(
+                batched.walks, 1,
+                "{objects} objects: the batched arm walks the cache exactly once, whatever it \
+                 was handed; it walked {} times for {} keys",
+                batched.walks,
+                batched.dropped,
+            );
+            assert!(
+                batched.stepped > 0 && per_key.stepped > 0,
+                "{objects} objects: both arms must have stepped over something, or the ratio is \
+                 a ratio of zeroes: per-key {} and batched {}",
+                per_key.stepped,
+                batched.stepped,
+            );
+            assert!(
+                per_key.stepped > batched.stepped.saturating_mul(100),
+                "{objects} objects: one pass must step over at least a hundredth of what {} \
+                 per-key sweeps step over; per-key {} and batched {}",
+                per_key.dropped,
+                per_key.stepped,
+                batched.stepped,
+            );
+        }
+
+        // AND THE SHAPE OF THE SAVING, across the two sizes. The per-key arm's cost per dropped
+        // key grows with the corpus -- that is what makes it a property of the STORE rather than
+        // of the round -- and the batched arm's does not.
+        assert!(
+            large_per_key.stepped_per_key() > small_per_key.stepped_per_key() * 2.0,
+            "the per-key arm's cost per dropped key must grow with the corpus: {:.1} at {SMALL} \
+             and {:.1} at {LARGE}",
+            small_per_key.stepped_per_key(),
+            large_per_key.stepped_per_key(),
+        );
+        assert!(
+            large_batched.stepped_per_key() <= small_batched.stepped_per_key() * 1.5,
+            "one pass's cost per dropped key must NOT grow with the corpus: {:.1} at {SMALL} and \
+             {:.1} at {LARGE}",
+            small_batched.stepped_per_key(),
+            large_batched.stepped_per_key(),
+        );
+
+        // THE SYSCALLS THE PASS BUYS THE SAVING WITH, bounded by a count from the same run.
+        // `entries_for_shard` makes one filesystem `metadata()` for every entry it returns that
+        // the disk index does not hold, so `returned` is the ceiling on them, and it is ONE cache
+        // length per round rather than anything per key.
+        for (_per_key, batched, _marked, _dropped, objects) in arms {
+            assert!(
+                batched.returned > 0,
+                "{objects} objects: the listing returned nothing, so this probe has priced an \
+                 operation on an empty cache",
+            );
+            assert!(
+                batched.returned <= batched.before.len() as u64,
+                "{objects} objects: the listing cannot return more entries than the shard's \
+                 cache holds: returned {} of {}",
+                batched.returned,
+                batched.before.len(),
             );
         }
     }

@@ -4619,6 +4619,20 @@ pub(crate) struct CacheSweepCounts {
     pub entries_walked: std::sync::atomic::AtomicU64,
     /// Named-key invalidations: one `CacheKey`, no walk. What a sweep is narrowed TO.
     pub named: std::sync::atomic::AtomicU64,
+    /// `invalidate_records_all_batched` calls -- ONE per round, not one per dropped key.
+    pub batched_calls: std::sync::atomic::AtomicU64,
+    /// Dropped keys those calls were handed, counted INSIDE the primitive.
+    pub keys_batched: std::sync::atomic::AtomicU64,
+    /// `MultiLayerCache::entries_for_shard` listings -- the batched pass's single walk.
+    pub listings: std::sync::atomic::AtomicU64,
+    /// Cache entries those listings stepped over, summed. Zero unless armed, and read from the
+    /// SAME three tier lengths as `entries_walked`, so the two are commensurable.
+    pub entries_listed: std::sync::atomic::AtomicU64,
+    /// Entries those listings RETURNED for the shard. This is the upper bound on the filesystem
+    /// `metadata()` calls the listing makes: `entries_for_shard` falls through to
+    /// `disk_path(&key).metadata()` for every returned entry the disk index does not hold, and
+    /// for no others. Always counted -- it is a `Vec::len()`, not a probe.
+    pub entries_returned: std::sync::atomic::AtomicU64,
 }
 
 impl CacheSweepCounts {
@@ -4629,13 +4643,28 @@ impl CacheSweepCounts {
             sweeps: std::sync::atomic::AtomicU64::new(0),
             entries_walked: std::sync::atomic::AtomicU64::new(0),
             named: std::sync::atomic::AtomicU64::new(0),
+            batched_calls: std::sync::atomic::AtomicU64::new(0),
+            keys_batched: std::sync::atomic::AtomicU64::new(0),
+            listings: std::sync::atomic::AtomicU64::new(0),
+            entries_listed: std::sync::atomic::AtomicU64::new(0),
+            entries_returned: std::sync::atomic::AtomicU64::new(0),
         }
     }
 
     /// Process-wide, so a reader resets immediately before the round it measures and the suite it
     /// runs in is single-threaded.
     pub(crate) fn reset(&self) {
-        for cell in [&self.calls, &self.sweeps, &self.entries_walked, &self.named] {
+        for cell in [
+            &self.calls,
+            &self.sweeps,
+            &self.entries_walked,
+            &self.named,
+            &self.batched_calls,
+            &self.keys_batched,
+            &self.listings,
+            &self.entries_listed,
+            &self.entries_returned,
+        ] {
             cell.store(0, std::sync::atomic::Ordering::Relaxed);
         }
     }
@@ -4663,9 +4692,56 @@ impl CacheSweepCounts {
             .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     }
 
+    /// `(batched_calls, keys_batched, listings, entries_listed, entries_returned)`.
+    pub(crate) fn read_batched(&self) -> (u64, u64, u64, u64, u64) {
+        let load = |cell: &std::sync::atomic::AtomicU64| {
+            cell.load(std::sync::atomic::Ordering::Relaxed)
+        };
+        (
+            load(&self.batched_calls),
+            load(&self.keys_batched),
+            load(&self.listings),
+            load(&self.entries_listed),
+            load(&self.entries_returned),
+        )
+    }
+
     fn note_named(&self) {
         self.named
             .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    }
+
+    /// One batched pass, and the number of dropped keys it was handed.
+    ///
+    /// `keys` is counted HERE, inside the primitive, so it is independent of the dropped-key
+    /// count `apply_storage_eviction` returns to its caller. The difference between the two is
+    /// the round's residual.
+    fn note_batched_call(&self, keys: u64) {
+        self.batched_calls
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        self.keys_batched
+            .fetch_add(keys, std::sync::atomic::Ordering::Relaxed);
+    }
+
+    /// Counted immediately BEFORE the listing it describes, from the same three tier lengths
+    /// `note_sweep` reads -- so a listing and a sweep are priced in the same unit and the ratio
+    /// between them means something.
+    fn note_listing(&self, cache: &MultiLayerCache) {
+        self.listings
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        if self.armed.load(std::sync::atomic::Ordering::Relaxed) {
+            let listed = cache
+                .item_count_for_tier(matrixcache::CacheTier::Memory)
+                .saturating_add(cache.item_count_for_tier(matrixcache::CacheTier::Pmem))
+                .saturating_add(cache.item_count_for_tier(matrixcache::CacheTier::Ssd));
+            self.entries_listed
+                .fetch_add(listed as u64, std::sync::atomic::Ordering::Relaxed);
+        }
+    }
+
+    fn note_listed_entries(&self, returned: u64) {
+        self.entries_returned
+            .fetch_add(returned, std::sync::atomic::Ordering::Relaxed);
     }
 
     /// Counted immediately BEFORE the walk it describes, so the tier lengths it reads are the
@@ -4686,6 +4762,29 @@ impl CacheSweepCounts {
 
 pub(crate) static CACHE_SWEEP_COUNTS: CacheSweepCounts = CacheSweepCounts::zeroed();
 
+/// The record namespaces a dropped key has to SWEEP for, because neither has a single cacheable
+/// key to name: a hash caches one entry per FIELD and a feature one per query window.
+///
+/// THE AUTHORITY, and both arms read it. The per-key primitive below and the batched pass both
+/// iterate this list, so a namespace added here is covered by both and cannot be covered by only
+/// one. The equivalence test enumerates from here too, rather than from a list written out beside
+/// it -- a hand-written copy goes stale and nothing fails.
+pub(crate) const SWEPT_RECORD_NAMESPACES: [&str; 2] = ["hash", "feature"];
+
+/// The record entries a dropped key can NAME instead of sweeping for, one `CacheKey` each.
+///
+/// `string` has the fixed selector "value", and a set has exactly ONE cacheable entry because
+/// `CacheKey::set_members` fixes its selector at "members" -- so naming them is equivalent to
+/// sweeping for them, and it is O(1) instead of O(cache).
+///
+/// THE AUTHORITY, again shared by both arms, for the same reason.
+fn named_record_keys(shard_id: ShardId, key: &str) -> [CacheKey; 2] {
+    [
+        CacheKey::string(shard_id, key),
+        CacheKey::set_members(shard_id, key),
+    ]
+}
+
 fn invalidate_record_all(
     cache: &MultiLayerCache,
     shard_id: ShardId,
@@ -4693,19 +4792,95 @@ fn invalidate_record_all(
     counts: &CacheSweepCounts,
 ) {
     counts.note_call();
-    counts.note_named();
-    let _ = cache.invalidate(&CacheKey::string(shard_id, key));
-    counts.note_sweep(cache);
-    let _ = cache.invalidate_record(shard_id, "hash", key);
-    // A set has exactly ONE cacheable entry -- `CacheKey::set_members` fixes the selector at
-    // "members" -- so naming it is equivalent to sweeping for it, and a sweep is
-    // `invalidate_record`, which walks every key in all three cache tiers.
-    counts.note_named();
-    let _ = cache.invalidate(&CacheKey::set_members(shard_id, key));
-    // `hash` and `feature` keep their sweeps: a hash caches one entry per FIELD and a feature
-    // one per query window, so neither has a single key to name.
-    counts.note_sweep(cache);
-    let _ = cache.invalidate_record(shard_id, "feature", key);
+    for named in named_record_keys(shard_id, key) {
+        counts.note_named();
+        let _ = cache.invalidate(&named);
+    }
+    for namespace in SWEPT_RECORD_NAMESPACES {
+        counts.note_sweep(cache);
+        let _ = cache.invalidate_record(shard_id, namespace, key);
+    }
+}
+
+/// ONE PASS OVER THE CACHE FOR A WHOLE ROUND OF DROPPED KEYS, instead of two per key.
+///
+/// WHAT IT REPLACES. `invalidate_record_all` above, called once per dropped key, makes two
+/// `MultiLayerCache::invalidate_record` calls, and each of those chains the key sets of all three
+/// cache tiers and filters:
+///
+///     inner.memory.keys().chain(inner.pmem.keys()).chain(inner.disk_index.keys())
+///         .filter(|key| key.shard_id == shard_id && key.namespace == namespace && ...)
+///
+/// So N dropped keys walk the cache 2N times. #1907 measured that at 3,999 entries per dropped
+/// key on a warm 4,000-object store -- 15,996,000 entry visits for one round, inside the `shards`
+/// write guard that serving reads queue behind.
+///
+/// WHAT IT DOES INSTEAD. The swept namespaces are the same for every key in the round, so the
+/// walk does not have to be repeated: one listing of the shard's cache, one membership test per
+/// entry against the round's dropped-key set, and one `invalidate_batch` for everything that
+/// matched plus the named keys. The cache is stepped over ONCE per round rather than twice per
+/// key, and the write lock inside the cache is taken once rather than 4N times.
+///
+/// EXACTLY THE SAME SET, arm for arm. `entries_for_shard` chains the SAME three tier key sets as
+/// `invalidate_record` and filters them by shard alone, so it is a superset of what every one of
+/// the round's per-key sweeps could have matched; the predicate here re-applies the other two
+/// halves of that filter (`namespace` and `record_key`) that `invalidate_record` applies inline.
+/// `CacheEntryInfo` carries `shard_id`, `namespace`, `record_key` and `selector`, which is every
+/// field of a `CacheKey`, so the key each matched entry is rebuilt from is the key that was in
+/// the tier. Both arms take their namespaces from `SWEPT_RECORD_NAMESPACES` and their named keys
+/// from `named_record_keys`, so neither list can drift from the other. And a key the round did
+/// NOT drop is not in the set, so its entries are left cached -- which is the same thing N
+/// per-key sweeps do, and the direction that would be visible if this were wrong.
+///
+/// WHY IT STILL RUNS INSIDE THE GUARD. #1907 priced deferring it and refused: `cached_response`
+/// is cache-first and a `string` record key carries no generation, sequence or version stamp, so
+/// a reader in the window is answered with a value the shard has already deleted -- measured at 8
+/// of 533 reads. This change moves no invalidation out of the `shards` write guard; it only stops
+/// repeating the walk. `a_key_the_shard_has_dropped_is_never_still_answered_out_of_the_cache` is
+/// what holds that.
+///
+/// WHAT IT COSTS INSTEAD. `entries_for_shard` falls through to a filesystem `metadata()` for
+/// every entry it returns that the disk index does not hold, so the one pass carries C syscalls.
+/// `what_one_listing_of_the_shards_cache_costs_in_syscalls` measures C from outside the process
+/// and `one_batched_pass_walks_the_cache_once_instead_of_twice_per_dropped_key` puts it next to
+/// the entry visits it removes.
+fn invalidate_records_all_batched(
+    cache: &MultiLayerCache,
+    shard_id: ShardId,
+    keys: &[std::sync::Arc<str>],
+    counts: &CacheSweepCounts,
+) -> usize {
+    if keys.is_empty() {
+        return 0;
+    }
+    counts.note_batched_call(keys.len() as u64);
+    let dropped = keys
+        .iter()
+        .map(|key| key.as_ref())
+        .collect::<std::collections::BTreeSet<&str>>();
+    let mut batch = Vec::with_capacity(keys.len().saturating_mul(2));
+    for key in keys {
+        for named in named_record_keys(shard_id, key.as_ref()) {
+            counts.note_named();
+            batch.push(named);
+        }
+    }
+    counts.note_listing(cache);
+    let listed = cache.entries_for_shard(shard_id);
+    counts.note_listed_entries(listed.len() as u64);
+    for entry in listed {
+        if SWEPT_RECORD_NAMESPACES.contains(&entry.namespace.as_str())
+            && dropped.contains(entry.record_key.as_str())
+        {
+            batch.push(CacheKey {
+                shard_id,
+                record_key: entry.record_key,
+                namespace: std::borrow::Cow::Owned(entry.namespace),
+                selector: entry.selector,
+            });
+        }
+    }
+    cache.invalidate_batch(&batch).unwrap_or(0)
 }
 
 fn read_block_bytes(
