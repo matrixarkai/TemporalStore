@@ -4830,11 +4830,11 @@ fn a_key_the_expiry_round_has_removed_is_never_still_answered_out_of_the_cache()
 fn what_one_listing_of_an_expiry_fixtures_cache_costs_in_syscalls() {
     let objects: usize = std::env::var("TS_EXPIRY_PROBE_OBJECTS")
         .ok()
-        .and_then(|value| value.parse().ok())
+        .and_then(|value| value.trim().parse().ok())
         .unwrap_or(500);
     let repeats: usize = std::env::var("TS_EXPIRY_PROBE_LIST_REPEATS")
         .ok()
-        .and_then(|value| value.parse().ok())
+        .and_then(|value| value.trim().parse().ok())
         .unwrap_or(0);
 
     let (_dir, engine) = cache_pass_fixture(objects, true, &cache_pass_due(objects));

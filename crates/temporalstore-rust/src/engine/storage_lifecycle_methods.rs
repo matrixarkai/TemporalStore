@@ -3939,11 +3939,11 @@ mod eviction_round_scale {
     fn what_one_listing_of_the_shards_cache_costs_in_syscalls() {
         let objects: usize = std::env::var("TS_PROBE_OBJECTS")
             .ok()
-            .and_then(|value| value.parse().ok())
+            .and_then(|value| value.trim().parse().ok())
             .unwrap_or(500);
         let repeats: usize = std::env::var("TS_PROBE_LIST_REPEATS")
             .ok()
-            .and_then(|value| value.parse().ok())
+            .and_then(|value| value.trim().parse().ok())
             .unwrap_or(0);
 
         let (_dir, engine) = engine_with_warm_cache(objects);
