@@ -245,6 +245,10 @@ EXAMINED = {
         "the replication mode a benchmark run asks for; set when the benchmark is invoked, which is the harness rule wearing a name the harness pattern does not match",
     "MATRIXARK_REQUIRE_RETRIEVAL_MEMORY_COVERAGE":
         "a report gate: the workflow report reads it to decide whether missing coverage fails the run, and a gate exists to be turned on for a run",
+    "MATRIXARK_SHARE_SERVING_VALUES":
+        "a tenant knob shipping OFF on purpose, whose ON side is a measured memory saving -- 188 route objects collapse to 3 on a three-session store -- held back because an HTTP module failing 0/20 runs on main fails 7/20 with it on. It is in matrixark_gateway_config.INTERNAL_KNOBS, so the portal deliberately does not offer it and the variable is the only process-wide way to turn it on for the background-write check its own Knob docstring asks for. Retiring it would freeze the OFF side and strand the feature",
+    "MATRIXARK_STREAM_IDLE_COMMIT_TIMEOUT_MS":
+        "the streaming-ingest debounce: a plain /v1/ingest schedules a native idle-commit with this deadline, and the gateway tests it with `> 0`, so <= 0 is a described off position -- the same shape as MATRIXARK_PRIOR_CONTEXT_PROBE_WINDOW above. Its other two channels are in-process (a GatewayConfig.from_env override) and per request (idle_commit_timeout_ms in the args), so this variable is the only one a deployment running the gateway as a process has",
 }
 
 def _readers_all_unreachable(reads):
@@ -2251,6 +2255,33 @@ class TheFlagSurfaceOnlyShrinksTest(unittest.TestCase):
             "the SDK module whose three variables were read as unreachable is not in the "
             "production set any more. It is the case the corpus rule was written for: a shipped "
             "library a customer imports, which nothing under tools/ reaches.")
+
+    def test_nothing_is_left_unread(self) -> None:
+        """A ceiling of zero, now that reading them one at a time has finished.
+
+        The report below deliberately asserts nothing about how many, and while a dozen candidates
+        were still outstanding that was right: cutting each one needed judgement no rule here can
+        supply. That is no longer the position. Every one of the reads is now either classified by
+        a rule or recorded in `EXAMINED` with what reading it settled, so the bucket is empty and
+        the interesting event is it becoming non-empty again.
+
+        Which is the event this fails on. A new flag that something selects, or that a sentence
+        tells a reader to set, lands in another group and nothing here notices -- it only fires for
+        a flag nobody can be shown to set and no prose describes, which is exactly the shape this
+        file exists to keep out of the tree. Three ways to clear it, and the message says so:
+        make something select it, write the sentence that tells an operator what it does, or read
+        it and record what you found.
+        """
+        candidates = sorted(self.groups["candidate"])
+        self.assertEqual(
+            [], candidates,
+            "%d flag(s) nothing selects and no sentence instructs: %s. Either something should "
+            "select it (the portal, the loader map, a config file, a test), or a sentence in "
+            "production prose should tell a reader what setting it does, or -- if it is neither a "
+            "switch nor removable -- read it and add it to EXAMINED with what you found. Do not "
+            "add it to EXAMINED to quiet this: the register counts flags somebody has looked at, "
+            "and an entry that says nothing is caught by the note-length check above."
+            % (len(candidates), ", ".join(candidates)))
 
     def test_the_candidates_are_reported(self) -> None:
         """Not an assertion about how many: a record of what is left, printed where it is read.
