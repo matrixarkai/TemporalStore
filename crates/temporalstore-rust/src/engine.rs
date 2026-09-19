@@ -4327,55 +4327,122 @@ fn associated_record_keys(key: &str) -> Vec<String> {
     keys
 }
 
+/// Absorb one data model's block addresses into the live set, charging every address visited.
+///
+/// The set this function returns is tiny -- one entry per slab -- and the walk that fills it is
+/// the size of the CORPUS. That difference is invisible in the return value, so it is charged
+/// here, by reference: a data model added to `collect_live_block_slab_ids` has to go through this
+/// to reach `ids`, and therefore cannot be walked without being counted.
+fn absorb_live_block_slab_ids(
+    ids: &mut BTreeSet<u64>,
+    addresses_visited: &mut u64,
+    addresses: impl Iterator<Item = u64>,
+) {
+    for block_slab_id in addresses {
+        *addresses_visited += 1;
+        ids.insert(block_slab_id);
+    }
+}
+
 fn collect_live_block_slab_ids(shard: &ShardState) -> BTreeSet<u64> {
     let mut ids = BTreeSet::new();
-    ids.extend(
-        shard
-            .strings
-            .values()
-            .map(|address| address.block_slab_id),
+    let mut visited = 0u64;
+    absorb_live_block_slab_ids(
+        &mut ids,
+        &mut visited,
+        shard.strings.values().map(|address| address.block_slab_id),
     );
     for fields in shard.hashes.values() {
-        ids.extend(fields.values().map(|address| address.block_slab_id));
+        absorb_live_block_slab_ids(
+            &mut ids,
+            &mut visited,
+            fields.values().map(|address| address.block_slab_id),
+        );
     }
     for members in shard.sets.values() {
-        ids.extend(members.values().map(|address| address.block_slab_id));
+        absorb_live_block_slab_ids(
+            &mut ids,
+            &mut visited,
+            members.values().map(|address| address.block_slab_id),
+        );
     }
     for elements in shard.lists.values() {
-        ids.extend(elements.values().map(|address| address.block_slab_id));
+        absorb_live_block_slab_ids(
+            &mut ids,
+            &mut visited,
+            elements.values().map(|address| address.block_slab_id),
+        );
     }
     for members in shard.zsets.values() {
-        ids.extend(members.values().map(|(_, address)| address.block_slab_id));
+        absorb_live_block_slab_ids(
+            &mut ids,
+            &mut visited,
+            members.values().map(|(_, address)| address.block_slab_id),
+        );
     }
     for series in shard.features.values() {
-        ids.extend(series.values().map(|address| address.block_slab_id));
+        absorb_live_block_slab_ids(
+            &mut ids,
+            &mut visited,
+            series.values().map(|address| address.block_slab_id),
+        );
     }
-    ids.extend(
+    absorb_live_block_slab_ids(
+        &mut ids,
+        &mut visited,
         shard
             .context_nodes
             .values()
             .map(|address| address.block_slab_id),
     );
     for series in shard.context_events.values() {
-        ids.extend(series.values().map(|address| address.block_slab_id));
+        absorb_live_block_slab_ids(
+            &mut ids,
+            &mut visited,
+            series.values().map(|address| address.block_slab_id),
+        );
     }
     for series in shard.context_indexes.values() {
-        ids.extend(series.values().map(|address| address.block_slab_id));
+        absorb_live_block_slab_ids(
+            &mut ids,
+            &mut visited,
+            series.values().map(|address| address.block_slab_id),
+        );
     }
     for series in shard.context_audits.values() {
-        ids.extend(series.values().map(|address| address.block_slab_id));
+        absorb_live_block_slab_ids(
+            &mut ids,
+            &mut visited,
+            series.values().map(|address| address.block_slab_id),
+        );
     }
     for series in shard.context_entities.values() {
-        ids.extend(series.values().map(|address| address.block_slab_id));
+        absorb_live_block_slab_ids(
+            &mut ids,
+            &mut visited,
+            series.values().map(|address| address.block_slab_id),
+        );
     }
     for series in shard.context_children.values() {
-        ids.extend(series.values().map(|address| address.block_slab_id));
+        absorb_live_block_slab_ids(
+            &mut ids,
+            &mut visited,
+            series.values().map(|address| address.block_slab_id),
+        );
     }
     for series in shard.context_summaries.values() {
-        ids.extend(series.values().map(|address| address.block_slab_id));
+        absorb_live_block_slab_ids(
+            &mut ids,
+            &mut visited,
+            series.values().map(|address| address.block_slab_id),
+        );
     }
     for series in shard.context_compressions.values() {
-        ids.extend(series.values().map(|address| address.block_slab_id));
+        absorb_live_block_slab_ids(
+            &mut ids,
+            &mut visited,
+            series.values().map(|address| address.block_slab_id),
+        );
     }
     // control_state_pages is the page-backed control-state model and MUST be in the
     // GC live set: it feeds both the reclaim live-slab set and the page-gc dependency plan.
@@ -4383,12 +4450,17 @@ fn collect_live_block_slab_ids(shard: &ShardState) -> BTreeSet<u64> {
     // still referenced it -> DataLoss on the next read. keeps any model's live pages
     // counted in the zone's used_bytes so the zone is never destroyed while referenced. The
     // sibling collect_model_live_block_entries already includes it -- the two lists had drifted.
-    ids.extend(
+    absorb_live_block_slab_ids(
+        &mut ids,
+        &mut visited,
         shard
             .control_state_blocks
             .values()
             .map(|address| address.block_slab_id),
     );
+    #[cfg(test)]
+    crate::snapshot_probe::note_live_slab_scan(visited);
+    let _ = visited;
     ids
 }
 

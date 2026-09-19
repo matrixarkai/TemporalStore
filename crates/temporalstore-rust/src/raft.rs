@@ -147,11 +147,40 @@ pub struct RaftSnapshot {
 /// that reconstructs a shard's applied state without replaying the committed log. Mirrors the
 /// metadata-checkpoint the shared-store recovery path builds (index bytes + slab bytes +
 /// next-page-id), letting a snapshot install run in O(state) rather than O(total history).
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Serialize, Deserialize, PartialEq, Eq)]
 pub struct RaftSnapshotStateImage {
     pub index_bytes: Vec<u8>,
     pub next_block_id: u64,
     pub slabs: Vec<RaftSnapshotStateImageSlab>,
+}
+
+impl RaftSnapshotStateImage {
+    /// Index bytes plus every slab's bytes -- one copy of the shard, which is what this type
+    /// costs to clone and what it costs to hold.
+    pub fn payload_bytes(&self) -> usize {
+        self.index_bytes.len() + self.slabs.iter().map(|slab| slab.bytes.len()).sum::<usize>()
+    }
+}
+
+/// Hand-written so the copy can be CHARGED where it happens.
+///
+/// This type is the whole shard. Every other cost on the snapshot path is bounded by the corpus
+/// once; a clone of this is bounded by the corpus again, and the derived `Clone` gave no way to
+/// tell one apart from the other at any call site. Charging it inside the impl means a new caller
+/// of `.clone()` anywhere in the tree is counted without anyone maintaining a list of callers.
+///
+/// Field-for-field equivalent to the derive it replaces -- `snapshot_cost` asserts a clone equals
+/// its source, which is what a hand-written `Clone` needs a test for.
+impl Clone for RaftSnapshotStateImage {
+    fn clone(&self) -> Self {
+        #[cfg(test)]
+        crate::snapshot_probe::note_image_clone(self.payload_bytes() as u64);
+        Self {
+            index_bytes: self.index_bytes.clone(),
+            next_block_id: self.next_block_id,
+            slabs: self.slabs.clone(),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -6006,6 +6035,8 @@ fn apply_committed(node: &mut RaftNode) -> Option<CommandResponse> {
 fn install_snapshot_state(node: &mut RaftNode, snapshot: RaftSnapshot) {
     let engine = TemporalEngine::default();
     if let Some(image) = &snapshot.state_image {
+        #[cfg(test)]
+        crate::snapshot_probe::note_engine_rebuild();
         // Reconstruct from the opaque state image in O(state): install the slabs and the served
         // index, then load the shard so the index is read in. Every path a snapshot can land on
         // must handle this -- an image snapshot fed to an entries-only installer replays nothing

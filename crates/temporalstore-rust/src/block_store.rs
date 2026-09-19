@@ -1655,6 +1655,8 @@ impl BlockStore {
     }
 
     pub fn slab_ids(&self) -> Result<Vec<u64>, BlockStoreError> {
+        #[cfg(test)]
+        crate::snapshot_probe::note_slab_dir_listing();
         let root = self
             .inner
             .lock()

@@ -97,7 +97,10 @@ impl BlockStore {
             .root
             .clone();
         let read = LocalSlabBackend::new(&root).read_all(block_slab_id)?;
-        Ok(read.charge(&mut self.inner.lock().expect("block store lock poisoned").stats))
+        let bytes = read.charge(&mut self.inner.lock().expect("block store lock poisoned").stats);
+        #[cfg(test)]
+        crate::snapshot_probe::note_slab_read(bytes.len() as u64);
+        Ok(bytes)
     }
 
     /// Install one slab, and rewrite the whole slab manifest.
@@ -118,6 +121,8 @@ impl BlockStore {
         block_slab_id: u64,
         bytes: &[u8],
     ) -> Result<(), BlockStoreError> {
+        #[cfg(test)]
+        crate::snapshot_probe::note_slab_install(bytes.len() as u64);
         let mut inner = self.inner.lock().expect("block store lock poisoned");
         fs::create_dir_all(&inner.root)?;
         let path = slab_path(&inner.root, block_slab_id);

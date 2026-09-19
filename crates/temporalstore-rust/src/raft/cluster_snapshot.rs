@@ -17,7 +17,22 @@ impl RaftCluster {
         target_id: RaftNodeId,
         external_snapshot_ref: Option<RaftExternalSnapshotRef>,
     ) -> Result<InstallSnapshotRequest, RaftError> {
-        let mut snapshot = self.create_snapshot()?;
+        let snapshot = self.create_snapshot()?;
+        self.build_install_snapshot_request_from(target_id, snapshot, external_snapshot_ref)
+    }
+
+    /// The bookkeeping half of building an install request, against a snapshot the caller already
+    /// has.
+    ///
+    /// Split out because a state-image snapshot IS the whole shard: building one costs a walk of
+    /// the corpus, an index encode and a read of every slab. A caller that has already built one
+    /// in order to decide something about it must not pay for a second.
+    fn build_install_snapshot_request_from(
+        &self,
+        target_id: RaftNodeId,
+        mut snapshot: RaftSnapshot,
+        external_snapshot_ref: Option<RaftExternalSnapshotRef>,
+    ) -> Result<InstallSnapshotRequest, RaftError> {
         snapshot.external_snapshot_ref = external_snapshot_ref.clone();
         let mut inner = self.inner.write().expect("raft cluster lock poisoned");
         let leader = inner
@@ -92,16 +107,14 @@ impl RaftCluster {
     ) -> Result<InstallSnapshotRequest, RaftError> {
         let snapshot = self.create_snapshot()?;
         let transfer = decide_snapshot_transfer(&snapshot, policy, external_snapshot_ref.clone())?;
-        match transfer.mode {
-            RaftSnapshotTransferMode::PeerStreaming => {
-                self.build_install_snapshot_request_with_external_ref(target_id, None)
-            }
-            RaftSnapshotTransferMode::ExternalStore => self
-                .build_install_snapshot_request_with_external_ref(
-                    target_id,
-                    transfer.external_snapshot_ref,
-                ),
-        }
+        // The snapshot built above is the one that gets sent. Asking `create_snapshot` again here
+        // built a SECOND state image -- a second corpus walk, a second index encode and a second
+        // read of every slab -- and threw the first one away, having consulted only its size.
+        let carried_ref = match transfer.mode {
+            RaftSnapshotTransferMode::PeerStreaming => None,
+            RaftSnapshotTransferMode::ExternalStore => transfer.external_snapshot_ref,
+        };
+        self.build_install_snapshot_request_from(target_id, snapshot, carried_ref)
     }
 
     pub fn receive_install_snapshot(
@@ -905,6 +918,8 @@ impl RaftCluster {
         if should_trigger {
             let snapshot = self.create_snapshot()?;
             let mut inner = self.inner.write().expect("raft cluster lock poisoned");
+            #[cfg(test)]
+            let _guard_mark = crate::snapshot_probe::GuardMark::new();
             // A deployed process owns ONE node and keeps shadows of its peers, so most entries
             // here are not nodes this process runs. Installing the snapshot into a peer's shadow
             // advances its recorded commit and applied indices and truncates its log, which
@@ -916,13 +931,41 @@ impl RaftCluster {
             // With no local node id set -- the in-process cluster, where every entry IS a node
             // this process runs -- they are all local and all get installed, as before.
             let local_only = inner.local_node_id;
-            for node in inner.nodes.values_mut().filter(|node| node.alive) {
-                if local_only.map_or(false, |local| local != node.id) {
+            // The snapshot carries the whole shard as a state image, and it is dropped the moment
+            // this loop ends, so the LAST install had no need of a copy -- it can have the
+            // original. Cloning for every install spent one whole shard per node inside the
+            // cluster write guard, which is the half of the lock every `propose` needs; a
+            // deployed process installs into exactly one node, so there the clone was the only
+            // one and all of it was waste.
+            //
+            // Choosing the targets first is what makes the last one nameable. It changes nothing
+            // about WHICH nodes install: the guard is held across both passes, and
+            // `install_snapshot_state` touches only the node it is handed, so no install can move
+            // another node's `commit_index` and change the predicate for it.
+            let targets = inner
+                .nodes
+                .values()
+                .filter(|node| node.alive)
+                .filter(|node| local_only.map_or(true, |local| local == node.id))
+                .filter(|node| snapshot.last_included_index >= node.commit_index)
+                .map(|node| node.id)
+                .collect::<Vec<_>>();
+            let mut carried = Some(snapshot);
+            let mut targets = targets.into_iter().peekable();
+            while let Some(node_id) = targets.next() {
+                let is_last = targets.peek().is_none();
+                let Some(node) = inner.nodes.get_mut(&node_id) else {
                     continue;
-                }
-                if snapshot.last_included_index >= node.commit_index {
-                    install_snapshot_state(node, snapshot.clone());
-                }
+                };
+                let Some(held) = carried.as_ref() else {
+                    break;
+                };
+                let for_this_node = if is_last {
+                    carried.take().expect("held above")
+                } else {
+                    held.clone()
+                };
+                install_snapshot_state(node, for_this_node);
             }
             inner.persist_configured_wal()?;
         }
@@ -1300,6 +1343,8 @@ pub(super) fn build_state_image(
     let block_store = engine.block_store();
     #[cfg(test)]
     install_probe::note_state_image_build();
+    #[cfg(test)]
+    crate::snapshot_probe::note_image_build();
     // Read the store's slab set first, so an unreadable store still aborts the image exactly
     // as it did before rather than silently shipping a scoped subset of nothing.
     let present = block_store.slab_ids().ok()?;
@@ -1344,6 +1389,8 @@ fn build_installed_engine(
         // S2: reconstruct state from the opaque image (index + slabs) in O(state) -- no
         // full-history entry replay. Mirrors the shared-store lazy restore: install slabs,
         // install the served index base, then load the shard so the index is read in.
+        #[cfg(test)]
+        crate::snapshot_probe::note_engine_rebuild();
         let block_store = engine.block_store();
         for slab in &image.slabs {
             #[cfg(test)]

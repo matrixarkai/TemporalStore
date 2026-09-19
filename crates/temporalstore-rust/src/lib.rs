@@ -6,6 +6,11 @@
 #[cfg(test)]
 pub mod alloc_probe;
 
+// Tests only. Counts what a raft snapshot walks, reads, copies and rebuilds, bumped inside the
+// primitives that do the work rather than at the call sites that ask for it.
+#[cfg(test)]
+pub mod snapshot_probe;
+
 // Tests only, and only under the `alloc-probe` feature. RSS cannot resolve a per-request
 // allocation change -- 71% of the proxy's resident memory was measured as allocator retention
 // rather than live data -- so memory claims about a request path need the allocations counted
