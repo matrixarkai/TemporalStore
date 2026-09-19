@@ -28,7 +28,11 @@
 //!      2,000       339,873        1       2        24       269
 //!     20,000     3,403,490        7      13       248     1,230
 //!     80,000    13,663,490       27      53     3,088     8,106
-//!   20,000 -> 80,000 is 4.01x the bytes and 12.45x the statx. SUPERLINEAR.
+//!   20,000 -> 80,000 is 4.01x the bytes and 12.45x the statx. SUPERLINEAR -- that walk has since
+//!   been given the piece's own NAME to read instead of its header, and the same measurement now
+//!   reports 75 -> 255 statx, 3.40x for 4.01x, with the same windows and the same records
+//!   replayed. See `wal_replay_scale`, which took that aside as its subject; the table above is
+//!   left as the BEFORE it was measured as.
 //!
 //!   And the same 3.4 MB of log written as 2,000 records instead of 20,000 -- ten times fewer
 //!   records, same bytes -- cost 1,348 syscalls against 1,230. Replay tracks the log's BYTES.
@@ -466,26 +470,29 @@ fn a_replay_costs_the_logs_bytes_and_not_its_records() {
     );
 }
 
-/// Every replay window lists the log's directory again, and re-reads the header of every piece
-/// behind it.
+/// Every replay window lists the log's directory again, and steps over the pieces behind it
+/// WITHOUT reading them.
 ///
-/// The walk is resumable in its RECORDS -- each window picks up exactly where the last stopped --
-/// and not in anything else. It takes the log's piece list from a fresh `read_dir` every time, and
-/// then walks that list from the FRONT, reading each piece's header to learn where the piece
-/// begins so it can decide the piece is behind the window and step over it. So a piece one window
-/// stepped over is read again by every window after it, and both the number of windows and the
-/// number of pieces grow with the log.
+/// This test used to assert the opposite, and it said what to do if the shape ever changed: "If
+/// that ever becomes linear this test is reporting a FIX -- the walk would have started resuming
+/// its piece list the way it already resumes its records -- and should be rewritten to hold the
+/// new shape, not deleted." That is what happened, and this is that rewrite.
 ///
-/// Measured on the real binary at 512 KiB windows and 256 KiB pieces: 20,000 records cost 248
-/// `statx`, and 80,000 -- four times the bytes -- cost 3,088. That is 12.45x for 4.01x, and at
-/// 80,000 records the walk spent more syscalls on piece metadata (3,018 on sealed pieces alone)
-/// than it did reading records (2,722).
+/// The walk was resumable in its RECORDS -- each window picks up exactly where the last stopped --
+/// and in nothing else. It took the log's piece list from a fresh `read_dir` every time and walked
+/// it from the FRONT, reading each piece's header to learn where the piece begins so it could
+/// decide the piece was behind the window and step over it. Both the windows and the pieces grow
+/// with the log, so the header reads grew with their PRODUCT: 45 at 2,000 records and 466 at
+/// 8,000, which is 10.36x for 4.00x the bytes, and 12.45x the `statx` for 4.01x on the real binary.
 ///
-/// The exact identity is the listing: one per window, no more and no fewer, with the two walks
-/// that bracket a replay accounted for by name. A residual of zero is what makes this a
-/// measurement of the mechanism rather than of a number that happened to come out.
+/// A sealed piece is named for the log id its contents start at, so the NEXT piece's name already
+/// said where this one stops; `scan_collect` now reads that instead of the file. What this test
+/// holds is the part that did not change -- the listing identity, one per window with the two
+/// bracketing walks named -- and, in place of the product, that a window's cost no longer depends
+/// on how much log is in front of it. The superlinear shape itself, and the regime in which it is
+/// invisible, are measured in `wal_replay_scale`.
 #[test]
-fn a_replay_window_re_reads_the_pieces_behind_it() {
+fn a_replay_window_steps_over_the_pieces_behind_it() {
     set_wal_segment_bytes_for_test(Some(TEST_SEGMENT_BYTES));
 
     let small_records = 2_000usize;
@@ -567,15 +574,22 @@ fn a_replay_window_re_reads_the_pieces_behind_it() {
         large_cost.listings, large_cost.windows
     );
 
-    // The result: the per-window walk is not flat, so the whole replay is superlinear in the
-    // log's bytes. Four times the bytes costs four times the windows AND four times the pieces
-    // each window walks past.
+    // The result: what ONE WINDOW costs in piece headers does not depend on how much log is in
+    // front of it. That is the property; the ratio below is its consequence, and it is stated as a
+    // per-window figure so it does not quietly depend on this fixture being sized four-fold.
+    let small_per_window = small_cost.header_reads as f64 / small_cost.windows as f64;
+    let large_per_window = large_cost.header_reads as f64 / large_cost.windows as f64;
     assert!(
-        walk_ratio > byte_ratio * 1.5,
-        "the header reads grew {walk_ratio:.2}x for {byte_ratio:.2}x the bytes. If that ever \
-         becomes linear this test is reporting a FIX -- the walk would have started resuming its \
-         piece list the way it already resumes its records -- and should be rewritten to hold the \
-         new shape, not deleted"
+        large_per_window < small_per_window * 1.5,
+        "a window of the four-times-longer log read {large_per_window:.1} piece headers against \
+         {small_per_window:.1}. Every window walking the piece list from the front again is what \
+         made this superlinear -- 7.5 against 22.2 per window, 10.36x the header reads for 4.00x \
+         the bytes -- and it is back"
+    );
+    assert!(
+        walk_ratio < byte_ratio * 1.5,
+        "the header reads grew {walk_ratio:.2}x for {byte_ratio:.2}x the bytes, which is the \
+         windows-times-pieces product again rather than the pieces alone"
     );
 }
 

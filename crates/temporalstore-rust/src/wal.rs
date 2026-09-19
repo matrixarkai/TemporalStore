@@ -1723,14 +1723,19 @@ impl LocalWriteAheadLogStore {
         mut take: impl FnMut(u64, Vec<u8>, Option<WriteAheadLogRecord>) -> Option<T>,
     ) -> Result<(Vec<T>, bool, u64), WriteAheadLogError> {
         let mut inner = self.inner.lock().expect("write-ahead log lock poisoned");
-        let segments = wal_segment_paths(&inner.root, shard_id)
-            .into_iter()
-            .filter(|path| path.exists())
-            .collect::<Vec<_>>();
+        let segments = wal_segment_pieces(&inner.root, shard_id);
         // No file at all is "nothing to scan", not an error. Distinguishing it here lets recovery
         // treat a missing log as "nothing to replay" while still surfacing a genuine decode failure
         // (corruption) as data loss (see engine::lifecycle replay).
-        if segments.is_empty() {
+        //
+        // Only the piece being WRITTEN can be missing here: the sealed ones came out of a
+        // directory listing a moment ago. This used to `exists()` the whole list, which is a stat
+        // per piece per window -- the windows and the pieces both grow with the log, so that
+        // product is the shape this walk was quadratic in. A sealed piece reclaimed between the
+        // listing and the read still costs nothing: `read_wal_base` answers `(0, 0)` for an absent
+        // file and the length test in the loop steps over it, which is exactly what the filter
+        // used to do. See `read_wal_base`.
+        if segments.len() == 1 && !segments[0].path.exists() {
             inner.stats.scans += 1;
             return Ok((Vec::new(), false, start_offset));
         }
@@ -1746,12 +1751,39 @@ impl LocalWriteAheadLogStore {
         // Where a caller that ran out of budget resumes. Only meaningful when `truncated`.
         let mut resume_at = start_offset;
         let mut records: Vec<T> = Vec::new();
-        'segments: for path in segments {
+        'segments: for index in 0..segments.len() {
+            let path = &segments[index].path;
+            // BEHIND THE WINDOW, DECIDED FROM THE NEXT PIECE'S NAME.
+            //
+            // A sealed piece is named for the log id its contents start at, so the piece AFTER
+            // this one already says where this one stops: pieces never overlap in log-id space --
+            // a duplicated log id would resolve to two different records -- so this piece ends at
+            // or before the next one's start. If that start is already at or below the window,
+            // this piece holds nothing the caller asked for and does not have to be opened at all.
+            //
+            // This is the whole of the fix. The walk always resumed its RECORDS -- each window
+            // picks up exactly where the last stopped -- and never resumed its PIECE LIST: every
+            // window restarted the piece walk at log id zero and re-read the header of every piece
+            // it had already stepped over, to re-learn a number the piece's name had been carrying
+            // all along. Windows and pieces both grow with the log, so their product grew with its
+            // SQUARE.
+            //
+            // Nothing here decides what is REPLAYED. A skipped piece ends at or before
+            // `start_offset`, and every record at or after `start_offset` is still read, decoded
+            // and handed back by the loop below; the last piece (the one being written) has no
+            // number in its name, so the piece before it is never skipped this way either.
+            if let Some(next_start) = segments.get(index + 1).and_then(|piece| piece.starts_at) {
+                if next_start <= start_offset {
+                    #[cfg(test)]
+                    WAL_PIECES_SKIPPED_BY_NAME.with(|skipped| skipped.set(skipped.get() + 1));
+                    continue;
+                }
+            }
             // Each piece says where in the log's history its contents begin, so a record's position
             // is that plus how far into the piece it sits. Positions are log ids: an offset into
             // one file would mean nothing to a caller once there is more than one, and would not
             // survive reclaim.
-            let (base, header_len) = read_wal_base(&path)?;
+            let (base, header_len) = read_wal_base(path)?;
             // A piece that ends before the window starts holds nothing the caller asked for. Its
             // start plus its length says where it ends, so skipping it costs a stat rather than a
             // read of every line in it. This is what makes a windowed scan cost the window: without
@@ -1763,7 +1795,9 @@ impl LocalWriteAheadLogStore {
             if base.saturating_add(piece_len.saturating_sub(header_len)) <= start_offset {
                 continue;
             }
-            let mut file = File::open(&path)?;
+            #[cfg(test)]
+            WAL_PIECE_BODY_READS.with(|reads| reads.set(reads.get() + 1));
+            let mut file = open_wal_read(path)?;
             file.seek(SeekFrom::Start(header_len))?;
             let mut reader = BufReader::new(file);
             let mut log_id = base;
@@ -2119,7 +2153,7 @@ impl LocalWriteAheadLogStore {
         // One line at a time. A log is not bounded by memory, so neither this search nor the
         // copy below may hold it: reclaiming a large log otherwise costs a transient allocation
         // the size of the whole file.
-        let mut source = File::open(path.as_path())?;
+        let mut source = open_wal_read(path.as_path())?;
         source.seek(SeekFrom::Start(header_len))?;
         // Bounded by the cursor below rather than by `take`, because a Take is not seekable and
         // stepping over a block's footer is a seek. the reclaim walk crosses blocks now.
@@ -2240,7 +2274,7 @@ impl LocalWriteAheadLogStore {
             // Copy the retained records byte for byte rather than decoding and re-encoding
             // them. Re-encoding could change a record's length, which would break the offset
             // arithmetic this whole scheme rests on, and it costs a parse per record.
-            let mut source = File::open(path.as_path())?;
+            let mut source = open_wal_read(path.as_path())?;
             source.seek(SeekFrom::Start(split))?;
             std::io::copy(
                 &mut BufReader::new(source.take(record_end.saturating_sub(split))),
@@ -2406,7 +2440,7 @@ impl LocalWriteAheadLogStore {
         }
         let _ = last_wal_sequence_at(&inner.root, shard_id)?;
         let (_, header_len) = read_wal_base(&path)?;
-        let mut file = File::open(&path)?;
+        let mut file = open_wal_read(&path)?;
         file.seek(SeekFrom::Start(header_len))?;
         let mut reader = BufReader::new(file);
         let mut start_sequence = 0_u64;
@@ -2564,7 +2598,7 @@ fn drop_covered_wal_segments(
 
 /// One byte at `offset`, or None at/past the end of the file.
 fn byte_at(path: &Path, offset: u64) -> Result<Option<u8>, WriteAheadLogError> {
-    let mut file = File::open(path)?;
+    let mut file = open_wal_read(path)?;
     file.seek(SeekFrom::Start(offset))?;
     let mut byte = [0u8; 1];
     match std::io::Read::read(&mut file, &mut byte)? {
@@ -2574,7 +2608,7 @@ fn byte_at(path: &Path, offset: u64) -> Result<Option<u8>, WriteAheadLogError> {
 }
 
 fn read_at(path: &Path, physical: u64, size: u64) -> Result<Vec<u8>, WriteAheadLogError> {
-    let mut file = File::open(path)?;
+    let mut file = open_wal_read(path)?;
     file.seek(SeekFrom::Start(physical))?;
     let mut bytes = vec![0; size as usize];
     let read = file.read(&mut bytes)?;
@@ -2911,6 +2945,30 @@ fn wal_all_segment_bytes(root: &Path, shard_id: ShardId) -> u64 {
 }
 
 fn wal_segment_paths(root: &Path, shard_id: ShardId) -> Vec<PathBuf> {
+    wal_segment_pieces(root, shard_id)
+        .into_iter()
+        .map(|piece| piece.path)
+        .collect()
+}
+
+/// One piece of a shard's log, as the listing knows it.
+///
+/// `starts_at` is the log id the piece's contents begin at, taken from its NAME. A sealed piece is
+/// named for that number (`sealed_wal_path`), so the listing already knows it; the piece being
+/// written has no number in its name and answers `None`.
+struct WalPiece {
+    path: PathBuf,
+    starts_at: Option<u64>,
+}
+
+/// Every file that makes up a shard's log, oldest first, with the one being written last -- and
+/// what each sealed one's name says about where it starts.
+///
+/// `wal_segment_paths` already parsed those numbers to SORT by them and then threw them away, so
+/// every reader that wanted to know where a piece begins opened the piece and read its header to
+/// find out. Keeping them costs nothing and is what lets a walk decide from the name alone that a
+/// piece is behind it.
+fn wal_segment_pieces(root: &Path, shard_id: ShardId) -> Vec<WalPiece> {
     #[cfg(test)]
     WAL_SEGMENT_LISTINGS.with(|listings| listings.set(listings.get() + 1));
     let mut sealed = fs::read_dir(root)
@@ -2923,9 +2981,39 @@ fn wal_segment_paths(root: &Path, shard_id: ShardId) -> Vec<PathBuf> {
         })
         .collect::<Vec<_>>();
     sealed.sort_by_key(|(start, _)| *start);
-    let mut paths = sealed.into_iter().map(|(_, path)| path).collect::<Vec<_>>();
-    paths.push(write_ahead_log_path(root, shard_id));
-    paths
+    let mut pieces = sealed
+        .into_iter()
+        .map(|(start, path)| WalPiece { path, starts_at: Some(start) })
+        .collect::<Vec<_>>();
+    pieces.push(WalPiece {
+        path: write_ahead_log_path(root, shard_id),
+        starts_at: None,
+    });
+    pieces
+}
+
+/// What each piece of a shard's log says about itself: its name's number, its header's base, and
+/// the log id one past its last record.
+///
+/// The skip in `scan_collect` rests on two claims about this list, and this is what lets a test
+/// assert them rather than take them on trust: a sealed piece's NAME agrees with its HEADER, and
+/// no piece's contents reach into the next piece's range. `None` for the name's number is the
+/// piece being written, which has no number in its name.
+#[cfg(test)]
+pub(crate) fn wal_piece_extents_for_test(
+    root: &Path,
+    shard_id: ShardId,
+) -> Vec<(PathBuf, Option<u64>, u64, u64)> {
+    wal_segment_pieces(root, shard_id)
+        .into_iter()
+        .filter(|piece| piece.path.exists())
+        .map(|piece| {
+            let (base, header_len) = read_wal_base(&piece.path).unwrap_or((0, 0));
+            let length = piece.path.metadata().map(|meta| meta.len()).unwrap_or(0);
+            let end = base.saturating_add(length.saturating_sub(header_len));
+            (piece.path, piece.starts_at, base, end)
+        })
+        .collect()
 }
 
 /// Where a log id lives: which piece of the log, and how far into it.
@@ -3270,7 +3358,7 @@ fn shard_uses_blocks(
     let uses_blocks = if empty {
         true
     } else {
-        let file = File::open(path)?;
+        let file = open_wal_read(path)?;
         let len = file.metadata()?.len();
         last_written_footer(&file, header_len, len)?.is_some()
     };
@@ -3310,6 +3398,55 @@ thread_local! {
     pub(crate) static WAL_SEGMENT_LISTINGS: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
     pub(crate) static WAL_SEGMENT_HEADER_READS: std::cell::Cell<u64> =
         const { std::cell::Cell::new(0) };
+    /// Pieces a walk stepped over on the strength of the NEXT piece's NAME, without opening them.
+    ///
+    /// The row the fix in `scan_collect` adds, counted where the decision is taken rather than
+    /// where it is used, so a second skip site cannot appear without counting.
+    pub(crate) static WAL_PIECES_SKIPPED_BY_NAME: std::cell::Cell<u64> =
+        const { std::cell::Cell::new(0) };
+    /// Pieces a walk opened to READ RECORDS out of, as opposed to reading a header from.
+    pub(crate) static WAL_PIECE_BODY_READS: std::cell::Cell<u64> =
+        const { std::cell::Cell::new(0) };
+    /// Pieces a walk read the LAST SEQUENCE out of (`last_wal_sequence_in`).
+    ///
+    /// A separate row from the header reads because it answers a different question and cannot be
+    /// answered the same way: a piece's NAME carries the log id it starts at, and nothing carries
+    /// the sequence it ends at. `log_id_after_sequence` walks the pieces asking exactly that, once
+    /// per replay, and this is what makes that walk's cost visible rather than folded into the
+    /// window cost beside it.
+    pub(crate) static WAL_PIECE_TAIL_READS: std::cell::Cell<u64> =
+        const { std::cell::Cell::new(0) };
+    /// EVERY open the read side makes, counted inside the open itself.
+    ///
+    /// The outer total the residual is taken against. It is deliberately NOT the sum of the rows
+    /// above: it counts in `open_wal_read`, which is the one primitive every read-side open goes
+    /// through, so an open that belongs to no named row shows up as residual rather than
+    /// disappearing. A row is an audit of this number, never an ingredient of it.
+    pub(crate) static WAL_READ_FILE_OPENS: std::cell::Cell<u64> =
+        const { std::cell::Cell::new(0) };
+}
+
+/// Open a piece of the log for reading, and count it.
+///
+/// Every read-side open in this module goes through here. `File::open` on its own is fine and
+/// does the same thing; what this adds is the one place a total can be taken, which is what makes
+/// the per-record residual in `wal_replay_scale` a measurement of the whole operation rather than
+/// a restatement of the rows it audits.
+fn open_wal_read(path: &Path) -> std::io::Result<File> {
+    #[cfg(test)]
+    WAL_READ_FILE_OPENS.with(|opens| opens.set(opens.get() + 1));
+    File::open(path)
+}
+
+/// Open a piece to walk its TAIL for the last sequence it holds.
+///
+/// The same open as `open_wal_read` under a second name, so the residual has a row for it. One
+/// `last_wal_sequence_in` is two or three of these -- a footer hint, then the walk the hint points
+/// at -- and counting at the call instead of at the open reported one where three happened.
+fn open_wal_tail_scan(path: &Path) -> std::io::Result<File> {
+    #[cfg(test)]
+    WAL_PIECE_TAIL_READS.with(|reads| reads.set(reads.get() + 1));
+    open_wal_read(path)
 }
 
 /// How many times an append asks the FILESYSTEM for the active piece's length, and how many
@@ -3728,7 +3865,7 @@ fn read_wal_base(path: &Path) -> Result<(u64, u64), WriteAheadLogError> {
     if !path.exists() {
         return Ok((0, 0));
     }
-    let mut reader = BufReader::new(File::open(path)?);
+    let mut reader = BufReader::new(open_wal_read(path)?);
     let mut line = Vec::new();
     let read = reader.read_until(b'\n', &mut line)?;
     if read == 0 {
@@ -3939,7 +4076,7 @@ fn first_wal_sequence_in(path: &Path) -> Result<Option<u64>, WriteAheadLogError>
         return Ok(None);
     }
     let (_, header_len) = read_wal_base(path)?;
-    let file = File::open(path)?;
+    let file = open_wal_read(path)?;
     let len = file.metadata()?.len();
     if len <= header_len {
         return Ok(None);
@@ -3961,7 +4098,7 @@ fn first_wal_sequence_in(path: &Path) -> Result<Option<u64>, WriteAheadLogError>
 
 fn last_wal_sequence_forward(path: &Path) -> Result<(u64, u64), WriteAheadLogError> {
     let (_, header_len) = read_wal_base(path)?;
-    let file = File::open(path)?;
+    let file = open_wal_tail_scan(path)?;
     let len = file.metadata()?.len();
     if len <= header_len {
         return Ok((0, len.min(header_len)));
@@ -4182,7 +4319,7 @@ fn last_written_footer(
 /// block is still filling.
 fn footer_tail_hint(path: &Path) -> Result<Option<(u64, u64)>, WriteAheadLogError> {
     let (_, header_len) = read_wal_base(path)?;
-    let file = File::open(path)?;
+    let file = open_wal_tail_scan(path)?;
     let file_len = file.metadata()?.len();
     let Some((index, footer)) = last_written_footer(&file, header_len, file_len)? else {
         return Ok(None);
@@ -4199,7 +4336,7 @@ fn last_wal_sequence_forward_from(
     from: u64,
     known_sequence: u64,
 ) -> Result<(u64, u64), WriteAheadLogError> {
-    let file = File::open(path)?;
+    let file = open_wal_tail_scan(path)?;
     let len = file.metadata()?.len();
     if from >= len {
         return Ok((known_sequence, from.min(len)));
@@ -4271,6 +4408,14 @@ fn last_wal_sequence_in(path: &Path) -> Result<(u64, u64), WriteAheadLogError> {
         return last_wal_sequence_forward(path);
     }
     let (_, header_len) = read_wal_base(path)?;
+    // Read-WRITE, because this branch repairs a torn tail in place -- but it is still one of the
+    // read side's opens of a piece, and counted as one, or the residual would stop seeing this
+    // branch the moment binary framing were turned off.
+    #[cfg(test)]
+    {
+        WAL_PIECE_TAIL_READS.with(|reads| reads.set(reads.get() + 1));
+        WAL_READ_FILE_OPENS.with(|opens| opens.set(opens.get() + 1));
+    }
     let file = OpenOptions::new().read(true).write(true).open(path)?;
     let len = file.metadata()?.len();
     if len <= header_len {
