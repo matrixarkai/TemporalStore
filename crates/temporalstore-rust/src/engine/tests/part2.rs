@@ -2979,10 +2979,41 @@ fn the_log_stays_bounded_under_continuous_writing() {
         bytes_seen.push(stats.persistent_bytes);
     }
 
+    // The log warms up over the first rounds and then stops moving: measured
+    // [39898, 40602, 41602, 41605, 41605, ...], flat from round four to round twelve.
+    //
+    // This used to assert all twelve rounds were IDENTICAL, and they were -- at 262,144 every
+    // round, which is neither the log's size nor a quantity that could respond to anything.
+    // Under preallocation `persistent_bytes` reported the file's RESERVATION, a 256 KiB chunk
+    // boundary, so the bound this test exists to prove was being satisfied by a constant. A
+    // guard that holds a number which cannot move is not guarding.
+    //
+    // So the first assertion now is that the figure DOES move, which is what tells a live
+    // measurement from a constant, and only then that it settles and stays settled.
     let first = bytes_seen[0];
+    let plateau = bytes_seen[bytes_seen.len() - 1];
+    assert_ne!(
+        first, plateau,
+        "the durable byte figure was the same in round 1 and round {} ({first}). That is what a \
+         reservation looks like -- a number fixed by the preallocation chunk rather than by the \
+         log -- and this test cannot bound a log through one: {bytes_seen:?}",
+        bytes_seen.len()
+    );
     assert!(
-        bytes_seen.iter().all(|bytes| *bytes == first),
-        "the log grew across rounds while the same keys were rewritten: {bytes_seen:?}"
+        bytes_seen.windows(2).all(|pair| pair[1] >= pair[0]),
+        "the log did not settle monotonically, so neither the warm-up nor the plateau below \
+         describes it: {bytes_seen:?}"
+    );
+    let tail = &bytes_seen[4..];
+    assert!(
+        tail.iter().all(|bytes| *bytes == plateau),
+        "the log was still growing after four rounds of rewriting the same 500 keys: \
+         {bytes_seen:?}"
+    );
+    assert!(
+        plateau < first.saturating_mul(2),
+        "the settled log ({plateau} bytes) is more than twice its first round ({first}), so the \
+         rewrites are accumulating rather than superseding: {bytes_seen:?}"
     );
 }
 

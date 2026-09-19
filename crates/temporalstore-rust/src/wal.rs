@@ -1467,7 +1467,7 @@ impl LocalWriteAheadLogStore {
         if entry.durable_seq >= required_sequence {
             return Ok(());
         }
-        let (path, snapshot) = {
+        let (path, snapshot, record_end) = {
             let mut inner = self.inner.lock().expect("write-ahead log lock poisoned");
             // The CACHED name, not a rebuilt one. `write_ahead_log_path` decides which of the
             // two piece names a store uses by asking whether each exists, so rebuilding it here
@@ -1486,7 +1486,24 @@ impl LocalWriteAheadLogStore {
                 .copied()
                 .unwrap_or(required_sequence)
                 .max(required_sequence);
-            (path, snapshot)
+            // The byte watermark, snapshotted HERE beside the sequence and for the same reason
+            // this function's own contract gives for the sequence: every appender wrote its
+            // bytes under this lock and released it before calling, so what is in the file now
+            // is exactly what the barrier below makes durable. Read AFTER the fsync instead --
+            // which is where it used to be read -- it can also pick up an append that the
+            // barrier never covered.
+            //
+            // And the RECORD END, not the file's length. See `note_durable_record_end`.
+            // `verified_len_by_shard` is where the append primitive left the records, so this
+            // costs no syscall at all; the length it replaces cost a `statx` per barrier.
+            // Absent means this process has appended nothing to this shard and so has no bytes
+            // of its own to claim durable, which is what zero says.
+            let record_end = inner
+                .verified_len_by_shard
+                .get(&shard_id)
+                .copied()
+                .unwrap_or(0);
+            (path, snapshot, record_end)
         };
         // Asked by OPENING, not by an `exists()` before it. The open happens either way and
         // answers the same question in the same syscall, with no window between two answers for
@@ -1527,14 +1544,9 @@ impl LocalWriteAheadLogStore {
                 inner.stats.last_flushed_sequence = snapshot;
             }
             // The barrier above covered everything written to this shard's active segment, so
-            // its whole current length is durable. Recorded per shard for the same reason the
-            // flush path does it.
-            let durable_bytes = wal_path_len(path.as_path()).unwrap_or(0);
-            let bytes_entry = inner
-                .durable_active_bytes_by_shard
-                .entry(shard_id)
-                .or_default();
-            *bytes_entry = (*bytes_entry).max(durable_bytes);
+            // its records are durable as far as the end snapshotted before it. Recorded per
+            // shard for the same reason the flush path does it.
+            note_durable_record_end(&mut inner, shard_id, record_end, true);
             let sequence_entry = inner.durable_sequence_by_shard.entry(shard_id).or_default();
             *sequence_entry = (*sequence_entry).max(snapshot);
         }
@@ -1565,15 +1577,21 @@ impl LocalWriteAheadLogStore {
             }
         };
         if record.sequence <= last_sequence {
-            let path = active_wal_path(&mut inner, record.shard_id);
+            // Where the RECORDS end. Both fields here are about records -- `offset` is where the
+            // next record would go and `persistent_bytes` is a durability figure -- and both
+            // used to be the file's LENGTH, asked for twice, in two `statx` calls for one
+            // number. Under preallocation that length is the reservation: the offset then points
+            // past the records into the zeros, and the durability figure overstates. See
+            // `note_durable_record_end`.
+            let record_end = active_record_end(&mut inner, record.shard_id);
             return Ok(WriteAheadLogAppendReport {
                 shard_id: record.shard_id,
                 requested_sequence: record.sequence,
                 current_sequence: last_sequence,
                 appended: false,
-                offset: path.metadata().map(|metadata| metadata.len()).unwrap_or(0),
+                offset: record_end,
                 size: 0,
-                persistent_bytes: path.metadata().map(|metadata| metadata.len()).unwrap_or(0),
+                persistent_bytes: record_end,
             });
         }
         let report = append_record_locked(&mut inner, &record, true, None)?;
@@ -1925,7 +1943,9 @@ impl LocalWriteAheadLogStore {
         let mut inner = self.inner.lock().expect("write-ahead log lock poisoned");
         fs::create_dir_all(&inner.root)?;
         let path = active_wal_path(&mut inner, shard_id);
-        let (last_sequence, _) = last_wal_sequence_at(&inner.root, shard_id)?;
+        // The record end comes back from this scan. It used to be discarded and the file's
+        // LENGTH asked for instead -- see `note_durable_record_end` for why those differ.
+        let (last_sequence, record_end) = last_wal_sequence_at(&inner.root, shard_id)?;
         if !path.exists() {
             return Ok(WriteAheadLogFlushReport {
                 shard_id,
@@ -1939,15 +1959,17 @@ impl LocalWriteAheadLogStore {
         crate::durability_metrics::record_barrier("engine_wal_flush");
         file.sync_all()?;
         sync_parent_dir(&path)?;
-        let persistent_bytes = path.metadata()?.len();
+        // Where the RECORDS end, not where the FILE does. Under preallocation the two differ
+        // by up to a whole chunk, and this is a durability figure. See
+        // `note_durable_record_end`. The `inner` lock is held across this whole function, so
+        // nothing can have been appended between the scan above and the barrier just taken.
+        let persistent_bytes = record_end;
         inner.stats.flushes += 1;
         inner.stats.syncs += 1;
         inner.stats.last_flushed_sequence = last_sequence;
         inner.stats.persistent_bytes = persistent_bytes;
         // Per shard, so a later barrier on a different shard cannot be read as this one's.
-        inner
-            .durable_active_bytes_by_shard
-            .insert(shard_id, persistent_bytes);
+        note_durable_record_end(&mut inner, shard_id, persistent_bytes, false);
         inner
             .durable_sequence_by_shard
             .insert(shard_id, last_sequence);
@@ -3484,6 +3506,66 @@ fn wal_path_len(path: &Path) -> Option<u64> {
     path.metadata().ok().map(|metadata| metadata.len())
 }
 
+/// Where the shard's active piece's RECORDS end, without asking for the file's length.
+///
+/// The append primitive maintains `verified_len_by_shard` as exactly this, so the common answer
+/// costs nothing at all; a shard this process has not appended to this lifetime falls back to
+/// the tail scan, which is the only other thing that knows. Neither is the file's LENGTH, which
+/// under preallocation is the reservation -- see `note_durable_record_end` for what reporting
+/// that costs.
+fn active_record_end(inner: &mut WriteAheadLogInner, shard_id: ShardId) -> u64 {
+    if let Some(&record_end) = inner.verified_len_by_shard.get(&shard_id) {
+        return record_end;
+    }
+    let path = active_wal_path(inner, shard_id);
+    last_wal_sequence_in(path.as_path())
+        .map(|(_, record_end)| record_end)
+        .unwrap_or(0)
+}
+
+/// The ONE place a barrier records how far a shard's ACTIVE piece has been made durable.
+///
+/// Three barrier paths reach this field -- `flush`, the group-commit barrier and the append
+/// primitive's own sync -- and two of them used to take the file's LENGTH. Under preallocation
+/// (`TS_WAL_PREALLOCATE`, default ON) the file has been grown with `set_len` to a
+/// `TS_WAL_PREALLOCATE_CHUNK` boundary -- 256 KiB by default -- past the last record, so its
+/// length is the RESERVATION: zeros that no record occupies and that a crash leaves holding
+/// nothing. Measured on this tree at the default chunk, the file's length reported 262,144
+/// durable bytes for a log holding 10,100 of records (25.9x) and the same 262,144 for a log
+/// holding 30 (8,738x).
+///
+/// `info()` states the direction this figure must never err in -- "understating is survivable;
+/// overstating is the failure this field exists to prevent" -- and `roll_wal_segment_if_due`
+/// repeats it when it clears the entry. A file length errs in exactly that direction. A record
+/// end cannot: it is where the bytes stop.
+///
+/// Taking the record end as an argument rather than measuring it here is deliberate. Every
+/// caller already holds one -- the append primitive has just written to it, `flush` gets it back
+/// from the tail scan it pays for anyway, and the group-commit barrier reads the cache the
+/// primitive maintains -- so there is no call site that has to reach for the filesystem, and the
+/// call that used to do so is one `statx` per append that no longer happens.
+///
+/// `monotonic` is the group-commit barrier alone. Barriers for one shard can complete out of
+/// order there, so it must not lower a figure a later one already raised; the other two hold the
+/// shard's lock across the write and set it outright. The roll clears the entry, which is what
+/// stops that `max` carrying a sealed piece's figure into the next piece.
+fn note_durable_record_end(
+    inner: &mut WriteAheadLogInner,
+    shard_id: ShardId,
+    record_end: u64,
+    monotonic: bool,
+) {
+    let entry = inner
+        .durable_active_bytes_by_shard
+        .entry(shard_id)
+        .or_default();
+    *entry = if monotonic {
+        (*entry).max(record_end)
+    } else {
+        record_end
+    };
+}
+
 fn append_record_locked(
     inner: &mut WriteAheadLogInner,
     record: &WriteAheadLogRecord,
@@ -3756,9 +3838,7 @@ fn append_record_locked_on(
         // EVERY path that makes a record durable records it per shard, not just flush() and the
         // group-commit barrier: a replayed append syncs here and nowhere else, and a durability
         // figure that misses one sync path understates exactly the writes a follower just took.
-        inner
-            .durable_active_bytes_by_shard
-            .insert(record.shard_id, persistent_bytes);
+        note_durable_record_end(inner, record.shard_id, persistent_bytes, false);
         let durable_sequence = inner
             .durable_sequence_by_shard
             .entry(record.shard_id)
@@ -7495,9 +7575,36 @@ mod tests {
         assert_eq!(first.current_sequence, 8);
         assert!(first.size > 0);
         assert!(first.persistent_bytes >= first.size);
+        // The per-shard figure, not just the report this call returns. A replayed append syncs
+        // inside the append primitive and nowhere else, so the primitive's own record of how far
+        // the shard is durable has no second writer to correct it -- and every other assertion
+        // on this path reads the report, which carries its own copy. Without this the primitive
+        // could record nothing at all and the suite would not notice.
+        assert_eq!(
+            store.info(3).unwrap().persistent_length_bytes,
+            first.persistent_bytes,
+            "the replayed append's barrier is not recorded against the shard"
+        );
         let duplicate = store.append_replayed_record(replayed).unwrap();
         assert!(!duplicate.appended);
         assert_eq!(duplicate.current_sequence, 8);
+        // A duplicate appends nothing, and says so with the RECORDS' end -- where the next
+        // record would go, and how far a barrier has reached. It used to answer the file's
+        // length for both, which under preallocation is the reservation: an offset pointing
+        // into the zeros past the records, and a durability figure above what the log holds.
+        let (_, record_end) =
+            last_wal_sequence_in(&write_ahead_log_path(dir.path(), 3)).unwrap();
+        assert_eq!(duplicate.offset, record_end);
+        assert_eq!(duplicate.persistent_bytes, record_end);
+        assert_eq!(first.persistent_bytes, record_end);
+        if wal_preallocate_enabled() {
+            let physical = write_ahead_log_path(dir.path(), 3).metadata().unwrap().len();
+            assert!(
+                record_end < physical,
+                "no reservation ({record_end} records in a {physical}-byte file), so the two \
+                 answers coincide and these assertions do not tell them apart"
+            );
+        }
         assert_eq!(store.scan(3, 0, u64::MAX, u64::MAX).unwrap().len(), 1);
         let stats = store.stats(3);
         assert_eq!(stats.last_sequence, 8);
@@ -7682,11 +7789,472 @@ mod tests {
         );
         assert!(info.current_sequence > info.last_flushed_sequence);
 
-        // After a barrier the two agree.
+        // After a barrier the RECORDS are durable -- and it is the records that are reported.
+        // This used to assert the durable figure equals the file's LENGTH, which passed for the
+        // wrong reason: under preallocation both sides were the reservation. The file is grown
+        // to a chunk boundary past the last record, and those zeros are room, not durable log.
         store.flush(1).unwrap();
         let synced = store.info(1).unwrap();
-        assert_eq!(synced.persistent_length_bytes, synced.length_bytes);
+        let (_, record_end) = last_wal_sequence_in(&write_ahead_log_path(dir.path(), 1)).unwrap();
+        assert_eq!(
+            synced.persistent_length_bytes, record_end,
+            "a barrier makes the records durable, so the records are what is reported"
+        );
+        if wal_preallocate_enabled() {
+            assert!(
+                synced.persistent_length_bytes < synced.length_bytes,
+                "the file's length is the reservation ({}) and the records stop at {}; equal \
+                 means the reservation is being reported as durable",
+                synced.length_bytes,
+                synced.persistent_length_bytes
+            );
+        }
         assert_eq!(synced.last_flushed_sequence, synced.current_sequence);
+    }
+
+
+    /// The durable byte figure reports the RECORDS a barrier covered, not the reservation the
+    /// file was grown to -- at two log sizes, with the ratio.
+    ///
+    /// Preallocation (`TS_WAL_PREALLOCATE`, default ON) grows the active piece with `set_len` to
+    /// a 256 KiB chunk boundary past the last record. The barrier paths used to report
+    /// `path.metadata().len()`, which is that boundary: zeros no record occupies. Measured on
+    /// this tree before the fix, a 100-record log reported 262,144 durable bytes against 10,100
+    /// of records -- 25.9x -- and a one-record log reported 262,144 against 30, 8,738x.
+    ///
+    /// The assertion is EQUALITY, not "reasonable". Overstating and understating this figure
+    /// fail differently and a bound that admits both catches neither: `info()` says which way it
+    /// must never err -- understating is survivable, overstating says unsynced records are on
+    /// disk to survive a crash -- so the test pins the exact byte count and, separately, pins
+    /// that the figure is STRICTLY BELOW the file's length, which is the observable that was
+    /// false before the fix and is what tells the two apart.
+    #[test]
+    fn a_barrier_reports_the_records_it_covered_and_not_the_reservation() {
+        // The fixture has to be in the regime being measured, or it measures nothing.
+        assert!(
+            wal_preallocate_enabled(),
+            "this is a statement about the preallocation regime and preallocation is off"
+        );
+
+        for records in [100usize, 1_000usize] {
+            let dir = tempfile::tempdir().unwrap();
+            let store = LocalWriteAheadLogStore::new(dir.path());
+            // One piece, so the whole figure is the active piece's and a roll cannot mask it.
+            set_wal_segment_bytes_for_test(Some(0));
+            for index in 0..records {
+                store
+                    .append_with_sync(
+                        1,
+                        Command::StringSet {
+                            key: format!("k{index:08}"),
+                            value: vec![b'v'; 64],
+                        },
+                        true,
+                    )
+                    .unwrap();
+            }
+            let info = store.info(1).unwrap();
+            let pieces = wal_segment_paths(dir.path(), 1);
+            let active = write_ahead_log_path(dir.path(), 1);
+            let (_, record_end) = last_wal_sequence_in(&active).unwrap();
+            set_wal_segment_bytes_for_test(None);
+
+            // Regime, asserted rather than assumed: one piece, no roll, and a reservation that
+            // really is longer than the records -- without that last part there is no gap
+            // between the two answers and the test cannot fail either way.
+            assert_eq!(pieces.len(), 1, "the fixture rolled, which is a different measurement");
+            assert!(
+                info.length_bytes > record_end,
+                "no reservation: the file is {} bytes and the records end at {record_end}, so \
+                 the two candidate answers coincide and this asserts nothing",
+                info.length_bytes
+            );
+
+            let ratio = info.length_bytes as f64 / record_end as f64;
+            println!(
+                "  {records} records: records {record_end} B, file {} B (the reservation, \
+                 {ratio:.2}x), reported durable {} B",
+                info.length_bytes, info.persistent_length_bytes
+            );
+
+            assert_eq!(
+                info.persistent_length_bytes, record_end,
+                "the barrier covered {record_end} bytes of records; {} was reported",
+                info.persistent_length_bytes
+            );
+            assert!(
+                info.persistent_length_bytes < info.length_bytes,
+                "the durable figure ({}) reached the file's length ({}), which under \
+                 preallocation is the reservation -- the overstating direction",
+                info.persistent_length_bytes,
+                info.length_bytes
+            );
+        }
+    }
+
+    /// The same, for the two barrier paths separately, because they are separate writers.
+    ///
+    /// `flush()` and the group-commit barrier each recorded the figure their own way and each
+    /// took the file's length. A guard covering one of two live writers leaves the other holding
+    /// the bug, so both are driven here: a synced append reaches the group-commit barrier, and an
+    /// unsynced append followed by `flush()` reaches the other.
+    #[test]
+    fn both_barrier_paths_report_records_rather_than_the_reservation() {
+        assert!(wal_preallocate_enabled(), "preallocation is off");
+        let dir = tempfile::tempdir().unwrap();
+        let store = LocalWriteAheadLogStore::new(dir.path());
+        set_wal_segment_bytes_for_test(Some(0));
+
+        // Shard 1: the group-commit barrier.
+        store
+            .append_with_sync(
+                1,
+                Command::StringSet { key: "k".to_string(), value: b"v".to_vec() },
+                true,
+            )
+            .unwrap();
+        // Shard 2: an unsynced append, then the flush barrier.
+        store
+            .append_with_sync(
+                2,
+                Command::StringSet { key: "k".to_string(), value: b"v".to_vec() },
+                false,
+            )
+            .unwrap();
+        let flush = store.flush(2).unwrap();
+        set_wal_segment_bytes_for_test(None);
+
+        let (_, end_one) = last_wal_sequence_in(&write_ahead_log_path(dir.path(), 1)).unwrap();
+        let (_, end_two) = last_wal_sequence_in(&write_ahead_log_path(dir.path(), 2)).unwrap();
+        let one = store.info(1).unwrap();
+        let two = store.info(2).unwrap();
+        println!(
+            "  group commit: records {end_one} B, file {} B, reported {} B",
+            one.length_bytes, one.persistent_length_bytes
+        );
+        println!(
+            "  flush:        records {end_two} B, file {} B, reported {} B",
+            two.length_bytes, two.persistent_length_bytes
+        );
+
+        // Without a reservation neither assertion below can fail, so say so first.
+        assert!(
+            one.length_bytes > end_one && two.length_bytes > end_two,
+            "no reservation on either shard, so neither writer is being distinguished"
+        );
+        assert_eq!(
+            one.persistent_length_bytes, end_one,
+            "the group-commit barrier reported {} for {end_one} bytes of records",
+            one.persistent_length_bytes
+        );
+        assert_eq!(
+            two.persistent_length_bytes, end_two,
+            "the flush barrier reported {} for {end_two} bytes of records",
+            two.persistent_length_bytes
+        );
+        assert_eq!(
+            flush.persistent_bytes, end_two,
+            "the flush REPORT carries the same figure it records"
+        );
+    }
+
+    /// A rolled log's durable figure is what its pieces actually hold.
+    ///
+    /// Sealed pieces are trimmed to their records before the rename, so their file lengths are
+    /// exact; only the piece being written carries a reservation. That makes the rolled case the
+    /// one where the error is easiest to miss -- it is diluted by every sealed byte -- and the
+    /// one where it recurs, because each new piece starts with a fresh whole-chunk reservation
+    /// over almost no records.
+    #[test]
+    fn a_rolled_logs_durable_figure_is_what_its_pieces_hold() {
+        assert!(wal_preallocate_enabled(), "preallocation is off");
+        let dir = tempfile::tempdir().unwrap();
+        let store = LocalWriteAheadLogStore::new(dir.path());
+        set_wal_segment_bytes_for_test(Some(8 * 1024));
+        for index in 0..400 {
+            store
+                .append_with_sync(
+                    1,
+                    Command::StringSet {
+                        key: format!("k{index:08}"),
+                        value: vec![b'v'; 64],
+                    },
+                    true,
+                )
+                .unwrap();
+        }
+        set_wal_segment_bytes_for_test(None);
+
+        let pieces = wal_segment_paths(dir.path(), 1);
+        let mut held = 0u64;
+        for piece in &pieces {
+            let (_, record_end) = last_wal_sequence_in(piece).unwrap();
+            held += record_end;
+        }
+        let info = store.info(1).unwrap();
+        println!(
+            "  {} pieces: records {held} B, files {} B, reported durable {} B",
+            pieces.len(),
+            info.length_bytes,
+            info.persistent_length_bytes
+        );
+
+        assert!(pieces.len() > 1, "the fixture did not roll, so this is not the rolled case");
+        assert!(
+            info.length_bytes > held,
+            "the active piece carries no reservation, so the rolled case is not distinguished"
+        );
+        assert_eq!(
+            info.persistent_length_bytes, held,
+            "the pieces hold {held} bytes of records; {} was reported durable",
+            info.persistent_length_bytes
+        );
+    }
+
+    /// One writer, and it is not a file length.
+    ///
+    /// Six counters in this tree have been found declared and never incremented, or counting a
+    /// fraction of their call sites. The defect here is the mirror of that: three barrier paths
+    /// each wrote the same field, and two of them computed it from `metadata().len()`. Fixing
+    /// the two without closing the door leaves the next barrier path free to open it again, and
+    /// nothing would fail -- the figure would simply be wrong in the direction that says data is
+    /// safe when it is not.
+    ///
+    /// The identifier is assembled at runtime so this guard's own source does not contain the
+    /// name it counts: a guard that lists names otherwise feeds on its own list.
+    #[test]
+    fn the_durable_byte_figure_has_exactly_one_writer() {
+        let source = include_str!("wal.rs");
+        let field = format!("{}{}", "durable_active_bytes", "_by_shard");
+        let door = format!("{}{}", "note_durable_record", "_end");
+
+        // The denominator, before any conclusion is drawn from it. A guard that reads an empty
+        // string reports the same clean result as one that is satisfied.
+        assert!(
+            source.len() > 100_000 && source.contains(&field),
+            "this guard is not reading the module it is about ({} bytes)",
+            source.len()
+        );
+
+        let naming: Vec<&str> = source
+            .lines()
+            .map(|line| line.trim())
+            .filter(|line| line.contains(&field))
+            .collect();
+        assert_eq!(
+            naming.len(),
+            6,
+            "the lines naming the field changed; every one of them is either the declaration, \
+             its initialiser, the single writer, the roll that clears it, or one of the two \
+             readers: {naming:#?}"
+        );
+
+        // Mutation reaches it through one door and one clearing, and through nothing else.
+        let entries = naming.iter().filter(|line| line.contains(".entry(")).count();
+        let inserts = naming.iter().filter(|line| line.contains(".insert(")).count();
+        let removes = naming.iter().filter(|line| line.contains(".remove(")).count();
+        assert_eq!(
+            (entries, inserts, removes),
+            (0, 0, 1),
+            "the field is mutated somewhere other than its one writer and the roll's clear: \
+             {naming:#?}"
+        );
+
+        // And the door itself: one definition, three barrier paths.
+        let calls = source.matches(&format!("{door}(")).count();
+        assert_eq!(
+            calls, 4,
+            "one definition and three barrier paths call the single writer; found {calls} \
+             mentions. A fourth barrier path is fine -- update this number and make sure it \
+             passes a record end, not a file length"
+        );
+
+        // No barrier path derives it from a length. The two that did are the whole defect.
+        for line in &naming {
+            assert!(
+                !line.contains("metadata()") && !line.contains("wal_path_len"),
+                "a file length is feeding the durable byte figure again: {line}"
+            );
+        }
+    }
+
+
+    /// An append grows the piece it is writing to, or leaves it alone. It never shortens it.
+    ///
+    /// #1916 priced an optimisation that would cache the active piece's reservation size instead
+    /// of asking the filesystem for it on every append, and DECLINED it: `append_replayed_record`
+    /// and `append_batch_atomic` reach the `set_len` under that read without the fast path's
+    /// disk check, so a stale-low value would make that `set_len` TRUNCATE rather than grow. It
+    /// priced the decline honestly -- the mutant passed 2,105 of 2,105 tests. Nothing in the
+    /// suite could see a truncating write-ahead log, which is the worst thing this file can do.
+    ///
+    /// This is the missing guard. It takes no position on the optimisation; it pins the property
+    /// the optimisation would have put at risk, so that the next attempt at it fails a test
+    /// rather than a store. Three statements, and the third is the one that catches a truncation:
+    ///
+    ///  * the piece's length never decreases across appends,
+    ///  * the records' end never decreases either,
+    ///  * the FILE is never shorter than the RECORDS -- a `set_len` that shrinks below the
+    ///    record end has destroyed acked bytes, and this is what sees it.
+    ///
+    /// Driven through all three append paths, because the two named above are the ones that skip
+    /// the check, and a guard covering one of several live callers lets the others keep the bug.
+    #[test]
+    fn no_append_ever_shortens_the_piece_it_is_appending_to() {
+        // The grow under test is preallocation's. Without it there is nothing to shrink.
+        assert!(
+            wal_preallocate_enabled(),
+            "preallocation is off, so the `set_len` this guards is never reached"
+        );
+        let dir = tempfile::tempdir().unwrap();
+        let store = LocalWriteAheadLogStore::new(dir.path());
+        // One piece: the roll TRIMS a piece to its records on purpose, and a legitimate trim
+        // must not be mistaken for the truncation this is looking for.
+        set_wal_segment_bytes_for_test(Some(0));
+        let path = write_ahead_log_path(dir.path(), 1);
+
+        let mut acked: Vec<u64> = Vec::new();
+        let mut previous_len = 0u64;
+        let mut previous_end = 0u64;
+        let mut grows = 0usize;
+
+        let value_for = |index: usize| -> Vec<u8> {
+            // Sizes that cross the reservation at irregular intervals, so some appends grow the
+            // file and most do not -- both branches of the grow are exercised.
+            //
+            // Incompressible bytes, not a run of one byte: the log compresses records, and a
+            // 48 KiB run of `v` lands on disk small enough that the file never grows at all.
+            // The regime assertion at the end of this test caught exactly that.
+            let len = match index % 5 {
+                0 => 8,
+                1 => 512,
+                2 => 4_096,
+                3 => 48 * 1024,
+                _ => 16,
+            };
+            let mut state = 0x2545_F491_4F6C_DD1D_u64
+                ^ (len as u64).wrapping_mul(0x9E37_79B9_7F4A_7C15)
+                ^ (index as u64).wrapping_mul(0xD1B5_4A32_D192_ED03);
+            (0..len)
+                .map(|_| {
+                    state ^= state >> 12;
+                    state ^= state << 25;
+                    state ^= state >> 27;
+                    state.wrapping_mul(0x2545_F491_4F6C_DD1D) as u8
+                })
+                .collect()
+        };
+
+        for index in 0..120usize {
+            match index % 3 {
+                // The ordinary synced append.
+                0 => {
+                    store
+                        .append_with_sync(
+                            1,
+                            Command::StringSet {
+                                key: format!("k{index:08}"),
+                                value: value_for(index),
+                            },
+                            true,
+                        )
+                        .unwrap();
+                }
+                // The atomic batch: it holds one handle across several records and carries the
+                // physical length itself, which is the path the declined cache would have fed.
+                1 => {
+                    store
+                        .append_batch_atomic(
+                            1,
+                            vec![
+                                Command::StringSet {
+                                    key: format!("b{index:08}a"),
+                                    value: value_for(index),
+                                },
+                                Command::StringSet {
+                                    key: format!("b{index:08}b"),
+                                    value: value_for(index + 1),
+                                },
+                            ],
+                            true,
+                        )
+                        .unwrap();
+                }
+                // Replay: it syncs inside the append primitive and nowhere else, and it reaches
+                // the grow without the fast path's disk check.
+                _ => {
+                    let next = store.stats(1).last_sequence + 1;
+                    let command = Command::StringSet {
+                        key: format!("r{index:08}"),
+                        value: value_for(index),
+                    };
+                    store
+                        .append_replayed_record(WriteAheadLogRecord {
+                            shard_id: 1,
+                            sequence: next,
+                            metadata: Some(WriteAheadLogRecordMetadata::single_command(&command)),
+                            command: Some(command),
+                            staged_blocks: Vec::new(),
+                            outcomes: Vec::new(),
+                        })
+                        .unwrap();
+                }
+            }
+
+            let len = path.metadata().unwrap().len();
+            let (last, record_end) = last_wal_sequence_in(&path).unwrap();
+            acked.push(last);
+
+            assert!(
+                len >= previous_len,
+                "append {index} SHORTENED the piece, from {previous_len} bytes to {len}"
+            );
+            assert!(
+                record_end >= previous_end,
+                "append {index} moved the records' end BACKWARDS, from {previous_end} to \
+                 {record_end} -- bytes that had been acked are gone"
+            );
+            assert!(
+                len >= record_end,
+                "after append {index} the file is {len} bytes and its records run to \
+                 {record_end}: the piece has been truncated through its own records"
+            );
+            if len > previous_len {
+                grows += 1;
+            }
+            previous_len = len;
+            previous_end = record_end;
+        }
+        set_wal_segment_bytes_for_test(None);
+
+        // The fixture has to have been in the regime it claims. A run that never grew the file
+        // never reached the `set_len` this is about, and every assertion above would hold
+        // trivially.
+        println!(
+            "  120 appends: {} acked, file {previous_len} B, records {previous_end} B, \
+             {grows} grows",
+            acked.len()
+        );
+        assert!(
+            grows > 1,
+            "the file was grown {grows} times over 120 appends (file {previous_len} B, records \
+             {previous_end} B), so the grow being guarded was barely reached"
+        );
+        assert!(
+            previous_len > previous_end,
+            "the piece ends exactly at its records, so there is no reservation and a truncation \
+             of one could not have been seen"
+        );
+
+        // And the records themselves: every sequence that was acked is still readable.
+        let survivors = store.scan(1, 0, u64::MAX, u64::MAX).unwrap();
+        let highest = acked.iter().copied().max().unwrap();
+        assert_eq!(
+            survivors.len() as u64,
+            highest,
+            "{} records survived of {highest} acked",
+            survivors.len()
+        );
     }
 
     #[test]

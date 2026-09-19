@@ -765,16 +765,21 @@ fn a_steady_state_append_asks_for_the_active_pieces_length_a_fixed_number_of_tim
 
     // The result: the per-append cost does not move with the log.
     assert_eq!(
-        small_asks as usize, small * 4,
+        small_asks as usize, small * 3,
         "{small} steady-state appends asked for the active piece's length {small_asks} times, \
-         not {} -- an append asks four times: once to check the piece exists, once to confirm no \
-         other writer moved its end, once to decide whether it is full, and once to record how \
-         much of it a barrier just covered",
-        small * 4
+         not {} -- an append asks three times: once to check the piece exists, once to confirm \
+         no other writer moved its end, and once to decide whether it is full. \
+         There used to be a fourth, taken by the group-commit barrier to record how much of the \
+         piece it had just made durable. It asked the wrong question: under preallocation the \
+         file's length is the RESERVATION, not the records, so the barrier recorded a durable \
+         byte count up to a whole 256 KiB chunk above what the log actually held. The record end \
+         is already in hand on that path, so the answer cost a `statx` that was not needed even \
+         to be wrong",
+        small * 3
     );
     assert_eq!(
-        large_asks as usize, large * 4,
-        "{large} steady-state appends asked {large_asks} times, not {}", large * 4
+        large_asks as usize, large * 3,
+        "{large} steady-state appends asked {large_asks} times, not {}", large * 3
     );
     assert_eq!(
         small_per, large_per,
