@@ -28,7 +28,10 @@ use crate::types::ShardId;
 /// suite is run. Each probe resets immediately before the call it measures.
 #[cfg(test)]
 pub(crate) mod probe {
-    use std::sync::atomic::{AtomicU64, Ordering};
+    use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+    use std::sync::Mutex;
+
+    use crate::types::ShardId;
 
     /// Calls to [`super::index_log_segment_paths`] -- one directory listing each.
     pub(crate) static DIR_LISTINGS: AtomicU64 = AtomicU64::new(0);
@@ -50,6 +53,104 @@ pub(crate) mod probe {
     /// Times an append resolved WHICH FILE the shard's log is being written to. Each pass is
     /// at least one `statx`, and the append used to make two of them per record.
     pub(crate) static APPEND_PATH_PROBES: AtomicU64 = AtomicU64::new(0);
+    /// Records the load-path fold was asked about, and what it was told.
+    ///
+    /// Counted inside [`super::delta_record_is_reflected_by`] rather than at the fold, so a
+    /// second caller of that predicate cannot ask the question without being counted here.
+    pub(crate) static FOLD_RECORDS_TESTED: AtomicU64 = AtomicU64::new(0);
+    /// Of those, the ones that carry NO anchor and carry something the fold would apply, asked
+    /// about by a base that anchors somewhere. This is the population #1832 and #1842 are about,
+    /// met at the third site; a zero here is "the fold never saw one", not "it saw one and kept
+    /// it".
+    pub(crate) static FOLD_ANCHORLESS_WITH_CONTENT: AtomicU64 = AtomicU64::new(0);
+    /// The per-record decision sequence, in the order the fold made it: (shard, sequence,
+    /// reflected). A test compares this ELEMENT BY ELEMENT against a control, because a count
+    /// is equally happy when the right number of the wrong records is kept.
+    ///
+    /// ARMED EXPLICITLY. The fold-cost fixtures in `index_log_scale` measure the memory the
+    /// fold holds at 10,000 records; a Vec that grows with the corpus would be measured along
+    /// with it. Unarmed this is one relaxed load per record and nothing else.
+    pub(crate) static FOLD_DECISIONS_ARMED: AtomicBool = AtomicBool::new(false);
+    pub(crate) static FOLD_DECISIONS: Mutex<Vec<(ShardId, u64, bool)>> = Mutex::new(Vec::new());
+    /// The records the fold actually APPLIED, in order, as (shard, sequence).
+    ///
+    /// Recorded where the WORK LANDS -- after the page items are re-attached and the key-states
+    /// are applied -- and not where the decision is taken. The two are separate on purpose: a
+    /// change that asks the predicate and then ignores the answer leaves [`FOLD_DECISIONS`]
+    /// exactly as it was, and is visible only here.
+    pub(crate) static FOLD_APPLIED: Mutex<Vec<(ShardId, u64)>> = Mutex::new(Vec::new());
+
+    /// Start recording the decision and application sequences, from empty. Put back by
+    /// [`disarm_decisions`].
+    pub(crate) fn arm_decisions() {
+        FOLD_DECISIONS
+            .lock()
+            .expect("fold decision probe poisoned")
+            .clear();
+        FOLD_APPLIED
+            .lock()
+            .expect("fold decision probe poisoned")
+            .clear();
+        FOLD_DECISIONS_ARMED.store(true, Ordering::Relaxed);
+    }
+
+    /// Note that the fold APPLIED a record. Called from inside the fold, after the work.
+    pub(crate) fn note_fold_applied(shard_id: ShardId, sequence: u64) {
+        if FOLD_DECISIONS_ARMED.load(Ordering::Relaxed) {
+            FOLD_APPLIED
+                .lock()
+                .expect("fold decision probe poisoned")
+                .push((shard_id, sequence));
+        }
+    }
+
+    pub(crate) fn applied() -> Vec<(ShardId, u64)> {
+        FOLD_APPLIED
+            .lock()
+            .expect("fold decision probe poisoned")
+            .clone()
+    }
+
+    pub(crate) fn disarm_decisions() {
+        FOLD_DECISIONS_ARMED.store(false, Ordering::Relaxed);
+    }
+
+    pub(crate) fn decisions() -> Vec<(ShardId, u64, bool)> {
+        FOLD_DECISIONS
+            .lock()
+            .expect("fold decision probe poisoned")
+            .clone()
+    }
+
+    pub(crate) fn fold_records_tested() -> u64 {
+        FOLD_RECORDS_TESTED.load(Ordering::Relaxed)
+    }
+
+    pub(crate) fn fold_anchorless_with_content() -> u64 {
+        FOLD_ANCHORLESS_WITH_CONTENT.load(Ordering::Relaxed)
+    }
+
+    /// The counting half of [`super::delta_record_is_reflected_by`], kept beside the statics it
+    /// moves so the predicate reads as the decision alone.
+    pub(crate) fn note_fold_decision(
+        record: &super::IndexDeltaRecord,
+        base_anchor: u64,
+        reflected: bool,
+    ) {
+        FOLD_RECORDS_TESTED.fetch_add(1, Ordering::Relaxed);
+        if base_anchor > 0
+            && record.applied_wal_sequence.is_none()
+            && super::delta_record_carries_content_of(record)
+        {
+            FOLD_ANCHORLESS_WITH_CONTENT.fetch_add(1, Ordering::Relaxed);
+        }
+        if FOLD_DECISIONS_ARMED.load(Ordering::Relaxed) {
+            FOLD_DECISIONS
+                .lock()
+                .expect("fold decision probe poisoned")
+                .push((record.shard_id, record.sequence, reflected));
+        }
+    }
 
     pub(crate) fn reset() {
         DIR_LISTINGS.store(0, Ordering::Relaxed);
@@ -58,6 +159,16 @@ pub(crate) mod probe {
         FOLD_PIECES_DECLINED.store(0, Ordering::Relaxed);
         APPEND_ROOT_CREATES.store(0, Ordering::Relaxed);
         APPEND_PATH_PROBES.store(0, Ordering::Relaxed);
+        FOLD_RECORDS_TESTED.store(0, Ordering::Relaxed);
+        FOLD_ANCHORLESS_WITH_CONTENT.store(0, Ordering::Relaxed);
+        FOLD_DECISIONS
+            .lock()
+            .expect("fold decision probe poisoned")
+            .clear();
+        FOLD_APPLIED
+            .lock()
+            .expect("fold decision probe poisoned")
+            .clear();
     }
 
     pub(crate) fn dir_listings() -> u64 {
@@ -1786,11 +1897,22 @@ impl LocalIndexLogStore {
     ///
     /// - `max_applied_wal` is a max over the records' own anchors, taken at SEAL time by
     ///   [`index_log_segment_span_of`], after a complete append. A record carrying NO anchor
-    ///   contributes 0 to that max -- and the load-path test reads a missing anchor as 0 in
-    ///   exactly the same way (`applied_wal_sequence.unwrap_or(0)`), so the two agree about it.
-    ///   That agreement is what makes the piece-level test equivalent to the per-record one,
-    ///   and it holds for every spelling this name has ever had: the value written has been
-    ///   `max(anchor.unwrap_or(0))` since the pieces were introduced (#1634).
+    ///   does not take part in that max at all: one carrying something the fold would apply
+    ///   makes the whole name [`INDEX_SEGMENT_UNREFLECTED`], and one carrying nothing leaves
+    ///   the max where it was. The load-path test is [`delta_record_is_reflected_by`], which
+    ///   asks those same two questions of the same record, so the two agree about it. That
+    ///   agreement is what makes the piece-level test equivalent to the per-record one.
+    ///
+    ///   THIS BULLET OUTLIVED WHAT IT DESCRIBED, AND IS KEPT AS THE RECORD OF HOW. It used to
+    ///   read "A record carrying NO anchor contributes 0 to that max -- and the load-path test
+    ///   reads a missing anchor as 0 in exactly the same way (`applied_wal_sequence
+    ///   .unwrap_or(0)`), so the two agree about it." Both halves stopped being true, one at a
+    ///   time. #1842 stopped the SEAL from reading a missing anchor as 0, because a piece of
+    ///   nothing but anchor-less deltas named 0 and the post-dump sweep unlinked it unread. The
+    ///   fold went on reading it as 0 for longer -- so a piece held open by #1842 precisely to
+    ///   save an anchor-less record handed that record to a fold that dropped it one line
+    ///   later, and the sentence above still said the two agreed. The agreement is a property
+    ///   of the predicate both sides now call, not of this paragraph.
     /// - [`INDEX_SEGMENT_UNREFLECTED`] is excluded EXPLICITLY rather than left to the `<=`. It
     ///   is `u64::MAX`, so the comparison would already decline to fire for any real anchor --
     ///   but "already" is a property of the anchors a deployment happens to reach, not of this
@@ -2770,6 +2892,50 @@ fn piece_is_reflected_by(span: IndexSegmentSpan, base_anchor: u64) -> bool {
         && span.max_applied_wal <= base_anchor
 }
 
+/// Does a base snapshot anchored at `base_anchor` PROVABLY already hold this delta record?
+///
+/// The load-path fold's own test. It lives here, beside [`piece_is_reflected_by`] and the record
+/// walk in [`LocalIndexLogStore::gc_reflected_before_anchor`], because the three ask ONE
+/// question of three different views of the same record -- a whole piece from its name, a raw
+/// payload, a decoded record -- and a fourth copy is how the first three came apart.
+///
+/// A MISSING ANCHOR IS NOT ANCHOR 0. `applied_wal_sequence.unwrap_or(0)` made one, and 0 is at
+/// or below every anchor, so an anchor-less record compared as older than everything, was
+/// classified reflected, and was dropped. #1832 took that reading out of the record walk and
+/// #1842 out of the piece name; the fold was the third site and kept it longest -- long enough
+/// that #1842's fix, which holds such a piece OPEN so the fold can see the record, delivered it
+/// to a fold that skipped it.
+///
+/// So an anchor-less record is reflected by nothing UNLESS it carries nothing the fold would
+/// apply. The content-less shapes -- the legacy whole-index line, and the checkpoint that
+/// records no key -- stay reflected, which is what the post-dump sweep exists to reclaim.
+///
+/// THE FOLD NEVER MEETS A CONTENT-LESS RECORD, AND THE BRANCH IS STILL LOAD-BEARING.
+/// [`LocalIndexLogStore::for_each_delta_record_above_anchor`] drops such a record before any
+/// caller sees it ("only keep records that carry a delta payload OR a WAL anchor"), so via the
+/// fold that arm is unreachable -- a FOURTH spelling of this same question, and one that agrees
+/// with this one. The arm answers for the OTHER two callers, which read raw payloads off the
+/// disk and do meet the legacy line. Writing it as anything else would make the walk, the sweep
+/// and the piece name disagree again, which is how this started.
+///
+/// WHICH WAY A WRONG ANSWER FAILS. Answering `true` about a record the fold would have applied
+/// is SILENT DATA LOSS: the removal or eviction it describes lives only in the delta, so it is
+/// recovered from neither the delta nor the write-ahead log, and the load reports success.
+/// Answering `false` about a record the base already holds costs a re-apply of something
+/// already applied. Only one of those is observable, so the tests attack that one.
+pub(crate) fn delta_record_is_reflected_by(record: &IndexDeltaRecord, base_anchor: u64) -> bool {
+    // A base that anchors nowhere reflects nothing, whatever the record says -- the same first
+    // clause `piece_is_reflected_by` opens with.
+    let reflected = base_anchor > 0
+        && match record.applied_wal_sequence {
+            Some(anchor) => anchor <= base_anchor,
+            None => !delta_record_carries_content_of(record),
+        };
+    #[cfg(test)]
+    probe::note_fold_decision(record, base_anchor, reflected);
+    reflected
+}
+
 fn index_log_segment_paths(root: &Path, shard_id: ShardId) -> Vec<PathBuf> {
     #[cfg(test)]
     probe::DIR_LISTINGS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
@@ -3019,7 +3185,15 @@ fn delta_record_carries_content(payload: &[u8]) -> Result<bool, IndexLogError> {
     // IndexDeltaRecord with every delta field empty -- which is the same answer, reached by
     // reading it rather than by trusting a byte that is not there.
     let record: IndexDeltaRecord = decode_index_payload(payload)?;
-    Ok(!record.items.is_empty() || record.meta.is_some() || !record.key_states.is_empty())
+    Ok(delta_record_carries_content_of(&record))
+}
+
+/// The same question asked of a record that is ALREADY DECODED, which is how the load-path fold
+/// meets it. Split out of [`delta_record_carries_content`] rather than written twice: the sweep
+/// reads raw payloads and the fold reads records, and "what the fold would apply" has to mean
+/// the same thing to both or the two drift about which records matter.
+pub(crate) fn delta_record_carries_content_of(record: &IndexDeltaRecord) -> bool {
+    !record.items.is_empty() || record.meta.is_some() || !record.key_states.is_empty()
 }
 
 fn sync_parent_dir(path: &Path) -> std::io::Result<()> {
@@ -3421,6 +3595,78 @@ mod tests {
             in_log: false,
             deleted,
         }
+    }
+
+    /// WHAT A BASE ANCHOR REFLECTS, AT EVERY CORNER, AS A TABLE.
+    ///
+    /// [`super::delta_record_is_reflected_by`] is the one test the load-path fold, the post-dump
+    /// record walk and the piece name all ask, so every corner of it is a corner of all three.
+    /// Each row is written from the INVARIANT -- a record is reflected only when the base
+    /// PROVABLY already holds it -- rather than read off the implementation.
+    ///
+    /// The two rows about a base anchor of 0 are the ones that look redundant and are not: the
+    /// `<=` alone would answer them correctly only for the anchors a deployment happens to
+    /// reach, and "no base has been written yet" must not be a number the comparison can reason
+    /// about. The last row is the legacy whole-index line, which the post-dump sweep exists to
+    /// reclaim: it carries no anchor AND nothing the fold would apply, and it must stay
+    /// reflected or that sweep stops being able to drop anything.
+    #[test]
+    fn what_a_base_anchor_reflects_at_every_corner() {
+        // (what it is, the record's anchor, items, meta, key-states, the base anchor, reflected)
+        let cases: &[(&str, Option<u64>, bool, bool, bool, u64, bool)] = &[
+            ("a base anchored nowhere reflects no anchored record", Some(1), true, false, false, 0, false),
+            ("a base anchored nowhere reflects no anchor-less record either", None, false, false, false, 0, false),
+            ("an anchor BELOW the base is in the base", Some(4), true, false, false, 5, true),
+            ("an anchor AT the base is in the base", Some(5), true, false, false, 5, true),
+            ("an anchor ABOVE the base is not", Some(6), true, false, false, 5, false),
+            ("no anchor, page items: no base reflects it", None, true, false, false, 5, false),
+            ("no anchor, a folded catalog: no base reflects it", None, false, true, false, 5, false),
+            ("no anchor, key-states: no base reflects it", None, false, false, true, 5, false),
+            ("no anchor and nothing at all: the legacy whole-index shape", None, false, false, false, 5, true),
+        ];
+        // VACUITY FLOOR, before the rows are read: a table asking for one answer throughout is
+        // passed by a predicate that returns a constant.
+        let yes = cases.iter().filter(|case| case.6).count();
+        assert!(
+            yes > 0 && yes < cases.len(),
+            "the table asks for `true` {yes} times out of {}, so a constant passes it",
+            cases.len()
+        );
+
+        let mut wrong = Vec::new();
+        for (what, anchor, items, meta, key_states, base_anchor, reflected) in cases {
+            let record = IndexDeltaRecord {
+                shard_id: 1,
+                sequence: 1,
+                items: if *items {
+                    vec![block_item(0, "tenant/1/object/0", false)]
+                } else {
+                    Vec::new()
+                },
+                meta: if *meta { Some(MetaItem::default()) } else { None },
+                applied_wal_sequence: *anchor,
+                upsert: false,
+                key_states: if *key_states {
+                    vec![serde_json::json!({ "key": "tenant/1/object/0" })]
+                } else {
+                    Vec::new()
+                },
+                shared_object_key: None,
+            };
+            let answer = super::delta_record_is_reflected_by(&record, *base_anchor);
+            if answer != *reflected {
+                wrong.push(format!(
+                    "base {base_anchor}, {what}: reflected={answer}, must be {reflected}"
+                ));
+            }
+        }
+        assert!(
+            wrong.is_empty(),
+            "{} of {} rows answer wrongly:\n  {}",
+            wrong.len(),
+            cases.len(),
+            wrong.join("\n  ")
+        );
     }
 
     /// An object id that is the hash of the row's own fields is not written, and comes back.
@@ -6458,14 +6704,14 @@ flag exists to say",
         assert_eq!(sequences, vec![1, 2, 3], "GC must see the real sequences");
     }
 
-    /// The load-path fold's own test, extracted so the piece-level decline and the per-record
-    /// one are literally the same predicate rather than two copies that can drift.
+    /// The load-path fold's own test, CALLED rather than copied, so the piece-level decline and
+    /// the per-record one are literally the same predicate.
     ///
-    /// This is `fold_index_log_deltas`'s first three lines, and it is what the piece name has to
-    /// be able to answer for a whole piece at once.
+    /// This used to be a transcription of `fold_index_log_deltas`'s first three lines, under a
+    /// comment claiming it could not drift from them. It drifted: the fold read a missing anchor
+    /// as anchor 0 and so did this, after #1842 had already stopped the piece name from doing so.
     fn load_path_applies(record: &IndexDeltaRecord, base_anchor: u64) -> bool {
-        let record_anchor = record.applied_wal_sequence.unwrap_or(0);
-        !(base_anchor > 0 && record_anchor <= base_anchor)
+        !super::delta_record_is_reflected_by(record, base_anchor)
     }
 
     /// Fold a log the two ways and report what each cost, for a given base anchor.

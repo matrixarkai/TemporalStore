@@ -313,10 +313,16 @@ impl TemporalEngine {
         if let Err(err) = self
             .index_log_store
             .for_each_delta_record_above_anchor(shard_id, 0, base_anchor, |record| {
-                let record_anchor = record.applied_wal_sequence.unwrap_or(0);
-                // A present base already reflects everything at/below its anchor; fold only the
-                // suffix. An absent base (anchor 0) folds the whole log.
-                if base_anchor > 0 && record_anchor <= base_anchor {
+                // A present base already reflects everything at/below its anchor; fold only
+                // the suffix. An absent base (anchor 0) folds the whole log. This read
+                // `applied_wal_sequence.unwrap_or(0) <= base_anchor` inline, which made a
+                // MISSING anchor into anchor 0 -- at or below every anchor -- and skipped every
+                // anchor-less record. That is the reading #1832 took out of the post-dump record
+                // walk and #1842 out of the piece name, surviving at the third site: #1842 holds
+                // a piece of anchor-less deltas OPEN so this fold can see them, and this fold
+                // then dropped them. `delta_record_is_reflected_by` is the predicate all three
+                // now ask, so they cannot disagree about a record again.
+                if crate::index_log::delta_record_is_reflected_by(&record, base_anchor) {
                     return;
                 }
                 let covered = delta_record_covered_keys(&record);
@@ -327,7 +333,16 @@ impl TemporalEngine {
                     record.upsert,
                 );
                 apply_key_states(shard, &record.key_states);
-                max_anchor = max_anchor.max(record_anchor);
+                // A MISSING anchor takes no part in this max, and must not be given one. The
+                // reconstructed anchor is where WAL replay starts ABOVE, so a record that says
+                // nothing about the WAL must not move it -- in either direction. (`unwrap_or(0)`
+                // happened to be harmless here; `unwrap_or(u64::MAX)`, the shape #1842 chose for
+                // a piece NAME, would suppress replay of the entire tail.)
+                if let Some(anchor) = record.applied_wal_sequence {
+                    max_anchor = max_anchor.max(anchor);
+                }
+                #[cfg(test)]
+                crate::index_log::probe::note_fold_applied(shard_id, record.sequence);
                 applied = true;
             })
         {
