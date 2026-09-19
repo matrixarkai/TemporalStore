@@ -46,8 +46,8 @@
 
 use crate::types::Command;
 use crate::wal::{
-    set_wal_segment_bytes_for_test, LocalWriteAheadLogStore, WAL_SEGMENT_HEADER_READS,
-    WAL_SEGMENT_LISTINGS,
+    set_wal_segment_bytes_for_test, LocalWriteAheadLogStore, WAL_PATH_BUILDS, WAL_PATH_LEN_ASKS,
+    WAL_SEGMENT_HEADER_READS, WAL_SEGMENT_LISTINGS,
 };
 
 /// The window the engine replays with -- `engine::lifecycle::WAL_REPLAY_WINDOW_BYTES`, scaled
@@ -648,5 +648,182 @@ fn no_durable_barrier_is_taken_while_the_append_lock_is_held() {
          {records} appends that took {after_release} barriers after releasing it. A barrier under \
          the lock is milliseconds of held mutex on the write path, and on one thread it costs \
          nothing measurable -- it only shows up as every concurrent writer queueing"
+    );
+}
+
+/// Append `records` records into a log that is ALREADY being written, and report how many times
+/// the append path asked the filesystem for the active piece's length, how many times it rebuilt
+/// that piece's name, how many records the log took, and how many files it ended up in.
+///
+/// The first append is outside the measurement deliberately. It creates the file, takes the one
+/// full tail scan this process pays, and makes the directory entry durable -- none of which is
+/// per-record work, and all of which would be divided into the per-append figure as though it
+/// were. Everything counted here is a steady-state append into a non-empty log.
+fn metadata_asks_over_steady_appends(records: usize) -> (u64, u64, u64, usize) {
+    let dir = tempfile::tempdir().unwrap();
+    let store = LocalWriteAheadLogStore::new(dir.path());
+    store
+        .append(
+            1,
+            Command::StringSet { key: "warm".to_string(), value: vec![1u8; 128] },
+        )
+        .unwrap();
+
+    WAL_PATH_LEN_ASKS.with(|asks| asks.set(0));
+    WAL_PATH_BUILDS.with(|builds| builds.set(0));
+    let mut index = 0usize;
+    while index < records {
+        store
+            .append(
+                1,
+                Command::StringSet {
+                    key: format!("k{index:08}"),
+                    value: incompressible(128, index as u64),
+                },
+            )
+            .unwrap();
+        index += 1;
+    }
+    let asks = WAL_PATH_LEN_ASKS.with(|asks| asks.get());
+    let builds = WAL_PATH_BUILDS.with(|builds| builds.get());
+
+    let written = store.raw_stats(1).writes;
+    let files = std::fs::read_dir(dir.path()).unwrap().count();
+    (asks, builds, written, files)
+}
+
+/// What a steady-state append asks the FILESYSTEM, as a number that does not move with the log.
+///
+/// Measured outside the suite with `strace -f -c` on the release binary, at 2,000 and 20,000
+/// records of 128 incompressible bytes: an append issues 22 syscalls, of which ONE `write` and
+/// ONE `fdatasync` are the durable work. Nine of the other twenty were `statx`, every one of them
+/// a question about the same file, asked under the same append lock, inside the same append.
+///
+/// Three of those nine were the same question asked twice. `ensure_active_wal_segment` asked
+/// `metadata()` for the length and `exists()` for the presence -- one `statx` each, back to back,
+/// about one file -- where absent and empty take the same branch and one answer decides both.
+/// `group_commit_sync` rebuilt the piece's NAME, which costs a `statx` because the name is chosen
+/// by asking which candidate exists, and then asked `exists()` again before an open that answers
+/// the same question itself. Removing the three took the release binary from 44,167 to 38,167
+/// syscalls at 2,000 records and from 440,411 to 380,411 at 20,000: 3.000 fewer per append at
+/// both sizes, all three of them `statx`.
+///
+/// This is the in-process half of that. It counts the asks rather than the syscalls because a
+/// count can be asserted and a syscall total cannot, and it asserts the count PER APPEND at two
+/// log sizes: fixed process overhead divides away, and an ask that started scaling with the log
+/// reads as a failure rather than as a larger constant.
+#[test]
+fn a_steady_state_append_asks_for_the_active_pieces_length_a_fixed_number_of_times() {
+    set_wal_segment_bytes_for_test(Some(TEST_SEGMENT_BYTES));
+    let small = 200usize;
+    let large = 2_000usize;
+    let (small_asks, _, small_written, small_files) = metadata_asks_over_steady_appends(small);
+    let (large_asks, _, large_written, large_files) = metadata_asks_over_steady_appends(large);
+    set_wal_segment_bytes_for_test(None);
+
+    let small_per = small_asks as f64 / small as f64;
+    let large_per = large_asks as f64 / large as f64;
+    println!("  what an append asks the filesystem for the active piece's length");
+    println!("    records   asks     per append   files   records written");
+    println!("    {small:>7}   {small_asks:>6}   {small_per:>10.3}   {small_files:>5}   {small_written}");
+    println!("    {large:>7}   {large_asks:>6}   {large_per:>10.3}   {large_files:>5}   {large_written}");
+
+    // The fixture is in the regime being measured. Both runs appended into a log that already
+    // had records in it, both appended more than one record, and both ROLLED -- a log of one
+    // piece never enters `roll_wal_segment_if_due`'s sealing branch, and a fresh-file append
+    // takes the full-scan path rather than the steady-state one. More than two files is a
+    // rolled log: the piece being written, the lock, and at least one sealed piece.
+    assert!(
+        small_written > small as u64 && large_written > large as u64,
+        "the warm append is missing: {small_written} and {large_written} records written for \
+         {small} and {large} measured appends"
+    );
+    assert!(
+        small_files > 2 && large_files > 2,
+        "neither run rolled ({small_files} and {large_files} files), so this measures a log that \
+         never seals a piece and not the one the engine writes"
+    );
+    assert!(
+        small_asks > 0 && large_asks > 0,
+        "no asks were counted at all, so every assertion below is about a counter that is not \
+         being incremented"
+    );
+
+    // The result: the per-append cost does not move with the log.
+    assert_eq!(
+        small_asks as usize, small * 4,
+        "{small} steady-state appends asked for the active piece's length {small_asks} times, \
+         not {} -- an append asks four times: once to check the piece exists, once to confirm no \
+         other writer moved its end, once to decide whether it is full, and once to record how \
+         much of it a barrier just covered",
+        small * 4
+    );
+    assert_eq!(
+        large_asks as usize, large * 4,
+        "{large} steady-state appends asked {large_asks} times, not {}", large * 4
+    );
+    assert_eq!(
+        small_per, large_per,
+        "the per-append ask count moved between a {small}-record log and a {large}-record one \
+         ({small_per} against {large_per}). A quantity that grows with the log is a scan wearing \
+         a constant's clothes"
+    );
+}
+
+/// A steady-state append never rebuilds the log's NAME.
+///
+/// `write_ahead_log_path` chooses between the current piece name and the one a store written
+/// before the rename still uses, and it chooses by asking whether each exists -- so every call is
+/// a `statx`, sometimes two. The append path holds the answer in `active_path_by_shard` and the
+/// name cannot move while the log is open: a roll seals the outgoing piece under a NUMBERED name
+/// and recreates this one. `group_commit_sync` rebuilt it once per barrier anyway.
+///
+/// That was also the more dangerous of the two questions, and the reason this test asserts zero
+/// rather than one. The record is written to the CACHED path; a barrier has to cover the file the
+/// record went into, not whatever the name resolves to by the time the barrier runs. Two
+/// independent answers to "which file is the log" on one durability path agree by coincidence.
+/// One answer agrees by construction.
+///
+/// The zero is asserted in a run that rolls, because a roll is the one moment the name could
+/// plausibly need re-deriving -- and then the counter is proved to work by planting exactly one
+/// rebuild and asserting exactly one is recovered. Without that, a counter wired to nothing
+/// reports the same zero.
+#[test]
+fn a_steady_state_append_never_rebuilds_the_logs_name() {
+    set_wal_segment_bytes_for_test(Some(TEST_SEGMENT_BYTES));
+    let records = 2_000usize;
+    let (_, builds, written, files) = metadata_asks_over_steady_appends(records);
+
+    println!("  name rebuilds over {records} steady-state appends: {builds}");
+    println!("    records written {written}, files {files}");
+
+    assert!(
+        written > records as u64 && files > 2,
+        "{written} records in {files} files: this run did not roll, so the zero below is a zero \
+         about a log that never sealed a piece"
+    );
+    assert_eq!(
+        builds, 0,
+        "{records} appends rebuilt the log's name {builds} times. Each rebuild is a `statx` to \
+         re-derive a name that cannot change while the log is open, and a second opinion about \
+         which file the log IS on a path that is about to make it durable"
+    );
+
+    // The counter is wired to something. Exactly one rebuild is planted -- `base_offset` builds
+    // the name from the root, which is the one thing being counted -- and exactly one has to come
+    // back. A counter that reports zero because nothing increments it fails here and passes above.
+    let dir = tempfile::tempdir().unwrap();
+    let store = LocalWriteAheadLogStore::new(dir.path());
+    store
+        .append(1, Command::StringSet { key: "one".to_string(), value: vec![9u8; 64] })
+        .unwrap();
+    WAL_PATH_BUILDS.with(|builds| builds.set(0));
+    let _ = store.base_offset(1).unwrap();
+    let planted = WAL_PATH_BUILDS.with(|builds| builds.get());
+    set_wal_segment_bytes_for_test(None);
+    assert_eq!(
+        planted, 1,
+        "one name rebuild was planted and {planted} were counted, so the zero above says nothing \
+         about whether appends rebuild the name"
     );
 }

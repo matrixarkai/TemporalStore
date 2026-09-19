@@ -1468,8 +1468,18 @@ impl LocalWriteAheadLogStore {
             return Ok(());
         }
         let (path, snapshot) = {
-            let inner = self.inner.lock().expect("write-ahead log lock poisoned");
-            let path = write_ahead_log_path(&inner.root, shard_id);
+            let mut inner = self.inner.lock().expect("write-ahead log lock poisoned");
+            // The CACHED name, not a rebuilt one. `write_ahead_log_path` decides which of the
+            // two piece names a store uses by asking whether each exists, so rebuilding it here
+            // spent a `statx` per barrier re-deriving a name that cannot move while the log is
+            // open -- a roll seals the old piece under a NUMBERED name and recreates this one.
+            //
+            // It is also the safer of the two questions. The record was written to
+            // `active_wal_path`; a barrier has to cover the file the record went INTO, not
+            // whatever the name resolves to by the time the barrier runs. Taking the same
+            // cached answer the writer took makes those the same file by construction instead
+            // of by coincidence.
+            let path = active_wal_path(&mut inner, shard_id);
             let snapshot = inner
                 .last_sequence_by_shard
                 .get(&shard_id)
@@ -1478,11 +1488,18 @@ impl LocalWriteAheadLogStore {
                 .max(required_sequence);
             (path, snapshot)
         };
-        if !path.exists() {
-            entry.durable_seq = entry.durable_seq.max(snapshot);
-            return Ok(());
-        }
-        let file = OpenOptions::new().read(true).write(true).open(&path)?;
+        // Asked by OPENING, not by an `exists()` before it. The open happens either way and
+        // answers the same question in the same syscall, with no window between two answers for
+        // the file to appear or vanish in. A shard with no file has nothing unsynced, which is
+        // what the early return says.
+        let file = match OpenOptions::new().read(true).write(true).open(path.as_path()) {
+            Ok(file) => file,
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => {
+                entry.durable_seq = entry.durable_seq.max(snapshot);
+                return Ok(());
+            }
+            Err(err) => return Err(err.into()),
+        };
         crate::durability_metrics::record_barrier("engine_wal_group_commit");
         file.sync_data()?;
         let owed = {
@@ -1493,7 +1510,7 @@ impl LocalWriteAheadLogStore {
             // The first durable append for this shard this process lifetime makes the directory
             // entry durable once, and afterwards nothing touches it -- until a roll creates a new
             // file under the same name, which is what `owed` reports.
-            sync_parent_dir(&path)?;
+            sync_parent_dir(path.as_path())?;
             entry.dir_synced = true;
             self.inner
                 .lock()
@@ -1512,7 +1529,7 @@ impl LocalWriteAheadLogStore {
             // The barrier above covered everything written to this shard's active segment, so
             // its whole current length is durable. Recorded per shard for the same reason the
             // flush path does it.
-            let durable_bytes = path.metadata().map(|metadata| metadata.len()).unwrap_or(0);
+            let durable_bytes = wal_path_len(path.as_path()).unwrap_or(0);
             let bytes_entry = inner
                 .durable_active_bytes_by_shard
                 .entry(shard_id)
@@ -2659,11 +2676,11 @@ fn ensure_active_wal_segment(
     // between the two leaves behind. It has to be treated as absent: `read_wal_base` reads an
     // empty file as starting at log id ZERO, and if there are sealed pieces then zero is an
     // address they already own, so leaving it alone hands the same address out twice.
-    let empty = path
-        .metadata()
-        .map(|metadata| metadata.len() == 0)
-        .unwrap_or(false);
-    if path.exists() && !empty {
+    //
+    // Absent and empty take the same branch, so ONE answer decides both. Asking `metadata()`
+    // for the length and `exists()` for the presence was the same `statx` issued twice about
+    // the same file, back to back, under the same append lock.
+    if wal_path_len(path.as_path()).is_some_and(|length| length > 0) {
         return Ok(());
     }
     let start = log_id_after_sealed(&inner.root, shard_id)?;
@@ -2696,7 +2713,7 @@ fn roll_wal_segment_if_due(
         return Ok(false);
     }
     let path = active_wal_path(inner, shard_id);
-    let length = path.metadata().map(|metadata| metadata.len()).unwrap_or(0);
+    let length = wal_path_len(path.as_path()).unwrap_or(0);
     // From the cache, not the file. This runs on EVERY append to answer "is the piece full", and
     // `read_wal_base` opens the file and reads its header to do it -- through a `BufReader`, whose
     // buffer is eight kilobytes. That was 8,240 bytes and an open per write, to learn a number the
@@ -2811,6 +2828,8 @@ const WAL_PIECE_SUFFIX: &str = "bin";
 const LEGACY_WAL_PIECE_SUFFIX: &str = "jsonl";
 
 fn write_ahead_log_path(root: &Path, shard_id: ShardId) -> PathBuf {
+    #[cfg(test)]
+    WAL_PATH_BUILDS.with(|builds| builds.set(builds.get() + 1));
     let renamed = root.join(format!("shard-{shard_id}.wal.{WAL_PIECE_SUFFIX}"));
     if renamed.exists() {
         return renamed;
@@ -3081,7 +3100,7 @@ fn resolve_last_sequence_for_append(
             inner.verified_len_by_shard.get(&shard_id),
         ) {
             let path = active_wal_path(inner, shard_id);
-            let on_disk_len = path.metadata().map(|metadata| metadata.len()).unwrap_or(0);
+            let on_disk_len = wal_path_len(path.as_path()).unwrap_or(0);
             // Under preallocation the file is allowed to be longer than the records; unchanged
             // means "still exactly the size this process grew it to". Either way, the offset
             // handed back is where the RECORDS end, which is where the next one goes.
@@ -3291,6 +3310,41 @@ thread_local! {
     pub(crate) static WAL_SEGMENT_LISTINGS: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
     pub(crate) static WAL_SEGMENT_HEADER_READS: std::cell::Cell<u64> =
         const { std::cell::Cell::new(0) };
+}
+
+/// How many times an append asks the FILESYSTEM for the active piece's length, and how many
+/// times it rebuilds that piece's NAME.
+///
+/// Both are metadata, and metadata is what a round of appends actually spends itself on.
+/// Measured on the release binary at 2,000 and 20,000 records of 128 incompressible bytes, a
+/// steady-state append issues 22 syscalls; one `write` and one `fdatasync` are the durable
+/// work and nine of the other twenty are `statx`. Counted here rather than inferred, because
+/// a syscall nobody counts is a syscall that comes back.
+///
+/// `WAL_PATH_LEN_ASKS` counts the asks made through [`wal_path_len`] -- one ask, one `statx`.
+/// `WAL_PATH_BUILDS` counts [`write_ahead_log_path`], which decides the piece's name by asking
+/// whether each candidate exists and so costs a `statx` of its own; the append path holds that
+/// name cached and should not rebuild it at all.
+///
+/// Thread-local and test-only for the same reason the counters above are: the suite runs tests
+/// in parallel and a process-global counter reads another test's appends as this one's.
+#[cfg(test)]
+thread_local! {
+    pub(crate) static WAL_PATH_LEN_ASKS: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+    pub(crate) static WAL_PATH_BUILDS: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+}
+
+/// The active piece's length, or `None` when there is no file.
+///
+/// ONE ask, not two. `Path::exists` is itself a `metadata()` call, so a site that wanted both
+/// "is it there" and "how long is it" asked the filesystem the same question twice running --
+/// and got two answers from two different instants, which is strictly weaker than one answer
+/// from one instant. Nothing is remembered here: the question is still put to the filesystem
+/// on every call, so there is no cached length to go stale and no invalidation to get wrong.
+fn wal_path_len(path: &Path) -> Option<u64> {
+    #[cfg(test)]
+    WAL_PATH_LEN_ASKS.with(|asks| asks.set(asks.get() + 1));
+    path.metadata().ok().map(|metadata| metadata.len())
 }
 
 fn append_record_locked(
