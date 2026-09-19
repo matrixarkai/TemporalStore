@@ -276,6 +276,19 @@ def _s3_client() -> Any:
         return None
 
 
+#: Wall-clock cap on the aws-cli fallback below.
+#:
+#: The boto3 path in `upload_file_to_s3` / `download_s3_to_file` is bounded by botocore's own
+#: socket timeouts. This one was bounded by nothing, so an endpoint that accepts the connection
+#: and never answers held a resource ingest open forever, with no error and no way out. That is
+#: not the rare path it looks like: `dependencies` in pyproject.toml is empty, so a pip-installed
+#: copy of this package has no boto3, `_s3_client()` returns None, and the CLI IS the S3 path.
+#:
+#: Generous on purpose. Botocore bounds each READ; this bounds the WHOLE transfer, so it has to
+#: clear a large attachment rather than match botocore's 60s.
+AWS_CLI_S3_TIMEOUT_S = 900
+
+
 def _aws_cli_s3_cp(source: str, target: str) -> None:
     command = ["aws"]
     profile = os.environ.get("AWS_PROFILE")
@@ -288,7 +301,14 @@ def _aws_cli_s3_cp(source: str, target: str) -> None:
     if endpoint_url:
         command.extend(["--endpoint-url", endpoint_url])
     command.extend(["s3", "cp", source, target])
-    completed = subprocess.run(command, text=True, capture_output=True, check=False)
+    try:
+        completed = subprocess.run(command, text=True, capture_output=True, check=False,
+                                   timeout=AWS_CLI_S3_TIMEOUT_S)
+    except subprocess.TimeoutExpired as exc:
+        # Same error type as the non-zero-exit case below, so a caller that already handles a
+        # failed copy handles this one too rather than meeting a new exception class.
+        raise MatrixArkError(
+            f"aws s3 cp timed out after {AWS_CLI_S3_TIMEOUT_S}s: {source} -> {target}") from exc
     if completed.returncode != 0:
         raise MatrixArkError(compact_ws(completed.stderr or completed.stdout or f"aws s3 cp failed: {source} -> {target}"))
 
