@@ -34,6 +34,7 @@ fn main() {
     match mode {
         "append" => append_phase(&root, records, value_bytes),
         "replay" => replay_phase(&root),
+        "count" => count_phase(&root),
         other => panic!("unknown mode {other}"),
     }
 }
@@ -107,6 +108,28 @@ fn replay_phase(root: &PathBuf) {
     println!("windows          {windows}");
     println!("records_replayed {records}");
     println!("command_bytes    {record_bytes}");
+    println!("log_bytes_on_disk {}", dir_bytes(root));
+    println!("segment_files    {}", segment_files(root));
+}
+
+/// What a RECORD COUNT of the whole log costs.
+///
+/// `record_count` is the walk `storage_log_compatibility_report` takes to fill `wal_records`, and
+/// that report is what both maintenance paths ask for their pressure snapshot. Measured on its own
+/// so the cost of counting is not read as the cost of replaying: a replay reads a SUFFIX, this
+/// reads everything.
+fn count_phase(root: &PathBuf) {
+    let store = LocalWriteAheadLogStore::new(root);
+    let before = store.raw_stats(1);
+    let counted = store.record_count(1).unwrap();
+    let after = store.raw_stats(1);
+    println!("PHASE count");
+    println!("records_counted  {counted}");
+    println!("scans            {}", after.scans.saturating_sub(before.scans));
+    println!(
+        "bytes_read       {}",
+        after.bytes_read.saturating_sub(before.bytes_read)
+    );
     println!("log_bytes_on_disk {}", dir_bytes(root));
     println!("segment_files    {}", segment_files(root));
 }

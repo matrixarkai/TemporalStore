@@ -816,3 +816,444 @@ fn a_live_page_entry_carries_pointers_not_text_and_the_hoist_lowered_the_peak() 
          the cost was moved rather than removed"
     );
 }
+
+// ---------------------------------------------------------------------------------------------
+// WHAT A ROUND READS OF THE LOGS -- a different denominator from the live-page walks above.
+// ---------------------------------------------------------------------------------------------
+
+/// Bytes of the write-ahead log this engine has decoded, taken from the counter inside the walk.
+///
+/// `bytes_read` is incremented in `scan_collect`, the one walk every WAL scan shares, so a reader
+/// added to the log cannot avoid moving it. `raw_stats` is the NON-scanning accessor: reading an
+/// instrument must not be work the instrument counts, and `stats()` here would take a piece-tail
+/// read of its own.
+fn wal_bytes_decoded(engine: &TemporalEngine) -> u64 {
+    engine.write_ahead_log_store().raw_stats(1).bytes_read
+}
+
+/// The same for the index log, whose count sits one line below the write-ahead log's.
+fn index_log_bytes_decoded(engine: &TemporalEngine) -> u64 {
+    engine.index_log_store().stats(1).bytes_read
+}
+
+/// How many pieces the shard's log is in, and how many bytes are on disk under it.
+///
+/// The regime assertions rest on this: a log in ONE piece that has never rolled is not the log a
+/// steady store has, and every figure taken on it would be a small number about nothing.
+fn wal_shape(engine: &TemporalEngine) -> (usize, u64) {
+    let info = engine
+        .write_ahead_log_store()
+        .info(1)
+        .expect("write-ahead log info");
+    let root = info
+        .path
+        .parent()
+        .expect("the log's path has a parent")
+        .to_path_buf();
+    let pieces = crate::wal::wal_piece_extents_for_test(&root, 1);
+    let bytes = pieces
+        .iter()
+        .map(|(path, _, _, _)| path.metadata().map(|meta| meta.len()).unwrap_or(0))
+        .sum();
+    (pieces.len(), bytes)
+}
+
+/// xorshift64*, seeded per record.
+///
+/// The batched seeder above writes a repeated byte, and the log compresses its records: 2,000
+/// objects written that way put 30,737 bytes in the log where their payload is 280,000. A corpus
+/// of repeated bytes holds a fraction of the log its record count implies, so a fixture built from
+/// one does not roll, does not reach the regime, and measures a cost against a log it has not got.
+fn incompressible_value(len: usize, seed: u64) -> Vec<u8> {
+    let mut state = 0x2545_F491_4F6C_DD1D_u64
+        ^ (len as u64).wrapping_mul(0x9E37_79B9_7F4A_7C15)
+        ^ seed.wrapping_mul(0xD1B5_4A32_D192_ED03);
+    (0..len)
+        .map(|_| {
+            state ^= state >> 12;
+            state ^= state << 25;
+            state ^= state >> 27;
+            state.wrapping_mul(0x2545_F491_4F6C_DD1D) as u8
+        })
+        .collect()
+}
+
+/// Bytes per value in the log-reading fixtures. Large enough that a few thousand records roll the
+/// log several times over at the shipped 256 KiB threshold, which is what puts the fixture into
+/// the regime this cost occurs in.
+const LOG_FIXTURE_VALUE_BYTES: usize = 512;
+
+/// Seed ONE log record per object, incompressibly.
+///
+/// One per object, not one per batch: a batch writes a SINGLE write-ahead log record however many
+/// commands it carries, so the batched seeder above puts 79 records in the log for 20,000 objects.
+/// That is below the dump threshold, so such a log is never dumped, never reclaimed, and the
+/// drained regime measured below could never be reached from it.
+fn seed_one_record_per_object(engine: &TemporalEngine, shard_id: ShardId, count: usize) {
+    for index in 0..count {
+        let response = engine.execute(crate::types::ExecuteRequest {
+            shard_id,
+            command: Command::StringSet {
+                key: format!("k-{index:08}"),
+                value: incompressible_value(LOG_FIXTURE_VALUE_BYTES, index as u64),
+            },
+        });
+        assert!(response.status.ok, "seed write failed: {:?}", response.status);
+    }
+}
+
+/// What one round, and the report it used to ask for, read of the two logs.
+struct LogReadCost {
+    records: usize,
+    pieces: usize,
+    log_bytes_on_disk: u64,
+    /// The instrument's own control: a deliberate whole-log `record_count()`, which must move the
+    /// counter by about the log's size. A counter that has quietly stopped incrementing reports a
+    /// perfect result for every claim below it, so it is planted and recovered before anything
+    /// else is measured.
+    planted_wal: u64,
+    /// What the FULL compatibility report reads of each log. This is what a round paid before the
+    /// pressure sites stopped asking for it -- measured live on this fixture, not kept here as a
+    /// constant that would go stale the moment a write logs a different number of bytes.
+    full_report_wal: u64,
+    full_report_index: u64,
+    /// What the CHEAP report -- the one the pressure sites now ask for -- reads of each log.
+    pressure_report_wal: u64,
+    pressure_report_index: u64,
+    /// What one whole round reads of each log now.
+    round_wal: u64,
+    round_index: u64,
+    /// The same full report, taken again once the round has drained the log. The DRAINED regime.
+    drained_report_wal: u64,
+    drained_log_bytes_on_disk: u64,
+}
+
+/// Measure one fixture: seed, plant, take both readings on the RETAINED log, then run the round
+/// and take the drained reading.
+///
+/// Order is load-bearing. The round reclaims, so every figure about a retained log has to be taken
+/// before it runs; the drained figure is the same report after it.
+fn log_read_cost(records: usize) -> LogReadCost {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let engine = round_engine(dir.path());
+    seed_one_record_per_object(&engine, 1, records);
+
+    let (pieces, log_bytes_on_disk) = wal_shape(&engine);
+
+    // CONTROL FOR THE INSTRUMENT. Reading it twice, with nothing in between, must not move it.
+    let idle_before = wal_bytes_decoded(&engine);
+    let idle_after = wal_bytes_decoded(&engine);
+    assert_eq!(
+        idle_before, idle_after,
+        "{records} records: reading the byte counter moved it, so every delta below is this \
+         accessor's own work and not the work being measured"
+    );
+
+    // PLANTED. A whole-log count, deliberately, so the counter is known to answer.
+    let before = wal_bytes_decoded(&engine);
+    let counted = engine
+        .write_ahead_log_store()
+        .record_count(1)
+        .expect("record count");
+    let planted_wal = wal_bytes_decoded(&engine) - before;
+    assert!(
+        counted >= records,
+        "{records} objects written one log record each, and the log counted {counted}. This \
+         fixture is not the log it thinks it is"
+    );
+
+    // THE FULL REPORT, on the retained log. This is the cost the pressure snapshot used to carry.
+    let wal_before = wal_bytes_decoded(&engine);
+    let index_before = index_log_bytes_decoded(&engine);
+    let _ = engine.storage_log_compatibility_report(1);
+    let full_report_wal = wal_bytes_decoded(&engine) - wal_before;
+    let full_report_index = index_log_bytes_decoded(&engine) - index_before;
+
+    // THE CHEAP REPORT, on the same retained log. This is the site that changed.
+    let wal_before = wal_bytes_decoded(&engine);
+    let index_before = index_log_bytes_decoded(&engine);
+    let _ = engine.storage_log_pressure_report(1);
+    let pressure_report_wal = wal_bytes_decoded(&engine) - wal_before;
+    let pressure_report_index = index_log_bytes_decoded(&engine) - index_before;
+
+    // ONE WHOLE ROUND, on the same retained log.
+    let wal_before = wal_bytes_decoded(&engine);
+    let index_before = index_log_bytes_decoded(&engine);
+    let report = engine.run_storage_manager_cycle(round_request());
+    let round_wal = wal_bytes_decoded(&engine) - wal_before;
+    let round_index = index_log_bytes_decoded(&engine) - index_before;
+    assert!(
+        report.errors.is_empty(),
+        "{records} records: the round errored, so what it read measures nothing: {:?}",
+        report.errors
+    );
+
+    // THE DRAINED REGIME: the same full report, once the round has taken what it can.
+    let (_, drained_log_bytes_on_disk) = wal_shape(&engine);
+    let wal_before = wal_bytes_decoded(&engine);
+    let _ = engine.storage_log_compatibility_report(1);
+    let drained_report_wal = wal_bytes_decoded(&engine) - wal_before;
+
+    LogReadCost {
+        records,
+        pieces,
+        log_bytes_on_disk,
+        planted_wal,
+        full_report_wal,
+        full_report_index,
+        pressure_report_wal,
+        pressure_report_index,
+        round_wal,
+        round_index,
+        drained_report_wal,
+        drained_log_bytes_on_disk,
+    }
+}
+
+fn print_log_read_cost(cost: &LogReadCost) {
+    println!(
+        "    {:>6} records, {:>3} pieces, {:>9} B of log | PLANTED count read {:>9} B | \
+         FULL REPORT read {:>9} B of log + {:>8} B of index log | ONE ROUND read {:>9} B of log \
+         + {:>8} B of index log | DRAINED to {:>8} B, same report read {:>8} B | PRESSURE REPORT \
+         read {} B + {} B",
+        cost.records,
+        cost.pieces,
+        cost.log_bytes_on_disk,
+        cost.planted_wal,
+        cost.full_report_wal,
+        cost.full_report_index,
+        cost.round_wal,
+        cost.round_index,
+        cost.drained_log_bytes_on_disk,
+        cost.drained_report_wal,
+        cost.pressure_report_wal,
+        cost.pressure_report_index
+    );
+}
+
+/// The apparatus and the regime, asserted before any ratio is read from it.
+///
+/// A cost measured where it cannot occur reads exactly like a cost that is gone.
+fn assert_log_read_regime(cost: &LogReadCost) {
+    assert!(
+        cost.pieces > 1,
+        "{} records: the log is in {} piece(s). A store whose log has never rolled is not the \
+         steady state this measures",
+        cost.records,
+        cost.pieces
+    );
+    assert!(
+        cost.log_bytes_on_disk > 0,
+        "{} records: the log holds no bytes, so every figure here is a zero about nothing",
+        cost.records
+    );
+    assert!(
+        cost.planted_wal >= cost.log_bytes_on_disk / 2,
+        "{} records: a deliberate whole-log count moved the byte counter by {} against {} bytes \
+         on disk. The counter is not counting the walk, so a zero anywhere below means nothing",
+        cost.records,
+        cost.planted_wal,
+        cost.log_bytes_on_disk
+    );
+}
+
+/// A ROUND NO LONGER DECODES EITHER LOG END TO END -- at two corpus sizes, in both regimes.
+///
+/// The live-page walks measured above are what a round costs in the STORE. This is what it cost in
+/// the LOGS, and nothing counted it. The pressure snapshot asked `storage_log_compatibility_report`
+/// and read two byte figures out of it; that report also fills `wal_records` and
+/// `index_log_records`, and each of those is a `record_count()` -- a walk of the whole log that
+/// decodes every record in it. So every round decoded the write-ahead log end to end, and the
+/// index log after it, for two numbers it then discarded.
+///
+/// The denominator is the worse of the two available. It is not the store, it is the RETAINED LOG:
+/// the round that reclaims is the round that pays, so a shard whose log is not draining -- held by
+/// a block-retention floor, by a durable-index anchor, or simply between dumps -- makes its own
+/// maintenance more expensive the longer it fails to drain.
+///
+/// THE REGIME, which decides whether any of this is visible at all:
+///
+/// * RETAINED -- the log is still there. The count is the whole log and grows with it. This is the
+///   regime the cost is real in, and the one the figures below are taken in.
+/// * DRAINED -- the round has reclaimed the log back to a handful of records. The count is those
+///   records, the cost is nothing, and a measurement taken only here would report "flat and
+///   healthy" about a walk that is linear in a log this fixture no longer has.
+///
+/// Both are measured, at both sizes, so neither can be picked by accident later.
+#[test]
+fn a_round_no_longer_decodes_both_logs_end_to_end() {
+    const SMALL: usize = 2_000;
+    const LARGE: usize = 8_000;
+
+    let small = log_read_cost(SMALL);
+    let large = log_read_cost(LARGE);
+
+    println!("  WHAT ONE STORAGE-MANAGER ROUND READS OF THE LOGS");
+    print_log_read_cost(&small);
+    print_log_read_cost(&large);
+
+    assert_log_read_regime(&small);
+    assert_log_read_regime(&large);
+
+    let record_ratio = LARGE as f64 / SMALL as f64;
+    let byte_ratio = large.log_bytes_on_disk as f64 / small.log_bytes_on_disk.max(1) as f64;
+    let full_ratio = large.full_report_wal as f64 / small.full_report_wal.max(1) as f64;
+    println!(
+        "    ratio: {record_ratio:.2}x records, {byte_ratio:.2}x log bytes, \
+         {full_ratio:.2}x read by the full report; one round read {} B and {} B",
+        small.round_wal, large.round_wal
+    );
+
+    // THE TREATMENT WAS APPLIED: the larger fixture really does hold a larger log.
+    assert!(
+        byte_ratio > record_ratio * 0.5,
+        "the two logs differ by {byte_ratio:.2}x in bytes against {record_ratio:.2}x in records, \
+         so the larger fixture is not the larger log this is sized for"
+    );
+
+    // WHAT IT COST. The full report reads the whole log, at both sizes, and what it reads GROWS
+    // with the log. This is the quantity, measured live rather than remembered.
+    assert!(
+        small.full_report_wal >= small.log_bytes_on_disk / 2
+            && large.full_report_wal >= large.log_bytes_on_disk / 2,
+        "the full report read {} B and {} B against logs of {} B and {} B. If it is not reading \
+         the log in full then the cost this test is about does not exist and the result below \
+         proves nothing",
+        small.full_report_wal,
+        large.full_report_wal,
+        small.log_bytes_on_disk,
+        large.log_bytes_on_disk
+    );
+    assert!(
+        full_ratio > byte_ratio * 0.5,
+        "what the full report read grew {full_ratio:.2}x for {byte_ratio:.2}x the log. It is \
+         supposed to be reading the whole log, so this fixture is not producing the growth the \
+         result below is measured against"
+    );
+
+    // THE RESULT, PART ONE. The report the pressure sites now ask for reads NEITHER LOG AT ALL.
+    // This is the exact claim: every figure it answers comes from `stats()`, which is piece
+    // headers and accumulated counters, and none of it from the records.
+    for cost in [&small, &large] {
+        assert_eq!(
+            cost.pressure_report_wal, 0,
+            "{} records: the pressure report decoded {} bytes of the write-ahead log. It is \
+             supposed to answer entirely from `stats()`",
+            cost.records, cost.pressure_report_wal
+        );
+        assert_eq!(
+            cost.pressure_report_index, 0,
+            "{} records: the pressure report decoded {} bytes of the index log",
+            cost.records, cost.pressure_report_index
+        );
+    }
+
+    // THE RESULT, PART TWO. What a whole round reads of the write-ahead log is now a CONSTANT --
+    // measured at 573 and 574 bytes for a 4x store -- rather than the log. Asserted as a shape,
+    // not as those two numbers: a constant is what matters, and the constant itself would move
+    // with any unrelated change to what the reclaim plan reads.
+    assert!(
+        large.round_wal <= small.round_wal + small.round_wal / 4 + 64,
+        "one round read {} bytes of the write-ahead log on the small store and {} on the store \
+         four times its size. That is the round reading the LOG again instead of a fixed amount \
+         of it",
+        small.round_wal,
+        large.round_wal
+    );
+    assert!(
+        large.round_wal * 100 < large.full_report_wal,
+        "one round read {} bytes of the write-ahead log where the full report reads {}. The \
+         round is back to reading the log in full",
+        large.round_wal,
+        large.full_report_wal
+    );
+
+    // WHAT IS STILL THERE, named rather than left for someone to rediscover. The round still
+    // reads the INDEX log in full, and it grows with the store -- but not from the pressure
+    // snapshot, which the two zeros above have just proved reads nothing. That read belongs to
+    // the index-GC stage, which walks the index log because walking it is its job. It is stated
+    // here so the difference between the two logs is a measured fact and not an oversight.
+    assert!(
+        large.round_index > small.round_index,
+        "the round read {} bytes of the index log on the small store and {} on the large one. If \
+         that has stopped growing, the index-GC stage this note describes has changed and the \
+         note is now wrong",
+        small.round_index,
+        large.round_index
+    );
+
+    // AND THE DRAINED REGIME, stated rather than left to be discovered. The same report on a
+    // drained log reads almost nothing -- which is why a measurement taken only there would have
+    // closed this question with a flat, healthy-looking number.
+    assert!(
+        large.drained_report_wal < large.full_report_wal,
+        "the full report read {} B on the drained log against {} B on the retained one. Without \
+         that difference the two regimes are the same regime and this test measures one of them \
+         twice",
+        large.drained_report_wal,
+        large.full_report_wal
+    );
+}
+
+/// THE CHEAP REPORT IS THE SAME REPORT, FIELD BY FIELD -- not a second opinion about the log.
+///
+/// The direction analysis. Removing a walk from a maintenance round is only safe if the numbers
+/// the round actually reads are unchanged: `wal_bytes` and `index_log_bytes` feed the pressure
+/// score and, through it, whether a stage runs at all. Reading them from a different place that
+/// happened to agree on one fixture is how two live copies of a rule start to disagree.
+///
+/// So this compares the FIELDS, not their plausibility, at two corpus sizes and after a write has
+/// moved every one of them off zero -- equality of zeros is equality about nothing.
+#[test]
+fn the_log_pressure_report_agrees_with_the_full_report_field_by_field() {
+    for records in [2_000usize, 8_000usize] {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let engine = round_engine(dir.path());
+        seed_one_record_per_object(&engine, 1, records);
+        engine.flush_shard_index(1);
+
+        let full = engine.storage_log_compatibility_report(1);
+        let cheap = engine.storage_log_pressure_report(1);
+
+        assert!(
+            full.wal_bytes > 0
+                && full.index_log_bytes > 0
+                && full.wal_last_sequence > 0
+                && full.index_log_last_sequence > 0,
+            "{records} records: the full report answers {full:?}, and a field that is zero in \
+             both reports agrees about nothing"
+        );
+        assert_eq!(
+            cheap.shard_id, full.shard_id,
+            "{records} records: the two reports are about different shards"
+        );
+        assert_eq!(
+            cheap.wal_bytes, full.wal_bytes,
+            "{records} records: the round would read {} bytes of log where the full report says \
+             {}",
+            cheap.wal_bytes, full.wal_bytes
+        );
+        assert_eq!(
+            cheap.index_log_bytes, full.index_log_bytes,
+            "{records} records: the round would read {} bytes of index log where the full report \
+             says {}",
+            cheap.index_log_bytes, full.index_log_bytes
+        );
+        assert_eq!(
+            cheap.wal_last_sequence, full.wal_last_sequence,
+            "{records} records: the two reports disagree about the log's last sequence"
+        );
+        assert_eq!(
+            cheap.index_log_last_sequence, full.index_log_last_sequence,
+            "{records} records: the two reports disagree about the index log's last sequence"
+        );
+        println!(
+            "  {records:>6} records: both reports say wal_bytes {}, index_log_bytes {}, \
+             wal_last_sequence {}, index_log_last_sequence {}",
+            cheap.wal_bytes,
+            cheap.index_log_bytes,
+            cheap.wal_last_sequence,
+            cheap.index_log_last_sequence
+        );
+    }
+}

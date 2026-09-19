@@ -3735,6 +3735,28 @@ pub struct StorageProductionReadinessReport {
     pub corrupt_feature_block_count: usize,
 }
 
+/// The log numbers a maintenance round actually reads -- without the walk that counts records.
+///
+/// `StorageLogCompatibilityReport` answers these same figures and six more besides, two of which
+/// are `wal_records` and `index_log_records`. Each of those is a `record_count()`, and a
+/// `record_count()` reads the WHOLE log and decodes every record in it. Both pressure sites asked
+/// for the full report and read only the bytes, so every maintenance round decoded the write-ahead
+/// log end to end -- and the index log after it -- for two numbers it then discarded. On a small
+/// store that is a few hundred kilobytes and invisible; it grows with the retained log, and the
+/// round it runs on is the same round that reclaims, so a log that is not draining makes its own
+/// maintenance more expensive.
+///
+/// Same fields, same sources, same values as the report it is taken from. This is that report with
+/// the counting left out, not a second opinion about the log.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct StorageLogPressureReport {
+    pub shard_id: ShardId,
+    pub wal_last_sequence: u64,
+    pub index_log_last_sequence: u64,
+    pub wal_bytes: u64,
+    pub index_log_bytes: u64,
+}
+
 #[derive(Debug, Default, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct StorageLogCompatibilityReport {
     pub shard_id: ShardId,

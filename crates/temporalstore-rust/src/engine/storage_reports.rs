@@ -348,6 +348,27 @@ impl TemporalEngine {
         }
     }
 
+    /// The log figures the maintenance round reads, with no walk of either log.
+    ///
+    /// `stats()` answers both of these from the piece headers and the accumulated counters, which
+    /// is work proportional to the number of PIECES. `storage_log_compatibility_report` answers
+    /// them too, and counts the records on the way -- which is work proportional to the log's
+    /// BYTES, decoded. The pressure sites want only what is here, so this is what they ask for.
+    ///
+    /// Taken from the same `stats()` calls as the full report, so the two cannot drift about what
+    /// the log holds.
+    pub fn storage_log_pressure_report(&self, shard_id: ShardId) -> StorageLogPressureReport {
+        let wal_stats = self.wal_store.stats(shard_id);
+        let index_log_stats = self.index_log_store.stats(shard_id);
+        StorageLogPressureReport {
+            shard_id,
+            wal_last_sequence: wal_stats.last_sequence,
+            index_log_last_sequence: index_log_stats.last_sequence,
+            wal_bytes: wal_stats.bytes_written,
+            index_log_bytes: index_log_stats.bytes_written,
+        }
+    }
+
     pub fn storage_log_compatibility_report(
         &self,
         shard_id: ShardId,

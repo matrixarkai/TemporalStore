@@ -262,7 +262,7 @@ impl DataNodeRuntime {
             .saturating_add(cache.async_writeback_queue_bytes)
             .saturating_add(cache.async_writeback_queue_depth)
             .saturating_add(bucket_index_resident_bytes);
-        let log_pressure = self.inner.engine.storage_log_compatibility_report(shard_id);
+        let log_pressure = self.inner.engine.storage_log_pressure_report(shard_id);
         let queue = self
             .inner
             .queue

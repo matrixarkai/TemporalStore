@@ -11219,3 +11219,127 @@ fn reclaim_is_refused_while_the_shard_is_recovering() {
         "only {readable} of {RECORDS} records survived a reclaim taken during replay"
     );
 }
+
+/// THE DATA NODE'S MAINTENANCE ROUND DOES NOT READ THE LOGS EITHER.
+///
+/// There are TWO pressure snapshots, not one. The engine's cycle takes one and this runtime takes
+/// its own, and both used to reach `storage_log_compatibility_report` -- whose `wal_records` and
+/// `index_log_records` are each a `record_count()`, a walk of the whole log that decodes every
+/// record in it -- to read two byte figures out of it.
+///
+/// A guard covering one of two live copies lets the other keep the cost, so this is the same
+/// assertion as `a_round_no_longer_decodes_both_logs_end_to_end` made against the copy that test
+/// cannot reach: that one drives `TemporalEngine::run_storage_manager_cycle`, this one drives
+/// `DataNodeRuntime::storage_manager_pressure_snapshot`, and only reverting BOTH call sites is
+/// invisible to both.
+///
+/// `bytes_read` is incremented inside `scan_collect`, the one walk every scan of the log shares,
+/// so a reader added to either log cannot avoid moving it. The store handles are cloned before the
+/// engine is moved into the runtime, and `raw_stats` is the accessor that does not itself scan.
+#[test]
+fn the_data_node_pressure_snapshot_does_not_read_either_log() {
+    const RECORDS: usize = 2_000;
+    const VALUE_BYTES: usize = 512;
+
+    let dir = tempfile::tempdir().unwrap();
+    let engine = TemporalEngine::with_local_dirs(
+        1 << 20,
+        dir.path().join("cache"),
+        dir.path().join("pages"),
+        dir.path().join("indexes"),
+    );
+    engine.load_shard(1);
+
+    // Incompressible, one log record per object. A repeated byte compresses to almost nothing, so
+    // a corpus built from one puts a fraction of the log on disk that its record count implies and
+    // the planted control below would have nothing to recover.
+    let mut state = 0x2545_F491_4F6C_DD1D_u64;
+    for index in 0..RECORDS {
+        let value = (0..VALUE_BYTES)
+            .map(|_| {
+                state ^= state >> 12;
+                state ^= state << 25;
+                state ^= state >> 27;
+                state.wrapping_mul(0x2545_F491_4F6C_DD1D) as u8
+            })
+            .collect::<Vec<u8>>();
+        let response = engine.execute(ExecuteRequest {
+            shard_id: 1,
+            command: Command::StringSet {
+                key: format!("pressure-{index:06}"),
+                value,
+            },
+        });
+        assert!(response.status.ok, "write {index}: {:?}", response.status);
+    }
+
+    // Cloned handles onto the same logs: the engine itself is about to move into the runtime.
+    let wal = engine.write_ahead_log_store();
+    let index_log = engine.index_log_store();
+
+    // THE INSTRUMENT'S OWN CONTROL. Reading it twice, with nothing between, must not move it.
+    assert_eq!(
+        wal.raw_stats(1).bytes_read,
+        wal.raw_stats(1).bytes_read,
+        "reading the byte counter moved it, so every delta below is this accessor's own work"
+    );
+
+    // PLANTED, AND RECOVERED. A deliberate whole-log count must move the counter by about the
+    // log's size, or a zero below would be a counter that has stopped rather than a walk that has
+    // gone.
+    let log_bytes = wal.stats(1).bytes_written;
+    let before = wal.raw_stats(1).bytes_read;
+    let counted = wal.record_count(1).expect("record count");
+    let planted = wal.raw_stats(1).bytes_read - before;
+    assert!(
+        counted >= RECORDS,
+        "{RECORDS} objects written one log record each, and the log counted {counted}"
+    );
+    assert!(
+        planted >= log_bytes / 2,
+        "a deliberate whole-log count moved the counter by {planted} against {log_bytes} bytes \
+         written. The counter is not counting the walk, so the zero below would mean nothing"
+    );
+
+    let runtime = DataNodeRuntime::new_without_workers_with_options(
+        engine,
+        DataNodeRuntimeOptions {
+            worker_threads: 0,
+            max_queue_depth: 4,
+            max_background_queue_depth: 2,
+        },
+    );
+    let options = StorageManagerOptions::default();
+
+    let wal_before = wal.raw_stats(1).bytes_read;
+    let index_before = index_log.stats(1).bytes_read;
+    let (pressure, _plan) = runtime.storage_manager_pressure_snapshot(1, &options);
+    let wal_read = wal.raw_stats(1).bytes_read - wal_before;
+    let index_read = index_log.stats(1).bytes_read - index_before;
+
+    println!(
+        "  {RECORDS} records, {log_bytes} B of log: a deliberate count read {planted} B; the \
+         pressure snapshot read {wal_read} B of log and {index_read} B of index log"
+    );
+
+    // THE DENOMINATOR. A snapshot that computed nothing reads nothing, and would satisfy the
+    // result below without the result meaning anything.
+    assert!(
+        pressure.undumped_wal_records >= 1,
+        "the snapshot reports {} undumped log records, so it did not survey this shard and the \
+         zeros below are about nothing",
+        pressure.undumped_wal_records
+    );
+
+    // THE RESULT.
+    assert_eq!(
+        wal_read, 0,
+        "the data node's pressure snapshot decoded {wal_read} bytes of the write-ahead log. It is \
+         supposed to answer from `stats()` -- piece headers and accumulated counters -- and never \
+         from the records"
+    );
+    assert_eq!(
+        index_read, 0,
+        "the data node's pressure snapshot decoded {index_read} bytes of the index log"
+    );
+}

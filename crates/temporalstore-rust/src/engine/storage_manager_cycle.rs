@@ -176,7 +176,7 @@ impl TemporalEngine {
             .stale_block_slab_ids
             .len()
             .saturating_sub(reclaim_candidate_count);
-        let log_pressure = self.storage_log_compatibility_report(request.shard_id);
+        let log_pressure = self.storage_log_pressure_report(request.shard_id);
         let cache_pressure = self.storage_cache_inspection_report(request.shard_id);
         let block_slab_total_bytes = reclaim_live_bytes.saturating_add(reclaim_stale_bytes);
         let block_slab_stale_density_basis_points = if block_slab_total_bytes == 0 {
