@@ -66,6 +66,12 @@ name = "shared_store_append_blob_smoke"
 required-features = ["matrixobject"]
 
 [[bin]]
+# Needs the counting allocator to say anything; it refuses to run without it rather than printing
+# a table of zeros.
+name = "alloc_class_scale_harness"
+path = "src/bin/alloc_class_scale_harness.rs"
+
+[[bin]]
 name = "matrixark_rust_proxy"
 path = "src/bin/matrixark_rust_proxy.rs"
 

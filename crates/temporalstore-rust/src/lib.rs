@@ -3,7 +3,19 @@
 
 #![doc = include_str!("../README.md")]
 
-#[cfg(test)]
+// COMPILED INTO EVERY BUILD, not only test builds.
+//
+// It used to be `#[cfg(test)]`, which was right while everything that read the counters was a
+// test. The allocation-class scopes that say what a write's memory is spent on are not: they sit
+// inside the primitives that own each sink, because that is the only placement a new call site
+// cannot go around -- the lesson of #1882 and #1899, where counters at one call site of nine saw
+// one write in twelve.
+//
+// The cost of that in a build without the `alloc-probe` feature below is nothing at all:
+// `in_class` is its closure, with no atomic, no thread-local and no branch, and what remains is a
+// few hundred bytes of never-incremented counters. What the feature changes is not whether the
+// module exists but whether anything counts -- and `classified_now` answers `None` rather than a
+// table of zeros when nothing does, so an uninstrumented build cannot be read as a clean one.
 pub mod alloc_probe;
 
 // Tests only. Counts what a raft snapshot walks, reads, copies and rebuilds, bumped inside the

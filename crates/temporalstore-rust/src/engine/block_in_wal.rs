@@ -69,11 +69,16 @@ pub(super) fn begin_write() {
 /// durability analysis at the top of `tests/wal_single_barrier_recovery.rs`, which is the file
 /// somebody reads to decide what an ack promises.
 pub(super) fn stage(object_id: u64, bytes: &[u8]) {
-    STAGED.with(|staged| {
-        staged.borrow_mut().push(StagedBlock {
-            object_id,
-            bytes: bytes.to_vec(),
-        })
+    // Charged here rather than at the two call sites inside `append_value`: this copy is what
+    // carrying a page in its record COSTS, and a third caller staging a page would otherwise add
+    // that cost to the store while adding nothing to the count.
+    crate::alloc_probe::in_class(crate::alloc_probe::AllocClass::CarriedPage, || {
+        STAGED.with(|staged| {
+            staged.borrow_mut().push(StagedBlock {
+                object_id,
+                bytes: bytes.to_vec(),
+            })
+        });
     });
 }
 
@@ -88,6 +93,18 @@ thread_local! {
 /// Staged for the same reason pages are -- the record does not exist yet, so there is nowhere
 /// to put it until the append.
 pub(super) fn stage_outcome(item: crate::wal::WalOutcomeItem) {
+    crate::alloc_probe::in_class(crate::alloc_probe::AllocClass::StagedOutcome, || {
+        stage_outcome_inner(item)
+    })
+}
+
+/// The staging itself, so the class above covers the opt-out return as well as the push.
+///
+/// This charge sees the outcome BUFFER. Each item's own strings are built by the caller, before it
+/// gets here, and are charged to whatever class that caller is in -- for a page upsert the
+/// bucket-index primitive re-enters this class around the item it builds, so that one path is
+/// whole; a future caller that does not will have its item counted as its own class's cost.
+fn stage_outcome_inner(item: crate::wal::WalOutcomeItem) {
     // Asked here rather than by each caller. Six of them asked it immediately before calling,
     // which is six chances to write a seventh that does not -- and the answer belongs with the
     // table that holds the result, not with the code that produced it.

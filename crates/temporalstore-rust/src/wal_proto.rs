@@ -1020,6 +1020,15 @@ pub(crate) fn prepare(record: &WriteAheadLogRecord) -> Result<PreparedRecord<'_>
 
 /// Encode a record as protobuf, marker byte first.
 pub(crate) fn encode(record: &WriteAheadLogRecord) -> Result<Vec<u8>, String> {
+    // Few calls and the most bytes of any class: the record is built as whole buffers, so an
+    // allocation COUNT reports this as very nearly free while the byte column says it is the
+    // largest single thing a write allocates.
+    crate::alloc_probe::in_class(crate::alloc_probe::AllocClass::LogRecord, || {
+        encode_inner(record)
+    })
+}
+
+fn encode_inner(record: &WriteAheadLogRecord) -> Result<Vec<u8>, String> {
     let parts = record_parts(record)?;
     if compress_records_enabled() {
         // Compression cannot use the borrowing writer above: that path reserves the frame from

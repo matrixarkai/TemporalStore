@@ -2623,6 +2623,34 @@ pub(super) fn upsert_bucket_index_block_with(
     dirty: bool,
     stage: bool,
 ) {
+    // Every single-page writer reaches the bucket index through here, so the charge sits here and
+    // not at the arms. A new command arm that files a page is counted because this function counts
+    // it; the outcome staged in the middle re-tags itself, so the two do not overlap.
+    crate::alloc_probe::in_class(crate::alloc_probe::AllocClass::BucketIndex, || {
+        upsert_bucket_index_block_inner(
+            shard,
+            shard_id,
+            kind,
+            object_key,
+            component,
+            address,
+            dirty,
+            stage,
+        )
+    })
+}
+
+#[allow(clippy::too_many_arguments)]
+fn upsert_bucket_index_block_inner(
+    shard: &mut ShardState,
+    shard_id: ShardId,
+    kind: &str,
+    object_key: &str,
+    component: Option<String>,
+    address: BlockAddress,
+    dirty: bool,
+    stage: bool,
+) {
     let routing_bucket = address
         .routing_bucket()
         .unwrap_or_else(|| block_routing_bucket(object_key, 0, u32::MAX));
@@ -2637,17 +2665,23 @@ pub(super) fn upsert_bucket_index_block_with(
     // for the record, so replay has the option of installing it instead of re-running the
     // command that produced it.
     if stage {
-        super::block_in_wal::stage_outcome(crate::wal::WalOutcomeItem {
-            kind: kind.to_string(),
-            object_key: object_key.to_string(),
-            component: component.clone(),
-            object_id,
-            routing_bucket,
-            address: Some(address.clone()),
-            value: None,
-            ttl: None,
-            deleted: false,
-            meta: false,
+        // The item is BUILT here and staged there, and both halves belong to the record rather
+        // than to the index -- so the class covers the construction too. Without this the three
+        // owned strings an outcome carries would be charged to the bucket index, which is the
+        // shape of mis-attribution that makes an index look like it is growing when a log is.
+        crate::alloc_probe::in_class(crate::alloc_probe::AllocClass::StagedOutcome, || {
+            super::block_in_wal::stage_outcome(crate::wal::WalOutcomeItem {
+                kind: kind.to_string(),
+                object_key: object_key.to_string(),
+                component: component.clone(),
+                object_id,
+                routing_bucket,
+                address: Some(address.clone()),
+                value: None,
+                ttl: None,
+                deleted: false,
+                meta: false,
+            });
         });
     }
     let entry = LiveBlockEntry {

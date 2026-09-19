@@ -256,6 +256,18 @@ fn encode_block_record_payload(
     payload: &[u8],
     options: BlockStoreOptions,
 ) -> Result<(Vec<u8>, BlockRecordCompression), BlockStoreError> {
+    crate::alloc_probe::in_class(crate::alloc_probe::AllocClass::PageBytes, || {
+        encode_block_record_payload_inner(payload, options)
+    })
+}
+
+/// The encode itself. Split out so the allocation class above covers a whole function body rather
+/// than a span the early return skips: an uncompressed write takes that return, and it is the one
+/// a scope wrapped around the tail would have missed.
+fn encode_block_record_payload_inner(
+    payload: &[u8],
+    options: BlockStoreOptions,
+) -> Result<(Vec<u8>, BlockRecordCompression), BlockStoreError> {
     if !options.compression_enabled || payload.len() < options.compression_min_bytes {
         return Ok((payload.to_vec(), BlockRecordCompression::None));
     }

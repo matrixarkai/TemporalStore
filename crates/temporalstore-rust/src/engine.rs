@@ -4473,6 +4473,32 @@ fn append_value(
     routing_bucket: Option<u32>,
     async_storage: bool,
 ) -> Result<BlockAddress, BlockStoreError> {
+    // Both arms, and every command that stores a value, reach a slab through here. The payload's
+    // own copies re-tag themselves inside -- the encode as `PageBytes`, the carried copy as
+    // `CarriedPage` -- so what is left under this class is the append machinery and not the bytes.
+    crate::alloc_probe::in_class(crate::alloc_probe::AllocClass::SlabAppend, || {
+        append_value_inner(
+            cache,
+            block_store,
+            shard_id,
+            bytes,
+            object_id,
+            routing_bucket,
+            async_storage,
+        )
+    })
+}
+
+#[allow(clippy::too_many_arguments)]
+fn append_value_inner(
+    cache: &MultiLayerCache,
+    block_store: &BlockStore,
+    shard_id: ShardId,
+    bytes: &[u8],
+    object_id: Option<u64>,
+    routing_bucket: Option<u32>,
+    async_storage: bool,
+) -> Result<BlockAddress, BlockStoreError> {
     if !async_storage {
         // Carry the page in this write's record, the same as the asynchronous arm below.
         //
@@ -4498,16 +4524,18 @@ fn append_value(
     if let Some(object_id) = object_id {
         block_in_wal::stage(object_id, bytes);
     }
-    let bytes = bytes.to_vec();
-    cache.put_memory_only(
-        CacheKey::page_with_slot(
-            shard_id,
-            address.block_slab_id,
-            address.offset,
-            address.length,
-            address.routing_bucket()),
-        bytes,
-    );
+    crate::alloc_probe::in_class(crate::alloc_probe::AllocClass::PageBytes, || {
+        let bytes = bytes.to_vec();
+        cache.put_memory_only(
+            CacheKey::page_with_slot(
+                shard_id,
+                address.block_slab_id,
+                address.offset,
+                address.length,
+                address.routing_bucket()),
+            bytes,
+        );
+    });
     Ok(address)
 }
 
@@ -4555,6 +4583,15 @@ fn persist_control_state_block(
 }
 
 fn invalidate_cache_key(cache: &MultiLayerCache, key: CacheKey, memory_only: bool) {
+    // The largest class by allocation count on a value write, and it took a measurement to find
+    // out: invalidating one key costs more calls than the whole rest of the write together. The
+    // key itself is built by the caller and is not in here.
+    crate::alloc_probe::in_class(crate::alloc_probe::AllocClass::CacheInvalidation, || {
+        invalidate_cache_key_inner(cache, key, memory_only)
+    })
+}
+
+fn invalidate_cache_key_inner(cache: &MultiLayerCache, key: CacheKey, memory_only: bool) {
     if memory_only {
         cache.invalidate_memory_only(&key);
     } else {

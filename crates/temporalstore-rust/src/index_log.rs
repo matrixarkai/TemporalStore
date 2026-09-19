@@ -1596,6 +1596,35 @@ impl LocalIndexLogStore {
         upsert: bool,
         durable: bool,
     ) -> Result<u64, IndexLogError> {
+        // The single and the batch write paths are two live callers of this, which is exactly the
+        // pair a charge at one call site would have split: an exploratory scope placed at the
+        // single-command site read ZERO on a batch ingest. Here both are counted, and the
+        // disabled-log return below is inside the class so a store with the log off reports a
+        // measured zero rather than an absent one.
+        crate::alloc_probe::in_class(crate::alloc_probe::AllocClass::IndexLogDelta, || {
+            self.append_delta_inner(
+                shard_id,
+                items,
+                key_states,
+                applied_wal_sequence,
+                meta,
+                upsert,
+                durable,
+            )
+        })
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn append_delta_inner(
+        &self,
+        shard_id: ShardId,
+        items: Vec<IndexItem>,
+        key_states: Vec<serde_json::Value>,
+        applied_wal_sequence: Option<u64>,
+        meta: Option<MetaItem>,
+        upsert: bool,
+        durable: bool,
+    ) -> Result<u64, IndexLogError> {
         if bulk_ingest_mode() || !indexlog_enabled() {
             return Ok(0);
         }
