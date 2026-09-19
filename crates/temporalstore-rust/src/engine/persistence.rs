@@ -312,7 +312,7 @@ impl TemporalEngine {
         // folded into something it did not own would not have this property.
         if let Err(err) = self
             .index_log_store
-            .for_each_delta_record(shard_id, 0, |record| {
+            .for_each_delta_record_above_anchor(shard_id, 0, base_anchor, |record| {
                 let record_anchor = record.applied_wal_sequence.unwrap_or(0);
                 // A present base already reflects everything at/below its anchor; fold only the
                 // suffix. An absent base (anchor 0) folds the whole log.

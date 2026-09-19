@@ -37,8 +37,12 @@ pub(crate) mod probe {
     pub(crate) static PIECE_PATHS: AtomicU64 = AtomicU64::new(0);
     /// Frames [`super::LocalIndexLogStore::for_each_delta_record`] read off disk.
     pub(crate) static FOLD_FRAMES_READ: AtomicU64 = AtomicU64::new(0);
-    /// Sealed pieces that fold DECLINED TO OPEN because their name said the retain floor
-    /// already covers every record in them.
+    /// Sealed pieces that fold DECLINED TO OPEN because their name said the dumped base
+    /// already reflects every record in them.
+    ///
+    /// Counted only under [`super::LocalIndexLogStore::for_each_delta_record_above_anchor`],
+    /// which is the load-path fold. Every other walk passes anchor 0 and declines nothing, so a
+    /// zero here from those callers is the right answer rather than a silent one.
     pub(crate) static FOLD_PIECES_DECLINED: AtomicU64 = AtomicU64::new(0);
     /// Times an append actually asked the filesystem to create the log directory -- one
     /// `mkdir` and, when it returns `EEXIST`, one `statx` behind it.
@@ -1729,6 +1733,68 @@ impl LocalIndexLogStore {
         &self,
         shard_id: ShardId,
         retain_after_sequence: u64,
+        take: impl FnMut(IndexDeltaRecord),
+    ) -> Result<(), IndexLogError> {
+        // Anchor 0 declines nothing, so this opens every piece exactly as it always has. Every
+        // caller but the load-path fold asks about the LOG ITSELF -- what it holds, what its
+        // newest catalog is -- and no base anchor makes any part of that answer redundant.
+        self.for_each_delta_record_above_anchor(shard_id, retain_after_sequence, 0, take)
+    }
+
+    /// The same walk, declining WHOLE PIECES the dumped base already reflects, from their names.
+    ///
+    /// The load-path fold in `fold_index_log_deltas` hands every record it is given to the same
+    /// test: a record whose `applied_wal_sequence` is at or below the base's anchor is already
+    /// in the base, so folding it again would change nothing. That test was applied AFTER the
+    /// frame had been read off the disk, the payload decoded and every stripped repeat put back
+    /// -- so a restore whose base reflects the entire log still paid for the entire log.
+    ///
+    /// A sealed piece's name already carries the one number that test reads: `max_applied_wal`,
+    /// the highest anchor any record in it carries. When that is at or below `base_anchor`,
+    /// EVERY record in the piece fails the same test, so the piece can be passed over unopened.
+    ///
+    /// WHAT THE NAME PINS, AND WHY THAT IS ENOUGH HERE.
+    ///
+    /// - `max_applied_wal` is a max over the records' own anchors, taken at SEAL time by
+    ///   [`index_log_segment_span_of`], after a complete append. A record carrying NO anchor
+    ///   contributes 0 to that max -- and the load-path test reads a missing anchor as 0 in
+    ///   exactly the same way (`applied_wal_sequence.unwrap_or(0)`), so the two agree about it.
+    ///   That agreement is what makes the piece-level test equivalent to the per-record one,
+    ///   and it holds for every spelling this name has ever had: the value written has been
+    ///   `max(anchor.unwrap_or(0))` since the pieces were introduced (#1634).
+    /// - [`INDEX_SEGMENT_UNREFLECTED`] is excluded EXPLICITLY rather than left to the `<=`. It
+    ///   is `u64::MAX`, so the comparison would already decline to fire for any real anchor --
+    ///   but "already" is a property of the anchors a deployment happens to reach, not of this
+    ///   code, and the one value that means "no base reflects this" must not be reachable by
+    ///   arithmetic on the boundary.
+    /// - Nothing renames, copies or appends to a sealed piece. The only writer of a sealed name
+    ///   is the `fs::rename` in [`roll_index_log_segment_at`], which renames the piece being
+    ///   WRITTEN to a name computed from a fresh walk of it; the two index-GC rewrites both
+    ///   target [`index_log_path`], the active piece, which has no numbers in its name and is
+    ///   never declined here. So a piece's name and its contents are fixed together.
+    /// - The piece being written is never declined: it has no sealed name, so
+    ///   [`sealed_index_log_span`] answers `None` for it and the walk reads it whole. The tail
+    ///   of the log -- the part no dump can have reflected -- is therefore always read.
+    ///
+    /// WHICH WAY A WRONG ANSWER FAILS. Declining a piece that still holds a record the fold
+    /// would have applied is SILENT DATA LOSS: an eviction or removal recorded only in that
+    /// delta is recovered from neither the delta nor the write-ahead log, and the load reports
+    /// success. Reading a piece that could have been declined is merely slow. Only one of those
+    /// two is observable, so the tests attack that one: they assert the RECORDS THE FOLD HANDS
+    /// BACK are identical with the decline and without it, and take the saving as a separate
+    /// half.
+    ///
+    /// WHAT IS GIVEN UP. A declined piece is not checked for sequence continuity, because it is
+    /// not read. The watermark is still carried across it from its name, so a hole ON a piece
+    /// boundary is still refused; a hole INSIDE a declined piece is not. That is a strictly
+    /// smaller concession than the one this project has already made: the post-dump sweep
+    /// UNLINKS a piece on the same predicate ([`drop_reflected_index_segments`]), so a piece
+    /// this fold declines to read is a piece reclaim would delete unread.
+    pub fn for_each_delta_record_above_anchor(
+        &self,
+        shard_id: ShardId,
+        retain_after_sequence: u64,
+        base_anchor: u64,
         mut take: impl FnMut(IndexDeltaRecord),
     ) -> Result<(), IndexLogError> {
         let inner = self.inner.lock().expect("index log lock poisoned");
@@ -1740,6 +1806,26 @@ impl LocalIndexLogStore {
         // that falls on a boundary -- which is the only new place a hole can appear.
         let mut last_sequence = 0_u64;
         for path in index_log_segment_paths(&inner.root, shard_id) {
+            // From the NAME, before the `exists` probe and before the open, so a declined piece
+            // costs neither. `sealed_index_log_span` parses the path string and touches no
+            // filesystem, and the enumeration handed the path over already.
+            if let Some(span) = sealed_index_log_span(&path, shard_id) {
+                if piece_is_reflected_by(span, base_anchor) {
+                    #[cfg(test)]
+                    probe::FOLD_PIECES_DECLINED
+                        .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                    // Carry the continuity watermark ACROSS the declined piece, from its name.
+                    // Leaving it behind would put the next piece's first record up against a
+                    // watermark from before this one, which is a WEAKER check than the walk has
+                    // today -- it would pass a record that repeats a sequence inside the piece
+                    // just declined. `end` is one past the last sequence the piece held when it
+                    // was sealed. `max` rather than assignment, and no new refusal: a name that
+                    // somehow ran backwards must not turn a load that succeeds today into one
+                    // that fails.
+                    last_sequence = last_sequence.max(span.end.saturating_sub(1));
+                    continue;
+                }
+            }
             if !path.exists() {
                 continue;
             }
@@ -2642,6 +2728,19 @@ fn sealed_index_log_span(path: &Path, shard_id: ShardId) -> Option<IndexSegmentS
 ///
 /// A log that has never rolled is one file, and this returns just that -- the same path the rest
 /// of the code has always used, which is what makes a store written before pieces still load.
+/// Whether a base at `base_anchor` already reflects every record in this sealed piece.
+///
+/// The same comparison [`drop_reflected_index_segments`] makes before it UNLINKS a piece, minus
+/// that sweep's position bound, which is about where reclaim may cut the log rather than about
+/// what a base holds. A base at anchor 0 is no base at all -- an absent or empty dump -- and
+/// reflects nothing, which is why the whole predicate is off there rather than comparing
+/// against 0.
+fn piece_is_reflected_by(span: IndexSegmentSpan, base_anchor: u64) -> bool {
+    base_anchor > 0
+        && span.max_applied_wal != INDEX_SEGMENT_UNREFLECTED
+        && span.max_applied_wal <= base_anchor
+}
+
 fn index_log_segment_paths(root: &Path, shard_id: ShardId) -> Vec<PathBuf> {
     #[cfg(test)]
     probe::DIR_LISTINGS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
@@ -6330,4 +6429,546 @@ flag exists to say",
         assert_eq!(sequences, vec![1, 2, 3], "GC must see the real sequences");
     }
 
+    /// The load-path fold's own test, extracted so the piece-level decline and the per-record
+    /// one are literally the same predicate rather than two copies that can drift.
+    ///
+    /// This is `fold_index_log_deltas`'s first three lines, and it is what the piece name has to
+    /// be able to answer for a whole piece at once.
+    fn load_path_applies(record: &IndexDeltaRecord, base_anchor: u64) -> bool {
+        let record_anchor = record.applied_wal_sequence.unwrap_or(0);
+        !(base_anchor > 0 && record_anchor <= base_anchor)
+    }
+
+    /// Fold a log the two ways and report what each cost, for a given base anchor.
+    fn fold_both_ways(
+        store: &LocalIndexLogStore,
+        shard_id: ShardId,
+        base_anchor: u64,
+    ) -> (Vec<u64>, u64, Vec<u64>, u64, u64) {
+        probe::reset();
+        let mut opening_everything = Vec::new();
+        store
+            .for_each_delta_record(shard_id, 0, |record| {
+                if load_path_applies(&record, base_anchor) {
+                    opening_everything.push(record.sequence);
+                }
+            })
+            .unwrap();
+        let frames_opening_everything = probe::fold_frames_read();
+
+        probe::reset();
+        let mut declining = Vec::new();
+        store
+            .for_each_delta_record_above_anchor(shard_id, 0, base_anchor, |record| {
+                if load_path_applies(&record, base_anchor) {
+                    declining.push(record.sequence);
+                }
+            })
+            .unwrap();
+        (
+            opening_everything,
+            frames_opening_everything,
+            declining,
+            probe::fold_frames_read(),
+            probe::fold_pieces_declined(),
+        )
+    }
+
+    /// Append `records` anchored deltas whose anchors CLIMB, so the pieces do not all name the
+    /// same thing.
+    ///
+    /// ONE store handle for the whole fixture, not one per append: the handle caches the shard's
+    /// last sequence, and a fresh handle re-derives it by reading the piece being written from
+    /// the start -- which makes building an n-record fixture cost n-squared frame reads.
+    fn climbing_anchor_log(
+        store: &LocalIndexLogStore,
+        shard_id: ShardId,
+        records: usize,
+    ) {
+        for value in 0..records {
+            store
+                .append_delta(
+                    shard_id,
+                    vec![block_item(
+                        (value % 64) as u32,
+                        &format!("tenant/1/object/{value:08}"),
+                        false,
+                    )],
+                    Vec::new(),
+                    // The anchor climbs with the record, so successive pieces name successively
+                    // higher anchors and a base anchor can fall BETWEEN two pieces. A fixture
+                    // whose pieces all named one anchor could not tell a correct decision from a
+                    // constant one.
+                    Some(value as u64 + 1),
+                    None,
+                    false,
+                    false,
+                )
+                .unwrap();
+        }
+    }
+
+    /// THE DIRECTION THAT LOSES DATA: what the load path APPLIES must not move.
+    ///
+    /// A wrong piece-level decision fails one way silently and one way loudly. Declining a piece
+    /// that still holds a record the fold would apply loses an eviction recorded only in that
+    /// delta, and the load reports success -- invisible. Opening a piece that could have been
+    /// declined is merely slow. So the assertion that matters is an EQUALITY on the records
+    /// handed back, not an inequality on the cost; the cost is taken as a separate half, after.
+    ///
+    /// The fixture has to be able to express the defect, which takes three things and each is
+    /// floored rather than hoped for: more than one sealed piece, pieces that do NOT all name
+    /// the same anchor, and a base anchor that falls strictly inside the range they name -- so
+    /// some pieces are declinable, some are not, and a decline of "all" or "none" fails.
+    #[test]
+    fn declining_a_piece_changes_nothing_about_what_the_load_path_applies() {
+        let _rolling = roll_at(4 * 1024);
+        let dir = tempfile::tempdir().unwrap();
+        const RECORDS: usize = 3_000;
+        let store = LocalIndexLogStore::new(dir.path());
+        climbing_anchor_log(&store, 11, RECORDS);
+
+        let spans: Vec<IndexSegmentSpan> = index_log_segment_paths(dir.path(), 11)
+            .iter()
+            .filter_map(|path| sealed_index_log_span(path, 11))
+            .collect();
+        // DENOMINATOR ONE: more than one piece. A single-piece log cannot express a per-piece
+        // decision at all.
+        assert!(
+            spans.len() >= 4,
+            "fixture sealed {} pieces -- a per-piece decision needs several",
+            spans.len()
+        );
+        // DENOMINATOR TWO: the pieces are not identical in the dimension the decline keys on.
+        let distinct_anchors: std::collections::BTreeSet<u64> =
+            spans.iter().map(|span| span.max_applied_wal).collect();
+        assert!(
+            distinct_anchors.len() >= 4,
+            "every piece names the same anchor ({distinct_anchors:?}) -- this fixture cannot \
+             tell a correct decision from a constant one"
+        );
+
+        // DENOMINATOR THREE: a base anchor STRICTLY INSIDE what the pieces name, so the right
+        // answer is neither "decline everything" nor "decline nothing".
+        let lowest = *distinct_anchors.iter().next().unwrap();
+        let highest = *distinct_anchors.iter().next_back().unwrap();
+        let base_anchor = lowest + (highest - lowest) / 2;
+        assert!(
+            base_anchor > lowest && base_anchor < highest,
+            "base anchor {base_anchor} is not strictly inside the named range {lowest}..{highest}"
+        );
+
+        let (everything, frames_everything, declining, frames_declining, declined) =
+            fold_both_ways(&store, 11, base_anchor);
+
+        println!(
+            "index-log replay fold at base anchor {base_anchor}: opening every piece = {} frames \
+             / {} applied | declining = {} frames / {} applied / {} of {} sealed pieces declined",
+            frames_everything,
+            everything.len(),
+            frames_declining,
+            declining.len(),
+            declined,
+            spans.len(),
+        );
+
+        // HALF ONE, AND IT IS THE POINT: the records the load path applies are IDENTICAL. Not a
+        // count -- the sequences themselves, in order, so a decline that dropped one record and
+        // duplicated another would still fail.
+        assert_eq!(
+            declining, everything,
+            "declining pieces changed WHICH records the load path applies -- this is the silent \
+             direction"
+        );
+        // HALF TWO, ORDERED AFTER IT AND NON-VACUOUS: something was actually applied, so half
+        // one is not an equality between two empty lists.
+        assert!(
+            !everything.is_empty(),
+            "the fold applied nothing at all -- half one compared two empty lists"
+        );
+        // HALF THREE: and it cost less. Some pieces were declined, and not all of them.
+        assert!(
+            declined > 0 && (declined as usize) < spans.len(),
+            "expected a strict subset of {} pieces to be declined, got {declined}",
+            spans.len()
+        );
+        assert!(
+            frames_declining < frames_everything,
+            "the decline read {frames_declining} frames against {frames_everything} -- it saved \
+             nothing"
+        );
+    }
+
+    /// A PIECE NO DUMP CAN REFLECT IS NEVER DECLINED, EVEN AT THE TOP BASE ANCHOR.
+    ///
+    /// `INDEX_SEGMENT_UNREFLECTED` is `u64::MAX`, so a comparison alone would decline such a
+    /// piece at exactly one base anchor: `u64::MAX` itself. That value is not reachable by a
+    /// deployment, which is precisely why it must be excluded by the CODE and not by the
+    /// deployment -- the same reasoning #1842 used to keep the sweep off these pieces.
+    ///
+    /// This is the boundary value, and it is the one a mutant that drops the
+    /// `!= INDEX_SEGMENT_UNREFLECTED` clause fails.
+    #[test]
+    fn a_piece_no_dump_reflects_is_read_even_at_the_top_base_anchor() {
+        let _rolling = roll_at(0);
+        let dir = tempfile::tempdir().unwrap();
+        let store = LocalIndexLogStore::new(dir.path());
+        const ROUNDS: usize = 16;
+        for round in 0..ROUNDS {
+            store
+                .append_delta(
+                    12,
+                    Vec::new(),
+                    vec![serde_json::json!({ "key": format!("expired-{round:03}") })],
+                    None,
+                    None,
+                    false,
+                    false,
+                )
+                .unwrap();
+        }
+        let active_len = index_log_path(dir.path(), 12).metadata().unwrap().len();
+        assert!(active_len > 0, "fixture wrote nothing");
+        set_index_log_segment_bytes_for_test(Some(active_len));
+        store
+            .append_delta(12, Vec::new(), Vec::new(), Some(9), Some(MetaItem::default()), false, false)
+            .unwrap();
+
+        // DENOMINATOR: exactly one sealed piece, and it names the saturated anchor. Without
+        // this the test below would pass against a piece naming a small anchor.
+        let spans: Vec<IndexSegmentSpan> = index_log_segment_paths(dir.path(), 12)
+            .iter()
+            .filter_map(|path| sealed_index_log_span(path, 12))
+            .collect();
+        assert_eq!(spans.len(), 1, "fixture must seal exactly one piece: {spans:?}");
+        assert_eq!(
+            spans[0].max_applied_wal, INDEX_SEGMENT_UNREFLECTED,
+            "fixture piece does not name the saturated anchor: {spans:?}"
+        );
+
+        probe::reset();
+        let mut tombstones = 0usize;
+        store
+            .for_each_delta_record_above_anchor(12, 0, u64::MAX, |record| {
+                if !record.key_states.is_empty() {
+                    tombstones += 1;
+                }
+            })
+            .unwrap();
+        let declined = probe::fold_pieces_declined();
+        println!(
+            "unreflectable piece at base anchor u64::MAX: {declined} declined, {tombstones} of \
+             {ROUNDS} expiry checkpoints read"
+        );
+        assert_eq!(
+            declined, 0,
+            "a piece naming the saturated anchor was declined at base anchor u64::MAX"
+        );
+        assert_eq!(
+            tombstones, ROUNDS,
+            "the fold read {tombstones} of {ROUNDS} anchor-less checkpoints"
+        );
+    }
+
+    /// THE BOUNDARY ON THE COMPARISON ITSELF: at the named anchor, declined; one below it, read.
+    ///
+    /// The piece holds `start..end` and names the highest anchor any record in it carries. A base
+    /// AT that anchor reflects every record in the piece, so it may go unread; a base ONE BELOW
+    /// it does not reflect the last record, so the piece must be opened. A mutant that turns the
+    /// `<=` into `<` fails the first half; one that turns it into `>=` or drops the comparison
+    /// fails the second.
+    #[test]
+    fn a_piece_is_declined_at_the_anchor_it_names_and_read_one_below_it() {
+        let _rolling = roll_at(4 * 1024);
+        let dir = tempfile::tempdir().unwrap();
+        let store = LocalIndexLogStore::new(dir.path());
+        climbing_anchor_log(&store, 13, 2_000);
+
+        let spans: Vec<IndexSegmentSpan> = index_log_segment_paths(dir.path(), 13)
+            .iter()
+            .filter_map(|path| sealed_index_log_span(path, 13))
+            .collect();
+        assert!(spans.len() >= 2, "fixture sealed {} pieces", spans.len());
+        // The FIRST piece's named anchor is the boundary under test: at it, that piece and
+        // nothing else is declinable.
+        let named = spans[0].max_applied_wal;
+        assert!(named > 1, "first piece names anchor {named} -- no room below it");
+
+        probe::reset();
+        store
+            .for_each_delta_record_above_anchor(13, 0, named, |_| {})
+            .unwrap();
+        let at_the_anchor = probe::fold_pieces_declined();
+
+        probe::reset();
+        store
+            .for_each_delta_record_above_anchor(13, 0, named - 1, |_| {})
+            .unwrap();
+        let one_below = probe::fold_pieces_declined();
+
+        println!(
+            "boundary at the anchor a piece names ({named}): declined {at_the_anchor} at it, \
+             {one_below} one below it, over {} sealed pieces",
+            spans.len()
+        );
+        assert_eq!(
+            at_the_anchor, 1,
+            "a base AT the anchor the first piece names declined {at_the_anchor} pieces, expected 1"
+        );
+        assert_eq!(
+            one_below, 0,
+            "a base ONE BELOW the anchor the first piece names declined {one_below} pieces -- \
+             that piece still holds a record the base does not reflect"
+        );
+    }
+
+    /// THE PIECE BEING WRITTEN IS NEVER DECLINED, AT ANY BASE ANCHOR.
+    ///
+    /// It carries no numbers in its name, so there is nothing to decide from -- and it is the one
+    /// piece that certainly holds records no dump has reflected, because it is still being
+    /// appended to. A decline that reached it would drop the newest writes on every restore,
+    /// which is the worst version of the silent direction.
+    ///
+    /// A base anchor of `u64::MAX` is above every record in the log, so every SEALED piece is
+    /// declinable here and only the active one can account for what is read.
+    #[test]
+    fn the_piece_being_written_is_never_declined() {
+        let _rolling = roll_at(4 * 1024);
+        let dir = tempfile::tempdir().unwrap();
+        let store = LocalIndexLogStore::new(dir.path());
+        climbing_anchor_log(&store, 14, 2_000);
+
+        let spans: Vec<IndexSegmentSpan> = index_log_segment_paths(dir.path(), 14)
+            .iter()
+            .filter_map(|path| sealed_index_log_span(path, 14))
+            .collect();
+        let active_records = {
+            let mut count = 0usize;
+            let file = File::open(index_log_path(dir.path(), 14)).unwrap();
+            let mut reader = BufReader::new(file);
+            while let Some((_, payload)) = crate::log_framing::read_frame(&mut reader).unwrap() {
+                if !payload.iter().all(|byte| byte.is_ascii_whitespace()) {
+                    count += 1;
+                }
+            }
+            count
+        };
+        // DENOMINATOR: the active piece must hold something, or "it was still read" is vacuous.
+        assert!(
+            active_records > 0,
+            "the piece being written holds no record -- there is nothing for this to be about"
+        );
+        assert!(!spans.is_empty(), "fixture sealed no piece");
+
+        probe::reset();
+        let mut taken = 0usize;
+        store
+            .for_each_delta_record_above_anchor(14, 0, u64::MAX, |_| taken += 1)
+            .unwrap();
+        let declined = probe::fold_pieces_declined();
+        let frames = probe::fold_frames_read();
+        println!(
+            "at base anchor u64::MAX: {declined} of {} sealed pieces declined, {frames} frames \
+             read, {taken} records taken, active piece holds {active_records}",
+            spans.len()
+        );
+        assert_eq!(
+            declined as usize,
+            spans.len(),
+            "every sealed piece is below u64::MAX and should have been declined"
+        );
+        assert_eq!(
+            frames as usize, active_records,
+            "the frames read must be exactly the piece being written: {frames} against \
+             {active_records}"
+        );
+        assert_eq!(
+            taken, active_records,
+            "the piece being written was not handed over whole: {taken} of {active_records}"
+        );
+    }
+
+    /// A LOG WHOSE PIECES NAME ANCHOR 0 IS NEVER DECLINED, BY ANY CALLER.
+    ///
+    /// `base_anchor > 0` looks like a defensive clause and is not. A whole-index log names 0 in
+    /// EVERY piece -- `how_many_sealed_pieces_name_anchor_zero` measures exactly that -- so
+    /// without the guard `0 <= 0` is true and every piece of such a log is declined by every
+    /// caller, including the two that pass no anchor at all and are supposed to read the log
+    /// whole.
+    ///
+    /// The fixture is the one that can express it: a log built from `append_json`, which writes
+    /// whole-index records that carry no anchor by construction. A fixture of anchored deltas
+    /// names nothing 0 and cannot tell the guard from a constant.
+    #[test]
+    fn a_log_whose_pieces_name_anchor_zero_is_never_declined() {
+        let _rolling = roll_at(4 * 1024);
+        let dir = tempfile::tempdir().unwrap();
+        let store = LocalIndexLogStore::new(dir.path());
+        const RECORDS: usize = 3_000;
+        for value in 0..RECORDS {
+            store
+                .append_json(15, format!("{{\"value\":\"{value:08}\"}}").as_bytes())
+                .unwrap();
+        }
+
+        // DENOMINATOR: several sealed pieces, and EVERY one of them names anchor 0. Without this
+        // the assertions below would hold for a log that simply had nothing declinable in it.
+        let spans: Vec<IndexSegmentSpan> = index_log_segment_paths(dir.path(), 15)
+            .iter()
+            .filter_map(|path| sealed_index_log_span(path, 15))
+            .collect();
+        assert!(spans.len() >= 4, "fixture sealed {} pieces", spans.len());
+        let naming_zero = spans.iter().filter(|span| span.max_applied_wal == 0).count();
+        assert_eq!(
+            naming_zero,
+            spans.len(),
+            "fixture must name every piece 0 or it cannot express this: {spans:?}"
+        );
+
+        // The two entry points that pass no anchor, and the anchor-aware one at a base of 0 --
+        // which is what an absent or empty base gives it.
+        probe::reset();
+        store.for_each_delta_record(15, 0, |_| {}).unwrap();
+        let plain = (probe::fold_pieces_declined(), probe::fold_frames_read());
+        probe::reset();
+        store.read_delta_records(15, 0).unwrap();
+        let collecting = (probe::fold_pieces_declined(), probe::fold_frames_read());
+        probe::reset();
+        store
+            .for_each_delta_record_above_anchor(15, 0, 0, |_| {})
+            .unwrap();
+        let at_zero = (probe::fold_pieces_declined(), probe::fold_frames_read());
+
+        println!(
+            "a log of {RECORDS} whole-index records in {} pieces, every piece naming anchor 0: \
+             for_each_delta_record = {} declined / {} frames | read_delta_records = {} declined / \
+             {} frames | at base anchor 0 = {} declined / {} frames",
+            spans.len(),
+            plain.0,
+            plain.1,
+            collecting.0,
+            collecting.1,
+            at_zero.0,
+            at_zero.1,
+        );
+
+        // THE APPARATUS FLOOR, FIRST: all three walks must have read the log, or three zeroes in
+        // the declined column mean only that nothing ran.
+        assert_eq!(
+            plain.1 as usize, RECORDS,
+            "APPARATUS: the plain walk read {} frames of {RECORDS}",
+            plain.1
+        );
+        assert_eq!(collecting.1 as usize, RECORDS, "APPARATUS: the collecting walk");
+        assert_eq!(at_zero.1 as usize, RECORDS, "APPARATUS: the walk at base anchor 0");
+        // THE CLAIM: nothing was declined anywhere. A base at anchor 0 is no base at all.
+        assert_eq!(plain.0, 0, "for_each_delta_record declined {} pieces", plain.0);
+        assert_eq!(collecting.0, 0, "read_delta_records declined {} pieces", collecting.0);
+        assert_eq!(
+            at_zero.0, 0,
+            "a base anchor of 0 declined {} pieces -- an absent base reflects nothing, and every \
+             piece of a whole-index log names 0",
+            at_zero.0
+        );
+    }
+
+    /// THE CONTINUITY WATERMARK CROSSES A DECLINED PIECE, TAKEN FROM ITS NAME.
+    ///
+    /// The fold refuses a delta stream whose sequences do not strictly climb, and that refusal is
+    /// what stops a holed stream being folded as though it were whole. A declined piece is not
+    /// read, so the records inside it cannot advance the watermark -- and if nothing else does,
+    /// the first record AFTER the declined piece is compared against a watermark from BEFORE it,
+    /// which passes sequences that overlap the piece just declined.
+    ///
+    /// The piece's name says the sequence one past its last record, so the watermark is carried
+    /// across from there instead. This test makes the two answers differ: the first piece is
+    /// renamed so its name claims a span reaching past every later record, which is exactly the
+    /// shape an overlap has. With the watermark carried, the fold refuses. Without it, the fold
+    /// accepts a stream whose sequences run backwards across the boundary.
+    ///
+    /// The rename is the only way to build this: the writer cannot produce an overlapping pair,
+    /// which is the point -- the check exists for a log that has been damaged, and damage has to
+    /// be applied from outside.
+    #[test]
+    fn the_continuity_watermark_crosses_a_declined_piece_from_its_name() {
+        let _rolling = roll_at(4 * 1024);
+        let dir = tempfile::tempdir().unwrap();
+        let store = LocalIndexLogStore::new(dir.path());
+        const RECORDS: usize = 1_500;
+        climbing_anchor_log(&store, 16, RECORDS);
+
+        let sealed: Vec<PathBuf> = index_log_segment_paths(dir.path(), 16)
+            .into_iter()
+            .filter(|path| sealed_index_log_span(path, 16).is_some())
+            .collect();
+        assert!(sealed.len() >= 3, "fixture sealed {} pieces", sealed.len());
+        let first = sealed[0].clone();
+        let span = sealed_index_log_span(&first, 16).unwrap();
+
+        // THE CONTROL, AND IT RUNS FIRST: undamaged, at a base anchor that declines this piece,
+        // the fold succeeds. Without this the refusal below could be the fixture rather than the
+        // overlap.
+        let base_anchor = span.max_applied_wal;
+        assert!(base_anchor > 0, "the first piece names anchor 0: {span:?}");
+        probe::reset();
+        store
+            .for_each_delta_record_above_anchor(16, 0, base_anchor, |_| {})
+            .expect("CONTROL: an undamaged log must fold");
+        let declined_clean = probe::fold_pieces_declined();
+        assert!(
+            declined_clean > 0,
+            "CONTROL: nothing was declined at base anchor {base_anchor}, so the watermark never \
+             had to cross anything"
+        );
+
+        // THE DAMAGE. The name now claims the piece holds every sequence in the log, which
+        // overlaps every later piece. Only the name changes; the bytes are untouched.
+        let widened = IndexSegmentSpan {
+            start: span.start,
+            end: (RECORDS as u64) + 1,
+            max_applied_wal: span.max_applied_wal,
+        };
+        assert!(
+            widened.end > span.end,
+            "the widened name {widened:?} does not overlap anything: {span:?}"
+        );
+        let damaged = sealed_index_log_path(dir.path(), 16, widened);
+        fs::rename(&first, &damaged).unwrap();
+
+        probe::reset();
+        let outcome = store.for_each_delta_record_above_anchor(16, 0, base_anchor, |_| {});
+        let declined_damaged = probe::fold_pieces_declined();
+        println!(
+            "continuity across a declined piece: clean fold declined {declined_clean} and \
+             succeeded; with the first piece renamed {:?} -> {:?} the fold declined \
+             {declined_damaged} and returned {}",
+            span,
+            widened,
+            match &outcome {
+                Ok(()) => "Ok".to_string(),
+                Err(err) => format!("Err({err})"),
+            }
+        );
+
+        // FLOOR: the damaged run must still have declined the piece, or the watermark was never
+        // asked to cross it and this test is about nothing.
+        assert!(
+            declined_damaged > 0,
+            "the damaged run declined nothing, so the carried watermark was never exercised"
+        );
+        match outcome {
+            Ok(()) => panic!(
+                "the fold accepted a stream whose later pieces overlap the span the declined \
+                 piece NAMES. The watermark did not cross it, so every record after the declined \
+                 piece was checked against a watermark from before it"
+            ),
+            Err(err) => {
+                let text = err.to_string();
+                assert!(
+                    text.contains("continuity"),
+                    "the fold refused, but not for continuity: {text}"
+                );
+            }
+        }
+    }
 }
