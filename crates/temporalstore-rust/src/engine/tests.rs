@@ -107,6 +107,7 @@ mod restore_large_scale;
 mod promote_precondition;
 mod alloc_class_scale;
 mod evict_scale;
+mod cache_invalidation_cost;
 
 
 /// The token-bucket arithmetic with explicit clocks -- the whole model is this pure function,
