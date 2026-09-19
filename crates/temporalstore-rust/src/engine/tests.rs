@@ -101,6 +101,7 @@ mod index_log_replay_reach;
 mod round_scale;
 mod index_bytes_per_key;
 mod dump_scale;
+mod dump_release_scale;
 mod restore_scale;
 mod promote_precondition;
 mod alloc_class_scale;
