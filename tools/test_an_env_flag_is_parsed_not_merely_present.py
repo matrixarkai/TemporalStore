@@ -30,7 +30,7 @@ what the operator typed, and the truthy one is wrong in the direction that ignor
 The scan follows one local-variable hop inside a function, because that is how the code is
 actually written:
 
-    raw = os.environ.get("MATRIXARK_SHARE_SERVING_VALUES")
+    raw = os.environ.get("MATRIXARK_A_SWITCH")
     if raw:                                            # <- the defect, one line later
 
 A detector that only saw the inline form would be easier than the defect, and would report zero
