@@ -986,6 +986,31 @@ pub fn reset_model_map_addresses_visited() {
     MODEL_MAP_ADDRESSES_VISITED.store(0, std::sync::atomic::Ordering::Relaxed);
 }
 
+/// Times [`release_bucket_blocks`] actually ran its whole-store derivation.
+///
+/// [`MODEL_MAP_ADDRESSES_VISITED`] says how big the pass was; this says whether it happened. The
+/// two are different questions and only one of them survives a store of any particular size: a
+/// release that never reaches the model-map comparison visits zero addresses, and zero is also
+/// what a counter wired to nothing reads. Counting the derivations separately means a guard can
+/// assert the pass did NOT run without that assertion being satisfied by the counter being dead.
+///
+/// At most one per `release_bucket_blocks` call by construction -- the derivation covers the whole
+/// candidate set in one pass and is memoized for the rest of the batch -- so the identity a guard
+/// pins is `derivations == 1 if any candidate reached the comparison else 0`, whatever the batch
+/// size and whatever the store size.
+static BUCKET_RELEASE_MODEL_DERIVATIONS: std::sync::atomic::AtomicU64 =
+    std::sync::atomic::AtomicU64::new(0);
+
+/// Whole-store derivations run by the bucket release since the last reset.
+pub fn bucket_release_model_derivations() -> u64 {
+    BUCKET_RELEASE_MODEL_DERIVATIONS.load(std::sync::atomic::Ordering::Relaxed)
+}
+
+/// Reset the release-derivation counter. Pairs with [`bucket_release_model_derivations`].
+pub fn reset_bucket_release_model_derivations() {
+    BUCKET_RELEASE_MODEL_DERIVATIONS.store(0, std::sync::atomic::Ordering::Relaxed);
+}
+
 /// Bucket-index entries visited by [`bucket_index_resident_bytes`]: one per node plus one per
 /// resident page.
 ///
@@ -1831,9 +1856,31 @@ pub(super) fn release_bucket_blocks(
     // is a field of the ADDRESS, and no index runs the other way. What the walk no longer does is
     // build an owned entry for every live page in the store before throwing all but the wanted
     // ones away -- four allocations per object in the store, to release four buckets.
-    let derived = derive_released_block_identities(shard, &wanted);
+    //
+    // THE REMAINING COST IS THE VISIT, AND IT IS PAID ONLY WHEN A CANDIDATE ASKS FOR IT. #1884
+    // removed what this pass ALLOCATES; the pass still runs `accept` on every live address in the
+    // shard, which is 200,000 field reads at 200,000 records to answer a question about at most
+    // `batch_limit` buckets, and no allocation table can see it because the walk is borrow-only.
+    // Every term tested below the derivation -- the five residency terms, the four per-block
+    // terms, and the lookup-locality term -- reads the CANDIDATE's own state and nothing the
+    // derivation produces, so a candidate that fails one of them never consults the derived map.
+    // At the shipped `eviction_dump_before_evict` false a freshly written bucket is dirty and
+    // every candidate is refused on `bucket_dirty`, so the whole-store pass was run and then
+    // entirely discarded, once per round, for ever.
+    //
+    // WHAT IS NOT CHANGED, and the reason this is a memoization rather than a reorder: the terms
+    // keep their order relative to one another, the derivation still covers the WHOLE candidate
+    // set in one pass, and it is still computed before any bucket is mutated -- the first
+    // candidate that reaches the comparison has not released anything yet, and a release touches
+    // only `bucket_index`, which the derivation does not read. So the map built here is the map
+    // that was built eagerly, at the same shard state, and every outcome field is identical.
+    // `refuse` is a set of counters with no ordering, and `released_buckets` is still pushed in
+    // candidate order.
+    let mut derived: Option<BTreeMap<u32, BTreeSet<ReleasedBlockIdentity>>> = None;
     let lookup_established = !shard.bucket_index.object_block_lookup.is_empty();
-    for routing_bucket in wanted {
+    // Iterated by reference rather than consumed, because the derivation below is handed the same
+    // set and is now reached from inside the loop. Same order, same elements, no allocation.
+    for routing_bucket in wanted.iter().copied() {
         let Some(bucket) = shard.bucket_index.bucket_map.get(&routing_bucket) else {
             continue;
         };
@@ -1903,6 +1950,11 @@ pub(super) fn release_bucket_blocks(
                 )
             })
             .collect();
+        // THE WHOLE-STORE PASS, on first demand and once. Nothing above this line consulted it.
+        let derived = derived.get_or_insert_with(|| {
+            BUCKET_RELEASE_MODEL_DERIVATIONS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            derive_released_block_identities(shard, &wanted)
+        });
         if derived.get(&routing_bucket) != Some(&resident) {
             // The model maps would not rebuild what is resident. Whatever the disagreement is,
             // it is not this function's to resolve -- and releasing across it would lose pages.
