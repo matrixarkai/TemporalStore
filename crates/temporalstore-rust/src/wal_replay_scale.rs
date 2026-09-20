@@ -196,7 +196,9 @@ impl ReplayCost {
 /// tail only on the first.
 fn replay_cost(store: &LocalWriteAheadLogStore, watermark: u64) -> ReplayCost {
     reset_counters();
-    let start_at = store.log_id_after_sequence(1, watermark).unwrap_or(0);
+    let start_at = store
+        .replay_start_after_sequence(1, watermark)
+        .unwrap_or_else(|_| crate::wal::ReplayPosition::at_start_of_log());
     let prewalk = counters();
     let mut window_start = start_at;
     let mut verify_tail = true;

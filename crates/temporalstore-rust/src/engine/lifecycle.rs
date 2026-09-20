@@ -1985,8 +1985,8 @@ impl TemporalEngine {
         // after the watermark -- so that test still decides what is replayed.
         let start_at = self
             .wal_store
-            .log_id_after_sequence(shard_id, watermark)
-            .unwrap_or(0);
+            .replay_start_after_sequence(shard_id, watermark)
+            .unwrap_or_else(|_| crate::wal::ReplayPosition::at_start_of_log());
 
         // Replay config-driven eviction (feature_max_size trims) with the config that was
         // effective at each record's WAL frontier. An entry stamped `after_seq` is effective for
@@ -2258,11 +2258,12 @@ impl TemporalEngine {
             // refusing a record for budget, and it always yields at least one record, so its
             // resume point is past this window's start -- refusing to assume that is cheaper than
             // a recovery that hangs.
-            if scanned_any && resume_at <= window_start {
+            if scanned_any && resume_at.log_id() <= window_start.log_id() {
+                let stalled_at = window_start.log_id();
                 return Err(Status::error(
                     "wal_replay_window_stalled",
                     format!(
-                        "WAL replay made no progress past log id {window_start} for shard {shard_id}; refusing load rather than reading the same window forever"
+                        "WAL replay made no progress past log id {stalled_at} for shard {shard_id}; refusing load rather than reading the same window forever"
                     ),
                 ));
             }

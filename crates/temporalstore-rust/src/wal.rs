@@ -26,7 +26,11 @@
 //! from the start of the piece. Here it would have no reader. Random access is by log id, which is
 //! already arithmetic and needs no index; and the only component that reads the log sequentially is
 //! recovery (`engine::lifecycle::replay_wal_into_shard`), which starts at a watermark and reads
-//! forward to the end, so a seek into the middle buys it nothing. Replication does not read this
+//! forward to the end -- in BOUNDED WINDOWS, so it seeks into the middle of a piece once per
+//! window, and it does so by arithmetic on the log id, which is exactly why no index is wanted.
+//! (This paragraph used to say a seek into the middle bought recovery nothing. It bought a
+//! 200,000-record restore 927 MB, because without it every window re-read the piece from its
+//! header to find where the last one stopped.) Replication does not read this
 //! log at all -- the raft log is a separate structure under `raft::local_wal`. Adding the sidecar
 //! would mean another file to write, checksum, recover and keep consistent with the piece beside
 //! it, in exchange for nothing, and it would have to be correct across reclaim and a torn tail.
@@ -714,6 +718,38 @@ pub struct WriteAheadLogStats {
     /// stays flat. Read (via `raw_stats`, which does NOT itself scan) by the phase-1 aging test.
     #[serde(default)]
     pub stats_full_scans: u64,
+}
+
+/// A log id that is the FIRST BYTE OF A RECORD.
+///
+/// A windowed replay resumes by seeking, and a seek is only safe at a position where a record
+/// actually starts -- a log id landing mid-record would have the walk decode the tail of one
+/// record as the head of another, which on the recovery path is the silent direction: a shard
+/// that comes up missing durable writes rather than one that refuses to come up.
+///
+/// So the position is not a number a caller can make up. The only two ways to hold one are to
+/// have been handed it by the walk, which produces it from the first byte of a record it refused
+/// for budget, and [`LocalWriteAheadLogStore::replay_start_after_sequence`], which answers a
+/// piece's base -- the first byte of that piece's first record -- or zero.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ReplayPosition(u64);
+
+impl ReplayPosition {
+    /// The start of the log, which is where a replay with no durable index begins.
+    pub fn at_start_of_log() -> Self {
+        Self(0)
+    }
+
+    /// The log id, for a caller that wants to report or compare it.
+    pub fn log_id(self) -> u64 {
+        self.0
+    }
+
+    /// Private on purpose: everything that can honestly claim a record starts here lives in
+    /// this module.
+    fn at_record_start(log_id: u64) -> Self {
+        Self(log_id)
+    }
 }
 
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -1659,6 +1695,7 @@ impl LocalWriteAheadLogStore {
             end_offset,
             max_bytes,
             true,
+            false,
             |log_id, line, _| Some((log_id, line)),
         )
         .map(|(records, truncated, _resume_at)| (records, truncated))
@@ -1683,6 +1720,7 @@ impl LocalWriteAheadLogStore {
             end_offset,
             max_bytes,
             true,
+            false,
             |log_id, _line, decoded| decoded.map(|record| (log_id, record)),
         )
         .map(|(records, truncated, _resume_at)| (records, truncated))
@@ -1693,21 +1731,45 @@ impl LocalWriteAheadLogStore {
     /// `scan_decoded` says whether it stopped early; this also says WHERE, so a caller replaying a
     /// long log can walk it in bounded pieces instead of holding all of it at once. Pass
     /// `verify_tail` on the FIRST window only -- see `scan_collect`.
+    ///
+    /// The position is a [`ReplayPosition`] rather than a log id, and that is what lets the walk
+    /// SEEK to it. A log id a caller made up could sit in the middle of a record, and seeking to
+    /// the middle of a record on the recovery path is how a restore starts decoding rubbish; a
+    /// `ReplayPosition` can only have come from this walk or from
+    /// [`Self::replay_start_after_sequence`], and both of those are the first byte of a record.
     pub fn scan_decoded_window(
         &self,
         shard_id: ShardId,
-        start_offset: u64,
+        from: ReplayPosition,
         max_bytes: u64,
         verify_tail: bool,
-    ) -> Result<(Vec<(u64, WriteAheadLogRecord)>, bool, u64), WriteAheadLogError> {
+    ) -> Result<(Vec<(u64, WriteAheadLogRecord)>, bool, ReplayPosition), WriteAheadLogError> {
         self.scan_collect(
             shard_id,
-            start_offset,
+            from.log_id(),
             u64::MAX,
             max_bytes,
             verify_tail,
+            true,
             |log_id, _line, decoded| decoded.map(|record| (log_id, record)),
         )
+        .map(|(records, truncated, resume_at)| {
+            (records, truncated, ReplayPosition::at_record_start(resume_at))
+        })
+    }
+
+    /// Where a replay that already holds everything up to `sequence` starts reading.
+    ///
+    /// The same answer as [`Self::log_id_after_sequence`], carried in the type that says what it
+    /// is: a piece's base is the first byte of that piece's first record, and zero is the first
+    /// byte of the log's.
+    pub fn replay_start_after_sequence(
+        &self,
+        shard_id: ShardId,
+        sequence: u64,
+    ) -> Result<ReplayPosition, WriteAheadLogError> {
+        self.log_id_after_sequence(shard_id, sequence)
+            .map(ReplayPosition::at_record_start)
     }
 
     /// How many records the log holds, without building them.
@@ -1726,11 +1788,20 @@ impl LocalWriteAheadLogStore {
     /// business; refusing to count because the last record is half-written would make a
     /// diagnostic fail exactly when it is most wanted.
     pub fn record_count(&self, shard_id: ShardId) -> Result<usize, WriteAheadLogError> {
-        self.scan_collect(shard_id, 0, u64::MAX, u64::MAX, false, |_, _, _| Some(()))
+        self.scan_collect(shard_id, 0, u64::MAX, u64::MAX, false, false, |_, _, _| {
+            Some(())
+        })
             .map(|(records, _truncated, _resume_at)| records.len())
     }
 
     /// The one walk both scans share, so they cannot drift about what a window contains.
+    ///
+    /// `start_record_aligned` says that `start_offset` is the FIRST BYTE OF A RECORD, which lets
+    /// the walk seek to it instead of reading its way there. Only [`Self::scan_decoded_window`]
+    /// passes it, and only because a [`ReplayPosition`] cannot be built any other way. The
+    /// public scans pass `false` and keep exactly the semantics they have always had: a
+    /// `start_offset` that lands in the middle of a record yields the next whole record after
+    /// it, because the walk reads its way there and compares.
     fn scan_collect<T>(
         &self,
         shard_id: ShardId,
@@ -1738,6 +1809,7 @@ impl LocalWriteAheadLogStore {
         end_offset: u64,
         max_bytes: u64,
         verify_tail: bool,
+        start_record_aligned: bool,
         mut take: impl FnMut(u64, Vec<u8>, Option<WriteAheadLogRecord>) -> Option<T>,
     ) -> Result<(Vec<T>, bool, u64), WriteAheadLogError> {
         let mut inner = self.inner.lock().expect("write-ahead log lock poisoned");
@@ -1815,10 +1887,41 @@ impl LocalWriteAheadLogStore {
             }
             #[cfg(test)]
             WAL_PIECE_BODY_READS.with(|reads| reads.set(reads.get() + 1));
-            let mut file = open_wal_read(path)?;
-            file.seek(SeekFrom::Start(header_len))?;
+            // WHERE IN THE PIECE THE WINDOW STARTS, COMPUTED RATHER THAN WALKED TO.
+            //
+            // A log id is a byte position in the log's whole history and this piece's contents
+            // begin at `base`, so the byte `start_offset` names sits at
+            // `header_len + (start_offset - base)`. That is not an approximation: it is the
+            // identity the loop below maintains for itself on every iteration, and the one
+            // `locate_log_id` already resolves a random-access address with.
+            //
+            // Opening at the header and reading forward until the records reached the window is
+            // what made a WINDOWED replay quadratic. #1917 stopped a window re-reading the
+            // HEADER of every piece behind it by deciding from the piece's name; this is the
+            // piece's CONTENTS, re-read window after window, which that change does not touch
+            // and which a one-piece log -- the shape a rolling log has until it first seals --
+            // shows in its purest form: every window opened the single piece at its header and
+            // read, decoded and discarded everything before its own start. Over W windows the
+            // walk read the window's own bytes W times, once for each window after it, so a log
+            // of L bytes cost about L*(L + window)/(2 * window) rather than L.
+            //
+            // Nothing here changes WHICH records are replayed. The seek lands on the first byte
+            // of the record at `start_offset`, and the `log_id < start_offset` test below still
+            // stands for every position the caller did not name; it is simply never reached for
+            // this piece, because the walk no longer starts behind the window. Only a caller
+            // holding a [`ReplayPosition`] can ask for this, and the only two ways to hold one
+            // are to have been handed it by this walk or to have taken it from
+            // `replay_start_after_sequence` -- both of which are the first byte of a record.
+            let seek_to = if start_record_aligned && start_offset > base {
+                header_len.saturating_add(start_offset - base)
+            } else {
+                header_len
+            };
+            let mut tally = WalReadTally::start();
+            let mut file = open_wal_read(path, &mut tally)?;
+            file.seek(SeekFrom::Start(seek_to))?;
             let mut reader = BufReader::new(file);
-            let mut log_id = base;
+            let mut log_id = base.saturating_add(seek_to.saturating_sub(header_len));
             loop {
                 // Step over a block footer this lands on. The zero-run check below only catches a
                 // boundary that has padding in front of its footer; a block whose records end
@@ -2175,7 +2278,8 @@ impl LocalWriteAheadLogStore {
         // One line at a time. A log is not bounded by memory, so neither this search nor the
         // copy below may hold it: reclaiming a large log otherwise costs a transient allocation
         // the size of the whole file.
-        let mut source = open_wal_read(path.as_path())?;
+        let mut tally = WalReadTally::start();
+        let mut source = open_wal_read(path.as_path(), &mut tally)?;
         source.seek(SeekFrom::Start(header_len))?;
         // Bounded by the cursor below rather than by `take`, because a Take is not seekable and
         // stepping over a block's footer is a seek. the reclaim walk crosses blocks now.
@@ -2300,7 +2404,8 @@ impl LocalWriteAheadLogStore {
             // Copy the retained records byte for byte rather than decoding and re-encoding
             // them. Re-encoding could change a record's length, which would break the offset
             // arithmetic this whole scheme rests on, and it costs a parse per record.
-            let mut source = open_wal_read(path.as_path())?;
+            let mut copy_tally = WalReadTally::start();
+            let mut source = open_wal_read(path.as_path(), &mut copy_tally)?;
             source.seek(SeekFrom::Start(split))?;
             std::io::copy(
                 &mut BufReader::new(source.take(record_end.saturating_sub(split))),
@@ -2466,7 +2571,8 @@ impl LocalWriteAheadLogStore {
         }
         let _ = last_wal_sequence_at(&inner.root, shard_id)?;
         let (_, header_len) = read_wal_base(&path)?;
-        let mut file = open_wal_read(&path)?;
+        let mut tally = WalReadTally::start();
+        let mut file = open_wal_read(&path, &mut tally)?;
         file.seek(SeekFrom::Start(header_len))?;
         let mut reader = BufReader::new(file);
         let mut start_sequence = 0_u64;
@@ -2624,7 +2730,8 @@ fn drop_covered_wal_segments(
 
 /// One byte at `offset`, or None at/past the end of the file.
 fn byte_at(path: &Path, offset: u64) -> Result<Option<u8>, WriteAheadLogError> {
-    let mut file = open_wal_read(path)?;
+    let mut tally = WalReadTally::start();
+    let mut file = open_wal_read(path, &mut tally)?;
     file.seek(SeekFrom::Start(offset))?;
     let mut byte = [0u8; 1];
     match std::io::Read::read(&mut file, &mut byte)? {
@@ -2634,7 +2741,8 @@ fn byte_at(path: &Path, offset: u64) -> Result<Option<u8>, WriteAheadLogError> {
 }
 
 fn read_at(path: &Path, physical: u64, size: u64) -> Result<Vec<u8>, WriteAheadLogError> {
-    let mut file = open_wal_read(path)?;
+    let mut tally = WalReadTally::start();
+    let mut file = open_wal_read(path, &mut tally)?;
     file.seek(SeekFrom::Start(physical))?;
     let mut bytes = vec![0; size as usize];
     let read = file.read(&mut bytes)?;
@@ -3384,9 +3492,10 @@ fn shard_uses_blocks(
     let uses_blocks = if empty {
         true
     } else {
-        let file = open_wal_read(path)?;
+        let mut tally = WalReadTally::start();
+        let mut file = open_wal_read(path, &mut tally)?;
         let len = file.metadata()?.len();
-        last_written_footer(&file, header_len, len)?.is_some()
+        last_written_footer(&mut file, header_len, len)?.is_some()
     };
     inner.block_mode_by_shard.insert(shard_id, uses_blocks);
     Ok(uses_blocks)
@@ -3452,16 +3561,177 @@ thread_local! {
         const { std::cell::Cell::new(0) };
 }
 
-/// Open a piece of the log for reading, and count it.
+/// Bytes this process has pulled off log PIECES, and the read calls that fetched them.
 ///
-/// Every read-side open in this module goes through here. `File::open` on its own is fine and
-/// does the same thing; what this adds is the one place a total can be taken, which is what makes
-/// the per-record residual in `wal_replay_scale` a measurement of the whole operation rather than
-/// a restatement of the rows it audits.
-fn open_wal_read(path: &Path) -> std::io::Result<File> {
+/// The store's own `bytes_read` counts what a scan HANDS BACK -- the records inside the window
+/// the caller asked for. A windowed replay reads a great deal more than it hands back, and none
+/// of it was anybody's row: at 200,000 records a restore read 987,705,371 bytes off one 32.8 MB
+/// log piece while every counter this engine keeps about itself reported the restore flat. A
+/// quantity nothing counts is a quantity nothing can report a regression in.
+///
+/// Process-wide rather than per-store, and deliberately: the primitive is reached from free
+/// functions that hold no store, so charging a store would mean threading one through the whole
+/// read side to buy a number that is already obtainable. The thread-local beside it is what a
+/// single restore wants, because a restore runs on one thread while the process does not.
+static WAL_PIECE_BYTES_READ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+static WAL_PIECE_READS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+thread_local! {
+    static WAL_PIECE_BYTES_READ_HERE: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+    static WAL_PIECE_READS_HERE: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+}
+
+/// Bytes and read calls this PROCESS has made against log pieces since it started.
+pub fn wal_piece_read_counts() -> (u64, u64) {
+    (
+        WAL_PIECE_BYTES_READ.load(AtomicOrdering::Relaxed),
+        WAL_PIECE_READS.load(AtomicOrdering::Relaxed),
+    )
+}
+
+/// Bytes and read calls THIS THREAD has made against log pieces since it started.
+///
+/// A restore runs on one thread; the suite runs many at once. Measuring a restore against the
+/// process counter would read another test's reads as this one's.
+pub fn wal_piece_read_counts_on_this_thread() -> (u64, u64) {
+    (
+        WAL_PIECE_BYTES_READ_HERE.with(|bytes| bytes.get()),
+        WAL_PIECE_READS_HERE.with(|reads| reads.get()),
+    )
+}
+
+/// What one span of reading against log pieces cost, published when it goes out of scope.
+///
+/// Held mutably by the [`CountedWalFile`] it is passed to, so the handle cannot outlive it and a
+/// new read of a piece cannot be written without one to hand over.
+pub(crate) struct WalReadTally {
+    bytes: u64,
+    reads: u64,
+}
+
+impl WalReadTally {
+    fn start() -> Self {
+        Self { bytes: 0, reads: 0 }
+    }
+}
+
+impl Drop for WalReadTally {
+    fn drop(&mut self) {
+        if self.reads == 0 {
+            return;
+        }
+        WAL_PIECE_BYTES_READ.fetch_add(self.bytes, AtomicOrdering::Relaxed);
+        WAL_PIECE_READS.fetch_add(self.reads, AtomicOrdering::Relaxed);
+        WAL_PIECE_BYTES_READ_HERE.with(|bytes| bytes.set(bytes.get() + self.bytes));
+        WAL_PIECE_READS_HERE.with(|reads| reads.set(reads.get() + self.reads));
+    }
+}
+
+/// A readable handle on one piece of a log, which charges every byte the kernel hands it.
+///
+/// This is the only thing [`open_wal_read`] returns, and [`open_wal_read`] is the only way the
+/// read side opens a piece -- so the counting is not a call site anyone has to remember. It is
+/// what makes 957 MB of reading a QUANTITY rather than a residual.
+pub(crate) struct CountedWalFile<'a> {
+    file: File,
+    tally: &'a mut WalReadTally,
+}
+
+impl CountedWalFile<'_> {
+    fn metadata(&self) -> std::io::Result<std::fs::Metadata> {
+        self.file.metadata()
+    }
+
+    /// Exactly `buf.len()` bytes from `at`, charged as one read.
+    ///
+    /// The footer probes used to do this through a `BufReader`, which fills 8 KiB to hand back
+    /// the 32 a footer slot holds. Reading the slot itself is the same answer for 256 times
+    /// fewer bytes, and it is the only shape that can be charged honestly.
+    fn read_exact_at(&mut self, at: u64, buf: &mut [u8]) -> std::io::Result<()> {
+        self.file.seek(SeekFrom::Start(at))?;
+        self.file.read_exact(buf)?;
+        self.tally.bytes += buf.len() as u64;
+        self.tally.reads += 1;
+        Ok(())
+    }
+
+    fn set_len(&self, len: u64) -> std::io::Result<()> {
+        self.file.set_len(len)
+    }
+
+    fn sync_all(&self) -> std::io::Result<()> {
+        self.file.sync_all()
+    }
+}
+
+impl Read for CountedWalFile<'_> {
+    fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+        let read = self.file.read(buf)?;
+        self.tally.bytes += read as u64;
+        self.tally.reads += 1;
+        Ok(read)
+    }
+}
+
+impl Seek for CountedWalFile<'_> {
+    fn seek(&mut self, pos: SeekFrom) -> std::io::Result<u64> {
+        self.file.seek(pos)
+    }
+}
+
+/// Open a piece of the log for reading, and count what comes off it.
+///
+/// Every read-side open in this module goes through here, which is the one place a total can be
+/// taken: it is what makes the per-record residual in `wal_replay_scale` a measurement of the
+/// whole operation rather than a restatement of the rows it audits, and it is what makes the
+/// BYTES a quantity at all. `File::open` on its own is no longer the same thing -- it hands back
+/// a handle that counts nothing -- so the handle this returns is the only readable one, and a
+/// new read of a piece cannot be written without a tally to pass.
+fn open_wal_read<'a>(
+    path: &Path,
+    tally: &'a mut WalReadTally,
+) -> std::io::Result<CountedWalFile<'a>> {
     #[cfg(test)]
     WAL_READ_FILE_OPENS.with(|opens| opens.set(opens.get() + 1));
-    File::open(path)
+    Ok(CountedWalFile {
+        file: File::open(path)?,
+        tally,
+    })
+}
+
+/// Exactly `len` bytes from `at` in a piece, through the one handle the read side uses.
+///
+/// The planted-marker control for the piece counter needs a read whose byte count IT decided,
+/// and the counted handle is private to this module. See
+/// `wal_replay_windows::the_piece_byte_counter_recovers_a_planted_read_exactly`.
+#[cfg(test)]
+pub(crate) fn read_piece_for_test(
+    path: &Path,
+    at: u64,
+    len: usize,
+) -> std::io::Result<Vec<u8>> {
+    let mut tally = WalReadTally::start();
+    let mut file = open_wal_read(path, &mut tally)?;
+    let mut bytes = vec![0u8; len];
+    file.read_exact_at(at, &mut bytes)?;
+    Ok(bytes)
+}
+
+/// Open a piece for the tail repair, which rewrites it in place.
+///
+/// Read-WRITE, and still one of the read side's opens of a piece: it is counted as one, and the
+/// bytes it reads are charged like any other, or the counter would stop seeing this branch the
+/// moment binary framing were turned off.
+fn open_wal_repair<'a>(
+    path: &Path,
+    tally: &'a mut WalReadTally,
+) -> std::io::Result<CountedWalFile<'a>> {
+    #[cfg(test)]
+    WAL_READ_FILE_OPENS.with(|opens| opens.set(opens.get() + 1));
+    Ok(CountedWalFile {
+        file: OpenOptions::new().read(true).write(true).open(path)?,
+        tally,
+    })
 }
 
 /// Open a piece to walk its TAIL for the last sequence it holds.
@@ -3469,10 +3739,13 @@ fn open_wal_read(path: &Path) -> std::io::Result<File> {
 /// The same open as `open_wal_read` under a second name, so the residual has a row for it. One
 /// `last_wal_sequence_in` is two or three of these -- a footer hint, then the walk the hint points
 /// at -- and counting at the call instead of at the open reported one where three happened.
-fn open_wal_tail_scan(path: &Path) -> std::io::Result<File> {
+fn open_wal_tail_scan<'a>(
+    path: &Path,
+    tally: &'a mut WalReadTally,
+) -> std::io::Result<CountedWalFile<'a>> {
     #[cfg(test)]
     WAL_PIECE_TAIL_READS.with(|reads| reads.set(reads.get() + 1));
-    open_wal_read(path)
+    open_wal_read(path, tally)
 }
 
 /// How many times an append asks the FILESYSTEM for the active piece's length, and how many
@@ -3949,7 +4222,8 @@ fn read_wal_base(path: &Path) -> Result<(u64, u64), WriteAheadLogError> {
     if !path.exists() {
         return Ok((0, 0));
     }
-    let mut reader = BufReader::new(open_wal_read(path)?);
+    let mut tally = WalReadTally::start();
+    let mut reader = BufReader::new(open_wal_read(path, &mut tally)?);
     let mut line = Vec::new();
     let read = reader.read_until(b'\n', &mut line)?;
     if read == 0 {
@@ -4160,7 +4434,8 @@ fn first_wal_sequence_in(path: &Path) -> Result<Option<u64>, WriteAheadLogError>
         return Ok(None);
     }
     let (_, header_len) = read_wal_base(path)?;
-    let file = open_wal_read(path)?;
+    let mut tally = WalReadTally::start();
+    let file = open_wal_read(path, &mut tally)?;
     let len = file.metadata()?.len();
     if len <= header_len {
         return Ok(None);
@@ -4182,7 +4457,8 @@ fn first_wal_sequence_in(path: &Path) -> Result<Option<u64>, WriteAheadLogError>
 
 fn last_wal_sequence_forward(path: &Path) -> Result<(u64, u64), WriteAheadLogError> {
     let (_, header_len) = read_wal_base(path)?;
-    let file = open_wal_tail_scan(path)?;
+    let mut tally = WalReadTally::start();
+    let file = open_wal_tail_scan(path, &mut tally)?;
     let len = file.metadata()?.len();
     if len <= header_len {
         return Ok((0, len.min(header_len)));
@@ -4369,7 +4645,7 @@ fn decode_block_footer(slot: &[u8]) -> Option<crate::storage_descriptor::BlockFo
 /// the file -- each slot is at a computed offset, so this is a handful of small reads whatever
 /// the log's size, and it stops at the first one that was written.
 fn last_written_footer(
-    file: &File,
+    file: &mut CountedWalFile<'_>,
     header_len: u64,
     file_len: u64,
 ) -> Result<Option<(u64, crate::storage_descriptor::BlockFooter)>, WriteAheadLogError> {
@@ -4382,9 +4658,7 @@ fn last_written_footer(
         let at = header_len + block_footer_at(index);
         if at + WAL_BLOCK_FOOTER_BYTES <= file_len {
             let mut slot = vec![0u8; WAL_BLOCK_FOOTER_BYTES as usize];
-            let mut reader = BufReader::new(file.try_clone()?);
-            reader.seek(SeekFrom::Start(at))?;
-            if reader.read_exact(&mut slot).is_ok() {
+            if file.read_exact_at(at, &mut slot).is_ok() {
                 if let Some(footer) = decode_block_footer(&slot) {
                     return Ok(Some((index, footer)));
                 }
@@ -4403,9 +4677,10 @@ fn last_written_footer(
 /// block is still filling.
 fn footer_tail_hint(path: &Path) -> Result<Option<(u64, u64)>, WriteAheadLogError> {
     let (_, header_len) = read_wal_base(path)?;
-    let file = open_wal_tail_scan(path)?;
+    let mut tally = WalReadTally::start();
+    let mut file = open_wal_tail_scan(path, &mut tally)?;
     let file_len = file.metadata()?.len();
-    let Some((index, footer)) = last_written_footer(&file, header_len, file_len)? else {
+    let Some((index, footer)) = last_written_footer(&mut file, header_len, file_len)? else {
         return Ok(None);
     };
     Ok(Some((
@@ -4420,7 +4695,8 @@ fn last_wal_sequence_forward_from(
     from: u64,
     known_sequence: u64,
 ) -> Result<(u64, u64), WriteAheadLogError> {
-    let file = open_wal_tail_scan(path)?;
+    let mut tally = WalReadTally::start();
+    let file = open_wal_tail_scan(path, &mut tally)?;
     let len = file.metadata()?.len();
     if from >= len {
         return Ok((known_sequence, from.min(len)));
@@ -4496,11 +4772,9 @@ fn last_wal_sequence_in(path: &Path) -> Result<(u64, u64), WriteAheadLogError> {
     // read side's opens of a piece, and counted as one, or the residual would stop seeing this
     // branch the moment binary framing were turned off.
     #[cfg(test)]
-    {
-        WAL_PIECE_TAIL_READS.with(|reads| reads.set(reads.get() + 1));
-        WAL_READ_FILE_OPENS.with(|opens| opens.set(opens.get() + 1));
-    }
-    let file = OpenOptions::new().read(true).write(true).open(path)?;
+    WAL_PIECE_TAIL_READS.with(|reads| reads.set(reads.get() + 1));
+    let mut tally = WalReadTally::start();
+    let mut file = open_wal_repair(path, &mut tally)?;
     let len = file.metadata()?.len();
     if len <= header_len {
         return Ok((0, len.min(header_len)));
@@ -4511,10 +4785,8 @@ fn last_wal_sequence_in(path: &Path) -> Result<(u64, u64), WriteAheadLogError> {
     let mut window = 64 * 1024u64;
     let (line, good_offset, tail_is_reservation) = loop {
         let window_start = header_len.max(len.saturating_sub(window));
-        let mut reader = BufReader::new(file.try_clone()?);
-        reader.seek(SeekFrom::Start(window_start))?;
         let mut data = vec![0u8; (len - window_start) as usize];
-        reader.read_exact(&mut data)?;
+        file.read_exact_at(window_start, &mut data)?;
 
         // Everything after the final newline was never finished being written.
         let Some(last_newline) = data.iter().rposition(|byte| *byte == b'\n') else {
@@ -5368,9 +5640,10 @@ mod tests {
              {active_len}"
         );
 
-        let file = File::open(&path).unwrap();
+        let mut tally = WalReadTally::start();
+        let mut file = open_wal_read(&path, &mut tally).unwrap();
         let (_, header_len) = read_wal_base(&path).unwrap();
-        let footer = last_written_footer(&file, header_len, active_len).unwrap();
+        let footer = last_written_footer(&mut file, header_len, active_len).unwrap();
         assert!(
             footer.is_some(),
             "a piece the log rolled into starts empty, so it is written in blocks and its first \

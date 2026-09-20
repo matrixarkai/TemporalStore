@@ -76,6 +76,8 @@ pub mod wal;
 /// What an append costs per record and what a replay costs per log -- tests only.
 #[cfg(test)]
 mod wal_replay_scale;
+/// What a WINDOWED replay reads against the log it replays -- tests only.
+mod wal_replay_windows;
 mod wal_scale;
 mod wal_proto;
 pub mod record_framing;

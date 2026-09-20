@@ -132,7 +132,9 @@ struct ReplayCost {
 
 fn replay_cost(store: &LocalWriteAheadLogStore) -> ReplayCost {
     reset_walk_counters();
-    let start_at = store.log_id_after_sequence(1, 0).unwrap_or(0);
+    let start_at = store
+        .replay_start_after_sequence(1, 0)
+        .unwrap_or_else(|_| crate::wal::ReplayPosition::at_start_of_log());
     let mut window_start = start_at;
     let mut verify_tail = true;
     let mut windows = 0u64;

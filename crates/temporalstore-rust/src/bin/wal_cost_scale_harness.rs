@@ -76,7 +76,9 @@ fn replay_phase(root: &PathBuf) {
     let store = LocalWriteAheadLogStore::new(root);
     // The engine starts past the pieces that hold nothing after its watermark. A watermark of
     // zero means replay everything, which is the restart this measures.
-    let start_at = store.log_id_after_sequence(1, 0).unwrap_or(0);
+    let start_at = store
+        .replay_start_after_sequence(1, 0)
+        .unwrap_or_else(|_| temporalstore_rust::wal::ReplayPosition::at_start_of_log());
     let mut window_start = start_at;
     let mut verify_tail = true;
     let mut windows = 0u64;
