@@ -108,6 +108,7 @@ mod promote_precondition;
 mod alloc_class_scale;
 mod evict_scale;
 mod cache_invalidation_cost;
+mod wal_reclaim_frame_boundary;
 
 
 /// The token-bucket arithmetic with explicit clocks -- the whole model is this pure function,

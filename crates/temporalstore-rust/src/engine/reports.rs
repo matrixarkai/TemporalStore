@@ -2979,9 +2979,25 @@ pub struct CatalogDumpReclaimReport {
     /// nothing to give from one that was rewritten for nothing -- they report identical bytes.
     #[serde(default)]
     pub index_log_rewrite_skipped: bool,
+    /// The index-log sweep returned an error and every field above is a default, not a reading.
+    ///
+    /// Same reason as `index_log_rewrite_skipped` one step further out: without it a sweep that
+    /// FAILED and a sweep that had nothing to do are byte-identical, because the `Result` is
+    /// dropped with `.ok()` and each field then read through `unwrap_or_default()`.
+    #[serde(default)]
+    pub index_log_sweep_failed: bool,
     pub wal_records_removed: usize,
     pub wal_bytes_before: u64,
     pub wal_bytes_after: u64,
+    /// The write-ahead-log sweep returned an error and the three fields above are defaults.
+    ///
+    /// This is the field that makes the difference sayable. An errored sweep and an empty one
+    /// both report `(0, 0, 0)`, so a zero release could mean the log had nothing to give, or
+    /// that the reclaim refused the log and the refusal was discarded -- and the embedded
+    /// proxy's reclaim loop, which is the only thing bounding that store's logs, prints exactly
+    /// this report.
+    #[serde(default)]
+    pub wal_sweep_failed: bool,
     /// The block-retention floor in force during the WAL sweep (`None` = unconstrained): the
     /// lowest WAL sequence a live block-in-WAL registration still depends on.
     pub wal_retention_floor: Option<u64>,

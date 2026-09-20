@@ -2220,9 +2220,13 @@ impl LocalWriteAheadLogStore {
             if read == 0 {
                 break;
             }
-            let trimmed = line
-                .strip_suffix(b"\n")
-                .unwrap_or(line.as_slice());
+            // The delimiter comes off a text record and NOTHING comes off a binary frame, which
+            // ends where its declared length ends. Stripping a trailing `0x0A` off a frame takes
+            // a byte of the payload, and `decode_wal_line` below then refuses the whole sweep
+            // with `binary record is incomplete` -- so a log whose records happen to end in that
+            // byte reclaimed nothing at all, and the caller's `.ok()` rendered it as success.
+            // `info_at`'s walk already applied this rule; this one did not.
+            let trimmed = crate::log_framing::record_body(line.as_slice());
             if !trimmed.iter().all(|byte| byte.is_ascii_whitespace()) {
                 records_before += 1;
                 if split.is_some() {

@@ -71,20 +71,29 @@
 //! oldest log-resident pages, taken on the write path after the ack. It bounds a set; it does not
 //! slow, refuse or report anything.
 //!
-//! THE WRITE-AHEAD LOG HALF RELEASES NOTHING, AND SAYS SO IN THE SAME WORDS AS SUCCESS. At both
-//! corpus sizes the dump's WAL reclaim reports `0 -> 0 bytes, 0 records` against a log holding
-//! 48 records in 524,288 bytes at 20,000 and 408 records in 3,145,728 bytes at 200,000. The
-//! control arm, a log written one command at a time, releases 261,933 bytes in 1,199 records off
-//! the same call. Underneath the zero, `gc_before_sequence` returns
-//! `Corruption("binary record is incomplete")`, and `engine/persistence.rs` takes it with `.ok()`
+//! THE WRITE-AHEAD LOG HALF USED TO RELEASE NOTHING, AND SAID SO IN THE SAME WORDS AS SUCCESS.
+//! At both corpus sizes the dump's WAL reclaim reported `0 -> 0 bytes, 0 records` against a log
+//! holding 48 records in 524,288 bytes at 20,000 and 408 records in 3,145,728 bytes at 200,000,
+//! while a control arm written one command at a time released 261,933 bytes in 1,199 records off
+//! the same call. Underneath the zero, `gc_before_sequence` returned
+//! `Corruption("binary record is incomplete")`, and `engine/persistence.rs` took it with `.ok()`
 //! and then `.unwrap_or_default()`, so an errored reclaim and a reclaim with nothing to do
-//! produce a byte-identical `CatalogDumpReclaimReport`. The embedded proxy's reclaim loop is the
-//! only thing keeping that store's logs bounded and it prints exactly that report. The
-//! single-command control arm reclaims the same log normally at every size tried, so a non-zero
-//! WAL release is something this fixture can express. THE TRIGGER IS NOT CLAIMED HERE: it is not
-//! record count alone (three batch records reclaim, four do not, but two written as 500+100 also
-//! do not), not total bytes, and not a newline in the payload -- all three were driven and none
-//! of them decides it.
+//! produced a byte-identical `CatalogDumpReclaimReport`.
+//!
+//! THE TRIGGER WAS THE PAYLOAD'S LAST BYTE, and it is fixed. A record is written as a binary
+//! frame, which carries no delimiter and ends where its declared length ends; the reclaim walk
+//! ran `strip_suffix(b"\n")` over it anyway, so a payload whose final byte was `0x0A` lost it,
+//! read one byte short of what the frame declares, and was refused as a torn frame. None of the
+//! three candidates this module first drove could see it -- it is not the record count, not the
+//! bytes in the log, and not a newline INSIDE the payload, which lands in the middle and changes
+//! nothing. `wal_reclaim_frame_boundary` holds the decision, the two-sided fixture and the
+//! element-by-element comparison; this module's subject arm now releases 254,342 bytes in 8
+//! records where it released nothing, and asserts that rather than the zero.
+//!
+//! The `.ok()` stays -- a failed sweep must not fail a dump that has already completed -- but
+//! `CatalogDumpReclaimReport` now carries `wal_sweep_failed`, so the three zeros of a refusal
+//! are no longer the three zeros of an empty log. The embedded proxy's reclaim loop is the only
+//! thing keeping that store's logs bounded and it prints exactly that report.
 //!
 //! DIRECTION. A dump that releases too much is silent data loss and a dump that releases too
 //! little is merely slow, so the strong form is asserted: after a dump, a reclaim and a reload
@@ -328,6 +337,9 @@ struct DumpAtSize {
     pieces_after: usize,
     wal_released: u64,
     wal_records_removed: usize,
+    /// Whether the sweep errored. Its `Result` is dropped with `.ok()`, so without this the
+    /// three fields above are defaults that read exactly like a reading.
+    wal_sweep_failed: bool,
 }
 
 impl DumpAtSize {
@@ -419,6 +431,7 @@ fn measure_dump(dir: &Path, corpus: usize, suffix: usize) -> DumpAtSize {
         pieces_after: store.piece_count(SHARD),
         wal_released: report.wal_bytes_before.saturating_sub(report.wal_bytes_after),
         wal_records_removed: report.wal_records_removed,
+        wal_sweep_failed: report.wal_sweep_failed,
     }
 }
 
@@ -749,45 +762,54 @@ fn a_dump_reports_the_same_write_ahead_log_release_whether_or_not_one_happened()
          without it the subject arm's zero says nothing",
         control_report.wal_records_removed
     );
-    assert_eq!(
-        (batched.wal_released, batched.wal_records_removed),
-        (0, 0),
-        "SUBJECT: the dump reported releasing {} B in {} records from a log holding {} records in \
-         {} bytes. If this now reports a release, the reclaim underneath has started working and \
-         this module's header needs rewriting rather than this assertion loosening",
+    // SUBJECT. This arm reported 0 B in 0 records when it was written, and the assertion here
+    // said so. The cause was found -- the reclaim walk stripped a trailing delimiter off a
+    // binary frame, which declares its own length, so a payload ending in `0x0A` read one byte
+    // short and the whole sweep was refused as a torn frame. See `wal_reclaim_frame_boundary`.
+    // Inverted rather than loosened, per the note this assertion used to carry: the arm still
+    // has to say something, and what it says now is that the batch path releases.
+    assert!(
+        batched.wal_released > 0 && batched.wal_records_removed > 0,
+        "SUBJECT: the dump released {} B in {} records from a log holding {} records in {} bytes. \
+         A batch-written log reclaims now; a zero here is that defect returning, not a log with \
+         nothing to give -- the fixture assertions above have already shown it holds records",
         batched.wal_released,
         batched.wal_records_removed,
         batched.wal_records_before,
         batched.wal_bytes_on_disk_before
     );
 
-    // THE ONE THAT DOES NOT DEPEND ON KNOWING WHY. A store holding a log and a store holding none
-    // hand back the same three numbers, because every field is read through `unwrap_or_default()`
-    // after the sweep's `Result` was dropped with `.ok()`.
+    // THE ONE THAT DOES NOT DEPEND ON KNOWING WHY, now the other way round. A store holding a
+    // log and a store holding none used to hand back the same three numbers. They must not.
     assert_eq!(
         empty_wal_records, 0,
         "APPARATUS: the empty arm's log held {empty_wal_records} records, so it is not the \
          nothing-to-do case this comparison needs"
     );
-    assert_eq!(
-        (
-            batched.wal_released,
-            batched.wal_records_removed,
-            batched.wal_bytes_on_disk_before > 0
-        ),
-        (
-            empty_report
-                .wal_bytes_before
-                .saturating_sub(empty_report.wal_bytes_after),
-            empty_report.wal_records_removed,
-            true
-        ),
+    let empty_released = empty_report
+        .wal_bytes_before
+        .saturating_sub(empty_report.wal_bytes_after);
+    assert_ne!(
+        (batched.wal_released, batched.wal_records_removed),
+        (empty_released, empty_report.wal_records_removed),
         "a store holding {} records in {} bytes and a store holding no log at all report the same \
-         release. An errored sweep and a sweep with nothing to do are the same \
-         `CatalogDumpReclaimReport`, so nothing downstream -- the proxy's reclaim loop included -- \
-         can tell them apart",
+         release again",
         batched.wal_records_before,
         batched.wal_bytes_on_disk_before
+    );
+
+    // And the term that says WHICH of the two a zero is, for the cases where a zero is still the
+    // answer. The sweep's `Result` is still dropped with `.ok()` -- a failed sweep must not fail
+    // a dump that has already completed -- so without this an error is three zeros again.
+    assert!(
+        !batched.wal_sweep_failed,
+        "SUBJECT: the sweep reported a failure, so its three zeros would be a refusal rendered as \
+         success were the term not there to say so"
+    );
+    assert!(
+        !empty_report.wal_sweep_failed,
+        "EMPTY: an empty shard's sweep reports a failure, so the term is reading something other \
+         than the sweep's own outcome"
     );
 }
 

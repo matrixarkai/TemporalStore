@@ -664,6 +664,7 @@ impl TemporalEngine {
                 .as_ref()
                 .map(|report| report.rewrite_skipped)
                 .unwrap_or_default(),
+            index_log_sweep_failed: index_gc.is_none(),
             wal_records_removed: wal_gc
                 .as_ref()
                 .map(|report| report.records_removed)
@@ -676,6 +677,11 @@ impl TemporalEngine {
                 .as_ref()
                 .map(|report| report.bytes_after)
                 .unwrap_or_default(),
+            // The `.ok()` above is kept -- a failed sweep must not fail the dump, which has
+            // already completed and is what bounds the index log. What changes is that the
+            // failure is now SAID rather than rendered as three zeros indistinguishable from an
+            // empty log.
+            wal_sweep_failed: wal_gc.is_none(),
             wal_retention_floor,
         })
     }

@@ -1029,6 +1029,27 @@ mod tests {
     }
 }
 
+/// The bytes of a record as framed, minus only a delimiter that IS one.
+///
+/// A walker holding what [`read_raw_record`] handed it wants the record without its trailing
+/// newline: the blank-line test and [`decode_line`] both want the body. For a text record the
+/// newline is the delimiter and comes off. For a binary frame there is no delimiter at all --
+/// the frame declares its own length -- so a trailing `0x0A` is the last byte of the PAYLOAD,
+/// and taking it leaves the frame one byte shorter than it says it is. `next_frame` then reads
+/// `bytes.len() < header_len + declared_len`, calls it a torn tail and returns `None`, and
+/// `decode_line` turns that into `binary record is incomplete`: a record that is entirely intact
+/// on disk, refused because the reader damaged it on the way in.
+///
+/// Lives here rather than at each walker for the reason [`read_raw_record`] does: a second copy
+/// of the rule would be free to drift from this one, and one that did cost a reclaim that swept
+/// nothing for every log whose records happen to end in that byte.
+pub(crate) fn record_body(raw: &[u8]) -> &[u8] {
+    if raw.first() == Some(&FRAME_MAGIC_V3) {
+        return raw;
+    }
+    strip_trailing_newline(raw)
+}
+
 /// Read one record's bytes AS FRAMED, or `None` at the end of the records.
 ///
 /// The readers below all used `read_until(b'\n')`, which is only correct while every record is
