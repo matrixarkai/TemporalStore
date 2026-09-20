@@ -101,6 +101,7 @@ mod index_log_replay_reach;
 mod round_scale;
 mod round_stage_cost;
 mod round_backlog_cost;
+mod round_walk_scope;
 mod index_bytes_per_key;
 mod dump_scale;
 mod dump_release_scale;
