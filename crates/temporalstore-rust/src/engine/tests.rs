@@ -103,6 +103,7 @@ mod index_bytes_per_key;
 mod dump_scale;
 mod dump_release_scale;
 mod restore_scale;
+mod restore_large_scale;
 mod promote_precondition;
 mod alloc_class_scale;
 
