@@ -425,11 +425,57 @@ fn a_block_id_that_does_not_fit_the_field_saturates_rather_than_wrapping() {
     }
 
     // The setter is the second write path into the same field and has to agree with the first.
+    //
+    // THE VALUE IS CHOSEN SO THE TWO ANSWERS DIFFER. `u64::MAX` cannot test this: its low 32 bits
+    // ARE `u32::MAX`, so truncation and saturation agree on it and a setter written `as u32`
+    // passes. A mutation run scored exactly that -- the setter truncating survived every test
+    // here -- and this is the value that kills it.
+    const OVER: u64 = (1u64 << 33) + 5;
+    assert_ne!(
+        u64::from(OVER as u32),
+        u64::from(u32::MAX),
+        "the probe value must distinguish truncation from saturation, or this test cannot fail"
+    );
     let mut address = BlockAddress::from_parts(1, 0, 64, None, None, None, None);
-    address.set_block_id(Some(u64::MAX));
-    assert_eq!(Some(u64::from(u32::MAX)), address.block_id(), "the setter must saturate too");
+    address.set_block_id(Some(OVER));
+    assert_eq!(
+        Some(u64::from(u32::MAX)),
+        address.block_id(),
+        "the setter must saturate too; it answered with the low 32 bits"
+    );
     address.set_block_id(None);
     assert_eq!(None, address.block_id(), "clearing the field must still clear it");
+
+    // And the constructor, on the same discriminating value.
+    let built = BlockAddress::from_parts(1, 0, 64, Some(OVER), None, None, None);
+    assert_eq!(Some(u64::from(u32::MAX)), built.block_id(), "the constructor must saturate");
+}
+
+/// `set_length` IS A WRITE PATH, and a setter that quietly drops its write is invisible to every
+/// test that only ever reads a length back out of a constructor.
+///
+/// The slab inspector is its one production caller -- it walks a slab and stamps each record's
+/// framed length onto the address it reports -- so a no-op here makes an inspection report every
+/// record as zero-length. A mutation run found this uncovered.
+#[test]
+fn setting_a_length_after_the_fact_writes_it_and_saturates_it() {
+    let mut address = BlockAddress::from_parts(1, 0, 0, None, None, None, None);
+    assert_eq!(0, address.length(), "it starts at the length it was built with");
+
+    address.set_length(4_096);
+    assert_eq!(4_096, address.length(), "the setter must actually write");
+
+    address.set_length(17);
+    assert_eq!(17, address.length(), "and must overwrite what was there");
+
+    // The same discriminating value as above: low bits that are not the saturation value.
+    const OVER: u64 = (1u64 << 33) + 5;
+    address.set_length(OVER);
+    assert_eq!(
+        u64::from(u32::MAX),
+        address.length(),
+        "the setter must saturate, not keep the low 32 bits"
+    );
 }
 
 /// THE STORED FORM DID NOT MOVE.
