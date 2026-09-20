@@ -1079,8 +1079,19 @@ fn the_index_fold_writes_the_shard_image_outside_the_engine_lock() {
 /// that is a census of records rather than a comparison of costs, so the ordinary gate runs it.
 /// The walk starts at the first log piece that could hold anything past the checkpoint and
 /// decodes every record in that piece -- integrity envelope and all -- before the sequence test
-/// drops the ones already durable. A shard that dumps often has a short tail every time, and
-/// pays for the whole piece every time.
+/// drops the ones already durable. So a replay always decodes some records it then throws away,
+/// and the question this guard exists to answer is HOW MANY.
+///
+/// It used to answer "most of them", and that was true for one reason: the log was ONE PIECE. The
+/// engine's batch append never asked whether the piece was full, so `log_id_after_sequence` had
+/// nothing to skip, every replay started at log id zero, and the waste was the whole prefix. With
+/// the batch path rolling, the waste is bounded by the ONE piece the checkpoint lands in, and
+/// that is what is asserted now.
+///
+/// The two claims are opposites, so this is a retarget and not a loosening: the old form said a
+/// nine times shorter tail is NOT a cheaper replay, and the new form says it is -- with the
+/// leftover waste asserted non-zero first, because a bound on a quantity that had become zero
+/// would pass while measuring nothing.
 #[test]
 fn the_replay_decodes_records_the_checkpoint_already_covers() {
     let light = measure_with(SMALL, NARROW, 1, SMALL * 9 / 10);
@@ -1109,21 +1120,34 @@ fn the_replay_decodes_records_the_checkpoint_already_covers() {
         "both arms must have recovered the whole key space"
     );
 
-    // HALF ONE: at a short tail, most of what the walk decodes is already durable.
+    // NOT VACUOUS, SECOND: there is still waste to bound. A replay that dropped nothing would
+    // satisfy every bound below while measuring nothing -- which is the dangerous way for a
+    // retargeted guard to pass.
     assert!(
-        light.cost.records_behind_checkpoint >= light.cost.records_decoded * 3 / 4,
-        "at a short tail most of what the walk decodes must already be covered by the \
-         checkpoint: {} of {} records",
+        light.cost.records_behind_checkpoint > 0 && heavy.cost.records_behind_checkpoint > 0,
+        "both arms must still decode records the checkpoint covers, or the quantity being \
+         bounded is zero and the bounds are vacuous: {} and {}",
         light.cost.records_behind_checkpoint,
-        light.cost.records_decoded,
+        heavy.cost.records_behind_checkpoint,
     );
 
-    // HALF TWO: and the walk decodes about the same number either way, which is why a nine times
-    // shorter tail is not a nine times cheaper replay.
+    // HALF ONE: the waste no longer grows when the tail SHRINKS. A one-piece log made a short
+    // tail decode the whole prefix, so the light arm wasted more than the heavy one; bounded by a
+    // piece, it wastes no more.
     assert!(
-        light.cost.records_decoded >= heavy.cost.records_decoded * 3 / 4,
-        "the walk must decode about the same number of records either way: {} against {}",
-        light.cost.records_decoded,
+        light.cost.records_behind_checkpoint <= heavy.cost.records_behind_checkpoint,
+        "a nine times SHORTER tail must not decode MORE already-durable records than a long \
+         one: {} against {}",
+        light.cost.records_behind_checkpoint,
+        heavy.cost.records_behind_checkpoint,
+    );
+
+    // HALF TWO: and what the walk decodes now tracks the TAIL rather than the log, which is the
+    // whole of what rolling buys a replay.
+    assert!(
+        heavy.cost.records_decoded >= light.cost.records_decoded * 3,
+        "a nine times longer tail must cost a materially longer walk: {} records against {}",
         heavy.cost.records_decoded,
+        light.cost.records_decoded,
     );
 }

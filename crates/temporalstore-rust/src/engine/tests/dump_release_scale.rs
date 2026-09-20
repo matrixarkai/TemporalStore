@@ -322,6 +322,14 @@ struct DumpAtSize {
     residual_bytes: i64,
     base_index_bytes: u64,
     barriers: u64,
+    /// Pieces the log was in when the dump started.
+    ///
+    /// A reclaim unlinks whole pieces below its floor and fsyncs the directory entry once for the
+    /// unlink; a log in ONE piece has no whole piece to unlink and never takes that barrier. Until
+    /// the batch append started rolling, every log here was one piece, so the barrier count could
+    /// be compared raw. It is the condition, not the barrier, that is recorded -- `sync_parent_dir`
+    /// records every directory fsync under one name.
+    wal_pieces_before: usize,
     dir_listings: u64,
     piece_paths: u64,
     /// FIXTURE.
@@ -385,6 +393,14 @@ fn measure_dump(dir: &Path, corpus: usize, suffix: usize) -> DumpAtSize {
     let wal_info = wal.info(SHARD).ok();
     let wal_records_before = wal_info.as_ref().map(|info| info.records).unwrap_or(0);
     let wal_bytes_on_disk_before = wal_info.as_ref().map(|info| info.length_bytes).unwrap_or(0);
+    // Pieces of the WAL, not of the index log: `store.piece_count` above counts the index log's.
+    // Read from the directory the log's own path sits in, so it counts what is there rather than
+    // what a report says is there.
+    let wal_pieces_before = wal_info
+        .as_ref()
+        .and_then(|info| info.path.parent())
+        .map(|root| crate::wal::wal_piece_extents_for_test(root, SHARD).len())
+        .unwrap_or(0);
     let tree_before = tree_snapshot(dir);
 
     crate::index_log::probe::reset();
@@ -416,6 +432,7 @@ fn measure_dump(dir: &Path, corpus: usize, suffix: usize) -> DumpAtSize {
             .map(|meta| meta.len())
             .unwrap_or(0),
         barriers,
+        wal_pieces_before,
         dir_listings,
         piece_paths,
         pieces_before,
@@ -539,6 +556,19 @@ fn what_a_dump_costs_and_releases_at_two_corpus_sizes() {
     let (small_fixed, large_fixed) = (&fixed[0], &fixed[1]);
     let (small_proportional, large_proportional) = (&proportional[0], &proportional[1]);
 
+    // THE CORRECTION BELOW MUST BE ABOUT SOMETHING. If no arm's log had rolled, the barrier
+    // subtraction is zero on both sides of every comparison and this test would be asserting the
+    // same thing it asserted before while appearing to account for a new term.
+    assert!(
+        [small_fixed, large_fixed, small_proportional, large_proportional]
+            .iter()
+            .any(|measured| measured.wal_pieces_before > 1),
+        "no arm's log was in more than one piece, so the reclaim never unlinks and the barrier \
+         correction below is vacuous: {:?}",
+        [small_fixed, large_fixed, small_proportional, large_proportional]
+            .map(|measured| measured.wal_pieces_before)
+    );
+
     // ----------------------------------------------------------------- the independent residual
     for measured in [small_fixed, large_fixed, small_proportional, large_proportional] {
         assert_eq!(
@@ -558,10 +588,32 @@ fn what_a_dump_costs_and_releases_at_two_corpus_sizes() {
         (small_fixed, large_fixed, "fixed"),
         (small_proportional, large_proportional, "proportional"),
     ] {
+        // FLAT, with the ONE term this engine's segmentation adds named and subtracted.
+        //
+        // A reclaim that unlinks whole pieces fsyncs the directory entry once for the unlink. A
+        // log in one piece has nothing to unlink and never pays it, so a corpus large enough to
+        // have ROLLED takes exactly one more barrier than one that did not -- measured as
+        // `engine_wal_dir` 2 -> 3, with `wal_seal_outgoing_piece` at zero on every arm.
+        //
+        // That is a STEP, taken once per reclaim pass, not growth: it does not scale with the
+        // corpus or with the pieces unlinked. Subtracting it by the CONDITION that produces it
+        // keeps the claim -- a dump's barriers do not grow with the corpus -- exactly as strong as
+        // it was, and asserting the condition occurs somewhere keeps the subtraction from being
+        // `0 == 0`.
+        let unlink_barrier = |measured: &DumpAtSize| u64::from(measured.wal_pieces_before > 1);
+        let small_own = small.barriers - unlink_barrier(small);
+        let large_own = large.barriers - unlink_barrier(large);
         assert_eq!(
-            small.barriers, large.barriers,
-            "FLAT: a dump took {} durability barriers at {} records and {} at {} ({regime} regime)",
-            small.barriers, small.corpus, large.barriers, large.corpus
+            small_own, large_own,
+            "FLAT: a dump took {small_own} durability barriers at {} records and {large_own} at \
+             {} ({regime} regime), after subtracting the reclaim's directory fsync from the arm \
+             whose log had pieces to unlink -- raw {} and {}, over logs in {} and {} piece(s)",
+            small.corpus,
+            large.corpus,
+            small.barriers,
+            large.barriers,
+            small.wal_pieces_before,
+            large.wal_pieces_before
         );
         assert_eq!(
             small.dir_listings, large.dir_listings,

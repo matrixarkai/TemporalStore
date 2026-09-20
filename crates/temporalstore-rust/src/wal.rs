@@ -1356,6 +1356,17 @@ impl LocalWriteAheadLogStore {
     ) -> Result<WriteAheadLogRecord, WriteAheadLogError> {
         let mut inner = self.inner.lock().expect("write-ahead log lock poisoned");
         let _append_lock = WalAppendLock::acquire(&mut inner, shard_id)?;
+        // Start a piece if a crash left none, exactly as every other append entry point does.
+        // Without it the record creates the file with no base header, so it reads as starting at
+        // log id ZERO -- an address the sealed pieces already own, and two records answering to
+        // one log id resolve to whichever the walk reaches first.
+        //
+        // This path could skip it for as long as it never rolled: a log that is always one piece
+        // has no sealed pieces to collide with, so zero was always free. The roll below is what
+        // makes sealed pieces exist here, and it is what makes this line load-bearing. The two
+        // belong in the same change for that reason: adding the roll alone converts a crash
+        // between the rename and the next batch into a duplicated address.
+        ensure_active_wal_segment(&mut inner, shard_id)?;
         let (last_sequence, _on_disk_len) = resolve_last_sequence_for_append(&mut inner, shard_id, self.flat_append())?;
         let seq = last_sequence.saturating_add(1);
         let record = WriteAheadLogRecord {
@@ -1375,6 +1386,27 @@ impl LocalWriteAheadLogStore {
         let report = append_record_locked(&mut inner, &record, sync, None)?;
         inner.stats.last_sequence = report.current_sequence;
         inner.last_sequence_by_shard.insert(shard_id, seq);
+        // Roll AFTER the record, never before it and never inside it. A batch written this way
+        // IS one record -- that is the whole point of the path -- so there is no inside to roll
+        // in: the frame is written by one call and a torn frame was never a record. Rolling
+        // BEFORE would be safe for atomicity too and is still wrong, because the decision it
+        // takes is whether the piece the LAST record filled is full, and asking that before
+        // this record lands seals a piece one record early and leaves the threshold measuring
+        // the wrong thing.
+        //
+        // Until now this path asked nothing. It is the path the engine takes for every batch
+        // that produced outcomes -- `wal_data_only_enabled` defaults ON -- so segmentation, and
+        // with it reclaim-by-unlink and every walk that decides what to read from a piece's
+        // NAME, stopped applying to the writer that writes the most. Measured: 200,000 records
+        // left one 32,768,000-byte piece where rolling makes about 125.
+        let rolled = roll_wal_segment_if_due(&mut inner, shard_id, Some(report.persistent_bytes))?;
+        if !rolled {
+            // After a roll the piece being written is new and its length was recorded by the
+            // roll; the length this record left behind belongs to the piece just sealed.
+            inner
+                .verified_len_by_shard
+                .insert(shard_id, report.persistent_bytes);
+        }
         Ok(record)
     }
 
