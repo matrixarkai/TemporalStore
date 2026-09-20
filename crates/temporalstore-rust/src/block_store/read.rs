@@ -14,7 +14,7 @@ impl BlockStore {
         let read = LocalSlabBackend::new(&inner.root).read_range(
             address.block_slab_id,
             address.offset,
-            address.length,
+            address.length(),
         )?;
         // Charged before the decode, not after. A read that reached the disk cost the disk
         // whether or not the record on it decodes, and the old order left a failed decode

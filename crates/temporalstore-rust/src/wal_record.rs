@@ -265,7 +265,7 @@ mod tests {
         let address = block_address_from_item(4096, 512, &item);
         assert!(is_wal_resident(address.block_slab_id));
         assert_eq!(address.offset, 4096, "the address IS the log id");
-        assert_eq!(address.length, 512);
+        assert_eq!(address.length(), 512);
         assert_eq!(address.routing_bucket(), Some(11));
         assert_eq!(address.block_id(), Some(7));
         assert_eq!(address.object_id(), Some(3));

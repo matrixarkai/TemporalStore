@@ -2515,7 +2515,7 @@ fn cold_index_block_address_reads_from_disk_cache_or_block_store_and_refills_mem
             1,
             address.block_slab_id,
             address.offset,
-            address.length,
+            address.length(),
             address.routing_bucket(),
         )
     };
@@ -3838,7 +3838,7 @@ fn what_reading_one_summary_actually_costs() {
             "         {wal_resident}/120 wal_resident addresses, {with_block_id} carry a page_id, {} distinct slabs",
             distinct_slabs.len(),
         );
-        let extent_total: u64 = addresses.iter().map(|a| a.length).sum();
+        let extent_total: u64 = addresses.iter().map(|a| a.length()).sum();
 
         let walk_probe = crate::alloc_probe::Probe::start();
         let mut decoded = 0usize;
@@ -3960,8 +3960,8 @@ fn how_many_blocks_do_a_retrieves_candidates_span() {
                     .and_then(|fields| fields.values().next())
                     .or_else(|| shard.context_nodes.get(&key));
                 if let Some(address) = address {
-                    if extents.insert((address.block_slab_id, address.offset, address.length)) {
-                        bytes += address.length;
+                    if extents.insert((address.block_slab_id, address.offset, address.length())) {
+                        bytes += address.length();
                     }
                     slabs.insert(address.block_slab_id);
                 }
@@ -3989,7 +3989,7 @@ fn how_many_blocks_do_a_retrieves_candidates_span() {
                     .and_then(|fields| fields.values().next())
                     .or_else(|| shard.context_nodes.get(&key))
                 {
-                    ranges.push((address.offset, address.length));
+                    ranges.push((address.offset, address.length()));
                 }
             }
             ranges.sort_unstable();
@@ -4099,7 +4099,7 @@ fn how_scattered_are_node_extents_after_a_real_ingest() {
                 .and_then(|fields| fields.values().next())
                 .or_else(|| shard.context_nodes.get(&key))
             {
-                ranges.push((address.block_slab_id, address.offset, address.length));
+                ranges.push((address.block_slab_id, address.offset, address.length()));
             }
         }
         ranges.sort_unstable();
@@ -4330,7 +4330,7 @@ fn deep_compare_the_index_a_reconstruct_produces() {
                     page.object_id(),
                     page.address.block_slab_id,
                     page.address.offset,
-                    page.address.length,
+                    page.address.length(),
                     page.dirty,
                     page.deleted,
                     page.log_backed,

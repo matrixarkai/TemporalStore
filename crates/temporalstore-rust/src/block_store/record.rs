@@ -46,7 +46,7 @@ pub(super) const BLOCK_RECORD_LENGTH_OFFSET: usize = BLOCK_RECORD_CHECKSUM_OFFSE
 /// across the whole store. An object with more than 65,535 blocks is not a case this design
 /// serves; one with a handful is every case it does.
 pub(super) const BLOCK_RECORD_BLOCK_ID_OFFSET: usize = BLOCK_RECORD_LENGTH_OFFSET + 4;
-pub(super) const BLOCK_RECORD_LENGTH_MASK: u32 = 0x3FFF_FFFF;
+pub(crate) const BLOCK_RECORD_LENGTH_MASK: u32 = 0x3FFF_FFFF;
 pub(super) const BLOCK_RECORD_CODEC_SHIFT: u32 = 30;
 
 /// The header is one size, always.
@@ -661,7 +661,7 @@ fn verify_block_record_checksum(
     Err(BlockStoreError::ChecksumMismatch {
         block_slab_id: address.block_slab_id,
         offset: address.offset,
-        length: address.length,
+        length: address.length(),
         expected: format!("{stored:08x}"),
         actual: format!("{actual:08x}"),
     })
@@ -891,7 +891,7 @@ pub(super) fn inspect_slab(slab: &[u8], block_slab_id: u64) -> BlockStoreSlabRep
             );
             break;
         }
-        address.length = record_len as u64;
+        address.set_length(record_len as u64);
         address.set_block_id(header.block_id);
         address.set_object_id(header.object_id);
         address.set_routing_bucket(header.routing_bucket);
@@ -904,7 +904,7 @@ pub(super) fn inspect_slab(slab: &[u8], block_slab_id: u64) -> BlockStoreSlabRep
                 report.block_index_entries.push(BlockStoreBlockIndexReport {
                     block_slab_id: block_slab_id,
                     offset: address.offset,
-                    length: address.length,
+                    length: address.length(),
                     compact_slab_address: address.compact_slab_address(),
                     compact_slab_id: address.compact_slab_id(),
                     compact_slab_offset: address.compact_slab_offset(),

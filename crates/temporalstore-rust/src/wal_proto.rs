@@ -360,10 +360,10 @@ fn address_to_proto(address: &BlockAddress, implied_length: Option<u64>) -> v1::
         // `length` is a plain field, so a zero is not written -- and a block record is never zero
         // bytes, since it always carries a header. Zero therefore reads as "the carried block
         // says it".
-        length: if Some(address.length) == implied_length {
+        length: if Some(address.length()) == implied_length {
             0
         } else {
-            address.length
+            address.length()
         },
         block_id: address.block_id(),
         object_id: address.object_id(),
@@ -2093,7 +2093,7 @@ mod tests {
             .address
             .as_mut()
             .expect("address")
-            .length = stored - 8;
+            .set_length(stored - 8);
         let longer = encode(&compressed).expect("encode");
         assert!(
             longer.len() > encoded.len(),

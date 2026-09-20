@@ -3,10 +3,10 @@
 
 //! What an in-memory `BlockAddress` costs, and what a compact form would buy.
 //!
-//! WHY THIS EXISTS. `BlockAddress` is 56 bytes. Three of its fields -- `block_slab_id`, `offset`,
+//! WHY THIS EXISTS. `BlockAddress` is 48 bytes. Three of its fields -- `block_slab_id`, `offset`,
 //! `length` -- are always meaningful. Four more -- `page_id`, `object_id`, `generation`,
 //! `routing_bucket` -- are OPTIONAL, gated by a `present` bitmask, and the struct allocates all
-//! four whether or not the bitmask says they are set. That is 28 bytes of optional payload plus
+//! four whether or not the bitmask says they are set. That is 24 bytes of optional payload plus
 //! one byte of bitmask, and the shard holds one of these per stored point: a 1,000-point feature
 //! series holds 1,000 of them.
 //!
@@ -21,7 +21,7 @@
 //! WHAT THESE PROBES ARE NOT. They are `#[ignore]`d because they seed tens of thousands of
 //! records and read process RSS, which is neither fast nor meaningful under a parallel test run.
 //! Run them by name. Two tests here are NOT ignored, and both are cheap:
-//! `an_address_is_fifty_six_bytes_and_twenty_eight_of_them_are_optional` pins the width so that
+//! `an_address_is_forty_eight_bytes_and_half_of_them_are_optional` pins the width so that
 //! widening the struct is noticed rather than absorbed, and
 //! `only_one_of_the_three_address_cross_checks_on_a_read_can_fire` pins how many of the address
 //! cross-checks on the read path can actually fire, which is the count that decides what dropping
@@ -94,7 +94,7 @@ impl AddressCensus {
         self.total += 1;
         self.widest[0] = self.widest[0].max(address.block_slab_id);
         self.widest[1] = self.widest[1].max(address.offset);
-        self.widest[2] = self.widest[2].max(address.length);
+        self.widest[2] = self.widest[2].max(address.length());
         self.widest[3] = self.widest[3].max(address.block_id().unwrap_or(0));
         self.widest[4] = self.widest[4].max(address.object_id().unwrap_or(0));
         self.widest[5] = self.widest[5].max(address.generation().unwrap_or(0));
@@ -141,10 +141,12 @@ impl AddressCensus {
     /// The optional payload is 28 bytes. An address carrying none of it pays 28 bytes for
     /// nothing; one carrying all four pays nothing for nothing.
     fn dead_optional_bytes(&self) -> usize {
+        // Six bytes is the AVERAGE width of the four optional fields: two 64-bit identities and
+        // two 32-bit ones, 24 bytes over four. It was seven while `block_id` was 64 bits.
         self.optional_field_histogram
             .iter()
             .enumerate()
-            .map(|(set, count)| count * (4 - set) * 7)
+            .map(|(set, count)| count * (4 - set) * 6)
             .sum()
     }
 
@@ -175,11 +177,15 @@ impl AddressCensus {
                 self.total
             );
         }
+        // Read off the type rather than written down. A hand-written width here went stale the
+        // moment the struct moved, and this line would have kept reporting the old figure.
+        let width = std::mem::size_of::<BlockAddress>();
         println!(
-            "  address payload resident: {} x 56 = {} bytes ({:.2} MiB)",
+            "  address payload resident: {} x {} = {} bytes ({:.2} MiB)",
             self.total,
-            self.total * 56,
-            (self.total * 56) as f64 / (1024.0 * 1024.0)
+            width,
+            self.total * width,
+            (self.total * width) as f64 / (1024.0 * 1024.0)
         );
         println!(
             "  of which optional payload NEVER SET: {} bytes ({:.2} MiB) -- the whole packing prize",
@@ -199,7 +205,7 @@ impl AddressCensus {
         }
 
         // Presence says whether a field can be OMITTED. Width says whether it can be SHRUNK.
-        // Both have to fail before the 56 bytes are justified.
+        // Both have to fail before the 48 bytes are justified.
         let names = [
             "block_slab_id", "offset", "length",
             "page_id", "object_id", "generation", "routing_bucket",
@@ -444,15 +450,16 @@ fn the_optional_payload_is_paid_for_on_every_live_address() {
         println!(
             "{label}: packing the optional payload away entirely would reclaim at most {} of {} resident address bytes ({:.1}%)",
             c.dead_optional_bytes(),
-            c.total * 56,
-            100.0 * c.dead_optional_bytes() as f64 / (c.total * 56) as f64,
+            c.total * std::mem::size_of::<BlockAddress>(),
+            100.0 * c.dead_optional_bytes() as f64
+                / (c.total * std::mem::size_of::<BlockAddress>()) as f64,
         );
     }
 }
 
 /// What a `BTreeMap` entry costs on top of the value it carries, measured rather than derived.
 ///
-/// A `BTreeMap<u64, BlockAddress>` does not cost 56 bytes per entry. Its leaf node is sized for
+/// A `BTreeMap<u64, BlockAddress>` does not cost one address width per entry. Its leaf node is sized for
 /// eleven entries and is allocated whole, so the per-entry cost is the node divided by how full
 /// the node actually ends up -- which depends on insertion order and is not something to assume.
 /// This measures it by RSS delta, and prices three value widths side by side so the container
@@ -466,7 +473,7 @@ fn the_optional_payload_is_paid_for_on_every_live_address() {
 /// nothing. Keeping every map live forces each arm to fault in new pages.
 ///
 /// The `Vec` arm is the POSITIVE CONTROL: a `Vec<(u64, BlockAddress)>` has a known, tight
-/// footprint (64 bytes per element, no node), so if the harness cannot see that it cannot see
+/// footprint (56 bytes per element, no node), so if the harness cannot see that it cannot see
 /// anything and every other number here is noise.
 #[test]
 #[ignore = "reads process RSS; run alone"]
@@ -846,7 +853,7 @@ fn the_payload_checksum_cannot_tell_one_record_from_another_at_the_same_address(
         "denominator: same slab id"
     );
     assert_eq!(stale.offset, live.offset, "denominator: same offset");
-    assert_eq!(stale.length, live.length, "denominator: same length");
+    assert_eq!(stale.length(), live.length(), "denominator: same length");
     assert_eq!(
         stale.block_id(),
         live.block_id(),
@@ -888,27 +895,28 @@ fn the_payload_checksum_cannot_tell_one_record_from_another_at_the_same_address(
 /// The width guard. Not ignored: it is free, and it is the thing that makes a future widening
 /// visible.
 ///
-/// `block_store.rs` already asserts the 56. This adds the decomposition, because 56 on its own
-/// does not say WHERE it goes, and the whole packing argument is about the 28 bytes of optional
-/// payload inside it. If a field is added, or an optional field is promoted to always-present,
-/// this fails with a number that names which half moved.
+/// `block_store.rs` already asserts the 48, and a `const _` beside the declaration makes a
+/// widening a BUILD failure. This adds the decomposition, because 48 on its own does not say
+/// WHERE it goes, and the whole packing argument is about the optional payload inside it. If a
+/// field is added, or an optional field is promoted to always-present, this fails with a number
+/// that names which half moved.
 #[test]
-fn an_address_is_fifty_six_bytes_and_twenty_eight_of_them_are_optional() {
-    // Three always-meaningful u64s.
-    const ALWAYS: usize = 3 * 8;
-    // Four optional fields: three u64 and one u32.
-    const OPTIONAL: usize = 3 * 8 + 4;
+fn an_address_is_forty_eight_bytes_and_half_of_them_are_optional() {
+    // Always meaningful: two u64 slab coordinates and the 32-bit byte count.
+    const ALWAYS: usize = 2 * 8 + 4;
+    // Four optional fields: two u64 identities, the 32-bit block id and the routing bucket.
+    const OPTIONAL: usize = 2 * 8 + 4 + 4;
     // The presence bitmask.
     const BITMASK: usize = 1;
 
-    assert_eq!(56, std::mem::size_of::<BlockAddress>(), "the address width moved");
+    assert_eq!(48, std::mem::size_of::<BlockAddress>(), "the address width moved");
     assert_eq!(8, std::mem::align_of::<BlockAddress>());
-    assert_eq!(24, ALWAYS);
-    assert_eq!(28, OPTIONAL);
+    assert_eq!(20, ALWAYS);
+    assert_eq!(24, OPTIONAL);
     assert_eq!(
-        56,
+        48,
         ALWAYS + OPTIONAL + BITMASK + 3,
-        "24 always + 28 optional + 1 bitmask + 3 padding = 56; if this stops adding up, a field \
+        "20 always + 24 optional + 1 bitmask + 3 padding = 48; if this stops adding up, a field \
          changed shape and the packing arithmetic in this module is stale"
     );
 
@@ -919,7 +927,7 @@ fn an_address_is_fifty_six_bytes_and_twenty_eight_of_them_are_optional() {
         "the optional payload is 50% of the address"
     );
 
-    // An address built with no optional field is the same 56 bytes as one built with all four.
+    // An address built with no optional field is the same 48 bytes as one built with all four.
     // This is the fact that makes the question worth asking at all.
     let bare = BlockAddress::from_parts(1, 0, 64, None, None, None, None);
     let full = BlockAddress::from_parts(1, 0, 64, Some(1), Some(2), Some(3), Some(4));
@@ -992,7 +1000,7 @@ impl DuplicationCensus {
 /// Which fields two addresses for the same physical location disagree on.
 fn differing_fields(a: &BlockAddress, b: &BlockAddress) -> Vec<&'static str> {
     let mut out = Vec::new();
-    if a.length != b.length {
+    if a.length() != b.length() {
         out.push("length");
     }
     if a.block_id() != b.block_id() {
@@ -1733,8 +1741,8 @@ fn the_capacity_ceilings_each_narrowing_would_impose() {
     let shards = engine.shards.read().expect("engine lock poisoned");
     let shard = shards.get(&1).expect("shard is loaded");
 
-    let empty_in_model_map = shard.strings.get("empty_value").map(|a| a.length);
-    let big_in_model_map = shard.strings.get("big_value").map(|a| a.length);
+    let empty_in_model_map = shard.strings.get("empty_value").map(|a| a.length());
+    let big_in_model_map = shard.strings.get("big_value").map(|a| a.length());
     println!(
         "  MODEL MAP lengths -- empty_value: {empty_in_model_map:?}   big_value: {big_in_model_map:?}"
     );
@@ -1758,23 +1766,23 @@ fn the_capacity_ceilings_each_narrowing_would_impose() {
             blocks_here += 1;
             model_ids.insert(page.model_id.to_string());
             *blocks_per_object.entry(page.object_id()).or_default() += 1;
-            max_length = max_length.max(page.address.length);
+            max_length = max_length.max(page.address.length());
             max_page_id = max_page_id.max(page.address.block_id().unwrap_or(0));
-            longest.push((page.address.length, page.object_key.to_string()));
+            longest.push((page.address.length(), page.object_key.to_string()));
             if page.object_key.as_ref() == "big_value" || page.object_key.as_ref() == "empty_value"
             {
                 named.insert(
                     page.object_key.to_string(),
-                    (page.address.length, page.deleted),
+                    (page.address.length(), page.deleted),
                 );
             }
             if !page.deleted {
                 live_blocks += 1;
-                if page.address.length == 0 {
+                if page.address.length() == 0 {
                     live_zero_length
                         .push((page.model_id.to_string(), page.object_key.to_string()));
                 }
-            } else if page.address.length == 0 {
+            } else if page.address.length() == 0 {
                 deleted_zero_length += 1;
             }
         }
@@ -1782,19 +1790,20 @@ fn the_capacity_ceilings_each_narrowing_would_impose() {
     }
     let max_blocks_in_an_object = blocks_per_object.values().copied().max().unwrap_or(0);
 
-    // WHAT A NARROWING WOULD ACTUALLY BUY, which is not what its field width suggests.
+    // WHAT A NARROWING ACTUALLY BUYS, which is not what its field width suggests.
     //
     // BlockAddress is 8-byte aligned because it contains u64s, so its size is its payload rounded
-    // UP to a multiple of 8. Today that payload is 6*8 + 4 + 1 = 53, rounded to 56 -- there are
-    // already 3 bytes of padding being paid for. Narrowing ONE 8-byte field to 4 takes the
-    // payload to 49, which still rounds to 56 and buys NOTHING. The struct only gets smaller when
-    // a change removes at least 6 bytes of payload. That is why these are printed together: the
-    // per-field question is not "can this be narrower" but "does this cross an alignment step".
+    // UP to a multiple of 8. That payload was 6*8 + 4 + 1 = 53, rounded to 56, with three bytes
+    // of padding already being paid for -- so narrowing ONE 8-byte field to 4 took the payload to
+    // 49, still rounded to 56, and would have bought NOTHING. The struct only got smaller once a
+    // change removed at least six bytes of payload, and that is what `length` and `block_id`
+    // moving to 32 bits together did: 4*8 + 3*4 + 1 = 45, rounded to 48. The per-field question
+    // was never "can this be narrower" but "does this cross an alignment step".
     println!("--- what the struct actually costs ---");
     println!(
-        "  size_of BlockAddress = {} (payload 6*8 + 4 + 1 = 53, so {} bytes are padding)",
+        "  size_of BlockAddress = {} (payload 4*8 + 3*4 + 1 = 45, so {} bytes are padding)",
         std::mem::size_of::<BlockAddress>(),
-        std::mem::size_of::<BlockAddress>() - 53
+        std::mem::size_of::<BlockAddress>() - 45
     );
     println!(
         "  align_of BlockAddress = {}",

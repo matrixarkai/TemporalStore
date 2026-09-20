@@ -323,7 +323,7 @@ fn append_timestamped_kv_blocks_inner(
                         shard_id,
                         address.block_slab_id,
                         address.offset,
-                        address.length,
+                        address.length(),
                         address.routing_bucket(),
                     ),
                     packed,

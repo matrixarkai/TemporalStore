@@ -493,6 +493,10 @@ pub struct IndexItem {
     pub deleted: bool,
 }
 
+/// One per changed page per write, and transient -- it lives for the length of an append.
+/// Pinned because it is the widest thing built per page anywhere in the engine.
+const _: () = assert!(std::mem::size_of::<IndexItem>() == 184);
+
 /// A field whose value is its default says nothing, and every field here carries
 /// `#[serde(default)]` -- so a reader that meets an absent one fills in the same value it would
 /// have read. That is what makes omitting them safe in a single step, with no ordering between
@@ -555,7 +559,7 @@ impl IndexItem {
             self.component.as_deref(),
             address.block_slab_id,
             address.offset,
-            address.length,
+            address.length(),
             address.block_id().unwrap_or_default(),
             address.generation().unwrap_or_default(),
         );
@@ -581,7 +585,7 @@ impl IndexItem {
             self.component.as_deref(),
             address.block_slab_id,
             address.offset,
-            address.length,
+            address.length(),
             address.block_id().unwrap_or_default(),
             address.generation().unwrap_or_default(),
         );
@@ -592,7 +596,7 @@ impl IndexItem {
     /// `size` and `address.length` are the same number on a page item, written twice.
     fn strip_size_repeat(&mut self) {
         if let Some(address) = self.address.as_ref() {
-            if self.size == address.length {
+            if self.size == address.length() {
                 self.size = 0;
             }
         }
@@ -602,7 +606,7 @@ impl IndexItem {
     fn restore_size_repeat(&mut self) {
         if self.size == 0 {
             if let Some(address) = self.address.as_ref() {
-                self.size = address.length;
+                self.size = address.length();
             }
         }
     }
@@ -1064,6 +1068,10 @@ pub struct SlabCatalogEntry {
     #[serde(default)]
     pub version: u64,
 }
+
+/// One per SLAB, not per item: a slab is a gigabyte of pages by default, so this is here to be
+/// ranked last rather than to be narrowed.
+const _: () = assert!(std::mem::size_of::<SlabCatalogEntry>() == 104);
 
 /// Compaction anchor for the delta log. `start_wal_sequence` is the lowest WAL sequence
 /// still required to reconstruct the served index on top of the base snapshot: once the
@@ -5074,7 +5082,7 @@ mod tests {
                 Some(component),
                 address.block_slab_id,
                 address.offset,
-                address.length,
+                address.length(),
                 address.block_id().unwrap_or_default(),
                 address.generation().unwrap_or_default(),
             );
@@ -6271,7 +6279,7 @@ mod tests {
         // POSITIVE CONTROL: the strip is live. Without this the round trip below is satisfied
         // just as well by a writer that stopped stripping altogether, which is the opposite
         // defect and reads identically from the reader's side.
-        let mut agrees = item(address.length);
+        let mut agrees = item(address.length());
         agrees.strip_size_repeat();
         assert_eq!(
             agrees.size, 0,
@@ -6282,7 +6290,7 @@ a writer that gave up rather than one that is careful",
         // THE ASSERTION. A size the address does NOT state survives the round trip as itself.
         let disagrees = item(999);
         assert_ne!(
-            disagrees.size, address.length,
+            disagrees.size, address.length(),
             "the case only exists while these differ",
         );
         let dir = tempfile::tempdir().unwrap();

@@ -43,6 +43,9 @@ pub(super) struct WalResidentBlock {
     pub(super) sequence: u64,
 }
 
+/// Two log coordinates. One per page whose only durable copy is a log record.
+const _: () = assert!(std::mem::size_of::<WalResidentBlock>() == 16);
+
 #[derive(Debug, Default, Clone, Serialize, Deserialize)]
 pub(super) struct ShardState {
     /// On-disk shape of this index. 0 means "written before the stamp existed".
@@ -394,6 +397,9 @@ pub(super) enum ObjectIndex {
     Many(Box<BTreeSet<u64>>),
 }
 
+/// A pointer-wide arm plus its tag, twice per bucket.
+const _: () = assert!(std::mem::size_of::<ObjectIndex>() == 16);
+
 pub(super) enum ObjectIndexIter<'a> {
     Empty,
     One(std::iter::Once<&'a u64>),
@@ -624,6 +630,10 @@ pub(super) enum BlockIndexMap {
     Many(BTreeMap<u64, BlockIndex>),
 }
 
+/// The `One` arm carries a whole page inline -- a handle plus a `BlockIndex` -- which is the
+/// point of the shape and what makes this the widest field of `BucketNode`.
+const _: () = assert!(std::mem::size_of::<BlockIndexMap>() == 112);
+
 /// Iterating a page index, whichever shape it is in.
 pub(super) enum BlockIndexIter<'a> {
     Empty,
@@ -741,7 +751,7 @@ impl BlockSlabLiveIndex {
         BLOCK_SLAB_LIVE_CHARGES.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         let tally = self.by_slab.entry(address.block_slab_id).or_default();
         tally.block_refs = tally.block_refs.saturating_add(1);
-        tally.bytes = tally.bytes.saturating_add(address.length);
+        tally.bytes = tally.bytes.saturating_add(address.length());
     }
 
     pub(super) fn remove_address(&mut self, address: &BlockAddress) {
@@ -750,7 +760,7 @@ impl BlockSlabLiveIndex {
             return;
         };
         tally.block_refs = tally.block_refs.saturating_sub(1);
-        tally.bytes = tally.bytes.saturating_sub(address.length);
+        tally.bytes = tally.bytes.saturating_sub(address.length());
         if tally.block_refs == 0 && tally.bytes == 0 {
             // A slab nothing points at any more is ABSENT, not zero. Keeping the entry would grow
             // this map with every slab the store ever rolled, and the caller that wants a zero for
@@ -1094,7 +1104,7 @@ pub(super) fn block_index_handle(page: &BlockIndex) -> u64 {
     page.component.as_deref().hash(&mut hasher);
     page.address.block_slab_id.hash(&mut hasher);
     page.address.offset.hash(&mut hasher);
-    page.address.length.hash(&mut hasher);
+    page.address.length().hash(&mut hasher);
     page.address.block_id().unwrap_or_default().hash(&mut hasher);
     page.address.generation().unwrap_or_default().hash(&mut hasher);
     hasher.finish()
@@ -1107,7 +1117,7 @@ pub(super) fn block_index_written_key(page: &BlockIndex) -> String {
         page.component.as_deref(),
         page.address.block_slab_id,
         page.address.offset,
-        page.address.length,
+        page.address.length(),
         page.address.block_id().unwrap_or_default(),
         page.address.generation().unwrap_or_default(),
     )
@@ -1275,6 +1285,9 @@ pub(super) struct ObjectBlockRefs {
     pub(super) by_component: ComponentList,
 }
 
+/// One per object in the lookup.
+const _: () = assert!(std::mem::size_of::<ObjectBlockRefs>() == 40);
+
 /// The components of one object: none, one, or a sorted vector.
 ///
 /// The measured average is 1.0 components per object, and a `Vec` holding a single element is a
@@ -1290,6 +1303,9 @@ pub(super) enum ComponentList {
     One(ComponentBlocks),
     Many(Vec<ComponentBlocks>),
 }
+
+/// Its `One` arm is a whole `ComponentBlocks`; the tag rides a niche in the shared name.
+const _: () = assert!(std::mem::size_of::<ComponentList>() == 40);
 
 impl ComponentList {
     pub(super) fn len(&self) -> usize {
@@ -1453,6 +1469,9 @@ pub(super) struct ComponentBlocks {
     pub(super) refs: BlockRefs,
 }
 
+/// One per (object, component), and the measured average is one component per object.
+const _: () = assert!(std::mem::size_of::<ComponentBlocks>() == 40);
+
 impl ObjectBlockRefs {
     /// Where this component sits, or where it would be inserted. `None` sorts first, matching
     /// `Option`'s own ordering, so the vector's order is the order a caller would expect.
@@ -1515,6 +1534,9 @@ pub(super) enum BlockRefs {
     One(BlockLookupRef),
     Many(Vec<BlockLookupRef>),
 }
+
+/// As wide as its `Many` arm's vector; the tag rides the padding of the inline ref.
+const _: () = assert!(std::mem::size_of::<BlockRefs>() == 24);
 
 impl BlockRefs {
     pub(super) fn as_slice(&self) -> &[BlockLookupRef] {
@@ -1602,6 +1624,11 @@ pub(super) struct BlockLookupRef {
     pub(super) block_ref_key: u64,
 }
 
+/// TWELVE BYTES OF FIELD IN SIXTEEN. This one is alignment, not width: a `u32` beside a `u64`
+/// pads to the `u64`'s alignment, and narrowing either field moves nothing. It is pinned so the
+/// waste is visible, not because it can be reclaimed here.
+const _: () = assert!(std::mem::size_of::<BlockLookupRef>() == 16);
+
 /// Rust-native core index mirroring the shape:
 /// The shard's dirty objects, indexed BY ROUTING BUCKET as well as by key.
 ///
@@ -1655,6 +1682,9 @@ pub(super) enum DirtyKeySet {
     One(Arc<str>),
     Many(Box<BTreeSet<Arc<str>>>),
 }
+
+/// One per dirty bucket, and the measured distribution is one key per bucket.
+const _: () = assert!(std::mem::size_of::<DirtyKeySet>() == 24);
 
 impl DirtyKeySet {
     pub(super) fn len(&self) -> usize {
@@ -1978,6 +2008,10 @@ pub(super) struct BucketNode {
     pub(super) block_index: BlockIndexMap,
 }
 
+/// The widest per-item structure in the engine, and the one whose count is the bucket count.
+/// Most of it is the `BlockIndexMap` it carries inline.
+const _: () = assert!(std::mem::size_of::<BucketNode>() == 208);
+
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub(super) enum BucketLayoutState {
     #[default]
@@ -1999,6 +2033,11 @@ pub(super) struct BlockIndex {
     pub(super) deleted: bool,
     pub(super) log_backed: bool,
 }
+
+/// One per stored page. Three shared names, an address, and three flags -- 99 bytes of field in
+/// 104, so the three flag bytes are already inside the alignment slack and packing them would
+/// reclaim nothing (and would move the stored index, which spells each one as its own key).
+const _: () = assert!(std::mem::size_of::<BlockIndex>() == 104);
 
 impl BlockIndex {
     /// The object this page belongs to.
@@ -2263,7 +2302,7 @@ fn push_lookup_part(buffer: &mut String, value: &str) {
 fn same_block_address(left: &BlockAddress, right: &BlockAddress) -> bool {
     left.block_slab_id == right.block_slab_id
         && left.offset == right.offset
-        && left.length == right.length
+        && left.length() == right.length()
         && left.block_id() == right.block_id()
         && left.object_id() == right.object_id()
         && left.routing_bucket() == right.routing_bucket()

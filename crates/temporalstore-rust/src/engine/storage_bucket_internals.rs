@@ -28,7 +28,7 @@ pub(super) fn recompute_block_slab_live(shard: &ShardState) -> BTreeMap<u64, Sla
     for entry in collect_live_block_entries(shard) {
         let tally = tallies.entry(entry.address.block_slab_id).or_default();
         tally.block_refs = tally.block_refs.saturating_add(1);
-        tally.bytes = tally.bytes.saturating_add(entry.address.length);
+        tally.bytes = tally.bytes.saturating_add(entry.address.length());
     }
     tallies
 }
@@ -335,7 +335,7 @@ pub(super) fn storage_page_address_sample(
         slab_id: address.block_slab_id,
         block_id: address.block_id().unwrap_or(address.block_slab_id),
         offset: address.offset,
-        length: address.length,
+        length: address.length(),
         generation: address.object_id().unwrap_or(0),
     }
 }
@@ -349,7 +349,7 @@ pub(super) fn storage_block_address_sample(
         stored_slab_id: address.block_slab_id,
         block_id: address.block_slab_id,
         offset: address.offset,
-        length: address.length,
+        length: address.length(),
         // Not carried in the index any more; the page envelope holds it.
         checksum: String::new(),
     }
@@ -637,7 +637,7 @@ pub(super) fn storage_gc_snapshot_with_samples_from_entries(
                 has_delete_marker,
                 follower_safe,
                 reclaimable_bytes: if follower_safe {
-                    entry.address.length
+                    entry.address.length()
                 } else {
                     0
                 },
@@ -767,9 +767,9 @@ pub(super) fn storage_topology_snapshot_with_samples_from_entries(
         usage.slabs.insert(slab_id);
         usage.generation = usage.generation.max(generation);
         if entry.deleted {
-            usage.stale_bytes = usage.stale_bytes.saturating_add(entry.address.length);
+            usage.stale_bytes = usage.stale_bytes.saturating_add(entry.address.length());
         } else {
-            usage.used_bytes = usage.used_bytes.saturating_add(entry.address.length);
+            usage.used_bytes = usage.used_bytes.saturating_add(entry.address.length());
         }
 
         let slab = slabs.entry(slab_id).or_insert_with(|| SlabAcc {
@@ -789,13 +789,13 @@ pub(super) fn storage_topology_snapshot_with_samples_from_entries(
             .entry(stored_slab_id)
             .or_insert_with(|| SlabAccumulator {
                 min_offset: entry.address.offset,
-                max_offset: entry.address.offset.saturating_add(entry.address.length),
+                max_offset: entry.address.offset.saturating_add(entry.address.length()),
                 ..SlabAccumulator::default()
             });
         range.min_offset = range.min_offset.min(entry.address.offset);
         range.max_offset = range
             .max_offset
-            .max(entry.address.offset.saturating_add(entry.address.length));
+            .max(entry.address.offset.saturating_add(entry.address.length()));
         range.generation = range.generation.max(generation);
         if entry.deleted {
             range.deleted_refs = range.deleted_refs.saturating_add(1);
@@ -1648,7 +1648,7 @@ fn released_block_identity_owned(
         component,
         address.block_slab_id,
         address.offset,
-        address.length,
+        address.length(),
         address.block_id(),
         address.generation(),
     )
@@ -2377,7 +2377,7 @@ pub(super) fn sync_context_blocks_for_object(
                     left.block_slab_id
                         .cmp(&right.block_slab_id)
                         .then(left.offset.cmp(&right.offset))
-                        .then(left.length.cmp(&right.length))
+                        .then(left.length().cmp(&right.length()))
                 })
                 .cloned()
             {
@@ -2774,7 +2774,7 @@ pub(super) fn block_physical_identity_key(
     (
         address.block_slab_id,
         address.offset,
-        address.length,
+        address.length(),
         address.block_id(),
         address.object_id(),
         address.routing_bucket(),
@@ -3822,7 +3822,7 @@ pub(super) fn reconcile_secondary_views_from_bucket_index(
                             shard_id,
                             entry.address.block_slab_id,
                             entry.address.offset,
-                            entry.address.length,
+                            entry.address.length(),
                             entry.address.routing_bucket(),
                         );
                         warm_batch.push((key, bytes.clone()));
@@ -4031,7 +4031,7 @@ pub(super) fn insert_timestamped_secondary_view(
             shard_id,
             address.block_slab_id,
             address.offset,
-            address.length,
+            address.length(),
             address.routing_bucket(),
         );
         warm_batch.push((key, bytes.clone()));
@@ -4096,7 +4096,7 @@ pub(super) fn insert_context_event_views(
             shard_id,
             address.block_slab_id,
             address.offset,
-            address.length,
+            address.length(),
             address.routing_bucket(),
         );
         warm_batch.push((key, bytes.clone()));
@@ -4190,7 +4190,7 @@ pub(super) fn validate_bucket_ownership_index_from_entries(
                     && bucket.block_index.values().any(|page| {
                         page.address.block_slab_id == entry.address.block_slab_id
                             && page.address.offset == entry.address.offset
-                            && page.address.length == entry.address.length
+                            && page.address.length() == entry.address.length()
                             && page.address.block_id() == expected_block_id
                             && page.model_id == entry.kind
                     })

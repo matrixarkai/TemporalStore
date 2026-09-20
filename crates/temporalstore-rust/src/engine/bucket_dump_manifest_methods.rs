@@ -835,7 +835,7 @@ impl TemporalEngine {
         for entry in live_block_entries {
             if self.block_store.read(&entry.address).is_err() {
                 unreadable_block_refs = unreadable_block_refs.saturating_add(1);
-                unreadable_block_bytes = unreadable_block_bytes.saturating_add(entry.address.length);
+                unreadable_block_bytes = unreadable_block_bytes.saturating_add(entry.address.length());
             }
         }
         if unreadable_block_refs > 0 {
@@ -927,7 +927,7 @@ impl TemporalEngine {
                         if self.block_store.read(&entry.address).is_err() {
                             unreadable_block_ref_count = unreadable_block_ref_count.saturating_add(1);
                             unreadable_block_bytes =
-                                unreadable_block_bytes.saturating_add(entry.address.length);
+                                unreadable_block_bytes.saturating_add(entry.address.length());
                         }
                     }
                 }

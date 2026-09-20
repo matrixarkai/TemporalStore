@@ -370,15 +370,15 @@ impl CompactionRewriteStats {
             self.skipped_off_drain_set = self.skipped_off_drain_set.saturating_add(1);
             return false;
         }
-        if address.length > self.budget_bytes || self.budget_block_refs == 0 {
+        if address.length() > self.budget_bytes || self.budget_block_refs == 0 {
             self.skipped_by_budget = self.skipped_by_budget.saturating_add(1);
             self.skipped_by_budget_bytes =
-                self.skipped_by_budget_bytes.saturating_add(address.length);
+                self.skipped_by_budget_bytes.saturating_add(address.length());
             return false;
         }
-        self.budget_bytes = self.budget_bytes.saturating_sub(address.length);
+        self.budget_bytes = self.budget_bytes.saturating_sub(address.length());
         self.budget_block_refs = self.budget_block_refs.saturating_sub(1);
-        self.relocated_bytes = self.relocated_bytes.saturating_add(address.length);
+        self.relocated_bytes = self.relocated_bytes.saturating_add(address.length());
         true
     }
 
@@ -434,7 +434,7 @@ pub(super) fn block_memory_resident(cache: &MultiLayerCache, shard_id: ShardId, 
             shard_id,
             address.block_slab_id,
             address.offset,
-            address.length,
+            address.length(),
             address.routing_bucket(),
             address.generation(),
         ))
@@ -708,7 +708,7 @@ pub(super) fn compact_block_addresses<'a>(
                 shard_id,
                 new_address.block_slab_id,
                 new_address.offset,
-                new_address.length,
+                new_address.length(),
                 new_address.routing_bucket(),
                 new_address.generation(),
             ),
@@ -754,7 +754,7 @@ pub(super) fn compact_feature_block_addresses(
                 shard_id,
                 new_address.block_slab_id,
                 new_address.offset,
-                new_address.length,
+                new_address.length(),
                 new_address.routing_bucket(),
                 new_address.generation(),
             ),

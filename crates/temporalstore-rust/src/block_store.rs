@@ -31,6 +31,14 @@ mod record;
 /// constants of one name in two modules is a thing to trip over rather than a bridge.
 pub(crate) use record::BLOCK_RECORD_HEADER_LEN;
 
+/// The largest number of bytes a single block record can store: `encode_block_record` returns an
+/// error above it rather than writing a truncated one.
+///
+/// Re-exported for the same reason as the header length above, and because it is the AUTHORITY
+/// for the width of `BlockAddress::length`. A copy of the number written down beside that field
+/// would go stale silently; `engine::tests::per_item_byte_budget` reads it from here.
+pub(crate) use record::BLOCK_RECORD_LENGTH_MASK;
+
 pub(crate) use record::block_index_checksums_enabled;
 
 use paths::{
@@ -168,7 +176,7 @@ impl From<BlockAddress> for BlockAddressWire {
         Self {
             block_slab_id: address.block_slab_id,
             offset: address.offset,
-            length: address.length,
+            length: address.length(),
             block_id: address.block_id(),
             object_id: address.object_id(),
             routing_bucket: address.routing_bucket(),
@@ -182,18 +190,64 @@ impl From<BlockAddress> for BlockAddressWire {
     }
 }
 
+/// A BYTE BUDGET, NOT A DEFAULT WIDTH.
+///
+/// There are two of these per stored record -- one in the model map a read resolves through, one
+/// inside the page-index entry -- and both live for the life of the shard, so this is the most
+/// numerous structure in the engine. `engine::tests::per_item_byte_budget` counts them at two
+/// corpus sizes and ranks every per-item structure by `size_of` x count; this one heads the list
+/// at both.
+///
+/// `length` and `block_id` are 32 bits because THE ENCODER REFUSES ANYTHING WIDER, not because
+/// 32 looked like enough. `encode_block_record` returns an error above
+/// `BLOCK_RECORD_LENGTH_MASK` (2^30 - 1) bytes for a record, and above `u16::MAX` for a block
+/// id -- so the field holds four times the largest length that can ever reach it and sixty-five
+/// thousand times the largest block id. Everything else here stays 64 bits and has to:
+/// `object_id` is a full FNV-1a hash of the object identity, `generation` carries that same hash
+/// at several call sites, `block_slab_id` and `offset` are bounded only by a configurable slab
+/// target.
+///
+/// Both narrow fields are read and written through `u64` (`length()`, `block_id()`,
+/// `from_parts`, `set_block_id`), so nothing outside this file knows the width, and every write
+/// SATURATES rather than truncating -- see `narrow` below. The stored form does not move: the
+/// address serializes through [`BlockAddressWire`], which still carries both as 64-bit fields.
 #[derive(Debug, Default, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(from = "BlockAddressWire", into = "BlockAddressWire")]
 pub struct BlockAddress {
     pub block_slab_id: u64,
     pub offset: u64,
-    pub length: u64,
-    block_id: u64,
+    length: u32,
+    block_id: u32,
     object_id: u64,
     generation: u64,
     routing_bucket: u32,
     /// Which of the five above are actually set. See `ADDRESS_HAS_*`.
     present: u8,
+}
+
+/// The width this structure is budgeted at, so a field added to it is a BUILD failure.
+///
+/// 48 bytes: two 64-bit slab coordinates, two 64-bit identities, two 32-bit narrow fields, the
+/// 32-bit routing bucket and the presence byte -- 45 bytes of field and three of alignment.
+/// Nothing stopped this growing before it was written down; it had already moved twice.
+const _: () = assert!(std::mem::size_of::<BlockAddress>() == 48);
+
+/// SATURATE, NEVER TRUNCATE.
+///
+/// `value as u32` on a 4 GiB length yields a small plausible number and no error anywhere, and
+/// this tree has been bitten by exactly that shape before: a value had to be pinned at `u64::MAX`
+/// so a fixed-width format kept its width, and a missing value read as zero caused two separate
+/// defects. A saturated length is larger than any length the encoder will accept, so it reads as
+/// broken rather than as a shorter record.
+///
+/// Reachable only from an already-corrupt stored address or a caller passing a value the write
+/// path would have refused; `engine::tests::per_item_byte_budget` holds both boundaries.
+const fn narrow(value: u64) -> u32 {
+    if value > u32::MAX as u64 {
+        u32::MAX
+    } else {
+        value as u32
+    }
 }
 
 impl BlockAddress {
@@ -229,8 +283,8 @@ impl BlockAddress {
         Self {
             block_slab_id,
             offset,
-            length,
-            block_id: block_id.unwrap_or_default(),
+            length: narrow(length),
+            block_id: narrow(block_id.unwrap_or_default()),
             object_id: object_id.unwrap_or_default(),
             generation: generation.unwrap_or_default(),
             routing_bucket: routing_bucket.unwrap_or_default(),
@@ -238,8 +292,22 @@ impl BlockAddress {
         }
     }
 
+    /// How many bytes this address covers.
+    ///
+    /// Answers in 64 bits, as it always has, over a 32-bit field. See the note on
+    /// [`BlockAddress`] for what bounds it: the block-record encoder refuses a record wider than
+    /// `BLOCK_RECORD_LENGTH_MASK`, which is a quarter of what this field holds.
+    pub fn length(&self) -> u64 {
+        u64::from(self.length)
+    }
+
+    /// Set the byte count, saturating rather than truncating. See [`narrow`].
+    pub fn set_length(&mut self, value: u64) {
+        self.length = narrow(value);
+    }
+
     pub fn block_id(&self) -> Option<u64> {
-        (self.present & ADDRESS_HAS_BLOCK_ID != 0).then_some(self.block_id)
+        (self.present & ADDRESS_HAS_BLOCK_ID != 0).then_some(u64::from(self.block_id))
     }
 
     pub fn object_id(&self) -> Option<u64> {
@@ -268,7 +336,7 @@ impl BlockAddress {
     }
 
     pub fn set_block_id(&mut self, value: Option<u64>) {
-        self.block_id = value.unwrap_or_default();
+        self.block_id = narrow(value.unwrap_or_default());
         self.set_present(ADDRESS_HAS_BLOCK_ID, value.is_some());
     }
 
@@ -866,6 +934,11 @@ pub struct BlockStoreSlabDescriptor {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub first_error: Option<String>,
 }
+
+/// One per slab. Six `Option`s of eight bytes each is 96 of its 168 bytes, which is the shape
+/// `BlockAddress` replaced with a presence byte -- worth it there at one per stored page, not
+/// worth a wire change here at one per gigabyte.
+const _: () = assert!(std::mem::size_of::<BlockStoreSlabDescriptor>() == 168);
 
 #[derive(Debug, Default, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct BlockStoreSlabSummary {
@@ -3641,7 +3714,7 @@ const RETIRED_NAMES: &[&str] = &[
         );
         let from_compact_slab = BlockAddress::from_compact_slab_address(
             next.compact_slab_address().unwrap(),
-            next.length,
+            next.length(),
         );
         assert_eq!(from_compact_slab.block_slab_id, next.block_slab_id);
         assert_eq!(from_compact_slab.offset, next.offset);
@@ -3685,9 +3758,12 @@ const RETIRED_NAMES: &[&str] = &[
             4,
             "the field is the checksum and nothing else: no padding, no marker"
         );
-        // Six u64, one u32 and the presence byte. It was 64 while the grouping id was a seventh
-        // field; it is the slab's own id, so it is read off `block_slab_id` instead of stored.
-        assert_eq!(std::mem::size_of::<BlockAddress>(), 56);
+        // Four u64, three u32 and the presence byte: 45 bytes of field in 48. It was 64 while
+        // the grouping id was a seventh field; it is the slab's own id, so it is read off
+        // `block_slab_id` instead of stored. It was 56 while `length` and `block_id` were 64-bit
+        // fields holding values the block-record encoder refuses above 2^30 and above `u16::MAX`
+        // respectively -- see the note on `BlockAddress` and `per_item_byte_budget`.
+        assert_eq!(std::mem::size_of::<BlockAddress>(), 48);
     }
 
     #[test]
@@ -3718,7 +3794,7 @@ const RETIRED_NAMES: &[&str] = &[
 
         assert_eq!(address.block_slab_id, 0);
         assert_eq!(address.offset, 0);
-        assert!(address.length > b"address-contract".len() as u64);
+        assert!(address.length() > b"address-contract".len() as u64);
         assert_eq!(address.block_id(), Some(0));
         assert_eq!(address.object_id(), Some(4242));
         assert_eq!(address.routing_bucket(), Some(17));
@@ -3728,7 +3804,7 @@ const RETIRED_NAMES: &[&str] = &[
         assert_eq!(address.compact_slab_address(), Some(0));
         let from_compact_slab = BlockAddress::from_compact_slab_address(
             address.compact_slab_address().unwrap(),
-            address.length,
+            address.length(),
         );
         assert_eq!(
             from_compact_slab.block_slab_id,
@@ -4319,7 +4395,7 @@ const RETIRED_NAMES: &[&str] = &[
         assert_eq!(report.partial_slab_count, 1);
         assert_eq!(
             report.readable_prefix_physical_bytes,
-            readable_prefix + second.length
+            readable_prefix + second.length()
         );
         assert!(report.partial_slab_recovery_ready);
         assert!(!report.envelope_checksum_ready);
@@ -4459,8 +4535,8 @@ const RETIRED_NAMES: &[&str] = &[
         let second = store.append(&second_payload).unwrap();
         let raw = store.read_slab(first.block_slab_id).unwrap();
 
-        assert!(first.length < (record::BLOCK_RECORD_HEADER_LEN + first_payload.len()) as u64);
-        assert!(second.length < (record::BLOCK_RECORD_HEADER_LEN + second_payload.len()) as u64);
+        assert!(first.length() < (record::BLOCK_RECORD_HEADER_LEN + first_payload.len()) as u64);
+        assert!(second.length() < (record::BLOCK_RECORD_HEADER_LEN + second_payload.len()) as u64);
         assert_eq!(store.read(&first).unwrap(), first_payload);
         assert_eq!(store.read(&second).unwrap(), second_payload);
 
@@ -4636,7 +4712,7 @@ const RETIRED_NAMES: &[&str] = &[
 
         assert_eq!(reports.len(), 1);
         assert_eq!(reports[0].block_slab_id, first.block_slab_id);
-        assert_eq!(reports[0].physical_bytes, first.length + second.length);
+        assert_eq!(reports[0].physical_bytes, first.length() + second.length());
         assert_eq!(
             reports[0].logical_bytes,
             (first_payload.len() + second_payload.len()) as u64
@@ -4658,7 +4734,7 @@ const RETIRED_NAMES: &[&str] = &[
             first.block_slab_id
         );
         assert_eq!(reports[0].block_index_entries[0].offset, first.offset);
-        assert_eq!(reports[0].block_index_entries[0].length, first.length);
+        assert_eq!(reports[0].block_index_entries[0].length, first.length());
         assert_eq!(
             reports[0].block_index_entries[0].compact_slab_address,
             first.compact_slab_address()
@@ -4681,7 +4757,7 @@ const RETIRED_NAMES: &[&str] = &[
         assert!(!reports[0].block_index_entries[0].deleted);
         assert!(!reports[0].block_index_entries[0].block_in_log);
         assert_eq!(reports[0].block_index_entries[1].offset, second.offset);
-        assert_eq!(reports[0].block_index_entries[1].length, second.length);
+        assert_eq!(reports[0].block_index_entries[1].length, second.length());
         assert_eq!(reports[0].block_index_entries[1].block_id, second.block_id());
         assert_eq!(reports[0].first_error, None);
     }
@@ -4702,9 +4778,9 @@ const RETIRED_NAMES: &[&str] = &[
         assert_eq!(reports.len(), 1);
         assert_eq!(reports[0].block_count, 1);
         assert_eq!(reports[0].logical_bytes, b"healthy".len() as u64);
-        assert_eq!(reports[0].readable_prefix_physical_bytes, first.length);
+        assert_eq!(reports[0].readable_prefix_physical_bytes, first.length());
         assert!(reports[0].has_corruption);
-        assert_eq!(reports[0].first_error_offset, Some(first.length));
+        assert_eq!(reports[0].first_error_offset, Some(first.length()));
         assert_eq!(reports[0].first_block_id, first.block_id());
         assert_eq!(reports[0].last_block_id, first.block_id());
         let error = reports[0]
@@ -4735,7 +4811,7 @@ const RETIRED_NAMES: &[&str] = &[
         // is the fixed part, one varint per number, and the compression codec.
         let expected_header = record::BLOCK_RECORD_HEADER_LEN;
         assert_eq!(
-            disabled_address.length,
+            disabled_address.length(),
             (expected_header + payload.len()) as u64
         );
         assert_eq!(
@@ -4763,7 +4839,7 @@ const RETIRED_NAMES: &[&str] = &[
 
         let threshold_header = record::BLOCK_RECORD_HEADER_LEN;
         assert_eq!(
-            threshold_address.length,
+            threshold_address.length(),
             (threshold_header + payload.len()) as u64
         );
         assert_eq!(record::block_record_compression_byte(&threshold_raw), BLOCK_RECORD_COMPRESSION_NONE);

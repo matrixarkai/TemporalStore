@@ -983,7 +983,7 @@ impl TemporalEngine {
                     page.object_id(),
                     page.address.block_slab_id,
                     page.address.offset,
-                    page.address.length,
+                    page.address.length(),
                     page.deleted,
                     page.log_backed,
                 ));
@@ -1003,7 +1003,7 @@ impl TemporalEngine {
         for (key, address) in strings {
             out.push_str(&format!(
                 "string {key} slab={} off={} len={}\n",
-                address.block_slab_id, address.offset, address.length
+                address.block_slab_id, address.offset, address.length()
             ));
         }
         for (key, deadline) in &shard.expires_at_ms {
@@ -1027,7 +1027,7 @@ impl TemporalEngine {
                 out.push_str(&format!(
                     "context_entity {key} id={entity_hash} slab={} off={} len={}
 ",
-                    address.block_slab_id, address.offset, address.length
+                    address.block_slab_id, address.offset, address.length()
                 ));
             }
         }
@@ -1037,7 +1037,7 @@ impl TemporalEngine {
             out.push_str(&format!(
                 "control_state_page {key} slab={} off={} len={}
 ",
-                address.block_slab_id, address.offset, address.length
+                address.block_slab_id, address.offset, address.length()
             ));
         }
         let mut counters: Vec<_> = shard.control_state.iter().collect();
@@ -1075,7 +1075,7 @@ impl TemporalEngine {
                 out.push_str(&format!(
                     "context_event {key} id={event_id_hash} slab={} off={} len={}
 ",
-                    address.block_slab_id, address.offset, address.length
+                    address.block_slab_id, address.offset, address.length()
                 ));
             }
         }
@@ -1106,7 +1106,7 @@ impl TemporalEngine {
                     out.push_str(&format!(
                         "{kind} {key} at={stored_key} slab={} off={} len={}
 ",
-                        address.block_slab_id, address.offset, address.length
+                        address.block_slab_id, address.offset, address.length()
                     ));
                 }
             }

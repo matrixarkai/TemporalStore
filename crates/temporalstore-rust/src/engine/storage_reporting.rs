@@ -193,8 +193,8 @@ pub(super) fn bucket_storage_summaries(
             ..BucketStorageSummary::default()
         });
         summary.block_ref_count = summary.block_ref_count.saturating_add(1);
-        summary.physical_bytes = summary.physical_bytes.saturating_add(entry.address.length);
-        summary.logical_bytes = summary.logical_bytes.saturating_add(entry.address.length);
+        summary.physical_bytes = summary.physical_bytes.saturating_add(entry.address.length());
+        summary.logical_bytes = summary.logical_bytes.saturating_add(entry.address.length());
         // Record which page slab backs each bucket so bucket-dump manifests carry the
         // live slab set (used by manifest validation and the dump/copy path).
         // Without this the map stayed empty and every summary reported no slabs.
@@ -401,7 +401,7 @@ pub(super) fn storage_physical_index_report(
             routing_bucket,
             block_slab_id: entry.address.block_slab_id,
             offset: entry.address.offset,
-            length: entry.address.length,
+            length: entry.address.length(),
             block_id: entry.address.block_id(),
             object_id: entry.address.object_id(),
             stored_slab_id: entry.address.slab_id(),
@@ -453,7 +453,7 @@ pub(super) fn storage_physical_index_report(
                 routing_bucket: *routing_bucket,
                 block_slab_id: page.address.block_slab_id,
                 offset: page.address.offset,
-                length: page.address.length,
+                length: page.address.length(),
                 block_id: page.address.block_id(),
                 object_id: Some(page.object_id()),
                 stored_slab_id: page.address.slab_id(),
@@ -810,7 +810,7 @@ pub(super) fn bucket_generation_fingerprints_by_bucket(shard: &ShardState) -> BT
             entry.component.unwrap_or_default(),
             entry.address.block_slab_id,
             entry.address.offset,
-            entry.address.length,
+            entry.address.length(),
             entry.address.block_id().unwrap_or_default(),
             entry.address.object_id().unwrap_or_default(),
             entry.address.routing_bucket().unwrap_or(routing_bucket),
@@ -839,7 +839,7 @@ pub(super) fn unique_timestamped_kv_block_addresses(series: &BTreeMap<u64, Block
         left.block_slab_id
             .cmp(&right.block_slab_id)
             .then(left.offset.cmp(&right.offset))
-            .then(left.length.cmp(&right.length))
+            .then(left.length().cmp(&right.length()))
     });
     addresses
 }
@@ -1120,7 +1120,7 @@ pub(super) fn feature_block_error(
         key: key.to_string(),
         block_slab_id: address.block_slab_id,
         offset: address.offset,
-        length: address.length,
+        length: address.length(),
         error: error.into(),
     }
 }
@@ -1137,7 +1137,7 @@ pub(super) fn feature_block_timestamp_mismatch(
         timestamp_ms,
         block_slab_id: address.block_slab_id,
         offset: address.offset,
-        length: address.length,
+        length: address.length(),
     }
 }
 

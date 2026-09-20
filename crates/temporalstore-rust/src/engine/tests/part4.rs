@@ -3615,7 +3615,7 @@ fn tiny_cache_dump_load_restart_refills_from_disk_block_cache() {
             1,
             address.block_slab_id,
             address.offset,
-            address.length,
+            address.length(),
             address.routing_bucket(),
         )
     };
@@ -4945,7 +4945,7 @@ fn what_each_address_field_actually_ranges_over() {
             let a = &page.address;
             slab = slab.max(a.block_slab_id);
             offset = offset.max(a.offset);
-            length = length.max(a.length);
+            length = length.max(a.length());
             block_id = block_id.max(a.block_id().unwrap_or(0));
             object_id = object_id.max(a.object_id().unwrap_or(0));
             generation = generation.max(a.generation().unwrap_or(0));
@@ -11989,7 +11989,7 @@ fn what_a_live_record_is_made_of() {
                     "[census]   address: slab={} off={} len={} block_id={:?} object_id={:?} gen={:?} slab_id={:?}",
                     address.block_slab_id,
                     address.offset,
-                    address.length,
+                    address.length(),
                     address.block_id(),
                     address.object_id(),
                     address.generation(),
@@ -18279,7 +18279,7 @@ fn what_a_packed_block_looks_like_in_the_index() {
             "    ts={timestamp} slab={} off={} len={} page_id={:?}",
             address.block_slab_id,
             address.offset,
-            address.length,
+            address.length(),
             address.block_id()
         );
         distinct.insert(address.clone());
@@ -18826,7 +18826,7 @@ fn a_released_bucket_reloads_the_exact_block_list_it_released() {
                         page.component.as_ref().map(|name| name.to_string()),
                         page.address.block_slab_id,
                         page.address.offset,
-                        page.address.length,
+                        page.address.length(),
                     )
                 })
             })

@@ -1805,8 +1805,8 @@ impl TemporalEngine {
                     if page.deleted {
                         continue;
                     }
-                    logical_bytes = logical_bytes.saturating_add(page.address.length);
-                    physical_bytes = physical_bytes.saturating_add(page.address.length);
+                    logical_bytes = logical_bytes.saturating_add(page.address.length());
+                    physical_bytes = physical_bytes.saturating_add(page.address.length());
                     if page.dirty {
                         dirty_object_count = dirty_object_count.saturating_add(1);
                     }

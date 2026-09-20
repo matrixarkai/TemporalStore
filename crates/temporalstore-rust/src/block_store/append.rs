@@ -98,7 +98,7 @@ impl BlockStore {
         if !defer_data_sync {
             file.sync_data()?;
         }
-        inner.write_offset += address.length;
+        inner.write_offset += address.length();
         let block_slab_id = inner.block_slab_id;
         let write_offset = inner.write_offset;
         upsert_slab_after_append(
@@ -114,7 +114,7 @@ impl BlockStore {
             inner.persist_slab_manifest_counted()?;
         }
         inner.stats.writes += 1;
-        inner.stats.bytes_written += address.length;
+        inner.stats.bytes_written += address.length();
         inner.stats.logical_bytes_written += record.logical_len as u64;
         if record.compression == BlockRecordCompression::Zstd {
             inner.stats.compressed_records_written += 1;
@@ -166,7 +166,7 @@ impl BlockStore {
             if let Some(current) = file.as_mut() {
                 current.write_all(&record.bytes)?;
             }
-            inner.write_offset += address.length;
+            inner.write_offset += address.length();
             let block_slab_id = inner.block_slab_id;
             let write_offset = inner.write_offset;
             upsert_slab_after_append(
@@ -177,7 +177,7 @@ impl BlockStore {
                 block_id,
             );
             writes = writes.saturating_add(1);
-            bytes_written = bytes_written.saturating_add(address.length);
+            bytes_written = bytes_written.saturating_add(address.length());
             logical_bytes_written = logical_bytes_written.saturating_add(record.logical_len as u64);
             if record.compression == BlockRecordCompression::Zstd {
                 compressed_records_written = compressed_records_written.saturating_add(1);

@@ -330,7 +330,7 @@ impl TemporalEngine {
             slab_report.live_block_refs = slab_report.live_block_refs.saturating_add(1);
             slab_report.live_physical_bytes = slab_report
                 .live_physical_bytes
-                .saturating_add(address.length);
+                .saturating_add(address.length());
             if let Some(object_id) = address.object_id() {
                 let objects = live_object_ids.entry(address.block_slab_id).or_default();
                 objects.insert(object_id);
@@ -635,7 +635,7 @@ impl TemporalEngine {
             slab_report.live_block_refs = slab_report.live_block_refs.saturating_add(1);
             slab_report.live_physical_bytes = slab_report
                 .live_physical_bytes
-                .saturating_add(address.length);
+                .saturating_add(address.length());
             if let Some(object_id) = address.object_id() {
                 let objects = live_object_ids.entry(address.block_slab_id).or_default();
                 objects.insert(object_id);
@@ -681,7 +681,7 @@ impl TemporalEngine {
                     unreadable_block_refs.push(StorageRecoveryBlockError {
                         block_slab_id: address.block_slab_id,
                         offset: address.offset,
-                        length: address.length,
+                        length: address.length(),
                         error: err.to_string(),
                     });
                 }

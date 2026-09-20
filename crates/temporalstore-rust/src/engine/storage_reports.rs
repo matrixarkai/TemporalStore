@@ -512,7 +512,7 @@ impl TemporalEngine {
                     shard_id,
                     entry.address.block_slab_id,
                     entry.address.offset,
-                    entry.address.length,
+                    entry.address.length(),
                     entry.address.routing_bucket(),
                 );
                 plan.push((key, entry.address));

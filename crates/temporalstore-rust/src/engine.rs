@@ -1788,7 +1788,7 @@ impl TemporalEngine {
             shard_id,
             address.block_slab_id,
             address.offset,
-            address.length,
+            address.length(),
             address.routing_bucket()))
     }
 
@@ -2968,7 +2968,7 @@ fn collect_upsert_index_items(
             component.as_deref().unwrap_or(""),
             address.block_slab_id,
             address.offset,
-            address.length,
+            address.length(),
             address.block_id().unwrap_or_default(),
             address.generation().unwrap_or_default()
         );
@@ -2981,7 +2981,7 @@ fn collect_upsert_index_items(
             component: component.clone(),
             object_id,
             block_id: address.block_id().unwrap_or(0),
-            size: address.length,
+            size: address.length(),
             in_log: address.block_id().is_none(),
             deleted: false,
             address: Some(address),
@@ -3064,7 +3064,7 @@ fn collect_command_index_items_for(
                 object_id: page.object_id(),
                 block_id: page.address.block_id().unwrap_or(0),
                 address: Some(page.address.clone()),
-                size: page.address.length,
+                size: page.address.length(),
                 in_log: page.log_backed,
                 deleted: page.deleted,
             });
@@ -4539,7 +4539,7 @@ fn append_value_inner(
                 shard_id,
                 address.block_slab_id,
                 address.offset,
-                address.length,
+                address.length(),
                 address.routing_bucket()),
             bytes,
         );
@@ -5027,7 +5027,7 @@ fn read_block_bytes(
         shard_id,
         address.block_slab_id,
         address.offset,
-        address.length,
+        address.length(),
         address.routing_bucket());
     if let Ok(Some(bytes)) = cache.get(&cache_key) {
         return Some(bytes);
@@ -5108,7 +5108,7 @@ fn read_block_shared(
         shard_id,
         address.block_slab_id,
         address.offset,
-        address.length,
+        address.length(),
         address.routing_bucket());
     if let Ok(Some(bytes)) = cache.get_shared(&cache_key) {
         return Some(bytes);
