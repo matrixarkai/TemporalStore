@@ -13,6 +13,72 @@
 //! single-shard behavior was byte-identical either way.
 
 use super::*;
+use crate::engine::reports::StageWalkCharges;
+
+/// One stage's measured span: how long its WORK took, and how much of the store that work walked.
+///
+/// WHY THE SPANS ARE CLOSED AT THE WORK AND NOT AT THE ROW. The stage rows are not built in the
+/// order the stages RUN. `expire`, `reclaim_page`, `evict` and `index_gc` all do their work before
+/// `reclaim_wal`'s row is pushed, so a clock that simply restarted at every push charged all four
+/// of them to `reclaim_wal` -- which then reported `skipped: true` beside the largest cost in the
+/// round, while the four stages that had actually done the work reported nothing.
+///
+/// Measured before this existed, on a store of 8,000 records taking a proportional round:
+/// `reclaim_wal` 503 ms and 39,360 live-page entries with `applied: false`, against `expire` 0 ms
+/// / 0 entries having removed 128 records, and `reclaim_page`, `evict` and `index_gc` at 0 ms and
+/// 0 entries each. This is the same defect mx#1435 fixed for `prepare` by giving the plan its own
+/// row -- `prepare` was reporting 328 ms at 32,000 records for pre-allocating one slab -- and it
+/// was still live for four more stages, which is why the round's own breakdown could not be used
+/// to decide which stage to bound.
+///
+/// A stage whose work is in two pieces (`reclaim_wal` dumps before it reclaims, with `evict`
+/// between) closes a span for each and adds them, so the row reports the stage rather than the
+/// interval.
+#[derive(Debug, Default, Clone, Copy)]
+pub(super) struct StageSpan {
+    duration_ms: u64,
+    walk: StageWalkCharges,
+}
+
+impl StageSpan {
+    /// Close the span running since `clock` was last restarted, and start the next one.
+    ///
+    /// Read-and-restart in one call for both the clock and the walk accumulators, so no interval
+    /// is charged twice and none is dropped between two stages.
+    fn close(clock: &mut std::time::Instant) -> Self {
+        let duration_ms = clock.elapsed().as_millis() as u64;
+        *clock = std::time::Instant::now();
+        Self {
+            duration_ms,
+            walk: crate::engine::take_stage_walk_charges(),
+        }
+    }
+
+    /// The two pieces of a stage whose work is not one interval.
+    fn plus(self, other: Self) -> Self {
+        Self {
+            duration_ms: self.duration_ms.saturating_add(other.duration_ms),
+            walk: StageWalkCharges {
+                live_block_entries: self
+                    .walk
+                    .live_block_entries
+                    .saturating_add(other.walk.live_block_entries),
+                bucket_block_index_visits: self
+                    .walk
+                    .bucket_block_index_visits
+                    .saturating_add(other.walk.bucket_block_index_visits),
+                index_encodes: self
+                    .walk
+                    .index_encodes
+                    .saturating_add(other.walk.index_encodes),
+                index_encode_bytes: self
+                    .walk
+                    .index_encode_bytes
+                    .saturating_add(other.walk.index_encode_bytes),
+            },
+        }
+    }
+}
 
 /// How many live pages one maintenance round checks for readability.
 ///
@@ -41,6 +107,10 @@ impl TemporalEngine {
         // was the first version here, and the totals gave it away: eight stages summing to eight
         // times the wall clock of the call that produced them.
         let mut stage_clock = std::time::Instant::now();
+        // The stage accumulators start this round at zero for the same reason `stage_clock` is
+        // taken here: `plan` is charged from the top of the round, and whatever ran before the
+        // round is not the round's cost.
+        crate::engine::reset_stage_walk_charges();
         // Short-circuit while the shard is RECOVERING (WAL replay in progress). The cycle
         // mutates shard state (eviction / page + WAL reclaim / compaction); a GC or compaction
         // round interleaved with an in-flight replay would observe a half-reconstructed bucket
@@ -287,6 +357,7 @@ impl TemporalEngine {
             compaction_debt_score,
             total_pressure_score,
         };
+        let plan_span = StageSpan::close(&mut stage_clock);
         let mut stages = Vec::new();
         let mut errors = Vec::new();
         // Everything above gets its own stage, for the reason mx#1435 gave for the dump-load
@@ -296,11 +367,8 @@ impl TemporalEngine {
         // charged to `prepare` -- which pre-allocates the next slab and surveys nothing, yet
         // reported 328 ms at 32,000 records.
         stages.push(StorageManagerStageReport {
-            duration_ms: {
-                let elapsed = stage_clock.elapsed().as_millis() as u64;
-                stage_clock = std::time::Instant::now();
-                elapsed
-            },
+            duration_ms: plan_span.duration_ms,
+            walk: plan_span.walk,
             stage: "plan".to_string(),
             enabled: true,
             applied: true,
@@ -350,12 +418,10 @@ impl TemporalEngine {
                 Err(error) => errors.push(format!("prepare: {error}")),
             }
         }
+        let prepare_span = StageSpan::close(&mut stage_clock);
         stages.push(StorageManagerStageReport {
-            duration_ms: {
-                let elapsed = stage_clock.elapsed().as_millis() as u64;
-                stage_clock = std::time::Instant::now();
-                elapsed
-            },
+            duration_ms: prepare_span.duration_ms,
+            walk: prepare_span.walk,
             stage: "prepare".to_string(),
             enabled: request.enable_prepare,
             applied: request.enable_prepare && !request.dry_run,
@@ -400,6 +466,8 @@ impl TemporalEngine {
                 Err(err) => errors.push(format!("expire: {}", err.message)),
             }
         }
+
+        let expire_span = StageSpan::close(&mut stage_clock);
 
         // ONE PINNED SLAB NO LONGER SUPPRESSES THE REST.
         //
@@ -474,6 +542,7 @@ impl TemporalEngine {
             }
         }
 
+        let reclaim_page_span = StageSpan::close(&mut stage_clock);
         let lifecycle_report = if request.dry_run {
             None
         } else {
@@ -495,6 +564,9 @@ impl TemporalEngine {
             self.publish_block_slab_live_bytes();
             report
         };
+        // The dump belongs to `reclaim_wal`: the log cannot be reclaimed past what a dump has
+        // made durable, so the dump is the price this stage pays and is charged to it.
+        let reclaim_wal_dump_span = StageSpan::close(&mut stage_clock);
         // apply_storage_lifecycle's warm phase brings freshly-dumped pages into DRAM.
         // The pressure snapshot above was captured during prepare (pre-warm), so
         // re-measure memory residency here so the emitted snapshot reflects the warmed
@@ -549,6 +621,9 @@ impl TemporalEngine {
         } else {
             None
         };
+        // The warm re-measure above feeds this stage's own pressure gate, so it is charged here
+        // rather than to the dump that warmed the cache.
+        let evict_span = StageSpan::close(&mut stage_clock);
         // Pages whose only durable copy is a WAL record leave the log HERE, before the reclaim
         // plan is computed, because `min_registered_sequence` pins retention to the LOWEST
         // registration: a page still resident holds the floor down and no retention policy can
@@ -604,6 +679,7 @@ impl TemporalEngine {
         } else {
             None
         };
+        let reclaim_wal_span = reclaim_wal_dump_span.plus(StageSpan::close(&mut stage_clock));
         let index_gc_report = Some(self.storage_index_gc_report(
             &plan,
             &wal_reclaim_plan,
@@ -611,12 +687,10 @@ impl TemporalEngine {
             &request,
         ));
 
+        let index_gc_span = StageSpan::close(&mut stage_clock);
         stages.push(StorageManagerStageReport {
-            duration_ms: {
-                let elapsed = stage_clock.elapsed().as_millis() as u64;
-                stage_clock = std::time::Instant::now();
-                elapsed
-            },
+            duration_ms: reclaim_wal_span.duration_ms,
+            walk: reclaim_wal_span.walk,
             stage: "reclaim_wal".to_string(),
             wal_resident_blocks_materialised,
             enabled: request.enable_wal_reclaim,
@@ -712,11 +786,8 @@ impl TemporalEngine {
         });
 
         stages.push(StorageManagerStageReport {
-            duration_ms: {
-                let elapsed = stage_clock.elapsed().as_millis() as u64;
-                stage_clock = std::time::Instant::now();
-                elapsed
-            },
+            duration_ms: expire_span.duration_ms,
+            walk: expire_span.walk,
             stage: "expire".to_string(),
             enabled: request.enable_expire,
             applied: request.enable_expire && !request.dry_run,
@@ -756,11 +827,8 @@ impl TemporalEngine {
         });
 
         stages.push(StorageManagerStageReport {
-            duration_ms: {
-                let elapsed = stage_clock.elapsed().as_millis() as u64;
-                stage_clock = std::time::Instant::now();
-                elapsed
-            },
+            duration_ms: evict_span.duration_ms,
+            walk: evict_span.walk,
             stage: "evict".to_string(),
             enabled: request.enable_evict,
             applied: eviction_report
@@ -872,11 +940,8 @@ impl TemporalEngine {
         });
 
         stages.push(StorageManagerStageReport {
-            duration_ms: {
-                let elapsed = stage_clock.elapsed().as_millis() as u64;
-                stage_clock = std::time::Instant::now();
-                elapsed
-            },
+            duration_ms: reclaim_page_span.duration_ms,
+            walk: reclaim_page_span.walk,
             stage: "reclaim_page".to_string(),
             enabled: request.enable_block_reclaim,
             applied: request.enable_block_reclaim
@@ -933,11 +998,8 @@ impl TemporalEngine {
         });
 
         stages.push(StorageManagerStageReport {
-            duration_ms: {
-                let elapsed = stage_clock.elapsed().as_millis() as u64;
-                stage_clock = std::time::Instant::now();
-                elapsed
-            },
+            duration_ms: index_gc_span.duration_ms,
+            walk: index_gc_span.walk,
             stage: "index_gc".to_string(),
             enabled: request.enable_index_gc,
             applied: request.enable_index_gc
@@ -1069,12 +1131,10 @@ impl TemporalEngine {
         // `skipped=true` and moving zero pages, because it was being charged for work it does
         // not do. A stage report that names the wrong stage is worse than no stage report: it
         // sends whoever reads it to optimise the wrong function, which is exactly what it did.
+        let merged_dump_load_policy_span = StageSpan::close(&mut stage_clock);
         stages.push(StorageManagerStageReport {
-            duration_ms: {
-                let elapsed = stage_clock.elapsed().as_millis() as u64;
-                stage_clock = std::time::Instant::now();
-                elapsed
-            },
+            duration_ms: merged_dump_load_policy_span.duration_ms,
+            walk: merged_dump_load_policy_span.walk,
             stage: "merged_dump_load_policy".to_string(),
             enabled: true,
             applied: true,
@@ -1097,12 +1157,10 @@ impl TemporalEngine {
         } else {
             None
         };
+        let compact_span = StageSpan::close(&mut stage_clock);
         stages.push(StorageManagerStageReport {
-            duration_ms: {
-                let elapsed = stage_clock.elapsed().as_millis() as u64;
-                stage_clock = std::time::Instant::now();
-                elapsed
-            },
+            duration_ms: compact_span.duration_ms,
+            walk: compact_span.walk,
             stage: "compact".to_string(),
             enabled: request.enable_block_compaction,
             applied: compaction_report.is_some(),
@@ -1170,12 +1228,10 @@ impl TemporalEngine {
         }
         merged_dump_load_policy.policy_ready = merged_dump_load_policy.blockers.is_empty();
 
+        let reap_metrics_span = StageSpan::close(&mut stage_clock);
         stages.push(StorageManagerStageReport {
-            duration_ms: {
-                let elapsed = stage_clock.elapsed().as_millis() as u64;
-                stage_clock = std::time::Instant::now();
-                elapsed
-            },
+            duration_ms: reap_metrics_span.duration_ms,
+            walk: reap_metrics_span.walk,
             stage: "reap_metrics".to_string(),
             enabled: true,
             applied: !request.dry_run,

@@ -57,6 +57,7 @@ pub use storage_bucket_internals::{
     model_map_addresses_visited, reset_bucket_block_index_visits,
     reset_bucket_index_resident_bytes_visits, reset_bucket_scoped_model_entries,
     reset_live_block_scan_entries, reset_live_block_scan_sites, reset_model_map_addresses_visited,
+    reset_stage_walk_charges, take_stage_walk_charges,
     BLOCK_SLAB_LIVE_DRIFTS, BLOCK_SLAB_LIVE_RECONCILES,
 };
 pub use state::{block_slab_live_charges, reset_block_slab_live_charges};
@@ -2367,6 +2368,10 @@ pub mod shard_write_guard {
     }
 
     pub(super) fn note_index_encode(bytes: usize) {
+        // The per-STAGE tally, in the primitive rather than at the call sites, for the reason the
+        // module note on `LIVE_BLOCK_SCAN_ENTRIES` gives: a counter charged at call sites is a
+        // counter the next call site forgets.
+        super::storage_bucket_internals::note_stage_index_encode(bytes);
         ENCODES_TOTAL.with(|count| count.set(count.get().saturating_add(1)));
         ENCODE_BYTES_TOTAL.with(|total| total.set(total.get().saturating_add(bytes as u64)));
         if held() {

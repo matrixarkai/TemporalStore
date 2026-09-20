@@ -3405,8 +3405,37 @@ fn default_storage_manager_eviction_threshold() -> u64 {
     1
 }
 
+/// What one stage of a maintenance round walked, in this engine's own units.
+///
+/// WHY A ROUND NEEDS THIS AND A TOTAL DOES NOT SUFFICE. The round's whole-store walk volume has
+/// been measured before and is a constant multiple of the store. A total says the round is
+/// proportional to the store; it does not say WHICH of the eight stages that proportionality
+/// lives in, and the two answers want opposite work. An aggregate also hides the element: one
+/// stage that is correctly bounded can hold the total down while three beside it are not.
+///
+/// `live_block_entries` counts whole-shard live-page entries MATERIALIZED -- an owned entry per
+/// live page, the expensive walk. `bucket_block_index_visits` counts the cheaper-looking
+/// `page_index` passes, which run inside loops over buckets and so cost a product rather than a
+/// sum. They are different walks and are reported apart, because a stage can be flat in one and
+/// growing in the other.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct StageWalkCharges {
+    #[serde(default)]
+    pub live_block_entries: u64,
+    #[serde(default)]
+    pub bucket_block_index_visits: u64,
+    #[serde(default)]
+    pub index_encodes: u64,
+    #[serde(default)]
+    pub index_encode_bytes: u64,
+}
+
 #[derive(Debug, Default, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct StorageManagerStageReport {
+    /// What this stage walked. Read-and-cleared at the stage boundary, exactly as `duration_ms`
+    /// is, so the stage rows tile the round.
+    #[serde(default)]
+    pub walk: StageWalkCharges,
     pub stage: String,
     pub enabled: bool,
     pub applied: bool,

@@ -3,6 +3,7 @@
 
 //! Storage snapshot/sample reporting + bucket-index maintenance internals, split from engine.rs.
 use super::*;
+use crate::engine::reports::StageWalkCharges;
 use std::sync::Arc;
 
 
@@ -1026,6 +1027,76 @@ pub fn reset_bucket_block_index_visits() {
     BUCKET_BLOCK_INDEX_VISITS.store(0, std::sync::atomic::Ordering::Relaxed);
 }
 
+/// The same two walks, accumulated for the STAGE of a maintenance round that is running.
+///
+/// Separate atomics rather than a second read of the two above, because the two questions have
+/// different spans. [`LIVE_BLOCK_SCAN_ENTRIES`] answers "how much did this whole call walk", and
+/// a reader resets it once around the call. These answer "how much did THIS STAGE walk", and are
+/// read-and-cleared at every stage boundary -- the same discipline the round's `stage_clock`
+/// already uses for `duration_ms`, so the stage rows tile the round rather than overlapping it.
+///
+/// KEEPING THEM SEPARATE IS THE POINT, not an accident of implementation. A residual computed as
+/// "the whole call minus the stages" is only a reading if the two sides are measured by different
+/// instruments; if the stage rows were slices of the same counter the subtraction would be an
+/// identity, and an identity cannot notice a stage boundary that has drifted or a walk made
+/// outside every stage. Both are charged by the same primitives below, and neither is derived
+/// from the other.
+static STAGE_LIVE_BLOCK_SCAN_ENTRIES: std::sync::atomic::AtomicU64 =
+    std::sync::atomic::AtomicU64::new(0);
+static STAGE_BUCKET_BLOCK_INDEX_VISITS: std::sync::atomic::AtomicU64 =
+    std::sync::atomic::AtomicU64::new(0);
+/// Served-index encodes charged to the stage that is running, and their bytes.
+///
+/// A WHOLE-STORE COST NEITHER WALK COUNTER CAN SEE. `serialize_index` encodes the entire served
+/// index for the shard; its cost is the store, and it materialises no live-page entry and visits
+/// no bucket `page_index`, so both counters above read zero across it. It is charged here so the
+/// round's own rows account for it -- and so the part of the round that does it OUTSIDE every
+/// stage shows up as a residual instead of as nothing.
+static STAGE_INDEX_ENCODES: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+static STAGE_INDEX_ENCODE_BYTES: std::sync::atomic::AtomicU64 =
+    std::sync::atomic::AtomicU64::new(0);
+
+/// Charge one served-index encode to the running stage. Called by `note_index_encode`.
+pub(super) fn note_stage_index_encode(bytes: usize) {
+    STAGE_INDEX_ENCODES.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    STAGE_INDEX_ENCODE_BYTES.fetch_add(bytes as u64, std::sync::atomic::Ordering::Relaxed);
+}
+
+/// Read the current stage's walk charges and clear them for the next stage.
+///
+/// Read-and-clear in one call, so a stage cannot be charged twice and the next stage cannot
+/// inherit this one's total.
+pub fn take_stage_walk_charges() -> StageWalkCharges {
+    StageWalkCharges {
+        live_block_entries: STAGE_LIVE_BLOCK_SCAN_ENTRIES.swap(0, std::sync::atomic::Ordering::Relaxed),
+        bucket_block_index_visits: STAGE_BUCKET_BLOCK_INDEX_VISITS
+            .swap(0, std::sync::atomic::Ordering::Relaxed),
+        index_encodes: STAGE_INDEX_ENCODES.swap(0, std::sync::atomic::Ordering::Relaxed),
+        index_encode_bytes: STAGE_INDEX_ENCODE_BYTES
+            .swap(0, std::sync::atomic::Ordering::Relaxed),
+    }
+}
+
+/// Clear both stage accumulators without reporting them, so the first stage of a round is not
+/// charged for whatever ran before the round started.
+pub fn reset_stage_walk_charges() {
+    STAGE_LIVE_BLOCK_SCAN_ENTRIES.store(0, std::sync::atomic::Ordering::Relaxed);
+    STAGE_BUCKET_BLOCK_INDEX_VISITS.store(0, std::sync::atomic::Ordering::Relaxed);
+    STAGE_INDEX_ENCODES.store(0, std::sync::atomic::Ordering::Relaxed);
+    STAGE_INDEX_ENCODE_BYTES.store(0, std::sync::atomic::Ordering::Relaxed);
+}
+
+/// Charge both the whole-call and the per-stage live-page counters by `count`.
+///
+/// Tests only, and it exists for one job: planting a known quantity into the residual instrument
+/// so a test can prove the subtraction recovers it exactly, rather than trusting that a zero
+/// means nothing was missed.
+#[cfg(test)]
+pub fn plant_live_block_scan_entries_for_test(count: u64) {
+    LIVE_BLOCK_SCAN_ENTRIES.fetch_add(count, std::sync::atomic::Ordering::Relaxed);
+    STAGE_LIVE_BLOCK_SCAN_ENTRIES.fetch_add(count, std::sync::atomic::Ordering::Relaxed);
+}
+
 /// Which tally a model-map walk is charged to.
 ///
 /// Named by the caller, applied by [`visit_model_live_blocks`] itself. The charge happens where
@@ -1053,6 +1124,7 @@ pub(super) enum ModelWalkTally {
 #[track_caller]
 fn note_live_block_scan(count: usize) {
     LIVE_BLOCK_SCAN_ENTRIES.fetch_add(count as u64, std::sync::atomic::Ordering::Relaxed);
+    STAGE_LIVE_BLOCK_SCAN_ENTRIES.fetch_add(count as u64, std::sync::atomic::Ordering::Relaxed);
     let caller = std::panic::Location::caller();
     if let Ok(mut sites) = live_block_scan_sites().lock() {
         *sites
@@ -1063,6 +1135,7 @@ fn note_live_block_scan(count: usize) {
 
 fn note_bucket_block_visits(count: usize) {
     BUCKET_BLOCK_INDEX_VISITS.fetch_add(count as u64, std::sync::atomic::Ordering::Relaxed);
+    STAGE_BUCKET_BLOCK_INDEX_VISITS.fetch_add(count as u64, std::sync::atomic::Ordering::Relaxed);
 }
 
 /// Per-site attribution for [`BUCKET_BLOCK_INDEX_VISITS`], so a scaling result names the walk that

@@ -99,6 +99,7 @@ mod prune_crash_window;
 mod install_on_load_anchor;
 mod index_log_replay_reach;
 mod round_scale;
+mod round_stage_cost;
 mod index_bytes_per_key;
 mod dump_scale;
 mod dump_release_scale;
