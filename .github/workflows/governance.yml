@@ -25,16 +25,34 @@ jobs:
         run: |
           set -euo pipefail
           files=$(git ls-files 'crates/**/*.rs' 'sdk/**/*.rs')
-          if [ -z "$files" ]; then
-            echo "No Rust sources found."; exit 0
+          count=$(printf '%s\n' "$files" | grep -c . || true)
+          # A scan that matches nothing passes every check below it, which is how a licence gate
+          # goes quietly blind: the headers do not have to disappear, the GLOB only has to stop
+          # matching -- a directory rename, or a checkout that did not fetch them. 402 sources
+          # matched when this floor was written, so it has ample headroom for ordinary churn and
+          # only fires when the scan itself has stopped working.
+          if [ "$count" -lt 50 ]; then
+            echo "Only $count Rust sources matched 'crates/**/*.rs' 'sdk/**/*.rs'."
+            echo "The scan is not reading the tree, so a clean result below would mean nothing."
+            exit 1
           fi
-          missing=$(grep -L 'SPDX-License-Identifier: Apache-2.0' $files || true)
+          # grep -L exits 1 when EVERY file matches, which is this gate's success case, so the
+          # status cannot simply be trusted. But `|| true` swallowed 2+ as well, and a grep that
+          # failed to run reported no missing headers -- the same blindness one layer down.
+          set +e
+          missing=$(grep -L 'SPDX-License-Identifier: Apache-2.0' $files)
+          status=$?
+          set -e
+          if [ "$status" -ge 2 ]; then
+            echo "grep exited $status while scanning $count files; the scan did not complete."
+            exit 1
+          fi
           if [ -n "$missing" ]; then
             echo "The following Rust sources are missing the SPDX Apache-2.0 header:"
             echo "$missing"
             exit 1
           fi
-          echo "OK: all $(echo "$files" | wc -l) Rust sources carry the SPDX Apache-2.0 header."
+          echo "OK: all $count Rust sources carry the SPDX Apache-2.0 header."
 
   secret-scan:
     name: secret scan (gitleaks)
