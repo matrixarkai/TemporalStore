@@ -68,11 +68,11 @@ const LARGE: usize = 4_000;
 /// read", and every per-slab multiplicity below is indistinguishable from a per-snapshot one. The
 /// records are rolled onto fresh slabs as they are written so the image genuinely spans several,
 /// and `assert_the_fixture_is_populated` refuses to measure a fixture that collapsed back to one.
-const SLABS: usize = 4;
+pub(super) const SLABS: usize = 4;
 
 /// A leader with `records` committed and applied, each a 128-byte value under a 12-byte key,
 /// spread over `SLABS` slabs.
-fn cluster_with(records: usize) -> RaftCluster {
+pub(super) fn cluster_with(records: usize) -> RaftCluster {
     let cluster = RaftCluster::new_single_shard(1, [1, 2, 3]);
     let roll_every = (records / SLABS).max(1);
     let mut index = 0usize;
@@ -109,7 +109,7 @@ fn cluster_with(records: usize) -> RaftCluster {
 /// Both are deliberate production behaviours that would otherwise make this fixture measure
 /// "nothing happened": the byte threshold is a gibibyte, and the retained-bytes ceiling holds
 /// compaction while a live peer is still behind.
-fn force_the_threshold(cluster: &RaftCluster) {
+pub(super) fn force_the_threshold(cluster: &RaftCluster) {
     let mut inner = cluster.inner.write().expect("raft cluster lock poisoned");
     inner.config.max_applied_log_bytes = 1;
     inner.config.max_retained_log_bytes = 0;
@@ -121,7 +121,7 @@ fn force_the_threshold(cluster: &RaftCluster) {
 /// with no slabs walks no slabs, and a cost that never occurred reads exactly like a low one. So
 /// every denominator the rows below divide by is checked here, against the same cluster the
 /// measurement runs on, and printed.
-fn assert_the_fixture_is_populated(cluster: &RaftCluster, records: usize) -> Fixture {
+pub(super) fn assert_the_fixture_is_populated(cluster: &RaftCluster, records: usize) -> Fixture {
     let snapshot = cluster.create_snapshot().expect("create_snapshot must succeed");
     let image = snapshot
         .state_image
@@ -194,13 +194,13 @@ fn assert_the_fixture_is_populated(cluster: &RaftCluster, records: usize) -> Fix
 
 /// The denominators one measurement divides by, read off the fixture it is about to run on.
 #[derive(Debug, Clone, Copy)]
-struct Fixture {
-    payload_bytes: usize,
-    slabs: usize,
-    alive_nodes: usize,
+pub(super) struct Fixture {
+    pub(super) payload_bytes: usize,
+    pub(super) slabs: usize,
+    pub(super) alive_nodes: usize,
 }
 
-fn print_counts(label: &str, counts: &SnapshotCounts) {
+pub(super) fn print_counts(label: &str, counts: &SnapshotCounts) {
     println!("  {label}: {counts:?}");
 }
 
