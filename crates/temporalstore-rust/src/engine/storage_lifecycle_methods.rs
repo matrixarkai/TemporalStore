@@ -1683,7 +1683,7 @@ impl TemporalEngine {
     /// Reads recency and eligibility straight off the bucket index -- the same signals the full
     /// scan derives, but without materializing every live page -- and computes byte totals only
     /// for the buckets actually chosen, which is at most `batch_limit` of them.
-    fn sampled_eviction_victims(
+    pub(super) fn sampled_eviction_victims(
         &self,
         shard_id: ShardId,
         batch_limit: usize,

@@ -961,6 +961,52 @@ pub fn reset_bucket_scoped_model_entries() {
     BUCKET_SCOPED_MODEL_ENTRIES.store(0, std::sync::atomic::Ordering::Relaxed);
 }
 
+/// Model-map addresses a walk LOOKED AT, across every tally.
+///
+/// [`BUCKET_SCOPED_MODEL_ENTRIES`] counts what a bucket-scoped walk EMITS, and that is bounded by
+/// the buckets it was asked about. The pass underneath it is not: the maps are keyed by object
+/// and the routing bucket is a field of the ADDRESS, so `accept` runs on every live address in
+/// the shard before any of them is filtered away. A release of four buckets and a release of four
+/// buckets on a store ten times the size therefore report the same emitted count while doing ten
+/// times the work, and until this counter existed nothing in the tree could tell them apart.
+///
+/// Charged once per walk from a local tally, so the walk pays one atomic and not one per address.
+/// Process-wide like its neighbours: reset immediately before the call being measured, and read
+/// it in a single-threaded run.
+static MODEL_MAP_ADDRESSES_VISITED: std::sync::atomic::AtomicU64 =
+    std::sync::atomic::AtomicU64::new(0);
+
+/// Model-map addresses visited since the last reset.
+pub fn model_map_addresses_visited() -> u64 {
+    MODEL_MAP_ADDRESSES_VISITED.load(std::sync::atomic::Ordering::Relaxed)
+}
+
+/// Reset the model-map visit counter. Pairs with [`model_map_addresses_visited`].
+pub fn reset_model_map_addresses_visited() {
+    MODEL_MAP_ADDRESSES_VISITED.store(0, std::sync::atomic::Ordering::Relaxed);
+}
+
+/// Bucket-index entries visited by [`bucket_index_resident_bytes`]: one per node plus one per
+/// resident page.
+///
+/// Deliberately its own counter rather than a site on [`BUCKET_BLOCK_INDEX_VISITS`]. That total
+/// is asserted on by existing guards around maintenance rounds, and folding a new walk into it
+/// would move their numbers without any of them being about this walk. What this one is for is
+/// the eviction round, which reads resident bytes twice -- once before its gate and once after
+/// its actuator -- and pays the whole bucket index each time.
+static BUCKET_INDEX_RESIDENT_BYTES_VISITS: std::sync::atomic::AtomicU64 =
+    std::sync::atomic::AtomicU64::new(0);
+
+/// Bucket-index entries visited by the resident-bytes walk since the last reset.
+pub fn bucket_index_resident_bytes_visits() -> u64 {
+    BUCKET_INDEX_RESIDENT_BYTES_VISITS.load(std::sync::atomic::Ordering::Relaxed)
+}
+
+/// Reset the resident-bytes walk counter. Pairs with [`bucket_index_resident_bytes_visits`].
+pub fn reset_bucket_index_resident_bytes_visits() {
+    BUCKET_INDEX_RESIDENT_BYTES_VISITS.store(0, std::sync::atomic::Ordering::Relaxed);
+}
+
 /// Running total of bucket `page_index` entries visited by the bucket-maintenance walks.
 ///
 /// Distinct from [`LIVE_BLOCK_SCAN_ENTRIES`], which counts materialized live-page entries. This
@@ -2021,6 +2067,12 @@ pub(super) fn bucket_index_resident_bytes(shard: &ShardState) -> u64 {
         .values()
         .map(|bucket| bucket.block_index.len() as u64)
         .sum();
+    // One entry per node plus one per resident page, which is what the walk above touched.
+    // Charged here rather than at the call sites: the eviction round reaches this twice per
+    // round and the lifecycle plan reaches it again, and a charge at any one of those would
+    // describe a fraction of the walking that actually happens.
+    BUCKET_INDEX_RESIDENT_BYTES_VISITS
+        .fetch_add(nodes.saturating_add(pages), std::sync::atomic::Ordering::Relaxed);
     nodes
         .saturating_mul(std::mem::size_of::<BucketNode>() as u64)
         .saturating_add(pages.saturating_mul(std::mem::size_of::<BlockIndex>() as u64))
@@ -2433,11 +2485,25 @@ fn visit_model_live_blocks(
         );
     }
 
+    // WHAT THE WALK LOOKED AT, as opposed to what it kept. `accept` runs on every live address
+    // in the shard whatever the caller asked for, so this is the term that tracks the store; the
+    // three tallies below track what came out. Counted in a local cell and charged once, so the
+    // walk pays one atomic rather than one per address.
+    let visited = std::cell::Cell::new(0u64);
+    let counting_accept = |address: &BlockAddress| {
+        visited.set(visited.get().saturating_add(1));
+        accept(address)
+    };
     let mut emitted = 0usize;
-    arms(shard, accept, |kind, object_key, component, address| {
-        emitted += 1;
-        emit(kind, object_key, component, address);
-    });
+    arms(
+        shard,
+        counting_accept,
+        |kind, object_key, component, address| {
+            emitted += 1;
+            emit(kind, object_key, component, address);
+        },
+    );
+    MODEL_MAP_ADDRESSES_VISITED.fetch_add(visited.get(), std::sync::atomic::Ordering::Relaxed);
     match tally {
         ModelWalkTally::WholeShardEntries => note_live_block_scan(emitted),
         ModelWalkTally::BucketScopedEntries => {
