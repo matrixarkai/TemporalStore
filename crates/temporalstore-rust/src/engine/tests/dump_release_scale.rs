@@ -1105,3 +1105,968 @@ fn the_byte_instrument_reports_a_planted_write() {
          see a byte written outside its attribution reports 0 for every dump whatever a dump does"
     );
 }
+
+// =============================================================================================
+// MAKING THE COST TRACK THE RELEASE
+// =============================================================================================
+//
+// Everything above prices a dump against a CONSTANT accrual threshold and finds bytes written per
+// byte released linear in the store. Two things have to be separated to act on that.
+//
+// THE WHOLE-INDEX WRITE IS IRREDUCIBLE, and `what_a_dump_writes_is_the_base_index` below counts
+// it. The base index is not a second copy of something incremental that could be written instead:
+// the incremental form already exists and is the index log, `load_index_inner` already loads base
+// + folded deltas, and the base index IS the compaction of that log. A dump that wrote only a
+// delta would have compacted nothing, so it would release nothing, and #1920 established that
+// nothing bounds the retained log except a completed dump. Writing less per dump is not available.
+//
+// THE RATIO IS NOT IRREDUCIBLE. It is cost over release, and while the cost is the store, the
+// release is whatever the cadence held out for -- a constant number of bytes that has nothing to
+// do with the base index a dump must write to free them.
+// `effective_index_dump_threshold_bytes` makes the configured value a FLOOR and adds a relative
+// term: a threshold dump waits until the accrual reaches
+// `base_index / INDEX_DUMP_BASE_FRACTION_DIVISOR`. The ratio is then the divisor, at every size.
+
+/// The accrual floor the cadence arms configure. Small enough that the relative term binds at both
+/// corpus sizes, large enough that the FIXED control still fires within a few batches.
+const CADENCE_FLOOR_BYTES: u64 = 16 * 1024;
+/// Corpus sizes for the cadence arms, exactly 10x apart.
+///
+/// Smaller than the 20,000 and 200,000 this module's first test uses, and deliberately. The figure
+/// the cadence bounds is bytes written per byte RELEASED -- dimensionless -- so what showing it
+/// needs is a tenfold RANGE, not a large absolute size, and the absolute cost of a dump at 20,000
+/// and 200,000 records is already measured and asserted above. A 200,000-record arm here would add
+/// minutes to every run of the suite forever to restate a ratio this pair states.
+const CADENCE_SMALL: usize = 5_000;
+const CADENCE_LARGE: usize = 50_000;
+/// Records written between two cadence checks. Small against the smallest threshold any arm holds
+/// out for, so a round overshoots by at most one batch and the released figure is the threshold
+/// rather than the batch.
+const CADENCE_BATCH: usize = 100;
+/// A round that has not fired after this many batches is an apparatus failure, not a zero.
+const CADENCE_MAX_BATCHES: usize = 1_000;
+/// The FIXED cadence, spelled as the divisor that disables the relative term. An arm that is not
+/// exercising the relative term says so by passing this.
+const FIXED_CADENCE: u64 = 0;
+
+/// One round of a cadence: the records written until the gate fired, and what the dump it fired
+/// cost and released.
+#[derive(Debug, Clone)]
+struct CadenceRound {
+    policy: &'static str,
+    corpus_before: usize,
+    records_written: usize,
+    /// What the production threshold function asked for, given the base index below.
+    threshold_bytes: u64,
+    /// The base index on disk when the round started -- the relative term's only input.
+    base_index_before: u64,
+    /// COST, from the kernel, for the dump alone.
+    kernel_bytes_written: u64,
+    attributed_bytes: u64,
+    residual_bytes: i64,
+    /// The length the ACTIVE index-log piece ended at -- the folded catalog anchor the dump
+    /// appended, as the post-dump sweep left it. The only value the residual is allowed to take
+    /// besides zero, and it is read off the tree rather than chosen. See
+    /// `assert_round_can_express_it`.
+    active_piece_bytes: u64,
+    /// RELEASE.
+    index_log_released: u64,
+    index_log_records_removed: usize,
+    /// The index log's high-water mark this round. What the relative term buys is paid here.
+    undumped_at_dump: u64,
+    pieces_before: usize,
+    pieces_after: usize,
+    /// The dump's bytes, by the name of the file each landed in.
+    named_writes: Vec<(String, u64)>,
+}
+
+impl CadenceRound {
+    fn written_per_byte_released(&self) -> f64 {
+        assert!(
+            self.index_log_released > 0,
+            "APPARATUS: a {} round at corpus {} released nothing, so it cannot price a release",
+            self.policy,
+            self.corpus_before
+        );
+        self.kernel_bytes_written as f64 / self.index_log_released as f64
+    }
+}
+
+fn base_index_on_disk(dir: &Path) -> u64 {
+    std::fs::metadata(
+        dir.join("indexes")
+            .join(format!("shard-{SHARD}.index.json")),
+    )
+    .map(|meta| meta.len())
+    .unwrap_or(0)
+}
+
+/// Write in batches until the PRODUCTION cadence fires, then price the dump it fired.
+///
+/// `maybe_dump_and_reclaim_with_threshold_and_divisor_for_test` differs from what the embedded
+/// proxy's reclaim thread calls once a second only in taking its floor, its interval and its
+/// divisor as arguments rather than reading them from the environment of the whole process --
+/// the same reason `dump_and_reclaim_index_logs_with_min_reclaimable` takes its threshold.
+///
+/// The attribution walk is not taken before every check -- on a 50,000-record store that is a
+/// directory walk per hundred records. It is taken before the check this test PREDICTS will fire,
+/// from the same production function the gate uses, and the prediction is then asserted both ways:
+/// a gate that fires when the prediction said it would not, or refuses when it said it would, is
+/// an apparatus failure and says so. That assertion is also what stops a mutated threshold from
+/// being silently mis-measured instead of caught.
+fn run_cadence_round(
+    engine: &TemporalEngine,
+    dir: &Path,
+    policy: &'static str,
+    next_key: &mut usize,
+    floor_bytes: u64,
+    divisor: u64,
+) -> CadenceRound {
+    let store = engine.index_log_store();
+    let corpus_before = *next_key;
+    let base_index_before = base_index_on_disk(dir);
+    let threshold_bytes = crate::index_log::effective_index_dump_threshold_bytes(
+        floor_bytes,
+        base_index_before,
+        divisor,
+    );
+
+    for batch in 0..CADENCE_MAX_BATCHES {
+        seed_in_batches_of(engine, *next_key, *next_key + CADENCE_BATCH, CADENCE_BATCH);
+        *next_key += CADENCE_BATCH;
+
+        let undumped_at_dump = store.undumped_len_since_dump(SHARD);
+        let expect_fire = undumped_at_dump >= threshold_bytes;
+        if !expect_fire {
+            // Cheap path: no attribution walk. The gate is still ASKED, and must agree.
+            let refused = engine
+                .maybe_dump_and_reclaim_with_threshold_and_divisor_for_test(
+                    SHARD, floor_bytes, 0, 0, divisor,
+                )
+                .is_none();
+            assert!(
+                refused,
+                "APPARATUS: the {policy} cadence fired at corpus {corpus_before} on \
+                 {undumped_at_dump} B accrued, below the {threshold_bytes} B that \
+                 `effective_index_dump_threshold_bytes` says it holds out for -- the gate and the \
+                 threshold function disagree, so nothing measured here is attributable"
+            );
+            assert!(
+                batch + 1 < CADENCE_MAX_BATCHES,
+                "APPARATUS: a {policy} round at corpus {corpus_before} never fired: \
+                 {CADENCE_MAX_BATCHES} batches of {CADENCE_BATCH} against a threshold of \
+                 {threshold_bytes} B, with {undumped_at_dump} B accrued"
+            );
+            continue;
+        }
+        let pieces_before = store.piece_count(SHARD);
+        let tree_before = tree_snapshot(dir);
+        let wchar_before =
+            bytes_written_now().expect("APPARATUS: /proc/thread-self/io carries no wchar line");
+        let fired = engine.maybe_dump_and_reclaim_with_threshold_and_divisor_for_test(
+            SHARD,
+            floor_bytes,
+            0,
+            0,
+            divisor,
+        );
+        let wchar_after =
+            bytes_written_now().expect("APPARATUS: /proc/thread-self/io carries no wchar line");
+        let Some(report) = fired else {
+            panic!(
+                "APPARATUS: the {policy} cadence REFUSED at corpus {corpus_before} with \
+                 {undumped_at_dump} B accrued against the {threshold_bytes} B that \
+                 `effective_index_dump_threshold_bytes` says is enough -- the gate and the \
+                 threshold function disagree"
+            );
+        };
+        let tree_after = tree_snapshot(dir);
+        let named_writes = changed_files(&tree_before, &tree_after);
+        let attributed_bytes: u64 = named_writes.iter().map(|(_, len)| *len).sum();
+        let kernel_bytes_written = wchar_after.saturating_sub(wchar_before);
+        return CadenceRound {
+            policy,
+            corpus_before,
+            records_written: *next_key - corpus_before,
+            threshold_bytes,
+            base_index_before,
+            kernel_bytes_written,
+            attributed_bytes,
+            residual_bytes: kernel_bytes_written as i64 - attributed_bytes as i64,
+            active_piece_bytes: named_writes
+                .iter()
+                .find(|(name, _)| name == &format!("shard-{SHARD}.indexlog.bin"))
+                .map(|(_, len)| *len)
+                .unwrap_or(0),
+            index_log_released: report
+                .index_log_bytes_before
+                .saturating_sub(report.index_log_bytes_after),
+            index_log_records_removed: report.index_log_records_removed,
+            undumped_at_dump,
+            pieces_before,
+            pieces_after: store.piece_count(SHARD),
+            named_writes,
+        };
+    }
+    unreachable!("the loop above either returns or asserts");
+}
+
+fn show_round(round: &CadenceRound) {
+    eprintln!(
+        "CADENCE {:8} corpus={:6} wrote={:5} recs | threshold={:9} B (base {:9} B) | COST \
+         kernel={:9} attributed={:9} residual={:3} (anchor {:3}) | RELEASE {:9} B in \
+         {:4} recs, pieces {:4}->{:2} | written per byte released {:9.3}",
+        round.policy,
+        round.corpus_before,
+        round.records_written,
+        round.threshold_bytes,
+        round.base_index_before,
+        round.kernel_bytes_written,
+        round.attributed_bytes,
+        round.residual_bytes,
+        round.active_piece_bytes,
+        round.index_log_released,
+        round.index_log_records_removed,
+        round.pieces_before,
+        round.pieces_after,
+        round.written_per_byte_released(),
+    );
+}
+
+/// Every assertion that says a cadence round can express what is claimed of it.
+fn assert_round_can_express_it(round: &CadenceRound) {
+    assert!(
+        round.pieces_before >= 2,
+        "FIXTURE: the {} round at corpus {} ran with the log in {} piece(s), so nothing per-piece \
+         is being released",
+        round.policy,
+        round.corpus_before,
+        round.pieces_before
+    );
+    assert!(
+        round.index_log_released > 0,
+        "FIXTURE: the {} round at corpus {} released nothing",
+        round.policy,
+        round.corpus_before
+    );
+    assert!(
+        round.undumped_at_dump >= round.threshold_bytes,
+        "FIXTURE: the {} round at corpus {} fired on {} B accrued against a threshold of {} B, so \
+         the cadence is not what decided",
+        round.policy,
+        round.corpus_before,
+        round.undumped_at_dump,
+        round.threshold_bytes
+    );
+    assert!(
+        round.base_index_before > 0,
+        "FIXTURE: the {} round at corpus {} started with no base index on disk, so the relative \
+         term had nothing to read and the two cadences are one cadence here",
+        round.policy,
+        round.corpus_before
+    );
+    // THE RESIDUAL IS NOT ASSERTED TO BE ZERO. It is asserted to be zero or EXACTLY the length
+    // the active index-log piece ended at, and nothing else.
+    //
+    // The attribution is a FINAL-LENGTH attribution: it names the files the dump touched and takes
+    // the length each one ended at. A byte written and then SUPERSEDED inside the same dump is
+    // invisible to it, and exactly one such byte-run exists here. Step 3 of
+    // `dump_index_catalog_anchored` appends the folded catalog anchor to the active piece; the
+    // post-dump sweep then rewrites the log down to a single piece holding that same record. The
+    // anchor is written twice and survives once, so the kernel counts 69 bytes the walk cannot.
+    //
+    // Measured both ways before this was written down: a length-and-mtime walk and an inode-aware
+    // walk attribute the identical 319,151 bytes on the round that shows it, so this was never a
+    // walk that could not see a file.
+    //
+    // Allowing a value READ OFF THE TREE rather than a chosen tolerance is what keeps this tight:
+    // any other unattributed write, of any size, still fails.
+    if round.residual_bytes != 0 && round.residual_bytes as u64 != round.active_piece_bytes {
+        eprintln!("UNATTRIBUTED, what the dump wrote by file:");
+        for (name, len) in &round.named_writes {
+            eprintln!("  {len:10} B  {name}");
+        }
+    }
+    assert!(
+        round.residual_bytes == 0 || round.residual_bytes as u64 == round.active_piece_bytes,
+        "the {} round at corpus {} wrote {} bytes no file under the store root accounts for \
+         (kernel {}, attributed {}), and that is not the {} bytes of catalog anchor the sweep \
+         rewrites. Any other unattributed write is a byte this test cannot name.",
+        round.policy,
+        round.corpus_before,
+        round.residual_bytes,
+        round.kernel_bytes_written,
+        round.attributed_bytes,
+        round.active_piece_bytes
+    );
+}
+
+/// WHAT A DUMP'S BYTES ARE, BY THE NAME OF THE FILE EACH ONE LANDS IN.
+///
+/// The refutation half of this change, counted so a regression in it is visible. A dump writes
+/// the whole served index because the base index IS the compaction of the index log: the
+/// incremental form exists already, `load_index_inner` already loads base + folded deltas, and a
+/// dump that wrote only a delta would have compacted nothing and released nothing. What this
+/// prints is that there is no second, removable term hiding beside it -- the base index is
+/// essentially the whole write, so there is nothing to take out.
+///
+/// rust-internal: attributes the engine's own dump bytes to files, no product behaviour
+#[test]
+fn what_a_dump_writes_is_the_base_index() {
+    const CORPUS: usize = 5_000;
+    let _rolling = roll_at(ROLL_BYTES);
+    let dir = tempfile::tempdir().expect("tempdir");
+    let engine = release_engine(dir.path());
+    seed_range(&engine, 0, CORPUS);
+    engine
+        .dump_and_reclaim_index_logs_with_min_reclaimable(SHARD, 0)
+        .expect("APPARATUS: the priming dump did not complete");
+    let mut next_key = CORPUS;
+    let round = run_cadence_round(
+        &engine,
+        dir.path(),
+        "RELATIVE",
+        &mut next_key,
+        CADENCE_FLOOR_BYTES,
+        crate::index_log::INDEX_DUMP_BASE_FRACTION_DIVISOR,
+    );
+    assert_round_can_express_it(&round);
+    show_round(&round);
+
+    eprintln!("WHAT THE DUMP WROTE, by file:");
+    for (name, len) in &round.named_writes {
+        eprintln!("  {len:10} B  {name}");
+    }
+    let base_index_after = base_index_on_disk(dir.path());
+    assert!(
+        base_index_after > 0,
+        "APPARATUS: no base index on disk after the dump"
+    );
+    let share = base_index_after as f64 / round.kernel_bytes_written as f64;
+    eprintln!(
+        "THE BASE INDEX IS {:.2}% OF THE DUMP ({base_index_after} B of {} B). Everything else the \
+         dump writes -- the new active log piece and the block extent manifest -- is bounded by \
+         the ROUND, not by the store.",
+        share * 100.0,
+        round.kernel_bytes_written
+    );
+    assert!(
+        share > 0.90,
+        "the base index is only {:.2}% of what the dump writes, so there IS a second term beside \
+         it worth attacking and this test's claim that there is nothing to remove is wrong",
+        share * 100.0
+    );
+}
+
+/// WHAT A DUMP COSTS PER BYTE IT RELEASES, UNDER BOTH CADENCES, AT TWO CORPUS SIZES.
+///
+/// Four rounds per corpus size in ABBA order -- FIXED, RELATIVE, RELATIVE, FIXED -- on ONE store
+/// per size, so both cadences are measured against the same fixture and the drift as the store
+/// grows through the sequence falls on both rather than on whichever went last.
+///
+/// SUBJECT: the relative cadence. Bytes written per byte released is the divisor at both sizes.
+/// CONTROL: the fixed cadence, which is what ships and what #1928 measured. It is asserted to
+/// GROW between the two sizes, with its own failure message, because a control arm that has gone
+/// flat is an apparatus that can no longer show the defect -- and would report the subject healthy
+/// for the wrong reason. A control arm that fails if it ever goes flat guards a refutation, not a
+/// fix; this one is here to keep the fix's flat reading meaning something.
+///
+/// rust-internal: prices the engine's own dump cadence in bytes, no product behaviour
+#[test]
+fn a_dump_pays_for_what_it_releases_when_the_cadence_reads_the_store() {
+    let _rolling = roll_at(ROLL_BYTES);
+    let divisor = crate::index_log::INDEX_DUMP_BASE_FRACTION_DIVISOR;
+
+    fn arm(corpus: usize, divisor: u64) -> Vec<CadenceRound> {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let engine = release_engine(dir.path());
+        seed_range(&engine, 0, corpus);
+        // Prime, so every measured round is a steady-state round. A FIRST dump has no base index
+        // on disk to read, which is exactly the case in which the two cadences are one cadence.
+        engine
+            .dump_and_reclaim_index_logs_with_min_reclaimable(SHARD, 0)
+            .expect("APPARATUS: the priming dump did not complete");
+        let mut next_key = corpus;
+        let mut rounds = Vec::new();
+        for (policy, divisor) in [
+            ("FIXED", FIXED_CADENCE),
+            ("RELATIVE", divisor),
+            ("RELATIVE", divisor),
+            ("FIXED", FIXED_CADENCE),
+        ] {
+            let round = run_cadence_round(
+                &engine,
+                dir.path(),
+                policy,
+                &mut next_key,
+                CADENCE_FLOOR_BYTES,
+                divisor,
+            );
+            assert_round_can_express_it(&round);
+            show_round(&round);
+            rounds.push(round);
+        }
+        rounds
+    }
+
+    eprintln!("\n=== CADENCE, corpus {CADENCE_SMALL} ===");
+    let small = arm(CADENCE_SMALL, divisor);
+    eprintln!("\n=== CADENCE, corpus {CADENCE_LARGE} ===");
+    let large = arm(CADENCE_LARGE, divisor);
+
+    let ratios = |rounds: &[CadenceRound], policy: &str| -> Vec<f64> {
+        rounds
+            .iter()
+            .filter(|round| round.policy == policy)
+            .map(|round| round.written_per_byte_released())
+            .collect()
+    };
+    let mean = |values: &[f64]| -> f64 {
+        assert!(!values.is_empty(), "APPARATUS: no rounds to average");
+        values.iter().sum::<f64>() / values.len() as f64
+    };
+
+    let small_fixed = mean(&ratios(&small, "FIXED"));
+    let large_fixed = mean(&ratios(&large, "FIXED"));
+    let small_relative = mean(&ratios(&small, "RELATIVE"));
+    let large_relative = mean(&ratios(&large, "RELATIVE"));
+
+    eprintln!(
+        "\nWRITTEN PER BYTE RELEASED, corpus {CADENCE_SMALL} -> {CADENCE_LARGE} (10x)\n  \
+         FIXED    (control) {small_fixed:10.3} -> {large_fixed:10.3}   ({:.3}x)\n  \
+         RELATIVE (subject) {small_relative:10.3} -> {large_relative:10.3}   ({:.3}x), divisor {divisor}",
+        large_fixed / small_fixed,
+        large_relative / small_relative,
+    );
+
+    // CONTROL FIRST, AND IT FAILS IF IT GOES FLAT.
+    assert!(
+        large_fixed >= small_fixed * 5.0,
+        "CONTROL: the FIXED cadence read {small_fixed:.3} at {CADENCE_SMALL} records and \
+         {large_fixed:.3} at {CADENCE_LARGE} -- only {:.3}x over a 10x corpus. The control arm has \
+         gone flat, so this fixture can no longer show the defect the subject arm claims to fix, \
+         and the subject's flat reading below means nothing.",
+        large_fixed / small_fixed
+    );
+
+    // SUBJECT.
+    for (tag, corpus, ratio) in [
+        ("small", CADENCE_SMALL, small_relative),
+        ("large", CADENCE_LARGE, large_relative),
+    ] {
+        assert!(
+            ratio <= divisor as f64 * 1.40,
+            "the RELATIVE cadence wrote {ratio:.3} bytes per byte released at {corpus} records \
+             ({tag} arm), above the divisor {divisor} it is supposed to bound. The figure sits \
+             structurally a little above the divisor and not at it: the threshold is taken from \
+             the base index BEFORE the round, and the base grows by about an eighth during the \
+             round it admits, so the cost divided is the larger one"
+        );
+        assert!(
+            ratio >= divisor as f64 * 0.50,
+            "the RELATIVE cadence wrote only {ratio:.3} bytes per byte released at {corpus} \
+             records ({tag} arm). Far BELOW the divisor is not a better result: it means the round \
+             released much more than the threshold it held out for, so the cadence is not what \
+             decided and this arm is not measuring one."
+        );
+    }
+    assert!(
+        large_relative <= small_relative * 1.20,
+        "the RELATIVE cadence is not flat across the corpus: {small_relative:.3} at \
+         {CADENCE_SMALL} records against {large_relative:.3} at {CADENCE_LARGE}"
+    );
+    assert!(
+        large_fixed >= large_relative * 3.0,
+        "APPARATUS: at {CADENCE_LARGE} records the two cadences read {large_fixed:.3} and \
+         {large_relative:.3} -- too close together to be two cadences"
+    );
+}
+
+/// WHAT THE STORE SERVES AFTER A DUMP THE RELATIVE CADENCE DELAYED, INCLUDING AFTER A RESTART.
+///
+/// Direction decides this test. A cadence that dumps LESS OFTEN holds more index log between
+/// dumps, and holding too much is merely slow; a dump that leaves a reader unable to reconstruct
+/// is silent, and is discovered when a restore cannot rebuild. So the strong form is asserted,
+/// element by element and never by count, at three points: after the delayed dump, immediately
+/// after a restart, and after writing past the restart. The comparison is against a control store
+/// that took the same writes and never dumped at all.
+///
+/// rust-internal: reconstructs the engine's own served index after a delayed dump
+#[test]
+fn a_store_on_the_relative_cadence_serves_what_it_served_before_across_a_restart() {
+    const CORPUS: usize = 6_000;
+    let _rolling = roll_at(ROLL_BYTES);
+    let divisor = crate::index_log::INDEX_DUMP_BASE_FRACTION_DIVISOR;
+
+    fn served_sequence(engine: &TemporalEngine, count: usize) -> Vec<Option<usize>> {
+        (0..count)
+            .map(|index| {
+                let response = engine.execute(ExecuteRequest {
+                    shard_id: SHARD,
+                    command: Command::StringGet {
+                        key: format!("k-{index:08}"),
+                    },
+                });
+                match response.response {
+                    CommandResponse::Bytes { value } => value.map(|bytes| bytes.len()),
+                    _ => None,
+                }
+            })
+            .collect()
+    }
+
+    let control_dir = tempfile::tempdir().expect("tempdir");
+    let control = release_engine(control_dir.path());
+    let subject_dir = tempfile::tempdir().expect("tempdir");
+    let subject = release_engine(subject_dir.path());
+
+    seed_range(&control, 0, CORPUS);
+    seed_range(&subject, 0, CORPUS);
+    subject
+        .dump_and_reclaim_index_logs_with_min_reclaimable(SHARD, 0)
+        .expect("APPARATUS: the priming dump did not complete");
+
+    let mut next_key = CORPUS;
+    let round = run_cadence_round(
+        &subject,
+        subject_dir.path(),
+        "RELATIVE",
+        &mut next_key,
+        CADENCE_FLOOR_BYTES,
+        divisor,
+    );
+    assert_round_can_express_it(&round);
+    show_round(&round);
+    seed_range(&control, CORPUS, next_key);
+
+    // DENOMINATORS.
+    let control_sequence = served_sequence(&control, next_key);
+    let live = control_sequence.iter().filter(|slot| slot.is_some()).count();
+    assert_eq!(
+        live, next_key,
+        "APPARATUS: the control served {live} of {next_key} records without dumping at all, so a \
+         match below would be two stores agreeing about nothing"
+    );
+    assert!(
+        round.undumped_at_dump > CADENCE_FLOOR_BYTES,
+        "FIXTURE: the dump fired on {} B of accrual against a configured floor of {} B -- the \
+         relative term delayed nothing here, so this is not a test of a delayed dump",
+        round.undumped_at_dump,
+        CADENCE_FLOOR_BYTES
+    );
+    assert!(
+        round.index_log_records_removed > 0,
+        "FIXTURE: the delayed dump's reclaim removed no index-log records, so nothing below had to \
+         survive one"
+    );
+
+    fn compare(
+        tag: &str,
+        observed: &[Option<usize>],
+        control: &[Option<usize>],
+    ) {
+        let first_difference = control
+            .iter()
+            .zip(observed.iter())
+            .position(|(left, right)| left != right);
+        assert_eq!(
+            first_difference, None,
+            "{tag}: the store on the relative cadence first differs from the store that never \
+             dumped at record {first_difference:?} -- control {:?} against observed {:?}",
+            first_difference.and_then(|at| control.get(at)),
+            first_difference.and_then(|at| observed.get(at)),
+        );
+        assert_eq!(
+            control.len(),
+            observed.len(),
+            "{tag}: the two stores serve different numbers of records"
+        );
+        assert_eq!(control, observed, "{tag}: the two stores serve different sequences");
+    }
+
+    // 1. Live, after the delayed dump and its reclaim.
+    compare(
+        "after the delayed dump",
+        &served_sequence(&subject, next_key),
+        &control_sequence,
+    );
+
+    // 2. Immediately after a restart: the base index the dump wrote plus the log it left, and
+    //    nothing else.
+    drop(subject);
+    let restarted = release_engine(subject_dir.path());
+    compare(
+        "immediately after a restart",
+        &served_sequence(&restarted, next_key),
+        &control_sequence,
+    );
+
+    // 3. Written past the restart, then compared again. A reconstruction that is correct only
+    //    until the next write is not a reconstruction.
+    let after_restart = next_key + 500;
+    seed_range(&restarted, next_key, after_restart);
+    seed_range(&control, next_key, after_restart);
+    compare(
+        "after writing past the restart",
+        &served_sequence(&restarted, after_restart),
+        &served_sequence(&control, after_restart),
+    );
+}
+
+/// A CADENCE AN OPERATOR DISABLED STAYS DISABLED, HOWEVER LARGE THE BASE INDEX GROWS.
+///
+/// `should_dump_index_catalog` refuses every undumped length against a zero, `u64::MAX` included:
+/// that is how dumps are pinned to compaction and unload only. The relative term is a `max`
+/// against a quantity that grows without bound, so getting this wrong does not fail -- it silently
+/// switches threshold dumping back ON for exactly the largest stores, which are the ones an
+/// operator who disabled it was most likely protecting.
+///
+/// rust-internal: pins the disabled branch of the engine's dump threshold
+#[test]
+fn a_dump_cadence_an_operator_disabled_stays_disabled_at_every_base_index_size() {
+    use crate::index_log::{effective_index_dump_threshold_bytes, should_dump_index_catalog};
+
+    // PIN THE DIVISOR. Every arm above reads INDEX_DUMP_BASE_FRACTION_DIVISOR for both the
+    // treatment and the expectation, so a change to it moves both sides and no assertion there
+    // can see it. This is the one place its value is written down. It is not a typo guard: the
+    // divisor IS the trade -- bytes written per byte released against index-log footprint -- so
+    // changing it is a decision that should have to be made here, with the footprint figure in
+    // `what_each_cadence_writes_to_get_the_same_work_through_the_store` re-read beside it.
+    assert_eq!(
+        crate::index_log::INDEX_DUMP_BASE_FRACTION_DIVISOR,
+        8,
+        "the shipped divisor moved. It bounds bytes written per byte released AND sets how much \
+         index log a store holds between dumps (base/divisor); both figures in this module are \
+         stated against 8."
+    );
+
+    for base in [0u64, 1, 4_096, 1_048_576, 13_499_438, u64::MAX] {
+        assert_eq!(
+            effective_index_dump_threshold_bytes(0, base, 8),
+            0,
+            "a disabled cadence was re-enabled by a base index of {base} bytes"
+        );
+        assert!(
+            !should_dump_index_catalog(u64::MAX, effective_index_dump_threshold_bytes(0, base, 8)),
+            "a disabled cadence fired on a base index of {base} bytes"
+        );
+    }
+    // A zero divisor is the fixed cadence and must leave the configured value exactly as found.
+    for floor in [1u64, 4_096, 1_048_576] {
+        assert_eq!(
+            effective_index_dump_threshold_bytes(floor, u64::MAX, 0),
+            floor,
+            "the fixed cadence moved a configured floor of {floor}"
+        );
+    }
+    // POSITIVE CONTROLS, so none of the above can pass by the function returning a constant.
+    assert_eq!(
+        effective_index_dump_threshold_bytes(8_192, 1_584_329, 8),
+        198_041,
+        "an enabled cadence is raised by the base index"
+    );
+    assert_eq!(
+        effective_index_dump_threshold_bytes(1_048_576, 1_584_329, 8),
+        1_048_576,
+        "the configured value is a FLOOR: a base index too small to reach it must not lower it"
+    );
+
+    // Driven through the engine, on a store whose base index is far past every floor above.
+    let _rolling = roll_at(ROLL_BYTES);
+    let dir = tempfile::tempdir().expect("tempdir");
+    let engine = release_engine(dir.path());
+    seed_range(&engine, 0, 4_000);
+    engine
+        .dump_and_reclaim_index_logs_with_min_reclaimable(SHARD, 0)
+        .expect("APPARATUS: the priming dump did not complete");
+    seed_range(&engine, 4_000, 8_000);
+    let base_index = base_index_on_disk(dir.path());
+    assert!(
+        base_index > 8 * CADENCE_FLOOR_BYTES,
+        "FIXTURE: the base index is {base_index} B, too small for the relative term to be what \
+         decides"
+    );
+    assert!(
+        engine
+            .maybe_dump_and_reclaim_with_threshold_and_divisor_for_test(SHARD, 0, 0, 0, 8)
+            .is_none(),
+        "the engine dumped on a cadence an operator had disabled, with a base index of \
+         {base_index} bytes"
+    );
+    // The same store, cadence enabled, DOES dump -- so the refusal above is the zero and not a
+    // store that had nothing to do.
+    assert!(
+        engine
+            .maybe_dump_and_reclaim_with_threshold_and_divisor_for_test(
+                SHARD,
+                CADENCE_FLOOR_BYTES,
+                0,
+                0,
+                8
+            )
+            .is_some(),
+        "APPARATUS: the same store did not dump with the cadence enabled either"
+    );
+}
+
+/// WHAT EACH CADENCE WRITES TO GET THE SAME WORK THROUGH THE STORE -- THE INTEGRAL.
+///
+/// A round-for-round comparison flatters the relative cadence, because its rounds are bigger by
+/// construction. The fair question is what each writes to put the SAME records into the same
+/// store, so all three arms write exactly `WORK` records past an identical seeded corpus, ask the
+/// production cadence after every batch, and sum every byte of every dump that fired.
+///
+/// The third arm is the cadence turned off, which is what "it cannot keep up" looks like when
+/// nothing sheds, throttles or signals: the store keeps taking writes at full speed and the index
+/// log never comes back. It prices the alternative of dumping less by dumping less OFTEN, taken
+/// to its limit.
+///
+/// rust-internal: sums the engine's own dump bytes across a run, no product behaviour
+#[test]
+fn what_each_cadence_writes_to_get_the_same_work_through_the_store() {
+    /// Large enough that the FIXED arm fires a countable number of times over WORK records rather
+    /// than hundreds, small enough that the relative term still binds.
+    const INTEGRAL_FLOOR_BYTES: u64 = 64 * 1024;
+    const SEEDED: usize = 10_000;
+    const WORK: usize = 20_000;
+    const BATCH: usize = 250;
+    let _rolling = roll_at(ROLL_BYTES);
+    let divisor = crate::index_log::INDEX_DUMP_BASE_FRACTION_DIVISOR;
+
+    #[derive(Debug)]
+    struct Integral {
+        policy: &'static str,
+        dumps: usize,
+        bytes_written: u64,
+        bytes_released: u64,
+        /// The most index log ever outstanding at once. What the relative term buys is paid here.
+        log_high_water: u64,
+        base_index_after: u64,
+    }
+
+    fn arm(policy: &'static str, floor_bytes: u64, divisor: u64) -> Integral {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let engine = release_engine(dir.path());
+        seed_range(&engine, 0, SEEDED);
+        engine
+            .dump_and_reclaim_index_logs_with_min_reclaimable(SHARD, 0)
+            .expect("APPARATUS: the priming dump did not complete");
+        let store = engine.index_log_store();
+
+        let mut dumps = 0usize;
+        let mut bytes_written = 0u64;
+        let mut bytes_released = 0u64;
+        let mut log_high_water = 0u64;
+        let mut cursor = SEEDED;
+        while cursor < SEEDED + WORK {
+            let end = (cursor + BATCH).min(SEEDED + WORK);
+            seed_in_batches_of(&engine, cursor, end, BATCH);
+            cursor = end;
+            log_high_water = log_high_water.max(store.undumped_len_since_dump(SHARD));
+            let wchar_before =
+                bytes_written_now().expect("APPARATUS: /proc/thread-self/io carries no wchar line");
+            let fired = engine.maybe_dump_and_reclaim_with_threshold_and_divisor_for_test(
+                SHARD,
+                floor_bytes,
+                0,
+                0,
+                divisor,
+            );
+            let wchar_after =
+                bytes_written_now().expect("APPARATUS: /proc/thread-self/io carries no wchar line");
+            if let Some(report) = fired {
+                dumps += 1;
+                bytes_written += wchar_after.saturating_sub(wchar_before);
+                bytes_released += report
+                    .index_log_bytes_before
+                    .saturating_sub(report.index_log_bytes_after);
+            }
+        }
+        Integral {
+            policy,
+            dumps,
+            bytes_written,
+            bytes_released,
+            log_high_water,
+            base_index_after: base_index_on_disk(dir.path()),
+        }
+    }
+
+    let fixed = arm("FIXED", INTEGRAL_FLOOR_BYTES, FIXED_CADENCE);
+    let relative = arm("RELATIVE", INTEGRAL_FLOOR_BYTES, divisor);
+    let disabled = arm("DISABLED", 0, divisor);
+
+    for measured in [&fixed, &relative, &disabled] {
+        eprintln!(
+            "INTEGRAL {:8} {WORK} records past {SEEDED} | dumps={:3} | wrote={:11} B | \
+             released={:9} B | log high-water={:9} B | base index after={:9} B | cumulative \
+             written per byte released {}",
+            measured.policy,
+            measured.dumps,
+            measured.bytes_written,
+            measured.bytes_released,
+            measured.log_high_water,
+            measured.base_index_after,
+            if measured.bytes_released == 0 {
+                "undefined -- nothing was released".to_string()
+            } else {
+                format!(
+                    "{:.3}",
+                    measured.bytes_written as f64 / measured.bytes_released as f64
+                )
+            },
+        );
+    }
+
+    // DENOMINATORS.
+    for measured in [&fixed, &relative, &disabled] {
+        assert!(
+            measured.base_index_after > 0,
+            "APPARATUS: the {} arm left no base index",
+            measured.policy
+        );
+    }
+    assert!(
+        fixed.dumps > relative.dumps,
+        "APPARATUS: the fixed cadence fired {} times and the relative one {} -- the relative term \
+         did not change the cadence on this fixture, so the two arms are one arm",
+        fixed.dumps,
+        relative.dumps
+    );
+    assert!(
+        relative.dumps > 0,
+        "APPARATUS: the relative arm never dumped, so it released nothing to price"
+    );
+    assert_eq!(
+        disabled.dumps, 0,
+        "APPARATUS: the disabled arm dumped {} times",
+        disabled.dumps
+    );
+
+    let fixed_ratio = fixed.bytes_written as f64 / fixed.bytes_released as f64;
+    let relative_ratio = relative.bytes_written as f64 / relative.bytes_released as f64;
+    eprintln!(
+        "\nOVER THE SAME {WORK} RECORDS: fixed wrote {} B in {} dumps, relative wrote {} B in {} \
+         dumps -- {:.2}x less, for a log that stood at {} B instead of {} B. ROUNDS RUN: {} and \
+         {}.",
+        fixed.bytes_written,
+        fixed.dumps,
+        relative.bytes_written,
+        relative.dumps,
+        fixed.bytes_written as f64 / relative.bytes_written as f64,
+        relative.log_high_water,
+        fixed.log_high_water,
+        fixed.dumps,
+        relative.dumps,
+    );
+
+    assert!(
+        relative.bytes_written < fixed.bytes_written,
+        "the relative cadence wrote {} B over {WORK} records against the fixed cadence's {} B",
+        relative.bytes_written,
+        fixed.bytes_written
+    );
+    assert!(
+        relative_ratio < fixed_ratio,
+        "cumulative written per byte released did not improve: fixed {fixed_ratio:.3}, relative \
+         {relative_ratio:.3}"
+    );
+    assert!(
+        relative_ratio <= divisor as f64 * 1.30,
+        "the relative cadence's cumulative figure {relative_ratio:.3} is above the divisor \
+         {divisor} it is supposed to bound"
+    );
+
+    // THE PRICE, ASSERTED SO IT CANNOT GROW UNNOTICED.
+    assert!(
+        relative.log_high_water > fixed.log_high_water,
+        "APPARATUS: the relative cadence held no more log than the fixed one ({} B against {} B), \
+         so it did not delay a dump",
+        relative.log_high_water,
+        fixed.log_high_water
+    );
+    assert!(
+        relative.log_high_water
+            <= relative.base_index_after / divisor + INTEGRAL_FLOOR_BYTES + 128 * 1024,
+        "the relative cadence let the index log reach {} B against a base index of {} B -- more \
+         than the base/{divisor} it is supposed to hold it to",
+        relative.log_high_water,
+        relative.base_index_after
+    );
+
+    // WHAT IT LOOKS LIKE WHEN IT CANNOT KEEP UP.
+    assert_eq!(
+        disabled.bytes_released, 0,
+        "APPARATUS: the disabled arm released {} B",
+        disabled.bytes_released
+    );
+    assert!(
+        disabled.log_high_water > relative.log_high_water,
+        "APPARATUS: the disabled arm held {} B of log, no more than the relative arm's {} B",
+        disabled.log_high_water,
+        relative.log_high_water
+    );
+}
+
+/// EVERY PRODUCTION CADENCE CHECK TAKES ITS THRESHOLD FROM THE ONE FUNCTION THAT READS THE STORE.
+///
+/// Every arm above reaches the cadence through the argument-taking test variant, so a change that
+/// removed the relative term from the PRODUCTION callers alone -- leaving the shared function
+/// intact -- would leave all of them passing. This reads  instead and
+/// requires that the deployments
+
+/// EVERY PRODUCTION CADENCE CHECK TAKES ITS THRESHOLD FROM THE ONE FUNCTION THAT READS THE STORE.
+///
+/// Every arm above reaches the cadence through the argument-taking test variant, so a change that
+/// removed the relative term from the PRODUCTION callers alone -- leaving the shared function
+/// intact -- would leave all of them passing. This reads `engine/persistence.rs` instead and
+/// requires that the deployment's configured value is read in exactly ONE place, that both
+/// production cadence checks take their threshold from it, and that the checks it counts are all
+/// of them.
+///
+/// A source-text guard, because what is guarded is which expression a call site was written with.
+/// It is not observable from any behaviour those two callers have that a test can drive without an
+/// 8 MiB base index and a write to the environment of the whole process.
+///
+/// rust-internal: pins how the engine's own dump cadence obtains its threshold
+#[test]
+fn every_production_dump_cadence_check_reads_the_store_for_its_threshold() {
+    const PERSISTENCE: &str = include_str!("../persistence.rs");
+
+    // DENOMINATOR FIRST. If this file stops holding cadence checks, everything below passes by
+    // having nothing to check.
+    let checks = PERSISTENCE.matches("should_dump_index_catalog_now(").count();
+    assert!(
+        checks >= 4,
+        "VACUITY: engine/persistence.rs holds {checks} cadence checks, fewer than the 4 this guard \
+         was written against -- it is no longer reading what it thinks it is"
+    );
+
+    let configured_reads = PERSISTENCE
+        .matches("crate::storage_config::index_dump_wal_gap_bytes()")
+        .count();
+    assert_eq!(
+        configured_reads, 1,
+        "the deployment's configured accrual floor is read in {configured_reads} places in \
+         engine/persistence.rs. It must be read in exactly one -- `index_dump_threshold_bytes`, \
+         which is where that floor is raised to keep a dump's cost in proportion to what it \
+         releases. A second reader is a production cadence check that skipped the relative term."
+    );
+
+    let through_the_helper = PERSISTENCE
+        .matches("self.index_dump_threshold_bytes(shard_id)")
+        .count();
+    assert_eq!(
+        through_the_helper, 2,
+        "{through_the_helper} production cadence checks take their threshold from \
+         `index_dump_threshold_bytes`, not the 2 there are (`maybe_dump_index_catalog` and \
+         `maybe_dump_and_reclaim_index_logs`)"
+    );
+
+    // And the helper applies the relative term rather than being a renamed passthrough.
+    assert!(
+        PERSISTENCE.contains("crate::index_log::effective_index_dump_threshold_bytes(")
+            && PERSISTENCE.contains("crate::index_log::INDEX_DUMP_BASE_FRACTION_DIVISOR"),
+        "engine/persistence.rs no longer applies the relative term at all"
+    );
+}

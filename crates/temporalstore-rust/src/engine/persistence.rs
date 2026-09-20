@@ -9,6 +9,36 @@ impl TemporalEngine {
         self.index_dir.join(format!("shard-{shard_id}.index.json"))
     }
 
+    /// Bytes of base index a dump of this shard would have to write, as the last completed dump
+    /// left it on disk.
+    ///
+    /// A `stat`, not a serialize. The cadence is asked on every background round -- the embedded
+    /// proxy's reclaim thread asks it once a second -- and what it needs is a SCALE, not a current
+    /// answer. The file lags the live index by exactly the accrual the cadence is about to weigh,
+    /// which is the quantity being bounded, and a shard that has never dumped has no file and
+    /// reports 0, which leaves the configured floor deciding on its own.
+    pub(super) fn base_index_bytes_on_disk(&self, shard_id: ShardId) -> u64 {
+        fs::metadata(self.index_path(shard_id))
+            .map(|meta| meta.len())
+            .unwrap_or(0)
+    }
+
+    /// The accrual this shard's next threshold dump must have to show for itself.
+    ///
+    /// The ONE place a production cadence check gets its threshold, which is what makes
+    /// `every_production_dump_cadence_check_reads_the_store_for_its_threshold` able to say so by
+    /// reading this file: every production caller passes this, and the deployment's configured
+    /// value is read here and nowhere else.
+    pub(super) fn index_dump_threshold_bytes(&self, shard_id: ShardId) -> u64 {
+        // The configured value is a FLOOR. Raise it so a dump does not write more than
+        // INDEX_DUMP_BASE_FRACTION_DIVISOR bytes of base index per byte of index log it frees.
+        crate::index_log::effective_index_dump_threshold_bytes(
+            crate::storage_config::index_dump_wal_gap_bytes(),
+            self.base_index_bytes_on_disk(shard_id),
+            crate::index_log::INDEX_DUMP_BASE_FRACTION_DIVISOR,
+        )
+    }
+
     /// The single funnel through which every consumer reads the COMPLETE served index for
     /// a shard. It always returns a full, current `serialize_index`-shaped byte image of
     /// the `ShardState`, so callers never see a partial or stale index.
@@ -432,7 +462,7 @@ impl TemporalEngine {
     /// so without the interval, a burst that keeps crossing the gap gets a whole-index
     /// serialize every time it does.
     pub fn maybe_dump_index_catalog(&self, shard_id: ShardId) -> bool {
-        let gap = crate::storage_config::index_dump_wal_gap_bytes();
+        let gap = self.index_dump_threshold_bytes(shard_id);
         let undumped = self.index_log_store.undumped_len_since_dump(shard_id);
         if !crate::index_log::should_dump_index_catalog_now(
             undumped,
@@ -563,7 +593,7 @@ impl TemporalEngine {
         &self,
         shard_id: ShardId,
     ) -> Option<super::reports::CatalogDumpReclaimReport> {
-        let gap = crate::storage_config::index_dump_wal_gap_bytes();
+        let gap = self.index_dump_threshold_bytes(shard_id);
         let undumped = self.index_log_store.undumped_len_since_dump(shard_id);
         if !crate::index_log::should_dump_index_catalog_now(
             undumped,
@@ -689,6 +719,11 @@ impl TemporalEngine {
     /// Test-only variant of `maybe_dump_and_reclaim_index_logs` taking an explicit gap, so a
     /// test can drive the below-threshold (no-op) and above-threshold (dump + reclaim) branches
     /// deterministically without mutating the process-wide gap env mid-test.
+    ///
+    /// The value it takes is used as given, with the relative term disabled -- which is what
+    /// "an explicit threshold" has always meant here and what every existing caller relies on. A
+    /// test that wants the shipped cadence, floor and relative term together, says so by calling
+    /// [`maybe_dump_and_reclaim_with_threshold_and_divisor_for_test`] with a divisor.
     #[cfg(test)]
     pub fn maybe_dump_and_reclaim_with_gap_for_test(
         &self,
@@ -697,10 +732,36 @@ impl TemporalEngine {
         min_interval_ms: u64,
         min_reclaimable_bytes: u64,
     ) -> Option<super::reports::CatalogDumpReclaimReport> {
+        self.maybe_dump_and_reclaim_with_threshold_and_divisor_for_test(
+            shard_id,
+            gap_bytes,
+            min_interval_ms,
+            min_reclaimable_bytes,
+            0,
+        )
+    }
+
+    /// [`maybe_dump_and_reclaim_with_gap_for_test`] with the relative term's divisor given too,
+    /// so ONE test can drive the fixed cadence (divisor 0) and the shipped relative one against
+    /// the same fixture and say by its argument which of the two it is measuring.
+    #[cfg(test)]
+    pub fn maybe_dump_and_reclaim_with_threshold_and_divisor_for_test(
+        &self,
+        shard_id: ShardId,
+        threshold_bytes: u64,
+        min_interval_ms: u64,
+        min_reclaimable_bytes: u64,
+        base_fraction_divisor: u64,
+    ) -> Option<super::reports::CatalogDumpReclaimReport> {
+        let threshold = crate::index_log::effective_index_dump_threshold_bytes(
+            threshold_bytes,
+            self.base_index_bytes_on_disk(shard_id),
+            base_fraction_divisor,
+        );
         let undumped = self.index_log_store.undumped_len_since_dump(shard_id);
         if !crate::index_log::should_dump_index_catalog_now(
             undumped,
-            gap_bytes,
+            threshold,
             self.index_log_store.ms_since_catalog_dump(shard_id),
             min_interval_ms,
         ) {

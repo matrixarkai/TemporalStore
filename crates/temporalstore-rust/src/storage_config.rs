@@ -213,10 +213,19 @@ pub fn effective_block_slab_target_bytes() -> u64 {
     StorageTuningConfig::from_env().effective_slab_target_bytes()
 }
 
-/// Undumped index-log-gap threshold (bytes) that triggers a background catalog/index dump under
+/// Undumped index-log threshold (bytes) that triggers a background catalog/index dump under
 /// the MANIFEST-CONFORMANCE FOLD. Reads the `TS_INDEX_DUMP_WAL_GAP_BYTES` env override -- or the
 /// previous name for it, so existing deployments keep working -- falling back to the 1 MiB
 /// default. Only consulted by the catalog fold's threshold dump.
+///
+/// This value is a FLOOR, not the threshold itself. A dump writes the whole served index, so its
+/// cost is the store while what it releases is only what accrued since the previous dump; against
+/// a constant value the two are unrelated and bytes written per byte released grows with the
+/// store. `index_log::effective_index_dump_threshold_bytes` raises this floor to
+/// `base_index / INDEX_DUMP_BASE_FRACTION_DIVISOR` once the base index is large enough for that to
+/// bind, which is what keeps the two in proportion. A store whose base index is smaller than
+/// `divisor` times this value keeps exactly the cadence it has today, and a zero here still
+/// disables threshold dumping entirely.
 pub fn index_dump_wal_gap_bytes() -> u64 {
     StorageTuningConfig::from_env().index_dump_wal_gap_bytes
 }

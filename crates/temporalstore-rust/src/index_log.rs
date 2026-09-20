@@ -1387,6 +1387,51 @@ fn indexlog_wal_only_sync() -> bool {
 /// whose `slabs` is empty serializes with no `zones` key, byte-identical to a pre-fold MetaItem.
 /// `meta_item_without_zones_serializes_byte_identically_to_pre_fold` asserts exactly that.
 ///
+/// How many bytes a threshold dump may WRITE for each byte it RELEASES.
+///
+/// A dump's cost is the whole served index; its release is the index log accrued since the
+/// previous dump. Against a constant accrual threshold those two quantities have nothing to do
+/// with each other, so bytes written per byte released is linear in the store: measured at 9.89
+/// on a 20,000-record store and 84.23 on a 200,000-record one, for the same 4,000 records of work
+/// in both. Requiring the accrual to reach `base_index / INDEX_DUMP_BASE_FRACTION_DIVISOR` before
+/// a threshold dump fires bounds that figure at the divisor, whatever the store holds.
+///
+/// It is bought with index-log footprint. Between dumps the log may now stand at
+/// `base_index / divisor` rather than at the configured floor -- 12.5% of the base index on top
+/// of it at 8 -- and it still returns to its floor at every dump. That is the trade: the store's
+/// steady-state disk grows by an eighth, and the bytes it writes to hold that bound stop growing
+/// with it.
+///
+/// A constant rather than a deployment knob. It is a dimensionless ratio, it is the same at every
+/// size by construction, and the deployment already sets the FLOOR through
+/// `TS_INDEX_DUMP_WAL_GAP_BYTES`.
+pub const INDEX_DUMP_BASE_FRACTION_DIVISOR: u64 = 8;
+
+/// The accrual a threshold dump must have to show for itself: the configured floor, raised so a
+/// dump never writes more than `divisor` bytes of base index per byte of index log it releases.
+///
+/// `configured_threshold_bytes` is a FLOOR and never a ceiling. A store whose base index is
+/// smaller than `divisor * configured_threshold_bytes` keeps exactly the cadence it has today --
+/// the relative term can only ever make a dump wait for MORE to release, never fire earlier -- so
+/// nothing below the crossover changes behaviour at all.
+///
+/// A zero configured floor DISABLES threshold dumping: `should_dump_index_catalog` refuses every
+/// undumped length against it, `u64::MAX` included, which is how an operator pins dumps to
+/// compaction and unload only. The relative term is a `max` against a quantity that grows without
+/// bound, so it would silently switch threshold dumping back ON for exactly the largest stores --
+/// the ones an operator who set a zero was most likely protecting. A zero in either position
+/// therefore returns the configured value unchanged and leaves the caller the decision it had.
+pub fn effective_index_dump_threshold_bytes(
+    configured_threshold_bytes: u64,
+    base_index_bytes: u64,
+    divisor: u64,
+) -> u64 {
+    if configured_threshold_bytes == 0 || divisor == 0 {
+        return configured_threshold_bytes;
+    }
+    configured_threshold_bytes.max(base_index_bytes / divisor)
+}
+
 /// Threshold decision for the background catalog/index dump, mirroring this design
 /// index-meta dump gate (the dump-delay check compares the undumped
 /// WAL length against the 1 MiB gap). `undumped_bytes` is the served-index-log growth since
