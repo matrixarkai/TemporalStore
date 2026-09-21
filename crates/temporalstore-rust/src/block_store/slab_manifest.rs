@@ -5,7 +5,7 @@
 
 use super::*;
 use super::slab_ids::*;
-use std::fs::{self, File};
+use std::fs::File;
 use std::io::BufWriter;
 use std::path::Path;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -48,6 +48,7 @@ impl<W: Write> Write for CountedFileWrites<W> {
 
 pub(super) fn load_slab_manifest_at(
     root: &Path,
+    tally: &mut BlockStoreReadTally,
 ) -> Result<BTreeMap<u64, BlockStoreSlabDescriptor>, BlockStoreError> {
     let current_path = slab_manifest_path(root);
     let legacy_path = legacy_zone_manifest_path(root);
@@ -59,8 +60,10 @@ pub(super) fn load_slab_manifest_at(
     if !path.exists() {
         return Ok(BTreeMap::new());
     }
+    let raw = read_block_store_file(&path, tally)?
+        .into_bytes_charged_to_the_process_only();
     let manifest: BlockStoreSlabManifest =
-        serde_json::from_slice(&fs::read(path)?).map_err(|err| {
+        serde_json::from_slice(&raw).map_err(|err| {
             BlockStoreError::CorruptBlockEnvelope {
                 block_slab_id: 0,
                 offset: 0,
@@ -76,12 +79,14 @@ pub(super) fn load_slab_manifest_at(
 
 pub(super) fn rebuild_slab_manifest_at(
     root: &Path,
+    tally: &mut BlockStoreReadTally,
 ) -> Result<BTreeMap<u64, BlockStoreSlabDescriptor>, BlockStoreError> {
     let mut slabs = BTreeMap::new();
     let latest = latest_slab_id_at(root)?;
     for block_slab_id in slab_ids_at(root)? {
         let path = slab_path(root, block_slab_id);
-        let bytes = fs::read(&path)?;
+        let bytes = read_block_store_file(&path, tally)?
+            .into_bytes_charged_to_the_process_only();
         let report = inspect_slab(&bytes, block_slab_id);
         slabs.insert(
             block_slab_id,
@@ -162,6 +167,13 @@ fn reverify_all_slabs() -> bool {
 pub(super) struct SlabManifestReconcileOutcome {
     pub changed: bool,
     pub slabs_skipped_reinspection: usize,
+    /// What the slab inspection read off disk, summed from the WORKERS OWN TALLIES.
+    ///
+    /// Carried back rather than read off the process counter because the inspection runs on
+    /// threads this function spawns: a caller sampling the process counter either side of this
+    /// call would read every other store in the process along with its own.
+    pub file_bytes_read: u64,
+    pub file_reads: u64,
 }
 
 pub(super) fn reconcile_slab_manifest_with_disk(
@@ -169,6 +181,8 @@ pub(super) fn reconcile_slab_manifest_with_disk(
     slabs: &mut BTreeMap<u64, BlockStoreSlabDescriptor>,
 ) -> Result<SlabManifestReconcileOutcome, BlockStoreError> {
     let mut changed = false;
+    let mut file_bytes_read = 0_u64;
+    let mut file_reads = 0_u64;
     let live_slab_ids = slab_ids_at(root)?.into_iter().collect::<BTreeSet<_>>();
     let delayed_slabs = delayed_destroy_slab_reports_at(root)?
         .into_iter()
@@ -212,7 +226,7 @@ pub(super) fn reconcile_slab_manifest_with_disk(
                 return true;
             };
             let path = slab_path(root, *block_slab_id);
-            let Ok(meta) = fs::metadata(&path) else {
+            let Ok(meta) = std::fs::metadata(&path) else {
                 return true;
             };
             if meta.len() != slab.physical_bytes {
@@ -227,7 +241,7 @@ pub(super) fn reconcile_slab_manifest_with_disk(
         .unwrap_or(1)
         .clamp(1, 8)
         .min(ordered_slab_ids.len().max(1));
-    type InspectedSlab = (u64, BlockStoreSlabReport, Option<u64>, Option<u64>);
+    type InspectedSlab = (u64, BlockStoreSlabReport, Option<u64>, Option<u64>, u64, u64);
     // A BATCH at a time. Fanning out over the whole list first was the same 2x, but held every
     // slab's report until the update loop ran and took peak RSS from 385 MB to ~960 MB. Worker
     // count made no difference to that, which is the tell: it is the retained reports, not the slab
@@ -239,22 +253,52 @@ pub(super) fn reconcile_slab_manifest_with_disk(
             for (slot, block_slab_id) in inspected.iter_mut().zip(batch.iter()) {
                 scope.spawn(move || {
                     let path = slab_path(root, *block_slab_id);
-                    *slot = Some(fs::read(&path).map(|bytes| {
+                    // A TALLY PER WORKER, because this read happens on a thread this scope
+                    // SPAWNED. The tally publishes into the process counter when it drops at the
+                    // end of this closure, which is the only reason a worker's bytes reach the
+                    // total at all -- and the reason the counter beside it is process-wide with
+                    // no thread-local twin. These threads do not exist before the open or after
+                    // it, so `/proc/thread-self/io` on the caller never sees a byte of this, and
+                    // neither would a thread-local counter.
+                    let mut tally = BlockStoreReadTally::start();
+                    // The read is consumed FIRST, which ends its borrow of the tally; only then
+                    // can the tally be asked what it took. Reading it inside the closure below
+                    // would hold an immutable borrow inside a mutable one.
+                    let read = read_block_store_file(&path, &mut tally)
+                        .map(|read| read.into_bytes_charged_to_the_process_only());
+                    let (taken_bytes, taken_reads) = tally.taken();
+                    *slot = Some(read.map(|bytes| {
                         let report = inspect_slab(&bytes, *block_slab_id);
                         let created =
                             file_created_unix_ms(&path).or_else(|| file_modified_unix_ms(&path));
                         let updated =
                             file_modified_unix_ms(&path).or_else(|| file_created_unix_ms(&path));
-                        (bytes.len() as u64, report, created, updated)
+                        (
+                            bytes.len() as u64,
+                            report,
+                            created,
+                            updated,
+                            taken_bytes,
+                            taken_reads,
+                        )
                     }));
                 });
             }
         });
 
         for (slot, block_slab_id) in inspected.iter_mut().zip(batch.iter()) {
-            let (physical_bytes, report, created_unix_ms, updated_unix_ms) = slot
+            let (
+                physical_bytes,
+                report,
+                created_unix_ms,
+                updated_unix_ms,
+                taken_bytes,
+                taken_reads,
+            ) = slot
                 .take()
                 .expect("every slab in the batch is inspected exactly once")?;
+            file_bytes_read = file_bytes_read.saturating_add(taken_bytes);
+            file_reads = file_reads.saturating_add(taken_reads);
             let desired_state = if *block_slab_id == latest {
             BlockStoreSlabState::Active
         } else {
@@ -395,6 +439,8 @@ pub(super) fn reconcile_slab_manifest_with_disk(
     Ok(SlabManifestReconcileOutcome {
         changed,
         slabs_skipped_reinspection,
+        file_bytes_read,
+        file_reads,
     })
 }
 
@@ -419,7 +465,7 @@ pub(super) fn persist_slab_manifest(
     slabs: &BTreeMap<u64, BlockStoreSlabDescriptor>,
     stats: &mut BlockStoreStats,
 ) -> Result<(), BlockStoreError> {
-    fs::create_dir_all(root)?;
+    std::fs::create_dir_all(root)?;
     let path = slab_manifest_path(root);
     let temp_path = path.with_extension(format!(
         "json.tmp.{}",
@@ -451,7 +497,7 @@ pub(super) fn persist_slab_manifest(
         // first would add 28 MB to the peak of a store that already watches its resident size.
         let mut temp = BufWriter::with_capacity(
             MANIFEST_WRITE_BUFFER_BYTES,
-            CountedFileWrites(File::create(&temp_path)?),
+            CountedFileWrites(std::fs::File::create(&temp_path)?),
         );
         serde_json::to_writer(&mut temp, &manifest).map_err(|err| {
             BlockStoreError::CorruptBlockEnvelope {
@@ -471,7 +517,7 @@ pub(super) fn persist_slab_manifest(
             .0;
         temp.sync_all()?;
     }
-    fs::rename(&temp_path, &path)?;
+    std::fs::rename(&temp_path, &path)?;
     sync_parent_dir(&path)?;
     // Counted where the manifest LANDS. Any `?` above means the document never replaced the live
     // one, and a count taken on entry would report a write that did not happen.

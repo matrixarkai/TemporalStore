@@ -456,9 +456,9 @@ impl BlockStore {
         selected_block_slab_ids: Option<BTreeSet<u64>>,
     ) -> Result<BlockStoreGcReport, BlockStoreError> {
         let mut inner = self.inner.lock().expect("block store lock poisoned");
-        fs::create_dir_all(&inner.root)?;
+        std::fs::create_dir_all(&inner.root)?;
         if delayed_destroy {
-            fs::create_dir_all(delayed_destroy_dir(&inner.root))?;
+            std::fs::create_dir_all(delayed_destroy_dir(&inner.root))?;
         }
         let current_block_slab_id = inner.block_slab_id;
         let live_block_slab_ids = live_block_slab_ids.into_iter().collect::<BTreeSet<_>>();
@@ -560,7 +560,7 @@ impl BlockStore {
                     delayed_destroy_ids.push(block_slab_id);
                     delayed_destroy_physical_bytes += slab_physical_bytes;
                 } else {
-                    fs::remove_file(slab_path(&inner.root, block_slab_id))?;
+                    std::fs::remove_file(slab_path(&inner.root, block_slab_id))?;
                     set_slab_state(
                         &mut inner.slabs,
                         block_slab_id,

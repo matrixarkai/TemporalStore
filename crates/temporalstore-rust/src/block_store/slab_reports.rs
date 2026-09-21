@@ -53,6 +53,26 @@ impl BlockStore {
             .slabs_skipped_reinspection_on_open
     }
 
+    /// Bytes and reads THIS store's open took off its own disk: the slab manifest, plus every
+    /// slab the inspection did not skip.
+    ///
+    /// THIS IS THE ROW THAT READ ZERO. `BlockStoreStats::bytes_read` counts records handed back
+    /// through the four read entry points, and an open hands back no record -- so a cold open of
+    /// a populated store moved no counter in this engine at all, and a restore harness sampling
+    /// the store either side of its load saw `bytes_read: 0` and could not tell that from a store
+    /// that had read nothing. Measured at 50 and 200 slabs, the open read 152,760 and 611,360
+    /// bytes while the store reported zero.
+    ///
+    /// Per store, and taken from the tallies the open itself used, so a suite opening stores in
+    /// parallel does not read one store's open as another's -- which the process-wide
+    /// [`block_store_file_read_counts`] cannot avoid.
+    ///
+    /// [`block_store_file_read_counts`]: crate::block_store::block_store_file_read_counts
+    pub fn open_file_read_counts(&self) -> (u64, u64) {
+        let inner = self.inner.lock().expect("block store lock poisoned");
+        (inner.open_file_bytes_read, inner.open_file_reads)
+    }
+
     /// MANIFEST-CONFORMANCE FOLD: project the in-memory slab catalog into the DURABLE `SlabCatalogEntry`
     /// subset kept in the index-log slab catalog. Only the durable fields ride in
     /// the fold; the slab descriptor's diagnostic fields (readable_prefix / corruption / errors)
@@ -180,9 +200,13 @@ impl BlockStore {
                         .saturating_add(slab.purged_block_store_used_bytes)
         });
         let slab_reports = {
+            let mut tally = BlockStoreReadTally::start();
             let mut reports = Vec::new();
             for id in slab_ids_at(&root)? {
-                reports.push(inspect_slab(&fs::read(slab_path(&root, id))?, id));
+                let bytes = LocalSlabBackend::new(&root)
+                    .read_all(id, &mut tally)?
+                    .into_bytes_charged_to_the_process_only();
+                reports.push(inspect_slab(&bytes, id));
             }
             reports
         };

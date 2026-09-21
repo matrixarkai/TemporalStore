@@ -31,9 +31,9 @@ pub(crate) fn move_slab_to_delayed_destroy_unsynced(
 ) -> Result<(), BlockStoreError> {
     let source = slab_path(root, block_slab_id);
     let trash_dir = delayed_destroy_dir(root);
-    fs::create_dir_all(&trash_dir)?;
+    std::fs::create_dir_all(&trash_dir)?;
     let destination = delayed_destroy_path(root, block_slab_id);
-    fs::rename(&source, &destination)?;
+    std::fs::rename(&source, &destination)?;
     Ok(())
 }
 
@@ -92,7 +92,7 @@ pub(crate) fn restore_slab_from_delayed_destroy_unsynced(
     if destination.exists() {
         return Ok(false);
     }
-    fs::rename(quarantined_path, &destination)?;
+    std::fs::rename(quarantined_path, &destination)?;
     Ok(true)
 }
 
@@ -117,7 +117,7 @@ pub(crate) fn delayed_destroy_slab_reports_at(
     // call graph is how the number was arrived at, and a read is a hypothesis -- so each walk
     // says so instead. The lock is nanoseconds against a directory read.
     crate::durability_metrics::record_scan("block_store_trash_dir_walk", 1);
-    for entry in fs::read_dir(trash_dir)? {
+    for entry in std::fs::read_dir(trash_dir)? {
         let entry = entry?;
         if let Some(id) = delayed_destroy_slab_id_from_name(&entry.file_name()) {
             let metadata = entry.metadata().ok();
@@ -185,7 +185,7 @@ pub(crate) fn slab_ids_at(root: &Path) -> Result<Vec<u64>, BlockStoreError> {
     }
     crate::durability_metrics::record_scan("block_store_root_dir_walk", 1);
     let mut entries_walked = 0u64;
-    for entry in fs::read_dir(root)? {
+    for entry in std::fs::read_dir(root)? {
         let entry = entry?;
         entries_walked += 1;
         let Some(name) = entry.file_name().to_str().map(str::to_string) else {

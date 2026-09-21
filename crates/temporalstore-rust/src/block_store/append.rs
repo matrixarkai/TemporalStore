@@ -58,7 +58,7 @@ impl BlockStore {
         block_ordinal: u32,
     ) -> Result<BlockAddress, BlockStoreError> {
         let mut inner = self.inner.lock().expect("block store lock poisoned");
-        fs::create_dir_all(&inner.root)?;
+        std::fs::create_dir_all(&inner.root)?;
         let slab_target_bytes = effective_block_slab_target_bytes();
         let block_id = u64::from(block_ordinal);
         // ENCODED ONCE, INCLUDING ACROSS A ROLL. This used to re-encode the whole record after
@@ -132,9 +132,9 @@ impl BlockStore {
         if records.is_empty() {
             return Ok(Vec::new());
         }
-        fs::create_dir_all(&inner.root)?;
+        std::fs::create_dir_all(&inner.root)?;
         let slab_target_bytes = effective_block_slab_target_bytes();
-        let mut file = None::<File>;
+        let mut file = None::<std::fs::File>;
         let mut addresses = Vec::with_capacity(records.len());
         let mut writes = 0u64;
         let mut bytes_written = 0u64;

@@ -10,11 +10,13 @@ impl BlockStore {
         // On-demand lazy recovery: if this slab lives only in shared storage after a
         // metadata-only restore, fetch + cache it before serving the read.
         self.ensure_slab_present(address.block_slab_id)?;
+        let mut tally = BlockStoreReadTally::start();
         let mut inner = self.inner.lock().expect("block store lock poisoned");
         let read = LocalSlabBackend::new(&inner.root).read_range(
             address.block_slab_id,
             address.offset,
             address.length(),
+            &mut tally,
         )?;
         // Charged before the decode, not after. A read that reached the disk cost the disk
         // whether or not the record on it decodes, and the old order left a failed decode
@@ -46,11 +48,13 @@ impl BlockStore {
         // On-demand lazy recovery: drive the shared-store read-through for slab-report /
         // streaming reads too, so a not-yet-fetched checkpoint slab is pulled + cached on demand.
         self.ensure_slab_present(block_slab_id)?;
+        let mut tally = BlockStoreReadTally::start();
         let mut inner = self.inner.lock().expect("block store lock poisoned");
         let read = LocalSlabBackend::new(&inner.root).read_range_at_most(
             block_slab_id,
             offset,
             size,
+            &mut tally,
         )?;
         Ok(read.charge(&mut inner.stats))
     }
@@ -64,11 +68,12 @@ impl BlockStore {
         // On-demand lazy recovery: drive the shared-store read-through for slab-report /
         // streaming reads too, so a not-yet-fetched checkpoint slab is pulled + cached on demand.
         self.ensure_slab_present(block_slab_id)?;
+        let mut tally = BlockStoreReadTally::start();
         let mut inner = self.inner.lock().expect("block store lock poisoned");
         // `bytes_read` is charged the WHOLE slab, which is what this read pulls off disk to
         // answer a logical range. It used to be charged the length of the slice handed back --
         // the same number `logical_bytes_read` gets, which is the field that means that.
-        let read = LocalSlabBackend::new(&inner.root).read_all(block_slab_id)?;
+        let read = LocalSlabBackend::new(&inner.root).read_all(block_slab_id, &mut tally)?;
         let slab = read.charge(&mut inner.stats);
         let range = logical_range_from_slab(&slab, block_slab_id, offset, size)?;
         let bytes = range.bytes;
@@ -96,7 +101,8 @@ impl BlockStore {
             .expect("block store lock poisoned")
             .root
             .clone();
-        let read = LocalSlabBackend::new(&root).read_all(block_slab_id)?;
+        let mut tally = BlockStoreReadTally::start();
+        let read = LocalSlabBackend::new(&root).read_all(block_slab_id, &mut tally)?;
         let bytes = read.charge(&mut self.inner.lock().expect("block store lock poisoned").stats);
         #[cfg(test)]
         crate::snapshot_probe::note_slab_read(bytes.len() as u64);
@@ -124,7 +130,7 @@ impl BlockStore {
         #[cfg(test)]
         crate::snapshot_probe::note_slab_install(bytes.len() as u64);
         let mut inner = self.inner.lock().expect("block store lock poisoned");
-        fs::create_dir_all(&inner.root)?;
+        std::fs::create_dir_all(&inner.root)?;
         let path = slab_path(&inner.root, block_slab_id);
         let temp_path = path.with_extension(format!(
             "seg.tmp.{}",
@@ -134,12 +140,12 @@ impl BlockStore {
                 .unwrap_or_default()
         ));
         {
-            let mut temp = File::create(&temp_path)?;
+            let mut temp = std::fs::File::create(&temp_path)?;
             temp.write_all(bytes)?;
             temp.flush()?;
             temp.sync_all()?;
         }
-        fs::rename(&temp_path, &path)?;
+        std::fs::rename(&temp_path, &path)?;
         sync_parent_dir(&path)?;
         if block_slab_id >= inner.block_slab_id {
             inner.block_slab_id = block_slab_id;

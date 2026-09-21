@@ -2,7 +2,7 @@
 // Copyright 2026 MatrixArkAI
 
 use std::collections::{BTreeMap, BTreeSet};
-use std::fs::{self, File, OpenOptions};
+use std::fs::OpenOptions;
 use std::io::{Read, Seek, Write};
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
@@ -20,7 +20,10 @@ mod read;
 mod gc;
 mod slab_ids;
 mod slab_backend;
-use slab_backend::{LocalSlabBackend, SlabBackend};
+pub use slab_backend::block_store_file_read_counts;
+use slab_backend::{
+    read_block_store_file, BlockStoreReadTally, LocalSlabBackend, SlabBackend,
+};
 mod record;
 
 /// Bytes a block record spends on its header, before the block's own bytes.
@@ -1279,6 +1282,14 @@ struct BlockStoreInner {
     /// Sealed slabs this open kept from the manifest WITHOUT re-reading them. Not part of any
     /// report wire shape; it exists so a guard aimed at that route can prove the route ran.
     slabs_skipped_reinspection_on_open: usize,
+    /// What THIS store's open read off its own disk: the slab manifest, plus every slab the
+    /// inspection did not skip.
+    ///
+    /// Kept per store rather than only on the process counter because a process that opens more
+    /// than one store -- which the suite does constantly -- cannot tell one open's reading from
+    /// another's on a shared atomic.
+    open_file_bytes_read: u64,
+    open_file_reads: u64,
     /// Per-slab live page tallies, PUBLISHED by the index that maintains them.
     ///
     /// `None` until an index has published once, and the difference matters: an empty map means
@@ -1392,7 +1403,7 @@ impl BlockStore {
 
     pub fn with_options(root: impl Into<PathBuf>, options: BlockStoreOptions) -> Self {
         let root = root.into();
-        let _ = fs::create_dir_all(&root);
+        let _ = std::fs::create_dir_all(&root);
         let block_slab_id = latest_slab_id_at(&root).unwrap_or_default();
         let mut write_offset = slab_path(&root, block_slab_id)
             .metadata()
@@ -1400,13 +1411,24 @@ impl BlockStore {
             .unwrap_or_default();
         let manifest_exists =
             slab_manifest_path(&root).exists() || legacy_zone_manifest_path(&root).exists();
+        // WHAT THE OPEN READS, TAKEN ON THE OPEN'S OWN TALLY. Every byte below also lands on the
+        // process counter when these tallies drop; this is the per-store figure beside it, and
+        // the store keeps it because the process counter cannot answer "what did THIS open read"
+        // in a process that opens more than one store.
+        let mut open_tally = BlockStoreReadTally::start();
         let (mut slabs, mut manifest_rebuilt) = if manifest_exists {
-            match load_slab_manifest_at(&root) {
+            match load_slab_manifest_at(&root, &mut open_tally) {
                 Ok(slabs) => (slabs, false),
-                Err(_) => (rebuild_slab_manifest_at(&root).unwrap_or_default(), true),
+                Err(_) => (
+                    rebuild_slab_manifest_at(&root, &mut open_tally).unwrap_or_default(),
+                    true,
+                ),
             }
         } else {
-            (rebuild_slab_manifest_at(&root).unwrap_or_default(), true)
+            (
+                rebuild_slab_manifest_at(&root, &mut open_tally).unwrap_or_default(),
+                true,
+            )
         };
         // Loaded BEFORE the page-id scan on purpose: the manifest already records `last_page_id`
         // per slab, and reading it turns a walk over every page record header -- 90% of a
@@ -1420,6 +1442,10 @@ impl BlockStore {
         let reconciled = reconcile_slab_manifest_with_disk(&root, &mut slabs).unwrap_or_default();
         let slab_manifest_reconciled_on_open = reconciled.changed;
         let slabs_skipped_reinspection_on_open = reconciled.slabs_skipped_reinspection;
+        // The manifest this open read, plus every slab the inspection read on its workers.
+        let (loaded_bytes, loaded_reads) = open_tally.taken();
+        let open_file_bytes_read = loaded_bytes.saturating_add(reconciled.file_bytes_read);
+        let open_file_reads = loaded_reads.saturating_add(reconciled.file_reads);
         manifest_rebuilt |= slab_manifest_reconciled_on_open;
         ensure_slab_descriptor(
             &mut slabs,
@@ -1445,7 +1471,7 @@ impl BlockStore {
                     if file.set_len(readable_prefix).is_ok() {
                         crate::durability_metrics::record_barrier("block_store_open");
                         let _ = file.sync_all();
-                        if let Ok(dir) = File::open(&root) {
+                        if let Ok(dir) = std::fs::File::open(&root) {
                             let _ = dir.sync_all();
                         }
                         write_offset = readable_prefix;
@@ -1478,6 +1504,8 @@ impl BlockStore {
                 slabs_unwritten: 0,
                 slab_manifest_reconciled_on_open,
                 slabs_skipped_reinspection_on_open,
+                open_file_bytes_read,
+                open_file_reads,
                 live_block_bytes: None,
                 stats,
                 shared_slab_source: None,
@@ -1529,14 +1557,14 @@ impl BlockStore {
         next_block_id_floor: u64,
     ) -> Result<(), BlockStoreError> {
         let mut inner = self.inner.lock().expect("block store lock poisoned");
-        fs::create_dir_all(&inner.root)?;
+        std::fs::create_dir_all(&inner.root)?;
         let existing_max = slab_ids_at(&inner.root)?.into_iter().max();
         let new_slab_id = through_slab_id
             .max(inner.block_slab_id)
             .max(existing_max.unwrap_or_default())
             .saturating_add(1);
         let path = slab_path(&inner.root, new_slab_id);
-        let file = File::create(&path)?;
+        let file = std::fs::File::create(&path)?;
         crate::durability_metrics::record_barrier("block_store_checkpoint_reserve");
         file.sync_all()?;
         sync_parent_dir(&path)?;
@@ -1972,7 +2000,7 @@ impl BlockStore {
         // the point of the tally is the total per round, and which of the three is which is a
         // question for a profile rather than a counter.
         crate::durability_metrics::record_scan("block_store_trash_dir_walk", 1);
-        for entry in fs::read_dir(&trash_dir)? {
+        for entry in std::fs::read_dir(&trash_dir)? {
             // COUNTED HERE, AT THE TOP, AND NOT WHERE THE ENTRY GETS A NAME. What this number is
             // for is telling a round that STOPPED from a round that walked on, and those two
             // differ in iterations, not in classifications -- put the increment after the budget
@@ -2079,7 +2107,7 @@ impl BlockStore {
                 }
             }
             purged_physical_bytes += bytes;
-            fs::remove_file(entry.path())?;
+            std::fs::remove_file(entry.path())?;
             set_slab_state(&mut inner.slabs, id, BlockStoreSlabState::Purged);
             purged.push(id);
             processed += 1;
@@ -2260,9 +2288,12 @@ impl BlockStore {
             .expect("block store lock poisoned")
             .root
             .clone();
+        let mut tally = BlockStoreReadTally::start();
         let mut out = Vec::new();
         for block_slab_id in slab_ids_at(&root)? {
-            let bytes = fs::read(slab_path(&root, block_slab_id))?;
+            let bytes = LocalSlabBackend::new(&root)
+                .read_all(block_slab_id, &mut tally)?
+                .into_bytes_charged_to_the_process_only();
             let (block_count, physical_bytes) =
                 crate::block_store::record::count_slab_blocks(&bytes, block_slab_id);
             out.push((block_slab_id, physical_bytes, block_count));
@@ -2277,9 +2308,12 @@ impl BlockStore {
             .expect("block store lock poisoned")
             .root
             .clone();
+        let mut tally = BlockStoreReadTally::start();
         let mut reports = Vec::new();
         for block_slab_id in slab_ids_at(&root)? {
-            let bytes = fs::read(slab_path(&root, block_slab_id))?;
+            let bytes = LocalSlabBackend::new(&root)
+                .read_all(block_slab_id, &mut tally)?
+                .into_bytes_charged_to_the_process_only();
             reports.push(inspect_slab(&bytes, block_slab_id));
         }
         Ok(reports)
@@ -2382,7 +2416,7 @@ impl BlockStoreInner {
 fn roll_slab_inner(
     inner: &mut BlockStoreInner,
 ) -> Result<BlockStoreRollReport, BlockStoreError> {
-    fs::create_dir_all(&inner.root)?;
+    std::fs::create_dir_all(&inner.root)?;
     let previous_block_slab_id = inner.block_slab_id;
     // The outgoing slab may hold relaxed (un-fsynced) bulk appends; make them
     // durable before we seal and stop writing to it.
@@ -2402,7 +2436,7 @@ fn roll_slab_inner(
     inner.block_slab_id = next_from_current.max(next_from_disk);
     inner.write_offset = 0;
     let path = slab_path(&inner.root, inner.block_slab_id);
-    let file = File::create(&path)?;
+    let file = std::fs::File::create(&path)?;
     crate::durability_metrics::record_barrier("block_store_slab_roll");
     file.sync_all()?;
     sync_parent_dir(&path)?;
@@ -2550,6 +2584,7 @@ impl Default for BlockStore {
 
 #[cfg(test)]
 mod address_size_tests {
+    use std::fs::{self, File};
     use super::*;
 
     /// The shape this replaced, declared here so the comparison is measured rather than argued.
@@ -2678,7 +2713,12 @@ mod address_size_tests {
 mod large_store_scale;
 
 #[cfg(test)]
+#[path = "block_store/open_read_scale.rs"]
+mod open_read_scale;
+
+#[cfg(test)]
 mod tests {
+    use std::fs::{self, File};
 
     /// The on-disk names, and the readers that have to agree with them.
     ///

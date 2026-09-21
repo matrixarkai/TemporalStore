@@ -180,6 +180,7 @@
 //!       what_a_large_store_costs_at_two_slab_counts -- --ignored --nocapture --test-threads=1
 //! ```
 use super::*;
+use std::fs;
 
 // Imported as a NAME, never spelled as a path outside a `#[test]`: the counting-allocator gate in
 // `alloc_probe.rs` scans every source line for the probe's fully qualified path and walks back to

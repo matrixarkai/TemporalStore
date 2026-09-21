@@ -4,6 +4,7 @@
 //! What one reclaim round COSTS as the quarantine grows, measured at two sizes.
 
 use crate::block_store::*;
+use std::fs;
 
 /// A quarantine of `slabs` freshly-written files, every one of them too young to destroy.
 ///

@@ -26,33 +26,146 @@
 
 use std::io;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use super::BlockStoreStats;
 
-/// Bytes read off a slab, and the charge for having read them.
+// ---------------------------------------------------------------------------------------------
+// WHAT THIS STORE READS OFF DISK, COUNTED WHERE THE READING HAPPENS.
+//
+// `BlockStoreStats::bytes_read` counts the PHYSICAL bytes of a record read back through one of
+// the store's four read entry points. That is a useful number and it is not this one. The store
+// also reads whole slab FILES on paths with no record read in them at all -- above all the slab
+// inspection every open runs -- and those fed no counter whatsoever.
+//
+// MEASURED, before this existed. A cold open of a store built by appending, 20 records of 128
+// bytes to a slab, `TS_REVERIFY_ALL_SLABS` unset:
+//
+//     slabs                                        50            200     ratio
+//     slab bytes on disk (stat)               140,000        560,000     4.000
+//     slab manifest on disk (stat)             12,760         51,360     4.025
+//     what the STORE said it read                   0              0        --
+//     what the KERNEL charged this process    153,087        611,711     3.996
+//
+// A READER WITH NO COUNTER CONTRIBUTES ZERO TO EVERY REPORT, WHICH IS INDISTINGUISHABLE FROM A
+// READER DOING NO WORK. This is the seventh counter in this campaign found blind.
+//
+// PROCESS-WIDE, AND THERE IS DELIBERATELY NO THREAD-LOCAL BESIDE IT. `wal.rs` and `index_log.rs`
+// both offer a `..._on_this_thread()` counter because a restore runs on one thread while the
+// suite does not. THAT INSTRUMENT CANNOT MEASURE THIS READER: the slab inspection reads and
+// hashes on threads it SPAWNS, so the bytes are charged to threads that did not exist before the
+// open and are gone after it. Measured across the same two cold opens above,
+// `/proc/thread-self/io` on the CALLING thread saw 12,871 and 51,478 bytes -- the manifest and
+// nothing else, 8.4% of what the process was charged, both times. A thread-local counter here
+// would report that same near-zero and would look perfectly reasonable. The tally publishes into
+// these atomics from whichever thread did the reading, which is what puts a worker's bytes in the
+// total at all.
+// ---------------------------------------------------------------------------------------------
+
+static BLOCK_STORE_FILE_BYTES_READ: AtomicU64 = AtomicU64::new(0);
+static BLOCK_STORE_FILE_READS: AtomicU64 = AtomicU64::new(0);
+
+/// Bytes and read calls this PROCESS has made against block-store files since it started.
 ///
-/// The bytes are PRIVATE and [`CountedSlabRead::charge`] is the only way to them, so a read path
-/// that forgets to count does not compile. That is not hypothetical tidiness: of the block
-/// store's four read entry points, `read_slab` charged nothing at all -- it read whole slabs off
-/// disk for the dump manifest, the cluster snapshot and two shared-storage paths, and
-/// `BlockStoreStats::reads` and `bytes_read` never moved. Those fields are `pub` on a crate other
-/// people build on, so the number was wrong for them too, not only for our own guards.
+/// Slab files and the slab manifest both: every byte the block store pulls off its own disk goes
+/// through [`read_block_store_file`], and nothing else in these modules opens one of its files to
+/// read it.
 ///
-/// Charging is deliberately a SEPARATE step from reading rather than something the backend does
-/// itself: `read_slab` clones the root and reads outside the store lock on purpose, and a backend
-/// that took `&mut BlockStoreStats` would have forced that read back under the lock.
-#[must_use = "a slab read has to be charged to the store's stats"]
-pub(crate) struct CountedSlabRead {
-    bytes: Vec<u8>,
-    physical_bytes: u64,
+/// Process-global and shared by every store in the process, so a caller measuring one span must
+/// take a DELTA across it, never an absolute.
+pub fn block_store_file_read_counts() -> (u64, u64) {
+    (
+        BLOCK_STORE_FILE_BYTES_READ.load(Ordering::Relaxed),
+        BLOCK_STORE_FILE_READS.load(Ordering::Relaxed),
+    )
 }
 
-impl CountedSlabRead {
-    fn of(bytes: Vec<u8>) -> Self {
+/// What one span of reading against block-store files cost, published when it goes out of scope.
+///
+/// Borrowed mutably by the [`CountedSlabRead`] it is passed to, so the read cannot outlive it and
+/// A NEW READ OF A BLOCK-STORE FILE CANNOT BE WRITTEN WITHOUT A TALLY TO HAND OVER.
+pub(crate) struct BlockStoreReadTally {
+    bytes: u64,
+    reads: u64,
+}
+
+impl BlockStoreReadTally {
+    pub(crate) fn start() -> Self {
+        Self { bytes: 0, reads: 0 }
+    }
+
+    /// What this tally has taken so far, for a caller that wants its own span's figure rather
+    /// than the process total.
+    ///
+    /// THE OPEN PATH NEEDS THIS AND THE PROCESS COUNTER CANNOT GIVE IT. `block_store_file_read_counts`
+    /// is shared by every store in the process, so a suite running stores in parallel reads one
+    /// store's open as another's. A store's own open figure is taken from the tallies that open
+    /// used, which no other thread can touch.
+    pub(crate) fn taken(&self) -> (u64, u64) {
+        (self.bytes, self.reads)
+    }
+}
+
+impl Drop for BlockStoreReadTally {
+    fn drop(&mut self) {
+        if self.reads == 0 {
+            return;
+        }
+        BLOCK_STORE_FILE_BYTES_READ.fetch_add(self.bytes, Ordering::Relaxed);
+        BLOCK_STORE_FILE_READS.fetch_add(self.reads, Ordering::Relaxed);
+    }
+}
+
+/// Read one whole block-store file, and charge every byte of it to `tally`.
+///
+/// THE ONE DOOR. `std::fs`'s reading primitives are not in the namespace of the modules that read
+/// this store's files any more, so a read written the old way does not compile. Slab files and
+/// the slab manifest both come through here; they are the only two kinds of file this store
+/// reads.
+pub(crate) fn read_block_store_file<'a>(
+    path: &Path,
+    tally: &'a mut BlockStoreReadTally,
+) -> io::Result<CountedSlabRead<'a>> {
+    let bytes = std::fs::read(path)?;
+    Ok(CountedSlabRead::of(bytes, tally))
+}
+
+/// Bytes read off a block-store file, and the charge for having read them.
+///
+/// The bytes are PRIVATE and [`CountedSlabRead::charge`] is the only way to them, so a read path
+/// that forgets to charge the STORE does not compile; and building one at all requires a
+/// [`BlockStoreReadTally`], so a read path that is invisible to the PROCESS counter does not
+/// compile either. That is not hypothetical tidiness in either direction: of the block store's
+/// four read entry points, `read_slab` charged nothing at all -- it read whole slabs off disk for
+/// the dump manifest, the cluster snapshot and two shared-storage paths, and
+/// `BlockStoreStats::reads` and `bytes_read` never moved. Those fields are `pub` on a crate other
+/// people build on, so the number was wrong for them too, not only for our own guards. And every
+/// open of a populated store read every slab in it without touching either counter.
+///
+/// Charging the STORE is deliberately a SEPARATE step from reading rather than something the
+/// backend does itself: `read_slab` clones the root and reads outside the store lock on purpose,
+/// and a backend that took `&mut BlockStoreStats` would have forced that read back under the
+/// lock. It is also a step some readers have no way to take -- the open path has no store to
+/// charge yet, and the slab inspection runs on a worker thread that holds none -- which is what
+/// the tally is for: it takes the reading of every one of them.
+#[must_use = "a slab read has to be charged to the store's stats"]
+pub(crate) struct CountedSlabRead<'a> {
+    bytes: Vec<u8>,
+    physical_bytes: u64,
+    /// Held only so a read cannot be constructed without one; the bytes are charged to it on the
+    /// way in, not on the way out.
+    _tally: &'a mut BlockStoreReadTally,
+}
+
+impl<'a> CountedSlabRead<'a> {
+    fn of(bytes: Vec<u8>, tally: &'a mut BlockStoreReadTally) -> Self {
         let physical_bytes = bytes.len() as u64;
+        tally.bytes = tally.bytes.saturating_add(physical_bytes);
+        tally.reads = tally.reads.saturating_add(1);
         Self {
             bytes,
             physical_bytes,
+            _tally: tally,
         }
     }
 
@@ -63,6 +176,17 @@ impl CountedSlabRead {
     pub(crate) fn charge(self, stats: &mut BlockStoreStats) -> Vec<u8> {
         stats.reads = stats.reads.saturating_add(1);
         stats.bytes_read = stats.bytes_read.saturating_add(self.physical_bytes);
+        self.bytes
+    }
+
+    /// The bytes, for a reader that has no store to charge.
+    ///
+    /// The open path and the slab inspection both read before any `BlockStore` exists, and the
+    /// inspection reads on a worker thread that could not reach one anyway. Their bytes are
+    /// already on the PROCESS counter -- that happened when this was built -- so this is not an
+    /// uncounted escape hatch; it is the absence of a second, store-scoped charge that would have
+    /// nowhere to land. Named so that it reads as a decision at each call site.
+    pub(crate) fn into_bytes_charged_to_the_process_only(self) -> Vec<u8> {
         self.bytes
     }
 }
@@ -101,7 +225,13 @@ pub(crate) trait SlabBackend: Send + Sync {
     ///
     /// EXACT: a slab too short for the range is an error, because an address that points past
     /// the end of its own slab is a broken address and not a short answer.
-    fn read_range(&self, slab_id: u64, offset: u64, length: u64) -> io::Result<CountedSlabRead>;
+    fn read_range<'a>(
+        &self,
+        slab_id: u64,
+        offset: u64,
+        length: u64,
+        tally: &'a mut BlockStoreReadTally,
+    ) -> io::Result<CountedSlabRead<'a>>;
 
     /// The same range, TOLERATING a short slab: what is there is returned, and nothing is an
     /// error.
@@ -110,15 +240,20 @@ pub(crate) trait SlabBackend: Send + Sync {
     /// difference is not cosmetic -- routing them through `read_range` above would turn a
     /// truncated tail from an empty answer into a failed read. Named separately so the choice is
     /// made by whoever knows which one they want.
-    fn read_range_at_most(
+    fn read_range_at_most<'a>(
         &self,
         slab_id: u64,
         offset: u64,
         length: u64,
-    ) -> io::Result<CountedSlabRead>;
+        tally: &'a mut BlockStoreReadTally,
+    ) -> io::Result<CountedSlabRead<'a>>;
 
     /// The whole slab, for the walks that summarise or inspect one.
-    fn read_all(&self, slab_id: u64) -> io::Result<CountedSlabRead>;
+    fn read_all<'a>(
+        &self,
+        slab_id: u64,
+        tally: &'a mut BlockStoreReadTally,
+    ) -> io::Result<CountedSlabRead<'a>>;
 
     /// How long the slab is, without reading it.
     fn len(&self, slab_id: u64) -> io::Result<u64>;
@@ -187,32 +322,43 @@ impl SlabBackend for LocalSlabBackend<'_> {
         Ok(offset)
     }
 
-    fn read_range(&self, slab_id: u64, offset: u64, length: u64) -> io::Result<CountedSlabRead> {
+    fn read_range<'a>(
+        &self,
+        slab_id: u64,
+        offset: u64,
+        length: u64,
+        tally: &'a mut BlockStoreReadTally,
+    ) -> io::Result<CountedSlabRead<'a>> {
         use std::io::{Read as _, Seek as _, SeekFrom};
         let mut file = std::fs::File::open(self.path(slab_id))?;
         file.seek(SeekFrom::Start(offset))?;
         let mut bytes = vec![0_u8; length as usize];
         file.read_exact(&mut bytes)?;
-        Ok(CountedSlabRead::of(bytes))
+        Ok(CountedSlabRead::of(bytes, tally))
     }
 
-    fn read_range_at_most(
+    fn read_range_at_most<'a>(
         &self,
         slab_id: u64,
         offset: u64,
         length: u64,
-    ) -> io::Result<CountedSlabRead> {
+        tally: &'a mut BlockStoreReadTally,
+    ) -> io::Result<CountedSlabRead<'a>> {
         use std::io::{Read as _, Seek as _, SeekFrom};
         let mut file = std::fs::File::open(self.path(slab_id))?;
         file.seek(SeekFrom::Start(offset))?;
         let mut bytes = vec![0_u8; length as usize];
         let read = file.read(&mut bytes)?;
         bytes.truncate(read);
-        Ok(CountedSlabRead::of(bytes))
+        Ok(CountedSlabRead::of(bytes, tally))
     }
 
-    fn read_all(&self, slab_id: u64) -> io::Result<CountedSlabRead> {
-        Ok(CountedSlabRead::of(std::fs::read(self.path(slab_id))?))
+    fn read_all<'a>(
+        &self,
+        slab_id: u64,
+        tally: &'a mut BlockStoreReadTally,
+    ) -> io::Result<CountedSlabRead<'a>> {
+        read_block_store_file(&self.path(slab_id), tally)
     }
 
     fn len(&self, slab_id: u64) -> io::Result<u64> {
@@ -266,7 +412,7 @@ mod tests {
         );
         assert_eq!(
             backend
-                .read_range(0, second, b"second-record".len() as u64)
+                .read_range(0, second, b"second-record".len() as u64, &mut BlockStoreReadTally::start())
                 .expect("read")
                 .charge(&mut BlockStoreStats::default()),
             b"second-record",
@@ -288,7 +434,7 @@ mod tests {
         assert_eq!(backend.len(1).expect("len"), 4);
         assert_eq!(
             backend
-                .read_all(1)
+                .read_all(1, &mut BlockStoreReadTally::start())
                 .expect("read")
                 .charge(&mut BlockStoreStats::default()),
             b"keep",
