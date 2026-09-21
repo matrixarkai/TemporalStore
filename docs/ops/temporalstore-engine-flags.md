@@ -8,7 +8,7 @@ within a week and its staleness is silent.
 
 ## Why this exists
 
-There are 311 of them, read by 99 functions.
+There are 311 of them, read by 98 functions.
 
 Deleting unreachable code is not the lever. An earlier version of this document argued that
 by asserting every accessor had a caller -- true when it was hand-checked at 55, and carried
@@ -68,7 +68,7 @@ Anything else is blank, and a blank means go and look.
 | **that nothing in this repository sets** | 177 |
 | documented as keeping an older path alive | 3 |
 | reaching more than two files | 15 |
-| whose doc comment is really about another flag | 40 |
+| whose doc comment is really about another flag | 38 |
 
 ## topology (42)
 
