@@ -113,6 +113,14 @@ pub(super) fn force_the_threshold(cluster: &RaftCluster) {
     let mut inner = cluster.inner.write().expect("raft cluster lock poisoned");
     inner.config.max_applied_log_bytes = 1;
     inner.config.max_retained_log_bytes = 0;
+    // And pin the FIXED cadence, which is what every measurement in this file and in
+    // `snapshot_large_store` was taken under: a constant byte threshold, unrelated to the image
+    // the snapshot will read. `snapshot_image_fraction_divisor` raises that threshold in
+    // proportion to the last image, which is exactly the thing those files RECORD as absent --
+    // leaving it at its shipped default would stop the second snapshot in every INCREMENT arm
+    // from firing at all, and a recording of a defect must go on measuring the defect. The
+    // relative cadence is measured in `snapshot_cadence`, against these same arms.
+    inner.config.snapshot_image_fraction_divisor = 0;
 }
 
 /// Everything the snapshot path is about to be measured against, asserted NON-EMPTY.
@@ -1056,7 +1064,7 @@ fn each_term_of_the_snapshot_eligibility_check_refuses_on_its_own() {
 /// A deployed follower, 400 entries over `SLABS` slabs, committed and applied by RPC. `total` is
 /// asserted applied, because a follower that rejected an append compacts nothing and every count
 /// taken from it is a zero for the wrong reason.
-fn deployed_follower_with(total: u64) -> (tempfile::TempDir, RaftCluster) {
+pub(super) fn deployed_follower_with(total: u64) -> (tempfile::TempDir, RaftCluster) {
     let dir = tempfile::tempdir().unwrap();
     let follower = RaftCluster::new_single_shard_with_wal(
         dir.path(),

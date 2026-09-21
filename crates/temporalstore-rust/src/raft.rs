@@ -3434,10 +3434,28 @@ pub struct RaftConfig {
     /// lagging/rejecting follower no longer freezes the proposer for a full 5 s.
     #[serde(default = "default_replication_deadline_ms")]
     pub replication_deadline_ms: u64,
+    /// How many bytes of state image a routine snapshot may READ for each byte of applied log it
+    /// DISCARDS.
+    ///
+    /// `max_applied_log_bytes` above is admission control on the LOG, and what a snapshot reads is
+    /// the STORE: the served index plus every live slab. Against a constant log threshold those
+    /// two are unrelated, so the bytes a snapshot reads per byte it discards is linear in the
+    /// shard. This bounds that ratio: the configured threshold becomes a FLOOR, raised to
+    /// `last_image_bytes / divisor` so a snapshot never reads more than `divisor` bytes of image
+    /// per byte of log it frees. It can only ever make a snapshot wait for MORE to discard, never
+    /// fire earlier, so a shard below the crossover keeps the cadence it has.
+    ///
+    /// Zero turns the relative term off and restores the constant threshold exactly.
+    #[serde(default = "default_snapshot_image_fraction_divisor")]
+    pub snapshot_image_fraction_divisor: u64,
 }
 
 fn default_replication_deadline_ms() -> u64 {
     5000
+}
+
+fn default_snapshot_image_fraction_divisor() -> u64 {
+    cluster_snapshot::SNAPSHOT_IMAGE_FRACTION_DIVISOR
 }
 
 impl Default for RaftConfig {
@@ -3482,6 +3500,7 @@ impl Default for RaftConfig {
             max_applied_log_bytes: 1024 * 1024 * 1024,
             max_retained_log_bytes: default_max_retained_log_bytes(),
             replication_deadline_ms: default_replication_deadline_ms(),
+            snapshot_image_fraction_divisor: default_snapshot_image_fraction_divisor(),
         }
     }
 }

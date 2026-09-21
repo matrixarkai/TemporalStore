@@ -23,6 +23,7 @@ mod part4;
 mod part5;
 mod durable_apply;
 mod pre_vote_default;
+mod snapshot_cadence;
 mod snapshot_cost;
 mod snapshot_large_store;
 mod snapshot_scale;

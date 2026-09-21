@@ -779,7 +779,16 @@ impl RaftCluster {
                 .map(|wal| wal.node_log_bytes_after(inner.shard_id, node_id, last_snapshot_index))
                 .unwrap_or(0)
                 .max(logical);
-            let limit = inner.config.max_applied_log_bytes;
+            // The same bound, for the same reason, on the copy of this cadence a deployed
+            // follower runs. A follower's compaction builds its own state image off its own
+            // engine, so it pays the identical whole-shard read for the identical constant
+            // threshold; a bound applied to only one of two live copies leaves the other with
+            // the defect.
+            let limit = effective_max_applied_log_bytes(
+                inner.config.max_applied_log_bytes,
+                installed_image_bytes(node),
+                inner.config.snapshot_image_fraction_divisor,
+            );
             if applied_log_bytes < limit {
                 return Ok(None);
             }
@@ -881,6 +890,20 @@ impl RaftCluster {
                 })
                 .unwrap_or(0)
                 .max(logical_log_bytes);
+            // What this snapshot will READ is the whole shard; what it discards is the log
+            // above. A constant threshold relates the two not at all, so raise it in
+            // proportion to the image the LAST snapshot here produced -- a length already in
+            // hand, never a build -- and a snapshot never reads more than
+            // `SNAPSHOT_IMAGE_FRACTION_DIVISOR` bytes of image per byte of log it discards.
+            // The configured value stays a FLOOR: a leader with no installed image reports 0
+            // and the floor decides alone, which is why the first snapshot on a fresh shard is
+            // untouched and only the routine ones after it are paced.
+            let last_image_bytes = installed_image_bytes(leader);
+            let effective_limit = effective_max_applied_log_bytes(
+                inner.config.max_applied_log_bytes,
+                last_image_bytes,
+                inner.config.snapshot_image_fraction_divisor,
+            );
             let mut report = RaftSnapshotTriggerReport {
                 triggered: false,
                 reason: "below_threshold".to_string(),
@@ -888,7 +911,7 @@ impl RaftCluster {
                 applied_index: leader.applied_index,
                 last_snapshot_index,
                 applied_log_bytes,
-                max_applied_log_bytes: inner.config.max_applied_log_bytes,
+                max_applied_log_bytes: effective_limit,
             };
             if !inner.config.can_trigger_snapshot {
                 report.reason = "disabled".to_string();
@@ -898,7 +921,11 @@ impl RaftCluster {
                 report.reason = "no_new_applied_logs".to_string();
                 return Ok(report);
             }
-            if applied_log_bytes < inner.config.max_applied_log_bytes {
+            if applied_log_bytes < effective_limit {
+                if effective_limit > inner.config.max_applied_log_bytes {
+                    report.reason = "below_threshold_raised_for_the_image_it_would_read"
+                        .to_string();
+                }
                 return Ok(report);
             }
             // Hold while a live follower still needs what this would discard, so catching it up
@@ -1446,6 +1473,75 @@ pub(super) fn node_accepts_snapshot(
         && local_only.map_or(true, |local| local == node.id)
         && snapshot_index >= node.commit_index
         && snapshot_index >= node.applied_index
+}
+
+/// How many bytes of state image a snapshot may READ for each byte of raft log it DISCARDS.
+///
+/// A snapshot's cost is the whole shard -- the served index plus every live slab -- and what it
+/// discards is the applied log accrued since the previous one. Against a constant accrual
+/// threshold those two quantities have nothing to do with each other, so bytes read per byte
+/// discarded is linear in the store: #1939 measured a snapshot on a 100,000-record store reading
+/// 14,000,140 slab bytes to discard ONE log entry, four times what the whole first snapshot of a
+/// 25,000-record store read, for a four-hundred-thousandth of the work. Requiring the accrual to
+/// reach `last_image_bytes / SNAPSHOT_IMAGE_FRACTION_DIVISOR` before a routine snapshot fires
+/// bounds that figure at the divisor, whatever the shard holds.
+///
+/// It is bought with retained raft log. Between snapshots the log may now stand at
+/// `last_image_bytes / divisor` rather than at the configured floor -- an eighth of the image at 8
+/// -- and it still returns to its floor at every snapshot. That is the trade: the log's
+/// steady-state footprint grows with the shard, and the bytes a shard reads to hold that bound
+/// stop growing with it.
+///
+/// A constant rather than a deployment knob. It is a dimensionless ratio, it is the same at every
+/// size by construction, and the deployment already sets the FLOOR through
+/// `TS_RAFT_MAX_APPLIED_LOG_BYTES`.
+pub const SNAPSHOT_IMAGE_FRACTION_DIVISOR: u64 = 8;
+
+/// The accrual a routine snapshot must have to show for itself: the configured floor, raised so a
+/// snapshot never reads more than `divisor` bytes of state image per byte of applied log it
+/// discards.
+///
+/// `configured_threshold_bytes` is a FLOOR and never a ceiling. A shard whose last image was
+/// smaller than `divisor * configured_threshold_bytes` keeps exactly the cadence it has today --
+/// the relative term can only ever make a snapshot wait for MORE to discard, never fire earlier --
+/// so nothing below the crossover changes behaviour at all.
+///
+/// `last_image_bytes` is the size of the image the PREVIOUS snapshot on this node produced, read
+/// off `installed_snapshot` where that snapshot left it. It is a length already in hand, not a
+/// build: asking the engine for the current image would run exactly the whole-store read this
+/// bound exists to ration, once per background tick instead of once per snapshot. A node that has
+/// never snapshotted has no installed image, reports 0, and leaves the floor deciding -- which is
+/// why the FIRST snapshot on a fresh shard fires precisely when it always did, and only the
+/// routine snapshots after it are paced.
+///
+/// A zero configured floor means "fire on any new applied entry": the comparison it feeds is
+/// `applied_log_bytes < threshold`, which no byte count is ever below at zero. That is how an
+/// operator pins snapshotting to every eligible tick, and the relative term is a `max` against a
+/// quantity that grows without bound, so without this guard it would silently STOP that operator's
+/// snapshots on exactly the largest shards -- the ones they were most likely pinning. A zero in
+/// either position therefore returns the configured value unchanged and leaves the caller the
+/// decision it had. (`can_trigger_snapshot` is the separate switch that turns the path off
+/// entirely, and nothing here reads or overrides it.)
+pub fn effective_max_applied_log_bytes(
+    configured_threshold_bytes: u64,
+    last_image_bytes: u64,
+    divisor: u64,
+) -> u64 {
+    if configured_threshold_bytes == 0 || divisor == 0 {
+        return configured_threshold_bytes;
+    }
+    configured_threshold_bytes.max(last_image_bytes / divisor)
+}
+
+/// The payload size of the state image a node's installed snapshot carries, or 0 when it carries
+/// none -- a node that has never snapshotted, or one whose image was externalised to a snapshot
+/// store and is not held here. Both leave the configured floor deciding on its own.
+fn installed_image_bytes(node: &RaftNode) -> u64 {
+    node.installed_snapshot
+        .as_ref()
+        .and_then(|snapshot| snapshot.state_image.as_ref())
+        .map(|image| image.payload_bytes() as u64)
+        .unwrap_or(0)
 }
 
 /// The nodes a routine snapshot ending at `snapshot_index` would be published into, right now.
