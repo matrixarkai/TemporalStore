@@ -53,6 +53,76 @@ pub(crate) mod probe {
     /// Times an append resolved WHICH FILE the shard's log is being written to. Each pass is
     /// at least one `statx`, and the append used to make two of them per record.
     pub(crate) static APPEND_PATH_PROBES: AtomicU64 = AtomicU64::new(0);
+    /// Entries to the post-dump sweep,
+    /// [`super::LocalIndexLogStore::gc_reflected_before_anchor`] -- counted on the FIRST line of
+    /// the function, before any early return, so a shard with no log on disk is still an entry.
+    ///
+    /// Which of the two sweeps a deployment actually drives is otherwise argued rather than
+    /// measured, and an argument about a cadence is exactly the shape that has been wrong here.
+    pub(crate) static SWEEP_ENTRIES_POST_DUMP: AtomicU64 = AtomicU64::new(0);
+    /// Entries to the budgeted sweep,
+    /// [`super::LocalIndexLogStore::gc_before_sequence_limited`], on the same terms.
+    pub(crate) static SWEEP_ENTRIES_BUDGETED: AtomicU64 = AtomicU64::new(0);
+    /// Frames either sweep READ off the piece being written.
+    ///
+    /// This is the quantity a per-round entry budget does NOT touch: both loops read the piece
+    /// to the end whatever the budget says, because the budget decides which side of the rewrite
+    /// a record lands on rather than whether the loop continues.
+    pub(crate) static SWEEP_FRAMES_READ: AtomicU64 = AtomicU64::new(0);
+    /// Frames either sweep COPIED into the rewritten piece.
+    ///
+    /// Counted where the bytes are written, not from `retained.len()`: a change that builds the
+    /// retained list correctly and then writes something else leaves the list untouched.
+    pub(crate) static SWEEP_FRAMES_COPIED: AtomicU64 = AtomicU64::new(0);
+    /// The sequences a sweep removed from the piece being written, in the order it decided them.
+    ///
+    /// ARMED EXPLICITLY, for the same reason [`FOLD_DECISIONS`] is: the scale fixtures measure
+    /// what a sweep holds at tens of thousands of records, and a Vec that grows with the corpus
+    /// would be measured along with it.
+    pub(crate) static SWEEP_REMOVED_ARMED: AtomicBool = AtomicBool::new(false);
+    pub(crate) static SWEEP_REMOVED: Mutex<Vec<(ShardId, u64)>> = Mutex::new(Vec::new());
+    /// Appends that COMPLETED, counted beside `inner.stats.writes` at all three append sites --
+    /// so it is incremented while the appender holds the very lock a sweep takes.
+    pub(crate) static APPENDS_COMPLETED: AtomicU64 = AtomicU64::new(0);
+    /// [`APPENDS_COMPLETED`] as a sweep read it at the moment it took the lock, and again at the
+    /// last statement before it dropped it.
+    ///
+    /// The difference is how many appends landed WHILE the sweep held the lock, with no timing in
+    /// it: not "few", not "few relative to a control window", but a number that is 0 if the lock
+    /// is held and climbs the moment it is not. The ratio this replaces was load-dependent --
+    /// 485x on an idle box and 11x on a busy one, off the same code.
+    pub(crate) static SWEEP_APPENDS_AT_LOCK: AtomicU64 = AtomicU64::new(0);
+    pub(crate) static SWEEP_APPENDS_AT_RELEASE: AtomicU64 = AtomicU64::new(0);
+
+    /// Takes the two readings above. Declared AFTER the lock guard so it drops BEFORE it, which
+    /// is what makes the second reading a reading taken while the lock is still held.
+    pub(crate) struct SweepLockSpan;
+
+    impl SweepLockSpan {
+        pub(crate) fn new() -> Self {
+            SWEEP_APPENDS_AT_LOCK.store(APPENDS_COMPLETED.load(Ordering::SeqCst), Ordering::SeqCst);
+            SWEEP_APPENDS_AT_RELEASE
+                .store(APPENDS_COMPLETED.load(Ordering::SeqCst), Ordering::SeqCst);
+            SweepLockSpan
+        }
+    }
+
+    impl Drop for SweepLockSpan {
+        fn drop(&mut self) {
+            SWEEP_APPENDS_AT_RELEASE
+                .store(APPENDS_COMPLETED.load(Ordering::SeqCst), Ordering::SeqCst);
+        }
+    }
+
+    pub(crate) fn appends_completed() -> u64 {
+        APPENDS_COMPLETED.load(Ordering::SeqCst)
+    }
+    /// Appends that landed while the last sweep held the lock.
+    pub(crate) fn appends_during_the_sweep_lock() -> u64 {
+        SWEEP_APPENDS_AT_RELEASE
+            .load(Ordering::SeqCst)
+            .saturating_sub(SWEEP_APPENDS_AT_LOCK.load(Ordering::SeqCst))
+    }
     /// Records the load-path fold was asked about, and what it was told.
     ///
     /// Counted inside [`super::delta_record_is_reflected_by`] rather than at the fold, so a
@@ -159,6 +229,17 @@ pub(crate) mod probe {
         FOLD_PIECES_DECLINED.store(0, Ordering::Relaxed);
         APPEND_ROOT_CREATES.store(0, Ordering::Relaxed);
         APPEND_PATH_PROBES.store(0, Ordering::Relaxed);
+        SWEEP_ENTRIES_POST_DUMP.store(0, Ordering::Relaxed);
+        SWEEP_ENTRIES_BUDGETED.store(0, Ordering::Relaxed);
+        SWEEP_FRAMES_READ.store(0, Ordering::Relaxed);
+        SWEEP_FRAMES_COPIED.store(0, Ordering::Relaxed);
+        APPENDS_COMPLETED.store(0, Ordering::SeqCst);
+        SWEEP_APPENDS_AT_LOCK.store(0, Ordering::SeqCst);
+        SWEEP_APPENDS_AT_RELEASE.store(0, Ordering::SeqCst);
+        SWEEP_REMOVED
+            .lock()
+            .expect("sweep removal probe poisoned")
+            .clear();
         FOLD_RECORDS_TESTED.store(0, Ordering::Relaxed);
         FOLD_ANCHORLESS_WITH_CONTENT.store(0, Ordering::Relaxed);
         FOLD_DECISIONS
@@ -188,6 +269,49 @@ pub(crate) mod probe {
     }
     pub(crate) fn append_path_probes() -> u64 {
         APPEND_PATH_PROBES.load(Ordering::Relaxed)
+    }
+
+    pub(crate) fn sweep_entries_post_dump() -> u64 {
+        SWEEP_ENTRIES_POST_DUMP.load(Ordering::Relaxed)
+    }
+    pub(crate) fn sweep_entries_budgeted() -> u64 {
+        SWEEP_ENTRIES_BUDGETED.load(Ordering::Relaxed)
+    }
+    pub(crate) fn sweep_frames_read() -> u64 {
+        SWEEP_FRAMES_READ.load(Ordering::Relaxed)
+    }
+    pub(crate) fn sweep_frames_copied() -> u64 {
+        SWEEP_FRAMES_COPIED.load(Ordering::Relaxed)
+    }
+
+    /// Start recording the removal sequence, from empty. Put back by [`disarm_removals`].
+    pub(crate) fn arm_removals() {
+        SWEEP_REMOVED
+            .lock()
+            .expect("sweep removal probe poisoned")
+            .clear();
+        SWEEP_REMOVED_ARMED.store(true, Ordering::Relaxed);
+    }
+
+    pub(crate) fn disarm_removals() {
+        SWEEP_REMOVED_ARMED.store(false, Ordering::Relaxed);
+    }
+
+    /// Note that a sweep removed a record from the piece being written.
+    pub(crate) fn note_sweep_removed(shard_id: ShardId, sequence: u64) {
+        if SWEEP_REMOVED_ARMED.load(Ordering::Relaxed) {
+            SWEEP_REMOVED
+                .lock()
+                .expect("sweep removal probe poisoned")
+                .push((shard_id, sequence));
+        }
+    }
+
+    pub(crate) fn removals() -> Vec<(ShardId, u64)> {
+        SWEEP_REMOVED
+            .lock()
+            .expect("sweep removal probe poisoned")
+            .clone()
     }
 }
 
@@ -1633,6 +1757,8 @@ impl LocalIndexLogStore {
             file.sync_data()?;
         }
         inner.stats.writes += 1;
+        #[cfg(test)]
+        probe::APPENDS_COMPLETED.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
         inner.stats.bytes_written += bytes.len() as u64;
         inner.stats.last_sequence = next_sequence;
         inner.last_sequence_by_shard.insert(shard_id, next_sequence);
@@ -1732,6 +1858,8 @@ impl LocalIndexLogStore {
             file.sync_data()?;
         }
         inner.stats.writes += 1;
+        #[cfg(test)]
+        probe::APPENDS_COMPLETED.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
         inner.stats.bytes_written += bytes.len() as u64;
         inner.stats.last_sequence = next_sequence;
         inner.last_sequence_by_shard.insert(shard_id, next_sequence);
@@ -1874,6 +2002,8 @@ impl LocalIndexLogStore {
         file.write_all(&bytes)?;
         file.flush()?;
         inner.stats.writes += 1;
+        #[cfg(test)]
+        probe::APPENDS_COMPLETED.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
         inner.stats.bytes_written += bytes.len() as u64;
         inner.stats.last_sequence = next_sequence;
         inner.last_sequence_by_shard.insert(shard_id, next_sequence);
@@ -2393,7 +2523,18 @@ impl LocalIndexLogStore {
         // `reclaim_costs_what_it_removes_not_what_it_keeps`.
         max_entries_per_round: usize,
     ) -> Result<IndexLogGcReport, IndexLogError> {
+        #[cfg(test)]
+        probe::SWEEP_ENTRIES_BUDGETED.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        // Taken here and held to the end of the function -- past the walk, past the rewrite,
+        // past the barrier and the rename. It is the same lock `append_json` takes, so for as
+        // long as a sweep runs the shard's index log accepts no record. What bounds that hold is
+        // therefore what bounds the sweep, and `max_entries_per_round` is not it: see the note
+        // on the parameter above.
         let inner = self.inner.lock().expect("index log lock poisoned");
+        // AFTER the guard, so it drops BEFORE it: the release reading is taken while the lock is
+        // still held. `a_sweep_holds_the_lock_every_append_needs` reads the two.
+        #[cfg(test)]
+        let _lock_span = probe::SweepLockSpan::new();
         fs::create_dir_all(&inner.root)?;
         let root = inner.root.clone();
         let path = index_log_path(&root, shard_id);
@@ -2431,6 +2572,8 @@ impl LocalIndexLogStore {
                     continue;
                 }
                 records_before += 1;
+                #[cfg(test)]
+                probe::SWEEP_FRAMES_READ.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
                 // Preserve the exact on-disk payload for retained records so a delta record is
                 // not silently re-encoded as a whole-index record (which would drop its
                 // items/meta). Decode verifies the integrity envelope; the retained raw payload
@@ -2447,6 +2590,8 @@ impl LocalIndexLogStore {
                 } else {
                     removed_this_round = removed_this_round.saturating_add(1);
                     reclaimable_bytes = reclaimable_bytes.saturating_add(frame_bytes as u64);
+                    #[cfg(test)]
+                    probe::note_sweep_removed(shard_id, record.sequence);
                 }
             }
         }
@@ -2463,6 +2608,8 @@ impl LocalIndexLogStore {
                 for payload in &retained {
                     let framed = crate::log_framing::encode_record(payload);
                     bytes_copied = bytes_copied.saturating_add(framed.len() as u64);
+                    #[cfg(test)]
+                    probe::SWEEP_FRAMES_COPIED.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
                     temp.write_all(&framed)?;
                 }
                 temp.flush()?;
@@ -2521,6 +2668,13 @@ impl LocalIndexLogStore {
     /// `min_reclaimable_bytes` is the least the sweep must be able to reclaim before it will
     /// rewrite the log. Below it -- and always when nothing at all is reclaimable -- the log is
     /// left exactly as it is and the report says so.
+    ///
+    /// NO PER-ROUND ENTRY BUDGET, DELIBERATELY, and it is the sweep a background thread drives
+    /// once a second while its budgeted sibling runs when an operator asks. Both halves of that
+    /// are measured; [`POST_DUMP_SWEEP_ENTRY_BUDGET`] is the long form, and the short one is that
+    /// a budget would bound neither the walk nor the lock this holds, and would make the rewrite
+    /// copy more. What bounds this round is the rolling threshold: pieces below the floor are
+    /// unlinked by name and never opened, so only the piece being written is walked.
     pub fn gc_reflected_before_anchor(
         &self,
         shard_id: ShardId,
@@ -2528,7 +2682,13 @@ impl LocalIndexLogStore {
         meta_sequence: u64,
         min_reclaimable_bytes: u64,
     ) -> Result<IndexLogGcReport, IndexLogError> {
+        #[cfg(test)]
+        probe::SWEEP_ENTRIES_POST_DUMP.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        // Held to the end of the function, exactly as the budgeted sweep holds it, and for the
+        // same reason: this is the lock `append_json` takes.
         let inner = self.inner.lock().expect("index log lock poisoned");
+        #[cfg(test)]
+        let _lock_span = probe::SweepLockSpan::new();
         fs::create_dir_all(&inner.root)?;
         let root = inner.root.clone();
         let path = index_log_path(&root, shard_id);
@@ -2567,6 +2727,8 @@ impl LocalIndexLogStore {
                     continue;
                 }
                 records_before += 1;
+                #[cfg(test)]
+                probe::SWEEP_FRAMES_READ.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
                 // Decode verifies the integrity envelope; the retained raw payload is re-framed
                 // on write-out below, so a retained delta record keeps its exact on-disk bytes.
                 let probe: IndexRecordHead = decode_index_payload(&payload)?;
@@ -2592,6 +2754,8 @@ impl LocalIndexLogStore {
                     retained.push(payload);
                 } else {
                     reclaimable_bytes = reclaimable_bytes.saturating_add(frame_bytes as u64);
+                    #[cfg(test)]
+                    crate::index_log::probe::note_sweep_removed(shard_id, probe.sequence);
                 }
             }
         }
@@ -2628,6 +2792,9 @@ impl LocalIndexLogStore {
             for payload in &retained {
                 let framed = crate::log_framing::encode_record(payload);
                 bytes_copied = bytes_copied.saturating_add(framed.len() as u64);
+                #[cfg(test)]
+                crate::index_log::probe::SWEEP_FRAMES_COPIED
+                    .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
                 temp.write_all(&framed)?;
             }
             temp.flush()?;
@@ -2640,7 +2807,9 @@ impl LocalIndexLogStore {
         Ok(IndexLogGcReport {
             shard_id,
             retain_from_sequence: meta_sequence,
-            max_entries_per_round: 0,
+            // NOT a bare zero. See the constant: an entry budget bounds neither this round's read
+            // nor its lock hold, and setting one here would only make the rewrite copy more.
+            max_entries_per_round: POST_DUMP_SWEEP_ENTRY_BUDGET,
             records_before: dropped_records.saturating_add(records_before),
             records_after: retained.len(),
             records_removed: dropped_records.saturating_add(removable),
@@ -2839,6 +3008,47 @@ fn index_log_segment_bytes() -> u64 {
 
 /// Rolling threshold when nothing sets one. See [`index_log_segment_bytes`].
 pub const DEFAULT_INDEX_LOG_SEGMENT_BYTES: u64 = 64 * 1024;
+
+/// The per-round entry budget the post-dump sweep applies: NONE, deliberately.
+///
+/// [`LocalIndexLogStore::gc_reflected_before_anchor`] takes no `max_entries_per_round` parameter
+/// and has no budget test in its record loop. This is the value its report carries, so a reader
+/// of an `IndexLogGcReport` off that path sees the absence stated rather than inferred -- and so
+/// a third sweep cannot pick up a bare literal without meeting the reason for it.
+///
+/// WHAT `0` MEANS, READ FROM THE CONSUMER. The only code that consumes this quantity is
+/// [`LocalIndexLogStore::gc_before_sequence_limited`], which guards it as
+/// `max_entries_per_round > 0 && removed_this_round >= max_entries_per_round`, and the
+/// `budget_exhausted` term, guarded the same way. `0` is therefore "no budget" and not "use the
+/// default" -- `the_default_entry_budget_belongs_to_the_path_that_runs_when_asked` drives the
+/// consumer at this value and asserts it removes everything it can.
+///
+/// WHY THIS PATH HAS NONE, AND WHY MATCHING THE OTHER PATH'S 256 WOULD BE A PESSIMISATION.
+/// An entry budget is not a bound on the work of either sweep. When the budget is reached the
+/// record is pushed onto `retained` and the loop CONTINUES, so the budget:
+///
+/// - does not bound what the round READS -- both loops read the piece being written to its end;
+/// - does not bound how long the round holds `inner`, which is the lock `append_json` takes;
+/// - bounds what the round REMOVES, and so makes the rewrite copy MORE, not less.
+///
+/// Measured in counts in `index_log_sweep_bound::an_entry_budget_copies_more_and_reads_exactly_as_much`:
+/// the same log, budgeted at 256, reads the identical number of frames, removes fewer records
+/// and copies strictly more bytes than the same round with no budget at all. The note on
+/// `gc_before_sequence_limited`'s parameter records the same inversion in milliseconds at 40,000
+/// records, from the shape that preceded piece unlinking.
+///
+/// WHAT DOES BOUND THIS SWEEP is [`DEFAULT_INDEX_LOG_SEGMENT_BYTES`]. Sealed pieces below the
+/// floor are unlinked by NAME without being opened, so the walk and the rewrite see only the
+/// piece being written -- at most the rolling threshold, whatever the store holds. That is a
+/// bound on what a round READS, which is the kind this engine has very few of.
+///
+/// AND THE CADENCES ARE THE OTHER WAY ROUND FROM THE BOUNDS. This unbudgeted sweep is the one
+/// the embedded proxy's background thread drives once a second
+/// (`MATRIXARK_RUST_PROXY_LOG_RECLAIM_INTERVAL_MS`); the budgeted one is reached from
+/// `run_storage_manager_cycle`, which in that proxy is a request op that runs when asked.
+/// Counted at both entry points in
+/// `index_log_sweep_bound::each_production_driver_reaches_exactly_one_of_the_two_sweeps`.
+pub(crate) const POST_DUMP_SWEEP_ENTRY_BUDGET: usize = 0;
 
 thread_local! {
     /// Per-thread override of the rolling threshold.
@@ -3262,6 +3472,10 @@ fn sync_parent_dir(path: &Path) -> std::io::Result<()> {
 #[cfg(test)]
 #[path = "index_log_scale.rs"]
 mod index_log_scale;
+
+#[cfg(test)]
+#[path = "index_log_sweep_bound.rs"]
+mod index_log_sweep_bound;
 
 #[cfg(test)]
 mod tests {
