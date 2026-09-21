@@ -297,6 +297,46 @@ pub(super) struct LiveBlockEntry {
     pub(super) dirty: bool,
     pub(super) deleted: bool,
     pub(super) log_backed: bool,
+    /// THE BUCKET THIS PAGE IS ACTUALLY FILED UNDER, when the walk that produced the entry knew
+    /// it -- which is whenever the entry came out of the bucket index.
+    ///
+    /// An address may carry no routing bucket of its own: `BlockAddressWire::routing_bucket` is
+    /// `Option<u32>` under `#[serde(default)]`, so an index written before that field existed
+    /// decodes into pages that carry none, and `rebuild_bucket_first_index` stamps only the
+    /// object id onto an address, so a page comes out of a reconstruct still unrouted. Five
+    /// readers then had to answer "which bucket is this page in?" for themselves, and each
+    /// answered it with `block_routing_bucket(key, 0, u32::MAX)` -- a hash over the WHOLE range,
+    /// which is the bucket the page is filed under only when the shard is loaded on the whole
+    /// range too. On a shard loaded `0..1023` it names a bucket the shard does not hold.
+    ///
+    /// `collect_bucket_index_live_block_entries` walks `bucket_map` and therefore HAS the answer;
+    /// it was iterating `.values()` and discarding the key. Carrying it costs NOTHING -- see the
+    /// note on the two-field shape below -- and removes the guess. An unset `filing_is_known`
+    /// means the entry came from the model maps, where there is no filing to report; those
+    /// callers keep the fallback they had.
+    ///
+    /// NOT the same question as `address.routing_bucket()`, which is what the PAGE claims. This
+    /// is where the INDEX has it. `validate_bucket_ownership_index_from_entries` exists to
+    /// report when those two disagree, so the two must stay separately answerable.
+    ///
+    /// A BARE `u32` AND A FLAG RATHER THAN AN `Option<u32>`, AND THE DIFFERENCE IS 8 BYTES PER
+    /// LIVE PAGE. This struct aligns to 8 -- three `Arc` pointers and a `BlockAddress` -- so its
+    /// three flags sat in three bytes with five of tail padding. A `u32` and a fourth flag fit
+    /// that padding; an `Option<u32>` is eight bytes of its own and took the struct from 104 to
+    /// 112. `a_live_page_entry_carries_pointers_not_text_and_the_hoist_lowered_the_peak` caught
+    /// that, and it is the guard on a walk that materializes EVERY live page in the shard, so the
+    /// right answer was to stop paying the eight bytes rather than to widen the bound.
+    ///
+    /// Read through [`LiveBlockEntry::filed_bucket`], never as the two fields.
+    pub(super) filed_routing_bucket: u32,
+    pub(super) filing_is_known: bool,
+}
+
+impl LiveBlockEntry {
+    /// The bucket the INDEX has this page under, when the walk that produced the entry knew it.
+    pub(super) fn filed_bucket(&self) -> Option<u32> {
+        self.filing_is_known.then_some(self.filed_routing_bucket)
+    }
 }
 
 #[derive(Debug, Default)]
@@ -322,6 +362,10 @@ pub(super) fn live_block_entry(
         address,
         dirty: false,
         deleted: false,
+        // A model-map walk reads the pages an object owns, not the index that files them, so
+        // this walk genuinely does not know. Says so rather than guessing.
+        filed_routing_bucket: 0,
+        filing_is_known: false,
     }
 }
 
@@ -522,6 +566,7 @@ pub(super) fn storage_watermark_snapshot_with_samples_from_entries(
         let bucket_id = entry
             .address
             .routing_bucket()
+            .or(entry.filed_bucket())
             .unwrap_or_else(|| bucket_for_object(&entry.object_key, 0, u32::MAX));
         let generation = entry.address.object_id().unwrap_or(0);
         bucket_watermarks
@@ -806,6 +851,7 @@ pub(super) fn storage_topology_snapshot_with_samples_from_entries(
         let bucket_id = entry
             .address
             .routing_bucket()
+            .or(entry.filed_bucket())
             .unwrap_or_else(|| bucket_for_object(&entry.object_key, 0, u32::MAX));
         let bucket = buckets.entry(bucket_id).or_default();
         bucket.dirty_generation = bucket.dirty_generation.max(generation);
@@ -1569,7 +1615,7 @@ pub(super) fn collect_bucket_index_live_block_entries(shard: &ShardState) -> Vec
     // the supplement walk below either -- it charged what was RETURNED, while the walk
     // materializes the indexed pages and then, whenever anything is released, the whole shard.
     let mut from_index = 0usize;
-    for bucket in shard.bucket_index.bucket_map.values() {
+    for (routing_bucket, bucket) in &shard.bucket_index.bucket_map {
         for page in bucket.block_index.values() {
             from_index += 1;
             entries.push(LiveBlockEntry {
@@ -1582,6 +1628,11 @@ pub(super) fn collect_bucket_index_live_block_entries(shard: &ShardState) -> Vec
                 dirty: page.dirty,
                 deleted: page.deleted,
                 log_backed: page.log_backed,
+                // The key of the map being walked. This walk always knew it; it was iterating
+                // `.values()` and throwing it away, which is why five readers downstream had to
+                // guess it back out of the object key.
+                filed_routing_bucket: *routing_bucket,
+                filing_is_known: true,
             });
         }
     }
@@ -1597,11 +1648,16 @@ pub(super) fn collect_bucket_index_live_block_entries(shard: &ShardState) -> Vec
     // explicit routing bucket equal to the bucket's own -- so the filter below needs no hash
     // fallback and cannot claim a page for the wrong bucket.
     if !shard.bucket_index.released_buckets.is_empty() {
-        for entry in collect_model_live_block_entries(shard) {
+        for mut entry in collect_model_live_block_entries(shard) {
             let Some(routing_bucket) = entry.address.routing_bucket() else {
                 continue;
             };
             if shard.bucket_index.released_buckets.contains(&routing_bucket) {
+                // A released bucket admits a page only when the page's own explicit bucket IS
+                // the bucket's -- the filter three lines up -- so the filing is known exactly
+                // here too, and a supplemented entry must not read as "not filed".
+                entry.filed_routing_bucket = routing_bucket;
+                entry.filing_is_known = true;
                 entries.push(entry);
             }
         }
@@ -2885,6 +2941,9 @@ fn upsert_bucket_index_block_inner(
         address,
         dirty,
         deleted: false,
+        // Where this upsert is about to file it, computed ten lines up.
+        filed_routing_bucket: routing_bucket,
+        filing_is_known: true,
     };
     // Buckets whose pages this upsert disturbs. Collected while the bucket borrows are live and
     // recorded once they end, so the per-write refresh can skip the rest of the shard.
@@ -3150,6 +3209,9 @@ pub(super) fn sync_bucket_index_object_blocks_with_mode(
             address,
             dirty,
             deleted: false,
+            // Where this publish is about to file it, computed five lines up.
+            filed_routing_bucket: routing_bucket,
+            filing_is_known: true,
         };
         let bucket = shard
             .bucket_index

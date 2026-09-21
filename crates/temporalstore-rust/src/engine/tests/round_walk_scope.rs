@@ -1332,7 +1332,7 @@ fn what_scoping_the_summary_walk_saves_at_two_corpus_sizes() {
 
 /// The text between one call's own parentheses, balanced, so a multi-line call is read whole and
 /// the NEXT call's arguments are not read at all.
-fn call_arguments(lines: &[&str], line_index: usize, needle: &str) -> Option<String> {
+pub(super) fn call_arguments(lines: &[&str], line_index: usize, needle: &str) -> Option<String> {
     let start_column = lines[line_index].find(needle)? + needle.len();
     let mut depth = 1i32;
     let mut out = String::new();

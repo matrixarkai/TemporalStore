@@ -383,6 +383,7 @@ pub(super) fn storage_physical_index_report(
         let routing_bucket = entry
             .address
             .routing_bucket()
+            .or(entry.filed_bucket())
             .unwrap_or_else(|| bucket_for_object(&entry.object_key, 0, u32::MAX));
         let bucket = buckets
             .entry(routing_bucket)
@@ -802,6 +803,7 @@ pub(super) fn bucket_generation_fingerprints_by_bucket(shard: &ShardState) -> BT
         let routing_bucket = entry
             .address
             .routing_bucket()
+            .or(entry.filed_bucket())
             .unwrap_or_else(|| bucket_for_object(&entry.object_key, 0, u32::MAX));
         by_bucket.entry(routing_bucket).or_default().insert(format!(
             "{}|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}",
