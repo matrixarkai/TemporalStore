@@ -43,3 +43,9 @@ jobs:
 
       - name: Validate open-source readiness contract
         run: python tools/validate_open_source_readiness.py
+
+      # Green and unwired is the same protection as absent. This guard sat in tools/ running
+      # nowhere, and it was red on main -- one false positive on the English phrase "byte STORED"
+      # -- so wiring it would have broken the build and nobody did.
+      - name: Refuse retired object-store naming
+        run: python tools/validate_legacy_object_store_names.py
