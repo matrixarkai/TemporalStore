@@ -3687,6 +3687,24 @@ impl CountedWalFile<'_> {
         Ok(())
     }
 
+    /// Up to `buf.len()` bytes from the current position, stopping at end of file.
+    ///
+    /// Loops, because a SHORT READ IS NOT AN END OF FILE: a reader that took the first `read`'s
+    /// return value for the whole answer would see a truncated header on a file that has one, and
+    /// a header that fails to decode reads as a base of zero -- the silent direction.
+    fn read_window(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+        let mut filled = 0usize;
+        while filled < buf.len() {
+            match self.read(&mut buf[filled..]) {
+                Ok(0) => break,
+                Ok(read) => filled += read,
+                Err(error) if error.kind() == std::io::ErrorKind::Interrupted => continue,
+                Err(error) => return Err(error),
+            }
+        }
+        Ok(filled)
+    }
+
     fn set_len(&self, len: u64) -> std::io::Result<()> {
         self.file.set_len(len)
     }
@@ -4255,6 +4273,68 @@ fn read_wal_base(path: &Path) -> Result<(u64, u64), WriteAheadLogError> {
         return Ok((0, 0));
     }
     let mut tally = WalReadTally::start();
+    let mut window = [0u8; WAL_BASE_HEADER_PROBE_BYTES];
+    let read = {
+        let mut file = open_wal_read(path, &mut tally)?;
+        file.read_window(&mut window)?
+    };
+    let scanned = &window[..read];
+    let line: &[u8] = match scanned.iter().position(|byte| *byte == b'\n') {
+        // The terminated header line, inside the window. Every piece this engine has ever
+        // written is this shape.
+        Some(end) => &scanned[..=end],
+        // No terminator, and the read stopped SHORT of the window: the window is the whole file,
+        // so these are exactly the bytes the buffered reader would have handed the decoder. A
+        // piece truncated part-way through its header is this shape and it still decodes.
+        None if read < WAL_BASE_HEADER_PROBE_BYTES => scanned,
+        // A FULL window, no terminator, and it opens with the header magic. This writer cannot
+        // produce a header that long -- `wal_base_header_read::
+        // the_probe_window_is_wider_than_the_widest_header_the_writer_can_make` holds that
+        // arithmetically, against `encode_base_header` rather than against a comment -- so this
+        // is corrupt or foreign, and the one thing that must not happen to it is being quietly
+        // called base zero. Read it the way the buffered reader did and let the decoder refuse
+        // it.
+        None if scanned.starts_with(crate::log_framing::BASE_HEADER_MAGIC) => {
+            return read_wal_base_buffered(path);
+        }
+        // A full window with no terminator and no magic: not a header, and the buffered reader
+        // would have read to the first newline in the file to reach the same conclusion.
+        None => return Ok((0, 0)),
+    };
+    if line.is_empty() {
+        return Ok((0, 0));
+    }
+    match crate::log_framing::decode_base_header(line)? {
+        Some(base) => Ok((base, line.len() as u64)),
+        None => Ok((0, 0)),
+    }
+}
+
+/// How far into a piece a base header is looked for.
+///
+/// A header is `#tsb1 ` plus a CRC, a space, a `u64` in decimal and a newline, so the widest one
+/// this writer can produce is well under fifty bytes. 256 leaves a factor of five over it, and
+/// the test above turns that slack into an assertion rather than a hope.
+///
+/// It replaces an 8 KiB `BufReader` fill. The fill was bought and thrown away: the reader was a
+/// local, it was dropped at the end of the function, and what escaped was two integers -- nothing
+/// after the header read reused a byte of it. #1936 priced it at 483,328 of the 34,779,419 bytes
+/// a 200,000-record restore reads off its log, one fill per piece per replay window.
+pub(crate) const WAL_BASE_HEADER_PROBE_BYTES: usize = 256;
+
+/// `read_wal_base`'s reader as it stood before the window: a `BufReader` filling 8 KiB and
+/// reading on until it finds a line terminator, however far away it is.
+///
+/// Kept, and in PRODUCTION rather than behind `cfg(test)`, for two reasons. It is the fallback
+/// above for a piece that opens with the header magic and does not terminate inside the window --
+/// a shape the writer cannot produce, which is exactly why it must not be guessed at. And it is
+/// the CONTROL the bounded reader is compared against field by field, so the comparison is
+/// against the code that actually ran rather than against a copy of it in a test, which drifts.
+fn read_wal_base_buffered(path: &Path) -> Result<(u64, u64), WriteAheadLogError> {
+    if !path.exists() {
+        return Ok((0, 0));
+    }
+    let mut tally = WalReadTally::start();
     let mut reader = BufReader::new(open_wal_read(path, &mut tally)?);
     let mut line = Vec::new();
     let read = reader.read_until(b'\n', &mut line)?;
@@ -4265,6 +4345,29 @@ fn read_wal_base(path: &Path) -> Result<(u64, u64), WriteAheadLogError> {
         Some(base) => Ok((base, read as u64)),
         None => Ok((0, 0)),
     }
+}
+
+/// The two readers, side by side, for the test that compares their ANSWERS field by field.
+///
+/// Both are private to this module; the comparison has to be made from outside it.
+#[cfg(test)]
+pub(crate) fn read_wal_base_bounded_for_test(
+    path: &Path,
+) -> Result<(u64, u64), WriteAheadLogError> {
+    read_wal_base(path)
+}
+
+#[cfg(test)]
+pub(crate) fn read_wal_base_unbounded_for_test(
+    path: &Path,
+) -> Result<(u64, u64), WriteAheadLogError> {
+    read_wal_base_buffered(path)
+}
+
+/// The probe window, for the test that holds it against what the writer can produce.
+#[cfg(test)]
+pub(crate) fn wal_base_header_probe_bytes() -> usize {
+    WAL_BASE_HEADER_PROBE_BYTES
 }
 
 /// The sequence the log last reached, found by reading its END rather than all of it.

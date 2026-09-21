@@ -2,7 +2,7 @@
 // Copyright 2026 MatrixArkAI
 
 use std::collections::HashMap;
-use std::fs::{self, File, OpenOptions};
+use std::fs::{self, OpenOptions};
 use std::io::{BufRead, BufReader, Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
@@ -1319,12 +1319,193 @@ pub fn block_ref_key_from_parts(
     key
 }
 
+// ---------------------------------------------------------------------------------------------
+// WHAT THIS STORE READS OFF DISK, COUNTED WHERE THE READING HAPPENS.
+//
+// `IndexLogStats::bytes_read` counts what a read HANDS BACK -- the records inside the window a
+// caller asked for. That is a useful number and it is not this one. The load-path fold reads
+// whole PIECES and hands back RECORDS, and it fed neither counter at all: #1936 measured a
+// 200,000-record restore reading 8,119,256 bytes off this store's pieces in 1,069 reads while
+// `index_log_store().stats()` answered `bytes_read: 0`. Measured again here at 2,000 and 8,000
+// records, the fold read 163,236 and 655,236 bytes -- the whole log, both times -- against a
+// store that reported zero.
+//
+// A READER WITH NO COUNTER CONTRIBUTES ZERO TO EVERY REPORT, WHICH IS INDISTINGUISHABLE FROM A
+// READER DOING NO WORK. That is how 965,415,651 bytes -- 95% of a restore -- survived every
+// previous measurement of that path.
+//
+// Process-wide rather than per-store, and deliberately: pieces are read from free functions that
+// hold no store (`last_sequence_at`, `index_log_segment_span_of`), so charging a store would mean
+// threading one through the whole read side to buy a number that is already obtainable. The
+// thread-local beside it is what a single restore wants, because a restore runs on one thread
+// while the suite does not.
+// ---------------------------------------------------------------------------------------------
+
+static INDEX_LOG_PIECE_BYTES_READ: std::sync::atomic::AtomicU64 =
+    std::sync::atomic::AtomicU64::new(0);
+static INDEX_LOG_PIECE_READS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+thread_local! {
+    static INDEX_LOG_PIECE_BYTES_READ_HERE: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+    static INDEX_LOG_PIECE_READS_HERE: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+}
+
+/// Bytes and read calls this PROCESS has made against index-log pieces since it started.
+pub fn index_log_piece_read_counts() -> (u64, u64) {
+    (
+        INDEX_LOG_PIECE_BYTES_READ.load(std::sync::atomic::Ordering::Relaxed),
+        INDEX_LOG_PIECE_READS.load(std::sync::atomic::Ordering::Relaxed),
+    )
+}
+
+/// Bytes and read calls THIS THREAD has made against index-log pieces since it started.
+///
+/// A restore runs on one thread; the suite runs many at once. Measuring a restore against the
+/// process counter reads another test's reads as this one's.
+pub fn index_log_piece_read_counts_on_this_thread() -> (u64, u64) {
+    (
+        INDEX_LOG_PIECE_BYTES_READ_HERE.with(|bytes| bytes.get()),
+        INDEX_LOG_PIECE_READS_HERE.with(|reads| reads.get()),
+    )
+}
+
+/// What one span of reading against index-log pieces cost, published when it goes out of scope.
+///
+/// Held mutably by the [`CountedIndexLogFile`] it is passed to, so the handle cannot outlive it
+/// and A NEW READ OF A PIECE CANNOT BE WRITTEN WITHOUT A TALLY TO HAND OVER.
+pub(crate) struct IndexLogReadTally {
+    bytes: u64,
+    reads: u64,
+}
+
+impl IndexLogReadTally {
+    fn start() -> Self {
+        Self { bytes: 0, reads: 0 }
+    }
+}
+
+impl Drop for IndexLogReadTally {
+    fn drop(&mut self) {
+        if self.reads == 0 {
+            return;
+        }
+        INDEX_LOG_PIECE_BYTES_READ
+            .fetch_add(self.bytes, std::sync::atomic::Ordering::Relaxed);
+        INDEX_LOG_PIECE_READS.fetch_add(self.reads, std::sync::atomic::Ordering::Relaxed);
+        INDEX_LOG_PIECE_BYTES_READ_HERE.with(|bytes| bytes.set(bytes.get() + self.bytes));
+        INDEX_LOG_PIECE_READS_HERE.with(|reads| reads.set(reads.get() + self.reads));
+    }
+}
+
+/// A readable handle on one piece of an index log, which charges every byte the kernel hands it.
+///
+/// This is the only thing [`open_index_log_read`] and [`open_index_log_repair`] return, and they
+/// are the only way this module opens a piece to read it -- so the counting is not a call site
+/// anyone has to remember. `std::fs::File` is deliberately NOT imported into this module any
+/// more: a new read written the old way does not compile.
+pub(crate) struct CountedIndexLogFile<'a> {
+    file: std::fs::File,
+    tally: &'a mut IndexLogReadTally,
+}
+
+impl CountedIndexLogFile<'_> {
+    fn metadata(&self) -> std::io::Result<std::fs::Metadata> {
+        self.file.metadata()
+    }
+
+    fn set_len(&self, len: u64) -> std::io::Result<()> {
+        self.file.set_len(len)
+    }
+
+    fn sync_all(&self) -> std::io::Result<()> {
+        self.file.sync_all()
+    }
+}
+
+impl Read for CountedIndexLogFile<'_> {
+    fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+        let read = self.file.read(buf)?;
+        self.tally.bytes += read as u64;
+        self.tally.reads += 1;
+        Ok(read)
+    }
+}
+
+impl Seek for CountedIndexLogFile<'_> {
+    fn seek(&mut self, pos: SeekFrom) -> std::io::Result<u64> {
+        self.file.seek(pos)
+    }
+}
+
+/// Open a piece of an index log for reading, and count what comes off it.
+///
+/// Every read-side open in this module goes through here or [`open_index_log_repair`], which is
+/// what makes a total takeable at all: the handle this returns is the only readable one, and a
+/// new read of a piece cannot be written without a tally to pass.
+fn open_index_log_read<'a>(
+    path: &Path,
+    tally: &'a mut IndexLogReadTally,
+) -> std::io::Result<CountedIndexLogFile<'a>> {
+    Ok(CountedIndexLogFile {
+        file: std::fs::File::open(path)?,
+        tally,
+    })
+}
+
+/// Open the piece being written, for the tail trim that reads it and then truncates it.
+///
+/// Read-WRITE, and still one of the read side's opens: the bytes it reads are charged like any
+/// other, or the counter would stop seeing this branch the moment a torn tail appeared.
+fn open_index_log_repair<'a>(
+    path: &Path,
+    tally: &'a mut IndexLogReadTally,
+) -> std::io::Result<CountedIndexLogFile<'a>> {
+    Ok(CountedIndexLogFile {
+        file: OpenOptions::new().read(true).write(true).open(path)?,
+        tally,
+    })
+}
+
+/// Exactly `len` bytes from `at` in a piece, through the one handle the read side uses.
+///
+/// The planted-marker control for the piece counter needs a read whose byte count IT decided, and
+/// the counted handle is private to this module.
+#[cfg(test)]
+pub(crate) fn read_index_log_piece_for_test(
+    path: &Path,
+    at: u64,
+    len: usize,
+) -> std::io::Result<Vec<u8>> {
+    let mut tally = IndexLogReadTally::start();
+    let mut file = open_index_log_read(path, &mut tally)?;
+    file.seek(SeekFrom::Start(at))?;
+    let mut bytes = vec![0u8; len];
+    let mut filled = 0usize;
+    while filled < len {
+        match file.read(&mut bytes[filled..]) {
+            Ok(0) => break,
+            Ok(read) => filled += read,
+            Err(error) if error.kind() == std::io::ErrorKind::Interrupted => continue,
+            Err(error) => return Err(error),
+        }
+    }
+    bytes.truncate(filled);
+    Ok(bytes)
+}
+
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct IndexLogStats {
     pub writes: u64,
     pub reads: u64,
     pub scans: u64,
     pub bytes_written: u64,
+    /// Bytes of RECORDS this store has handed back, which is not what it read off disk.
+    ///
+    /// The two came apart badly enough to hide a restore: see
+    /// [`index_log_piece_read_counts`], which is charged inside the read itself and is the
+    /// number to use for what a path COSTS. This one stays what it has always been, because a
+    /// caller reporting how much record data it received is asking a real question -- it is
+    /// simply a different one.
     pub bytes_read: u64,
     /// Records this store has read back and handed to a decoder.
     ///
@@ -2139,6 +2320,9 @@ impl LocalIndexLogStore {
         // below is what refuses a holed delta stream, and per-piece it would stop seeing a hole
         // that falls on a boundary -- which is the only new place a hole can appear.
         let mut last_sequence = 0_u64;
+        // ONE tally for the whole fold, borrowed by each piece's handle in turn and published
+        // when the fold returns. This is the reader #1936 named and did not fix.
+        let mut tally = IndexLogReadTally::start();
         for path in index_log_segment_paths(&inner.root, shard_id) {
             // From the NAME, before the `exists` probe and before the open, so a declined piece
             // costs neither. `sealed_index_log_span` parses the path string and touches no
@@ -2163,8 +2347,7 @@ impl LocalIndexLogStore {
             if !path.exists() {
                 continue;
             }
-            let file = File::open(&path)?;
-            let mut reader = BufReader::new(file);
+            let mut reader = BufReader::new(open_index_log_read(&path, &mut tally)?);
             // Read by FRAME, not by line. A record's payload may be binary, and a binary payload
             // may contain 0x0A -- a reader splitting on newlines would cut such a record in half
             // and, being `lines()`, would also demand it be valid UTF-8. `read_frame` takes the
@@ -2257,6 +2440,7 @@ impl LocalIndexLogStore {
         let mut inner = self.inner.lock().expect("index log lock poisoned");
         let mut bytes: Vec<u8> = Vec::new();
         let mut at = 0_u64;
+        let mut tally = IndexLogReadTally::start();
         for path in index_log_segment_paths(&inner.root, shard_id) {
             if bytes.len() as u64 >= size {
                 break;
@@ -2273,7 +2457,7 @@ impl LocalIndexLogStore {
             }
             let start_in_piece = offset.saturating_sub(at);
             let want = size.saturating_sub(bytes.len() as u64);
-            let mut file = File::open(&path)?;
+            let mut file = open_index_log_read(&path, &mut tally)?;
             file.seek(SeekFrom::Start(start_in_piece))?;
             file.take(want).read_to_end(&mut bytes)?;
             at = at.saturating_add(length);
@@ -2355,6 +2539,7 @@ impl LocalIndexLogStore {
         let mut total = 0;
         let mut truncated = false;
         let mut records = Vec::new();
+        let mut tally = IndexLogReadTally::start();
 
         'segments: for path in segments {
             let length = path.metadata().map(|metadata| metadata.len()).unwrap_or(0);
@@ -2362,7 +2547,7 @@ impl LocalIndexLogStore {
                 offset = offset.saturating_add(length);
                 continue;
             }
-            let mut file = File::open(&path)?;
+            let mut file = open_index_log_read(&path, &mut tally)?;
             let skip = start_offset.saturating_sub(offset);
             file.seek(SeekFrom::Start(skip))?;
             offset = offset.saturating_add(skip);
@@ -2438,6 +2623,7 @@ impl LocalIndexLogStore {
             retain_from_sequence,
             ..IndexLogGateSummary::default()
         };
+        let mut tally = IndexLogReadTally::start();
         for path in index_log_segment_paths(&root, shard_id) {
             // A `stat`, and for a sealed piece that is the whole of it. A piece that has just been
             // unlinked out from under this walk is simply not counted, the same way
@@ -2460,7 +2646,7 @@ impl LocalIndexLogStore {
                     .saturating_add(removable as usize);
                 continue;
             }
-            let Ok(file) = File::open(&path) else {
+            let Ok(file) = open_index_log_read(&path, &mut tally) else {
                 continue;
             };
             let mut reader = BufReader::new(file);
@@ -2564,9 +2750,9 @@ impl LocalIndexLogStore {
         let mut retained = Vec::new();
         let mut reclaimable_bytes = 0u64;
         if path.exists() {
-            let file = File::open(&path)?;
+            let mut tally = IndexLogReadTally::start();
             // By frame, not by line: see the fold path above.
-            let mut reader = BufReader::new(file);
+            let mut reader = BufReader::new(open_index_log_read(&path, &mut tally)?);
             while let Some((frame_bytes, payload)) = crate::log_framing::read_frame(&mut reader)? {
                 if payload.iter().all(|byte| byte.is_ascii_whitespace()) {
                     continue;
@@ -2604,7 +2790,9 @@ impl LocalIndexLogStore {
         if !rewrite_skipped {
             let temp_path = path.with_extension("gc.tmp");
             {
-                let mut temp = File::create(&temp_path)?;
+                // A WRITE, not a read: spelled in full because `File` is no longer in this
+                // module's namespace, which is what stops a read being written uncounted.
+                let mut temp = std::fs::File::create(&temp_path)?;
                 for payload in &retained {
                     let framed = crate::log_framing::encode_record(payload);
                     bytes_copied = bytes_copied.saturating_add(framed.len() as u64);
@@ -2719,9 +2907,9 @@ impl LocalIndexLogStore {
         // below is measured in the same bytes the file is measured in rather than in payloads.
         let mut reclaimable_bytes = 0u64;
         if path.exists() {
-            let file = File::open(&path)?;
+            let mut tally = IndexLogReadTally::start();
             // By frame, not by line: see the fold path above.
-            let mut reader = BufReader::new(file);
+            let mut reader = BufReader::new(open_index_log_read(&path, &mut tally)?);
             while let Some((frame_bytes, payload)) = crate::log_framing::read_frame(&mut reader)? {
                 if payload.iter().all(|byte| byte.is_ascii_whitespace()) {
                     continue;
@@ -2788,7 +2976,8 @@ impl LocalIndexLogStore {
         let temp_path = path.with_extension("gc.tmp");
         let mut bytes_copied = 0u64;
         {
-            let mut temp = File::create(&temp_path)?;
+            // A WRITE, not a read. See the note on the other rewrite.
+            let mut temp = std::fs::File::create(&temp_path)?;
             for payload in &retained {
                 let framed = crate::log_framing::encode_record(payload);
                 bytes_copied = bytes_copied.saturating_add(framed.len() as u64);
@@ -2924,8 +3113,8 @@ fn last_sequence_at(root: &Path, shard_id: ShardId) -> Result<u64, IndexLogError
     // Only the piece being written can have a torn tail: a sealed piece was made durable and
     // renamed after a whole record landed, and nothing appends to it afterwards. So this trims
     // the active piece, exactly as it trimmed the single file before there were pieces.
-    let file = OpenOptions::new().read(true).write(true).open(&path)?;
-    let mut reader = BufReader::new(file.try_clone()?);
+    let mut tally = IndexLogReadTally::start();
+    let mut reader = BufReader::new(open_index_log_repair(&path, &mut tally)?);
     let mut good_offset = 0_u64;
     loop {
         // By FRAME, not by newline. This function truncates: it trims the file back to the
@@ -2959,6 +3148,10 @@ fn last_sequence_at(root: &Path, shard_id: ShardId) -> Result<u64, IndexLogError
             Err(err) => return Err(IndexLogError::Corruption(err.0)),
         }
     }
+    // Back out of the reader to truncate through the same handle: the bytes it read are
+    // already charged, and taking a second descriptor to do this is what made the write-ahead
+    // log's tail repair count one open where two happened.
+    let file = reader.into_inner();
     if good_offset < file.metadata()?.len() {
         file.set_len(good_offset)?;
         crate::durability_metrics::record_barrier("engine_index_log_seq_probe");
@@ -3235,8 +3428,8 @@ fn index_log_total_bytes(root: &Path, shard_id: ShardId) -> u64 {
 ///
 /// `None` when the piece holds no record at all, which is nothing to seal.
 fn index_log_segment_span_of(path: &Path) -> Result<Option<IndexSegmentSpan>, IndexLogError> {
-    let file = File::open(path)?;
-    let mut reader = BufReader::new(file);
+    let mut tally = IndexLogReadTally::start();
+    let mut reader = BufReader::new(open_index_log_read(path, &mut tally)?);
     let mut first = None;
     let mut last = 0_u64;
     let mut max_applied_wal = 0_u64;
@@ -3461,7 +3654,9 @@ pub(crate) fn delta_record_carries_content_of(record: &IndexDeltaRecord) -> bool
 
 fn sync_parent_dir(path: &Path) -> std::io::Result<()> {
     if let Some(parent) = path.parent() {
-        if let Ok(dir) = File::open(parent) {
+        // A DIRECTORY handle, opened only to `fsync` it: no byte is ever read through it, so
+        // it takes no tally. Spelled in full for the same reason the two creates above are.
+        if let Ok(dir) = std::fs::File::open(parent) {
             crate::durability_metrics::record_barrier("engine_index_log_dir");
             dir.sync_all()?;
         }
@@ -3476,6 +3671,10 @@ mod index_log_scale;
 #[cfg(test)]
 #[path = "index_log_sweep_bound.rs"]
 mod index_log_sweep_bound;
+
+#[cfg(test)]
+#[path = "index_log_read_bytes.rs"]
+mod index_log_read_bytes;
 
 #[cfg(test)]
 mod tests {
@@ -4803,8 +5002,9 @@ mod tests {
 
         let at = std::time::Instant::now();
         let mut framed = 0usize;
+        let mut tally = IndexLogReadTally::start();
         for path in &pieces {
-            let mut reader = BufReader::new(File::open(path).unwrap());
+            let mut reader = BufReader::new(open_index_log_read(path, &mut tally).unwrap());
             while let Some((_, payload)) = crate::log_framing::read_frame(&mut reader).unwrap() {
                 if !payload.iter().all(|byte| byte.is_ascii_whitespace()) {
                     framed += 1;
@@ -4815,8 +5015,9 @@ mod tests {
 
         let at = std::time::Instant::now();
         let mut decoded = 0usize;
+        let mut tally = IndexLogReadTally::start();
         for path in &pieces {
-            let mut reader = BufReader::new(File::open(path).unwrap());
+            let mut reader = BufReader::new(open_index_log_read(path, &mut tally).unwrap());
             while let Some((_, payload)) = crate::log_framing::read_frame(&mut reader).unwrap() {
                 if payload.iter().all(|byte| byte.is_ascii_whitespace()) {
                     continue;
@@ -7286,7 +7487,8 @@ flag exists to say",
             .collect();
         let active_records = {
             let mut count = 0usize;
-            let file = File::open(index_log_path(dir.path(), 14)).unwrap();
+            let mut tally = IndexLogReadTally::start();
+            let file = open_index_log_read(&index_log_path(dir.path(), 14), &mut tally).unwrap();
             let mut reader = BufReader::new(file);
             while let Some((_, payload)) = crate::log_framing::read_frame(&mut reader).unwrap() {
                 if !payload.iter().all(|byte| byte.is_ascii_whitespace()) {

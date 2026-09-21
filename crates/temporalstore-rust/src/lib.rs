@@ -79,6 +79,10 @@ mod wal_batch_roll;
 mod wal_replay_scale;
 /// What a WINDOWED replay reads against the log it replays -- tests only.
 mod wal_replay_windows;
+/// What reading a log piece's base header COSTS -- tests only.
+mod wal_base_header_read;
+/// What a RESTORE reads, and what no reader claims -- tests only.
+mod restore_read_residual;
 mod wal_scale;
 mod wal_proto;
 pub mod record_framing;
