@@ -13,18 +13,18 @@
 //!
 //! ```text
 //!   class                allocs/record   bytes/record   ratio 2,000 -> 20,000
-//!   cache_invalidation          54.06          1,474           1.000
-//!   bucket_index                 7.63            705           1.000
-//!   index_log_delta              7.27            648           1.003
+//!   cache_invalidation          35.06            995           1.000
 //!   slab_append                  6.00          1,192           1.000
+//!   bucket_index                 5.63            676           1.000
+//!   staged_outcome               2.06            252           1.000
 //!   page_bytes                   2.00          2,115           1.000
 //!   dirty_objects                1.31            121           0.999
+//!   index_log_delta              1.26            372           1.013
 //!   carried_page                 1.06          1,065           1.000
-//!   staged_outcome               0.06            246           1.000
 //!   log_record                   0.03          2,386           0.968
-//!   nine classes summed         79.42          9,952
-//!   SPAN TOTAL                  99.65         12,442           <- independent counter
-//!   residual                    20.23          2,490           1.000
+//!   nine classes summed         54.42          9,172
+//!   SPAN TOTAL                  80.69         11,933           <- independent counter
+//!   residual                    26.27          2,761           1.000
 //! ```
 //!
 //! EVERY CLASS IS FLAT PER RECORD ACROSS A TEN-TIMES CORPUS, and so is the residual. Nothing in
@@ -32,10 +32,10 @@
 //! later run can say which row stopped being flat.
 //!
 //! THE TWO COLUMNS DISAGREE ABOUT WHAT MATTERS, which is why both are kept. By CALLS the biggest
-//! thing a write does is invalidate one serving-cache key -- 54 of the 99.65, more than everything
-//! else together. By BYTES that class is fourth, and the biggest is the write-ahead record, which
-//! makes 0.03 allocations a record because it is built as whole buffers. A report with only one of
-//! these columns gives the opposite answer about where to look.
+//! thing a write does is invalidate one serving-cache key -- 35.06 of the 80.69, more than the
+//! other eight classes together. By BYTES that class is fifth, and the biggest is the write-ahead
+//! record, which makes 0.03 allocations a record because it is built as whole buffers. A report
+//! with only one of these columns gives the opposite answer about where to look.
 //!
 //! THE CLASSES WERE MEASURED, NOT CHOSEN. Four candidates were scoped, run, and dropped:
 //!

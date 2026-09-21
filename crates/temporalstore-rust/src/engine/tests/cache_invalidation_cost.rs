@@ -1,10 +1,10 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright 2026 MatrixArkAI
 
-//! WHERE THE FIFTY-FOUR ALLOCATIONS OF ONE CACHE INVALIDATION GO.
+//! WHERE THE THIRTY-FIVE ALLOCATIONS OF ONE CACHE INVALIDATION GO.
 //!
 //! `alloc_class_scale` measured a value write and found one class larger by CALL COUNT than the
-//! whole rest of the write together: `cache_invalidation`, 54.06 allocations for 1,474 bytes,
+//! other eight together: `cache_invalidation`, 35.06 allocations for 995 bytes,
 //! flat per record at 2,000 and at 20,000 and again at 400,000 and 4,000,000. Flat is the
 //! important word. This is not a sink that grows with the store; it is a constant paid on every
 //! single write, and nobody had asked what it is made of.
@@ -27,12 +27,12 @@
 //!                                 pmem delete line, ssd block delete
 //! ```
 //!
-//! WHAT IS NOT IN THE 54, and it matters for reading the table: the class is charged INSIDE
+//! WHAT IS NOT IN THE 35, and it matters for reading the table: the class is charged INSIDE
 //! `invalidate_cache_key`, whose key argument is built by the caller. `CacheKey::string` is
-//! therefore outside it. The quantity to compare against 54.06 is `invalidate` MINUS `key_only`.
+//! therefore outside it. The quantity to compare against 35.06 is `invalidate` MINUS `key_only`.
 //!
 //! THE RECONCILIATION IS AGAINST AN INSTRUMENT THIS LADDER DOES NOT FEED. Every figure here comes
-//! from `alloc_probe::Probe`, the process-wide counter, over a synthetic loop. The 54.06 it is
+//! from `alloc_probe::Probe`, the process-wide counter, over a synthetic loop. The 35.06 it is
 //! checked against comes from the per-class ledger, charged inside the primitive, during a real
 //! `batch_execute` ingest in `alloc_class_scale`. Two instruments, two workloads, one number; the
 //! residual between them is reported and asserted small rather than computed from the rows.
@@ -356,7 +356,7 @@ fn the_invalidation_ladder_refuses_to_report_without_the_counting_allocator() {
 #[cfg(feature = "alloc-probe")]
 #[test]
 #[ignore = "measurement; run with --features alloc-probe --ignored --nocapture"]
-fn where_the_fifty_four_allocations_of_one_cache_invalidation_go() {
+fn where_the_allocations_of_one_cache_invalidation_go() {
     let dir = tempfile::tempdir().expect("tempdir");
     println!(
         "\nSTORE PATH HELD CONSTANT: {} ({} characters)",
@@ -449,12 +449,23 @@ fn where_the_fifty_four_allocations_of_one_cache_invalidation_go() {
          persistence bookkeeping rests on it being free",
         memory_only.per(LARGE) - key_only.per(LARGE)
     );
+    // RETARGETED when the cache pin moved to 5031edb, which stopped building persistence
+    // bookkeeping for tiers a cache does not have. Measured on this ladder: 54.063 allocations a
+    // key against the previous pin, 35.063 against this one, at both corpus sizes.
+    //
+    // BANDED rather than floored, because the two ways this can go wrong point in opposite
+    // directions: a floor alone still passes if the removed bookkeeping comes back, and a ceiling
+    // alone still passes if the invalidation stops happening at all. The lower bound doubles as
+    // the vacuity floor -- a collapse toward zero reads as a free invalidation, which is what the
+    // original one-sided assertion was written to catch and what this must keep catching.
+    let persistence = full.per(LARGE) - memory_only.per(LARGE);
     assert!(
-        full.per(LARGE) - memory_only.per(LARGE) > 40.0,
-        "the persistence term is {:.3} allocations a key, not the ~54 that made this the largest \
-         class by count on the write path; either the cache revision changed or this ladder is no \
-         longer measuring the shipped call",
-        full.per(LARGE) - memory_only.per(LARGE)
+        (25.0..45.0).contains(&persistence),
+        "the persistence term is {persistence:.3} allocations a key, outside the 25..45 this \
+         ladder expects: it measured 54.063 before the cache pin moved and 35.063 after, so a \
+         reading above the band means the removed bookkeeping is back, and one below it means \
+         the invalidation stopped happening and this ladder is no longer measuring the shipped \
+         call"
     );
 
     // THE CANDIDATES, PRICED SEPARATELY. Neither is applied; both are measured so the reason for
