@@ -115,6 +115,7 @@ mod alloc_class_scale;
 mod evict_scale;
 mod cache_invalidation_cost;
 mod cache_read_cost;
+mod warm_read_decomposition;
 mod wal_reclaim_frame_boundary;
 mod per_item_byte_budget;
 

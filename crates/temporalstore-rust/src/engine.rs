@@ -907,11 +907,13 @@ impl TemporalEngine {
         // bucket(s), read or write, so eviction can prefer least-recently-used buckets.
         {
             let now = now_ms();
-            for key in command_touched_keys(&command) {
-                let recency_bucket =
-                    block_routing_bucket(&key, start_routing_bucket, end_routing_bucket);
-                shard.bucket_recency.insert(recency_bucket, now);
-            }
+            crate::alloc_probe::in_class(crate::alloc_probe::AllocClass::RecencyStamp, || {
+                for_each_touched_key(&command, |key| {
+                    let recency_bucket =
+                        block_routing_bucket(key, start_routing_bucket, end_routing_bucket);
+                    shard.bucket_recency.insert(recency_bucket, now);
+                });
+            });
         }
         // Set to the reserved WAL sequence when the concurrent-commit path defers this
         // write's durable barrier out of the `shards` lock (TS_ENGINE_CONCURRENT_COMMIT).

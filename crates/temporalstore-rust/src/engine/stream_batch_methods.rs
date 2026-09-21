@@ -429,11 +429,13 @@ impl TemporalEngine {
             // touched, read or write, so eviction can prefer least-recently-used buckets.
             {
                 let now = now_ms();
-                for key in command_touched_keys(&command_for_post_write) {
-                    let recency_bucket =
-                        block_routing_bucket(&key, start_routing_bucket, end_routing_bucket);
-                    shard.bucket_recency.insert(recency_bucket, now);
-                }
+                crate::alloc_probe::in_class(crate::alloc_probe::AllocClass::RecencyStamp, || {
+                    for_each_touched_key(&command_for_post_write, |key| {
+                        let recency_bucket =
+                            block_routing_bucket(key, start_routing_bucket, end_routing_bucket);
+                        shard.bucket_recency.insert(recency_bucket, now);
+                    });
+                });
             }
             if outcome.mutated {
                 mutated_any = true;

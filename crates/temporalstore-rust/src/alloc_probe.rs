@@ -131,9 +131,17 @@ pub enum AllocClass {
     /// `invalidate_cache_key`, so the two cache-side classes are measured the same way and can be
     /// read against each other.
     CacheRead,
+    /// STAMPING PER-BUCKET LRU RECENCY for the keys a command touched, at the two sites that
+    /// do it. The second class on the READ side, and it exists because that stamp was TWO of
+    /// the ten allocations #1952 measured on a warm serving read -- a `Vec<String>` built and
+    /// cloned into so that a routing bucket could be derived from a key the command already
+    /// owned. It now visits the keys instead of collecting them, and this row is what says so:
+    /// zero on a read command, and still non-zero on a write, whose keys are synthesised and
+    /// have to be built.
+    RecencyStamp,
 }
 
-const CLASS_COUNT: usize = 10;
+const CLASS_COUNT: usize = 11;
 
 impl AllocClass {
     /// Every class, in slot order. `alloc_class_slots_are_dense_and_in_order` holds that.
@@ -148,6 +156,7 @@ impl AllocClass {
         AllocClass::IndexLogDelta,
         AllocClass::CacheInvalidation,
         AllocClass::CacheRead,
+        AllocClass::RecencyStamp,
     ];
 
     /// Which counter row this class owns.
@@ -169,6 +178,7 @@ impl AllocClass {
             AllocClass::IndexLogDelta => 7,
             AllocClass::CacheInvalidation => 8,
             AllocClass::CacheRead => 9,
+            AllocClass::RecencyStamp => 10,
         }
     }
 
@@ -185,6 +195,7 @@ impl AllocClass {
             AllocClass::IndexLogDelta => "index_log_delta",
             AllocClass::CacheInvalidation => "cache_invalidation",
             AllocClass::CacheRead => "cache_read",
+            AllocClass::RecencyStamp => "recency_stamp",
         }
     }
 }
@@ -212,6 +223,7 @@ impl ClassSlot {
 }
 
 static CLASS_SLOTS: [ClassSlot; CLASS_COUNT] = [
+    ClassSlot::new(),
     ClassSlot::new(),
     ClassSlot::new(),
     ClassSlot::new(),

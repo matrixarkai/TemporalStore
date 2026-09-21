@@ -200,13 +200,20 @@ fn report(label: &str, arm: &ReadArm) {
 ///
 /// ```text
 ///   case                        allocs/read   cache reads/read   which counter moved
-///   answer held in memory             10.00               1.00   memory_hits
-///   no such key                       29.13               1.00   misses
-///   answer on the SSD tier            39.00               1.00   disk_hits
+///   answer held in memory              8.00               1.00   memory_hits
+///   no such key                       27.13               1.00   misses
+///   answer on the SSD tier            37.00               1.00   disk_hits
 /// ```
 ///
 /// Flat per record: 512 records and 4,096 records give the same per-read figure, so none of this
 /// is a corpus effect.
+///
+/// THESE READ 10.00, 29.13 AND 39.00 WHEN THIS FILE WAS WRITTEN. `warm_read_decomposition` took
+/// the first of them apart site by site and stopped the per-command LRU recency stamp collecting
+/// a `Vec<String>` of keys that it walks once and drops. That stamp runs on every command rather
+/// than in any one of these three cases, so exactly 2.00 came off all three and the SHAPE of
+/// this table -- which is what it exists to show -- is unchanged. Restated here rather than left
+/// standing: a recorded measurement whose mechanism has since been fixed reads as a live one.
 #[test]
 #[ignore]
 #[cfg(feature = "alloc-probe")]

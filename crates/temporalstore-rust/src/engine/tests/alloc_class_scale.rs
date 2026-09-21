@@ -295,6 +295,7 @@ fn variant_name(class: crate::alloc_probe::AllocClass) -> &'static str {
         AllocClass::IndexLogDelta => "IndexLogDelta",
         AllocClass::CacheInvalidation => "CacheInvalidation",
         AllocClass::CacheRead => "CacheRead",
+        AllocClass::RecencyStamp => "RecencyStamp",
     }
 }
 

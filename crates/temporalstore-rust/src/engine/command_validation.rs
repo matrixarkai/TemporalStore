@@ -4,10 +4,15 @@
 //! Command inspection, admission control, and precondition validation helpers, split from engine.rs.
 use super::*;
 
-/// Keys READ (not written) by a command, for LRU recency tracking. Covers the
+/// The key a command READS (does not write), for LRU recency tracking. Covers the
 /// key-addressed read commands; the hash-addressed context queries are omitted (their
 /// buckets refresh recency on the next write -- acceptable, eviction is memory-only).
-pub(super) fn command_read_keys(command: &Command) -> Vec<String> {
+///
+/// ONE KEY, NOT A LIST OF THEM. Every arm of this match yielded exactly one key or none, so
+/// the `Vec<String>` this used to return carried at most one element and cloned it to do so.
+/// A read command's key is owned by the command for as long as the recency stamp needs it,
+/// which is why the borrow is sound and the clone was not buying anything.
+pub(super) fn command_read_key(command: &Command) -> Option<&str> {
     match command {
         Command::CommonTtl { key, .. }
         | Command::CommonExists { key, .. }
@@ -18,18 +23,33 @@ pub(super) fn command_read_keys(command: &Command) -> Vec<String> {
         | Command::HashLen { key, .. }
         | Command::SetMembers { key, .. }
         | Command::FeatureQuery { key, .. }
-        | Command::SequenceQuery { key, .. } => vec![key.clone()],
-        _ => Vec::new(),
+        | Command::SequenceQuery { key, .. } => Some(key.as_str()),
+        _ => None,
     }
 }
 
-/// Keys a command touched, read or write -- used to stamp per-bucket LRU recency.
-pub(super) fn command_touched_keys(command: &Command) -> Vec<String> {
-    let keys = command_object_keys(command);
-    if keys.is_empty() {
-        command_read_keys(command)
+/// Hand each key a command touched, read or write, to `visit` -- for the per-bucket LRU
+/// recency stamp, which is the only thing that wants them.
+///
+/// VISITED RATHER THAN COLLECTED. The two call sites are the same four-line loop: derive a
+/// routing bucket from the key and insert a `u32 -> u64`. Neither keeps a key, so the
+/// `Vec<String>` this replaces was allocated and cloned into purely to be walked once and
+/// dropped -- TWO allocations per warm serving read, measured, of the ten #1952 found.
+///
+/// A WRITE command's keys are still built and still owned: `command_object_keys` synthesises
+/// several of them (a control-state family key, a context node key) and there is nothing to
+/// borrow from. Only the borrowing half of the fork got cheaper, which is the half a serving
+/// read takes.
+pub(super) fn for_each_touched_key(command: &Command, mut visit: impl FnMut(&str)) {
+    let object_keys = command_object_keys(command);
+    if object_keys.is_empty() {
+        if let Some(key) = command_read_key(command) {
+            visit(key);
+        }
     } else {
-        keys
+        for key in object_keys {
+            visit(&key);
+        }
     }
 }
 
