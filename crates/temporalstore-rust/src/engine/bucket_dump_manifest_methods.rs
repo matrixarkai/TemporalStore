@@ -1428,6 +1428,24 @@ impl TemporalEngine {
         // serialization would drop every hash page from the restored index -- and that index is
         // what gets persisted durably below.
         rebuild_unserialized_model_maps_from_bucket_index(&mut restored);
+        // THE WHOLE RANGE HERE IS LOAD-BEARING, and it is the one place in this change where
+        // that is true. `restored` is a DECODED MANIFEST INDEX -- a whole-shard image, written by
+        // whatever routing range the SOURCE shard ran on, whose pages already carry explicit
+        // routing buckets from that range. `rebuild_bucket_block_ownership` does not merely place
+        // unrouted pages by the range it is given, it also FILTERS on it
+        // (`routing_bucket < start || routing_bucket > end` -> `continue`), so handing it the
+        // INSTALLING shard's range silently deletes every page whose source bucket falls outside
+        // it.
+        //
+        // Not hypothetical: a cross-range restore is what
+        // `storage_merged_dump_load_policy_coordinates_dump_load_replay_and_index_gc` drives --
+        // source on `load_shard` (0..u32::MAX), restore target on `0..16_383` -- and passing the
+        // target's range here made it read `merged-a` back as None. A whole-shard image must be
+        // installed whole; narrowing it is data loss, not reconciliation.
+        //
+        // The unrouted pages this leaves filed outside the target's range are the known residual,
+        // and they are recoverable: the addresses stay unrouted, so a later rebuild over the live
+        // model maps re-derives their placement from the shard's own range.
         rebuild_bucket_block_ownership(manifest.shard_id, &mut restored, 0, u32::MAX);
         let restored_index_bytes = serialize_index(&restored);
         self.persist_bucket_dump_install_marker(manifest, "prepare")

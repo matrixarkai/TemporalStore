@@ -1664,7 +1664,12 @@ fn expiry_scan_budget(limit: usize) -> usize {
             // non-durable page, then persist -- leaving volatile == durable so reclaim is safe --
             // and propagate the original error so the caller knows compaction did not fully
             // complete (a later run retries the not-yet-moved pages).
-            rebuild_bucket_first_index(shard_id, shard, 0, u32::MAX);
+            rebuild_bucket_first_index(
+                shard_id,
+                shard,
+                start_routing_bucket,
+                end_routing_bucket,
+            );
             refresh_bucket_runtime_flags(shard);
             rebuild_bucket_block_ownership(shard_id, shard, start_routing_bucket, end_routing_bucket);
             self.block_store.sync_durable().map_err(|barrier| {
@@ -1712,7 +1717,12 @@ fn expiry_scan_budget(limit: usize) -> usize {
                 rounds.remove(&shard_id);
             }
         }
-        rebuild_bucket_first_index(shard_id, shard, 0, u32::MAX);
+        rebuild_bucket_first_index(
+            shard_id,
+            shard,
+            start_routing_bucket,
+            end_routing_bucket,
+        );
         refresh_bucket_runtime_flags(shard);
         let after_slabs = collect_live_block_slab_ids(shard);
         let after = compaction_utility_report(&self.block_store, shard);

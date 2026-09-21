@@ -2099,7 +2099,21 @@ impl TemporalEngine {
         }
     }
 
-    pub fn routing_bucket_for_key(&self, shard_id: ShardId, key: &str) -> u32 {
+    /// THE SHARD'S OWN ROUTING RANGE, from the info row the engine publishes when it loads it.
+    ///
+    /// Every rebuild of the bucket index takes this range as an argument, and it decides WHERE A
+    /// PAGE IS FILED: an address that arrives carrying no routing bucket of its own is filed under
+    /// `block_routing_bucket(key, start, end)`, and `bucket_for_object` reduces the key's hash
+    /// modulo the bucket COUNT. So the range is not a filter over a fixed answer, it is an
+    /// argument to the placement function -- pass `0, u32::MAX` on a shard loaded as `0..1023` and
+    /// every unrouted page is filed under a bucket the shard does not hold.
+    ///
+    /// THE MISSING-INFO DEFAULT IS THE WHOLE RANGE, deliberately. That is what a caller which
+    /// could not reach the info row passed unconditionally before, so a shard whose info row is
+    /// absent -- a dump manifest installed before its shard is loaded -- keeps exactly the
+    /// behaviour it had, and a shard that IS loaded gets the range it was loaded with. The same
+    /// default `routing_bucket_for_key` has always used, now shared rather than restated.
+    pub(crate) fn shard_routing_range(&self, shard_id: ShardId) -> (u32, u32) {
         let info = self
             .infos
             .read()
@@ -2114,6 +2128,11 @@ impl TemporalEngine {
             .as_ref()
             .map(|info| info.end_routing_bucket)
             .unwrap_or(u32::MAX);
+        (start, end)
+    }
+
+    pub fn routing_bucket_for_key(&self, shard_id: ShardId, key: &str) -> u32 {
+        let (start, end) = self.shard_routing_range(shard_id);
         block_routing_bucket(key, start, end)
     }
 

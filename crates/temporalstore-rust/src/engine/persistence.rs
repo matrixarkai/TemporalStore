@@ -406,6 +406,10 @@ impl TemporalEngine {
         if self.block_store.sync_durable().is_err() || self.wal_store.flush(shard_id).is_err() {
             return;
         }
+        // Read OUTSIDE the shards write lock. `shard_routing_range` takes `infos.read()`, copies
+        // the two numbers out and drops the guard before it returns, so no path ever HOLDS one of
+        // these locks while acquiring the other.
+        let (start_routing_bucket, end_routing_bucket) = self.shard_routing_range(shard_id);
         let index_bytes = {
             // Reconstruct everything the per-command bulk path deferred: promote
             // model-map pages into bucket_index, rebuild the secondary views, refresh
@@ -413,10 +417,20 @@ impl TemporalEngine {
             let mut shards = self.shards.write().expect("engine lock poisoned");
             match shards.get_mut(&shard_id) {
                 Some(shard) => {
-                    if promote_model_maps_to_bucket_index_authority(shard_id, shard, 0, u32::MAX) {
+                    if promote_model_maps_to_bucket_index_authority(
+                        shard_id,
+                        shard,
+                        start_routing_bucket,
+                        end_routing_bucket,
+                    ) {
                         reconcile_secondary_views_from_bucket_index(&self.block_store, shard, None);
                     }
-                    rebuild_bucket_first_index(shard_id, shard, 0, u32::MAX);
+                    rebuild_bucket_first_index(
+                        shard_id,
+                        shard,
+                        start_routing_bucket,
+                        end_routing_bucket,
+                    );
                     refresh_bucket_runtime_flags(shard);
                     // Anchor the flushed index to the WAL sequence it reflects so a
                     // later load replays only records written after this flush. A

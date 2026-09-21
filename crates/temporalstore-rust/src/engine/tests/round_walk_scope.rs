@@ -54,12 +54,28 @@
 //!
 //! The dirty set is keyed by `block_routing_bucket(key, start, end)` at both of the two sites that
 //! mark an object dirty. The filing is decided by `address.routing_bucket()` with a `0..u32::MAX`
-//! fallback -- at `upsert_bucket_index_block_inner`, and at NINE of the twenty production call
-//! sites that rebuild the bucket index, enumerated and held by
-//! `nine_rebuild_call_sites_file_a_page_under_the_whole_range_instead_of_the_shards`. So the
-//! precondition fails for every page that reaches one of those without a routing bucket of its
-//! own, and it fails SILENTLY: the page is still readable, still summarised, still counted. Only
-//! a walk that entered through the dirty set would miss it.
+//! fallback -- at `upsert_bucket_index_block_inner`, and, WHEN THIS FILE WAS WRITTEN, at NINE of
+//! the twenty production call sites that rebuild the bucket index. So the precondition failed for
+//! every page that reached one of those without a routing bucket of its own, and it failed
+//! SILENTLY: the page is still readable, still summarised, still counted. Only a walk that entered
+//! through the dirty set would miss it.
+//!
+//! SIX OF THOSE NINE NOW PASS THE SHARD'S OWN RANGE. THREE ARE CORRECT AS WRITTEN, for two
+//! different reasons, and neither reason is visible from the call site alone:
+//!
+//!   * TWO run `rebuild_bucket_block_ownership` over a DECODED MANIFEST INDEX -- a whole-shard
+//!     image written by whatever range the SOURCE shard ran on. That rebuild FILTERS on the range
+//!     it is given, so narrowing it there DELETES every page whose source bucket falls outside the
+//!     installing shard's range. Driven, not argued: a cross-range restore read a record back as
+//!     None.
+//!   * ONE is a `#[cfg(test)]` helper on a shard it publishes as `0..u32::MAX`, for which the whole
+//!     range IS the shard's range.
+//!
+//! `the_three_rebuild_call_sites_still_on_the_whole_range_are_each_right_to_be` holds the list, and
+//! `engine/tests/bucket_filing_range.rs` measures what the change did, what had to be true before
+//! it could be made, and what the filter costs when it is pointed at a foreign image.
+//! `upsert_bucket_index_block_inner`'s own hard-coded fallback is untouched and is a separate
+//! class: it takes no range argument at all, so no call site can correct it.
 //!
 //! THERE IS A THIRD PLACEMENT RULE, and it is the one thing here that is already safe. A RELEASED
 //! bucket holds no entry in `bucket_map` at all; `collect_live_block_entries` supplements it from
@@ -1343,7 +1359,7 @@ fn call_arguments(lines: &[&str], line_index: usize, needle: &str) -> Option<Str
     None
 }
 
-/// THE NINE CALL SITES THAT FILE A PAGE UNDER `0..u32::MAX` INSTEAD OF THE SHARD'S OWN RANGE.
+/// THE THREE CALL SITES STILL PASSING `0..u32::MAX`, AND WHY EACH IS RIGHT TO.
 ///
 /// Where a page is FILED is decided by whoever rebuilds the bucket index, and each of the three
 /// functions that do takes the routing range as an argument. Enumerated with the compiler --
@@ -1353,41 +1369,68 @@ fn call_arguments(lines: &[&str], line_index: usize, needle: &str) -> Option<Str
 /// suppresses every later use of that value. Pass one named 81 read sites and 72 assign sites,
 /// pass two named 6 more that pass one had suppressed, pass three named none.
 ///
-/// Twenty production call sites rebuild the index. Eleven pass the shard's own range. NINE pass
-/// `0, u32::MAX`, and they are the recovery, replay, manifest-install and bulk-flush paths --
-/// exactly the paths on which an address can arrive without a routing bucket of its own.
+/// Twenty production call sites rebuild the index. When mx#1942 took that enumeration, ELEVEN
+/// passed the shard's own range and NINE passed `0, u32::MAX` -- the recovery, replay,
+/// manifest-install and bulk-flush paths, exactly the paths on which an address can arrive without
+/// a routing bucket of its own. Eight of those nine now pass the shard's range. The total is still
+/// twenty; what moved is the split, 11/9 to 19/1.
 ///
-/// TWO OF THEM SIT BESIDE A SITE THAT PASSES THE SHARD'S RANGE, in the same function, with the
-/// range already in scope: `recovery_sweep_compact.rs` rebuilds the first index on `0..u32::MAX`
-/// and then rebuilds ownership on `start..end`, twice, two lines apart. Those two are one token
-/// each from being reconciled.
+/// THE THREE THAT REMAIN ARE EACH CORRECT AS WRITTEN, for two different reasons.
+///
+/// ONE IS NOT PRODUCTION CODE, which is the thing this scan structurally cannot see.
+/// `lifecycle.rs`'s `test_publish_recovering_shard` is a `#[cfg(test)]` helper, and this scan
+/// excludes test FILES, not `#[cfg(test)]` items inside production files -- so it counted a
+/// test-only helper among the nine production sites. That helper publishes its own shard info with
+/// `start_routing_bucket: 0, end_routing_bucket: u32::MAX` a few lines below the call, so the whole
+/// range IS that shard's own range.
+///
+/// TWO RUN OVER A DECODED MANIFEST INDEX, and there the whole range is load-bearing.
+/// `install_bucket_dump_manifest` and the durable-manifest recovery base in `lifecycle.rs` both
+/// call `rebuild_bucket_block_ownership` on the output of `decode_index_bytes` -- a WHOLE-SHARD
+/// image carrying explicit routing buckets from whatever range the source shard ran on. That
+/// rebuild does not merely PLACE unrouted pages by the range it is handed, it also FILTERS on it,
+/// so the installing shard's range silently deletes every page whose source bucket falls outside
+/// it. Measured rather than reasoned: with the target's range passed,
+/// `storage_merged_dump_load_policy_coordinates_dump_load_replay_and_index_gc` -- source on
+/// `load_shard` (0..u32::MAX), restore target on `0..16_383` -- read `merged-a` back as None. A
+/// whole-shard image is installed whole or it is truncated; there is no third option.
+///
+/// So the nine were never one class, and the split is not by file or by callee. It is: does this
+/// rebuild run over THIS shard's own live model maps (the shard's range is right) or over a
+/// FOREIGN whole-shard image (the whole range is right)?
 ///
 /// HELD AS A LIST, not as a count, because a count agrees with itself after a site moves. If a
-/// site here is FIXED, delete it from this list -- that is the change this file exists to make
-/// safe. If one is ADDED, this fails and names it.
+/// site here is FIXED, delete it from this list. If one is ADDED, this fails and names it.
+///
+/// AND THE LIST IS WHAT MAKES THIS NON-VACUOUS. It is compared by equality, not by containment,
+/// and it is not empty -- so a matcher that broke and found nothing produces `[]`, which fails
+/// against a one-element list rather than passing as "no offending sites". That is the property an
+/// empty expected list would have destroyed, which is why the remaining entry is kept in the list
+/// rather than the assertion being turned into "must be empty". The floors below cover the other
+/// direction.
 ///
 /// THE CONTROL IS A SECOND IMPLEMENTATION. The same enumeration was taken outside the crate, in
 /// Python, over the same source, and produced the same 20 / 11 / 9 split with the same seven
-/// file-and-callee rows. Two independent parsers agreeing is what makes this a reading rather
-/// than a claim about a regular expression.
+/// file-and-callee rows when mx#1942 wrote it.
 ///
 /// rust-internal: reads this crate's own call sites, no product behaviour
 #[test]
-fn nine_rebuild_call_sites_file_a_page_under_the_whole_range_instead_of_the_shards() {
+fn the_three_rebuild_call_sites_still_on_the_whole_range_are_each_right_to_be() {
     use std::path::Path;
 
-    /// Every production rebuild that passes `0, u32::MAX`, as `file :: callee x count`.
+    /// Every rebuild this scan can see that passes `0, u32::MAX`, as `file :: callee x count`.
     ///
     /// Keyed by file and callee rather than by line, so a sibling change that moves a line does
     /// not fail this and a change that ADDS or REMOVES one of these calls does.
+    ///
+    /// Three entries, and the note above says why each is right. Two are the manifest-decode
+    /// rebuilds, where the whole range is what keeps a whole-shard image whole; one is
+    /// `test_publish_recovering_shard`, a `#[cfg(test)]` helper this file-level scan cannot
+    /// distinguish from production code.
     const WHOLE_RANGE_SITES: &[&str] = &[
         "engine/bucket_dump_manifest_methods.rs :: rebuild_bucket_block_ownership x1",
-        "engine/lifecycle.rs :: promote_model_maps_to_bucket_index_authority x2",
+        "engine/lifecycle.rs :: promote_model_maps_to_bucket_index_authority x1",
         "engine/lifecycle.rs :: rebuild_bucket_block_ownership x1",
-        "engine/lifecycle.rs :: rebuild_bucket_first_index x1",
-        "engine/persistence.rs :: promote_model_maps_to_bucket_index_authority x1",
-        "engine/persistence.rs :: rebuild_bucket_first_index x1",
-        "engine/recovery_sweep_compact.rs :: rebuild_bucket_first_index x2",
     ];
     const REBUILDS: [&str; 3] = [
         "rebuild_bucket_block_ownership(",
@@ -1493,6 +1536,23 @@ fn nine_rebuild_call_sites_file_a_page_under_the_whole_range_instead_of_the_shar
         total >= 15,
         "the scan found {total} rebuild call sites in all; there were 20 when this was written \
          and below 15 the matcher is finding something other than the calls"
+    );
+    // THE FLOOR THAT MOVED WITH THE FIX. Before it, 11 sites read the shard's range; after it, 19.
+    // A floor left at the old number would have gone on passing while the argument test quietly
+    // stopped recognising a shard-range call and dropped those sites into NEITHER list -- which
+    // would also empty `whole_range` and, with an empty expected list, have read as a clean pass.
+    //
+    // Set BELOW the current 19 on purpose: retiring a rebuild call site lowers this count BY
+    // DESIGN, and a floor that forbids that would fail the next sibling who legitimately removes
+    // one. 15 is low enough to allow four removals and high enough that a matcher which stopped
+    // recognising the argument -- which would take this to roughly zero -- still fails here.
+    assert!(
+        shard_range.len() >= 13,
+        "only {} rebuild call sites read the shard's own range; there were 17 after six of the \
+         nine were reconciled and three were kept. Below 13, either several were retired at once \
+         or the `start_routing_bucket` test has stopped recognising them -- and in the second case \
+         every list above is wrong for a reason that does not show up as a failure anywhere else.",
+        shard_range.len()
     );
 
     whole_range.sort();

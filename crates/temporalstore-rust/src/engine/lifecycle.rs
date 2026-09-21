@@ -697,6 +697,14 @@ impl TemporalEngine {
                             // carries, recorded at
                             // `rebuild_unserialized_model_maps_from_bucket_index`.
                             rebuild_unserialized_model_maps_from_bucket_index(&mut restored);
+                            // THE WHOLE RANGE, for the same reason `install_bucket_dump_manifest`
+                            // keeps it: `restored` is a DECODED MANIFEST INDEX, a whole-shard image
+                            // carrying explicit routing buckets from whatever range wrote it, and
+                            // `rebuild_bucket_block_ownership` FILTERS on the range it is given. A
+                            // load that narrows the range would silently drop every page the
+                            // manifest holds outside it rather than re-file it. The promote below
+                            // this match passes `request`'s range and should: it runs over this
+                            // shard's own live model maps, not over a foreign image.
                             rebuild_bucket_block_ownership(
                                 request.shard_id,
                                 &mut restored,
@@ -2302,6 +2310,12 @@ impl TemporalEngine {
             // (e.g. async writes, which do not append index-log deltas). The delta path's
             // sync writes were already folded at their original addresses in load_index, so
             // this reconstruct handles just the replayed tail.
+            // Read OUTSIDE the shards write lock. `shard_routing_range` takes `infos.read()`,
+            // copies the two numbers out and drops the guard before it returns, so no path ever
+            // HOLDS one of these locks while acquiring the other -- which is what makes the order
+            // a non-question rather than a convention to keep. Taken here rather than inside the
+            // block below so that stays true by construction.
+            let (start_routing_bucket, end_routing_bucket) = self.shard_routing_range(shard_id);
             let index_bytes = {
                 let mut shards = self.shards.write().expect("engine lock poisoned");
                 #[cfg(test)]
@@ -2318,8 +2332,8 @@ impl TemporalEngine {
                         if promote_model_maps_to_bucket_index_authority(
                             shard_id,
                             shard,
-                            0,
-                            u32::MAX,
+                            start_routing_bucket,
+                            end_routing_bucket,
                         ) {
                             reconcile_secondary_views_from_bucket_index(
                                 &self.block_store,
@@ -2327,7 +2341,12 @@ impl TemporalEngine {
                                 None,
                             );
                         }
-                        rebuild_bucket_first_index(shard_id, shard, 0, u32::MAX);
+                        rebuild_bucket_first_index(
+                            shard_id,
+                            shard,
+                            start_routing_bucket,
+                            end_routing_bucket,
+                        );
                         refresh_bucket_runtime_flags(shard);
                         shard.applied_wal_sequence = Some(replayed_through);
                         Some(serialize_index(shard))
