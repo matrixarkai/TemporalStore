@@ -440,7 +440,7 @@ fn where_the_allocations_of_one_cache_invalidation_go() {
 
     // THE FINDING, AS AN ASSERTION. Dropping the key from the memory and pmem maps, clearing its
     // pin entry and emitting the access record costs NOTHING beyond building the key: the whole
-    // 54 is the persistence bookkeeping underneath it. If a later revision of the cache changes
+    // 27 is the persistence bookkeeping underneath it. If a later revision of the cache changes
     // that, this is where it is noticed rather than in a table nobody re-reads.
     assert!(
         memory_only.per(LARGE) - key_only.per(LARGE) < 1.0,
@@ -449,23 +449,30 @@ fn where_the_allocations_of_one_cache_invalidation_go() {
          persistence bookkeeping rests on it being free",
         memory_only.per(LARGE) - key_only.per(LARGE)
     );
-    // RETARGETED when the cache pin moved to 5031edb, which stopped building persistence
-    // bookkeeping for tiers a cache does not have. Measured on this ladder: 54.063 allocations a
-    // key against the previous pin, 35.063 against this one, at both corpus sizes.
+    // RETARGETED again when the cache pin moved to 81ba390, which builds the SSD store key in one
+    // allocation instead of nine. Measured on this ladder at both corpus sizes: 54.063 allocations
+    // a key two pins ago, 35.063 at the previous pin, 27.063 at this one.
     //
     // BANDED rather than floored, because the two ways this can go wrong point in opposite
     // directions: a floor alone still passes if the removed bookkeeping comes back, and a ceiling
     // alone still passes if the invalidation stops happening at all. The lower bound doubles as
     // the vacuity floor -- a collapse toward zero reads as a free invalidation, which is what the
     // original one-sided assertion was written to catch and what this must keep catching.
+    //
+    // NARROWED as well as moved, which is the part that mattered. The old 25..45 still contains
+    // the new 27.063, so it would have passed untouched and nobody would have looked -- but it
+    // also contains 35.063, so it could not have noticed the eight allocations this pin removes
+    // coming back. A band wide enough to hold both the before and the after cannot report the
+    // change it straddles. 22..32 keeps the measured 27.063 with about five either side, and
+    // fails on 35.063 above and on a collapse toward zero below.
     let persistence = full.per(LARGE) - memory_only.per(LARGE);
     assert!(
-        (25.0..45.0).contains(&persistence),
-        "the persistence term is {persistence:.3} allocations a key, outside the 25..45 this \
-         ladder expects: it measured 54.063 before the cache pin moved and 35.063 after, so a \
-         reading above the band means the removed bookkeeping is back, and one below it means \
-         the invalidation stopped happening and this ladder is no longer measuring the shipped \
-         call"
+        (22.0..32.0).contains(&persistence),
+        "the persistence term is {persistence:.3} allocations a key, outside the 22..32 this \
+         ladder expects: it measured 54.063 two cache pins ago, 35.063 at the previous pin and \
+         27.063 at this one, so a reading above the band means removed bookkeeping is back, and \
+         one below it means the invalidation stopped happening and this ladder is no longer \
+         measuring the shipped call"
     );
 
     // THE CANDIDATES, PRICED SEPARATELY. Neither is applied; both are measured so the reason for
