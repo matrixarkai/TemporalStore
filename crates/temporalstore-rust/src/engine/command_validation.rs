@@ -1026,7 +1026,10 @@ pub(super) fn cached_response(
     key: CacheKey,
     source: impl FnOnce() -> CommandResponse,
 ) -> CommandResponse {
-    if let Ok(Some(bytes)) = cache.get(&key) {
+    let cached = crate::alloc_probe::in_class(crate::alloc_probe::AllocClass::CacheRead, || {
+        cache.get(&key)
+    });
+    if let Ok(Some(bytes)) = cached {
         if let Some(response) = decode_cached_response(&bytes) {
             return response;
         }

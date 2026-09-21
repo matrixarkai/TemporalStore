@@ -120,9 +120,20 @@ pub enum AllocClass {
     /// Invalidating the serving cache's entry for a written key. The largest class by allocation
     /// COUNT and a middling one by bytes, which is the pair of facts either column alone hides.
     CacheInvalidation,
+    /// ASKING THE SERVING CACHE FOR AN ANSWER: the lookup itself, inside the three production
+    /// primitives that make one. The only class on the READ side, and it was added because the
+    /// other nine are all charged inside WRITE primitives, so a serving read reconciled to a
+    /// classified share of exactly zero -- every allocation it made landed in the residual and
+    /// nothing could say what any of them were for.
+    ///
+    /// Charged around the cache call and nothing else. The key is built by the caller and the
+    /// answer is decoded by it, which is the same boundary `CacheInvalidation` draws around
+    /// `invalidate_cache_key`, so the two cache-side classes are measured the same way and can be
+    /// read against each other.
+    CacheRead,
 }
 
-const CLASS_COUNT: usize = 9;
+const CLASS_COUNT: usize = 10;
 
 impl AllocClass {
     /// Every class, in slot order. `alloc_class_slots_are_dense_and_in_order` holds that.
@@ -136,6 +147,7 @@ impl AllocClass {
         AllocClass::LogRecord,
         AllocClass::IndexLogDelta,
         AllocClass::CacheInvalidation,
+        AllocClass::CacheRead,
     ];
 
     /// Which counter row this class owns.
@@ -145,7 +157,7 @@ impl AllocClass {
     /// incremented" a compiler can catch; the other half -- declared, given a row, and then never
     /// entered by any production code -- is caught by `every_alloc_class_has_a_production_scope`,
     /// which fails by name on a class no production file enters.
-    const fn slot(self) -> usize {
+    pub(crate) const fn slot(self) -> usize {
         match self {
             AllocClass::PageBytes => 0,
             AllocClass::CarriedPage => 1,
@@ -156,6 +168,7 @@ impl AllocClass {
             AllocClass::LogRecord => 6,
             AllocClass::IndexLogDelta => 7,
             AllocClass::CacheInvalidation => 8,
+            AllocClass::CacheRead => 9,
         }
     }
 
@@ -171,6 +184,7 @@ impl AllocClass {
             AllocClass::LogRecord => "log_record",
             AllocClass::IndexLogDelta => "index_log_delta",
             AllocClass::CacheInvalidation => "cache_invalidation",
+            AllocClass::CacheRead => "cache_read",
         }
     }
 }
@@ -198,6 +212,7 @@ impl ClassSlot {
 }
 
 static CLASS_SLOTS: [ClassSlot; CLASS_COUNT] = [
+    ClassSlot::new(),
     ClassSlot::new(),
     ClassSlot::new(),
     ClassSlot::new(),

@@ -149,6 +149,28 @@ fn alloc_class_slots_are_dense_and_in_order() {
         "there were nine classes when this was written; {} is not the table this file documents",
         AllocClass::ALL.len()
     );
+
+    // AND THE SLOTS THEMSELVES, which this test is named for and did not look at.
+    //
+    // Everything above compares ENTRIES and LABELS. Two classes can be distinct entries with
+    // distinct labels and still return the same slot, and then they share one counter row: the
+    // later one's charges land on the earlier one, so a report double-counts the first and shows
+    // the second as a flat zero in every column. Nothing here noticed. A mutant that pointed a
+    // tenth class at the ninth's slot survived this test and every other test in a wide slice
+    // around it, which is how it was found.
+    //
+    // Dense and in order, both asserted: slot `i` belongs to `ALL[i]`.
+    for (index, class) in AllocClass::ALL.iter().enumerate() {
+        assert_eq!(
+            class.slot(),
+            index,
+            "{} sits at slot {} but is entry {index} of ALL; the ledger indexes its rows by \
+             position, so this class and whichever one owns slot {} would share a row",
+            class.label(),
+            class.slot(),
+            class.slot()
+        );
+    }
 }
 
 /// Every declared class is entered by production code.
@@ -272,6 +294,7 @@ fn variant_name(class: crate::alloc_probe::AllocClass) -> &'static str {
         AllocClass::LogRecord => "LogRecord",
         AllocClass::IndexLogDelta => "IndexLogDelta",
         AllocClass::CacheInvalidation => "CacheInvalidation",
+        AllocClass::CacheRead => "CacheRead",
     }
 }
 

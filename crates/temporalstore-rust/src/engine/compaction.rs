@@ -429,16 +429,22 @@ impl CompactionRewriteStats {
 }
 
 pub(super) fn block_memory_resident(cache: &MultiLayerCache, shard_id: ShardId, address: &BlockAddress) -> bool {
-    cache
-        .get_memory(&CacheKey::page_with_slot_generation(
-            shard_id,
-            address.block_slab_id,
-            address.offset,
-            address.length(),
-            address.routing_bucket(),
-            address.generation(),
-        ))
-        .is_some()
+    // Compaction asking the serving cache a question is still a read of it, and it is charged the
+    // same way the three serving primitives are. Charging it rather than excusing it is what lets
+    // `every_production_cache_read_is_charged_to_the_read_class` carry no exemption list at all --
+    // and an exemption list is where a site goes to stop being looked at.
+    crate::alloc_probe::in_class(crate::alloc_probe::AllocClass::CacheRead, || {
+        cache
+            .get_memory(&CacheKey::page_with_slot_generation(
+                shard_id,
+                address.block_slab_id,
+                address.offset,
+                address.length(),
+                address.routing_bucket(),
+                address.generation(),
+            ))
+            .is_some()
+    })
 }
 
 pub(super) fn compaction_model_layout_reports(

@@ -5048,7 +5048,10 @@ fn read_block_bytes(
         address.offset,
         address.length(),
         address.routing_bucket());
-    if let Ok(Some(bytes)) = cache.get(&cache_key) {
+    let cached = crate::alloc_probe::in_class(crate::alloc_probe::AllocClass::CacheRead, || {
+        cache.get(&cache_key)
+    });
+    if let Ok(Some(bytes)) = cached {
         return Some(bytes);
     }
     // Past the cache, so this call goes to storage. Counted here rather than at each of the
@@ -5129,7 +5132,10 @@ fn read_block_shared(
         address.offset,
         address.length(),
         address.routing_bucket());
-    if let Ok(Some(bytes)) = cache.get_shared(&cache_key) {
+    let cached = crate::alloc_probe::in_class(crate::alloc_probe::AllocClass::CacheRead, || {
+        cache.get_shared(&cache_key)
+    });
+    if let Ok(Some(bytes)) = cached {
         return Some(bytes);
     }
     // Every path below writes to the cache and hands back what it wrote, so going through
