@@ -813,10 +813,7 @@ impl TemporalEngine {
                 recovering: true,
             },
         );
-        self.shards
-            .write()
-            .expect("engine lock poisoned")
-            .insert(request.shard_id, state);
+        self.install_shard_state(request.shard_id, state);
         self.configs
             .write()
             .expect("config lock poisoned")
@@ -2559,10 +2556,7 @@ impl TemporalEngine {
                 recovering: true,
             },
         );
-        self.shards
-            .write()
-            .expect("engine lock poisoned")
-            .insert(shard_id, state);
+        self.install_shard_state(shard_id, state);
         self.configs
             .write()
             .expect("config lock poisoned")

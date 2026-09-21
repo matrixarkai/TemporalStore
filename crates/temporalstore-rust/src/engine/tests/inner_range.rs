@@ -11,11 +11,12 @@
 //! # THE SPLIT IS PLACES AGAINST ATTRIBUTES, AND ONLY ONE HALF NEEDS A RANGE
 //!
 //! Two of the eight decide WHERE A PAGE IS FILED (`upsert_bucket_index_block_inner`,
-//! `sync_bucket_index_object_blocks_with_mode`). Those genuinely need the shard's range and cannot
-//! reach it: they take `&mut ShardState` and a `ShardId`, never `&self`, so `shard_routing_range`
-//! -- which reads the engine's info rows -- is not available. They are NOT changed here;
-//! `the_two_sites_that_file_a_page_still_file_it_under_the_whole_range` holds them as a measured,
-//! named defect so the next reader does not have to rediscover it.
+//! `sync_bucket_index_object_blocks_with_mode`). Those genuinely need the shard's range and could
+//! not reach it: they take `&mut ShardState` and a `ShardId`, never `&self`, so
+//! `shard_routing_range` -- which reads the engine's info rows -- is not available. They were NOT
+//! changed here, and were held as a measured, named defect instead. mx#1953 fixed them by giving
+//! the shard its own range to carry, and the measurement is inverted rather than deleted; see
+//! `shard_carried_range` and section 5 below.
 //!
 //! FIVE do not decide placement at all. They ATTRIBUTE an already-filed page to a bucket, for a
 //! report, for a dump-reuse comparison, or -- once -- to decide whether to DELETE the record. Each
@@ -531,75 +532,19 @@ fn a_store_written_on_one_range_reads_back_whole_on_the_other() {
 }
 
 // =============================================================================================
-// 5. THE TWO SITES THAT ARE STILL WRONG, HELD AS A MEASUREMENT
+// 5. THE TWO SITES THAT FILED A PAGE UNDER THE WHOLE RANGE -- NOW IN shard_carried_range.rs
 // =============================================================================================
-
-/// THE TWO SITES THAT FILE A PAGE STILL FILE IT UNDER THE WHOLE RANGE, AND THIS MEASURES IT.
-///
-/// `upsert_bucket_index_block_inner` and `sync_bucket_index_object_blocks_with_mode` are the two
-/// of the eight that decide WHERE A PAGE GOES. They take `&mut ShardState` and a `ShardId` and
-/// never `&self`, so `shard_routing_range` -- which reads the engine's info rows under
-/// `infos.read()` -- is not reachable from either, and none of their 44 call sites passes a range
-/// they could use. Fixing them means threading a range through all of those, or putting the range
-/// on `ShardState`, which is a SERIALIZED shape whose own doc records what a change to it costs.
-/// Neither is done here.
-///
-/// This test is NOT a wish. It asserts what the tree does today, with the page's bucket named, so
-/// that whoever threads the range has a failing test the moment they succeed -- and so the defect
-/// cannot quietly stop being one without anybody noticing.
-#[test]
-fn the_two_sites_that_file_a_page_still_file_it_under_the_whole_range() {
-    let dir = tempfile::tempdir().expect("tempdir");
-    let engine = engine_on(dir.path());
-    load_on(&engine, NARROW_END);
-    let keys = seed(&engine, 8);
-    let key = keys[0].clone();
-
-    let mut shards = engine.shards.write().expect("shards lock poisoned");
-    let shard = shards.get_mut(&1).expect("shard 1 is loaded");
-    let address = as_an_older_build_wrote_it(shard.strings.get(&key).expect("key present"));
-    shard.strings.insert(key.clone(), address.clone());
-    assert!(
-        address.routing_bucket().is_none(),
-        "the fixture needs an UNROUTED address here, or the fallback never fires and this test \
-         passes without exercising the site it names"
-    );
-
-    crate::engine::storage_bucket_internals::upsert_bucket_index_block(
-        shard, 1, "string", &key, None, address, true,
-    );
-
-    let narrow = block_routing_bucket(&key, 0, NARROW_END);
-    let wide = block_routing_bucket(&key, 0, WIDE_END);
-    assert_ne!(
-        narrow, wide,
-        "the two ranges put {key} in the same bucket, so this fixture cannot tell them apart"
-    );
-    let contents = bucket_contents(shard);
-    let in_narrow = contents
-        .get(&narrow)
-        .is_some_and(|object_keys| object_keys.contains(&key));
-    let in_wide = contents
-        .get(&wide)
-        .is_some_and(|object_keys| object_keys.contains(&key));
-
-    println!("  {key}: shard's own bucket {narrow}, whole-range bucket {wide}");
-    println!("  after upsert_bucket_index_block -- in narrow {in_narrow}, in wide {in_wide}");
-    assert!(
-        in_wide && !in_narrow,
-        "`upsert_bucket_index_block_inner` filed {key} in bucket {} rather than {wide}. If this \
-         now files it at {narrow}, THE DEFECT IS FIXED and this test should be deleted -- but \
-         check first that the five readers in this file and \
-         `collect_command_index_items_for` all still agree with the new filing, because they are \
-         what makes a filing reachable.",
-        if in_narrow { narrow } else { 0 }
-    );
-    assert!(
-        wide > NARROW_END,
-        "the whole-range bucket {wide} is inside 0..{NARROW_END}, so this page is not actually \
-         misfiled and the assertion above passed for the wrong reason"
-    );
-}
+//
+// `the_two_sites_that_file_a_page_still_file_it_under_the_whole_range` lived here. It asserted
+// that `upsert_bucket_index_block_inner` filed `inner-000000` in bucket 1,422,005,296 on a shard
+// holding 0..1023, so that whoever threaded the range would get a failing test the moment they
+// succeeded. mx#1953 succeeded -- by carrying the range on `ShardState` rather than through the
+// writers' 32 production call sites -- and so this test failed, exactly as it was written to.
+//
+// IT IS NOT DELETED, IT IS INVERTED, and it moved to the change that inverted it:
+// `shard_carried_range::the_two_sites_that_file_a_page_now_file_it_under_the_shards_own_range`
+// keeps the same fixture and the same two bucket numbers, asserting the page IS in 398 and is
+// NOT in 1,422,005,296 -- and it drives the SECOND site too, which the version here did not.
 
 // =============================================================================================
 // 6. THE EIGHTH SITE, RIGHT AS WRITTEN
@@ -790,9 +735,16 @@ fn every_site_that_hard_codes_the_whole_routing_range_is_accounted_for() {
     /// `file :: door xN`. Enumerated with the compiler: both doors renamed at their definitions,
     /// rustc asked to name every caller, iterated to a ZERO PASS (69 sites, then 13 that pass one
     /// had suppressed, then none).
+    /// A FIX REMOVES A SITE FROM THIS LIST ONLY WHEN IT PLACES. mx#1949 wrote that fixing a site
+    /// does not shrink this list, and for the five it fixed that is right: they ATTRIBUTE an
+    /// already-filed page, and the literal has to stay behind `filed_bucket()` as the last resort
+    /// for a model-map entry that has no filing to read. The two that PLACE are different. A page
+    /// being filed for the first time has no filing to read, so there is no fallback to put the
+    /// literal behind; the range itself had to change. mx#1953 carries it on `ShardState`, and the
+    /// two `block_routing_bucket` calls in `storage_bucket_internals.rs` now name
+    /// `start_routing_bucket` and are no longer literal-range sites at all.
     const LITERAL_RANGE_SITES: &[&str] = &[
         "engine.rs :: block_routing_bucket x1",
-        "engine/storage_bucket_internals.rs :: block_routing_bucket x2",
         "engine/storage_bucket_internals.rs :: bucket_for_object x2",
         "engine/storage_lifecycle_methods.rs :: bucket_for_object x1",
         "engine/storage_reporting.rs :: bucket_for_object x2",
@@ -800,14 +752,12 @@ fn every_site_that_hard_codes_the_whole_routing_range_is_accounted_for() {
 
     /// Of those, the sites that do NOT consult the bucket the page is filed under first.
     ///
-    /// Two of them FILE a page and cannot reach a range at all -- see
-    /// `the_two_sites_that_file_a_page_still_file_it_under_the_whole_range`. One is a record field
-    /// no reader consults -- see
-    /// `the_delete_outcomes_routing_bucket_is_a_record_field_no_reader_consults`.
-    const STILL_GUESSING: &[&str] = &[
-        "engine.rs :: block_routing_bucket x1",
-        "engine/storage_bucket_internals.rs :: block_routing_bucket x2",
-    ];
+    /// ONE LEFT, and it is the record field no reader consults -- see
+    /// `the_delete_outcomes_routing_bucket_is_a_record_field_no_reader_consults`. The two that
+    /// FILE a page left this list by leaving the list above: they read the shard's own range now.
+    /// `shard_carried_range::the_two_sites_that_file_a_page_now_file_it_under_the_shards_own_range`
+    /// is what holds that, with both buckets named.
+    const STILL_GUESSING: &[&str] = &["engine.rs :: block_routing_bucket x1"];
 
     const DOORS: [&str; 2] = ["block_routing_bucket(", "bucket_for_object("];
 

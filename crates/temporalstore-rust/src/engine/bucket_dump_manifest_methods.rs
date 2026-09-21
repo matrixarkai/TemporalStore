@@ -1478,10 +1478,12 @@ impl TemporalEngine {
             {
                 info.recovering = true;
             }
-            self.shards
-                .write()
-                .expect("engine lock poisoned")
-                .insert(manifest.shard_id, restored);
+            // Stamped with the TARGET's own range, not the image's. The whole-range rebuild above
+            // is what keeps this image whole and must stay; what the stamp decides is where the
+            // NEXT write files a page, and the comment above already records that the unrouted
+            // residual is meant to come back into range under the shard's own range. Nothing that
+            // is already filed moves: this places, it does not filter.
+            self.install_shard_state(manifest.shard_id, restored);
         }
         // Persist the manifest BEFORE the replay. If the replay below fails, the durable state
         // is the embedded index anchored at the dump plus this manifest -- behind the log, never

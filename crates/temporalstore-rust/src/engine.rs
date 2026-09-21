@@ -2136,6 +2136,33 @@ impl TemporalEngine {
         block_routing_bucket(key, start, end)
     }
 
+    /// THE ONE WAY A `ShardState` ENTERS THE SERVED MAP, and the one place its routing range is
+    /// stamped.
+    ///
+    /// The two functions that decide where a page is FILED never see `&self`, so the range has to
+    /// reach them on the shard itself. Making the stamp part of the install, rather than a line
+    /// every install site has to remember, is what makes "every served shard knows its range" a
+    /// property of the code instead of a convention -- and there is nothing to forget at a new
+    /// install site, because there is no other way to insert one.
+    ///
+    /// THE INFO ROW IS READ OUTSIDE THE SHARDS WRITE LOCK, the same order
+    /// `storage_dump_shard_index` and `materialize_resident_blocks_where` already take:
+    /// `shard_routing_range` takes `infos.read()`, and taking it while holding `shards.write()`
+    /// would be a second lock in a new order. Every caller publishes the info row BEFORE handing
+    /// the state over, so the range read here is the one the shard was loaded with.
+    pub(crate) fn install_shard_state(
+        &self,
+        shard_id: ShardId,
+        mut state: crate::engine::state::ShardState,
+    ) {
+        let (start_routing_bucket, end_routing_bucket) = self.shard_routing_range(shard_id);
+        state.set_routing_range(start_routing_bucket, end_routing_bucket);
+        self.shards
+            .write()
+            .expect("engine lock poisoned")
+            .insert(shard_id, state);
+    }
+
     /// What the resident bucket index costs on this shard: one node per bucket, plus one entry
     /// per page the bucket holds.
     ///

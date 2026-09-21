@@ -5,7 +5,7 @@
 //!
 //! Most of this engine reaches for a 64-bit integer by default and that is the right default: a
 //! sequence number, a hash, a timestamp and a byte count all want the full width, and a structure
-//! that exists once per shard can be as fat as it likes. `ShardState` is 1,880 bytes and there is
+//! that exists once per shard can be as fat as it likes. `ShardState` is 1,888 bytes and there is
 //! one of it. What is different about the handful of structures below is that their count is the
 //! CORPUS: one per stored address, one per page-index entry, one per routing bucket. At those
 //! counts a byte is a megabyte, and nothing in this tree stopped one of them growing.

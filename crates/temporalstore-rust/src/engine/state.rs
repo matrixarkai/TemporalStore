@@ -303,6 +303,60 @@ pub(super) struct ShardState {
     /// pass, not correctness. Only consulted when the engine's `evict_sampled_lru` is on.
     #[serde(skip)]
     pub(super) evict_sampler: super::eviction_sampler::EvictionSamplerState,
+    /// THE ROUTING RANGE THIS SHARD IS LOADED ON, travelling with the shard instead of with a
+    /// caller. Read through [`ShardState::routing_range`], never directly.
+    ///
+    /// The two functions that decide WHERE A PAGE IS FILED -- `upsert_bucket_index_block_inner`
+    /// and `sync_bucket_index_object_blocks_with_mode` -- take `&mut ShardState` and a `ShardId`
+    /// and never `&self`, so the engine's `shard_routing_range` accessor, which reads the info
+    /// rows under `infos.read()`, is not reachable from either. They answered with the WHOLE
+    /// range, which on a shard loaded on `0..1023` files an unrouted page in a bucket the shard
+    /// does not hold, where nothing scoped to the shard will ever look for it.
+    ///
+    /// THREE `u32`-WIDE FIELDS RATHER THAN AN `Option<(u32, u32)>`, for the same reason
+    /// `LiveBlockEntry` carries a value and a flag: the flag lands in the byte this struct was
+    /// already padding out for its three other `bool`s, so the pair costs 8 bytes and not 16.
+    ///
+    /// `#[serde(skip)]`, SO THE STORED SHAPE DOES NOT MOVE. `ShardState` IS the serialized index
+    /// -- see `index_format_version` at the top of this struct for what a change to that shape
+    /// has already cost once -- and a skipped field is absent from the Serialize impl entirely,
+    /// so an index written before this field reads identically after it and vice versa.
+    /// `the_routing_range_field_changes_no_serialized_byte` drives that rather than asserting it.
+    ///
+    /// THE UNSTAMPED DEFAULT IS THE WHOLE RANGE, deliberately, and it is the same default
+    /// `Engine::shard_routing_range` gives a shard whose info row is absent. A `ShardState` that
+    /// never entered the engine -- a decoded image, a report's scratch copy -- keeps exactly the
+    /// behaviour it had. Every state the engine SERVES is stamped, because there is one function
+    /// that installs one (`install_shard_state`) and it stamps;
+    /// `every_shard_the_engine_installs_carries_its_routing_range` holds that as a list.
+    #[serde(skip)]
+    pub(super) routing_range_start: u32,
+    #[serde(skip)]
+    pub(super) routing_range_end: u32,
+    #[serde(skip)]
+    pub(super) routing_range_known: bool,
+}
+
+impl ShardState {
+    /// Record the range this shard is loaded on. Called once, by `install_shard_state`.
+    pub(super) fn set_routing_range(&mut self, start_routing_bucket: u32, end_routing_bucket: u32) {
+        self.routing_range_start = start_routing_bucket;
+        self.routing_range_end = end_routing_bucket;
+        self.routing_range_known = true;
+    }
+
+    /// The range to file an unrouted page under.
+    ///
+    /// An unstamped state answers the WHOLE range -- what every caller of these two writers
+    /// passed unconditionally before the field existed -- so a state that never entered the
+    /// engine is unchanged by this field's existence.
+    pub(super) fn routing_range(&self) -> (u32, u32) {
+        if self.routing_range_known {
+            (self.routing_range_start, self.routing_range_end)
+        } else {
+            (0, u32::MAX)
+        }
+    }
 }
 
 #[derive(Debug, Default, Clone, Serialize, Deserialize)]

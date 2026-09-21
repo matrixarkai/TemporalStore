@@ -2898,9 +2898,15 @@ fn upsert_bucket_index_block_inner(
     dirty: bool,
     stage: bool,
 ) {
+    // THE SHARD'S OWN RANGE, carried on the shard. This site PLACES: `routing_bucket` below is
+    // the KEY this page is filed under, not a filter over an answer already decided. Under the
+    // whole range an unrouted page went into a bucket a `0..1023` shard does not hold -- filed
+    // where nothing scoped to the shard will look for it. An unstamped state still answers the
+    // whole range, which is what this line passed unconditionally before.
+    let (start_routing_bucket, end_routing_bucket) = shard.routing_range();
     let routing_bucket = address
         .routing_bucket()
-        .unwrap_or_else(|| block_routing_bucket(object_key, 0, u32::MAX));
+        .unwrap_or_else(|| block_routing_bucket(object_key, start_routing_bucket, end_routing_bucket));
     // Filing a page into a RELEASED bucket would leave the node holding one page and claiming to
     // be resident, with the rest of its pages still only in the model maps -- neither released
     // nor whole. Load it back first; a no-op for every bucket that was never released.
@@ -3090,6 +3096,10 @@ pub(super) fn sync_bucket_index_object_blocks_with_mode(
 ) {
     let mut touched_buckets = BTreeSet::new();
     let mut removed_any = false;
+    // Read before the first `&mut` borrow of the index below, and for the same reason as the
+    // upsert: this site PLACES. What it REMOVES is decided by `object_block_refs` and by the
+    // bucket map itself -- where the pages actually are -- so narrowing this cannot drop one.
+    let (start_routing_bucket, end_routing_bucket) = shard.routing_range();
     // Same reason as `upsert_bucket_index_block_with`: publish into a released bucket and the node
     // is left half-resident. Reload every bucket these addresses land in first.
     if !shard.bucket_index.released_buckets.is_empty() {
@@ -3197,7 +3207,7 @@ pub(super) fn sync_bucket_index_object_blocks_with_mode(
     for address in unique_addresses.into_values() {
         let routing_bucket = address
             .routing_bucket()
-            .unwrap_or_else(|| block_routing_bucket(object_key, 0, u32::MAX));
+            .unwrap_or_else(|| block_routing_bucket(object_key, start_routing_bucket, end_routing_bucket));
         let object_id = address
             .object_id()
             .unwrap_or_else(|| stable_block_object_id(shard_id, kind, object_key, None));
