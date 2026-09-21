@@ -4279,6 +4279,179 @@ pub(super) fn validate_bucket_ownership_index_from_entries(
 }
 
 
+/// What the live-page walk reports for a RELEASED bucket, including the FILING.
+///
+/// WHY THIS EXISTS. mx#1949 gave `LiveBlockEntry` a `filed_bucket()` so five readers could stop
+/// guessing a page's bucket out of its key, and mutated the two lines that set it on the
+/// released-bucket supplement. That mutant SURVIVED, and mx#1949 reported it as unkillable by
+/// construction: the supplement admits a page only when `address.routing_bucket()` is `Some`, so
+/// every reader's `address.routing_bucket().or(entry.filed_bucket())` short-circuits before the
+/// filing is ever consulted.
+///
+/// The first half of that is right and is asserted below -- no reader of the five can see this
+/// field on this path, so the supplement's filing is PRODUCTION-INERT. The second half does not
+/// follow. `filed_bucket()` is the walk's own answer to "which bucket is this page in", and
+/// `collect_bucket_index_live_block_entries` states its contract in place: what it returns is
+/// what the bucket index WOULD say if nothing were released. A released bucket's page reporting
+/// no filing breaks that contract at the walk's own output, whether or not a reader looks --
+/// and the next reader added, or an existing one that stops finding an explicit bucket on the
+/// address, reads bucket 0 instead of the bucket the page is in.
+///
+/// So the mutant is killable, by comparing the walk's answer against the SAME walk before the
+/// release rather than against a reader downstream of it.
+#[cfg(test)]
+mod released_supplement_guards {
+    use super::release_refusal_guards::releasable_bucket;
+    use super::{collect_live_block_entries, release_bucket_blocks};
+    use crate::engine::state::ShardState;
+    use std::collections::BTreeMap;
+
+    /// The walk's answer, keyed by page. Element by element, never a count: a count is equal on
+    /// a walk that returns the right number of pages with the wrong answers on all of them.
+    fn filings(shard: &ShardState) -> BTreeMap<String, Option<u32>> {
+        collect_live_block_entries(shard)
+            .iter()
+            .map(|entry| (entry.object_key.to_string(), entry.filed_bucket()))
+            .collect()
+    }
+
+    /// THE CONTROL, and it fires on the plant and on nothing else.
+    ///
+    /// `filings` has to be able to report `None`, or the equality in the test below holds
+    /// because the comparison cannot express a difference. The model-map arm of the same walk --
+    /// taken when `bucket_map` is empty -- genuinely does not know a filing and answers `None`
+    /// for every page, which is the plant. The bucket-index arm on the same pages answers
+    /// `Some`, which is what says the `None`s are the arm and not the fixture.
+    #[test]
+    fn the_filing_comparison_can_report_a_missing_filing() {
+        let mut shard = ShardState::default();
+        releasable_bucket(&mut shard, 7, "control-key");
+
+        let from_the_index = filings(&shard);
+        assert_eq!(
+            from_the_index.get("control-key"),
+            Some(&Some(7)),
+            "the bucket-index arm must report a filing, or the plant below proves nothing",
+        );
+
+        // The plant: empty the bucket index so the walk takes its model-map arm, which has no
+        // index to read a filing out of.
+        shard.bucket_index.bucket_map.clear();
+        let from_the_model_maps = filings(&shard);
+        assert_eq!(
+            from_the_model_maps.len(),
+            1,
+            "the model-map arm produced {} pages; if it produces none this control measures \
+             nothing",
+            from_the_model_maps.len(),
+        );
+        assert_eq!(
+            from_the_model_maps.get("control-key"),
+            Some(&None),
+            "the comparison used below cannot express a missing filing, so its equality is \
+             satisfied by a walk that reports nothing at all",
+        );
+    }
+
+    /// A RELEASED bucket's pages report the bucket they are filed in, exactly as before the
+    /// release.
+    ///
+    /// The assertion is SET EQUALITY against the walk's own answer taken before the release --
+    /// not a count, and not "every filing is non-empty". Doing too little here is silent: a page
+    /// whose filing has been dropped is still returned, still live, still the right page, and
+    /// reads as a page that simply has no bucket.
+    #[test]
+    fn a_released_buckets_pages_still_report_the_bucket_they_are_filed_in() {
+        let mut shard = ShardState::default();
+        releasable_bucket(&mut shard, 7, "released-key");
+        releasable_bucket(&mut shard, 9, "resident-key");
+
+        let before = filings(&shard);
+        assert_eq!(
+            before,
+            BTreeMap::from([
+                ("released-key".to_string(), Some(7u32)),
+                ("resident-key".to_string(), Some(9u32)),
+            ]),
+            "the fixture does not start in the state this test compares against",
+        );
+
+        let outcome = release_bucket_blocks(&mut shard, &[7]);
+
+        // THE DENOMINATOR. Every assertion below is about the supplement, and the supplement
+        // runs only for a bucket that was actually released.
+        assert_eq!(outcome.released_buckets, vec![7], "{outcome:?}");
+        assert!(
+            shard.bucket_index.released_buckets.contains(&7),
+            "nothing was released, so the supplement walk never runs: {outcome:?}",
+        );
+        assert!(
+            shard
+                .bucket_index
+                .bucket_map
+                .get(&7)
+                .expect("node kept")
+                .block_index
+                .is_empty(),
+            "bucket 7 still holds its pages in the index, so they come from the index arm and \
+             not from the supplement this test is about",
+        );
+
+        let after = filings(&shard);
+        assert_eq!(
+            after, before,
+            "the walk's answer changed across a release. Its contract is that what it returns \
+             is what the bucket index WOULD say if nothing were released -- the filing included",
+        );
+        // Named separately, so a failure says which half moved rather than printing two maps.
+        assert_eq!(
+            after.get("released-key"),
+            Some(&Some(7)),
+            "the page of the RELEASED bucket lost the bucket it is filed in",
+        );
+        assert_eq!(
+            after.get("resident-key"),
+            Some(&Some(9)),
+            "the page of the bucket that was NOT released moved, which is a different defect",
+        );
+    }
+
+    /// AND THE SUPPLEMENT'S FILING IS PRODUCTION-INERT, which is why no reader could see it.
+    ///
+    /// mx#1949's five readers all spell `address.routing_bucket().or(entry.filed_bucket())`. The
+    /// supplement's own filter admits a page only when `address.routing_bucket()` is `Some`, so
+    /// on this path the left side always answers and the right side is never evaluated. That is
+    /// asserted here rather than read off the source: it is what makes the test above a
+    /// statement about the WALK's contract rather than about any reader's answer, and it is what
+    /// a reader added later would be relying on without knowing it.
+    #[test]
+    fn no_reader_can_reach_the_supplements_filing_because_the_address_always_answers_first() {
+        let mut shard = ShardState::default();
+        releasable_bucket(&mut shard, 7, "inert-key");
+        let outcome = release_bucket_blocks(&mut shard, &[7]);
+        assert_eq!(outcome.released_buckets, vec![7], "{outcome:?}");
+
+        let entries = collect_live_block_entries(&shard);
+        assert_eq!(entries.len(), 1, "the supplement returned {} pages", entries.len());
+        for entry in &entries {
+            assert_eq!(
+                entry.address.routing_bucket(),
+                Some(7),
+                "a supplemented page whose address carries no routing bucket would send every \
+                 reader to `filed_bucket()`, and the walk above would then be observable from \
+                 production rather than inert",
+            );
+            // The reader's own expression, spelled out: the left side answers, so the right one
+            // is dead on this path.
+            assert_eq!(
+                entry.address.routing_bucket().or(entry.filed_bucket()),
+                entry.address.routing_bucket(),
+                "the five readers' fallback is reachable on the supplement path",
+            );
+        }
+    }
+}
+
 /// Guards for the preconditions [`release_bucket_blocks`] refuses on.
 ///
 /// WHY THESE EXIST. The refusal outcome was produced and never checked. Across the whole crate

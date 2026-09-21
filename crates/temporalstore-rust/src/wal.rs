@@ -2459,6 +2459,23 @@ impl LocalWriteAheadLogStore {
         // and the record end IS the file length again. Leaving the old entries in place would
         // make the next append place its bytes against the pre-rewrite file.
         inner.verified_len_by_shard.insert(shard_id, bytes_after);
+        // AND THE DURABLE FIGURE, for the same reason and through the same door.
+        //
+        // The rewrite made the retained records durable -- the temp file was `sync_all`'d and
+        // the rename was followed by a directory sync -- and they are now the WHOLE of the
+        // active piece, so `bytes_after` is exactly how far a barrier has reached into it.
+        //
+        // Left alone the entry kept the PRE-REWRITE figure. `roll_wal_segment_if_due` clears its
+        // entry precisely because it replaces the active piece; a reclaim is the OTHER thing
+        // that shortens one, and it did not. Measured on this tree before this line existed: a
+        // log holding 5,223 bytes of records reported 20,273 durable, and after a second reclaim
+        // a log holding 1,184 still reported 20,273 -- 17.1x, which is the OVERSTATING direction
+        // `note_durable_record_end` and `info()` both exist to rule out.
+        //
+        // Written OUTRIGHT, not monotonically. The log is shorter than it was, so a `max` here
+        // would keep exactly the figure that is now wrong -- which is what the group-commit
+        // barrier's `max` did with it until a `flush` happened to overwrite it.
+        note_durable_record_end(&mut inner, shard_id, bytes_after, false);
         inner.prealloc_physical_by_shard.remove(&shard_id);
         Ok(WriteAheadLogGcReport {
             shard_id,
@@ -8423,6 +8440,99 @@ mod tests {
         );
     }
 
+    /// Durable bytes never exceed the bytes the log holds, across a RECLAIM.
+    ///
+    /// The sibling of `durable_bytes_never_exceed_the_bytes_the_log_holds`, which drives the
+    /// ROLL. Both are the same invariant and both are about the same entry: "how far a barrier
+    /// reached into the active piece", remembered per shard. A roll replaces that piece and
+    /// clears the entry deliberately. A reclaim REWRITES it shorter -- 200 records down to 51
+    /// here -- and until this test existed it left the entry describing a piece that no longer
+    /// exists.
+    ///
+    /// WHY THIS IS THE CASE THAT MATTERS, and why no fixture had reached it. The entry has three
+    /// writers; one of them, the group-commit barrier, takes a `.max()` rather than overwriting,
+    /// so once the value is stale-high that writer cannot bring it back down. The only thing
+    /// that used to repair it was a `flush`, which overwrites -- so whether the figure was right
+    /// depended on which barrier happened to run next.
+    ///
+    /// Overstating is the direction this field exists to rule out. Measured here before the
+    /// reclaim recorded its own figure: 20,273 bytes reported durable for a log holding 5,223.
+    #[test]
+    fn durable_bytes_never_exceed_the_bytes_the_log_holds_across_a_reclaim() {
+        // One piece. A roll would clear the entry on its own and hide the case under test.
+        set_wal_segment_bytes_for_test(Some(0));
+        let dir = tempfile::tempdir().unwrap();
+        let store = LocalWriteAheadLogStore::new(dir.path());
+        for index in 0..200usize {
+            store
+                .append_with_sync(
+                    1,
+                    Command::StringSet { key: format!("k{index:06}"), value: vec![b'v'; 64] },
+                    true,
+                )
+                .unwrap();
+        }
+        let active = write_ahead_log_path(dir.path(), 1);
+        let (_, end_before) = last_wal_sequence_in(&active).unwrap();
+        let before = store.info(1).unwrap();
+
+        let report = store.gc_before_sequence_unchecked(1, 150).unwrap();
+        let (_, end_after) = last_wal_sequence_in(&active).unwrap();
+        let after_reclaim = store.info(1).unwrap();
+
+        // The group-commit barrier is the writer that takes a `.max()`. It must not raise the
+        // figure back to the pre-reclaim one.
+        store.commit_barrier(1, 200).unwrap();
+        let after_barrier = store.stats(1);
+        let pieces = wal_segment_paths(dir.path(), 1);
+        set_wal_segment_bytes_for_test(None);
+
+        // THE DENOMINATOR, asserted before any verdict. Without every one of these the test
+        // passes while measuring nothing.
+        assert_eq!(pieces.len(), 1, "the fixture rolled; a roll clears the entry by itself");
+        assert_eq!(
+            before.persistent_length_bytes, end_before,
+            "the pre-reclaim figure is already wrong, so nothing below is about the reclaim",
+        );
+        assert!(
+            !report.skipped_not_worth_rewrite,
+            "the reclaim declined to rewrite, so the log never shortened: {report:?}",
+        );
+        assert!(
+            report.records_removed > 0,
+            "the reclaim removed no record: {report:?}",
+        );
+        assert!(
+            end_after < end_before,
+            "the reclaim did not SHORTEN the piece ({end_before} -> {end_after}), so the \
+             stale-high state this test is about cannot arise",
+        );
+
+        println!(
+            "  reclaim removed {} records: piece {end_before} B -> {end_after} B; reported \
+             durable {} B, then {} B after the group-commit barrier",
+            report.records_removed,
+            after_reclaim.persistent_length_bytes,
+            after_barrier.persistent_bytes,
+        );
+
+        // EQUALITY, in both places. A bound that admits "not more than the file holds" would
+        // pass on a figure that had simply been cleared to zero, which understates every
+        // retained record the reclaim just made durable.
+        assert_eq!(
+            after_reclaim.persistent_length_bytes, end_after,
+            "the reclaim rewrote the piece to {end_after} bytes of records and made them \
+             durable; {} was reported",
+            after_reclaim.persistent_length_bytes,
+        );
+        assert_eq!(
+            after_barrier.persistent_bytes, end_after,
+            "the group-commit barrier raised the durable figure to {} over a log holding \
+             {end_after} bytes -- it took a max against a piece that no longer exists",
+            after_barrier.persistent_bytes,
+        );
+    }
+
     /// One writer, and it is not a file length.
     ///
     /// Six counters in this tree have been found declared and never incremented, or counting a
@@ -8475,9 +8585,9 @@ mod tests {
         // And the door itself: one definition, three barrier paths.
         let calls = source.matches(&format!("{door}(")).count();
         assert_eq!(
-            calls, 4,
-            "one definition and three barrier paths call the single writer; found {calls} \
-             mentions. A fourth barrier path is fine -- update this number and make sure it \
+            calls, 5,
+            "one definition, three barrier paths and the reclaim call the single writer; found \
+             {calls} mentions. Another one is fine -- update this number and make sure it \
              passes a record end, not a file length"
         );
 
