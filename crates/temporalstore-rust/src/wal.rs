@@ -3101,13 +3101,44 @@ fn sealed_wal_path(root: &Path, shard_id: ShardId, start_log_id: u64) -> PathBuf
 /// The piece being written has no number in its name, so it is not one of these -- an empty middle
 /// section does not parse as a log id.
 fn sealed_wal_start_log_id(path: &Path, shard_id: ShardId) -> Option<u64> {
+    sealed_wal_start_log_id_with(path, &SealedNameParts::for_shard(shard_id))
+}
+
+/// The three fixed strings `sealed_wal_start_log_id` matches a name against, built ONCE.
+///
+/// They depend only on the shard id, and a listing asks the same shard about every file in the
+/// directory -- so building them inside the per-file test allocated three `String`s per file per
+/// listing to re-derive three constants. A replay lists once per window, which puts that at
+/// windows x pieces x 3 allocations: about 35 million for a whole-log replay of an eight-million
+/// record log, none of which had to happen. Hoisted, not cached globally: a local value cannot go
+/// stale and needs no invalidation.
+struct SealedNameParts {
+    prefix: String,
+    suffix: String,
+    legacy_suffix: String,
+}
+
+impl SealedNameParts {
+    fn for_shard(shard_id: ShardId) -> Self {
+        Self {
+            prefix: format!("shard-{shard_id}.wal."),
+            suffix: format!(".{WAL_PIECE_SUFFIX}"),
+            legacy_suffix: format!(".{LEGACY_WAL_PIECE_SUFFIX}"),
+        }
+    }
+}
+
+/// The log id a sealed piece's NAME says its contents start at, matched against prebuilt parts.
+///
+/// Same answer as `sealed_wal_start_log_id`, which is this with the parts built for one call.
+fn sealed_wal_start_log_id_with(path: &Path, parts: &SealedNameParts) -> Option<u64> {
     let name = path.file_name()?.to_str()?;
-    let middle = name.strip_prefix(&format!("shard-{shard_id}.wal."))?;
+    let middle = name.strip_prefix(parts.prefix.as_str())?;
     // Either name is a piece of the log. A store part-way through the rename holds both, and
     // reading only one of them would silently skip whichever half it did not recognise.
     let middle = middle
-        .strip_suffix(&format!(".{WAL_PIECE_SUFFIX}"))
-        .or_else(|| middle.strip_suffix(&format!(".{LEGACY_WAL_PIECE_SUFFIX}")))?;
+        .strip_suffix(parts.suffix.as_str())
+        .or_else(|| middle.strip_suffix(parts.legacy_suffix.as_str()))?;
     middle.parse().ok()
 }
 
@@ -3154,13 +3185,21 @@ struct WalPiece {
 fn wal_segment_pieces(root: &Path, shard_id: ShardId) -> Vec<WalPiece> {
     #[cfg(test)]
     WAL_SEGMENT_LISTINGS.with(|listings| listings.set(listings.get() + 1));
+    // Built once for the whole listing rather than once per file: see `SealedNameParts`.
+    let parts = SealedNameParts::for_shard(shard_id);
     let mut sealed = fs::read_dir(root)
         .into_iter()
         .flatten()
         .flatten()
         .map(|entry| entry.path())
+        .inspect(|_| {
+            // The ENTRIES, not the call. This is the quantity that grows with the directory, and
+            // the one a per-window listing pays over and over; the call count above cannot show it.
+            #[cfg(test)]
+            WAL_SEGMENT_LISTING_ENTRIES.with(|seen| seen.set(seen.get() + 1));
+        })
         .filter_map(|path| {
-            sealed_wal_start_log_id(&path, shard_id).map(|start| (start, path))
+            sealed_wal_start_log_id_with(&path, &parts).map(|start| (start, path))
         })
         .collect::<Vec<_>>();
     sealed.sort_by_key(|(start, _)| *start);
@@ -3580,6 +3619,21 @@ thread_local! {
 #[cfg(test)]
 thread_local! {
     pub(crate) static WAL_SEGMENT_LISTINGS: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+    /// Directory ENTRIES those listings walked, summed across all of them.
+    ///
+    /// `WAL_SEGMENT_LISTINGS` counts the CALL. One call over a 14-piece log and one over a
+    /// 5,000-piece log both count as one, so a walk that lists once per window reads as linear in
+    /// the windows -- which is exactly what a per-window listing over a growing directory is not.
+    /// The work is the entries, and the entries are windows x pieces: the same product
+    /// `scan_collect` stopped paying in piece-header reads, still being paid one directory entry
+    /// at a time where no counter looked.
+    ///
+    /// Invisible below a few hundred pieces for a mechanical reason: one `getdents64` returns the
+    /// whole directory until it no longer fits in the kernel's buffer, so at the 14, 54 and 67
+    /// piece logs every measurement of this log has been taken on, the syscall count is flat and
+    /// says nothing about the entries behind it. This counts the entries.
+    pub(crate) static WAL_SEGMENT_LISTING_ENTRIES: std::cell::Cell<u64> =
+        const { std::cell::Cell::new(0) };
     pub(crate) static WAL_SEGMENT_HEADER_READS: std::cell::Cell<u64> =
         const { std::cell::Cell::new(0) };
     /// Pieces a walk stepped over on the strength of the NEXT piece's NAME, without opening them.
@@ -5160,6 +5214,61 @@ fn sync_parent_dir(path: &Path) -> std::io::Result<()> {
 
 #[cfg(test)]
 mod tests {
+    /// Both names a sealed piece can carry are read, and nothing else is.
+    ///
+    /// Pieces were named `.jsonl` before the rename and are named `.bin` now, and a store caught
+    /// part-way through that rename holds both -- so the predicate every walk reads its piece list
+    /// with has to accept either. Nothing exercised the legacy half: a mutation that deleted the
+    /// legacy branch outright left the whole suite green, because every fixture in the tree writes
+    /// the current name and no test ever puts the old one on disk.
+    ///
+    /// The active piece and the lock file are the negative side, and they matter as much: this
+    /// predicate is what tells a sealed piece from the one being written, and a version of it that
+    /// accepted the active piece would have a walk skip the records still being appended to.
+    #[test]
+    fn a_sealed_piece_is_recognised_under_either_name_and_nothing_else_is() {
+        use super::sealed_wal_start_log_id;
+        let root = std::path::Path::new("/tmp/does-not-need-to-exist");
+
+        // CURRENT name.
+        assert_eq!(
+            sealed_wal_start_log_id(&root.join("shard-1.wal.00000000000000004096.bin"), 1),
+            Some(4096),
+            "the current piece name must parse, or no log rolls"
+        );
+        // LEGACY name -- the half with no coverage until now.
+        assert_eq!(
+            sealed_wal_start_log_id(&root.join("shard-1.wal.00000000000000004096.jsonl"), 1),
+            Some(4096),
+            "a piece written before the rename must still be read; dropping this branch loses \
+             every record in every piece a part-way-renamed store still holds under the old name"
+        );
+        // Same number under both names: the suffix says nothing about where the piece starts.
+        assert_eq!(
+            sealed_wal_start_log_id(&root.join("shard-1.wal.00000000000000004096.bin"), 1),
+            sealed_wal_start_log_id(&root.join("shard-1.wal.00000000000000004096.jsonl"), 1),
+            "the two names must answer the same log id"
+        );
+
+        // NOT a sealed piece: the one being written has no number in its name.
+        assert_eq!(
+            sealed_wal_start_log_id(&root.join("shard-1.wal.bin"), 1),
+            None,
+            "the ACTIVE piece must not read as sealed; a walk that skipped it would step over \
+             every record still being appended"
+        );
+        assert_eq!(sealed_wal_start_log_id(&root.join("shard-1.wal.jsonl"), 1), None);
+        // NOT this shard.
+        assert_eq!(
+            sealed_wal_start_log_id(&root.join("shard-2.wal.00000000000000004096.bin"), 1),
+            None,
+            "another shard's piece must not join this shard's log"
+        );
+        // Not a piece at all.
+        assert_eq!(sealed_wal_start_log_id(&root.join("shard-1.wal.lock"), 1), None);
+        assert_eq!(sealed_wal_start_log_id(&root.join("shard-1.wal.notanumber.bin"), 1), None);
+    }
+
 
     /// eight records against one record holding eight items, on identical outcomes.
     ///

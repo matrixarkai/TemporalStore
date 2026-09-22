@@ -14,7 +14,10 @@
 //!
 //! Run:
 //!   wal_cost_scale_harness <root> append <records> <value_bytes>
-//!   wal_cost_scale_harness <root> replay
+//!   wal_cost_scale_harness <root> replay            whole log: watermark zero
+//!   wal_cost_scale_harness <root> count
+//!   wal_cost_scale_harness <root> lastseq           the log's last sequence
+//!   wal_cost_scale_harness <root> start <watermark> where a restore from <watermark> begins
 
 use std::path::PathBuf;
 
@@ -35,6 +38,8 @@ fn main() {
         "append" => append_phase(&root, records, value_bytes),
         "replay" => replay_phase(&root),
         "count" => count_phase(&root),
+        "lastseq" => lastseq_phase(&root),
+        "start" => start_phase(&root, records as u64),
         other => panic!("unknown mode {other}"),
     }
 }
@@ -134,6 +139,51 @@ fn count_phase(root: &PathBuf) {
     );
     println!("log_bytes_on_disk {}", dir_bytes(root));
     println!("segment_files    {}", segment_files(root));
+}
+
+/// The last sequence in the log, so another process can name a watermark without this one's
+/// syscalls landing in that process's trace.
+///
+/// Its own phase for the reason every other phase is: `stats()` takes a scan of its own, and a
+/// watermark computed in the same process as the walk being measured would put that scan in the
+/// walk's syscall total.
+fn lastseq_phase(root: &PathBuf) {
+    let store = LocalWriteAheadLogStore::new(root);
+    let stats = store.stats(1);
+    println!("PHASE lastseq");
+    println!("last_sequence    {}", stats.last_sequence);
+    println!("persistent_bytes {}", stats.persistent_bytes);
+    println!("segment_files    {}", segment_files(root));
+}
+
+/// What it costs to work out WHERE a restore starts reading -- and nothing else.
+///
+/// `replay_phase` measures a watermark of zero: the whole log replayed, every piece wanted. That
+/// is the restart a fresh shard takes. The restart a node that has been dumping its index takes
+/// is the other one: a watermark near the END of the log, a handful of records left to replay,
+/// and the reading itself bounded to one window.
+///
+/// `replay_start_after_sequence` is what answers that, and it is the step this isolates. It walks
+/// the pieces FROM THE FRONT asking each for its last sequence, and stops at the first piece whose
+/// last sequence is past the watermark -- so a watermark near the end walks nearly every piece in
+/// the log to reach the one it wants. The piece's NAME cannot shortcut it the way it shortcuts the
+/// windowed walk: a sealed piece is named for the LOG ID its contents start at, and this walk is
+/// looking for a SEQUENCE.
+///
+/// Measured on its own, in its own process, so its cost is not read as the replay's: the replay
+/// that follows a high watermark reads one window, and a measurement that summed the two would
+/// report the pair as cheap.
+fn start_phase(root: &PathBuf, watermark: u64) {
+    let store = LocalWriteAheadLogStore::new(root);
+    let position = store.replay_start_after_sequence(1, watermark).unwrap();
+    println!("PHASE start");
+    println!("watermark        {watermark}");
+    println!("start_log_id     {}", position.log_id());
+    // Deliberately NOT `dir_bytes`/`segment_files` here. Both walk the directory -- `dir_bytes`
+    // takes a `metadata()` per file -- so printing them adds one `statx` per piece to the very
+    // count this phase exists to report, which at 1,308 pieces is a 14% overstatement of the
+    // walk's own `statx` and grows with the corpus. The corpus size is known to whatever built
+    // it; the walk's cost is only knowable here.
 }
 
 /// xorshift64*, seeded by length and caller seed so runs stay repeatable.

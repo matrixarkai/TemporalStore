@@ -73,7 +73,8 @@ use crate::types::Command;
 use crate::wal::{
     set_wal_segment_bytes_for_test, wal_piece_extents_for_test, LocalWriteAheadLogStore,
     DEFAULT_WAL_SEGMENT_BYTES, WAL_PIECES_SKIPPED_BY_NAME, WAL_PIECE_BODY_READS,
-    WAL_PIECE_TAIL_READS, WAL_READ_FILE_OPENS, WAL_SEGMENT_HEADER_READS, WAL_SEGMENT_LISTINGS,
+    WAL_PIECE_TAIL_READS, WAL_READ_FILE_OPENS, WAL_SEGMENT_HEADER_READS,
+    WAL_SEGMENT_LISTINGS, WAL_SEGMENT_LISTING_ENTRIES,
 };
 
 /// The window the engine replays with (`engine::lifecycle::WAL_REPLAY_WINDOW_BYTES`) and the size
@@ -121,6 +122,7 @@ fn build_log(dir: &std::path::Path, records: usize, value_bytes: usize) -> Local
 
 fn reset_counters() {
     WAL_SEGMENT_LISTINGS.with(|value| value.set(0));
+    WAL_SEGMENT_LISTING_ENTRIES.with(|value| value.set(0));
     WAL_SEGMENT_HEADER_READS.with(|value| value.set(0));
     WAL_PIECES_SKIPPED_BY_NAME.with(|value| value.set(0));
     WAL_PIECE_BODY_READS.with(|value| value.set(0));
@@ -132,6 +134,8 @@ fn reset_counters() {
 #[derive(Clone, Copy, Default)]
 struct Counters {
     listings: u64,
+    /// Directory ENTRIES the listings walked, summed. The work, as against the call count.
+    listing_entries: u64,
     header_reads: u64,
     skipped_by_name: u64,
     body_reads: u64,
@@ -142,6 +146,7 @@ struct Counters {
 fn counters() -> Counters {
     Counters {
         listings: WAL_SEGMENT_LISTINGS.with(|value| value.get()),
+        listing_entries: WAL_SEGMENT_LISTING_ENTRIES.with(|value| value.get()),
         header_reads: WAL_SEGMENT_HEADER_READS.with(|value| value.get()),
         skipped_by_name: WAL_PIECES_SKIPPED_BY_NAME.with(|value| value.get()),
         body_reads: WAL_PIECE_BODY_READS.with(|value| value.get()),
@@ -849,5 +854,139 @@ fn the_default_rolling_threshold_puts_a_replayed_log_in_many_pieces() {
         pieces > 100 && windows > 50,
         "a {log_bytes} B log comes to {pieces} pieces in {windows} windows at the defaults; the \
          product this change removes is only worth removing if both of them grow"
+    );
+}
+
+/// THE PRODUCT THAT IS STILL BEING PAID, one directory entry at a time.
+///
+/// #1917 stopped a window re-reading the HEADER of every piece behind it, and #1936 stopped it
+/// re-reading their CONTENTS. Both of those were the same product -- windows x pieces -- and both
+/// are gone. What neither touched is the step in front of them: every window takes its piece list
+/// from a fresh `read_dir` of the log's directory, and that listing walks, name-matches and sorts
+/// EVERY piece in the log. The walk is resumed in its records and in its skip decision; the
+/// LISTING is not resumed at all.
+///
+/// So the product survives, in the entries:
+///
+/// ```text
+///   entries  ~=  windows x pieces  =  bytes/WAL_REPLAY_WINDOW_BYTES x bytes/TS_WAL_SEGMENT_BYTES
+/// ```
+///
+/// WHY NO MEASUREMENT HAS SEEN IT. Two reasons, and they compound.
+///
+/// First, the counter. `WAL_SEGMENT_LISTINGS` counts the CALL, and a walk that lists once per
+/// window makes exactly as many calls as it has windows -- linear, healthy, and silent about the
+/// directory behind each one. The entries were never counted, so the only in-process number for
+/// this quantity reported the wrong shape.
+///
+/// Second, the syscalls. One `getdents64` returns as many entries as fit in the kernel's buffer,
+/// which for these names is several hundred, so on a log of 14, 54 or 67 pieces -- every size this
+/// log has ever been measured at -- the whole directory comes back in one call and the syscall
+/// count is flat. The entries behind it are not, and a corpus large enough to need a second
+/// `getdents64` is the first place the two numbers separate.
+///
+/// The assertion is therefore on the ENTRIES against the LISTINGS at two sizes: the listings track
+/// the windows, the entries track their product with the pieces, and a test that watched only the
+/// listings would call this flat.
+#[test]
+fn every_replay_window_lists_the_whole_directory_again() {
+    set_wal_segment_bytes_for_test(Some(TEST_SEGMENT_BYTES));
+    let small_records = 2_000usize;
+    let large_records = 8_000usize;
+
+    let small_dir = tempfile::tempdir().unwrap();
+    let small = build_log(small_dir.path(), small_records, 128);
+    let small_bytes = small.raw_stats(1).bytes_written;
+    let small_pieces = piece_count(&small, small_dir.path());
+    let small_cost = replay_cost(&small, 0);
+
+    let large_dir = tempfile::tempdir().unwrap();
+    let large = build_log(large_dir.path(), large_records, 128);
+    let large_bytes = large.raw_stats(1).bytes_written;
+    let large_pieces = piece_count(&large, large_dir.path());
+    let large_cost = replay_cost(&large, 0);
+
+    println!("  every_replay_window_lists_the_whole_directory_again:");
+    print_cost("small", small_bytes, small_pieces, &small_cost);
+    print_cost("large", large_bytes, large_pieces, &large_cost);
+
+    assert_in_regime("small", small_pieces, &small_cost);
+    assert_in_regime("large", large_pieces, &large_cost);
+
+    // THE APPARATUS, before any ratio is read off it. A counter that never moved would make every
+    // number below a zero about nothing, and a directory that fits one `getdents64` at BOTH sizes
+    // is the regime in which this defect is invisible -- so the fixture has to leave it.
+    assert!(
+        small_cost.total.listing_entries > 0 && large_cost.total.listing_entries > 0,
+        "the entry counter read {} and {}; it is not counting, so nothing below means anything",
+        small_cost.total.listing_entries,
+        large_cost.total.listing_entries
+    );
+    assert!(
+        large_pieces > small_pieces * 2,
+        "{small_pieces} pieces against {large_pieces}: the piece count barely moved, so a product \
+         with it cannot be told apart from a constant"
+    );
+
+    // THE IDENTITY. Every listing walks every FILE the directory holds at that moment, so the
+    // entries are the listings times the directory's size -- not a bound, an equality. The
+    // denominator is the directory as `read_dir` sees it, not `piece_count`: the latter reports
+    // what parses as a piece and answers one fewer here, and an identity checked against the
+    // wrong denominator is off by a constant that looks exactly like a partial walk.
+    let dir_entries = |dir: &std::path::Path| std::fs::read_dir(dir).unwrap().count() as u64;
+    for (label, cost, files) in [
+        ("small", &small_cost, dir_entries(small_dir.path())),
+        ("large", &large_cost, dir_entries(large_dir.path())),
+    ] {
+        let expected = cost.total.listings * files;
+        assert_eq!(
+            cost.total.listing_entries, expected,
+            "{label}: {} entries walked over {} listings of a {files}-file directory. The product \
+             is the claim; if a listing has started walking fewer than every file, this test is \
+             the thing that has gone stale",
+            cost.total.listing_entries, cost.total.listings
+        );
+    }
+
+    // THE SHAPE, at the two sizes. The listings grow like the windows -- linear. The entries grow
+    // like the product -- and the two ratios being DIFFERENT numbers is the whole finding.
+    let listing_ratio =
+        large_cost.total.listings as f64 / small_cost.total.listings.max(1) as f64;
+    let entry_ratio =
+        large_cost.total.listing_entries as f64 / small_cost.total.listing_entries.max(1) as f64;
+    let byte_ratio = large_bytes as f64 / small_bytes.max(1) as f64;
+    println!(
+        "    {byte_ratio:.2}x bytes -> {listing_ratio:.2}x listings, {entry_ratio:.2}x entries \
+         ({} -> {})",
+        small_cost.total.listing_entries, large_cost.total.listing_entries
+    );
+
+    assert!(
+        (listing_ratio - byte_ratio).abs() < byte_ratio * 0.5,
+        "the listings grew {listing_ratio:.2}x for {byte_ratio:.2}x the bytes. They are supposed \
+         to track the WINDOWS, which track the bytes; if they no longer do, the walk has stopped \
+         listing once per window and the comparison below is against the wrong thing"
+    );
+    assert!(
+        entry_ratio > listing_ratio * 2.0,
+        "the entries grew {entry_ratio:.2}x against {listing_ratio:.2}x the listings. Those two \
+         being the same number would mean the listing had stopped walking the whole directory -- \
+         which is the fix, and would make this test the record of it rather than a passing guard"
+    );
+    assert!(
+        entry_ratio > byte_ratio * 2.0,
+        "the entries grew {entry_ratio:.2}x for {byte_ratio:.2}x the bytes. A per-window listing \
+         over a directory that grows with the log is quadratic in the log; anything close to \
+         linear here means the fixture has stopped producing the regime"
+    );
+
+    // AND WHAT THE OLD COUNTER WOULD HAVE SAID, so the reason this went unseen is on the record
+    // rather than in a commit message. Reading the listings alone reports a walk growing exactly
+    // as fast as the log -- the same healthy, linear answer a measurement of the piece-header
+    // reads now correctly gives, about a quantity that is not linear at all.
+    assert!(
+        listing_ratio < entry_ratio,
+        "the call count and the entry count grew at the same rate, so the call count was never \
+         hiding anything and this test has no subject"
     );
 }
