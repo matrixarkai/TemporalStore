@@ -39,11 +39,21 @@
 //! gains a dependent load it did not have.
 //!
 //! WHICH IS THE OPPOSITE CONCLUSION TO `ObjectIndex`, deliberately, and the contrast is the rule:
-//! `ObjectIndex` boxes its RARE arm, because there the rare arm is the wide one (a `BTreeSet` at
-//! 24 bytes) and the common arm is a bare `u64`. `BlockIndexMap`'s wide arm is the COMMON one --
-//! a whole 104-byte page entry -- and its rare arm is the narrow one. Boxing "the rare arm" is a
-//! win; boxing "the arm that happens to be widest" is a loss whenever that arm is also the common
-//! one. The distribution is what tells the two apart, and nothing before this module measured it.
+//! `ObjectIndex` boxes its MULTI-ENTRY arm, because there that arm is the wide one (a collection
+//! at 24 bytes) and the single-entry arm is a bare `u64`. `BlockIndexMap`'s wide arm is the
+//! COMMON one -- a whole 104-byte page entry -- and its multi-entry arm is the narrow one. Boxing
+//! the UNCOMMON arm is a win; boxing "the arm that happens to be widest" is a loss whenever that
+//! arm is also the common one. The distribution is what tells the two apart.
+//!
+//! ONE CORRECTION TO THAT CONTRAST, measured since: the object index's multi-entry arm is NOT
+//! rare in every workload. An object id is hashed over `shard:kind:key:component` while the
+//! routing bucket is hashed over the key alone, so a collection key files one object id per
+//! MEMBER into one bucket -- 46.46% of buckets hold two or more on a store with collections in
+//! it, against 0.00% on a store of strings and series.
+//! `how_many_objects_a_bucket_holds_at_two_corpus_sizes_and_two_shape_mixes` reports both. What
+//! survives is the rule above, which is about which arm is WIDE and which is COMMON, not about
+//! either being rare; the object index's boxed arm holds a sorted run rather than a tree for
+//! exactly that reason.
 //!
 //! THE DENOMINATORS ARE READ OFF THE SHARD and asserted before anything divides by them, and the
 //! fixture is asserted to REACH multi-page buckets: a fixture that only ever produced one page per
@@ -57,6 +67,7 @@ use std::sync::Arc;
 use crate::block_store::BlockAddress;
 use crate::engine::state::{
     BlockIndex, BlockIndexMap, BlockSlabLiveIndex, BucketLayoutState, BucketNode, BucketTtl,
+    DeletedObjectIndex,
     ObjectIndex,
 };
 
@@ -644,7 +655,7 @@ struct MirrorNode<I> {
     first_dirty_index_log_sequence: u64,
     last_dump_sequence: u64,
     object_index: ObjectIndex,
-    deleted_object_index: ObjectIndex,
+    deleted_object_index: DeletedObjectIndex,
     block_index: I,
 }
 

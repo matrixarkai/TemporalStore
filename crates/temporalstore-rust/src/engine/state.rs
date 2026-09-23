@@ -443,22 +443,38 @@ pub(super) enum ObjectIndex {
     #[default]
     Empty,
     One(u64),
-    /// Boxed: this is the rare arm, and an enum is as wide as its widest.
+    /// Several ids, held as a SORTED RUN behind one pointer.
     ///
-    /// Held inline, the set made every `ObjectIndex` 32 bytes whether or not a set existed, and a
-    /// `BucketNode` carries two of them -- one of which, `deleted_object_index`, is Empty for the
-    /// whole life of almost every bucket. Behind a box the enum is 16, and the box is only
-    /// allocated by the buckets that actually hold more than one object.
-    Many(Box<BTreeSet<u64>>),
+    /// Boxed because an enum is as wide as its widest arm: held inline the collection made every
+    /// `ObjectIndex` wider than a word whether or not it held anything, and a `BucketNode`
+    /// carries two of them. Behind a box the enum is 16, and the box is only allocated by the
+    /// buckets that actually hold more than one object.
+    ///
+    /// A RUN AND NOT A TREE, because this arm is not rare. The measured occupancy is 46.6% of
+    /// buckets holding two or more -- a collection key files one object id PER MEMBER into the
+    /// one bucket its key routes to, while a string or a series files one -- so what this arm
+    /// costs is paid by nearly half the store. A search tree charges a fixed 128 bytes for it: 24
+    /// for the collection and 104 for a node sized to hold eleven ids whether it holds two or
+    /// eleven. A run charges 24 plus eight bytes an id, which at the measured distribution is 64.
+    ///
+    /// Sorted, which is what lets it answer `contains` by bisection and iterate in the order the
+    /// tree did -- the stored spelling is that order, so it is not free to change. Ordered and
+    /// deduplicated are invariants of this arm, established by `insert` and preserved by
+    /// `remove`; `the_sorted_run_stays_sorted_and_deduplicated_through_every_mutation` drives
+    /// them.
+    Many(Box<Vec<u64>>),
 }
 
-/// A pointer-wide arm plus its tag, twice per bucket.
+/// A pointer-wide arm plus its tag, once per bucket.
+///
+/// It used to be twice: the tombstone side held the same enum for a case it is in 2.32% of
+/// the time, and is now `DeletedObjectIndex` below, at eight.
 const _: () = assert!(std::mem::size_of::<ObjectIndex>() == 16);
 
 pub(super) enum ObjectIndexIter<'a> {
     Empty,
     One(std::iter::Once<&'a u64>),
-    Many(std::collections::btree_set::Iter<'a, u64>),
+    Many(std::slice::Iter<'a, u64>),
 }
 
 impl<'a> Iterator for ObjectIndexIter<'a> {
@@ -477,7 +493,7 @@ impl ObjectIndex {
         match self {
             ObjectIndex::Empty => 0,
             ObjectIndex::One(_) => 1,
-            ObjectIndex::Many(set) => set.len(),
+            ObjectIndex::Many(run) => run.len(),
         }
     }
 
@@ -485,11 +501,13 @@ impl ObjectIndex {
         matches!(self, ObjectIndex::Empty)
     }
 
+    /// By bisection over the sorted run, so the answer costs a handful of comparisons over one
+    /// contiguous span rather than a walk through a tree node.
     pub(super) fn contains(&self, id: &u64) -> bool {
         match self {
             ObjectIndex::Empty => false,
             ObjectIndex::One(held) => held == id,
-            ObjectIndex::Many(set) => set.contains(id),
+            ObjectIndex::Many(run) => run.binary_search(id).is_ok(),
         }
     }
 
@@ -504,13 +522,19 @@ impl ObjectIndex {
                     return false;
                 }
                 let first = *held;
-                let mut set = BTreeSet::new();
-                set.insert(first);
-                set.insert(id);
-                *self = ObjectIndex::Many(Box::new(set));
+                let run = if first < id { vec![first, id] } else { vec![id, first] };
+                *self = ObjectIndex::Many(Box::new(run));
                 true
             }
-            ObjectIndex::Many(set) => set.insert(id),
+            // `binary_search` answers where the id belongs when it is absent, so the ordered
+            // insert is the same lookup the membership test already did.
+            ObjectIndex::Many(run) => match run.binary_search(&id) {
+                Ok(_) => false,
+                Err(at) => {
+                    run.insert(at, id);
+                    true
+                }
+            },
         }
     }
 
@@ -524,8 +548,14 @@ impl ObjectIndex {
                 *self = ObjectIndex::Empty;
                 true
             }
-            ObjectIndex::Many(set) => {
-                let removed = set.remove(id);
+            ObjectIndex::Many(run) => {
+                let removed = match run.binary_search(id) {
+                    Ok(at) => {
+                        run.remove(at);
+                        true
+                    }
+                    Err(_) => false,
+                };
                 self.shrink();
                 removed
             }
@@ -536,17 +566,17 @@ impl ObjectIndex {
     /// does not keep a node for the rest of its life.
     fn shrink(&mut self) {
         let len = match self {
-            ObjectIndex::Many(set) => set.len(),
+            ObjectIndex::Many(run) => run.len(),
             _ => return,
         };
         match len {
             0 => *self = ObjectIndex::Empty,
             1 => {
-                let set = match std::mem::replace(self, ObjectIndex::Empty) {
-                    ObjectIndex::Many(set) => set,
+                let run = match std::mem::replace(self, ObjectIndex::Empty) {
+                    ObjectIndex::Many(run) => run,
                     _ => unreachable!("just matched Many"),
                 };
-                *self = ObjectIndex::One((*set).into_iter().next().expect("length is one"));
+                *self = ObjectIndex::One(*run.first().expect("length is one"));
             }
             _ => {}
         }
@@ -560,7 +590,7 @@ impl ObjectIndex {
         match self {
             ObjectIndex::Empty => ObjectIndexIter::Empty,
             ObjectIndex::One(id) => ObjectIndexIter::One(std::iter::once(id)),
-            ObjectIndex::Many(set) => ObjectIndexIter::Many(set.iter()),
+            ObjectIndex::Many(run) => ObjectIndexIter::Many(run.iter()),
         }
     }
 
@@ -588,7 +618,7 @@ impl IntoIterator for ObjectIndex {
         match self {
             ObjectIndex::Empty => Vec::new().into_iter(),
             ObjectIndex::One(id) => vec![id].into_iter(),
-            ObjectIndex::Many(set) => (*set).into_iter().collect::<Vec<_>>().into_iter(),
+            ObjectIndex::Many(run) => (*run).into_iter(),
         }
     }
 }
@@ -644,10 +674,155 @@ impl<'de> Deserialize<'de> for ObjectIndex {
         D: serde::Deserializer<'de>,
     {
         // Through `insert`, so a loaded bucket takes the shape a written one does: one id comes
-        // back held inline rather than in a set.
-        Ok(BTreeSet::<u64>::deserialize(deserializer)?
-            .into_iter()
-            .collect())
+        // back held inline rather than in a run, and a repeated id collapses.
+        //
+        // The sequence is read into a `Vec` and not a tree. It accepts exactly what it always
+        // accepted -- a sequence of ids, in any order, duplicates allowed -- and `insert` puts
+        // each one where it belongs, so the loaded shape is the same one a written bucket holds.
+        // The tree that used to stand here was an allocation per bucket for a shape that was
+        // thrown away on the next line.
+        Ok(Vec::<u64>::deserialize(deserializer)?.into_iter().collect())
+    }
+}
+
+/// THE TOMBSTONE SIDE OF A BUCKET, held so that ABSENCE costs a pointer and nothing else.
+///
+/// `deleted_object_index` is the ids a bucket has had deleted and not yet reclaimed. It is
+/// written by one path -- a delete that finds pages to retire -- and cleared by the next write of
+/// the same object, so on a store that is not being deleted from it holds nothing at all.
+/// MEASURED over a seeded corpus at two sizes with one string key in twenty deleted: 97.68% of
+/// buckets carry no tombstone, and the widest bucket that carries one carries a single id.
+///
+/// Held as `ObjectIndex` that is the sixteen bytes of an enum whether or not it holds anything,
+/// twice over on the two arms that never run. Held as one nullable pointer it is eight, and the
+/// sixteen it used to spend are only spent by the buckets that are actually carrying a tombstone
+/// -- which is the same tiering `ObjectIndex` already applies one level down, with the tier that
+/// costs nothing moved to the case this field is actually in.
+///
+/// WHERE THE TRADE TURNS OVER, because it is not free in the other direction: a bucket that DOES
+/// carry a tombstone pays the pointer plus a sixteen-byte allocation for the index behind it,
+/// which the allocator serves out of its smallest chunk. So the shape wins while fewer than
+/// about a quarter of buckets carry one and loses above that, against a measured 2.32%.
+/// `what_the_object_side_of_the_bucket_node_costs` prints the share beside the saving so a
+/// workload that moved it would be visible rather than assumed.
+///
+/// `Some` ALWAYS HOLDS A NON-EMPTY INDEX. `remove` gives the allocation back when it takes the
+/// last id, so "carrying nothing" has exactly one spelling and two buckets holding no tombstone
+/// cannot compare unequal.
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
+pub(super) struct DeletedObjectIndex(Option<Box<ObjectIndex>>);
+
+/// One nullable pointer, against the sixteen bytes the enum spends inline.
+const _: () = assert!(std::mem::size_of::<DeletedObjectIndex>() == 8);
+
+impl DeletedObjectIndex {
+    pub(super) fn len(&self) -> usize {
+        self.0.as_ref().map_or(0, |index| index.len())
+    }
+
+    pub(super) fn is_empty(&self) -> bool {
+        self.0.as_ref().map_or(true, |index| index.is_empty())
+    }
+
+    pub(super) fn contains(&self, id: &u64) -> bool {
+        self.0.as_ref().is_some_and(|index| index.contains(id))
+    }
+
+    pub(super) fn insert(&mut self, id: u64) -> bool {
+        self.0
+            .get_or_insert_with(|| Box::new(ObjectIndex::default()))
+            .insert(id)
+    }
+
+    /// Removing the last id gives the allocation back, which is what keeps the empty state to a
+    /// single spelling and keeps a bucket that was briefly deleted from holding a box for ever.
+    pub(super) fn remove(&mut self, id: &u64) -> bool {
+        let Some(index) = self.0.as_mut() else {
+            return false;
+        };
+        let removed = index.remove(id);
+        if index.is_empty() {
+            self.0 = None;
+        }
+        removed
+    }
+
+    pub(super) fn iter(&self) -> ObjectIndexIter<'_> {
+        match &self.0 {
+            None => ObjectIndexIter::Empty,
+            Some(index) => index.iter(),
+        }
+    }
+}
+
+impl<'a> IntoIterator for &'a DeletedObjectIndex {
+    type Item = &'a u64;
+    type IntoIter = ObjectIndexIter<'a>;
+    fn into_iter(self) -> Self::IntoIter {
+        self.iter()
+    }
+}
+
+impl IntoIterator for DeletedObjectIndex {
+    type Item = u64;
+    type IntoIter = std::vec::IntoIter<u64>;
+    fn into_iter(self) -> Self::IntoIter {
+        match self.0 {
+            None => Vec::new().into_iter(),
+            Some(index) => (*index).into_iter(),
+        }
+    }
+}
+
+impl Extend<u64> for DeletedObjectIndex {
+    fn extend<I: IntoIterator<Item = u64>>(&mut self, ids: I) {
+        for id in ids {
+            self.insert(id);
+        }
+    }
+}
+
+impl<'a> Extend<&'a u64> for DeletedObjectIndex {
+    fn extend<I: IntoIterator<Item = &'a u64>>(&mut self, ids: I) {
+        for id in ids {
+            self.insert(*id);
+        }
+    }
+}
+
+impl FromIterator<u64> for DeletedObjectIndex {
+    fn from_iter<I: IntoIterator<Item = u64>>(ids: I) -> Self {
+        let mut index = DeletedObjectIndex::default();
+        index.extend(ids);
+        index
+    }
+}
+
+impl Serialize for DeletedObjectIndex {
+    /// The same sequence of ids in the same order, and the same empty sequence when there is
+    /// nothing to write -- a bucket carrying no tombstone spells it `[]` exactly as it did when
+    /// the field held an empty enum.
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        use serde::ser::SerializeSeq;
+        let mut seq = serializer.serialize_seq(Some(self.len()))?;
+        for id in self.iter() {
+            seq.serialize_element(&id)?;
+        }
+        seq.end()
+    }
+}
+
+impl<'de> Deserialize<'de> for DeletedObjectIndex {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        // An empty sequence loads as no allocation at all, which is the whole point of the
+        // shape: the common bucket comes back holding one null pointer.
+        Ok(Vec::<u64>::deserialize(deserializer)?.into_iter().collect())
     }
 }
 
@@ -2139,23 +2314,24 @@ pub(super) struct BucketNode {
     #[serde(default, alias = "object_ids")]
     pub(super) object_index: ObjectIndex,
     #[serde(default, alias = "deleted_object_ids")]
-    pub(super) deleted_object_index: ObjectIndex,
+    pub(super) deleted_object_index: DeletedObjectIndex,
     #[serde(rename = "page_index", default, alias = "page_refs")]
     pub(super) block_index: BlockIndexMap,
 }
 
 /// The widest per-item structure in the engine, and the one whose count is the bucket count.
 ///
-/// Most of it is the `BlockIndexMap` it carries inline: 112 of these 200 bytes are one page
+/// Most of it is the `BlockIndexMap` it carries inline: 112 of these 192 bytes are one page
 /// entry held inline plus its handle, and any accounting of this structure has to start there
 /// rather than with the flags.
 ///
 /// 202 bytes of field became 194 when `ttl_ms` stopped spending a word on a discriminant, and
-/// the struct went 208 -> 200 with it. The six bytes left over are the aligner rounding
+/// 186 when the tombstone index stopped spending sixteen on a case it is in 2.32% of the time;
+/// the struct went 208 -> 200 -> 192 with them. The six bytes left over are the aligner rounding
 /// `routing_bucket`, `layout` and the five flags -- ten bytes of small field -- up to sixteen,
 /// and they are ALIGNMENT, not width: narrowing any of those ten bytes moves nothing.
 /// `every_byte_of_the_bucket_node_is_accounted_for` states the whole of it field by field.
-const _: () = assert!(std::mem::size_of::<BucketNode>() == 200);
+const _: () = assert!(std::mem::size_of::<BucketNode>() == 192);
 
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub(super) enum BucketLayoutState {

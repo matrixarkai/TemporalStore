@@ -3634,7 +3634,7 @@ pub(super) fn rebuild_bucket_first_index(
     // the slot. The deserialize + reconcile load path keeps deleted_object_index; a
     // promote/rebuild reconstruct (flush or the WAL-replay tail) would otherwise silently drop
     // it, undercounting objects after a reconstruct-based reload.
-    let prior_deleted_object_index: BTreeMap<u32, ObjectIndex> = shard
+    let prior_deleted_object_index: BTreeMap<u32, DeletedObjectIndex> = shard
         .bucket_index
         .bucket_map
         .iter()

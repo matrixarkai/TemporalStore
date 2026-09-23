@@ -6715,9 +6715,13 @@ fn a_reload_rebuilds_the_lookup_the_index_no_longer_writes() {
 
 /// A bucket holding one object id holds it inline, and goes back to inline when it can.
 ///
-/// Every bucket has one: keys route one to a bucket, and an object with many components is still
-/// one object, so the set that held it was never holding more. A `BTreeSet` with a single member
-/// costs 128 live bytes of node to carry eight bytes of id.
+/// Keys route one to a bucket, so a bucket holds a single object unless its key is a COLLECTION:
+/// the object id is hashed over `shard:kind:key:component` and the routing bucket over the key
+/// alone, so a hash with eight fields files eight ids into one bucket. Measured, that is 86.98%
+/// of buckets holding exactly one on a store of strings and series and 46.57% on a store with
+/// collections in it -- this test drives the first case, and the inline arm is what makes it
+/// free. A single-member collection behind the pointer costs 128 live bytes to carry eight of
+/// id, which is what the inline arm is not spending.
 ///
 /// The demotion is checked too. A bucket that briefly held two objects would otherwise keep its
 /// node for the rest of its life, which is the cost being removed and shows up nowhere else.
@@ -7009,12 +7013,17 @@ fn a_bucket_holding_one_block_holds_no_node() {
 
 
 
-/// An `ObjectIndex` is two words, so the set arm cannot widen the bucket that almost never uses it.
+/// An `ObjectIndex` is two words, so the multi-entry arm cannot widen the bucket that is not on
+/// it.
 ///
-/// A `BucketNode` carries two of these, and one of them -- `deleted_object_index` -- is Empty for
-/// the whole life of almost every bucket. Held inline, a `BTreeSet` made both of them as wide as
-/// the arm neither was using. The number here is what stops that from silently coming back: a
-/// future arm holding anything larger than a pointer widens every bucket in the shard.
+/// Held inline, the collection made the field as wide as the arm most buckets were not using.
+/// The number here is what stops that from silently coming back: a future arm holding anything
+/// larger than a pointer widens every bucket in the shard.
+///
+/// `BucketNode` used to carry two of these. The tombstone side is now `DeletedObjectIndex`,
+/// which is one nullable pointer, because the case IT is almost always in is the empty one --
+/// a different distribution wanting a different free tier. `how_many_objects_a_bucket_holds_at
+/// _two_corpus_sizes_and_two_shape_mixes` reports both.
 #[test]
 fn an_object_index_costs_a_word_and_a_pointer() {
     use crate::engine::state::ObjectIndex;
