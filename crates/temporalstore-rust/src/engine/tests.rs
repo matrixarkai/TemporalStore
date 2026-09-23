@@ -118,6 +118,7 @@ mod cache_read_cost;
 mod warm_read_decomposition;
 mod wal_reclaim_frame_boundary;
 mod pages_per_bucket;
+mod bucket_fill;
 mod per_item_byte_budget;
 
 

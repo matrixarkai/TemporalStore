@@ -96,17 +96,57 @@ Narrowing the range makes records share slots. Measured on 40,000 records, a
 1024 slots, so there is little reason to go narrower. For a store of 4 million
 records that is roughly 24 GB against 13 GB.
 
+**It is not free, and below a certain fill it is a loss.** The figures above are
+whole-process resident memory. The bucket index itself moves the other way at a
+shallow fill, because a bucket holding one page holds it *inline* and allocates
+nothing, while a bucket holding several holds them in a `BTreeMap` whose node is
+sized for eleven entries whether or not it fills them. Measured on the bucket map
+with a counting allocator, routed string keys, store path held at 15 characters:
+
+| records | buckets | pages a bucket | bytes / page | allocations / page |
+| ---: | ---: | ---: | ---: | ---: |
+| 4,000 | 4,000 (default) | 1.00 | 329.5 | 0.1452 |
+| 4,000 | 1,024 | 3.91 | **413.1 (+25.4%)** | **0.7625 (+425%)** |
+| 40,000 | 40,000 (default) | 1.00 | 327.9 | 0.1446 |
+| 40,000 | 1,024 | 39.06 | **209.9 (-36.0%)** | **0.3195 (+121%)** |
+
+So narrow the range when the corpus is large enough to fill the buckets well past
+eleven pages, and not otherwise. At 40,000 records over 1,024 buckets the bytes
+fall by a third and the allocation count still more than doubles.
+
+**And a routing bucket is the unit of more than memory.** It is the unit of
+eviction victim selection, of cache invalidation, of the dump's bucket budget, of
+the dirty set drained when a dump manifest becomes durable, and of the write-ahead
+and index log reclaim floor. All of those coarsen by exactly the number of keys a
+bucket comes to hold: a dump of one bucket drains one key at the default range and
+eight at 4,000 records on `1023`, one hot key holds the log floor for every key
+sharing its bucket, and one evicted bucket takes every key in it. Reads are
+unaffected -- they resolve through the model maps, not the bucket index.
+
 ```bash
 TS_SHARD_START_ROUTING_BUCKET=0 \
 TS_SHARD_END_ROUTING_BUCKET=1023 \
 matrixark_rust_datanode
 ```
 
-**Set this before the first ingest.** Slot ids are durable — a bucket dump
-manifest records the `slot_ids` it covers — so changing the range on a populated
-store remaps keys to different slots. On a fresh store it is safe: sampled reads
-returned no missing and no mismatched values after the writes, after a dump, and
-after a restart that recovered from the on-disk artifacts.
+**Set this before the first ingest, and narrowing it later is silent.** A page's
+bucket is written onto its address when the page is appended, and a reopened range
+is consulted only for an address that carries no bucket of its own. So changing the
+range on a populated store re-files nothing. Driven both ways over 2,000 records:
+
+* **Widening** (`1023` then the default) is safe. Every record readable, every page
+  present, nothing outside the new range — because the wide range contains the
+  narrow one, not because anything moved. The store stayed on its 938 buckets.
+* **Narrowing** (the default then `1023`) leaves the store on its original 2,000
+  buckets, and **all 2,000 of them sit above the shard's own end**. Every record is
+  still readable, which is what makes this quiet: the pages are simply outside every
+  per-bucket sweep the shard runs — the dump's bucket selection, eviction's victim
+  sampling, the reclaim floor and the release pass all enumerate the bucket map
+  against the shard's own range.
+
+On a fresh store it is safe: sampled reads returned no missing and no mismatched
+values after the writes, after a dump, and after a restart that recovered from the
+on-disk artifacts.
 
 The range also bounds how finely slots can be divided between shards, so keep it
 comfortably above the shard count you expect to grow into.

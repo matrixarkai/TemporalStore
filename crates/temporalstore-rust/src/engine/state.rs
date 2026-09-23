@@ -674,10 +674,20 @@ pub(super) enum BlockIndexMap {
     Empty,
     /// One page, held inline.
     ///
-    /// This is the ordinary bucket. Keys route one to a bucket, so a bucket holds a single page
-    /// unless its object has components -- and a `BTreeMap` holding one entry costs 1,496 live
-    /// bytes to carry a 120-byte page, because its node is sized for eleven. Measured over a
-    /// store of 2,000 keys, the containers were about 70% of the index's live heap.
+    /// THE ORDINARY BUCKET AT THE DEFAULT ROUTING RANGE, AND NOT OTHERWISE. A page's bucket is
+    /// `block_routing_bucket(object_key, start, end)`, whose modulus is the RANGE WIDTH, so on
+    /// `load_shard`'s default of `0..u32::MAX` every key lands alone by construction and this
+    /// arm holds essentially every bucket. On the range `docs/runtime_tuning.md` tells an
+    /// operator to set -- `TS_SHARD_END_ROUTING_BUCKET=1023` -- it does not: measured over
+    /// routed string keys, 5.27% of buckets hold one page at 4,000 records and NONE do at
+    /// 40,000, where the mean is 39.06. `bucket_fill.rs` reports both as histograms.
+    ///
+    /// So this arm is worth its inline page because of the DEFAULT RANGE, not because of the
+    /// workload, and a `BTreeMap` holding one entry costs 1,496 live bytes to carry a 120-byte
+    /// page, because its node is sized for eleven. Measured over a store of 2,000 keys, the
+    /// containers were about 70% of the index's live heap. That same node sizing is why
+    /// filling a bucket is a LOSS below about eleven pages: it trades one node per page for a
+    /// map node per bucket, measured at +25.4% bytes a page at a fill of 3.91.
     ///
     /// The shape `BlockRefs` already uses, for the same reason.
     One(u64, BlockIndex),
@@ -1712,10 +1722,17 @@ pub(super) struct DirtyObjectIndex {
 
 /// The dirty object keys of ONE bucket.
 ///
-/// Almost always exactly one, for the same reason `ObjectIndex` holds one object id: keys route
-/// one to a bucket. MEASURED, not assumed -- `what_a_live_key_costs_in_the_index_at_two_corpus_sizes`
-/// walks the shard and reports the distribution, and it was 40,040 of 40,040 buckets holding
-/// exactly one key at 80,000 records and 4,004 of 4,004 at 8,000.
+/// Almost always exactly one AT THE DEFAULT ROUTING RANGE, and almost never otherwise.
+/// `what_a_live_key_costs_in_the_index_at_two_corpus_sizes` measured 40,040 of 40,040 buckets
+/// holding exactly one key at 80,000 records and 4,004 of 4,004 at 8,000 -- on `load_shard`'s
+/// default of `0..u32::MAX`, where a key lands alone by construction because the placement
+/// modulus is the RANGE WIDTH. On the range `docs/runtime_tuning.md` tells an operator to set,
+/// `TS_SHARD_END_ROUTING_BUCKET=1023`, it is 54 of 1,024 at 4,000 records: 94.7% of dirty
+/// buckets hold more than one key and sit on the `Many` arm below. `bucket_fill.rs` reports
+/// both, and drains one bucket to show what that costs a dump.
+///
+/// So the inline arm is earned by the DEFAULT RANGE rather than by the workload, and the
+/// sizing argument that follows holds at that range and is the wrong way round at a narrow one.
 ///
 /// A `BTreeSet<Arc<str>>` holding a single key costs 192 live bytes of node -- a leaf sized for
 /// eleven 16-byte pointers -- to carry one of them, once per dirty object. At 40,040 dirty objects
