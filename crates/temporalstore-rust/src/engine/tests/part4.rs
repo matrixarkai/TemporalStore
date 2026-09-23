@@ -5536,16 +5536,53 @@ fn the_block_index_dump_is_ordered_by_its_written_key() {
 
     let json = serde_json::to_string(&bucket.block_index).expect("the index serializes");
     let value: serde_json::Value = serde_json::from_str(&json).expect("valid json");
-    let keys: Vec<&String> = value
+    let keys: Vec<String> = value
         .as_object()
         .expect("a map of rendered keys")
         .keys()
+        .cloned()
         .collect();
 
     assert!(keys.len() > 4, "need several keys to see an order: {keys:?}");
+
+    // THE ORDER IS READ OFF THE EMITTED BYTES, NOT OFF THE PARSED VALUE.
+    //
+    // `serde_json::Value` holds an object in a map that sorts its keys, so `.keys()` on a parsed
+    // value comes back in sorted order whatever the dump actually emitted. Comparing that against
+    // its own sorted copy is an identity: it passes for every possible dump order, including a
+    // reversed one. This test was written that way and could not fail; a mutation that reversed
+    // the sort inside `BlockIndexMap::serialize` survived it until the order was taken from the
+    // string. The parsed value is still used, but only for the SET of keys.
+    let mut placed: Vec<(usize, String)> = Vec::with_capacity(keys.len());
+    for key in &keys {
+        let needle = format!("\"{key}\":");
+        let at = json
+            .find(&needle)
+            .unwrap_or_else(|| panic!("the emitted dump does not contain the key {key:?}"));
+        placed.push((at, key.clone()));
+    }
+    assert_eq!(
+        keys.len(),
+        placed.len(),
+        "every key must have been located in the emitted bytes"
+    );
+    placed.sort_by_key(|(at, _)| *at);
+    let emitted: Vec<String> = placed.into_iter().map(|(_, key)| key).collect();
+
     let mut sorted = keys.clone();
     sorted.sort();
-    assert_eq!(keys, sorted, "the dump must be ordered by written key");
+    assert_eq!(
+        emitted, sorted,
+        "the dump must be ordered by written key; it emitted {emitted:?}"
+    );
+
+    // AND THE CONTROL: the emitted order must be something this comparison could have found
+    // wrong. If the keys were already all equal, or there were one of them, the assertion above
+    // would hold for any implementation at all.
+    assert!(
+        emitted.first() != emitted.last(),
+        "the emitted keys are not distinguishable, so the order assertion is vacuous"
+    );
 }
 
 /// A command does not allocate to discover that nothing has expired.
