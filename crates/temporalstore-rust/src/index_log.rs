@@ -433,7 +433,58 @@ fn index_log_compression_min_bytes() -> usize {
         .unwrap_or(256)
 }
 
-fn encode_index_payload<T: serde::Serialize>(
+/// The same encoding, into a buffer the caller owns and reuses.
+///
+/// [`encode_index_payload`] built the record in one vector and then copied the whole thing into a
+/// second one so that a single container byte could go in front of it -- a full copy of every
+/// record appended, thrown away immediately. Measured on a one-item delta record, that encode was
+/// 5.99 allocations and 211 bytes per record, against 80.98 bytes of record.
+///
+/// The container byte goes in FIRST here and the serializer writes after it, so there is no second
+/// buffer and nothing to copy. The buffer is CLEARED and not appended to, keeping its capacity,
+/// which is what takes the growth out of a steady stream of appends: the write-ahead log's
+/// `encode_scratch` is the same arrangement for the same reason.
+///
+/// The BYTES ARE UNCHANGED, and that is the binding constraint on this function: it writes the
+/// same container byte, the same msgpack, and the same compressed form under the same two
+/// conditions. `the_two_index_payload_encoders_agree_byte_for_byte` holds the two against each
+/// other over every record shape this log writes.
+pub(crate) fn encode_index_payload_into<T: serde::Serialize>(
+    record: &T,
+    shape: u8,
+    out: &mut Vec<u8>,
+) -> Result<(), IndexLogError> {
+    out.clear();
+    out.push(index_container_byte(INDEX_LOG_CODEC_MSGPACK, shape));
+    let mut serializer = rmp_serde::Serializer::new(&mut *out);
+    if serde::Serialize::serialize(record, &mut serializer).is_ok() {
+        // `out` is the container byte plus the packed record, so the packed length -- the number
+        // the two conditions below are written in terms of -- is one less than it.
+        let packed_len = out.len() - 1;
+        if index_log_compression_enabled() && packed_len >= index_log_compression_min_bytes() {
+            if let Ok(squeezed) = zstd::stream::encode_all(&out[1..], 3) {
+                // Only when it actually helps, and the comparison is between the PACKED forms,
+                // exactly as it was: both shapes carry one container byte, so comparing
+                // `squeezed` against `packed_len` and comparing the two whole payloads are the
+                // same test.
+                if squeezed.len() < packed_len {
+                    out.clear();
+                    out.push(index_container_byte(INDEX_LOG_CODEC_MSGPACK_ZSTD, shape));
+                    out.extend_from_slice(&squeezed);
+                }
+            }
+        }
+        return Ok(());
+    }
+    // An encode failure must not cost the record: fall through to the bytes that always work,
+    // which the reader still takes. This is the only path that now produces JSON, and it carries
+    // NO container byte -- so the partial msgpack above has to come off first.
+    out.clear();
+    serde_json::to_writer(&mut *out, record)?;
+    Ok(())
+}
+
+pub(crate) fn encode_index_payload<T: serde::Serialize>(
     record: &T,
     shape: u8,
 ) -> Result<Vec<u8>, IndexLogError> {
@@ -1629,7 +1680,28 @@ struct IndexLogInner {
     /// wearing the costume of resilience. `an_append_fails_loudly_when_the_log_directory_is_
     /// removed_underneath_it` is that behaviour, asserted.
     root_created: bool,
+    /// The buffer a delta append encodes its payload into, kept between appends.
+    ///
+    /// The encode used to start from an empty vector every time and grow it by doubling to the
+    /// size of the record. Reusing one buffer leaves a steady stream of appends allocating
+    /// nothing here after the first few, which is the arrangement the write-ahead log's
+    /// `encode_scratch` already had. Held on `inner` rather than in a thread-local because the
+    /// append holds this lock across the encode anyway, so there is no contention to avoid and
+    /// no second place for it to live.
+    encode_scratch: Vec<u8>,
+    /// The buffer that payload is FRAMED into, kept for the same reason.
+    ///
+    /// Separate from the one above because the frame is built from the payload, so the two are
+    /// alive at the same moment.
+    frame_scratch: Vec<u8>,
 }
+
+/// The largest scratch buffer worth keeping between appends.
+///
+/// The buffers grow to the largest record this store has encoded and would otherwise hold that
+/// capacity for the life of the process. Past this they are dropped instead. Same ceiling, and
+/// the same reason, as `MAX_ENCODE_SCRATCH_BYTES` in the write-ahead encoder.
+const MAX_INDEX_ENCODE_SCRATCH_BYTES: usize = 1024 * 1024;
 
 impl IndexLogInner {
     /// Make the log directory if `new` could not, and then never ask again.
@@ -1857,6 +1929,8 @@ impl LocalIndexLogStore {
                 last_dumped_at_by_shard: HashMap::new(),
                 scratch: None,
                 root_created,
+                encode_scratch: Vec::new(),
+                frame_scratch: Vec::new(),
             })),
             flush_gates: Arc::new(crate::flush_gate::FlushRegistry::default()),
         }
@@ -2174,18 +2248,44 @@ impl LocalIndexLogStore {
         // Frame the delta record with a length + SHA-256 digest (crate::log_framing) so a
         // value-preserving bit-flip (e.g. a flipped `deleted` flag or page address) in this
         // committed line is detected on read rather than replayed as truth on recovery.
-        let bytes =
-            crate::log_framing::encode_record(&encode_index_payload(&record, INDEX_LOG_SHAPE_DELTA)?);
-        let mut file = OpenOptions::new()
-            .create(true)
-            .append(true)
-            .open(&active)?;
-        file.write_all(&bytes)?;
-        file.flush()?;
+        // Both buffers are taken off `inner` and put back below, because the framing borrows one
+        // while the other is still being read and `inner` is needed either side.
+        //
+        // A failed append puts them back holding WHATEVER THEY HELD -- a partial encode, or the
+        // previous record's frame -- and that is safe because both writers CLEAR before they
+        // write, so no byte of a failed or an earlier record can reach the next one. What must
+        // not happen is LOSING them, which would leave the next append allocating from nothing.
+        let mut payload = std::mem::take(&mut inner.encode_scratch);
+        let mut bytes = std::mem::take(&mut inner.frame_scratch);
+        // Encode, frame and write inside one closure so that EVERY way out of it -- including the
+        // three I/O failures -- passes through the restore below. A `?` here would drop the two
+        // buffers on the floor and leave `inner` holding empty ones, so the next append would
+        // allocate from nothing: not a correctness bug, but exactly the cost this removes,
+        // reappearing after the first transient write error and never going away.
+        let written = (|payload: &mut Vec<u8>, bytes: &mut Vec<u8>| -> Result<std::fs::File, IndexLogError> {
+            encode_index_payload_into(&record, INDEX_LOG_SHAPE_DELTA, payload)?;
+            crate::log_framing::encode_record_into(payload, bytes);
+            let mut file = OpenOptions::new().create(true).append(true).open(&active)?;
+            file.write_all(bytes)?;
+            file.flush()?;
+            Ok(file)
+        })(&mut payload, &mut bytes);
+        let written_len = bytes.len() as u64;
+        // A buffer that grew to hold one enormous record does not keep that capacity for the life
+        // of the process; past the ceiling it is dropped and the next append starts again.
+        if payload.capacity() > MAX_INDEX_ENCODE_SCRATCH_BYTES {
+            payload = Vec::new();
+        }
+        if bytes.capacity() > MAX_INDEX_ENCODE_SCRATCH_BYTES {
+            bytes = Vec::new();
+        }
+        inner.encode_scratch = payload;
+        inner.frame_scratch = bytes;
+        let mut file = written?;
         inner.stats.writes += 1;
         #[cfg(test)]
         probe::APPENDS_COMPLETED.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-        inner.stats.bytes_written += bytes.len() as u64;
+        inner.stats.bytes_written += written_len;
         inner.stats.last_sequence = next_sequence;
         inner.last_sequence_by_shard.insert(shard_id, next_sequence);
         // The bytes are in the file and the bookkeeping is done, so claim a barrier and then let

@@ -63,6 +63,22 @@ pub(crate) const FRAME_MAGIC: &[u8] = FRAME_MAGIC_V2;
 /// legacy unframed record is a JSON document starting with `{`.
 pub(crate) const FRAME_MAGIC_V3: u8 = 0xB3;
 
+/// The widest a binary frame's header can be: the marker, a ten-byte varint length, and the
+/// four checksum bytes.
+///
+/// Ten is what a `u64` varint costs at its widest, and `read_raw_record` refuses a longer one as
+/// corruption. Held here so the array the header is parsed into cannot drift from the parse.
+pub(crate) const MAX_BINARY_HEADER_BYTES: usize = 1 + 10 + 4;
+
+/// The largest a record's DECLARED length may be allowed to size an allocation.
+///
+/// A declared length is a number read off a file that a corrupt varint can make arbitrarily
+/// large, and the checksum that would reject the record cannot be computed until after the bytes
+/// are in hand. So the reader reserves from it only up to here and then grows as bytes actually
+/// arrive, which is what it did for every record before it reserved at all. One mebibyte is the
+/// same ceiling the write-ahead encoder keeps its own scratch buffer under.
+pub(crate) const MAX_RESERVED_RECORD_BYTES: usize = 1024 * 1024;
+
 /// Whether new records are written with the binary frame. DEFAULT ON.
 ///
 /// The cost this removes is not the newline byte, it is what a delimiter forces on everything
@@ -1089,20 +1105,37 @@ pub(crate) fn read_raw_record<R: std::io::BufRead>(reader: &mut R) -> std::io::R
         return Ok(Some(line));
     }
     // Binary: marker, varint length, four checksum bytes, then exactly that many payload bytes.
-    let mut raw = Vec::with_capacity(64);
-    let mut marker = [0u8; 1];
-    if reader.read_exact(&mut marker).is_err() {
+    //
+    // The header is parsed into a fixed array rather than into the vector being built, because
+    // the vector cannot be sized until the length in that header has been read. Parsing it here
+    // first means the record's bytes are asked for ONCE, at exactly the size the record declares.
+    // Marker, at most ten varint bytes, four checksum bytes.
+    let mut header = [0u8; MAX_BINARY_HEADER_BYTES];
+    let mut header_len = 0usize;
+    let mut byte = [0u8; 1];
+    if reader.read_exact(&mut byte).is_err() {
         return Ok(None);
     }
-    raw.push(marker[0]);
+    header[header_len] = byte[0];
+    header_len += 1;
     let mut declared: u64 = 0;
     let mut shift = 0u32;
     loop {
-        let mut byte = [0u8; 1];
         if reader.read_exact(&mut byte).is_err() {
             return Ok(None); // torn mid-varint
         }
-        raw.push(byte[0]);
+        // Bounded by the `shift > 63` test below -- a varint carrying a u64 is at most ten
+        // bytes -- and written as a checked index anyway, because the alternative to an error
+        // here is an out-of-bounds panic on a corrupt log, which is the one input this reader
+        // exists to survive.
+        if header_len >= MAX_BINARY_HEADER_BYTES - 4 {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                "record length is not a varint",
+            ));
+        }
+        header[header_len] = byte[0];
+        header_len += 1;
         declared |= u64::from(byte[0] & 0x7f) << shift;
         if byte[0] & 0x80 == 0 {
             break;
@@ -1119,12 +1152,29 @@ pub(crate) fn read_raw_record<R: std::io::BufRead>(reader: &mut R) -> std::io::R
     if reader.read_exact(&mut digest).is_err() {
         return Ok(None);
     }
-    raw.extend_from_slice(&digest);
+    header[header_len..header_len + 4].copy_from_slice(&digest);
+    header_len += 4;
     let declared_len = declared as usize;
-    let mut payload = Vec::new();
+    // The declared length comes off the file and is NOT trusted to size an allocation. A corrupt
+    // varint can say four exabytes, and reserving from it would take the process out before the
+    // checksum ever got a chance to reject the record. Past the cap the vector grows as it reads,
+    // exactly as it did when every record did.
+    let mut raw = Vec::with_capacity(header_len + declared_len.min(MAX_RESERVED_RECORD_BYTES));
+    raw.extend_from_slice(&header[..header_len]);
+    // Read straight into the record's own buffer. This used to read into a SECOND vector and
+    // then copy the whole payload across, which is a full copy of every record read, thrown away
+    // immediately -- on every replay, every reclaim sweep and every index-log scan.
+    //
+    // Still `take(..).read_to_end(..)`, and deliberately: it grows the vector as bytes actually
+    // ARRIVE, so a declared length no file can satisfy costs what the file holds rather than what
+    // it claims. Sizing the vector from the declared length instead -- by `resize`, say -- gives
+    // the cap above nothing to do and hands an untrusted number straight to the allocator.
     let read = {
         use std::io::Read as _;
-        match reader.by_ref().take(declared).read_to_end(&mut payload) {
+        // A short read is a torn tail, not damage, and is reported the way the two-vector form
+        // reported it: as the end of the records. Any other error is reported that way too,
+        // which is also what it did.
+        match reader.by_ref().take(declared).read_to_end(&mut raw) {
             Ok(read) => read,
             Err(_) => return Ok(None),
         }
@@ -1132,6 +1182,5 @@ pub(crate) fn read_raw_record<R: std::io::BufRead>(reader: &mut R) -> std::io::R
     if read != declared_len {
         return Ok(None); // fewer bytes than declared: a torn tail
     }
-    raw.extend_from_slice(&payload);
     Ok(Some(raw))
 }

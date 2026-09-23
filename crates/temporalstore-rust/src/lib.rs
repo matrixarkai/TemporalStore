@@ -84,6 +84,8 @@ mod wal_base_header_read;
 /// What a RESTORE reads, and what no reader claims -- tests only.
 mod restore_read_residual;
 mod wal_scale;
+/// What one log RECORD costs to build and to decode -- tests only.
+mod record_cost;
 mod wal_proto;
 pub mod record_framing;
 pub mod index_log_record;
