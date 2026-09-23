@@ -2443,7 +2443,7 @@ fn bucket_store_reports_all_layout_states_and_runtime_flags() {
             deleted: true,
             meta_loaded: true,
             in_memory: false,
-            ttl_ms: Some(5_000),
+            ttl_ms: BucketTtl::from_ms(Some(5_000)),
             dirty_generation: 7,
             object_index: [20].into_iter().collect(),
             ..BucketNode::default()

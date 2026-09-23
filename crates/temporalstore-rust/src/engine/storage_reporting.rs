@@ -431,7 +431,7 @@ pub(super) fn storage_physical_index_report(
         bucket.meta_loaded = runtime_bucket.meta_loaded;
         bucket.loading = runtime_bucket.loading;
         bucket.in_memory = runtime_bucket.in_memory;
-        bucket.ttl_ms = runtime_bucket.ttl_ms;
+        bucket.ttl_ms = runtime_bucket.ttl_ms.ms();
         bucket.object_count = runtime_bucket.object_index.len() as u64;
         bucket.block_ref_count = runtime_bucket.block_index.len() as u64;
         bucket.dirty_generation = runtime_bucket.dirty_generation;

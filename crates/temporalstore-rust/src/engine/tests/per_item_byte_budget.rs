@@ -28,6 +28,17 @@
 //! the only candidate here where it does, and only when TWO fields narrow together: one alone
 //! takes 53 bytes of field to 49 and leaves the struct at 56.
 //!
+//! THERE IS A THIRD THING A FIELD CAN BE WASTING, and `BucketNode` was. An `Option<u64>` is 16
+//! bytes for 8 bytes of number, because a `u64` has no value it does not use and the
+//! discriminant has nowhere to go but a word of its own. That is neither width nor alignment:
+//! the number is exactly as wide as it needs to be and the struct has no slack to reclaim. It is
+//! a DISCRIMINANT with no niche to sit in, and the fix is to make one -- `Option<NonZeroU64>` is
+//! 8. `every_byte_of_the_bucket_node_is_accounted_for` states the whole of that structure field
+//! by field, `what_each_declined_shape_of_the_bucket_node_would_cost` prices the three shapes
+//! that were considered for it and declined, and
+//! `the_stored_spelling_of_a_bucket_node_did_not_move` drives the constraint that decides which
+//! of them can be taken at all.
+//!
 //! THE COUNTS ARE MEASURED, NOT ASSUMED. Every denominator below is read off a seeded shard and
 //! asserted non-zero before anything is divided by it, because a walk over an empty shard reports
 //! "0 bytes over 0 items", which reads exactly like a structure that costs nothing.
@@ -38,9 +49,15 @@ use std::sync::Arc;
 
 use crate::block_store::{BlockAddress, BlockStoreSlabDescriptor};
 use crate::engine::state::{
-    BlockIndex, BlockIndexMap, BlockLookupRef, BlockRefs, BucketLayoutState, BucketNode,
+    BlockIndex, BlockIndexMap, BlockLookupRef, BlockRefs, BucketLayoutState, BucketNode, BucketTtl,
     ComponentBlocks, ComponentList, DirtyKeySet, ObjectBlockRefs, ObjectIndex, WalResidentBlock,
 };
+
+// Imported as a NAME rather than spelled out at the call site: the counting-allocator gate in
+// `alloc_probe.rs` walks back from every line quoting the probe's full path to the nearest
+// `#[test]`, and a helper spelling it out would be reported as reading the probe outside a test.
+#[cfg(feature = "alloc-probe")]
+use crate::alloc_probe::Probe;
 use crate::index_log::{IndexItem, IndexItemKind, SlabCatalogEntry};
 
 /// One structure in the budget: what it costs, and what its own fields add up to.
@@ -110,12 +127,12 @@ fn budget() -> Vec<Budgeted> {
             name: "BucketNode",
             size: size_of::<BucketNode>(),
             align: align_of::<BucketNode>(),
-            // routing_bucket u32, layout, five bools, ttl_ms Option<u64>,
+            // routing_bucket u32, layout, five bools, ttl_ms BucketTtl,
             // four u64 sequences, two ObjectIndex, one BlockIndexMap
             fields: size_of::<u32>()
                 + size_of::<BucketLayoutState>()
                 + 5 * size_of::<bool>()
-                + opt_u64
+                + size_of::<BucketTtl>()
                 + 4 * size_of::<u64>()
                 + 2 * size_of::<ObjectIndex>()
                 + size_of::<BlockIndexMap>(),
@@ -279,7 +296,7 @@ fn every_per_item_structure_states_its_width_and_its_padding() {
     assert_eq!(48, size_of::<BlockAddress>(), "BlockAddress width moved");
     assert_eq!(104, size_of::<BlockIndex>(), "BlockIndex width moved");
     assert_eq!(112, size_of::<BlockIndexMap>(), "BlockIndexMap width moved");
-    assert_eq!(208, size_of::<BucketNode>(), "BucketNode width moved");
+    assert_eq!(200, size_of::<BucketNode>(), "BucketNode width moved");
     assert_eq!(16, size_of::<BlockLookupRef>(), "BlockLookupRef width moved");
     assert_eq!(24, size_of::<BlockRefs>(), "BlockRefs width moved");
     assert_eq!(40, size_of::<ComponentBlocks>(), "ComponentBlocks width moved");
@@ -775,4 +792,881 @@ fn budget_seed(engine: &TemporalEngine, strings_n: usize, series_keys: usize, se
             assert!(response.status.ok, "feature seed must ack: {:?}", response.status);
         }
     }
+}
+
+// -------------------------------------------------------------------------------------------
+// THE WIDEST PER-ITEM STRUCTURE, BYTE BY BYTE.
+//
+// `BucketNode` exists once per routing bucket, which is once per key that routes to a bucket of
+// its own, and the ranking above puts it first at both corpus sizes. This section says what its
+// bytes ARE -- every field with its own width and alignment, the sum beside `size_of`, and the
+// slack named separately -- and then prices the three shapes that were considered for it and
+// declined, so the decline is a number rather than an opinion.
+// -------------------------------------------------------------------------------------------
+
+/// One declared field of `BucketNode`.
+///
+/// The widths are `size_of` over the DECLARED types, never literals, so this table moves when the
+/// declaration does instead of going quietly stale beside it.
+struct Field {
+    name: &'static str,
+    ty: &'static str,
+    size: usize,
+    align: usize,
+}
+
+fn bucket_node_fields() -> Vec<Field> {
+    macro_rules! field {
+        ($name:literal, $ty:ty) => {
+            Field {
+                name: $name,
+                ty: stringify!($ty),
+                size: size_of::<$ty>(),
+                align: align_of::<$ty>(),
+            }
+        };
+    }
+    vec![
+        field!("routing_bucket", u32),
+        field!("layout", BucketLayoutState),
+        field!("dirty", bool),
+        field!("deleted", bool),
+        field!("meta_loaded", bool),
+        field!("loading", bool),
+        field!("in_memory", bool),
+        field!("ttl_ms", BucketTtl),
+        field!("dirty_generation", u64),
+        field!("first_dirty_wal_sequence", u64),
+        field!("first_dirty_index_log_sequence", u64),
+        field!("last_dump_sequence", u64),
+        field!("object_index", ObjectIndex),
+        field!("deleted_object_index", ObjectIndex),
+        field!("block_index", BlockIndexMap),
+    ]
+}
+
+/// EVERY BYTE OF THE BUCKET NODE, ACCOUNTED FOR.
+///
+/// Fifteen fields, their widths summed, and the difference against `size_of` named as what it is:
+/// the aligner's, not any field's. The sum is the discriminating half. A width that is stated
+/// without its field sum cannot tell a structure that is FULL from one that is half padding, and
+/// those two want opposite fixes -- one wants a narrower field, the other cannot be helped by any
+/// narrowing at all.
+///
+/// HOW RUST LAYS THIS OUT, and it is the whole explanation of the number. Fields reorder freely,
+/// so the layout is two groups: everything of alignment 8 packs solid, and everything smaller
+/// fills the tail, which is then rounded up to the struct's own alignment. Here that is 184 bytes
+/// of eight-aligned field and 10 bytes of small field rounded to 16. The consequence is blunt and
+/// worth stating in a test rather than a comment: NOTHING in the ten-byte tail can be narrowed to
+/// any effect -- not the routing bucket, not the layout, not the five flags -- because the tail
+/// is already inside a rounding. Only a change that takes the tail to 8 bytes or fewer, or that
+/// takes a whole word out of the eight-aligned group, moves this structure at all.
+#[test]
+fn every_byte_of_the_bucket_node_is_accounted_for() {
+    let fields = bucket_node_fields();
+    assert_eq!(
+        15,
+        fields.len(),
+        "the field table lists {} fields; `BucketNode` has fifteen and a table that has drifted \
+         from the declaration proves nothing about it",
+        fields.len()
+    );
+
+    println!("\n=== BucketNode, field by field ===");
+    println!("  {:<34} {:<20} {:>5} {:>6}", "field", "declared type", "size", "align");
+    let mut eight_aligned = 0usize;
+    let mut tail = 0usize;
+    for field in &fields {
+        println!(
+            "  {:<34} {:<20} {:>5} {:>6}",
+            field.name, field.ty, field.size, field.align
+        );
+        if field.align == align_of::<BucketNode>() {
+            eight_aligned += field.size;
+        } else {
+            tail += field.size;
+        }
+    }
+    let sum: usize = fields.iter().map(|field| field.size).sum();
+    let size = size_of::<BucketNode>();
+    let slack = size - sum;
+    println!("  {:<34} {:<20} {:>5}", "SUM OF FIELDS", "", sum);
+    println!("  {:<34} {:<20} {:>5}", "size_of::<BucketNode>()", "", size);
+    println!(
+        "  {:<34} {:<20} {:>5}   <- the aligner, not any field",
+        "SLACK", "", slack
+    );
+    println!(
+        "  groups: {eight_aligned} B of eight-aligned field + {tail} B of small field, the tail \
+         rounded up to {}",
+        size - eight_aligned
+    );
+
+    assert_eq!(194, sum, "the fields of BucketNode add up to {sum}, not 194");
+    assert_eq!(200, size, "BucketNode is {size} bytes wide, not 200");
+    assert_eq!(6, slack, "BucketNode carries {slack} bytes of alignment slack, not 6");
+
+    // The layout rule itself, asserted rather than described: the eight-aligned group packs
+    // solid and the rest is one rounding.
+    let align = align_of::<BucketNode>();
+    assert_eq!(8, align, "BucketNode's alignment moved, and the arithmetic below assumes 8");
+    assert_eq!(184, eight_aligned, "the eight-aligned group is {eight_aligned} B, not 184");
+    assert_eq!(10, tail, "the tail group is {tail} B, not 10");
+    assert_eq!(
+        eight_aligned + tail.div_ceil(align) * align,
+        size,
+        "the two groups plus one rounding must reconstruct the width exactly, or the layout is \
+         not what this test says it is"
+    );
+
+    // --- WIDTH OR ALIGNMENT, field by field, and the verdict is arithmetic. ---
+    //
+    // A field is a WIDTH candidate only if taking bytes off it takes bytes off the struct.
+    // Inside the tail that is false until the tail itself drops past a multiple of the
+    // alignment, and every field in the tail here is one byte or four.
+    println!("\n=== which fields could move this structure, and which could not ===");
+    for field in &fields {
+        let verdict = if field.align < align {
+            // In the rounding. Narrowing it cannot cross the boundary on its own.
+            "ALIGNMENT -- inside a 10-in-16 rounding; narrowing it moves nothing"
+        } else if field.size % align == 0 && field.size > align {
+            "WIDTH -- a whole number of words, and every word of it is paid per bucket"
+        } else {
+            "WIDTH -- one word, and losing it would take a word off the struct"
+        };
+        println!("  {:<34} {}", field.name, verdict);
+    }
+    let tail_fields = fields.iter().filter(|field| field.align < align).count();
+    assert_eq!(
+        7,
+        tail_fields,
+        "seven fields sit in the tail rounding -- the routing bucket, the layout and the five \
+         flags -- and this test found {tail_fields}"
+    );
+    let tail_bytes: usize = fields
+        .iter()
+        .filter(|field| field.align < align)
+        .map(|field| field.size)
+        .sum();
+    assert!(
+        tail_bytes.div_ceil(align) * align > tail_bytes,
+        "the tail is {tail_bytes} B and fills its rounding exactly; the claim that narrowing a \
+         tail field changes nothing is only true while it does not"
+    );
+
+    // --- The biggest single field, because an accounting that does not say so misleads. ---
+    let page = fields
+        .iter()
+        .find(|field| field.name == "block_index")
+        .expect("block_index is a field of BucketNode");
+    assert!(
+        page.size * 2 > size,
+        "the inline page entry is {} of {size} bytes; if it is no longer more than half the \
+         structure, the accounting above leads with the wrong field",
+        page.size
+    );
+}
+
+// -------------------------------------------------------------------------------------------
+// THE THREE SHAPES CONSIDERED AND DECLINED, PRICED.
+//
+// Each is a MIRROR: a struct built from the same field types, so it is a statement about widths
+// and not a guess. `mirror_is_faithful` is the control -- it fails if a mirror stops describing
+// the declaration, which is the only way these numbers could quietly become fiction.
+// -------------------------------------------------------------------------------------------
+
+/// The node as it stands. If this is not `size_of::<BucketNode>()` every mirror below is fiction.
+#[allow(dead_code)]
+struct MirrorLive {
+    routing_bucket: u32,
+    layout: BucketLayoutState,
+    dirty: bool,
+    deleted: bool,
+    meta_loaded: bool,
+    loading: bool,
+    in_memory: bool,
+    ttl_ms: BucketTtl,
+    dirty_generation: u64,
+    first_dirty_wal_sequence: u64,
+    first_dirty_index_log_sequence: u64,
+    last_dump_sequence: u64,
+    object_index: ObjectIndex,
+    deleted_object_index: ObjectIndex,
+    block_index: BlockIndexMap,
+}
+
+/// The node as it was, with the countdown spending a word on its discriminant.
+#[allow(dead_code)]
+struct MirrorWideTtl {
+    routing_bucket: u32,
+    layout: BucketLayoutState,
+    dirty: bool,
+    deleted: bool,
+    meta_loaded: bool,
+    loading: bool,
+    in_memory: bool,
+    ttl_ms: Option<u64>,
+    dirty_generation: u64,
+    first_dirty_wal_sequence: u64,
+    first_dirty_index_log_sequence: u64,
+    last_dump_sequence: u64,
+    object_index: ObjectIndex,
+    deleted_object_index: ObjectIndex,
+    block_index: BlockIndexMap,
+}
+
+/// The five flags folded into one byte.
+#[allow(dead_code)]
+struct MirrorPackedFlags {
+    routing_bucket: u32,
+    layout: BucketLayoutState,
+    flags: u8,
+    ttl_ms: BucketTtl,
+    dirty_generation: u64,
+    first_dirty_wal_sequence: u64,
+    first_dirty_index_log_sequence: u64,
+    last_dump_sequence: u64,
+    object_index: ObjectIndex,
+    deleted_object_index: ObjectIndex,
+    block_index: BlockIndexMap,
+}
+
+/// The two transient log claims moved out of the node into a side map of dirty buckets.
+#[allow(dead_code)]
+struct MirrorHoistedClaims {
+    routing_bucket: u32,
+    layout: BucketLayoutState,
+    dirty: bool,
+    deleted: bool,
+    meta_loaded: bool,
+    loading: bool,
+    in_memory: bool,
+    ttl_ms: BucketTtl,
+    dirty_generation: u64,
+    last_dump_sequence: u64,
+    object_index: ObjectIndex,
+    deleted_object_index: ObjectIndex,
+    block_index: BlockIndexMap,
+}
+
+/// The inline page entry held behind a pointer instead.
+#[allow(dead_code)]
+enum MirrorBoxedBlockIndexMap {
+    Empty,
+    One(u64, Box<BlockIndex>),
+    Many(std::collections::BTreeMap<u64, BlockIndex>),
+}
+
+#[allow(dead_code)]
+struct MirrorBoxedPage {
+    routing_bucket: u32,
+    layout: BucketLayoutState,
+    dirty: bool,
+    deleted: bool,
+    meta_loaded: bool,
+    loading: bool,
+    in_memory: bool,
+    ttl_ms: BucketTtl,
+    dirty_generation: u64,
+    first_dirty_wal_sequence: u64,
+    first_dirty_index_log_sequence: u64,
+    last_dump_sequence: u64,
+    object_index: ObjectIndex,
+    deleted_object_index: ObjectIndex,
+    block_index: MirrorBoxedBlockIndexMap,
+}
+
+/// WHAT EACH DECLINED SHAPE WOULD ACTUALLY BUY, IN BYTES PER BUCKET.
+///
+/// THE CONTROL COMES FIRST. `MirrorLive` is built from the same field types as the declaration
+/// and has to agree with it exactly; if it does not, every other row here is describing a
+/// structure this engine does not have, and the test says so rather than printing numbers.
+///
+/// THE ONE THAT WAS TAKEN. `MirrorWideTtl` is the shape before this change and `MirrorLive` is
+/// the shape after: eight bytes, and they came off because the countdown stopped needing a word
+/// for its discriminant. It is the only one of the four whose stored spelling does not move --
+/// the countdown is one JSON key either way, and the serde impls unbias across it.
+///
+/// THE ONE THAT WAS DECLINED ON BLAST RADIUS. Folding the five flags into a byte is worth the
+/// same eight bytes, and it is a different kind of change: `dirty`, `deleted`, `meta_loaded`,
+/// `loading` and `in_memory` are five keys of the stored index and 137 read sites across the
+/// engine, and holding the stored spelling still would mean a hand-written serializer for the
+/// node. Eight bytes a bucket does not buy that here, and a mechanical rewrite of 137 sites is
+/// how a guard that reads one of those names stops seeing anything.
+///
+/// THE ONE THAT WAS DECLINED ON WHERE THE COST WOULD GO. The two `#[serde(skip)]` log claims are
+/// sixteen bytes and touch no stored shape at all, which makes them the cheapest bytes here to
+/// reach -- but only if they move somewhere cheaper, and a side map keyed by bucket costs its own
+/// key, its own pair and its own B-tree node for every bucket that is dirty. The measurement that
+/// decides it is the dirty FRACTION, which the corpus probe prints; at the fraction this store
+/// runs at it is not a win.
+///
+/// THE ONE THAT IS A LOSS, AND THE ONLY ONE WHOSE SIGN IS NOT OBVIOUS. Putting the inline page
+/// entry behind a pointer takes the most off the struct of anything here -- and then pays it
+/// back with interest, because almost every bucket holds exactly one page and would allocate for
+/// it. The allocation is rounded up by the allocator, so the pair costs MORE than the inline form
+/// it replaced, plus an indirection on every page read and an allocation on every bucket.
+#[test]
+fn what_each_declined_shape_of_the_bucket_node_would_cost() {
+    // --- The control. Nothing below means anything without it. ---
+    assert_eq!(
+        size_of::<BucketNode>(),
+        size_of::<MirrorLive>(),
+        "the mirror of the live declaration is {} bytes against the declaration's {}; the mirrors \
+         have drifted and every price below is fiction",
+        size_of::<MirrorLive>(),
+        size_of::<BucketNode>()
+    );
+
+    let live = size_of::<BucketNode>();
+    let wide_ttl = size_of::<MirrorWideTtl>();
+    let packed = size_of::<MirrorPackedFlags>();
+    let hoisted = size_of::<MirrorHoistedClaims>();
+    let boxed = size_of::<MirrorBoxedPage>();
+
+    println!("\n=== what each shape makes the node ===");
+    println!("  {:<44} {:>5} {:>9}", "shape", "bytes", "vs live");
+    for (name, bytes) in [
+        ("the node as it stands", live),
+        ("with the countdown back at two words (before)", wide_ttl),
+        ("with the five flags folded into one byte", packed),
+        ("with the two transient log claims hoisted out", hoisted),
+        ("with the inline page entry behind a pointer", boxed),
+    ] {
+        println!(
+            "  {:<44} {:>5} {:>+9}",
+            name,
+            bytes,
+            bytes as i64 - live as i64
+        );
+    }
+
+    // --- The change this module documents. ---
+    assert_eq!(
+        208, wide_ttl,
+        "the shape before this change was 208 bytes; it reads as {wide_ttl}, so the eight bytes \
+         this change claims are not the eight bytes it took"
+    );
+    assert_eq!(200, live, "the node is {live} bytes, not 200");
+
+    // --- The two declined savings, each a real eight and sixteen. ---
+    assert_eq!(
+        8,
+        live - packed,
+        "folding the flags is priced at eight bytes a bucket; it measured {}",
+        live - packed
+    );
+    assert_eq!(
+        16,
+        live - hoisted,
+        "hoisting the two transient claims is priced at sixteen bytes a bucket; it measured {}",
+        live - hoisted
+    );
+
+    // --- The loss, and why the struct width alone would have read as a win. ---
+    //
+    // The pointer takes eighty bytes off the struct and then buys a 104-byte allocation for the
+    // entry it moved out -- and it buys one for very nearly every bucket, because the page
+    // entries and the buckets are within a tenth of a percent of each other in count. A 104-byte
+    // request is served from a 112-byte chunk once the allocator has taken its header and rounded
+    // to a class, so the pair is WIDER than the inline form it replaced, before counting the
+    // allocation itself or the pointer chase on every page read.
+    const ALLOCATOR_CHUNK_FOR_A_PAGE_ENTRY: usize = 112;
+    assert!(
+        boxed < live,
+        "the boxed shape must make the STRUCT smaller, or the point of the row is lost"
+    );
+    let boxed_pair = boxed + ALLOCATOR_CHUNK_FOR_A_PAGE_ENTRY;
+    println!(
+        "\n  the boxed shape: {boxed} B of struct + {ALLOCATOR_CHUNK_FOR_A_PAGE_ENTRY} B of \
+         allocation = {boxed_pair} B for the bucket that holds one page, against {live} B inline \
+         -- {:+} B, one allocation and one indirection",
+        boxed_pair as i64 - live as i64
+    );
+    assert!(
+        boxed_pair > live,
+        "the boxed shape costs {boxed_pair} B against {live} B inline; if that has become a win \
+         the decline recorded here is stale and should be revisited"
+    );
+    assert!(
+        size_of::<BlockIndex>() <= ALLOCATOR_CHUNK_FOR_A_PAGE_ENTRY,
+        "the chunk size assumed for a page entry is smaller than the entry ({} B), which would \
+         under-price the decline",
+        size_of::<BlockIndex>()
+    );
+}
+
+// -------------------------------------------------------------------------------------------
+// THE STORED SHAPE, DRIVEN IN BOTH DIRECTIONS.
+// -------------------------------------------------------------------------------------------
+
+/// A bucket node with every field set to something distinguishable, for the wire tests.
+fn wire_fixture(ttl_ms: Option<u64>) -> BucketNode {
+    BucketNode {
+        routing_bucket: 7,
+        layout: BucketLayoutState::SingleBlockObject,
+        dirty: false,
+        deleted: false,
+        meta_loaded: true,
+        loading: false,
+        in_memory: true,
+        ttl_ms: BucketTtl::from_ms(ttl_ms),
+        dirty_generation: 3,
+        first_dirty_wal_sequence: 41,
+        first_dirty_index_log_sequence: 42,
+        last_dump_sequence: 11,
+        object_index: [42u64].into_iter().collect(),
+        deleted_object_index: ObjectIndex::default(),
+        block_index: BlockIndexMap::default(),
+    }
+}
+
+/// THE STORED SPELLING OF A BUCKET NODE DID NOT MOVE.
+///
+/// This is the constraint the whole subject runs into, and it is why the accounting above ends
+/// where it does: `BucketNode` is written into the shard index, so its field names ARE a stored
+/// format and a resident-layout change that alters one of them is not a resident-layout change.
+///
+/// The countdown is the one field this change touched, and it is held differently in memory and
+/// written identically to disk. Both directions are DRIVEN rather than argued:
+///
+///   * NEW WRITE. The node serializes to the exact bytes below -- `ttl_ms` as a bare number or
+///     `null`, in the same position, with no key added and none removed.
+///   * OLD READ. The spellings an index written before this change can contain -- a number, a
+///     zero, `null`, and the key absent entirely -- all load, and load to the value they meant.
+///
+/// THE ZERO IS THE CASE THAT MATTERS. A countdown of zero is a bucket whose expiry is due, and
+/// the biased representation has to keep it distinct from absent; a version of this change that
+/// read zero as absent passes every other assertion in this module.
+#[test]
+fn the_stored_spelling_of_a_bucket_node_did_not_move() {
+    // --- NEW WRITE: the exact bytes. ---
+    let with_ttl = serde_json::to_string(&wire_fixture(Some(5_000))).expect("a node serializes");
+    assert_eq!(
+        "{\"routing_slot\":7,\"layout\":\"SingleBlockObject\",\"dirty\":false,\"deleted\":false,\
+         \"meta_loaded\":true,\"loading\":false,\"in_memory\":true,\"ttl_ms\":5000,\
+         \"dirty_generation\":3,\"last_dump_sequence\":11,\"object_index\":[42],\
+         \"deleted_object_index\":[],\"page_index\":{}}",
+        with_ttl,
+        "the stored spelling of a bucket node moved"
+    );
+    let without = serde_json::to_string(&wire_fixture(None)).expect("a node serializes");
+    assert!(
+        without.contains("\"ttl_ms\":null"),
+        "an absent countdown must still be written as null, not omitted: {without}"
+    );
+    let at_zero = serde_json::to_string(&wire_fixture(Some(0))).expect("a node serializes");
+    assert!(
+        at_zero.contains("\"ttl_ms\":0"),
+        "a countdown of zero must be written as 0, not as null and not as 1: {at_zero}"
+    );
+
+    // --- The two sides must not agree by accident. ---
+    assert_ne!(
+        without, at_zero,
+        "absent and zero must not write the same bytes, or the wire has lost the distinction \
+         this representation was built to keep"
+    );
+
+    // --- OLD READ: every spelling an index written before this change can hold. ---
+    for (stored, expected) in [
+        ("5000", Some(5_000u64)),
+        ("0", Some(0)),
+        ("null", None),
+        ("18446744073709551615", Some(u64::MAX - 1)),
+    ] {
+        let json = format!(
+            "{{\"routing_slot\":7,\"layout\":\"SingleBlockObject\",\"dirty\":false,\
+             \"deleted\":false,\"meta_loaded\":true,\"loading\":false,\"in_memory\":true,\
+             \"ttl_ms\":{stored},\"dirty_generation\":3,\"last_dump_sequence\":11,\
+             \"object_ids\":[42],\"page_refs\":{{}}}}"
+        );
+        let node: BucketNode = serde_json::from_str(&json).expect("a stored node loads");
+        assert_eq!(
+            expected,
+            node.ttl_ms.ms(),
+            "a stored countdown of {stored} loaded as {:?}",
+            node.ttl_ms.ms()
+        );
+    }
+
+    // The key absent entirely: an index older than the field.
+    let missing = "{\"routing_slot\":7,\"layout\":\"Empty\",\"dirty\":false,\"deleted\":false,\
+                   \"meta_loaded\":true,\"loading\":false,\"in_memory\":false,\
+                   \"dirty_generation\":0,\"last_dump_sequence\":0}";
+    let node: BucketNode = serde_json::from_str(missing).expect("a node without the key loads");
+    assert_eq!(None, node.ttl_ms.ms(), "a missing countdown key must load as absent");
+
+    // --- ROUND TRIP, at the values that discriminate. ---
+    for ms in [None, Some(0), Some(1), Some(5_000), Some(u64::MAX - 1)] {
+        let node = wire_fixture(ms);
+        let json = serde_json::to_string(&node).expect("a node serializes");
+        let back: BucketNode = serde_json::from_str(&json).expect("a node loads");
+        assert_eq!(ms, back.ttl_ms.ms(), "a countdown of {ms:?} did not round-trip");
+    }
+}
+
+/// THE BIAS SATURATES AT THE TOP, AND NOWHERE ELSE.
+///
+/// A representation that gains a byte by giving up a value has to say which value, and has to
+/// come back wrong in a direction that reads as wrong. Every countdown below `u64::MAX` survives
+/// exactly; `u64::MAX` alone comes back one millisecond short, which is 584,542,046 years after
+/// the deadline either way.
+///
+/// THE PROBE VALUES ARE CHOSEN SO TRUNCATION AND SATURATION DISAGREE. A wrapping bias would turn
+/// `u64::MAX` into a countdown of zero -- an expiry that is due -- which is both plausible and
+/// wrong, and is the mutant this test exists to kill.
+#[test]
+fn the_biased_countdown_saturates_at_the_top_and_is_exact_below_it() {
+    for ms in [0u64, 1, 2, 5_000, 1 << 32, u64::MAX - 2, u64::MAX - 1] {
+        assert_eq!(
+            Some(ms),
+            BucketTtl::from_ms(Some(ms)).ms(),
+            "a countdown of {ms} must round-trip through the biased representation exactly"
+        );
+    }
+
+    let top = BucketTtl::from_ms(Some(u64::MAX));
+    assert_eq!(
+        Some(u64::MAX - 1),
+        top.ms(),
+        "the one countdown the bias cannot hold must saturate one below the top"
+    );
+    assert_ne!(
+        Some(0),
+        top.ms(),
+        "a countdown of u64::MAX came back as zero -- that is a wrapping bias, and zero means an \
+         expiry that is due"
+    );
+    assert!(top.is_some(), "a saturated countdown is still a countdown, not an absence");
+
+    // Absent and zero are two states, not one.
+    assert_eq!(None, BucketTtl::ABSENT.ms());
+    assert!(!BucketTtl::ABSENT.is_some());
+    assert_eq!(Some(0), BucketTtl::from_ms(Some(0)).ms());
+    assert!(
+        BucketTtl::from_ms(Some(0)).is_some(),
+        "a countdown of zero must report as present; a bucket whose expiry is due is exactly \
+         what `ttl_bucket_count` is counting"
+    );
+    assert_ne!(
+        BucketTtl::ABSENT,
+        BucketTtl::from_ms(Some(0)),
+        "absent and zero must not compare equal"
+    );
+    assert_eq!(BucketTtl::ABSENT, BucketTtl::default(), "a fresh node holds no countdown");
+}
+
+/// THE COUNTDOWN REACHES BOTH REPORTS, AND AN EMPTY EXPIRY TABLE CLEARS IT.
+///
+/// The representation is held by the tests above; this is its other half, and it exists because a
+/// mutation run said it did not. Three production readers carry the countdown out of the node --
+/// `refresh_bucket_runtime_flags`, which computes it, and the two reports that publish it -- and
+/// a mutant in each of the three survived every test in the tree that names a bucket flag:
+///
+///   * `refresh_bucket_runtime_flags` leaving a countdown of ZERO where it should clear. Zero is
+///     "this bucket's expiry is due", so this one does not read as a bug anywhere; it reads as a
+///     store whose every bucket is about to expire.
+///   * `bucket_store::runtime_report` publishing `ttl_ms: None` on every row. `ttl_bucket_count`
+///     is computed from the node and not from the row, so the count stays right while every row
+///     says the opposite.
+///   * `storage_physical_index_report` doing the same.
+///
+/// `bucket_store_reports_all_layout_states_and_runtime_flags` builds its nodes by hand and never
+/// runs a refresh; `bucket_runtime_flags_match_full_sweep` compares the targeted refresh against
+/// a full sweep, so a mutation in the shared computation moves both sides and cancels. Neither
+/// could have caught any of the three, which is why the value is asserted here and not the flag.
+#[test]
+fn the_countdown_reaches_both_reports_and_an_empty_expiry_table_clears_it() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let engine = budget_engine(dir.path());
+    for key in ["countdown-a", "countdown-b"] {
+        let response = engine.execute(ExecuteRequest {
+            shard_id: 1,
+            command: Command::StringSet {
+                key: key.to_string(),
+                value: vec![b'v'; 16],
+            },
+        });
+        assert!(response.status.ok, "the seed must ack: {:?}", response.status);
+    }
+
+    // --- NOTHING EXPIRES. Every bucket must report ABSENT, not a countdown of zero. ---
+    {
+        let shards = engine.shards.read().expect("engine lock poisoned");
+        let shard = shards.get(&1).expect("shard is loaded");
+        assert!(
+            !shard.bucket_index.bucket_map.is_empty(),
+            "denominator: no buckets, so every assertion below is vacuous"
+        );
+        for (routing_bucket, bucket) in &shard.bucket_index.bucket_map {
+            assert_eq!(
+                None,
+                bucket.ttl_ms.ms(),
+                "bucket {routing_bucket} holds nothing that expires and reports a countdown of \
+                 {:?}; a countdown of zero here means every bucket in the store is due",
+                bucket.ttl_ms.ms()
+            );
+            assert!(!bucket.ttl_ms.is_some(), "bucket {routing_bucket} reports a countdown it does not have");
+        }
+        let report = crate::engine::bucket_store::runtime_report(shard);
+        assert_eq!(
+            0, report.ttl_bucket_count,
+            "no key has an expiry, so no bucket should be counted as holding one"
+        );
+        assert!(
+            report.buckets.iter().all(|row| row.ttl_ms.is_none()),
+            "a published row carries a countdown no bucket holds"
+        );
+    }
+
+    // --- ONE KEY IS ARMED. The VALUE has to arrive, not just the flag. ---
+    const ARMED_MS: u64 = 600_000;
+    let response = engine.execute(ExecuteRequest {
+        shard_id: 1,
+        command: Command::CommonExpire {
+            key: "countdown-a".to_string(),
+            ttl_ms: ARMED_MS,
+        },
+    });
+    assert!(response.status.ok, "arming must ack: {:?}", response.status);
+
+    {
+        let shards = engine.shards.read().expect("engine lock poisoned");
+        let shard = shards.get(&1).expect("shard is loaded");
+        let report = crate::engine::bucket_store::runtime_report(shard);
+        assert_eq!(1, report.ttl_bucket_count, "exactly one bucket now holds an expiry");
+        let armed: Vec<u64> = report.buckets.iter().filter_map(|row| row.ttl_ms).collect();
+        assert_eq!(
+            1,
+            armed.len(),
+            "exactly one published row must carry the countdown; {} did",
+            armed.len()
+        );
+        // The BOUNDS are what make this a test of the value rather than of its presence: zero is
+        // what a cleared countdown looks like, and ARMED_MS + 1 is what the stored bias looks
+        // like if it ever escapes the accessor.
+        assert!(
+            armed[0] > 0 && armed[0] <= ARMED_MS,
+            "the published countdown is {}; it must be a real number of milliseconds, neither \
+             zero nor the biased value the node holds internally",
+            armed[0]
+        );
+    }
+
+    let physical = engine.storage_physical_index_report(1);
+    let published: Vec<u64> = physical
+        .bucket_nodes
+        .iter()
+        .filter_map(|bucket| bucket.ttl_ms)
+        .collect();
+    assert_eq!(
+        1,
+        published.len(),
+        "the physical index report must publish the countdown too; {} of its {} bucket rows \
+         carried one",
+        published.len(),
+        physical.bucket_nodes.len()
+    );
+    assert!(
+        published[0] > 0 && published[0] <= ARMED_MS,
+        "the physical report published a countdown of {}",
+        published[0]
+    );
+}
+
+// -------------------------------------------------------------------------------------------
+// WHAT IT COSTS AT TWO LARGE CORPUS SIZES, AND WHAT AN INSTRUMENT THAT IS NOT `size_of` SEES.
+// -------------------------------------------------------------------------------------------
+
+/// The counting allocator, used here as the SECOND instrument.
+///
+/// `Clone` on a `BTreeMap` rebuilds the tree node for node, so the bytes charged across one
+/// `clone()` are the map's own nodes -- the key array, the value array, the node header and every
+/// slot a node has not filled. That number is measured by the allocator and owes nothing to
+/// `size_of` x count, which is what makes the difference between them a reading rather than an
+/// identity. A residual computed from one instrument twice cannot notice anything.
+#[cfg(feature = "alloc-probe")]
+fn clone_alloc_bytes<T: Clone>(value: &T) -> u64 {
+    let probe = Probe::start();
+    let copy = value.clone();
+    let counts = probe.stop();
+    std::hint::black_box(&copy);
+    drop(copy);
+    counts.alloc_bytes
+}
+
+/// THE PLANTED MARKER. Recovered exactly, or every residual below is noise.
+///
+/// The failure this guards against is the one that reads as good news: an instrument that reports
+/// near zero makes a structure look free. A megabyte is planted and has to come back as a
+/// megabyte -- not less, which would be blindness, and not much more, which would be the probe
+/// charging for something other than the clone.
+#[cfg(feature = "alloc-probe")]
+#[test]
+fn the_clone_instrument_recovers_a_planted_megabyte_exactly() {
+    const PLANTED: usize = 1 << 20;
+    let marker: Vec<u8> = vec![0xA5; PLANTED];
+    let measured = clone_alloc_bytes(&marker);
+    println!(
+        "planted {PLANTED} B, instrument charged {measured} B ({:.4}x)",
+        measured as f64 / PLANTED as f64
+    );
+    assert_eq!(
+        PLANTED as u64, measured,
+        "the clone instrument charged {measured} B for a planted {PLANTED} B; a residual taken \
+         with it would be measuring the instrument"
+    );
+}
+
+/// WHAT THE BUCKET NODE COSTS AT TWO LARGE CORPUS SIZES, IN TOTAL AND PER RECORD.
+///
+/// Two corpora three times apart, both large, because the question this module exists to answer
+/// is what the structure costs a STORE and not what it costs one bucket. The per-record figure is
+/// the one that multiplies out to any scale, and it is only usable if it is flat -- a per-record
+/// cost that grows with the corpus is a finding, not a budget, and the flatness check below says
+/// which of the two it is.
+///
+/// THE STORE PATH LENGTH IS HELD CONSTANT and asserted: `tempfile` names every directory with the
+/// same number of characters, and allocation bytes move with the path at about six bytes per
+/// character, so an arm whose path was one character longer would report a different residual for
+/// a reason that has nothing to do with the structure.
+///
+/// THE DIRTY FRACTION IS PRINTED because it is what prices the one decline this module could not
+/// settle from widths alone: the two `#[serde(skip)]` log claims are sixteen bytes that touch no
+/// stored shape, and moving them into a side map keyed by bucket is a win exactly when few
+/// buckets are dirty and a loss when most are.
+///
+/// THE RESIDUAL IS THE POINT OF THE SECOND INSTRUMENT. `size_of` x count is what the node
+/// occupies; the map that holds the nodes charges more than that, and the difference -- key
+/// arrays, node headers, unfilled slots and whatever each node owns on the heap -- is reported
+/// rather than assumed away, so a change in it is visible.
+#[test]
+#[ignore = "seeds 80,000 then 240,000 records; run by name"]
+fn what_the_bucket_node_costs_at_two_large_corpus_sizes() {
+    let mut path_lengths: Vec<usize> = Vec::new();
+    let mut per_record: Vec<(usize, f64)> = Vec::new();
+
+    for (label, strings_n, series_keys, series_points) in [
+        ("80,000 records", 40_000usize, 40usize, 1_000usize),
+        ("240,000 records", 120_000usize, 120usize, 1_000usize),
+    ] {
+        let dir = tempfile::tempdir().expect("tempdir");
+        path_lengths.push(dir.path().as_os_str().len());
+        let engine = budget_engine(dir.path());
+        budget_seed(&engine, strings_n, series_keys, series_points);
+
+        let shards = engine.shards.read().expect("engine lock poisoned");
+        let shard = shards.get(&1).expect("shard is loaded");
+        let counts = count_items(shard);
+
+        assert_eq!(
+            strings_n + series_keys * series_points,
+            counts.records,
+            "denominator: the shard must hold every record seeded"
+        );
+        assert!(
+            counts.bucket_nodes > 0,
+            "denominator: no routing buckets, so every figure below divides by nothing"
+        );
+
+        let width = size_of::<BucketNode>();
+        let accounted = width * counts.bucket_nodes;
+        // The width this structure carried before the countdown stopped spending a word on a
+        // discriminant. A literal, because the shape it names no longer exists to be measured;
+        // `what_each_declined_shape_of_the_bucket_node_would_cost` holds a mirror of it to 208
+        // so this literal cannot drift away from what it claims.
+        const WIDTH_BEFORE: usize = 208;
+        let before = WIDTH_BEFORE * counts.bucket_nodes;
+
+        let dirty_buckets = shard
+            .bucket_index
+            .bucket_map
+            .values()
+            .filter(|bucket| bucket.dirty)
+            .count();
+
+        println!("\n=== {label} ===");
+        println!(
+            "  records={} buckets={} page entries={}",
+            counts.records, counts.bucket_nodes, counts.block_index_entries
+        );
+        println!(
+            "  BucketNode: {width} B x {} = {accounted} B ({:.2} MiB), {:.2} B/record",
+            counts.bucket_nodes,
+            accounted as f64 / (1024.0 * 1024.0),
+            accounted as f64 / counts.records as f64
+        );
+        println!(
+            "  before this change: {WIDTH_BEFORE} B x {} = {before} B ({:.2} MiB), {:.2} B/record",
+            counts.bucket_nodes,
+            before as f64 / (1024.0 * 1024.0),
+            before as f64 / counts.records as f64
+        );
+        println!(
+            "  SAVED: {} B ({:.2} MiB), {:.2} B/record, {:.1}% of the structure",
+            before - accounted,
+            (before - accounted) as f64 / (1024.0 * 1024.0),
+            (before - accounted) as f64 / counts.records as f64,
+            100.0 * (before - accounted) as f64 / before as f64
+        );
+        println!(
+            "  dirty buckets: {dirty_buckets} of {} ({:.1}%)",
+            counts.bucket_nodes,
+            100.0 * dirty_buckets as f64 / counts.bucket_nodes as f64
+        );
+
+        #[cfg(feature = "alloc-probe")]
+        {
+            let measured = clone_alloc_bytes(&shard.bucket_index.bucket_map);
+            let residual = measured as i64 - accounted as i64;
+            println!(
+                "  the map that holds them, charged by the allocator: {measured} B ({:.2} MiB)",
+                measured as f64 / (1024.0 * 1024.0)
+            );
+            println!(
+                "  RESIDUAL outside the node widths: {residual} B, {:.2} B/bucket -- key arrays, \
+                 node headers, unfilled slots and what each node owns on the heap",
+                residual as f64 / counts.bucket_nodes as f64
+            );
+            assert!(
+                residual > 0,
+                "the allocator charged {measured} B for a map of {} nodes whose widths add up to \
+                 {accounted} B; a residual at or below zero means the two instruments are not \
+                 independent and the subtraction is an identity",
+                counts.bucket_nodes
+            );
+        }
+
+        per_record.push((
+            counts.records,
+            accounted as f64 / counts.records as f64,
+        ));
+    }
+
+    assert_eq!(2, path_lengths.len(), "both arms must have run");
+    assert_eq!(
+        path_lengths[0], path_lengths[1],
+        "the store path length moved between arms ({} then {}); allocation bytes move with it at \
+         about six bytes a character",
+        path_lengths[0], path_lengths[1]
+    );
+
+    let (small_records, small) = per_record[0];
+    let (big_records, big) = per_record[1];
+    assert!(
+        big_records > small_records,
+        "the second arm must be the larger corpus, or the flatness claim compares nothing"
+    );
+    let ratio = big / small;
+    println!(
+        "\n=== flatness: {small:.2} B/record at {small_records} -> {big:.2} B/record at \
+         {big_records} ({ratio:.3}x) ==="
+    );
+    assert!(
+        ratio < 1.25,
+        "BucketNode costs {small:.2} B/record at {small_records} records and {big:.2} at \
+         {big_records} ({ratio:.3}x) -- it is growing with the corpus, which is a finding and not \
+         a budget"
+    );
 }

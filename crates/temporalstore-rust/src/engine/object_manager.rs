@@ -72,13 +72,13 @@ pub(super) fn runtime_report(shard: &ShardState) -> ObjectManagerRuntimeReport {
                     deleted: object_deleted,
                     loading: bucket.loading,
                     in_memory: bucket.in_memory,
-                    ttl_ms: bucket.ttl_ms,
+                    ttl_ms: bucket.ttl_ms.ms(),
                 });
             object.dirty |= bucket.dirty;
             object.deleted |= object_deleted;
             object.loading |= bucket.loading;
             object.in_memory |= bucket.in_memory;
-            object.ttl_ms = match (object.ttl_ms, bucket.ttl_ms) {
+            object.ttl_ms = match (object.ttl_ms, bucket.ttl_ms.ms()) {
                 (Some(existing), Some(next)) => Some(existing.min(next)),
                 (None, Some(next)) => Some(next),
                 (existing, None) => existing,
@@ -123,7 +123,7 @@ pub(super) fn runtime_report(shard: &ShardState) -> ObjectManagerRuntimeReport {
             }
             object.loading |= bucket.loading;
             object.in_memory |= bucket.in_memory;
-            object.ttl_ms = match (object.ttl_ms, bucket.ttl_ms) {
+            object.ttl_ms = match (object.ttl_ms, bucket.ttl_ms.ms()) {
                 (Some(existing), Some(next)) => Some(existing.min(next)),
                 (None, Some(next)) => Some(next),
                 (existing, None) => existing,

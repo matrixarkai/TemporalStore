@@ -123,7 +123,7 @@ pub(super) fn runtime_report(shard: &ShardState) -> BucketStoreRuntimeReport {
             meta_loaded: bucket.meta_loaded,
             loading: bucket.loading,
             in_memory: bucket.in_memory,
-            ttl_ms: bucket.ttl_ms,
+            ttl_ms: bucket.ttl_ms.ms(),
             dirty_generation: bucket.dirty_generation,
             last_dump_sequence: bucket.last_dump_sequence,
             deleted_block_ref_count,

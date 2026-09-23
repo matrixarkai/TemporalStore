@@ -3469,15 +3469,17 @@ fn refresh_one_bucket_runtime_flags(
     // is exactly what the field already holds. A store that never sets a TTL is the common case
     // for bulk ingest, and this is where its per-bucket cost was going.
     if expires_at_ms.is_empty() {
-        bucket.ttl_ms = None;
+        bucket.ttl_ms = BucketTtl::ABSENT;
     } else {
         note_site(&bucket_visit_sites::REFRESH_FLAGS, bucket.block_index.len());
-        bucket.ttl_ms = bucket
-            .block_index
-            .values()
-            .filter_map(|page| expires_at_ms.get(page.object_key.as_ref()).copied())
-            .map(|expires_at| expires_at.saturating_sub(now))
-            .min();
+        bucket.ttl_ms = BucketTtl::from_ms(
+            bucket
+                .block_index
+                .values()
+                .filter_map(|page| expires_at_ms.get(page.object_key.as_ref()).copied())
+                .map(|expires_at| expires_at.saturating_sub(now))
+                .min(),
+        );
     }
     if rebuild_object_index {
         update_bucket_layout(bucket);

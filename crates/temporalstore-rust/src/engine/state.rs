@@ -3,6 +3,7 @@
 
 use std::sync::Arc;
 use std::collections::{BTreeMap, BTreeSet, HashMap};
+use std::num::NonZeroU64;
 
 use serde::{Deserialize, Serialize};
 
@@ -1975,6 +1976,86 @@ impl DirtyObjectIndex {
     }
 }
 
+/// The shortest countdown to expiry left in a bucket, in milliseconds, or absent when nothing
+/// the bucket holds expires.
+///
+/// EIGHT BYTES, NOT SIXTEEN, AND THAT IS THE WHOLE REASON THIS TYPE EXISTS. A `u64` has no value
+/// it does not use, so `Option<u64>` cannot put its discriminant inside the number: the
+/// discriminant takes a word of its own and the aligner rounds the pair to 16. `NonZeroU64` has
+/// exactly one unused value and `Option<NonZeroU64>` spends it on the discriminant, so the same
+/// two states fit in 8. On `BucketNode` that is not eight bytes of field traded for eight bytes
+/// of padding -- it moves the node from 208 to 200, because the node's eight-byte-aligned group
+/// loses a whole word and the six bytes of trailing slack stay exactly where they were.
+///
+/// WHY NOT JUST READ ZERO AS ABSENT. Zero is a real countdown and a different answer from
+/// absent. `refresh_bucket_runtime_flags` computes this as `expires_at.saturating_sub(now)`, so
+/// a bucket holding something already past its deadline reports a countdown of 0, and
+/// `ttl_bucket_count` counts that bucket. Folding zero into absent would stop counting exactly
+/// the buckets whose expiry is due, which is the opposite of what the field is for.
+///
+/// SO THE COUNTDOWN IS STORED PLUS ONE, and the one value that cannot survive the bias is the
+/// top of the range: a countdown of `u64::MAX` ms stores saturated and reads back one
+/// millisecond short -- 584,542,046 years after the deadline rather than that plus a
+/// millisecond. `saturating_add` is the same shape the narrowed address fields already use, and
+/// for the same reason: a value that cannot fit has to come back as something no clock will ever
+/// produce, never as its own low bits.
+///
+/// THE STORED SPELLING DOES NOT MOVE. The index writes this as the `ttl_ms` key it always did,
+/// a number or `null`, because the serde impls below unbias on the way out and rebias on the way
+/// in. `the_stored_spelling_of_a_bucket_node_did_not_move` drives that in both directions.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub(super) struct BucketTtl(Option<NonZeroU64>);
+
+/// One word, which is the point.
+const _: () = assert!(std::mem::size_of::<BucketTtl>() == 8);
+
+impl BucketTtl {
+    /// No countdown: nothing this bucket holds expires.
+    pub(super) const ABSENT: Self = Self(None);
+
+    /// Take a countdown in milliseconds and bias it into the non-zero range.
+    ///
+    /// `saturating_add` is the whole of the saturation: it is what keeps the biased value from
+    /// reaching zero, so the `and_then` never actually drops a countdown. Written this way on
+    /// purpose rather than with a fallback arm -- a fallback arm is unreachable code that no
+    /// test can reach and no mutation can be scored against, and an addition that WRAPPED would
+    /// then be absorbed by it silently instead of turning into the absence that
+    /// `the_biased_countdown_saturates_at_the_top_and_is_exact_below_it` catches.
+    pub(super) fn from_ms(ms: Option<u64>) -> Self {
+        Self(ms.and_then(|ms| NonZeroU64::new(ms.saturating_add(1))))
+    }
+
+    /// The countdown in milliseconds, as the rest of the engine reads it.
+    pub(super) fn ms(self) -> Option<u64> {
+        self.0.map(|biased| biased.get() - 1)
+    }
+
+    /// Whether this bucket holds anything that expires.
+    pub(super) fn is_some(self) -> bool {
+        self.0.is_some()
+    }
+}
+
+impl Serialize for BucketTtl {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        // The unbiased countdown, spelled exactly as the plain `Option<u64>` was: a number, or
+        // `null`. The bias is a resident-layout decision and stops at this boundary.
+        self.ms().serialize(serializer)
+    }
+}
+
+impl<'de> Deserialize<'de> for BucketTtl {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        Ok(Self::from_ms(Option::<u64>::deserialize(deserializer)?))
+    }
+}
+
 /// Index -> BucketMap -> BucketNode -> BlockIndex/ObjectIndex.
 #[derive(Debug, Default, Clone, Serialize, Deserialize)]
 pub(super) struct BucketNode {
@@ -2021,7 +2102,8 @@ pub(super) struct BucketNode {
     pub(super) meta_loaded: bool,
     pub(super) loading: bool,
     pub(super) in_memory: bool,
-    pub(super) ttl_ms: Option<u64>,
+    #[serde(default)]
+    pub(super) ttl_ms: BucketTtl,
     pub(super) dirty_generation: u64,
     /// The write-ahead log sequence at which this bucket most recently went from clean to dirty,
     /// or 0 when it is clean or the answer is not known.
@@ -2063,8 +2145,17 @@ pub(super) struct BucketNode {
 }
 
 /// The widest per-item structure in the engine, and the one whose count is the bucket count.
-/// Most of it is the `BlockIndexMap` it carries inline.
-const _: () = assert!(std::mem::size_of::<BucketNode>() == 208);
+///
+/// Most of it is the `BlockIndexMap` it carries inline: 112 of these 200 bytes are one page
+/// entry held inline plus its handle, and any accounting of this structure has to start there
+/// rather than with the flags.
+///
+/// 202 bytes of field became 194 when `ttl_ms` stopped spending a word on a discriminant, and
+/// the struct went 208 -> 200 with it. The six bytes left over are the aligner rounding
+/// `routing_bucket`, `layout` and the five flags -- ten bytes of small field -- up to sixteen,
+/// and they are ALIGNMENT, not width: narrowing any of those ten bytes moves nothing.
+/// `every_byte_of_the_bucket_node_is_accounted_for` states the whole of it field by field.
+const _: () = assert!(std::mem::size_of::<BucketNode>() == 200);
 
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub(super) enum BucketLayoutState {
