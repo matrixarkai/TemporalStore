@@ -211,10 +211,25 @@ impl TemporalEngine {
         // bucket_summaries arrives in ascending routing_bucket order (a BTreeMap), so truncating to
         // max_dump_buckets_per_round always dropped the same high-id buckets -- a bucket dirtied
         // once could be starved forever by low-id buckets re-dirtied every round, never
-        // checkpointed and pinning the WAL reclaim floor. Ordering by last_dump_sequence (the WAL
-        // sequence at the bucket's last dump; 0 = never dumped) ascending makes an overdue bucket
-        // rise to the top and guarantees every dirty bucket is eventually selected; routing_bucket
-        // is a stable tiebreaker.
+        // checkpointed and pinning the WAL reclaim floor. Ordering by last_dump_sequence
+        // ascending makes an overdue bucket rise to the top and guarantees every dirty bucket is
+        // eventually selected; routing_bucket is a stable tiebreaker.
+        //
+        // WHICH `last_dump_sequence` THIS IS, because there are two and they are not the same
+        // number. The sort below reads `BucketStorageSummary::last_dump_sequence`, and
+        // `bucket_storage_summaries` does not fill that one from the bucket node at all: the node
+        // carries its own `last_dump_sequence`, written from `manifest.wal_sequence` by
+        // `clear_dumped_bucket_dirty_state`, and the summary's is written by
+        // `merge_last_dump_sequence` from the NEWEST manifest's `index_log_sequence` -- the same
+        // value for every bucket that manifest names, and 0 for every bucket it does not. So what
+        // this key actually separates is "covered by the newest dump" from "not covered by it",
+        // not "dumped recently" from "dumped long ago", and the node's own figure never reaches
+        // it. `the_summary_last_dump_sequence_comes_from_the_manifest_not_from_the_node` pins
+        // that in both directions.
+        //
+        // Left as it is rather than repointed at the node: this is a TIEBREAKER behind
+        // `first_dirty_rank` below, which is the key that decides the order for every bucket that
+        // can name its oldest undumped write.
         // Empty EXACTLY when the dirty index is empty, which is the case that skipped the walk
         // above -- so this selects the same buckets it always did, without a fallback that could
         // mistake "did not look" for "looked and found none".
@@ -225,9 +240,9 @@ impl TemporalEngine {
             .collect::<Vec<_>>();
         // Oldest undumped write first: the bucket that has held the log longest is dumped first.
         //
-        // `last_dump_sequence` answers "when was this bucket last dumped", which is a proxy for
-        // "most overdue" and not the same question. What holds the log is the bucket's OLDEST
-        // UNDUMPED WRITE, and `first_dirty_wal_sequence` is that
+        // `last_dump_sequence` answers "is this bucket in the newest dump manifest" (see the note
+        // above it), which is a proxy for "most overdue" and not the same question. What holds
+        // the log is the bucket's OLDEST UNDUMPED WRITE, and `first_dirty_wal_sequence` is that
         // -- so ordering by it dumps the bucket pinning the log's floor first, and no bucket can
         // be starved indefinitely while older ones keep being re-dirtied.
         //
