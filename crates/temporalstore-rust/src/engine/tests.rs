@@ -167,3 +167,4 @@ fn bucket_take_arithmetic_with_explicit_clocks() {
 mod page_entry_names;
 
 mod bucket_sequence_budget;
+mod bucket_node_arms;
