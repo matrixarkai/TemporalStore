@@ -2937,10 +2937,19 @@ fn upsert_bucket_index_block_inner(
             });
         });
     }
+    // One allocation of this object's identity, shared by the page entry, the lookup, and every
+    // OTHER page already filed under the same object. Taken before the `&mut` borrows below.
+    //
+    // Only the first page of an object allocates. A container key's hundredth field now points at
+    // the copy its first field made, where before each of the hundred made its own.
+    let shared_object_key = shard
+        .bucket_index
+        .object_block_lookup
+        .shared_object_key(kind, object_key)
+        .unwrap_or_else(|| Arc::from(object_key));
     let entry = LiveBlockEntry {
-        // One allocation of this object's identity, shared by the page entry and the lookup.
-        object_key: Arc::from(object_key),
-        kind: crate::engine::state::intern_shared(&mut shard.bucket_index.kind_pool, kind),
+        object_key: shared_object_key,
+        kind: crate::engine::state::intern_kind(&mut shard.bucket_index.kind_pool, kind),
         component: component
             .map(|name| crate::engine::state::intern_shared(&mut shard.bucket_index.kind_pool, &name)),
         log_backed: address.block_id().is_none(),

@@ -389,11 +389,24 @@ pub(super) struct CoreIndex {
     /// for those same 2700 pages, which is why it is not interned here: sharing something that is
     /// nearly unique saves nothing.
     ///
+    /// COMPONENT names share it, and that used to destroy it. The cap exists so that being
+    /// bounded is a property of this code rather than a promise about every future caller -- but
+    /// components are one per field, member or element of a container, so the FIRST container key
+    /// written fills the cap, and after that the pool took nothing new. Including the kinds of
+    /// every container written afterwards, which then allocated their own copy of a
+    /// four-character string once per page. Measured over a container store of 40,000 pages in
+    /// 400 objects: 300 of the 400 held up to ONE HUNDRED distinct allocations of their model id,
+    /// a name with four distinct values in the whole store.
+    ///
+    /// ONE POOL, TWO CEILINGS, and no second `HashSet`: a set of its own is 48 bytes on a
+    /// structure there is one of per shard, and `shard_carried_range` holds `ShardState` at 1,888
+    /// for exactly that reason. Components may fill the pool to `KIND_POOL_CAP`; kinds may use
+    /// `KIND_RESERVE` slots beyond it, which no component can reach. The pool is still bounded,
+    /// by the sum, and a component can no longer crowd out a kind.
+    ///
     /// Owned by the index rather than a global, so the write path interns through the `&mut` it
-    /// already holds and no lock appears on it. Capped, so being bounded is a property of this
-    /// code rather than a promise about every future caller: past the cap a kind still works, it
-    /// just allocates as it did before. Not serialized -- it is a sharing detail, not part of the
-    /// index.
+    /// already holds and no lock appears on it. Not serialized -- it is a sharing detail, not part
+    /// of the index.
     #[serde(skip)]
     pub(super) kind_pool: std::collections::HashSet<Arc<str>>,
     /// Running total of page refs across `object_component_lookup`, or `None` when not known.
@@ -1238,6 +1251,23 @@ impl ObjectBlockLookup {
             .expect("just inserted")
     }
 
+    /// The allocation this map already holds for an object's key, for a page about to be filed
+    /// under that object.
+    ///
+    /// The write path used to build `Arc::from(object_key)` for every page. For a store of keys
+    /// that route one to a bucket that is right -- there is one page, and the allocation it makes
+    /// is the one the map then keeps. For a CONTAINER it is a hundred allocations of one short
+    /// string, because every field, member and element is filed by its own call and each call
+    /// started again. Ninety-nine of the hundred carried nothing the first did not, and pointer
+    /// identity is the only thing that could ever have told them apart.
+    ///
+    /// Answers `None` before the object has any pages, which is the first call for a new object
+    /// and the one that must allocate. The caller falls back to allocating then.
+    pub(super) fn shared_object_key(&self, model_id: &str, object_key: &str) -> Option<Arc<str>> {
+        let (stored, _) = self.by_model.get(model_id)?.get_key_value(object_key)?;
+        Some(Arc::clone(stored))
+    }
+
     /// The address of the inner key allocation, so a test can assert that a page and this map
     /// point at one copy of the object identity rather than two equal ones. Contents cannot tell
     /// those apart; pointers can.
@@ -1559,11 +1589,32 @@ const KIND_POOL_CAP: usize = 64;
 
 /// One shared copy of `kind`, taken from the pool or added to it.
 pub(super) fn intern_shared(pool: &mut std::collections::HashSet<Arc<str>>, kind: &str) -> Arc<str> {
-    if let Some(shared) = pool.get(kind) {
+    intern_up_to(pool, kind, KIND_POOL_CAP)
+}
+
+/// Headroom in the same pool that only a KIND may use.
+///
+/// Components are one per field, member or element, so they reach `KIND_POOL_CAP` on the first
+/// container key written and then the pool takes nothing new. Kinds are a closed set this engine
+/// spells itself -- about five -- so a reserve this size is never the binding constraint for them
+/// and the pool stays bounded by `KIND_POOL_CAP + KIND_RESERVE` either way.
+const KIND_RESERVE: usize = 16;
+
+/// Intern a KIND. Sees the reserve; a component does not.
+pub(super) fn intern_kind(pool: &mut std::collections::HashSet<Arc<str>>, kind: &str) -> Arc<str> {
+    intern_up_to(pool, kind, KIND_POOL_CAP + KIND_RESERVE)
+}
+
+fn intern_up_to(
+    pool: &mut std::collections::HashSet<Arc<str>>,
+    name: &str,
+    ceiling: usize,
+) -> Arc<str> {
+    if let Some(shared) = pool.get(name) {
         return Arc::clone(shared);
     }
-    let shared: Arc<str> = Arc::from(kind);
-    if pool.len() < KIND_POOL_CAP {
+    let shared: Arc<str> = Arc::from(name);
+    if pool.len() < ceiling {
         pool.insert(Arc::clone(&shared));
     }
     shared
