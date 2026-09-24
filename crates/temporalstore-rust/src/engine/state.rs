@@ -879,19 +879,175 @@ pub(super) enum BlockIndexMap {
     ///
     /// The shape `BlockRefs` already uses, for the same reason.
     One(u64, BlockIndex),
-    /// Several pages -- an object with components -- which is where a map earns its node.
-    Many(BTreeMap<u64, BlockIndex>),
+    /// Several pages -- an object with components, or several keys routed to one bucket -- held
+    /// as a FLAT LIST SORTED BY HANDLE rather than as a tree.
+    ///
+    /// WHY A LIST AND NOT A TREE. A `BTreeMap` leaf holds eleven value slots whether or not it
+    /// fills them: at 104 bytes a page that is a 1,248-byte node per eleven pages, and the fill
+    /// was measured at 63%. A page list is short, and the operations it actually takes are a
+    /// lookup by handle, an ordered walk, and an insert -- none of which needs a tree's
+    /// rebalancing. `the_page_index_of_a_real_store_costs_less_as_a_list_than_as_a_tree` measures
+    /// what the node costs against what the list costs at the real length distribution, and
+    /// `the_page_list_length_distribution_is_reported_as_a_histogram` publishes that distribution.
+    ///
+    /// SORTED BY HANDLE, AND THAT IS NOT AN IMPLEMENTATION DETAIL. A `BTreeMap<u64, _>` iterates
+    /// in ascending key order, and readers of this index depend on that: the index-log item
+    /// builder emits pages in this order, `collect_live_block_entries` materialises them in it,
+    /// the storage-topology sampler TRUNCATES at a sample cap so the order decides which pages
+    /// are reported, `bucket_index_shape_for_test` renders it as the comparison between a shard
+    /// built by commands and one rebuilt from records, and the whole-scan address lookup in
+    /// `bucket_store` takes the FIRST match. Keeping the list sorted by the same key the tree was
+    /// keyed by makes every one of those readers see the identical sequence, which is why this is
+    /// a container change and not a behaviour change.
+    /// `an_unsorted_page_list_would_reorder_every_walk_of_this_index` is the control: it builds
+    /// the same pages in three different orders and asserts one walk, with a negative control
+    /// showing that fill order and handle order genuinely differ.
+    ///
+    /// DUPLICATES ARE REPLACED, NOT APPENDED. A map deduplicated by construction; a list does
+    /// not, so `insert_unaccounted` binary-searches and overwrites in place on a hit, returning
+    /// the address it displaced so the live tally can discharge it.
+    /// `a_second_insert_of_the_same_page_replaces_it_rather_than_adding_beside_it` is the guard.
+    Many(Vec<(u64, BlockIndex)>),
 }
 
 /// The `One` arm carries a whole page inline -- a handle plus a `BlockIndex` -- which is the
-/// point of the shape and what makes this the widest field of `BucketNode`.
+/// point of the shape and what makes this the widest field of `BucketNode`. The `Many` arm is a
+/// 24-byte vector header and rides inside it.
 const _: () = assert!(std::mem::size_of::<BlockIndexMap>() == 112);
+
+/// Entries this process has examined looking a page up, counted under `cfg(test)` only.
+///
+/// THE READ PATH IS WHERE THIS CHANGE IS WON OR LOST -- it trades a tree descent for a walk --
+/// and a duration cannot say so on a box that sits at load 40. This counts the entries the
+/// lookup actually touched, which repeats to three significant figures and is what the two
+/// strategies differ in. Incremented inside [`find_page`], which is the ONE door every lookup
+/// goes through, so a test reading it is reading the copy production calls rather than a model
+/// of it.
+///
+/// `cfg(test)` and not a feature: a counter on the read path is exactly what this campaign is
+/// removing, and it must not exist in a shipped binary.
+#[cfg(test)]
+pub(super) static PAGE_LOOKUP_ENTRIES_EXAMINED: std::sync::atomic::AtomicU64 =
+    std::sync::atomic::AtomicU64::new(0);
+
+#[cfg(test)]
+pub(super) fn page_lookup_entries_examined() -> u64 {
+    PAGE_LOOKUP_ENTRIES_EXAMINED.load(std::sync::atomic::Ordering::Relaxed)
+}
+
+#[cfg(test)]
+pub(super) fn reset_page_lookup_entries_examined() {
+    PAGE_LOOKUP_ENTRIES_EXAMINED.store(0, std::sync::atomic::Ordering::Relaxed);
+}
+
+#[cfg(test)]
+fn note_entries_examined(count: usize) {
+    PAGE_LOOKUP_ENTRIES_EXAMINED.fetch_add(count as u64, std::sync::atomic::Ordering::Relaxed);
+}
+
+#[cfg(not(test))]
+#[inline(always)]
+fn note_entries_examined(_count: usize) {}
+
+/// Walk a sorted page list from the front. THE STRATEGY THE MEASUREMENT DECLINED, kept for the
+/// measurement and compiled only into tests.
+///
+/// A walk was the obvious candidate here: a page list is short, its entries are contiguous, and a
+/// walk has no unpredictable branch. `the_walk_and_the_bisection_cross_over_where_the_measurement_says`
+/// counts the entries each strategy touches and the bisection becomes the cheaper of the two at a
+/// list of THREE -- while the `Many` arm exists only from TWO, where the two tie exactly. So there
+/// is no length this arm ever holds at which the walk is ahead, and the shipped lookup is the
+/// bisection. At the measured p50 of 39 the walk touches 20.000 entries a hit against the
+/// bisection's 4.538 -- 4.41x, far outside any correction contiguity could make to a count.
+///
+/// Sorted, so the walk stops at the first handle PAST the one being looked for -- and the
+/// position it stops at is the insert position, which is what the bisection's `Err` arm hands
+/// back too. Both therefore answer the identical `Result`, which is what lets
+/// `the_walk_and_the_bisection_answer_identically_at_every_length` run one against the other.
+#[cfg(test)]
+pub(super) fn scan_page(pages: &[(u64, BlockIndex)], key: &u64) -> Result<usize, usize> {
+    for (at, (handle, _)) in pages.iter().enumerate() {
+        match handle.cmp(key) {
+            std::cmp::Ordering::Less => {}
+            std::cmp::Ordering::Equal => {
+                note_entries_examined(at + 1);
+                return Ok(at);
+            }
+            std::cmp::Ordering::Greater => {
+                note_entries_examined(at + 1);
+                return Err(at);
+            }
+        }
+    }
+    note_entries_examined(pages.len());
+    Err(pages.len())
+}
+
+/// Bisect a sorted page list. THE SHIPPED LOOKUP.
+///
+/// Written out rather than delegated to `binary_search_by` so the entries it touches can be
+/// COUNTED as they are touched. A count derived from `log2(len)` would be a model of the search
+/// rather than the search, and this campaign has already had an instrument report a model.
+///
+/// It also has no cliff: the widest list measured holds 50 pages, and ten times that is four more
+/// probes. A walk at the same length would be five hundred entries, which is the reason a
+/// fallback for the tail is not needed here -- the shipped strategy IS the tail's strategy.
+pub(super) fn bisect_page(pages: &[(u64, BlockIndex)], key: &u64) -> Result<usize, usize> {
+    let (mut low, mut high) = (0usize, pages.len());
+    let mut examined = 0usize;
+    while low < high {
+        let mid = low + (high - low) / 2;
+        examined += 1;
+        match pages[mid].0.cmp(key) {
+            std::cmp::Ordering::Less => low = mid + 1,
+            std::cmp::Ordering::Greater => high = mid,
+            std::cmp::Ordering::Equal => {
+                note_entries_examined(examined);
+                return Ok(mid);
+            }
+        }
+    }
+    note_entries_examined(examined);
+    Err(low)
+}
+
+/// Find a handle in a sorted page list.
+///
+/// THE ONE DOOR. Every lookup, removal and insert into the `Many` arm comes through here, which
+/// is what makes the entry counter above a reading of the path production runs rather than of a
+/// copy written for the test. It is the bisection because that is what the measurement said --
+/// see [`scan_page`] for the strategy it declined and the counts that declined it.
+pub(super) fn find_page(pages: &[(u64, BlockIndex)], key: &u64) -> Result<usize, usize> {
+    bisect_page(pages, key)
+}
+
+/// Room for one more page, taken in fixed steps rather than by doubling.
+///
+/// `Vec`'s own growth doubles: a list of 39 entries takes a capacity of 64, which is a quarter of
+/// its bytes unused -- almost exactly the slack the `BTreeMap` node left, so a change that
+/// swapped a tree for a doubling vector would have spent the change and bought nothing. Stepping
+/// by four caps the waste at three entries, at the price of a reallocation every four inserts on
+/// a list that is tens of entries long.
+/// `the_page_list_growth_step_is_what_keeps_the_slack_off_the_measurement` measures both sides.
+///
+/// FOUR AND NOT EIGHT, because most buckets are short. At 4,000 records on the configured range
+/// the measured distribution is p50 4, p90 6, MAX 8, and a step of eight would have charged a
+/// list of two the same as a list of eight. Four ties `Vec`'s own first block at every length up
+/// to eight and wins from twelve upward, which is where the large corpus lives.
+pub(super) const PAGE_LIST_GROWTH_STEP: usize = 4;
+
+fn reserve_one_more(pages: &mut Vec<(u64, BlockIndex)>) {
+    if pages.len() == pages.capacity() {
+        let want = (pages.len() + 1).div_ceil(PAGE_LIST_GROWTH_STEP) * PAGE_LIST_GROWTH_STEP;
+        pages.reserve_exact(want - pages.len());
+    }
+}
 
 /// Iterating a page index, whichever shape it is in.
 pub(super) enum BlockIndexIter<'a> {
     Empty,
     One(std::iter::Once<(&'a u64, &'a BlockIndex)>),
-    Many(std::collections::btree_map::Iter<'a, u64, BlockIndex>),
+    Many(std::slice::Iter<'a, (u64, BlockIndex)>),
 }
 
 impl<'a> Iterator for BlockIndexIter<'a> {
@@ -900,7 +1056,9 @@ impl<'a> Iterator for BlockIndexIter<'a> {
         match self {
             BlockIndexIter::Empty => None,
             BlockIndexIter::One(once) => once.next(),
-            BlockIndexIter::Many(iter) => iter.next(),
+            // The list is kept sorted by handle, so this yields the same sequence the tree's
+            // iterator did.
+            BlockIndexIter::Many(iter) => iter.next().map(|(handle, page)| (handle, page)),
         }
     }
 }
@@ -908,7 +1066,7 @@ impl<'a> Iterator for BlockIndexIter<'a> {
 pub(super) enum BlockIndexValuesMut<'a> {
     Empty,
     One(std::iter::Once<&'a mut BlockIndex>),
-    Many(std::collections::btree_map::ValuesMut<'a, u64, BlockIndex>),
+    Many(std::slice::IterMut<'a, (u64, BlockIndex)>),
 }
 
 impl<'a> Iterator for BlockIndexValuesMut<'a> {
@@ -917,7 +1075,7 @@ impl<'a> Iterator for BlockIndexValuesMut<'a> {
         match self {
             BlockIndexValuesMut::Empty => None,
             BlockIndexValuesMut::One(once) => once.next(),
-            BlockIndexValuesMut::Many(iter) => iter.next(),
+            BlockIndexValuesMut::Many(iter) => iter.next().map(|(_handle, page)| page),
         }
     }
 }
@@ -1071,7 +1229,7 @@ impl BlockIndexMap {
         match self {
             BlockIndexMap::Empty => None,
             BlockIndexMap::One(handle, page) => (handle == key).then_some(page),
-            BlockIndexMap::Many(map) => map.get(key),
+            BlockIndexMap::Many(pages) => find_page(pages, key).ok().map(|at| &pages[at].1),
         }
     }
 
@@ -1079,7 +1237,9 @@ impl BlockIndexMap {
         match self {
             BlockIndexMap::Empty => None,
             BlockIndexMap::One(handle, page) => (&*handle == key).then_some(page),
-            BlockIndexMap::Many(map) => map.get_mut(key),
+            BlockIndexMap::Many(pages) => {
+                find_page(pages, key).ok().map(|at| &mut pages[at].1)
+            }
         }
     }
 
@@ -1108,8 +1268,10 @@ impl BlockIndexMap {
                     _ => unreachable!("just matched One"),
                 }
             }
-            BlockIndexMap::Many(map) => {
-                let removed = map.remove(key);
+            BlockIndexMap::Many(pages) => {
+                let removed = find_page(pages, key)
+                    .ok()
+                    .map(|at| pages.remove(at).1);
                 self.shrink();
                 removed
             }
@@ -1154,19 +1316,42 @@ impl BlockIndexMap {
                 if *existing == handle {
                     Some(std::mem::replace(held, page).address)
                 } else {
-                    // A second page: this bucket has earned a map.
+                    // A second page: this bucket has earned a list. Built SORTED, because every
+                    // walk of this index reads it in handle order.
                     let (first_handle, first) = match std::mem::replace(self, BlockIndexMap::Empty) {
                         BlockIndexMap::One(first_handle, first) => (first_handle, first),
                         _ => unreachable!("just matched One"),
                     };
-                    let mut map = BTreeMap::new();
-                    map.insert(first_handle, first);
-                    map.insert(handle, page);
-                    *self = BlockIndexMap::Many(map);
+                    // ONE STEP, not two. A spill takes the same first block `reserve_one_more`
+                    // would have taken, so a list of two, three or four costs exactly what
+                    // `Vec`'s own first block costs and the step policy is never behind at the
+                    // short lengths where most buckets sit. Taking two steps here made a list of
+                    // three cost twice what doubling would have;
+                    // `the_page_list_growth_step_is_what_keeps_the_slack_off_the_measurement`
+                    // is what said so.
+                    let mut pages = Vec::with_capacity(PAGE_LIST_GROWTH_STEP);
+                    if first_handle < handle {
+                        pages.push((first_handle, first));
+                        pages.push((handle, page));
+                    } else {
+                        pages.push((handle, page));
+                        pages.push((first_handle, first));
+                    }
+                    *self = BlockIndexMap::Many(pages);
                     None
                 }
             }
-            BlockIndexMap::Many(map) => map.insert(handle, page).map(|previous| previous.address),
+            BlockIndexMap::Many(pages) => match find_page(pages, &handle) {
+                // A page with this identity is already filed: overwrite it where it sits. A list
+                // does not deduplicate by construction the way the tree did, so this is the only
+                // thing standing between a rewrite and a bucket holding the same page twice.
+                Ok(at) => Some(std::mem::replace(&mut pages[at].1, page).address),
+                Err(at) => {
+                    reserve_one_more(pages);
+                    pages.insert(at, (handle, page));
+                    None
+                }
+            },
         };
         (handle, displaced)
     }
@@ -1177,17 +1362,17 @@ impl BlockIndexMap {
     /// which is the cost this type exists to avoid.
     fn shrink(&mut self) {
         let len = match self {
-            BlockIndexMap::Many(map) => map.len(),
+            BlockIndexMap::Many(pages) => pages.len(),
             _ => return,
         };
         match len {
             0 => *self = BlockIndexMap::Empty,
             1 => {
-                let map = match std::mem::replace(self, BlockIndexMap::Empty) {
-                    BlockIndexMap::Many(map) => map,
+                let pages = match std::mem::replace(self, BlockIndexMap::Empty) {
+                    BlockIndexMap::Many(pages) => pages,
                     _ => unreachable!("just matched Many"),
                 };
-                let (handle, page) = map.into_iter().next().expect("length is one");
+                let (handle, page) = pages.into_iter().next().expect("length is one");
                 *self = BlockIndexMap::One(handle, page);
             }
             _ => {}
@@ -1198,7 +1383,7 @@ impl BlockIndexMap {
         match self {
             BlockIndexMap::Empty => 0,
             BlockIndexMap::One(..) => 1,
-            BlockIndexMap::Many(map) => map.len(),
+            BlockIndexMap::Many(pages) => pages.len(),
         }
     }
 
@@ -1210,7 +1395,7 @@ impl BlockIndexMap {
         match self {
             BlockIndexMap::Empty => BlockIndexIter::Empty,
             BlockIndexMap::One(handle, page) => BlockIndexIter::One(std::iter::once((handle, page))),
-            BlockIndexMap::Many(map) => BlockIndexIter::Many(map.iter()),
+            BlockIndexMap::Many(pages) => BlockIndexIter::Many(pages.iter()),
         }
     }
 
@@ -1237,7 +1422,7 @@ impl BlockIndexMap {
         match self {
             BlockIndexMap::Empty => BlockIndexValuesMut::Empty,
             BlockIndexMap::One(_, page) => BlockIndexValuesMut::One(std::iter::once(page)),
-            BlockIndexMap::Many(map) => BlockIndexValuesMut::Many(map.values_mut()),
+            BlockIndexMap::Many(pages) => BlockIndexValuesMut::Many(pages.iter_mut()),
         }
     }
 
@@ -1258,9 +1443,9 @@ impl BlockIndexMap {
                     *self = BlockIndexMap::Empty;
                 }
             }
-            BlockIndexMap::Many(map) => {
-                map.retain(|handle, page| {
-                    let kept = keep(handle, page);
+            BlockIndexMap::Many(pages) => {
+                pages.retain_mut(|(handle, page)| {
+                    let kept = keep(&*handle, page);
                     if !kept {
                         live.remove_address(&page.address);
                     }

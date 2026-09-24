@@ -1555,7 +1555,8 @@ fn the_feature_workload_has_no_short_series_for_the_one_shape_to_help() {
 ///
 /// MUTATION. Boxing `BlockIndexMap::One`'s page (`One(u64, Box<BlockIndex>)`) collapses the enum
 /// to a pointer and fires the first assert. Changing any one of the six map types fires the
-/// second as a compile error rather than a failure.
+/// second as a compile error rather than a failure. The `Many` arm is a flat page list since
+/// #1963 and is 24 bytes either way, so it decides nothing here.
 #[test]
 fn the_bucket_index_holds_one_page_inline_and_the_series_maps_hold_none() {
     use crate::engine::state::{BlockIndex, BlockIndexMap};
@@ -1591,8 +1592,11 @@ fn the_bucket_index_holds_one_page_inline_and_the_series_maps_hold_none() {
         Empty,
         #[allow(dead_code)]
         One(u64, Box<BlockIndex>),
+        // A FLAT LIST since #1963, mirroring the shipped shape. Same 24-byte header as the tree
+        // it replaced, so the control's own arithmetic is unchanged -- but a control that mirrors
+        // a shape the engine stopped building is a control of nothing.
         #[allow(dead_code)]
-        Many(BTreeMap<u64, BlockIndex>),
+        Many(Vec<(u64, BlockIndex)>),
     }
     let boxed = std::mem::size_of::<BoxedShape>();
     println!("  positive control: the same shape with One boxed is {boxed} B inline");

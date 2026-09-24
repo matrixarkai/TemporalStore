@@ -490,7 +490,10 @@ fn every_byte_of_the_page_index_is_accounted_for() {
 
     // --- BlockIndexMap: the widest arm is the COMMON one, and the tag rides a niche. ---
     let one_arm = size_of::<u64>() + size_of::<BlockIndex>();
-    let many_arm = size_of::<BTreeMap<u64, BlockIndex>>();
+    // A FLAT LIST since #1963, not a tree. Same 24-byte header either way, so this line does not
+    // move the assertion below -- but it has to name the shipped type or the reconstruction is
+    // describing a shape the engine no longer builds.
+    let many_arm = size_of::<Vec<(u64, BlockIndex)>>();
     println!(
         "BlockIndexMap: One arm {one_arm} B, Many arm {many_arm} B, size_of = {}",
         size_of::<BlockIndexMap>()
