@@ -6025,7 +6025,7 @@ mod tests {
         );
 
         let (_objects, replicator) = test_shared_store(dir.path());
-        let remote = replicator.block_slab_key(1, address.block_slab_id);
+        let remote = replicator.block_slab_key(1, address.block_slab_id());
         let basename = remote.rsplit('/').next().unwrap();
         assert_eq!(
             basename, on_disk[0],

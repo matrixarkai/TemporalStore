@@ -1459,7 +1459,7 @@ fn reading_a_page_behind_a_pointer_costs_a_dependent_load_the_inline_arm_does_no
         for (handle, index) in &inline {
             if let BlockIndexMap::One(held, page) = index {
                 if held == handle {
-                    sum = sum.wrapping_add(page.address.block_slab_id);
+                    sum = sum.wrapping_add(page.address.block_slab_id());
                 }
             }
         }
@@ -1470,7 +1470,7 @@ fn reading_a_page_behind_a_pointer_costs_a_dependent_load_the_inline_arm_does_no
         for (handle, index) in &boxed {
             if let MirrorBoxedPageIndex::One(held, page) = index {
                 if held == handle {
-                    sum = sum.wrapping_add(page.address.block_slab_id);
+                    sum = sum.wrapping_add(page.address.block_slab_id());
                 }
             }
         }

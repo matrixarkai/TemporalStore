@@ -3618,8 +3618,8 @@ fn tiny_cache_dump_load_restart_refills_from_disk_block_cache() {
             .clone();
         CacheKey::page_with_slot(
             1,
-            address.block_slab_id,
-            address.offset,
+            address.block_slab_id(),
+            address.offset(),
             address.length(),
             address.routing_bucket(),
         )
@@ -4948,8 +4948,8 @@ fn what_each_address_field_actually_ranges_over() {
         for (_key, page) in bucket.block_index.iter() {
             pages += 1;
             let a = &page.address;
-            slab = slab.max(a.block_slab_id);
-            offset = offset.max(a.offset);
+            slab = slab.max(a.block_slab_id());
+            offset = offset.max(a.offset());
             length = length.max(a.length());
             block_id = block_id.max(a.block_id().unwrap_or(0));
             object_id = object_id.max(a.object_id().unwrap_or(0));
@@ -12051,8 +12051,8 @@ fn what_a_live_record_is_made_of() {
             if let Some(address) = item.resolved_address() {
                 println!(
                     "[census]   address: slab={} off={} len={} block_id={:?} object_id={:?} gen={:?} slab_id={:?}",
-                    address.block_slab_id,
-                    address.offset,
+                    address.block_slab_id(),
+                    address.offset(),
                     address.length(),
                     address.block_id(),
                     address.object_id(),
@@ -18341,8 +18341,8 @@ fn what_a_packed_block_looks_like_in_the_index() {
     for (timestamp, address) in series.iter() {
         eprintln!(
             "    ts={timestamp} slab={} off={} len={} page_id={:?}",
-            address.block_slab_id,
-            address.offset,
+            address.block_slab_id(),
+            address.offset(),
             address.length(),
             address.block_id()
         );
@@ -18888,8 +18888,8 @@ fn a_released_bucket_reloads_the_exact_block_list_it_released() {
                         page.model_id.to_string(),
                         page.object_key.to_string(),
                         page.component.as_ref().map(|name| name.to_string()),
-                        page.address.block_slab_id,
-                        page.address.offset,
+                        page.address.block_slab_id(),
+                        page.address.offset(),
                         page.address.length(),
                     )
                 })

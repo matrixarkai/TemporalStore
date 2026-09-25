@@ -82,6 +82,12 @@ pub enum BlockStoreError {
         offset: u64,
         reason: String,
     },
+    /// A slab id or an offset that does not fit the address word.
+    ///
+    /// Its own variant rather than an `Io`, so a caller that retries I/O does not retry this:
+    /// the address does not exist and writing it again will not make it exist.
+    #[error("{0}")]
+    AddressOutOfRange(#[from] BlockAddressOutOfRange),
 }
 
 /// Which optional parts an address carries.
@@ -122,10 +128,27 @@ const ADDRESS_HAS_GENERATION: u8 = 1 << 3;
 /// new to old is not.
 #[derive(Debug, Default, Clone, Serialize, Deserialize)]
 struct BlockAddressWire {
-    #[serde(rename = "ps", alias = "page_segment_id", alias = "page_slab_id")]
-    block_slab_id: u64,
-    #[serde(rename = "o", alias = "offset")]
-    offset: u64,
+    /// THE MERGED ADDRESS WORD, AND DELIBERATELY NOT AN ALIAS OF THE OLD SPELLING.
+    ///
+    /// It would have been one line to give this `alias = "ps"` and read an old index without a
+    /// migration. That line is the whole hazard: an old record's `ps` of 1 beside an `o` of 2
+    /// would land here as the word 1, which is slab 0 offset 1 -- a well-formed address for a
+    /// block that is not the one that was written. Nothing would fail. So the old names are NOT
+    /// aliases of this field, and an entry carrying them and not this one is REFUSED.
+    ///
+    /// AN `Option` ONLY SO THE ABSENCE IS VISIBLE. The conversion requires it and says what is
+    /// missing; it is never written absent.
+    ///
+    /// WHY THE OLD NAMES ARE NOT KEPT HERE AS DECOYS. Naming `ps` and `o` as their own fields
+    /// would give a better message, and it costs two slots on the wire that cannot be skipped:
+    /// the index log packs this struct POSITIONALLY -- `encode_index_payload_into` uses a plain
+    /// `rmp_serde::Serializer`, so a field is a position and not a name -- and a
+    /// `skip_serializing_if` there shortens the array and shifts every field after it. Two nils
+    /// on every stored address is a worse trade than a less specific message, and the refusal is
+    /// loud either way: in a NAMED encoding the old keys are unknown and this field is absent, in
+    /// the POSITIONAL one the old record is an array shorter than this struct has fields.
+    #[serde(rename = "a", alias = "address_word", default)]
+    address: Option<u64>,
     #[serde(rename = "l", alias = "length")]
     length: u64,
     #[serde(
@@ -182,6 +205,28 @@ impl TryFrom<BlockAddressWire> for BlockAddress {
     type Error = String;
 
     fn try_from(wire: BlockAddressWire) -> Result<Self, Self::Error> {
+        // THE SPLIT SPELLING IS REFUSED BEFORE ANYTHING IS DERIVED FROM IT.
+        //
+        // An index written before the merge carries the slab and the offset as two fields, and
+        // there is no way to read one as a merged word that is not silently wrong: `ps: 1, o: 2`
+        // taken as a word is slab 0, offset 1 -- a valid-looking address for the wrong block. So
+        // the old names are not aliases of `a`, which makes such an entry arrive here with no
+        // address at all, and this is the first thing the conversion does: ahead of the
+        // generation check, ahead of building anything, and naming the migration rather than
+        // just failing.
+        let Some(address) = wire.address else {
+            return Err(
+                "this index entry has no address word: an index written before the slab id and \
+                 the offset merged spells them as two separate fields (`ps` and `o`, or \
+                 `page_segment_id` and `offset`), and this binary cannot read one. Reading a \
+                 split address as a merged word would produce a well-formed address for a \
+                 different block, so it is refused. Re-dump the index with the binary that wrote \
+                 it, then load it here"
+                    .to_string(),
+            );
+        };
+        let block_slab_id = u64::from(extract_block_slab_id(address));
+        let offset = u64::from(extract_block_offset(address));
         let derived = wire.block_id.or(wire.object_id);
         // A STORED VALUE is checked; a stored ABSENCE is honoured.
         //
@@ -202,27 +247,27 @@ impl TryFrom<BlockAddressWire> for BlockAddress {
                     "stored address generation {:?} disagrees with block_id.or(object_id) {:?} \
                      at slab {} offset {}: this index was written in a shape this binary cannot \
                      reproduce, and loading it would recompute every page handle",
-                    wire.generation, derived, wire.block_slab_id, wire.offset
+                    wire.generation, derived, block_slab_id, offset
                 ));
             }
         }
-        Ok(BlockAddress::from_wire_parts(
-            wire.block_slab_id,
-            wire.offset,
+        BlockAddress::try_from_wire_parts(
+            block_slab_id,
+            offset,
             wire.length,
             wire.block_id,
             wire.object_id,
             wire.routing_bucket,
             wire.generation.is_some(),
-        ))
+        )
+        .map_err(|out_of_range| out_of_range.to_string())
     }
 }
 
 impl From<BlockAddress> for BlockAddressWire {
     fn from(address: BlockAddress) -> Self {
         Self {
-            block_slab_id: address.block_slab_id,
-            offset: address.offset,
+            address: Some(address.address_word()),
             length: address.length(),
             block_id: address.block_id(),
             object_id: address.object_id(),
@@ -249,24 +294,31 @@ impl From<BlockAddress> for BlockAddressWire {
 /// 32 looked like enough. `encode_block_record` returns an error above
 /// `BLOCK_RECORD_LENGTH_MASK` (2^30 - 1) bytes for a record, and above `u16::MAX` for a block
 /// id -- so the field holds four times the largest length that can ever reach it and sixty-five
-/// thousand times the largest block id. Everything else here stays 64 bits and has to:
-/// `object_id` is a full FNV-1a hash of the object identity, and `block_slab_id` and `offset` are
-/// bounded only by a configurable slab target.
+/// thousand times the largest block id. `object_id` stays 64 bits and has to: it is a full
+/// FNV-1a hash of the object identity, so it uses the whole range by construction.
 ///
-/// Both narrow fields are read and written through `u64` (`length()`, `block_id()`,
-/// `from_parts`, `set_block_id`), so nothing outside this file knows the width, and every write
-/// SATURATES rather than truncating -- see `narrow` below. The stored form does not move: the
-/// address serializes through [`BlockAddressWire`], which still carries both as 64-bit fields.
+/// `address` is ONE WORD HOLDING TWO NUMBERS: the slab in the high 32 bits, the offset inside
+/// that slab in the low 32. See [`make_block_address_word`] for why each half fits, and
+/// [`storage_config::MAX_BLOCK_SLAB_TARGET_BYTES`] for the knob that bounds the offset.
+///
+/// Every narrow field is read and written through `u64` (`length()`, `block_id()`,
+/// `block_slab_id()`, `offset()`, `from_parts`, `set_block_id`), so nothing outside this file
+/// knows the width. `length` and `block_id` SATURATE rather than truncate -- see `narrow` below;
+/// the two halves of `address` do NOT saturate, because a saturated address is an address that
+/// resolves to the wrong block. They are checked and the caller is refused -- see
+/// [`BlockAddress::try_from_parts`].
 ///
 /// `generation` used to sit here as a seventh field. It is now DERIVED -- see [`BlockAddress::generation`].
 #[derive(Debug, Default, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(try_from = "BlockAddressWire", into = "BlockAddressWire")]
 pub struct BlockAddress {
-    pub block_slab_id: u64,
-    pub offset: u64,
+    /// Slab id in the high 32 bits, offset in the low 32. Read it through
+    /// [`BlockAddress::block_slab_id`] and [`BlockAddress::offset`]; the raw word is
+    /// [`BlockAddress::address_word`] and is what the stored form carries.
+    address: u64,
+    object_id: u64,
     length: u32,
     block_id: u32,
-    object_id: u64,
     routing_bucket: u32,
     /// Which of the three optional fields above are set, plus whether a generation is present at
     /// all -- four bits of the eight. The generation's VALUE is derived from the two identities;
@@ -276,35 +328,110 @@ pub struct BlockAddress {
 
 /// The width this structure is budgeted at, so a field added to it is a BUILD failure.
 ///
-/// 40 bytes: two 64-bit slab coordinates, one 64-bit identity, two 32-bit narrow fields, the
-/// 32-bit routing bucket and the presence byte -- 37 bytes of field and three of alignment.
-/// Nothing stopped this growing before it was written down; it had already moved twice.
+/// 32 bytes: one 64-bit address word, one 64-bit identity, two 32-bit narrow fields, the 32-bit
+/// routing bucket and the presence byte -- 29 bytes of field and three of alignment. Nothing
+/// stopped this growing before it was written down; it had already moved twice.
 ///
-/// IT WAS 48 UNTIL `generation` CAME OUT, AND NO SINGLE-FIELD NARROWING COULD HAVE DONE IT.
-/// At 48 the payload was 45 bytes inside an 8-aligned struct, so every field here shares one
+/// IT WAS 48, THEN 40, AND BOTH STEPS CAME FROM SHEDDING A WHOLE EIGHT-BYTE FIELD. At 48 the
+/// payload was 45 bytes and at 40 it was 37, and in each case every field shared one
 /// eight-aligned group: taking any ONE field from 8 bytes to 4 -- or from 4 to 2 -- lands the
-/// payload on 41 or 43, and both round straight back up to 48. The four narrowings that look
-/// available (`offset`, `object_id`, `block_slab_id`, `routing_bucket`) are each worth exactly
-/// ZERO on their own. Only shedding a whole eight-byte field crosses the step, which is why the
-/// question was never "can a field here be narrower" but "which field carries nothing of its
-/// own". `generation` was the answer: it was a COPY of `block_id.or(object_id)` at all six
-/// production write sites and on 120,080 of 120,080 live addresses measured.
+/// payload one step below the boundary and it rounds straight back up. So no SINGLE-FIELD
+/// NARROWING has ever been worth anything here, and `block_id` at 32 bits when 16 provably
+/// suffice is still worth exactly zero: it moves the tail from 13 bytes to 11 and both round to
+/// 16.
 ///
-/// 40 is now the FLOOR for this shape. The payload is 37 bytes; reaching 32 would mean shedding
-/// five more, and the three 64-bit fields that remain are each bounded only by a hash width or a
-/// configurable slab target -- see the field notes above.
-const _: () = assert!(std::mem::size_of::<BlockAddress>() == 40);
+/// WHAT THAT RULE DOES NOT SAY, AND USED TO: it does not say a narrowing cannot help. It says a
+/// narrowing of ONE field cannot. Two fields narrowed TOGETHER shed a whole eight bytes between
+/// them and cross the step exactly as shedding a field does -- which is what happened here.
+/// `block_slab_id` and `offset` were 8 bytes each and are now 4 and 4 in one word, and the
+/// comment that used to stand in this place ruled the win out by generalising from one field to
+/// all of them. It cost this structure eight bytes per stored record for as long as it stood.
+///
+/// The payload is now 29 bytes. Reaching 24 would mean shedding five more, and `object_id` is a
+/// full hash width -- see the field notes above.
+const _: () = assert!(std::mem::size_of::<BlockAddress>() == 32);
 
 /// The width is a RECONSTRUCTION, not a total: the eight-aligned group plus the rounded tail.
 ///
 /// Asserted rather than restated, so that a field moving between the two groups cannot leave the
 /// documented arithmetic still adding up to the right answer for the wrong reason.
 const _: () = {
-    let eight_aligned = 3 * 8; // block_slab_id, offset, object_id
+    let eight_aligned = 2 * 8; // address, object_id
     let tail = 4 + 4 + 4 + 1; // length, block_id, routing_bucket, present
     let round_up_tail = (tail + 7) / 8 * 8;
     assert!(eight_aligned + round_up_tail == std::mem::size_of::<BlockAddress>());
 };
+
+/// ONE WORD NAMES A BLOCK: slab in the high 32 bits, offset in the low 32.
+///
+/// Both halves are bounded, and neither bound is arithmetic -- each is something the engine
+/// enforces:
+///
+///   * THE OFFSET is bounded by the slab target, which is now capped at
+///     [`storage_config::MAX_BLOCK_SLAB_TARGET_BYTES`] and refused at configuration load above
+///     it. `should_roll_before_append` rolls whenever `write_offset + record_len` would exceed
+///     the target, and a record is never zero bytes, so the highest offset a store can record
+///     is `target - 1`. At the capped target that is exactly `u32::MAX`.
+///   * THE SLAB ID is bounded by [`MAX_ADDRESSABLE_BLOCK_SLAB_ID`], which sits below the two
+///     sentinel ids. Slab ids are minted sequentially from zero, so a store would have to roll
+///     four billion slabs -- sixteen exbibytes at the capped target -- to reach it.
+///
+/// Nothing here saturates. A saturated length reads as broken because it is larger than any
+/// length the encoder accepts; a saturated address is a perfectly plausible address for a
+/// DIFFERENT block, and a read that follows it returns the wrong bytes with no error anywhere.
+/// So the constructors check, and refuse.
+pub const fn make_block_address_word(block_slab_id: u32, offset: u32) -> u64 {
+    ((block_slab_id as u64) << 32) | (offset as u64)
+}
+
+/// The slab half of an address word. See [`make_block_address_word`].
+pub const fn extract_block_slab_id(address: u64) -> u32 {
+    (address >> 32) as u32
+}
+
+/// The offset half of an address word. See [`make_block_address_word`].
+pub const fn extract_block_offset(address: u64) -> u32 {
+    (address & 0xFFFF_FFFF) as u32
+}
+
+/// The largest slab id an address can name.
+///
+/// The two sentinel slab ids -- `engine::HOT_BLOCK_SLAB_ID` and `wal_record::WAL_LOG_SLAB_ID` --
+/// sit at the top of the 32-bit range, so a real slab id has to stay below them. They used to
+/// sit at the top of the SIXTY-FOUR bit range, which is precisely what made the slab id look
+/// un-narrowable: `record_cost` proved a bare `as u32` destroys them, and it does. Moving them
+/// rather than narrowing around them is what makes the merge possible, and it is a change to the
+/// STORED shape -- see [`BlockAddressWire`].
+pub const MAX_ADDRESSABLE_BLOCK_SLAB_ID: u64 = (u32::MAX as u64) - 2;
+
+/// The largest offset an address can name, which is the whole low half.
+pub const MAX_ADDRESSABLE_BLOCK_OFFSET: u64 = u32::MAX as u64;
+
+/// A slab id or an offset that does not fit in its half of the address word.
+///
+/// Carried as its own error rather than folded into an existing one so that a caller cannot
+/// mistake it for an I/O failure and retry: nothing about retrying a write whose address does
+/// not exist will make the address exist.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BlockAddressOutOfRange {
+    pub block_slab_id: u64,
+    pub offset: u64,
+}
+
+impl std::fmt::Display for BlockAddressOutOfRange {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "block address (slab {}, offset {}) does not fit the address word: a slab id must be \
+             at most {MAX_ADDRESSABLE_BLOCK_SLAB_ID} and an offset at most \
+             {MAX_ADDRESSABLE_BLOCK_OFFSET}. Truncating either half would name a different block, \
+             so this is refused rather than narrowed",
+            self.block_slab_id, self.offset
+        )
+    }
+}
+
+impl std::error::Error for BlockAddressOutOfRange {}
 
 /// SATURATE, NEVER TRUNCATE.
 ///
@@ -349,8 +476,42 @@ impl BlockAddress {
         object_id: Option<u64>,
         routing_bucket: Option<u32>,
     ) -> Self {
+        match Self::try_from_parts(
+            block_slab_id,
+            offset,
+            length,
+            block_id,
+            object_id,
+            routing_bucket,
+        ) {
+            Ok(address) => address,
+            Err(out_of_range) => panic!("{out_of_range}"),
+        }
+    }
+
+    /// THE CHECKED CONSTRUCTOR, AND THE ONLY PLACE THE TWO HALVES ARE PACKED.
+    ///
+    /// Every caller holding a slab id or an offset that is not bounded by construction comes
+    /// through here and handles the refusal: the two block-store appends (an offset recovered
+    /// from a slab file that a previous configuration grew past the cap), the hot-page mint (a
+    /// process-wide counter), and the record decoder (a physical offset inside a slab file this
+    /// binary did not write).
+    ///
+    /// [`BlockAddress::from_parts`] is the same check with the refusal raised instead of
+    /// returned, for callers whose values ARE bounded by construction -- a literal in a test, or
+    /// a value copied out of an address that was already checked once. It panics rather than
+    /// truncating, because a truncated address names a different block.
+    #[allow(clippy::too_many_arguments)]
+    pub fn try_from_parts(
+        block_slab_id: u64,
+        offset: u64,
+        length: u64,
+        block_id: Option<u64>,
+        object_id: Option<u64>,
+        routing_bucket: Option<u32>,
+    ) -> Result<Self, BlockAddressOutOfRange> {
         let has_generation = block_id.is_some() || object_id.is_some();
-        Self::from_wire_parts(
+        Self::try_from_wire_parts(
             block_slab_id,
             offset,
             length,
@@ -359,6 +520,19 @@ impl BlockAddress {
             routing_bucket,
             has_generation,
         )
+    }
+
+    /// The slab and offset packed into one word, which is what the stored form carries.
+    pub fn address_word(&self) -> u64 {
+        self.address
+    }
+
+    /// The offset of this block inside its slab.
+    ///
+    /// Answers in 64 bits, as it always has, over the low half of the address word. See
+    /// [`make_block_address_word`] for what bounds it.
+    pub fn offset(&self) -> u64 {
+        u64::from(extract_block_offset(self.address))
     }
 
     /// The constructor the STORED form uses, which is the only one that may say whether a
@@ -374,7 +548,7 @@ impl BlockAddress {
     /// generation that would disagree with it, so a `true` here always means a value that matches
     /// what the writer recorded.
     #[allow(clippy::too_many_arguments)]
-    fn from_wire_parts(
+    fn try_from_wire_parts(
         block_slab_id: u64,
         offset: u64,
         length: u64,
@@ -382,7 +556,18 @@ impl BlockAddress {
         object_id: Option<u64>,
         routing_bucket: Option<u32>,
         has_generation: bool,
-    ) -> Self {
+    ) -> Result<Self, BlockAddressOutOfRange> {
+        // The two sentinels are ALLOWED above `MAX_ADDRESSABLE_BLOCK_SLAB_ID` -- they are what
+        // that constant reserves room for. Everything else must be a slab id a store could
+        // actually have minted.
+        let slab_fits = block_slab_id <= MAX_ADDRESSABLE_BLOCK_SLAB_ID
+            || crate::wal_record::is_wal_resident(block_slab_id);
+        if !slab_fits || offset > MAX_ADDRESSABLE_BLOCK_OFFSET {
+            return Err(BlockAddressOutOfRange {
+                block_slab_id,
+                offset,
+            });
+        }
         let mut present = 0u8;
         if block_id.is_some() {
             present |= ADDRESS_HAS_BLOCK_ID;
@@ -396,15 +581,14 @@ impl BlockAddress {
         if has_generation {
             present |= ADDRESS_HAS_GENERATION;
         }
-        Self {
-            block_slab_id,
-            offset,
+        Ok(Self {
+            address: make_block_address_word(block_slab_id as u32, offset as u32),
             length: narrow(length),
             block_id: narrow(block_id.unwrap_or_default()),
             object_id: object_id.unwrap_or_default(),
             routing_bucket: routing_bucket.unwrap_or_default(),
             present,
-        }
+        })
     }
 
     /// How many bytes this address covers.
@@ -465,7 +649,15 @@ impl BlockAddress {
     /// Still an `Option` because every caller reads it as one, and it now answers `Some` for
     /// every address -- a slab is always known.
     pub fn slab_id(&self) -> Option<u64> {
-        Some(self.block_slab_id)
+        Some(self.block_slab_id())
+    }
+
+    /// The slab this address is in.
+    ///
+    /// Answers in 64 bits, as the field did, over the high half of the address word. See
+    /// [`make_block_address_word`] for what bounds it.
+    pub fn block_slab_id(&self) -> u64 {
+        u64::from(extract_block_slab_id(self.address))
     }
 
     pub fn set_block_id(&mut self, value: Option<u64>) {
@@ -527,15 +719,15 @@ mod hex_digest {
 
 impl BlockAddress {
     pub fn compact_slab_id(&self) -> Option<u32> {
-        u32::try_from(self.block_slab_id).ok()
+        u32::try_from(self.block_slab_id()).ok()
     }
 
     pub fn compact_slab_offset(&self) -> Option<u32> {
-        u32::try_from(self.offset).ok()
+        u32::try_from(self.offset()).ok()
     }
 
     pub fn compact_slab_address(&self) -> Option<u64> {
-        compact_slab_address_from_parts(self.block_slab_id, self.offset)
+        compact_slab_address_from_parts(self.block_slab_id(), self.offset())
     }
 
     pub fn from_compact_slab_address(compact_slab_address: u64, length: u64) -> Self {
@@ -2788,18 +2980,26 @@ mod address_size_tests {
         (covered, residual)
     }
 
-    /// EVERY ONE OF THE FORTY BYTES, MEASURED RATHER THAN ASSUMED.
+    /// EVERY ONE OF THE THIRTY-TWO BYTES, MEASURED RATHER THAN ASSUMED.
     ///
     /// The layout is `repr(Rust)`, so the compiler is free to reorder: nothing here assumes a
     /// declaration order. Each offset is measured with `offset_of!` and the padding falls out of
     /// the slack between them.
     ///
-    /// WIDTH VERSUS ALIGNMENT, WHICH IS THE WHOLE POINT. The payload is 37 bytes inside a
-    /// 40-byte, 8-aligned struct, so there are exactly 3 bytes of slack. Every field shares one
-    /// eight-aligned group, which means NO SINGLE-FIELD NARROWING IS WORTH ANYTHING: take
-    /// `routing_bucket` from 4 bytes to 2 and the payload is 35, which rounds back to 40. Take
-    /// `offset` from 8 to 4 and it is 33, which rounds back to 40. The only move that pays is
-    /// shedding a whole eight-byte field, which is what `generation` was.
+    /// WIDTH VERSUS ALIGNMENT, WHICH IS THE WHOLE POINT, AND THE PART THAT USED TO BE OVERSTATED.
+    /// The payload is 29 bytes inside a 32-byte, 8-aligned struct, so there are exactly 3 bytes
+    /// of slack. Every field shares one eight-aligned group, which means NO SINGLE-FIELD
+    /// NARROWING IS WORTH ANYTHING: take `routing_bucket` from 4 bytes to 2 and the payload is
+    /// 27, which rounds back to 32; take `block_id` from 4 to 2 -- which the encoder's
+    /// `u16::MAX` refusal proves is safe -- and it is 27 again. The loop at the bottom asserts
+    /// exactly that over the MEASURED payload rather than restating it.
+    ///
+    /// WHAT THAT DOES NOT SAY is that no narrowing can pay. It says no narrowing of ONE field
+    /// can. `block_slab_id` and `offset` were 8 bytes each; narrowing either alone was worth
+    /// zero, and narrowing BOTH sheds a whole eight bytes and crosses the step exactly as
+    /// shedding a field does. That is what the single `address` word here is, and the prose that
+    /// used to stand in this place had generalised the one-field rule into a rule about all
+    /// narrowings -- which is how the eight bytes went unclaimed.
     ///
     /// PROVEN RANGES, not assumed ones. `length` and `block_id` are 32 bits because the encoder
     /// REFUSES anything wider -- `encode_block_record` errors above `BLOCK_RECORD_LENGTH_MASK`
@@ -2807,16 +3007,16 @@ mod address_size_tests {
     /// value that got past them reads as broken. `object_id` is a full FNV-1a hash and uses its
     /// range: measured at 18,403,644,112,878,577,117 on a seeded shard, which needs all 64 bits.
     /// `routing_bucket` measured at 4,294,692,422, which needs all 32 -- so it cannot be narrowed
-    /// to 16 even if that were worth something, and it is not. `block_slab_id` and `offset` are
-    /// bounded only by a configurable slab target, so neither has a range to narrow to.
+    /// to 16 even if that were worth something, and it is not. `address` is two 32-bit halves
+    /// whose bounds are the capped slab target and the reserved sentinel ids -- see
+    /// [`make_block_address_word`].
     #[test]
     fn every_byte_of_a_block_address_is_accounted_for() {
         use std::mem::{align_of, offset_of, size_of};
 
         let total = size_of::<BlockAddress>();
         let fields: Vec<(&'static str, usize, usize)> = vec![
-            ("block_slab_id", offset_of!(BlockAddress, block_slab_id), size_of::<u64>()),
-            ("offset", offset_of!(BlockAddress, offset), size_of::<u64>()),
+            ("address", offset_of!(BlockAddress, address), size_of::<u64>()),
             ("object_id", offset_of!(BlockAddress, object_id), size_of::<u64>()),
             ("length", offset_of!(BlockAddress, length), size_of::<u32>()),
             ("block_id", offset_of!(BlockAddress, block_id), size_of::<u32>()),
@@ -2838,16 +3038,26 @@ mod address_size_tests {
         println!("  tail padding {}", total - cursor);
         println!("  field bytes {covered}, padding {padding}, total {total}");
 
-        assert_eq!(covered, 37, "the payload is 37 bytes of field");
+        assert_eq!(covered, 29, "the payload is 29 bytes of field");
         assert_eq!(padding, 3, "and three of alignment");
         assert_eq!(covered + padding, total);
-        assert_eq!(total, 40);
+        assert_eq!(total, 32);
         assert_eq!(align_of::<BlockAddress>(), 8);
 
         // The reconstruction, not the total: the eight-aligned group plus the rounded tail.
-        let eight_aligned: usize = 3 * 8;
+        let eight_aligned: usize = 2 * 8;
         let tail: usize = 4 + 4 + 4 + 1;
         assert_eq!(eight_aligned + tail.div_ceil(8) * 8, total);
+
+        // AND THE MERGE IS NOT A NARROWING THAT HAPPENED TO PAY -- it sheds a whole eight-byte
+        // field's worth. Stated over the measured payload so it cannot drift: the two halves
+        // together occupy one 8-byte slot where they used to occupy two.
+        assert_eq!(
+            covered + 8,
+            37,
+            "the payload was 37 bytes before the two address halves merged; it is {covered} now, \
+             so the step this change claims is not the step it took"
+        );
 
         // A NARROWING THAT DOES NOT CROSS THE STEP IS WORTH ZERO. Stated as arithmetic over the
         // measured payload rather than as prose, so it cannot quietly stop being true.
@@ -3003,15 +3213,23 @@ mod address_size_tests {
         );
         let json = serde_json::to_value(&address).unwrap();
         // What is written now: the short names, and nothing else.
-        assert_eq!(json["ps"], 5, "the page slab id");
-        assert_eq!(json["o"], 64, "the offset");
+        // ONE WORD, TWO NUMBERS: slab 5 in the high half, offset 64 in the low half.
+        assert_eq!(
+            json["a"],
+            make_block_address_word(5, 64),
+            "the packed address word"
+        );
+        assert!(
+            json.get("ps").is_none() && json.get("o").is_none(),
+            "the split slab id and offset must not be written any more"
+        );
         assert_eq!(json["l"], 128, "the length");
         assert_eq!(json["rs"], 3, "the routing bucket");
         assert!(
             json.get("b").is_none(),
             "the slab id is derived rather than written"
         );
-        for long in ["page_segment_id", "routing_slot", "band_id", "object_id", "generation"] {
+        for long in ["page_segment_id", "offset", "routing_slot", "band_id", "object_id", "generation"] {
             assert!(
                 json.get(long).is_none(),
                 "{long} is a read alias now, not something to write"
@@ -3024,8 +3242,9 @@ mod address_size_tests {
         let round_tripped: BlockAddress = serde_json::from_value(json).unwrap();
         assert_eq!(round_tripped, address, "an address written now must read back identical");
         let long_form = serde_json::json!({
-            "page_segment_id": 5_u64,
-            "offset": 64_u64,
+            // The long names that are RENAMES still read; the split address does not,
+            // and there is no long spelling of the merged word -- it is new.
+            "a": (5_u64 << 32) | 64_u64,
             "length": 128_u64,
             "page_id": 1_u64,
             "object_id": 2_u64,
@@ -3079,7 +3298,7 @@ mod address_size_tests {
     #[test]
     fn an_index_whose_generation_disagrees_is_refused_loudly() {
         let wrong_value = serde_json::json!({
-            "ps": 5_u64, "o": 64_u64, "l": 128_u64,
+            "a": 21474836544_u64, "l": 128_u64,
             "pi": 4_u64, "oi": 2_u64, "rs": 3_u32, "g": 7_u64,
         });
         let err = serde_json::from_value::<BlockAddress>(wrong_value).unwrap_err();
@@ -3096,7 +3315,7 @@ mod address_size_tests {
         // resolves through would move -- which is the same data loss the refusal above prevents,
         // arriving from the opposite direction.
         let absent_generation = serde_json::json!({
-            "ps": 5_u64, "o": 64_u64, "l": 128_u64,
+            "a": 21474836544_u64, "l": 128_u64,
             "pi": 4_u64, "oi": 2_u64, "rs": 3_u32,
         });
         let loaded: BlockAddress = serde_json::from_value(absent_generation)
@@ -3111,7 +3330,7 @@ mod address_size_tests {
         // THE NEGATIVE CONTROL: the guard must accept the shape it is not guarding against, or it
         // would be refusing every index rather than the disagreeing ones.
         let agreeing = serde_json::json!({
-            "ps": 5_u64, "o": 64_u64, "l": 128_u64,
+            "a": 21474836544_u64, "l": 128_u64,
             "pi": 4_u64, "oi": 2_u64, "rs": 3_u32, "g": 4_u64,
         });
         let loaded: BlockAddress = serde_json::from_value(agreeing).unwrap();
@@ -3119,7 +3338,7 @@ mod address_size_tests {
 
         // And an address with NEITHER identity carries no generation, which is agreement, not
         // disagreement -- the band the guard must exclude.
-        let neither = serde_json::json!({ "ps": 5_u64, "o": 64_u64, "l": 128_u64 });
+        let neither = serde_json::json!({ "a": 21474836544_u64, "l": 128_u64 });
         let loaded: BlockAddress = serde_json::from_value(neither).unwrap();
         assert_eq!(loaded.generation(), None);
     }
@@ -3675,8 +3894,13 @@ const RETIRED_NAMES: &[&str] = &[
         // `checksum` aliases. All of them must still land, or an index already on disk stops
         // resolving and the blocks it points at become unreachable.
         let legacy = serde_json::json!({
-            "page_segment_id": 3_u64,
-            "offset": 128_u64,
+            // THE RENAMES STILL LOAD; THE SPLIT ADDRESS DOES NOT, AND THEY ARE DIFFERENT THINGS.
+            // Every other key here is the same number under an older name, which is free to
+            // read. The slab id and the offset were two FIELDS and are now two halves of one
+            // word, which is a shape change with no safe reading -- so this fixture carries the
+            // merged word and `a_split_address_is_refused_and_a_merged_one_round_trips` drives
+            // the refusal of the shape this line used to hold.
+            "a": (3_u64 << 32) | 128_u64,
             "length": 126_u64,
             "page_id": 9_u64,
             "object_id": 122110326161599232_u64,
@@ -3691,8 +3915,8 @@ const RETIRED_NAMES: &[&str] = &[
             "checksum": "c38c2bf3055c516a98ac5d97f30e7c364e827bc0a1b2c3d4e5f60718293a4b5c"
         });
         let address: BlockAddress = serde_json::from_value(legacy).expect("a legacy address loads");
-        assert_eq!(address.block_slab_id, 3);
-        assert_eq!(address.offset, 128);
+        assert_eq!(address.block_slab_id(), 3);
+        assert_eq!(address.offset(), 128);
         assert_eq!(address.length, 126);
         // Every other field the legacy record carried, under whichever name it used: this is the
         // "all of them must still land" the comment above promises, and asserting one of them was
@@ -3784,7 +4008,7 @@ const RETIRED_NAMES: &[&str] = &[
         drop(store);
         // Simulate a crash that left a partial/torn record (no valid envelope) on the ACTIVE
         // slab past the last committed record.
-        let slab = slab_path(dir.path(), a2.block_slab_id);
+        let slab = slab_path(dir.path(), a2.block_slab_id());
         let clean_len = std::fs::metadata(&slab).unwrap().len();
         {
             use std::io::Write;
@@ -3813,9 +4037,9 @@ const RETIRED_NAMES: &[&str] = &[
         // blocks of three different objects all being block 0 is expected and says nothing
         // about where they landed.
         let a3 = reopened.append(b"record-three").unwrap();
-        assert_eq!(a3.offset, clean_len, "a new append starts at the fenced prefix");
-        assert_ne!(a3.offset, a1.offset);
-        assert_ne!(a3.offset, a2.offset);
+        assert_eq!(a3.offset(), clean_len, "a new append starts at the fenced prefix");
+        assert_ne!(a3.offset(), a1.offset());
+        assert_ne!(a3.offset(), a2.offset());
         assert_eq!(reopened.read(&a3).unwrap(), b"record-three");
     }
 
@@ -3970,7 +4194,7 @@ const RETIRED_NAMES: &[&str] = &[
         let mut guard = 0;
         let mut full_slab = 0;
         while !store.needs_slab_preparation_with_target(TARGET) {
-            full_slab = store.append(&payload).unwrap().block_slab_id;
+            full_slab = store.append(&payload).unwrap().block_slab_id();
             guard += 1;
             assert!(guard < 200, "filled {guard} times without reaching the target");
         }
@@ -3984,7 +4208,7 @@ const RETIRED_NAMES: &[&str] = &[
 
         // The next append lands on the fresh slab, and did not have to roll to get there.
         let after = store.append(&payload).unwrap();
-        assert_eq!(after.block_slab_id, rolled.new_block_slab_id);
+        assert_eq!(after.block_slab_id(), rolled.new_block_slab_id);
     }
 
     /// Prepare must be a no-op while the slab has room, or a background cycle would shred the
@@ -4051,14 +4275,14 @@ const RETIRED_NAMES: &[&str] = &[
         let dir = tempfile::tempdir().unwrap();
         let store = BlockStore::new(dir.path());
         let first = store.append(b"first").unwrap();
-        assert_eq!(first.block_slab_id, 0);
+        assert_eq!(first.block_slab_id(), 0);
 
         let roll = store.roll_slab().unwrap();
         assert_eq!(roll.previous_block_slab_id, 0);
         assert_eq!(roll.new_block_slab_id, 1);
         let second = store.append(b"second").unwrap();
-        assert_eq!(second.block_slab_id, 1);
-        assert_eq!(second.offset, 0);
+        assert_eq!(second.block_slab_id(), 1);
+        assert_eq!(second.offset(), 0);
         assert_eq!(store.read(&first).unwrap(), b"first");
         assert_eq!(store.read(&second).unwrap(), b"second");
     }
@@ -4070,13 +4294,13 @@ const RETIRED_NAMES: &[&str] = &[
         let first = store.append(b"first").unwrap();
         let roll = store.roll_slab().unwrap();
         let second = store.append(b"second").unwrap();
-        assert_eq!(roll.new_block_slab_id, second.block_slab_id);
+        assert_eq!(roll.new_block_slab_id, second.block_slab_id());
 
         let reopened = BlockStore::new(dir.path());
         let third = reopened.append(b"third").unwrap();
 
-        assert_eq!(third.block_slab_id, second.block_slab_id);
-        assert!(third.offset > second.offset);
+        assert_eq!(third.block_slab_id(), second.block_slab_id());
+        assert!(third.offset() > second.offset());
         assert_eq!(reopened.read(&first).unwrap(), b"first");
         assert_eq!(reopened.read(&second).unwrap(), b"second");
         assert_eq!(reopened.read(&third).unwrap(), b"third");
@@ -4099,7 +4323,7 @@ const RETIRED_NAMES: &[&str] = &[
             .as_array()
             .unwrap()
             .iter()
-            .find(|slab| slab["page_segment_id"] == serde_json::json!(first.block_slab_id))
+            .find(|slab| slab["page_segment_id"] == serde_json::json!(first.block_slab_id()))
             .unwrap()
             .clone()]);
         fs::write(
@@ -4113,11 +4337,11 @@ const RETIRED_NAMES: &[&str] = &[
 
         assert!(descriptors
             .iter()
-            .any(|slab| slab.block_slab_id == first.block_slab_id
+            .any(|slab| slab.block_slab_id == first.block_slab_id()
                 && slab.state == BlockStoreSlabState::Sealed));
         assert!(descriptors
             .iter()
-            .any(|slab| slab.block_slab_id == second.block_slab_id
+            .any(|slab| slab.block_slab_id == second.block_slab_id()
                 && slab.state == BlockStoreSlabState::Active));
         let report = reopened.stream_backed_slab_runtime_report().unwrap();
         assert!(report.slab_manifest_reconciled_on_open);
@@ -4138,18 +4362,18 @@ const RETIRED_NAMES: &[&str] = &[
         let second = store.append(b"second").unwrap();
         drop(store);
 
-        fs::remove_file(slab_path(dir.path(), first.block_slab_id)).unwrap();
+        fs::remove_file(slab_path(dir.path(), first.block_slab_id())).unwrap();
 
         let reopened = BlockStore::new(dir.path());
         let descriptors = reopened.slab_descriptors();
 
         assert!(descriptors
             .iter()
-            .any(|slab| slab.block_slab_id == first.block_slab_id
+            .any(|slab| slab.block_slab_id == first.block_slab_id()
                 && slab.state == BlockStoreSlabState::Purged));
         assert!(descriptors
             .iter()
-            .any(|slab| slab.block_slab_id == second.block_slab_id
+            .any(|slab| slab.block_slab_id == second.block_slab_id()
                 && slab.state == BlockStoreSlabState::Active));
         let report = reopened.stream_backed_slab_runtime_report().unwrap();
         assert!(report.slab_manifest_reconciled_on_open);
@@ -4167,8 +4391,8 @@ const RETIRED_NAMES: &[&str] = &[
 
         let next = store.append(b"after-restore").unwrap();
 
-        assert_eq!(next.block_slab_id, 3);
-        assert_eq!(next.offset, b"restored-segment".len() as u64);
+        assert_eq!(next.block_slab_id(), 3);
+        assert_eq!(next.offset(), b"restored-segment".len() as u64);
         assert_eq!(next.compact_slab_id(), Some(3));
         assert_eq!(
             next.compact_slab_offset(),
@@ -4182,8 +4406,8 @@ const RETIRED_NAMES: &[&str] = &[
             next.compact_slab_address().unwrap(),
             next.length(),
         );
-        assert_eq!(from_compact_slab.block_slab_id, next.block_slab_id);
-        assert_eq!(from_compact_slab.offset, next.offset);
+        assert_eq!(from_compact_slab.block_slab_id(), next.block_slab_id());
+        assert_eq!(from_compact_slab.offset(), next.offset());
         assert_eq!(from_compact_slab.length, next.length);
         assert_eq!(store.read(&next).unwrap(), b"after-restore");
     }
@@ -4202,9 +4426,9 @@ const RETIRED_NAMES: &[&str] = &[
         let payload = b"digest-lives-with-the-page";
         let address = store.append(payload).unwrap();
 
-        let path = slab_path(dir.path(), address.block_slab_id);
+        let path = slab_path(dir.path(), address.block_slab_id());
         let slab = fs::read(&path).unwrap();
-        let start = address.offset as usize;
+        let start = address.offset() as usize;
         let record = &slab[start..start + address.length as usize];
         let at = record::BLOCK_RECORD_CHECKSUM_OFFSET;
         let field = &record[at..at + record::BLOCK_RECORD_CHECKSUM_LEN];
@@ -4224,13 +4448,15 @@ const RETIRED_NAMES: &[&str] = &[
             4,
             "the field is the checksum and nothing else: no padding, no marker"
         );
-        // Three u64, three u32 and the presence byte: 37 bytes of field in 40. It was 64 while
-        // the grouping id was a seventh field; it is the slab's own id, so it is read off
-        // `block_slab_id` instead of stored. It was 56 while `length` and `block_id` were 64-bit
-        // fields holding values the block-record encoder refuses above 2^30 and above `u16::MAX`
-        // respectively, and 48 while `generation` was stored rather than derived from
-        // `block_id.or(object_id)` -- see the note on `BlockAddress` and `per_item_byte_budget`.
-        assert_eq!(std::mem::size_of::<BlockAddress>(), 40);
+        // Two u64, three u32 and the presence byte: 29 bytes of field in 32. It was 64 while
+        // the grouping id was a seventh field; it is the slab's own id, so it is read off the
+        // address instead of stored. It was 56 while `length` and `block_id` were 64-bit fields
+        // holding values the block-record encoder refuses above 2^30 and above `u16::MAX`
+        // respectively, 48 while `generation` was stored rather than derived from
+        // `block_id.or(object_id)`, and 40 while the slab id and the offset were two 64-bit
+        // fields rather than two halves of one word -- see the note on `BlockAddress` and
+        // `per_item_byte_budget`.
+        assert_eq!(std::mem::size_of::<BlockAddress>(), 32);
     }
 
     #[test]
@@ -4242,7 +4468,7 @@ const RETIRED_NAMES: &[&str] = &[
         // against it -- corrupting the slab below must still be caught.
         assert_eq!(store.read(&address).unwrap(), b"verified-page");
 
-        let path = slab_path(dir.path(), address.block_slab_id);
+        let path = slab_path(dir.path(), address.block_slab_id());
         let mut slab = fs::read(&path).unwrap();
         *slab.last_mut().unwrap() ^= 0xff;
         fs::write(path, slab).unwrap();
@@ -4259,8 +4485,8 @@ const RETIRED_NAMES: &[&str] = &[
             .append_with_block_metadata(b"address-contract", Some(4242), Some(17))
             .unwrap();
 
-        assert_eq!(address.block_slab_id, 0);
-        assert_eq!(address.offset, 0);
+        assert_eq!(address.block_slab_id(), 0);
+        assert_eq!(address.offset(), 0);
         assert!(address.length() > b"address-contract".len() as u64);
         assert_eq!(address.block_id(), Some(0));
         assert_eq!(address.object_id(), Some(4242));
@@ -4274,16 +4500,17 @@ const RETIRED_NAMES: &[&str] = &[
             address.length(),
         );
         assert_eq!(
-            from_compact_slab.block_slab_id,
-            address.block_slab_id
+            from_compact_slab.block_slab_id(),
+            address.block_slab_id()
         );
-        assert_eq!(from_compact_slab.offset, address.offset);
+        assert_eq!(from_compact_slab.offset(), address.offset());
         assert_eq!(from_compact_slab.length, address.length);
         assert_eq!(store.read(&address).unwrap(), b"address-contract");
 
         let legacy_alias_json = serde_json::json!({
-            "page_segment_id": address.block_slab_id,
-            "offset": address.offset,
+            // The renames still load; the split address does not. See
+            // `a_split_address_is_refused_and_a_merged_one_round_trips`.
+            "a": address.address_word(),
             "length": address.length,
             "page_id": address.block_id(),
             "object_id": address.object_id(),
@@ -4315,7 +4542,7 @@ const RETIRED_NAMES: &[&str] = &[
         let dir = tempfile::tempdir().unwrap();
         let store = BlockStore::new(dir.path());
         let address = store.append(b"enveloped-page").unwrap();
-        let raw = store.read_slab(address.block_slab_id).unwrap();
+        let raw = store.read_slab(address.block_slab_id()).unwrap();
 
         assert_eq!(address.block_id(), Some(0));
         assert_eq!(store.read(&address).unwrap(), b"enveloped-page");
@@ -4566,8 +4793,8 @@ const RETIRED_NAMES: &[&str] = &[
         let roll = store.roll_slab().unwrap();
         let second = store.append(b"second-slab").unwrap();
 
-        assert_eq!(first.slab_id(), Some(first.block_slab_id));
-        assert_eq!(second.slab_id(), Some(second.block_slab_id));
+        assert_eq!(first.slab_id(), Some(first.block_slab_id()));
+        assert_eq!(second.slab_id(), Some(second.block_slab_id()));
         assert_eq!(second.slab_id(), Some(roll.new_block_slab_id));
         assert_ne!(first.slab_id(), second.slab_id());
     }
@@ -4582,13 +4809,13 @@ const RETIRED_NAMES: &[&str] = &[
 
         let slabs = store.slab_descriptors();
         assert_eq!(slabs.len(), 2);
-        assert_eq!(slabs[0].block_slab_id, first.block_slab_id);
+        assert_eq!(slabs[0].block_slab_id, first.block_slab_id());
         assert_eq!(slabs[0].state, BlockStoreSlabState::Sealed);
         assert_eq!(slabs[0].first_block_id, first.block_id());
         assert_eq!(slabs[0].last_block_id, first.block_id());
         assert!(slabs[0].created_unix_ms.is_some());
         assert!(slabs[0].updated_unix_ms.is_some());
-        assert_eq!(slabs[1].block_slab_id, second.block_slab_id);
+        assert_eq!(slabs[1].block_slab_id, second.block_slab_id());
         assert_eq!(slabs[1].state, BlockStoreSlabState::Active);
         assert_eq!(slabs[1].first_block_id, second.block_id());
         assert_eq!(slabs[1].last_block_id, second.block_id());
@@ -4712,7 +4939,7 @@ const RETIRED_NAMES: &[&str] = &[
         let delayed_slab_usage = reopened.slab_usage();
         let delayed_first = delayed_slab_usage
             .iter()
-            .find(|slab| slab.block_slab_id == first.block_slab_id)
+            .find(|slab| slab.block_slab_id == first.block_slab_id())
             .unwrap();
         assert_eq!(
             delayed_first.reclaimable_block_store_used_bytes,
@@ -4742,7 +4969,7 @@ const RETIRED_NAMES: &[&str] = &[
         let purged_slab_usage = BlockStore::new(dir.path()).slab_usage();
         let purged_first = purged_slab_usage
             .iter()
-            .find(|slab| slab.block_slab_id == first.block_slab_id)
+            .find(|slab| slab.block_slab_id == first.block_slab_id())
             .unwrap();
         assert_eq!(
             purged_first.purged_block_store_used_bytes,
@@ -4768,13 +4995,13 @@ const RETIRED_NAMES: &[&str] = &[
         let slabs = rebuilt.slab_descriptors();
 
         assert_eq!(slabs.len(), 2);
-        assert_eq!(slabs[0].block_slab_id, first.block_slab_id);
+        assert_eq!(slabs[0].block_slab_id, first.block_slab_id());
         assert_eq!(slabs[0].state, BlockStoreSlabState::Sealed);
         assert_eq!(slabs[0].first_block_id, first.block_id());
         assert_eq!(slabs[0].last_block_id, first.block_id());
         assert!(slabs[0].created_unix_ms.is_some());
         assert!(slabs[0].updated_unix_ms.is_some());
-        assert_eq!(slabs[1].block_slab_id, second.block_slab_id);
+        assert_eq!(slabs[1].block_slab_id, second.block_slab_id());
         assert_eq!(slabs[1].state, BlockStoreSlabState::Active);
         assert_eq!(slabs[1].first_block_id, second.block_id());
         assert_eq!(slabs[1].last_block_id, second.block_id());
@@ -4817,7 +5044,7 @@ const RETIRED_NAMES: &[&str] = &[
         store.roll_slab().unwrap();
         let second = store.append(b"active-clean-tail").unwrap();
 
-        let first_slab = slab_path(dir.path(), first.block_slab_id);
+        let first_slab = slab_path(dir.path(), first.block_slab_id());
         let readable_prefix = fs::metadata(&first_slab).unwrap().len();
         OpenOptions::new()
             .append(true)
@@ -4834,7 +5061,7 @@ const RETIRED_NAMES: &[&str] = &[
         let slabs = rebuilt.slab_descriptors();
         let sealed = slabs
             .iter()
-            .find(|slab| slab.block_slab_id == first.block_slab_id)
+            .find(|slab| slab.block_slab_id == first.block_slab_id())
             .unwrap();
         assert_eq!(sealed.state, BlockStoreSlabState::Sealed);
         assert!(sealed.has_corruption);
@@ -5000,7 +5227,7 @@ const RETIRED_NAMES: &[&str] = &[
         let second_payload = b"suffix-".repeat(80);
         let first = store.append(&first_payload).unwrap();
         let second = store.append(&second_payload).unwrap();
-        let raw = store.read_slab(first.block_slab_id).unwrap();
+        let raw = store.read_slab(first.block_slab_id()).unwrap();
 
         assert!(first.length() < (record::BLOCK_RECORD_HEADER_LEN + first_payload.len()) as u64);
         assert!(second.length() < (record::BLOCK_RECORD_HEADER_LEN + second_payload.len()) as u64);
@@ -5009,7 +5236,7 @@ const RETIRED_NAMES: &[&str] = &[
 
         let logical_offset = first_payload.len() as u64 - 3;
         let logical = store
-            .read_logical_range(first.block_slab_id, logical_offset, 12)
+            .read_logical_range(first.block_slab_id(), logical_offset, 12)
             .unwrap();
         let mut expected = Vec::new();
         expected.extend_from_slice(&first_payload[first_payload.len() - 3..]);
@@ -5043,11 +5270,11 @@ const RETIRED_NAMES: &[&str] = &[
         let second = store
             .append_with_block_metadata(&second_payload, Some(12), Some(7))
             .unwrap();
-        assert_eq!(first.block_slab_id, second.block_slab_id);
+        assert_eq!(first.block_slab_id(), second.block_slab_id());
 
         let logical_offset = first_payload.len() as u64 - 8;
         let logical = store
-            .read_logical_range(first.block_slab_id, logical_offset, 16)
+            .read_logical_range(first.block_slab_id(), logical_offset, 16)
             .unwrap();
         let mut expected = Vec::new();
         expected.extend_from_slice(&first_payload[first_payload.len() - 8..]);
@@ -5059,7 +5286,7 @@ const RETIRED_NAMES: &[&str] = &[
         let third = store
             .append_with_block_metadata(&third_payload, Some(13), Some(8))
             .unwrap();
-        assert_eq!(third.block_slab_id, roll.new_block_slab_id);
+        assert_eq!(third.block_slab_id(), roll.new_block_slab_id);
         let before_gc = store.stream_backed_slab_runtime_report().unwrap();
         assert!(before_gc.runtime_ready, "{before_gc:?}");
         assert_eq!(before_gc.active_slabs, 1);
@@ -5178,7 +5405,7 @@ const RETIRED_NAMES: &[&str] = &[
         let reports = store.slab_reports().unwrap();
 
         assert_eq!(reports.len(), 1);
-        assert_eq!(reports[0].block_slab_id, first.block_slab_id);
+        assert_eq!(reports[0].block_slab_id, first.block_slab_id());
         assert_eq!(reports[0].physical_bytes, first.length() + second.length());
         assert_eq!(
             reports[0].logical_bytes,
@@ -5198,9 +5425,9 @@ const RETIRED_NAMES: &[&str] = &[
         assert_eq!(reports[0].block_index_entries.len(), 2);
         assert_eq!(
             reports[0].block_index_entries[0].block_slab_id,
-            first.block_slab_id
+            first.block_slab_id()
         );
-        assert_eq!(reports[0].block_index_entries[0].offset, first.offset);
+        assert_eq!(reports[0].block_index_entries[0].offset, first.offset());
         assert_eq!(reports[0].block_index_entries[0].length, first.length());
         assert_eq!(
             reports[0].block_index_entries[0].compact_slab_address,
@@ -5223,7 +5450,7 @@ const RETIRED_NAMES: &[&str] = &[
         assert!(!reports[0].block_index_entries[0].dirty);
         assert!(!reports[0].block_index_entries[0].deleted);
         assert!(!reports[0].block_index_entries[0].block_in_log);
-        assert_eq!(reports[0].block_index_entries[1].offset, second.offset);
+        assert_eq!(reports[0].block_index_entries[1].offset, second.offset());
         assert_eq!(reports[0].block_index_entries[1].length, second.length());
         assert_eq!(reports[0].block_index_entries[1].block_id, second.block_id());
         assert_eq!(reports[0].first_error, None);
@@ -5235,7 +5462,7 @@ const RETIRED_NAMES: &[&str] = &[
         let store = BlockStore::new(dir.path());
         let first = store.append(b"healthy").unwrap();
         let second = store.append(b"damaged").unwrap();
-        let path = slab_path(dir.path(), second.block_slab_id);
+        let path = slab_path(dir.path(), second.block_slab_id());
         let mut slab = fs::read(&path).unwrap();
         *slab.last_mut().unwrap() ^= 0xff;
         fs::write(path, slab).unwrap();
@@ -5271,7 +5498,7 @@ const RETIRED_NAMES: &[&str] = &[
         );
         let disabled_address = disabled_store.append(&payload).unwrap();
         let disabled_raw = disabled_store
-            .read_slab(disabled_address.block_slab_id)
+            .read_slab(disabled_address.block_slab_id())
             .unwrap();
 
         // Stated from the values that went in, because a varint header has no fixed length: it
@@ -5301,7 +5528,7 @@ const RETIRED_NAMES: &[&str] = &[
         );
         let threshold_address = threshold_store.append(&payload).unwrap();
         let threshold_raw = threshold_store
-            .read_slab(threshold_address.block_slab_id)
+            .read_slab(threshold_address.block_slab_id())
             .unwrap();
 
         let threshold_header = record::BLOCK_RECORD_HEADER_LEN;
@@ -5320,7 +5547,7 @@ const RETIRED_NAMES: &[&str] = &[
         let dir = tempfile::tempdir().unwrap();
         let store = BlockStore::new(dir.path());
         let address = store.append(&b"compress-me-".repeat(80)).unwrap();
-        let path = slab_path(dir.path(), address.block_slab_id);
+        let path = slab_path(dir.path(), address.block_slab_id());
         let mut slab = fs::read(&path).unwrap();
         *slab.last_mut().unwrap() ^= 0xff;
         fs::write(path, slab).unwrap();
@@ -5337,7 +5564,7 @@ const RETIRED_NAMES: &[&str] = &[
         let dir = tempfile::tempdir().unwrap();
         let store = BlockStore::new(dir.path());
         let address = store.append(b"header-checked-page").unwrap();
-        let path = slab_path(dir.path(), address.block_slab_id);
+        let path = slab_path(dir.path(), address.block_slab_id());
         let mut slab = fs::read(&path).unwrap();
         // Make the block say it is far larger than the record holds. The size sits at a
         // constant offset now, so this corrupts the number itself rather than payload bytes,
@@ -5362,7 +5589,7 @@ const RETIRED_NAMES: &[&str] = &[
         let store = BlockStore::new(dir.path());
         let legacy_address = BlockAddress::from_parts(0, 0, b"alteredpage".len() as u64, None, None, None);
         fs::write(
-            slab_path(dir.path(), legacy_address.block_slab_id),
+            slab_path(dir.path(), legacy_address.block_slab_id()),
             b"alteredpage",
         )
         .unwrap();
@@ -7280,6 +7507,296 @@ const RETIRED_NAMES: &[&str] = &[
         );
     }
 
+    /// THE CEILING THE ADDRESS WORD RESTS ON, ASKED AT THE CAP AND NOT AT THE FIXTURE DEFAULT.
+    ///
+    /// The low half of an address holds `0 ..= u32::MAX`, and what keeps a recorded offset inside
+    /// that is the roll predicate, not arithmetic. The claim is "an offset can never EQUAL the
+    /// slab target", and the two assertions below are the whole proof of it at the largest target
+    /// an operator may now configure -- one that a fixture would have to write four gibibytes to
+    /// reach, which is why this asks the predicate directly.
+    ///
+    /// The fixture default proves nothing here: at a 1 GiB target every offset fits in 30 bits
+    /// and the boundary is never approached. This campaign has twice shipped a premise that was
+    /// true at the default and false at what an operator is told to set.
+    #[test]
+    fn an_offset_can_never_equal_the_slab_target_so_the_low_half_holds_it() {
+        let cap = crate::storage_config::MAX_BLOCK_SLAB_TARGET_BYTES;
+        assert_eq!(
+            cap - 1,
+            MAX_ADDRESSABLE_BLOCK_OFFSET,
+            "the cap and the addressable offset must be one apart, or one of them is wrong"
+        );
+
+        // THE HIGHEST OFFSET A STORE CAN RECORD. At a target of 2^32 a record starting at
+        // 2^32 - 1 does not roll, so that offset IS reachable -- and it is exactly u32::MAX.
+        assert!(
+            !should_roll_before_append(MAX_ADDRESSABLE_BLOCK_OFFSET, 1, cap),
+            "an offset of u32::MAX must still be writable at the capped target, or the ceiling \
+             is lower than the cap says"
+        );
+
+        // AND THE FIRST OFFSET IT CANNOT. At the target itself, any record at all rolls, so no
+        // record is ever recorded at an offset equal to the target. `record_len >= 1` is what
+        // makes this total: `encode_block_record` always emits at least a header.
+        assert!(
+            should_roll_before_append(cap, 1, cap),
+            "an offset equal to the target must roll; if it did not, the usable ceiling would be \
+             the target minus one RECORD rather than minus one BYTE"
+        );
+        assert!(
+            crate::block_store::record::BLOCK_RECORD_HEADER_LEN >= 1,
+            "a zero-length record would make the roll predicate's strict comparison reachable at \
+             the target itself, and the offset would not fit"
+        );
+
+        // The round trip AT that ceiling, through the real constructor rather than through the
+        // packing helpers alone.
+        let at_ceiling = BlockAddress::try_from_parts(
+            MAX_ADDRESSABLE_BLOCK_SLAB_ID,
+            MAX_ADDRESSABLE_BLOCK_OFFSET,
+            4,
+            Some(1),
+            Some(2),
+            Some(3),
+        )
+        .expect("the ceiling itself must be addressable");
+        assert_eq!(at_ceiling.block_slab_id(), MAX_ADDRESSABLE_BLOCK_SLAB_ID);
+        assert_eq!(at_ceiling.offset(), MAX_ADDRESSABLE_BLOCK_OFFSET);
+
+        // And through the stored form, because that is where a merged word is actually carried.
+        let stored = serde_json::to_string(&at_ceiling).expect("address serializes");
+        let back: BlockAddress = serde_json::from_str(&stored).expect("address round-trips");
+        assert_eq!(back, at_ceiling, "the ceiling did not survive the stored form");
+    }
+
+    /// A SLAB ID THAT DOES NOT FIT IS REFUSED. Fed one, and the refusal is the assertion.
+    ///
+    /// The control is the half that matters: the value one below is ACCEPTED, so this is a
+    /// boundary and not a constructor that refuses everything. And the truncation that would have
+    /// happened instead is spelled out -- `as u32` on the refused id produces a small, entirely
+    /// plausible slab id, which is why saturating or narrowing here would be corruption rather
+    /// than a visible failure.
+    #[test]
+    fn an_out_of_range_slab_id_is_refused_rather_than_truncated() {
+        let too_large = MAX_ADDRESSABLE_BLOCK_SLAB_ID + 3; // past the two reserved sentinels too
+        let refused = BlockAddress::try_from_parts(too_large, 0, 4, Some(1), None, None)
+            .expect_err("a slab id past the addressable range must be refused");
+        assert_eq!(refused.block_slab_id, too_large);
+        assert!(
+            refused.to_string().contains("does not fit the address word"),
+            "the refusal does not say what is wrong: {refused}"
+        );
+
+        let accepted =
+            BlockAddress::try_from_parts(MAX_ADDRESSABLE_BLOCK_SLAB_ID, 0, 4, Some(1), None, None)
+                .expect("the largest addressable slab id must be accepted");
+        assert_eq!(accepted.block_slab_id(), MAX_ADDRESSABLE_BLOCK_SLAB_ID);
+
+        assert_ne!(
+            u64::from(too_large as u32),
+            too_large,
+            "this id survives a truncation, so it does not demonstrate what the refusal prevents"
+        );
+    }
+
+    /// AN OFFSET THAT DOES NOT FIT IS REFUSED. Fed one, with the same two controls.
+    #[test]
+    fn an_out_of_range_offset_is_refused_rather_than_truncated() {
+        let too_large = MAX_ADDRESSABLE_BLOCK_OFFSET + 1;
+        let refused = BlockAddress::try_from_parts(1, too_large, 4, Some(1), None, None)
+            .expect_err("an offset past the addressable range must be refused");
+        assert_eq!(refused.offset, too_large);
+        assert!(
+            refused.to_string().contains("does not fit the address word"),
+            "the refusal does not say what is wrong: {refused}"
+        );
+
+        let accepted =
+            BlockAddress::try_from_parts(1, MAX_ADDRESSABLE_BLOCK_OFFSET, 4, Some(1), None, None)
+                .expect("the largest addressable offset must be accepted");
+        assert_eq!(accepted.offset(), MAX_ADDRESSABLE_BLOCK_OFFSET);
+
+        // Truncated, this offset is ZERO -- the first record in the slab. A read following it
+        // would return a real block's bytes, with no error anywhere.
+        assert_eq!(
+            too_large as u32, 0,
+            "this offset does not truncate to a plausible one, so it does not demonstrate what \
+             the refusal prevents"
+        );
+    }
+
+    /// The infallible spelling RAISES the same refusal rather than truncating.
+    #[test]
+    #[should_panic(expected = "does not fit the address word")]
+    fn from_parts_panics_on_an_address_it_cannot_name() {
+        let _ = BlockAddress::from_parts(1, MAX_ADDRESSABLE_BLOCK_OFFSET + 1, 4, Some(1), None, None);
+    }
+
+    /// THE TWO SENTINELS ARE ADDRESSABLE AND RESERVED, WHICH ARE DIFFERENT CLAIMS.
+    ///
+    /// Addressable: they survive the word, so a log-resident block stays recognisable as one.
+    /// Reserved: they are above every slab id a store mints, so no real slab can ever be mistaken
+    /// for one. A sentinel that satisfied only the first would collide with a real slab.
+    #[test]
+    fn the_log_resident_sentinels_are_addressable_and_reserved() {
+        for sentinel in [
+            crate::engine::HOT_BLOCK_SLAB_ID,
+            crate::wal_record::WAL_LOG_SLAB_ID,
+        ] {
+            assert!(
+                sentinel > MAX_ADDRESSABLE_BLOCK_SLAB_ID,
+                "sentinel {sentinel} is inside the mintable range"
+            );
+            let address = BlockAddress::try_from_parts(sentinel, 7, 4, None, Some(9), None)
+                .expect("a sentinel address must be constructible");
+            assert_eq!(address.block_slab_id(), sentinel);
+            assert_eq!(address.offset(), 7);
+            assert!(crate::wal_record::is_wal_resident(address.block_slab_id()));
+        }
+    }
+
+    /// THE STORED SHAPE CARRIES ONE WORD, AND THE SPLIT SPELLING IS REFUSED BY NAME.
+    ///
+    /// THE MUTANT THIS EXISTS TO KILL is a one-line change: give the merged field
+    /// `alias = "ps"`. An index written before the merge would then load, silently, with its slab
+    /// id read as a whole address word -- slab 0 and an offset of whatever the slab id was. Every
+    /// read through it would go to the wrong place and nothing would report anything. So this
+    /// feeds the conversion exactly that document and requires a failure.
+    #[test]
+    fn a_split_address_is_refused_and_a_merged_one_round_trips() {
+        let address = BlockAddress::from_parts(3, 4096, 128, Some(1), Some(2), Some(7));
+        let stored = serde_json::to_value(&address).expect("address serializes");
+        let object = stored.as_object().expect("the stored address is a map");
+        assert!(
+            object.contains_key("a"),
+            "the stored address does not carry the merged word: {stored}"
+        );
+        assert!(
+            !object.contains_key("ps") && !object.contains_key("o"),
+            "the stored address still carries the split spelling: {stored}"
+        );
+        assert_eq!(
+            object.get("a").and_then(serde_json::Value::as_u64),
+            Some(make_block_address_word(3, 4096)),
+            "the stored word is not the two halves packed"
+        );
+        let back: BlockAddress = serde_json::from_value(stored).expect("address round-trips");
+        assert_eq!(back, address);
+
+        // The split spelling, exactly as an older binary wrote it, in BOTH the short names and
+        // the oldest long ones -- the alias list is where a hole would hide.
+        for split in [
+            serde_json::json!({"ps": 3, "o": 4096, "l": 128, "pi": 1, "oi": 2, "rs": 7}),
+            serde_json::json!({
+                "page_segment_id": 3, "offset": 4096, "length": 128, "page_id": 1
+            }),
+            serde_json::json!({
+                "page_slab_id": 3, "offset": 4096, "length": 128, "page_id": 1
+            }),
+        ] {
+            let refused = serde_json::from_value::<BlockAddress>(split.clone())
+                .expect_err("a split address must not load: {split}");
+            assert!(
+                refused.to_string().contains("no address word")
+                    && refused.to_string().contains("two separate fields"),
+                "the split address {split} failed for some other reason: {refused}"
+            );
+        }
+
+        // AND IT MUST NOT LOAD AS A DEFAULT EITHER. The refusal above is only worth something if
+        // the same document would otherwise have produced slab 0 offset 0 -- a real address for
+        // the first block of the first slab. Nothing here may come back at all.
+        let split = serde_json::json!({"ps": 3, "o": 4096, "l": 128, "pi": 1});
+        assert!(
+            serde_json::from_value::<BlockAddress>(split).is_err(),
+            "a split address produced an address rather than a failure"
+        );
+    }
+
+    /// THE POSITIONAL ENCODING REFUSES THE OLD RECORD TOO, AND FOR A DIFFERENT REASON.
+    ///
+    /// The index log packs an address as an ARRAY: a field is a position, not a name, so there
+    /// are no unknown keys to notice and the JSON refusal above says nothing about it. What
+    /// protects it is the array LENGTH -- an address written before the merge is one element
+    /// longer than this struct has fields, because two u64 fields became one.
+    ///
+    /// This builds the old array by hand and requires the decode to fail. Without it the merge
+    /// would rest on an assumption about `rmp_serde`'s tolerance for a length mismatch, and a
+    /// tolerant decoder would read the old `ps` as the new `a` -- exactly the silent
+    /// mis-parse the whole migration exists to prevent.
+    #[test]
+    fn a_positionally_packed_split_address_does_not_decode_as_a_merged_one() {
+        let address = BlockAddress::from_parts(3, 4096, 128, Some(1), Some(2), Some(7));
+        let mut merged = Vec::new();
+        address
+            .serialize(&mut rmp_serde::Serializer::new(&mut merged))
+            .expect("the merged address packs positionally");
+        let round_tripped: BlockAddress =
+            rmp_serde::from_slice(&merged).expect("and unpacks again");
+        assert_eq!(round_tripped, address);
+
+        // The old shape: the same values with the slab id and the offset as two elements, which
+        // is one element more than this struct has fields.
+        let mut split = Vec::new();
+        (
+            3u64,
+            4096u64,
+            128u64,
+            Some(1u64),
+            Some(2u64),
+            Some(7u32),
+            Some(1u64),
+            None::<String>,
+        )
+            .serialize(&mut rmp_serde::Serializer::new(&mut split))
+            .expect("the split address packs positionally");
+        // The msgpack fixarray header is `0x90 | n`, so the element COUNT is readable straight
+        // off the first byte -- which is the property the refusal rests on, and comparing byte
+        // lengths would not have shown it (the halves carry the same numbers either way).
+        assert_eq!(merged[0] & 0xF0, 0x90, "the merged form is a fixarray");
+        assert_eq!(split[0] & 0xF0, 0x90, "and so is the split one");
+        assert_eq!(
+            (split[0] & 0x0F) as usize,
+            (merged[0] & 0x0F) as usize + 1,
+            "the old shape must be exactly one element longer than the new one, because two \
+             u64 fields became one; if the counts matched, the length is not what separates them"
+        );
+        assert!(
+            rmp_serde::from_slice::<BlockAddress>(&split).is_err(),
+            "a positionally packed SPLIT address decoded as a merged one; it would have read \
+             slab {} as the whole address word",
+            3
+        );
+    }
+
+    /// `make` and `extract` are inverses across the corners, including the ones a store reaches.
+    #[test]
+    fn the_address_word_packs_and_unpacks_at_every_corner() {
+        let corners = [
+            (0u32, 0u32),
+            (0, u32::MAX),
+            (u32::MAX, 0),
+            (u32::MAX, u32::MAX),
+            (1, 4096),
+            (MAX_ADDRESSABLE_BLOCK_SLAB_ID as u32, u32::MAX),
+        ];
+        for (slab, offset) in corners {
+            let word = make_block_address_word(slab, offset);
+            assert_eq!(extract_block_slab_id(word), slab, "slab half of {word}");
+            assert_eq!(extract_block_offset(word), offset, "offset half of {word}");
+        }
+        // The halves must not bleed into each other: the same slab with two offsets differs only
+        // in the low half, and the same offset in two slabs only in the high half.
+        assert_eq!(
+            make_block_address_word(1, 0) ^ make_block_address_word(1, u32::MAX),
+            u64::from(u32::MAX)
+        );
+        assert_eq!(
+            make_block_address_word(0, 1) ^ make_block_address_word(u32::MAX, 1),
+            u64::from(u32::MAX) << 32
+        );
+    }
+
     /// A roll never hands back an id a slab file on disk already holds.
     ///
     /// THIS IS WHAT MAKES A STALE ADDRESS SAFE. A block address names (slab, offset, length); if
@@ -7699,7 +8216,7 @@ const RETIRED_NAMES: &[&str] = &[
         drop(store);
 
         // The first slab's FILE goes; the manifest still names it. Nothing on disk does.
-        fs::remove_file(slab_path(dir.path(), first.block_slab_id)).unwrap();
+        fs::remove_file(slab_path(dir.path(), first.block_slab_id())).unwrap();
 
         // Age the store back to the spelling a pre-rename deployment wrote.
         let current = slab_manifest_path(dir.path());
@@ -7720,7 +8237,7 @@ const RETIRED_NAMES: &[&str] = &[
 
         // THE HALF A REBUILD CANNOT FAKE.
         assert!(
-            descriptors.iter().any(|slab| slab.block_slab_id == first.block_slab_id
+            descriptors.iter().any(|slab| slab.block_slab_id == first.block_slab_id()
                 && slab.state == BlockStoreSlabState::Purged),
             "the legacy manifest must be READ: a slab with no file on disk is knowable only from \
              a manifest, and a store that missed it rebuilds around the hole and looks perfectly \
@@ -7729,7 +8246,7 @@ const RETIRED_NAMES: &[&str] = &[
         // THE OTHER HALF, asserted separately: the slab that does have a file is still described
         // and still reads, so the first half is not passing on a store that failed to open.
         assert!(
-            descriptors.iter().any(|slab| slab.block_slab_id == second.block_slab_id
+            descriptors.iter().any(|slab| slab.block_slab_id == second.block_slab_id()
                 && slab.state == BlockStoreSlabState::Active),
             "the surviving slab must still be active: {descriptors:?}"
         );

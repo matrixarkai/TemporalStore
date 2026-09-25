@@ -101,8 +101,24 @@ pub struct WalItem {
 /// This is the port of the log-item-to-block-descriptor conversion: the address is
 /// the log id, and the length is the record's framed size. Nothing is looked up — the address
 /// alone locates the bytes.
-pub fn block_address_from_item(log_id: u64, log_size: u64, item: &WalItem) -> BlockAddress {
-    BlockAddress::from_parts(
+/// FALLIBLE, BECAUSE A LOG ID IS THE ONE OFFSET NOTHING BOUNDS.
+///
+/// Every other offset in this engine is a position inside a slab, and the slab target is capped
+/// so that position fits in 32 bits. A log id is a position in the WAL measured from a reclaim
+/// base that only ever grows, so it passes 4 GiB on any store that has written 4 GiB of log --
+/// which is an afternoon, not a lifetime. There is nothing to cap here and nothing to clamp to,
+/// so the conversion is refused and the caller is told.
+///
+/// This spelling has no production caller today: the live write path mints the counter-shaped
+/// `HOT_BLOCK_SLAB_ID` address instead (see [`is_wal_resident`]). The refusal is therefore what
+/// a future caller meets on the day it starts minting positions, rather than a truncation it
+/// would meet silently.
+pub fn block_address_from_item(
+    log_id: u64,
+    log_size: u64,
+    item: &WalItem,
+) -> Result<BlockAddress, crate::block_store::BlockAddressOutOfRange> {
+    BlockAddress::try_from_parts(
         WAL_LOG_SLAB_ID,
         log_id,
         log_size,
@@ -115,7 +131,9 @@ pub fn block_address_from_item(log_id: u64, log_size: u64, item: &WalItem) -> Bl
 /// Sentinel slab id marking an address that resolves inside the WAL rather than a slab.
 /// A reserved slab id carries this distinction through the existing address type without
 /// widening it or adding a parallel flag.
-pub const WAL_LOG_SLAB_ID: u64 = u64::MAX - 1;
+/// AT THE TOP OF THE THIRTY-TWO BIT RANGE, NOT THE SIXTY-FOUR BIT ONE -- see the note on
+/// `engine::HOT_BLOCK_SLAB_ID`, which moved for the same reason and sits one above this.
+pub const WAL_LOG_SLAB_ID: u64 = (u32::MAX as u64) - 1;
 
 /// Whether an address resolves inside the WAL rather than in a slab file.
 ///
@@ -261,13 +279,39 @@ mod tests {
     #[test]
     fn block_address_carries_the_log_id() {
         let item = block_item(11, b"bytes");
-        let address = block_address_from_item(4096, 512, &item);
-        assert!(is_wal_resident(address.block_slab_id));
-        assert_eq!(address.offset, 4096, "the address IS the log id");
+        let address = block_address_from_item(4096, 512, &item).expect("a log id that fits");
+        assert!(is_wal_resident(address.block_slab_id()));
+        assert_eq!(address.offset(), 4096, "the address IS the log id");
         assert_eq!(address.length(), 512);
         assert_eq!(address.routing_bucket(), Some(11));
         assert_eq!(address.block_id(), Some(7));
         assert_eq!(address.object_id(), Some(3));
+    }
+
+    /// A LOG ID PAST THE ADDRESS WORD IS REFUSED, AND A LOG ID IS THE ONE OFFSET NOTHING CAPS.
+    ///
+    /// The slab target is capped so a slab offset fits in 32 bits. A log id is a position
+    /// measured from a reclaim base that only grows, so it passes 4 GiB on any store that has
+    /// written 4 GiB of log -- there is no knob to cap and nothing to clamp to. The conversion
+    /// therefore refuses, and this feeds it one past the boundary with the boundary itself as
+    /// the control.
+    #[test]
+    fn a_log_id_past_the_address_word_is_refused() {
+        let item = block_item(11, b"bytes");
+        let ceiling = crate::block_store::MAX_ADDRESSABLE_BLOCK_OFFSET;
+        assert!(
+            block_address_from_item(ceiling, 512, &item).is_ok(),
+            "the largest addressable log id must still convert, or this is not a boundary"
+        );
+        let refused = block_address_from_item(ceiling + 1, 512, &item)
+            .expect_err("a log id past the address word must be refused");
+        assert_eq!(refused.offset, ceiling + 1);
+        assert_eq!(
+            (ceiling + 1) as u32,
+            0,
+            "this log id does not truncate to a plausible offset, so it does not demonstrate \
+             what the refusal prevents"
+        );
     }
 
     #[test]

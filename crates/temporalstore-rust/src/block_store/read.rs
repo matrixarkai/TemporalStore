@@ -9,12 +9,12 @@ impl BlockStore {
     pub fn read(&self, address: &BlockAddress) -> Result<Vec<u8>, BlockStoreError> {
         // On-demand lazy recovery: if this slab lives only in shared storage after a
         // metadata-only restore, fetch + cache it before serving the read.
-        self.ensure_slab_present(address.block_slab_id)?;
+        self.ensure_slab_present(address.block_slab_id())?;
         let mut tally = BlockStoreReadTally::start();
         let mut inner = self.inner.lock().expect("block store lock poisoned");
         let read = LocalSlabBackend::new(&inner.root).read_range(
-            address.block_slab_id,
-            address.offset,
+            address.block_slab_id(),
+            address.offset(),
             address.length(),
             &mut tally,
         )?;
@@ -224,7 +224,7 @@ mod read_entry_point_counting {
         let dir = tempfile::tempdir().unwrap();
         let store = BlockStore::new(dir.path());
         let address = store.append(b"counted-payload").unwrap();
-        let slab = address.block_slab_id;
+        let slab = address.block_slab_id();
 
         let entry_points: Vec<(&str, Exercise)> = vec![
             (

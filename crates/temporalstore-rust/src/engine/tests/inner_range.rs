@@ -199,11 +199,11 @@ fn reader_attribution(
             bucket
                 .block_index
                 .values()
-                .map(move |page| ((page.object_key.to_string(), page.address.offset), *bucket_id))
+                .map(move |page| ((page.object_key.to_string(), page.address.offset()), *bucket_id))
         })
         .collect();
     for entry in &entries {
-        let Some(actual) = filed.get(&(entry.object_key.to_string(), entry.address.offset)) else {
+        let Some(actual) = filed.get(&(entry.object_key.to_string(), entry.address.offset())) else {
             continue;
         };
         let now = entry

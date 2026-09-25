@@ -80,7 +80,14 @@ impl BlockStore {
         }
         let path = slab_path(&inner.root, inner.block_slab_id);
         let mut file = OpenOptions::new().create(true).append(true).open(path)?;
-        let address = BlockAddress::from_parts(inner.block_slab_id, inner.write_offset, record.bytes.len() as u64, Some(block_id), object_id, routing_bucket);
+        // CHECKED, NOT SATURATED. The slab target is capped so `write_offset` fits in the
+        // address word's low half, but the cap binds what a store may be CONFIGURED with, not
+        // what a slab file on disk already is: a slab grown past 4 GiB under an older, uncapped
+        // target is recovered into `write_offset` verbatim (`read.rs` sets it from the file's
+        // length), and the very next append would record an offset that does not fit. Refusing
+        // the write turns that into a failed append; truncating it would turn it into a page
+        // that reads back as a different page.
+        let address = BlockAddress::try_from_parts(inner.block_slab_id, inner.write_offset, record.bytes.len() as u64, Some(block_id), object_id, routing_bucket)?;
         file.write_all(&record.bytes)?;
         file.flush()?;
         // Two INDEPENDENT relaxations:
@@ -162,7 +169,8 @@ impl BlockStore {
                 let path = slab_path(&inner.root, inner.block_slab_id);
                 file = Some(OpenOptions::new().create(true).append(true).open(path)?);
             }
-            let address = BlockAddress::from_parts(inner.block_slab_id, inner.write_offset, record.bytes.len() as u64, Some(block_id), object_id, routing_bucket);
+            // Checked, not saturated -- see the single-record path.
+            let address = BlockAddress::try_from_parts(inner.block_slab_id, inner.write_offset, record.bytes.len() as u64, Some(block_id), object_id, routing_bucket)?;
             if let Some(current) = file.as_mut() {
                 current.write_all(&record.bytes)?;
             }

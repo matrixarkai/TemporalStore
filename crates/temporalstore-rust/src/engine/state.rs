@@ -914,10 +914,11 @@ pub(super) enum BlockIndexMap {
 /// point of the shape and what makes this the widest field of `BucketNode`. The `Many` arm is a
 /// 24-byte vector header and rides inside it.
 ///
-/// 104, not 112, since the address inside that inline page shed its derived `generation`. The
-/// eight bytes cross straight through: the handle is a `u64`, the page entry is 8-aligned, and
-/// the discriminant rides in the `Arc` niche, so this arm is exactly `8 + size_of::<BlockIndex>()`.
-const _: () = assert!(std::mem::size_of::<BlockIndexMap>() == 104);
+/// 96, not 104, since the address inside that inline page merged its slab id and its offset into
+/// one word. The eight bytes cross straight through, as the eight `generation` shed before them
+/// did: the handle is a `u64`, the page entry is 8-aligned, and the discriminant rides in the
+/// `Arc` niche, so this arm is exactly `8 + size_of::<BlockIndex>()`.
+const _: () = assert!(std::mem::size_of::<BlockIndexMap>() == 96);
 const _: () =
     assert!(std::mem::size_of::<BlockIndexMap>() == 8 + std::mem::size_of::<BlockIndex>());
 
@@ -1166,14 +1167,14 @@ impl BlockSlabLiveIndex {
 
     pub(super) fn add_address(&mut self, address: &BlockAddress) {
         BLOCK_SLAB_LIVE_CHARGES.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-        let tally = self.by_slab.entry(address.block_slab_id).or_default();
+        let tally = self.by_slab.entry(address.block_slab_id()).or_default();
         tally.block_refs = tally.block_refs.saturating_add(1);
         tally.bytes = tally.bytes.saturating_add(address.length());
     }
 
     pub(super) fn remove_address(&mut self, address: &BlockAddress) {
         BLOCK_SLAB_LIVE_CHARGES.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-        let Some(tally) = self.by_slab.get_mut(&address.block_slab_id) else {
+        let Some(tally) = self.by_slab.get_mut(&address.block_slab_id()) else {
             return;
         };
         tally.block_refs = tally.block_refs.saturating_sub(1);
@@ -1182,7 +1183,7 @@ impl BlockSlabLiveIndex {
             // A slab nothing points at any more is ABSENT, not zero. Keeping the entry would grow
             // this map with every slab the store ever rolled, and the caller that wants a zero for
             // a slab it can name gets one from `tally` regardless.
-            self.by_slab.remove(&address.block_slab_id);
+            self.by_slab.remove(&address.block_slab_id());
         }
     }
 
@@ -1546,8 +1547,8 @@ pub(super) fn block_index_handle(page: &BlockIndex) -> u64 {
     page.model_id.hash(&mut hasher);
     page.object_key.hash(&mut hasher);
     page.component.as_deref().hash(&mut hasher);
-    page.address.block_slab_id.hash(&mut hasher);
-    page.address.offset.hash(&mut hasher);
+    page.address.block_slab_id().hash(&mut hasher);
+    page.address.offset().hash(&mut hasher);
     page.address.length().hash(&mut hasher);
     page.address.block_id().unwrap_or_default().hash(&mut hasher);
     page.address.generation().unwrap_or_default().hash(&mut hasher);
@@ -1559,8 +1560,8 @@ pub(super) fn block_index_written_key(page: &BlockIndex) -> String {
         &page.model_id,
         &page.object_key,
         page.component.as_deref(),
-        page.address.block_slab_id,
-        page.address.offset,
+        page.address.block_slab_id(),
+        page.address.offset(),
         page.address.length(),
         page.address.block_id().unwrap_or_default(),
         page.address.generation().unwrap_or_default(),
@@ -2652,7 +2653,7 @@ pub(super) struct BucketNode {
 
 /// The widest per-item structure in the engine, and the one whose count is the bucket count.
 ///
-/// Most of it is the `BlockIndexMap` it carries inline: 104 of these 168 bytes are one page
+/// Most of it is the `BlockIndexMap` it carries inline: 96 of these 160 bytes are one page
 /// entry held inline plus its handle, and any accounting of this structure has to start there
 /// rather than with the flags.
 ///
@@ -2660,8 +2661,16 @@ pub(super) struct BucketNode {
 /// 186 when the tombstone index stopped spending sixteen on a case it is in 2.32% of the time;
 /// the struct went 208 -> 200 -> 192 with them, and 192 -> 184 when the address inside the inline
 /// page entry shed its derived `generation`. 184 -> 176 is the five `bool` becoming five BITS.
-/// 176 -> 168 is `last_dump_sequence` leaving: a whole word out of the eight-aligned group, which
-/// is one of the only two shapes of change this structure responds to.
+/// 176 -> 168 is `last_dump_sequence` leaving: a whole word out of the eight-aligned group.
+/// 168 -> 160 is that same inline address merging its slab id and its offset into ONE WORD: a
+/// SECOND whole word out of that group.
+///
+/// THOSE THREE MOVE THIS STRUCTURE IN TWO DIFFERENT WAYS, which is why they are worth eight
+/// bytes each instead of eight between them. The flags are in the TAIL: packing them took it
+/// from ten bytes to six, and six rounds to eight where ten rounded to sixteen. The other two
+/// are in the EIGHT-ALIGNED GROUP -- a removed `u64` and, inside `block_index`, an address
+/// whose two slab coordinates became one word -- and each takes a whole word out of it. None of
+/// them could have been found by looking at another's half.
 ///
 /// THE RULE THAT USED TO BE WRITTEN HERE WAS TRUE OF ONE FIELD AND FALSE IN GENERAL, and it is
 /// worth stating plainly because it is why nobody tried this for three changes. It said the six
@@ -2670,21 +2679,26 @@ pub(super) struct BucketNode {
 /// nothing. Every clause of that is correct except the last one's scope. Narrowing ONE of the ten
 /// moves nothing: 9, 6 and 4 all round back to 16, and no single field here can cross the step on
 /// its own. PACKING is not narrowing one field. It took four bytes off at once, the tail landed
-/// on six, and six rounds to eight. The general rule that holds is the one the accounting test
-/// states: only a change that takes the tail to eight bytes or fewer, or that takes a whole word
-/// out of the eight-aligned group, moves this structure at all.
+/// on six, and six rounds to eight. MERGING is not narrowing one field either: two 8-byte
+/// fields become one, and a whole word leaves the eight-aligned group -- the same shape of
+/// change as removing a field, and for the same reason it crosses. The general rule that holds
+/// is the one the accounting test states: only a change that takes the tail to eight bytes or
+/// fewer, or that takes a whole word out of the eight-aligned group, moves this structure at
+/// all.
 ///
-/// THE SECOND OF THOSE TWO SHAPES IS WHAT TOOK IT TO 168. `last_dump_sequence` was eight-aligned,
-/// so removing it takes a whole word out of the packed group and the six-byte tail does not move
-/// at all: 168 - 8 = 160 of eight-aligned field, 6 of small field rounded to 8, and the struct is
-/// 168. Removed bytes LEAVE rather than move, which is why this crosses where narrowing a
-/// sequence would not have: at a six-byte tail the first narrowing lands on ten, ten still rounds
-/// to sixteen, and the freed word is handed straight back.
+/// THE SECOND OF THOSE TWO SHAPES HAS NOW BEEN TAKEN TWICE. `last_dump_sequence` was
+/// eight-aligned, so removing it took a whole word out of the packed group and the six-byte
+/// tail did not move at all. The address merge does the same thing one level in: two 8-byte
+/// fields inside the inline page entry become one, so `BlockIndexMap` goes 104 -> 96 and the
+/// group goes 168 -> 160 -> 152, with the tail still six rounded to eight. The struct is 160.
+/// Bytes that LEAVE the group cross where narrowing a sequence would not have: at a six-byte
+/// tail the first narrowing lands on ten, ten still rounds to sixteen, and the freed word is
+/// handed straight back.
 ///
 /// `every_byte_of_the_bucket_node_is_accounted_for` states the whole of it field by field, and
 /// asserts the reconstruction -- eight-aligned group plus one rounding of the tail -- rather than
 /// a literal.
-const _: () = assert!(std::mem::size_of::<BucketNode>() == 168);
+const _: () = assert!(std::mem::size_of::<BucketNode>() == 160);
 
 impl BucketNode {
     /// The five lifecycle flags, each read through its own mask and nothing else.
@@ -3030,14 +3044,16 @@ pub(super) struct BlockIndex {
     pub(super) log_backed: bool,
 }
 
-/// One per stored page. Three shared names, an address, and three flags -- 91 bytes of field in
-/// 96, so the three flag bytes are already inside the alignment slack and packing them would
+/// One per stored page. Three shared names, an address, and three flags -- 83 bytes of field in
+/// 88, so the three flag bytes are already inside the alignment slack and packing them would
 /// reclaim nothing (and would move the stored index, which spells each one as its own key).
 ///
-/// 96, not 104, since the address shed its derived `generation`. Note that the flags did NOT
-/// become worth packing when that happened: at 99 bytes of field the slack was five bytes and at
-/// 91 it is five bytes again, because the address left in a whole eight-byte step.
-const _: () = assert!(std::mem::size_of::<BlockIndex>() == 96);
+/// 88, not 96, since the address merged its slab id and its offset into one word; 96, not 104,
+/// since it shed its derived `generation` before that. Note that the flags did NOT become worth
+/// packing on either step: at 99 bytes of field the slack was five bytes, at 91 it was five
+/// again, and at 83 it is five again -- because the address has twice left in a whole
+/// eight-byte step, and a whole step is the only thing that moves this number.
+const _: () = assert!(std::mem::size_of::<BlockIndex>() == 88);
 
 impl BlockIndex {
     /// The object this page belongs to.
@@ -3300,8 +3316,8 @@ fn push_lookup_part(buffer: &mut String, value: &str) {
 }
 
 fn same_block_address(left: &BlockAddress, right: &BlockAddress) -> bool {
-    left.block_slab_id == right.block_slab_id
-        && left.offset == right.offset
+    left.block_slab_id() == right.block_slab_id()
+        && left.offset() == right.offset()
         && left.length() == right.length()
         && left.block_id() == right.block_id()
         && left.object_id() == right.object_id()

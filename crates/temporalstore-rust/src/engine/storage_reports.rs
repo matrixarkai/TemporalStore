@@ -510,8 +510,8 @@ impl TemporalEngine {
                 report.considered_block_refs = report.considered_block_refs.saturating_add(1);
                 let key = CacheKey::page_with_slot(
                     shard_id,
-                    entry.address.block_slab_id,
-                    entry.address.offset,
+                    entry.address.block_slab_id(),
+                    entry.address.offset(),
                     entry.address.length(),
                     entry.address.routing_bucket(),
                 );

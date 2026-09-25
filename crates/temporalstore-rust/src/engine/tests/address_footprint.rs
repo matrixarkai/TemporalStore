@@ -93,8 +93,8 @@ struct AddressCensus {
 impl AddressCensus {
     fn observe(&mut self, address: &BlockAddress) {
         self.total += 1;
-        self.widest[0] = self.widest[0].max(address.block_slab_id);
-        self.widest[1] = self.widest[1].max(address.offset);
+        self.widest[0] = self.widest[0].max(address.block_slab_id());
+        self.widest[1] = self.widest[1].max(address.offset());
         self.widest[2] = self.widest[2].max(address.length());
         self.widest[3] = self.widest[3].max(address.block_id().unwrap_or(0));
         self.widest[4] = self.widest[4].max(address.object_id().unwrap_or(0));
@@ -730,7 +730,7 @@ fn only_one_of_the_three_address_cross_checks_on_a_read_can_fire() {
     // slab a reader opened is the slab a reader opened -- true in every state, including one where
     // a slab id has been reused and a record in the new slab stamps the reused number.
     assert_eq!(
-        Some(good.block_slab_id),
+        Some(good.block_slab_id()),
         good.slab_id(),
         "the address's slab id IS its block_slab_id, so it cannot disagree with the file it named"
     );
@@ -829,10 +829,10 @@ fn the_payload_checksum_cannot_tell_one_record_from_another_at_the_same_address(
 
     // The two addresses agree on everything a read uses to FIND bytes.
     assert_eq!(
-        stale.block_slab_id, live.block_slab_id,
+        stale.block_slab_id(), live.block_slab_id(),
         "denominator: same slab id"
     );
-    assert_eq!(stale.offset, live.offset, "denominator: same offset");
+    assert_eq!(stale.offset(), live.offset(), "denominator: same offset");
     assert_eq!(stale.length(), live.length(), "denominator: same length");
     assert_eq!(
         stale.block_id(),
@@ -963,7 +963,7 @@ impl DuplicationCensus {
         self.model_total += 1;
         *self.stores_per_value.entry(address.clone()).or_default() += 1;
         self.model_values_at
-            .entry((address.block_slab_id, address.offset))
+            .entry((address.block_slab_id(), address.offset()))
             .or_default()
             .insert(address.clone());
     }
@@ -971,7 +971,7 @@ impl DuplicationCensus {
     fn observe_bucket(&mut self, address: &BlockAddress) {
         self.bucket_total += 1;
         *self.stores_per_value.entry(address.clone()).or_default() += 1;
-        let key = (address.block_slab_id, address.offset);
+        let key = (address.block_slab_id(), address.offset());
         if let Some(existing) = self.bucket_value_at.get(&key) {
             if existing != address {
                 self.bucket_location_collisions += 1;

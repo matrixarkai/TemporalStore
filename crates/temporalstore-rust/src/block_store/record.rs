@@ -659,8 +659,8 @@ fn verify_block_record_checksum(
         return Ok(());
     }
     Err(BlockStoreError::ChecksumMismatch {
-        block_slab_id: address.block_slab_id,
-        offset: address.offset,
+        block_slab_id: address.block_slab_id(),
+        offset: address.offset(),
         length: address.length(),
         expected: format!("{stored:08x}"),
         actual: format!("{actual:08x}"),
@@ -672,8 +672,8 @@ pub(super) fn corrupt_block_envelope(
     reason: impl Into<String>,
 ) -> BlockStoreError {
     BlockStoreError::CorruptBlockEnvelope {
-        block_slab_id: address.block_slab_id,
-        offset: address.offset,
+        block_slab_id: address.block_slab_id(),
+        offset: address.offset(),
         reason: reason.into(),
     }
 }
@@ -862,7 +862,7 @@ pub(super) fn inspect_slab(slab: &[u8], block_slab_id: u64) -> BlockStoreSlabRep
         if remaining.len() < BLOCK_RECORD_HEADER_LEN || !remaining.starts_with(BLOCK_RECORD_MAGIC) {
             record_slab_inspection_error(
                 &mut report,
-                address.offset,
+                address.offset(),
                 corrupt_block_envelope(&address, "mixed raw bytes after page envelope").to_string(),
             );
             break;
@@ -870,7 +870,7 @@ pub(super) fn inspect_slab(slab: &[u8], block_slab_id: u64) -> BlockStoreSlabRep
         if remaining.len() < BLOCK_RECORD_SMALLEST_HEADER_LEN {
             record_slab_inspection_error(
                 &mut report,
-                address.offset,
+                address.offset(),
                 corrupt_block_envelope(&address, "short header").to_string(),
             );
             break;
@@ -878,7 +878,7 @@ pub(super) fn inspect_slab(slab: &[u8], block_slab_id: u64) -> BlockStoreSlabRep
         let header = match parse_block_record_header(remaining, &address) {
             Ok(header) => header,
             Err(err) => {
-                record_slab_inspection_error(&mut report, address.offset, err.to_string());
+                record_slab_inspection_error(&mut report, address.offset(), err.to_string());
                 break;
             }
         };
@@ -886,7 +886,7 @@ pub(super) fn inspect_slab(slab: &[u8], block_slab_id: u64) -> BlockStoreSlabRep
         if remaining.len() < record_len {
             record_slab_inspection_error(
                 &mut report,
-                address.offset,
+                address.offset(),
                 corrupt_block_envelope(&address, "payload length mismatch".to_string()).to_string(),
             );
             break;
@@ -903,7 +903,7 @@ pub(super) fn inspect_slab(slab: &[u8], block_slab_id: u64) -> BlockStoreSlabRep
                     .saturating_add(decoded.logical_len as u64);
                 report.block_index_entries.push(BlockStoreBlockIndexReport {
                     block_slab_id: block_slab_id,
-                    offset: address.offset,
+                    offset: address.offset(),
                     length: address.length(),
                     compact_slab_address: address.compact_slab_address(),
                     compact_slab_id: address.compact_slab_id(),
@@ -956,7 +956,7 @@ pub(super) fn inspect_slab(slab: &[u8], block_slab_id: u64) -> BlockStoreSlabRep
                 }
             }
             Err(err) => {
-                record_slab_inspection_error(&mut report, address.offset, err.to_string());
+                record_slab_inspection_error(&mut report, address.offset(), err.to_string());
                 break;
             }
         }
@@ -982,12 +982,7 @@ mod block_record_format_tests {
     use super::*;
 
     fn address() -> BlockAddress {
-        BlockAddress {
-            block_slab_id: 1,
-            offset: 0,
-            length: 0,
-            ..Default::default()
-        }
+        BlockAddress::from_parts(1, 0, 0, None, None, None)
     }
 
     /// What the record carries comes back; what the index carries does not.

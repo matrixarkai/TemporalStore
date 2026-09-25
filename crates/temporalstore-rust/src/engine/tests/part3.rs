@@ -316,13 +316,23 @@ fn control_api_reads_and_scans_index_log_stream() {
         .get("address")
         .or_else(|| hash_block.get("a"))
         .expect("the recorded page carries its address");
-    // Either spelling: the field is written short now and the long name is kept as a read alias,
-    // which is exactly how this test already reads `object_key` and `component` above.
-    let block_slab = address
-        .get("ps")
-        .or_else(|| address.get("page_segment_id"))
-        .expect("the address carries its page slab id");
-    assert_eq!(block_slab, &serde_json::json!(0));
+    // ONE WORD, NOT TWO FIELDS. The slab id and the offset are the two halves of `a`, so the
+    // served index carries the word and the slab is the high 32 bits of it -- there is no `ps`
+    // key to read any more, and this asserts that there is not, so a reader that went back to
+    // looking for one would fail here rather than quietly finding nothing.
+    let word = address
+        .get("a")
+        .and_then(serde_json::Value::as_u64)
+        .expect("the address carries its packed address word");
+    assert!(
+        address.get("ps").is_none() && address.get("o").is_none(),
+        "the served index still writes the split slab id and offset: {address}"
+    );
+    assert_eq!(
+        crate::block_store::extract_block_slab_id(word),
+        0,
+        "the high half of the address word is the slab id"
+    );
     assert!(served["strings"].get("k1").is_some());
 }
 
@@ -2199,7 +2209,17 @@ fn storage_recovery_uses_bucket_index_not_stale_secondary_model_maps() {
             .expect("secondary string view");
         stale.set_object_id(Some(stale.object_id().unwrap_or_default().wrapping_add(99)));
         stale.set_routing_bucket(Some(stale.routing_bucket().unwrap_or_default().wrapping_add(99)));
-        stale.block_slab_id = stale.block_slab_id.wrapping_add(999);
+        // The slab id is half of one packed word now, so it is planted by rebuilding the address
+        // through the checked constructor rather than by assigning a field. Every other part is
+        // carried across unchanged, which is what makes this a STALE address and not a new one.
+        *stale = BlockAddress::from_parts(
+            stale.block_slab_id().wrapping_add(999),
+            stale.offset(),
+            stale.length(),
+            stale.block_id(),
+            stale.object_id(),
+            stale.routing_bucket(),
+        );
     }
 
     let recovery = engine.storage_recovery_report(1);
@@ -2408,18 +2428,55 @@ fn core_index_loads_legacy_bucket_page_field_names() {
         }
     }"#;
 
-    let index: CoreIndex = serde_json::from_str(legacy_json).unwrap();
+    // THE OLD NAMES STILL LOAD; THE OLD ADDRESS SHAPE DOES NOT, AND THAT IS THE WHOLE POINT.
+    //
+    // `routing_slot`, `page_refs` and `page_id` are RENAMES: the same number under a different
+    // key, so reading one is free of risk and this index has always loaded. `page_segment_id`
+    // beside `offset` is not a rename, it is a different SHAPE -- two numbers where this binary
+    // stores one word -- and there is no reading of it that is safe. Taken as a word, a
+    // `page_segment_id` of 1 beside an `offset` of 2 is slab 0 offset 1: a well-formed address
+    // for a block that is not the one that was written, and nothing anywhere would fail.
+    //
+    // So the split spelling is REFUSED, by name, before anything is derived from it. The failure
+    // has to be visible at the load rather than at the read, which is why this asserts on the
+    // message and not merely on an error.
+    let refused = serde_json::from_str::<CoreIndex>(legacy_json)
+        .expect_err("an index storing a split slab id and offset must not load");
+    let message = refused.to_string();
+    assert!(
+        message.contains("no address word") && message.contains("two separate fields"),
+        "the load failed for some other reason than the split address shape: {message}"
+    );
+
+    // The CONTROL, and it is the half that can actually go wrong. Everything above passes just
+    // as well if this index is malformed in some unrelated way, or if `CoreIndex` stopped
+    // deserializing at all. The same document with the address written in the merged spelling --
+    // and every other legacy name left exactly as it is -- must LOAD, and must land on the slab
+    // and offset the split form named.
+    let merged_json = legacy_json
+        // 2^32 + 2: slab 1 in the high half, offset 2 in the low half.
+        .replace("\"page_segment_id\": 1,", "\"a\": 4294967298,")
+        .replace("\"offset\": 2,", "");
+    assert!(
+        !merged_json.contains("page_segment_id") && !merged_json.contains("\"offset\""),
+        "the control still carries the split spelling, so it is not testing the merged one: \
+         {merged_json}"
+    );
+    let index: CoreIndex = serde_json::from_str(&merged_json)
+        .expect("the same index with a merged address word still loads");
     let bucket = index.bucket_map.get(&7).expect("legacy slot should load");
     assert!(bucket.object_index.contains(&42));
     assert_eq!(bucket.block_index.len(), 1);
+    let page = bucket
+        .block_index
+        .values()
+        .next()
+        .expect("legacy page index should load");
+    assert_eq!(page.address.routing_bucket(), Some(7));
     assert_eq!(
-        bucket.block_index
-            .values()
-            .next()
-            .expect("legacy page index should load")
-            .address
-            .routing_bucket(),
-        Some(7)
+        (page.address.block_slab_id(), page.address.offset()),
+        (1, 2),
+        "the merged word did not unpack to the slab and offset the split spelling named"
     );
 }
 

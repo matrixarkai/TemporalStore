@@ -82,6 +82,23 @@ Field meanings:
 | `length` | Byte length of the physical payload. |
 | `checksum` | Payload checksum used for corruption detection. |
 
+#### Stored spelling: one address word
+
+The Rust engine stores the slab id and the offset inside that slab as the two
+halves of a single 64-bit word, written under the key `a`: the slab id is the
+high 32 bits and the offset the low 32. `TS_BLOCK_SLAB_TARGET_BYTES` is capped
+at 4 GiB so an offset always fits the low half, and the two log-resident
+sentinel slab ids are reserved at the top of the 32-bit range.
+
+This is a format break. An index written before it spells the same two numbers
+as separate fields (`ps` and `o`, or `page_segment_id` and `offset`) and this
+engine **refuses to load one**, loudly and before the address is built. It is a
+refusal rather than a best-effort read because a split address taken as a merged
+word is a well-formed address for a different block: the failure would be a read
+returning the wrong bytes rather than an error. Re-dump the index with the
+binary that wrote it, then load it here. Every other older field name is a
+RENAME and still loads unchanged.
+
 ## Canonical Index Types
 
 ### PageIndex
@@ -509,7 +526,7 @@ configs, or environment readers internally.
 | knob | meaning | default |
 |---|---|---:|
 | `TS_CONTEXT_PAGE_TARGET_BYTES` | Target packed context timestamp page size. | `65536` |
-| `TS_BLOCK_SLAB_TARGET_BYTES` | Target durable block/segment size before rolling. | `1073741824` |
+| `TS_BLOCK_SLAB_TARGET_BYTES` | Target durable block/segment size before rolling. Capped at `4294967296`: a block address holds its offset in 32 bits, and a configuration above the cap is refused at load rather than clamped. | `1073741824` |
 | `TS_STORAGE_ZONE_SIZE` | Storage zone target used by lifecycle and placement. | `10485760` |
 | `TS_STREAM_MAX_BLOB_SIZE` | Stream/blob cap; effective segment target is the lower of this and block segment target. | `10485760` |
 | `TS_COMPACTION_WATERMARK_BYTES` | Compaction scheduling/reclaim watermark. | `268435456` |

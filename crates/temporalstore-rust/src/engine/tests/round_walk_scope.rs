@@ -565,7 +565,7 @@ fn the_engines_own_decoder_produces_an_address_with_no_routing_bucket() {
         "`BlockAddressWire::routing_bucket` is `Option<u32>` under `#[serde(default)]`, so a \
          record written before the field existed has to decode to None. It did not."
     );
-    assert_eq!(older.block_slab_id, 7, "the rest of the record still decoded");
+    assert_eq!(older.block_slab_id(), 7, "the rest of the record still decoded");
     assert_eq!(older.length(), 64, "the rest of the record still decoded");
 
     // And a REAL address, round-tripped through the same shape with the key removed.
@@ -582,7 +582,7 @@ fn the_engines_own_decoder_produces_an_address_with_no_routing_bucket() {
         "dropping `rs` from the wire shape has to produce an address with no routing bucket"
     );
     assert_eq!(
-        (older.block_slab_id, older.offset, older.length(), older.object_id()),
+        (older.block_slab_id(), older.offset(), older.length(), older.object_id()),
         (3, 64, 128, Some(2)),
         "dropping `rs` must drop ONLY the routing bucket; anything else changed makes the \
          construction below a different experiment"

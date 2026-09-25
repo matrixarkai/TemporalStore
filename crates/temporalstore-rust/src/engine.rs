@@ -1788,8 +1788,8 @@ impl TemporalEngine {
         let address = shards.get(&shard_id)?.strings.get(key)?;
         Some(CacheKey::page_with_slot(
             shard_id,
-            address.block_slab_id,
-            address.offset,
+            address.block_slab_id(),
+            address.offset(),
             address.length(),
             address.routing_bucket()))
     }
@@ -3014,8 +3014,8 @@ fn collect_upsert_index_items(
             kind,
             object_key,
             component.as_deref().unwrap_or(""),
-            address.block_slab_id,
-            address.offset,
+            address.block_slab_id(),
+            address.offset(),
             address.length(),
             address.block_id().unwrap_or_default(),
             address.generation().unwrap_or_default()
@@ -4405,41 +4405,41 @@ fn collect_live_block_slab_ids(shard: &ShardState) -> BTreeSet<u64> {
     absorb_live_block_slab_ids(
         &mut ids,
         &mut visited,
-        shard.strings.values().map(|address| address.block_slab_id),
+        shard.strings.values().map(|address| address.block_slab_id()),
     );
     for fields in shard.hashes.values() {
         absorb_live_block_slab_ids(
             &mut ids,
             &mut visited,
-            fields.values().map(|address| address.block_slab_id),
+            fields.values().map(|address| address.block_slab_id()),
         );
     }
     for members in shard.sets.values() {
         absorb_live_block_slab_ids(
             &mut ids,
             &mut visited,
-            members.values().map(|address| address.block_slab_id),
+            members.values().map(|address| address.block_slab_id()),
         );
     }
     for elements in shard.lists.values() {
         absorb_live_block_slab_ids(
             &mut ids,
             &mut visited,
-            elements.values().map(|address| address.block_slab_id),
+            elements.values().map(|address| address.block_slab_id()),
         );
     }
     for members in shard.zsets.values() {
         absorb_live_block_slab_ids(
             &mut ids,
             &mut visited,
-            members.values().map(|(_, address)| address.block_slab_id),
+            members.values().map(|(_, address)| address.block_slab_id()),
         );
     }
     for series in shard.features.values() {
         absorb_live_block_slab_ids(
             &mut ids,
             &mut visited,
-            series.values().map(|address| address.block_slab_id),
+            series.values().map(|address| address.block_slab_id()),
         );
     }
     absorb_live_block_slab_ids(
@@ -4448,55 +4448,55 @@ fn collect_live_block_slab_ids(shard: &ShardState) -> BTreeSet<u64> {
         shard
             .context_nodes
             .values()
-            .map(|address| address.block_slab_id),
+            .map(|address| address.block_slab_id()),
     );
     for series in shard.context_events.values() {
         absorb_live_block_slab_ids(
             &mut ids,
             &mut visited,
-            series.values().map(|address| address.block_slab_id),
+            series.values().map(|address| address.block_slab_id()),
         );
     }
     for series in shard.context_indexes.values() {
         absorb_live_block_slab_ids(
             &mut ids,
             &mut visited,
-            series.values().map(|address| address.block_slab_id),
+            series.values().map(|address| address.block_slab_id()),
         );
     }
     for series in shard.context_audits.values() {
         absorb_live_block_slab_ids(
             &mut ids,
             &mut visited,
-            series.values().map(|address| address.block_slab_id),
+            series.values().map(|address| address.block_slab_id()),
         );
     }
     for series in shard.context_entities.values() {
         absorb_live_block_slab_ids(
             &mut ids,
             &mut visited,
-            series.values().map(|address| address.block_slab_id),
+            series.values().map(|address| address.block_slab_id()),
         );
     }
     for series in shard.context_children.values() {
         absorb_live_block_slab_ids(
             &mut ids,
             &mut visited,
-            series.values().map(|address| address.block_slab_id),
+            series.values().map(|address| address.block_slab_id()),
         );
     }
     for series in shard.context_summaries.values() {
         absorb_live_block_slab_ids(
             &mut ids,
             &mut visited,
-            series.values().map(|address| address.block_slab_id),
+            series.values().map(|address| address.block_slab_id()),
         );
     }
     for series in shard.context_compressions.values() {
         absorb_live_block_slab_ids(
             &mut ids,
             &mut visited,
-            series.values().map(|address| address.block_slab_id),
+            series.values().map(|address| address.block_slab_id()),
         );
     }
     // control_state_pages is the page-backed control-state model and MUST be in the
@@ -4511,7 +4511,7 @@ fn collect_live_block_slab_ids(shard: &ShardState) -> BTreeSet<u64> {
         shard
             .control_state_blocks
             .values()
-            .map(|address| address.block_slab_id),
+            .map(|address| address.block_slab_id()),
     );
     #[cfg(test)]
     crate::snapshot_probe::note_live_slab_scan(visited);
@@ -4573,7 +4573,16 @@ fn append_value_inner(
         }
         return block_store.append_with_block_metadata(bytes, object_id, routing_bucket);
     }
-    let address = BlockAddress::from_parts(HOT_BLOCK_SLAB_ID, HOT_BLOCK_OFFSET.fetch_add(1, Ordering::Relaxed), bytes.len() as u64, None, object_id, routing_bucket);
+    // THE COUNTER IS NOW BOUNDED, AND IT IS REFUSED RATHER THAN WRAPPED.
+    //
+    // A hot page's "offset" is not a position, it is a ticket from a process-wide counter, and
+    // the address word gives that ticket 32 bits. Four billion hot writes in ONE process is a
+    // long run but not an impossible one, and the two things that could happen at the boundary
+    // are both worse than a refusal: wrapping hands a live page the address of an older one, and
+    // truncating does the same thing without even reaching the boundary. So the mint is checked,
+    // and a process that exhausts its tickets stops minting hot addresses instead of aliasing
+    // them. The counter is process-local and a reload starts it again at one.
+    let address = BlockAddress::try_from_parts(HOT_BLOCK_SLAB_ID, HOT_BLOCK_OFFSET.fetch_add(1, Ordering::Relaxed), bytes.len() as u64, None, object_id, routing_bucket)?;
     // Put the page aside for this write's record. It is often derived state rather than the
     // command's own bytes, so the record has to carry it for a read to serve it back.
     if let Some(object_id) = object_id {
@@ -4584,8 +4593,8 @@ fn append_value_inner(
         cache.put_memory_only(
             CacheKey::page_with_slot(
                 shard_id,
-                address.block_slab_id,
-                address.offset,
+                address.block_slab_id(),
+                address.offset(),
                 address.length(),
                 address.routing_bucket()),
             bytes,
@@ -5072,8 +5081,8 @@ fn read_block_bytes(
 ) -> Option<Vec<u8>> {
     let cache_key = CacheKey::page_with_slot(
         shard_id,
-        address.block_slab_id,
-        address.offset,
+        address.block_slab_id(),
+        address.offset(),
         address.length(),
         address.routing_bucket());
     let cached = crate::alloc_probe::in_class(crate::alloc_probe::AllocClass::CacheRead, || {
@@ -5091,8 +5100,8 @@ fn read_block_bytes(
     // the redirect and read the durable copy. On a genuine miss (never spilled, or spill failed)
     // this falls through to the normal read below, which returns None -- the WAL still holds the
     // value and a reload replays it.
-    if crate::wal_record::is_wal_resident(address.block_slab_id) {
-        if let Some(real_address) = hot_page_spill::lookup_spilled(shard_id, address.offset) {
+    if crate::wal_record::is_wal_resident(address.block_slab_id()) {
+        if let Some(real_address) = hot_page_spill::lookup_spilled(shard_id, address.offset()) {
             if let Ok(bytes) = block_store.read(&real_address) {
                 let _ = cache.put(cache_key, bytes.clone());
                 return Some(bytes);
@@ -5156,8 +5165,8 @@ fn read_block_shared(
 ) -> Option<std::sync::Arc<[u8]>> {
     let cache_key = CacheKey::page_with_slot(
         shard_id,
-        address.block_slab_id,
-        address.offset,
+        address.block_slab_id(),
+        address.offset(),
         address.length(),
         address.routing_bucket());
     let cached = crate::alloc_probe::in_class(crate::alloc_probe::AllocClass::CacheRead, || {

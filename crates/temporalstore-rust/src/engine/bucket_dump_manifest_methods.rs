@@ -126,7 +126,7 @@ impl TemporalEngine {
         let dump_live_block_entries = collect_live_block_entries(&dump_index_state);
         let block_slab_ids = dump_live_block_entries
             .iter()
-            .map(|entry| entry.address.block_slab_id)
+            .map(|entry| entry.address.block_slab_id())
             .collect::<BTreeSet<_>>()
             .into_iter()
             .collect::<Vec<_>>();
@@ -702,7 +702,7 @@ impl TemporalEngine {
         // from, so this costs no extra pass over the index.
         let index_block_slab_ids = all_live_block_entries
             .iter()
-            .map(|entry| entry.address.block_slab_id)
+            .map(|entry| entry.address.block_slab_id())
             .collect::<BTreeSet<_>>();
         let live_block_entries = all_live_block_entries
             .into_iter()

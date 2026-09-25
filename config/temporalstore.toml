@@ -61,7 +61,7 @@ backend = "auto"                       # TS_STORAGE_BACKEND  auto | shared | raf
 # object_store_dir = ""                # TS_MATRIXOBJECT_STORE_DIR  on-disk object-store root (enterprise, single-node)
 # shared_store_dir = ""                # TS_SHARED_STORE_DIR   shared-path backend root directory
 context_page_target_bytes = 65536      # TS_CONTEXT_BLOCK_TARGET_BYTES  target context block size (bytes, 64 KiB). TS_CONTEXT_PAGE_TARGET_BYTES is the previous variable name, still honoured by the engine when this one is unset
-block_slab_target_bytes = 1073741824   # TS_BLOCK_SLAB_TARGET_BYTES  data-slab seal size (bytes, 1 GiB)
+block_slab_target_bytes = 1073741824   # TS_BLOCK_SLAB_TARGET_BYTES  data-slab seal size (bytes, 1 GiB). CEILING 4294967296 (4 GiB): a block address holds its offset in 32 bits, so a store configured above this REFUSES TO START rather than recording an offset that does not fit. Not clamped -- a clamp would surface as a mis-addressed read long after the setting
 # stream_max_blob_size = 0             # TS_STREAM_MAX_BLOB_SIZE  max inline blob before streaming tier (0/unset = engine default)
 # compaction_watermark_bytes = 0       # TS_COMPACTION_WATERMARK_BYTES  dead-bytes watermark that triggers compaction
 # page_index_cache_bytes = 0           # TS_PAGE_INDEX_CACHE_BYTES  page-index cache budget (bytes)

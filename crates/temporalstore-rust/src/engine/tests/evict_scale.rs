@@ -219,7 +219,7 @@ fn live_pages_by_slab(engine: &TemporalEngine) -> BTreeMap<u64, usize> {
     let shard = shards.get(&1).expect("shard 1 loaded");
     let mut by_slab = BTreeMap::new();
     for entry in crate::engine::collect_live_block_entries(shard) {
-        *by_slab.entry(entry.address.block_slab_id).or_insert(0) += 1;
+        *by_slab.entry(entry.address.block_slab_id()).or_insert(0) += 1;
     }
     by_slab
 }
@@ -233,7 +233,7 @@ fn slabs_spanned_by(engine: &TemporalEngine, buckets: &BTreeSet<u32>) -> BTreeSe
         if let Some(bucket) = shard.bucket_index.bucket_map.get(routing_bucket) {
             for page in bucket.block_index.values() {
                 if !page.deleted {
-                    slabs.insert(page.address.block_slab_id);
+                    slabs.insert(page.address.block_slab_id());
                 }
             }
         }

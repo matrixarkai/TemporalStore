@@ -147,18 +147,32 @@ pub(crate) fn delayed_destroy_slab_id_from_name(name: &std::ffi::OsStr) -> Optio
     id.parse::<u64>().ok()
 }
 
+/// THE SAME PACKING THE ADDRESS ITSELF NOW USES, AND IT WAS HERE FIRST.
+///
+/// This 32/32 split was already in this file, reporting a "compact slab address" in slab
+/// metadata, for the whole time the doc comment on `BlockAddress` argued that merging its slab id
+/// and its offset was impossible. It is now the address's own representation, so these three
+/// DELEGATE rather than repeat it: two copies of a packing that must agree is one of them
+/// drifting, and a delegation is still a function.
+///
+/// The `Option` stays, because these are the OUTWARD-FACING spelling: a caller holding an
+/// unpacked pair asks whether it fits and gets `None` if it does not, where the address's own
+/// constructor returns an error naming the values. Both refuse; neither truncates.
 pub(crate) fn compact_slab_address_from_parts(block_slab_id: u64, offset: u64) -> Option<u64> {
     let packed_slab_id = u32::try_from(block_slab_id).ok()?;
     let slab_offset = u32::try_from(offset).ok()?;
-    Some(((packed_slab_id as u64) << 32) | slab_offset as u64)
+    Some(crate::block_store::make_block_address_word(
+        packed_slab_id,
+        slab_offset,
+    ))
 }
 
 pub(crate) fn compact_extract_slab_id(address: u64) -> u32 {
-    (address >> 32) as u32
+    crate::block_store::extract_block_slab_id(address)
 }
 
 pub(crate) fn compact_extract_slab_offset(address: u64) -> u32 {
-    (address & 0xFFFF_FFFF) as u32
+    crate::block_store::extract_block_offset(address)
 }
 
 /// Every slab id the store root holds, by READING THE DIRECTORY.

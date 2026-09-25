@@ -2510,11 +2510,11 @@ fn cold_index_block_address_reads_from_disk_cache_or_block_store_and_refills_mem
         let shards = engine.shards.read().expect("engine lock poisoned");
         let shard = shards.get(&1).expect("loaded shard");
         let address = shard.strings.get("cold-key").expect("indexed page address");
-        assert_ne!(address.block_slab_id, HOT_BLOCK_SLAB_ID);
+        assert_ne!(address.block_slab_id(), HOT_BLOCK_SLAB_ID);
         CacheKey::page_with_slot(
             1,
-            address.block_slab_id,
-            address.offset,
+            address.block_slab_id(),
+            address.offset(),
             address.length(),
             address.routing_bucket(),
         )
@@ -2745,7 +2745,7 @@ fn durable_writes_stamp_stable_object_ids_on_block_addresses() {
     );
     assert_eq!(
         string_address.slab_id(),
-        Some(string_address.block_slab_id)
+        Some(string_address.block_slab_id())
     );
     assert_eq!(
         hash_address.object_id(),
@@ -2755,7 +2755,7 @@ fn durable_writes_stamp_stable_object_ids_on_block_addresses() {
         hash_address.routing_bucket(),
         Some(block_routing_bucket("h", 10, 20))
     );
-    assert_eq!(hash_address.slab_id(), Some(hash_address.block_slab_id));
+    assert_eq!(hash_address.slab_id(), Some(hash_address.block_slab_id()));
     assert_ne!(string_address.object_id(), hash_address.object_id());
 }
 
@@ -3829,11 +3829,11 @@ fn what_reading_one_summary_actually_costs() {
         assert_eq!(addresses.len(), 120, "every summary must be addressable");
         let wal_resident = addresses
             .iter()
-            .filter(|a| crate::wal_record::is_wal_resident(a.block_slab_id))
+            .filter(|a| crate::wal_record::is_wal_resident(a.block_slab_id()))
             .count();
         let with_block_id = addresses.iter().filter(|a| a.block_id().is_some()).count();
         let distinct_slabs: std::collections::BTreeSet<u64> =
-            addresses.iter().map(|a| a.block_slab_id).collect();
+            addresses.iter().map(|a| a.block_slab_id()).collect();
         println!(
             "         {wal_resident}/120 wal_resident addresses, {with_block_id} carry a page_id, {} distinct slabs",
             distinct_slabs.len(),
@@ -3960,10 +3960,10 @@ fn how_many_blocks_do_a_retrieves_candidates_span() {
                     .and_then(|fields| fields.values().next())
                     .or_else(|| shard.context_nodes.get(&key));
                 if let Some(address) = address {
-                    if extents.insert((address.block_slab_id, address.offset, address.length())) {
+                    if extents.insert((address.block_slab_id(), address.offset(), address.length())) {
                         bytes += address.length();
                     }
-                    slabs.insert(address.block_slab_id);
+                    slabs.insert(address.block_slab_id());
                 }
             }
             (extents.len(), slabs.len(), bytes)
@@ -3989,7 +3989,7 @@ fn how_many_blocks_do_a_retrieves_candidates_span() {
                     .and_then(|fields| fields.values().next())
                     .or_else(|| shard.context_nodes.get(&key))
                 {
-                    ranges.push((address.offset, address.length()));
+                    ranges.push((address.offset(), address.length()));
                 }
             }
             ranges.sort_unstable();
@@ -4099,7 +4099,7 @@ fn how_scattered_are_node_extents_after_a_real_ingest() {
                 .and_then(|fields| fields.values().next())
                 .or_else(|| shard.context_nodes.get(&key))
             {
-                ranges.push((address.block_slab_id, address.offset, address.length()));
+                ranges.push((address.block_slab_id(), address.offset(), address.length()));
             }
         }
         ranges.sort_unstable();
@@ -4328,8 +4328,8 @@ fn deep_compare_the_index_a_reconstruct_produces() {
                     page.model_id,
                     page.component,
                     page.object_id(),
-                    page.address.block_slab_id,
-                    page.address.offset,
+                    page.address.block_slab_id(),
+                    page.address.offset(),
                     page.address.length(),
                     page.dirty,
                     page.deleted,
