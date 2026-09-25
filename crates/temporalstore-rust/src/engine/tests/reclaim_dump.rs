@@ -29,7 +29,7 @@ fn claims_by_bucket(engine: &TemporalEngine, shard_id: ShardId) -> Vec<(u32, u64
         .bucket_index
         .bucket_map
         .iter()
-        .filter(|(_, bucket)| bucket.dirty)
+        .filter(|(_, bucket)| bucket.dirty())
         .map(|(routing_bucket, bucket)| {
             (
                 *routing_bucket,

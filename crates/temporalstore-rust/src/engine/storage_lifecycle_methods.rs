@@ -817,7 +817,7 @@ impl TemporalEngine {
                 bucket.dirty_generation = bucket.dirty_generation.max(captured_generation);
                 // Record the dumped-log sequence (informational; not part of the fingerprint).
                 bucket.last_dump_sequence = bucket.last_dump_sequence.max(manifest.wal_sequence);
-                bucket.dirty = false;
+                bucket.set_dirty(false);
                 // The dump captured everything this bucket had, so it holds no claim over the
                 // log until it is written to again.
                 bucket.first_dirty_wal_sequence = 0;
@@ -1720,8 +1720,8 @@ impl TemporalEngine {
                     // Evicting a bucket only frees something if it is resident and still holds
                     // live objects, which is the same eligibility the full scan applies via its
                     // weight filter.
-                    eligible: bucket.in_memory
-                        && !bucket.deleted
+                    eligible: bucket.in_memory()
+                        && !bucket.deleted()
                         && !bucket.object_index.is_empty(),
                     last_used_ms: self.recency.get(&routing_bucket).copied().unwrap_or(0),
                 }

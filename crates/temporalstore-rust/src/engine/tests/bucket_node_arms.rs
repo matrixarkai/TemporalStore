@@ -7,8 +7,8 @@
 //! per routing bucket. #1958 took it 208 -> 200, #1961 took it 200 -> 192 and #1966 took it
 //! 192 -> 184, all by narrowing fields. The shape proposed next does not narrow a field: it
 //! replaces the node's three container members -- `object_index`, `deleted_object_index` and
-//! `block_index`, 128 of the 184 bytes -- with ONE TAGGED WORD whose tag says whether the bucket
-//! is simple or general, and puts the payload of each arm behind that word. The node is then 64
+//! `block_index`, 128 of the 176 bytes -- with ONE TAGGED WORD whose tag says whether the bucket
+//! is simple or general, and puts the payload of each arm behind that word. The node is then 56
 //! bytes, which is asserted here and reconstructs field by field.
 //!
 //! THE ANSWER IS STILL NO. IT IS NO FOR DIFFERENT REASONS THAN IT WAS, AND THE CHANGE IN REASONS
@@ -34,9 +34,9 @@
 //!     then; the numbers in this comment were not. Three of the four allocation ratios still
 //!     reproduce exactly and one does not, and both byte columns at the configured range moved.
 //!   * SETTLED, AND IT IS THE ONE THAT DECIDES IT: THE NODE NARROWS BY 120 BYTES AND THE KEY
-//!     HOLDS EIGHT MORE. A simple bucket costs 184 B inline today. Tagged, it costs a 64 B node
+//!     HOLDS EIGHT MORE. A simple bucket costs 176 B inline today. Tagged, it costs a 56 B node
 //!     plus the chunk the allocator serves a 112 B payload from, and that chunk is 128 B, READ
-//!     BACK FROM THE ALLOCATOR rather than taken from a formula: 192 B, +8 B a key. The 120 bytes
+//!     BACK FROM THE ALLOCATOR rather than taken from a formula: 184 B, +8 B a key. The 120 bytes
 //!     do not leave the key. They move from a field into a chunk.
 //!   * STANDING: THE SAVING THAT DOES EXIST IS NOT A PER-KEY SAVING AND IT IS NOT THE SHAPE'S. It
 //!     is B-tree slot waste. A `BTreeMap` node holds eleven value slots whether they are filled or
@@ -621,7 +621,7 @@ fn a_simple_bucket_holds_no_general_case_to_take_away() {
         "the tombstone index moved"
     );
 
-    // The three members sum to 128 of the node's 184 -- the bytes the proposal would replace
+    // The three members sum to 128 of the node's 176 -- the bytes the proposal would replace
     // with one word. It was 136 of 192 until the address inside the inline page entry shed
     // its derived generation; the members and the node each lost the same eight bytes, so
     // what the proposal would replace is unchanged in kind and eight smaller in size.
@@ -839,11 +839,7 @@ impl Drop for TaggedLayout {
 struct TaggedNode {
     routing_bucket: u32,
     layout: BucketLayoutState,
-    dirty: bool,
-    deleted: bool,
-    meta_loaded: bool,
-    loading: bool,
-    in_memory: bool,
+    flags: BucketFlags,
     ttl_ms: BucketTtl,
     dirty_generation: u64,
     first_dirty_wal_sequence: u64,
@@ -859,11 +855,7 @@ struct TaggedNode {
 struct LiveNodeMirror {
     routing_bucket: u32,
     layout: BucketLayoutState,
-    dirty: bool,
-    deleted: bool,
-    meta_loaded: bool,
-    loading: bool,
-    in_memory: bool,
+    flags: BucketFlags,
     ttl_ms: BucketTtl,
     dirty_generation: u64,
     first_dirty_wal_sequence: u64,
@@ -906,11 +898,7 @@ fn retag(node: &BucketNode) -> TaggedNode {
     TaggedNode {
         routing_bucket: node.routing_bucket,
         layout: node.layout,
-        dirty: node.dirty,
-        deleted: node.deleted,
-        meta_loaded: node.meta_loaded,
-        loading: node.loading,
-        in_memory: node.in_memory,
+        flags: BucketFlags::default().with(BucketFlags::DIRTY, node.dirty()).with(BucketFlags::DELETED, node.deleted()).with(BucketFlags::META_LOADED, node.meta_loaded()).with(BucketFlags::LOADING, node.loading()).with(BucketFlags::IN_MEMORY, node.in_memory()),
         ttl_ms: node.ttl_ms,
         dirty_generation: node.dirty_generation,
         first_dirty_wal_sequence: node.first_dirty_wal_sequence,
@@ -929,7 +917,7 @@ fn retag(node: &BucketNode) -> TaggedNode {
 ///
 /// rust-internal: measures declarations, no product behaviour
 #[test]
-fn the_tagged_node_is_sixty_four_bytes_and_every_arm_reconstructs() {
+fn the_tagged_node_is_fifty_six_bytes_and_every_arm_reconstructs() {
     // --- THE CONTROL COMES FIRST. ---
     assert_eq!(
         size_of::<BucketNode>(),
@@ -971,13 +959,13 @@ fn the_tagged_node_is_sixty_four_bytes_and_every_arm_reconstructs() {
                 + size_of::<ObjectIndex>()
                 + size_of::<DeletedObjectIndex>()
                 + size_of::<BlockIndexMap>(),
-            size_of::<u32>() + size_of::<BucketLayoutState>() + 5,
+            size_of::<u32>() + size_of::<BucketLayoutState>() + size_of::<BucketFlags>(),
         ),
         (
             "TaggedNode (proposed)",
             size_of::<TaggedNode>(),
             size_of::<BucketTtl>() + 4 * size_of::<u64>() + size_of::<TaggedLayout>(),
-            size_of::<u32>() + size_of::<BucketLayoutState>() + 5,
+            size_of::<u32>() + size_of::<BucketLayoutState>() + size_of::<BucketFlags>(),
         ),
         (
             "SimpleLayout (out of line)",
@@ -1004,11 +992,14 @@ fn the_tagged_node_is_sixty_four_bytes_and_every_arm_reconstructs() {
         );
     }
 
-    assert_eq!(184, size_of::<BucketNode>(), "the live node moved");
+    assert_eq!(176, size_of::<BucketNode>(), "the live node moved");
+    // 56, not 64, and for the same reason the live node is 176 and not 184: this mirror
+     // carries the node's header, the header's five flags are one byte now, and a ten-byte tail
+     // became six. BOTH SIDES LOSE THE SAME EIGHT BYTES, so the verdict below is untouched.
     assert_eq!(
-        64,
+        56,
         size_of::<TaggedNode>(),
-        "the tagged node is {} bytes, not 64",
+        "the tagged node is {} bytes, not 56",
         size_of::<TaggedNode>()
     );
     assert_eq!(
@@ -1776,7 +1767,7 @@ fn the_hundred_and_twenty_bytes_a_tagged_key_saves_are_not_bytes_a_tagged_key_st
     assert_eq!(
         120,
         inline - size_of::<TaggedNode>(),
-        "the node does go 184 -> 64; if that has changed the sentence this test refutes has \
+        "the node does go 176 -> 56; if that has changed the sentence this test refutes has \
          changed with it"
     );
     assert!(

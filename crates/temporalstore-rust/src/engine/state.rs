@@ -2490,16 +2490,97 @@ impl<'de> Deserialize<'de> for BucketTtl {
     }
 }
 
+/// The five per-bucket lifecycle flags, in one byte.
+///
+/// SIX BYTES OF SMALL FIELD, NOT TEN, AND THAT IS THE WHOLE REASON THIS TYPE EXISTS. Rust lays
+/// `BucketNode` out as two groups: everything of alignment 8 packs solid, and everything smaller
+/// fills the tail, which is then rounded up to the struct's alignment. The tail held
+/// `routing_bucket` (4), `layout` (1) and five separate `bool` (5) -- ten bytes, rounded to
+/// sixteen. Folding the five bools into one byte makes it six, and six rounds to eight.
+///
+/// WHY THE EARLIER READING SAID THIS WAS WORTH NOTHING, AND WHY IT WAS RIGHT ABOUT A DIFFERENT
+/// QUESTION. Narrowing any ONE field of a ten-byte tail is worth nothing, because 9 and 6 and 4
+/// all round back to 16 -- there is no single field here whose removal crosses the step. That is
+/// true, it was stated as the general rule, and the general rule is false: PACKING is not
+/// narrowing one field, it is removing four of them at once, and four is what it takes to cross.
+///
+/// THE STORED SPELLING DOES NOT MOVE. The index writes five separate boolean keys, exactly as it
+/// always did, because `BucketNode` now carries hand-written `Serialize` and `Deserialize` impls
+/// that spell them out. That is the real price of this change and it is paid in one place;
+/// `the_stored_spelling_of_a_bucket_node_did_not_move` drives it byte for byte.
+///
+/// A MASK IS THE FAILURE MODE. Five bits read through five masks is five chances to read the
+/// wrong one, and a flag that answers another flag's question is not a crash, it is a bucket that
+/// reports itself resident when it is loading. `engine::tests::bucket_flag_masks` holds every
+/// accessor to its own bit, and holds a deliberately mis-masked mirror beside it to prove the
+/// check can fail.
+#[derive(Default, Clone, Copy, PartialEq, Eq)]
+pub(super) struct BucketFlags(u8);
+
+impl BucketFlags {
+    pub(super) const DIRTY: u8 = 1 << 0;
+    pub(super) const DELETED: u8 = 1 << 1;
+    pub(super) const META_LOADED: u8 = 1 << 2;
+    pub(super) const LOADING: u8 = 1 << 3;
+    pub(super) const IN_MEMORY: u8 = 1 << 4;
+
+    /// Every flag this type defines, under the name the engine reads it by.
+    ///
+    /// Derived from here rather than hand-listed at each use, so a flag added to the struct and
+    /// not to this table is a table that has drifted -- which is what the mask guard checks.
+    pub(super) const MASKS: [(&'static str, u8); 5] = [
+        ("dirty", Self::DIRTY),
+        ("deleted", Self::DELETED),
+        ("meta_loaded", Self::META_LOADED),
+        ("loading", Self::LOADING),
+        ("in_memory", Self::IN_MEMORY),
+    ];
+
+    pub(super) const fn get(self, mask: u8) -> bool {
+        self.0 & mask != 0
+    }
+
+    pub(super) fn set(&mut self, mask: u8, on: bool) {
+        if on {
+            self.0 |= mask;
+        } else {
+            self.0 &= !mask;
+        }
+    }
+
+    /// The same, as a value, for the struct literals that used to name a flag inline.
+    pub(super) const fn with(self, mask: u8, on: bool) -> Self {
+        Self(if on { self.0 | mask } else { self.0 & !mask })
+    }
+
+    /// The raw byte. For the mask guard's diagnostics and for nothing else -- every engine reader
+    /// goes through a named accessor on `BucketNode`.
+    pub(super) const fn bits(self) -> u8 {
+        self.0
+    }
+}
+
+/// Named, not numeric: a debug line reading `BucketFlags(20)` is a line nobody can check.
+impl std::fmt::Debug for BucketFlags {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let mut set = formatter.debug_set();
+        for (name, mask) in Self::MASKS {
+            if self.get(mask) {
+                set.entry(&format_args!("{name}"));
+            }
+        }
+        set.finish()
+    }
+}
+
+/// One byte, which is the point.
+const _: () = assert!(std::mem::size_of::<BucketFlags>() == 1);
+
 /// Index -> BucketMap -> BucketNode -> BlockIndex/ObjectIndex.
-#[derive(Debug, Default, Clone, Serialize, Deserialize)]
+#[derive(Debug, Default, Clone)]
 pub(super) struct BucketNode {
-    #[serde(rename = "routing_slot")]
     pub(super) routing_bucket: u32,
-    #[serde(default)]
     pub(super) layout: BucketLayoutState,
-    pub(super) dirty: bool,
-    #[serde(default)]
-    pub(super) deleted: bool,
     /// The three flags of a per-bucket residency lifecycle. They are SET now, by
     /// `release_bucket_blocks` and `reload_released_bucket` in `storage_bucket_internals`.
     ///
@@ -2533,10 +2614,7 @@ pub(super) struct BucketNode {
     /// `loading` is held across the re-derivation, which is the state a concurrent caller would
     /// have to queue behind if reload ever became asynchronous; today the shard write lock covers
     /// it, so it is true only within one critical section.
-    pub(super) meta_loaded: bool,
-    pub(super) loading: bool,
-    pub(super) in_memory: bool,
-    #[serde(default)]
+    pub(super) flags: BucketFlags,
     pub(super) ttl_ms: BucketTtl,
     pub(super) dirty_generation: u64,
     /// The write-ahead log sequence at which this bucket most recently went from clean to dirty,
@@ -2556,7 +2634,6 @@ pub(super) struct BucketNode {
     /// reloaded bucket holds no claim by definition, and persisting this would both add a key to
     /// the index wire format and carry a number that is meaningless the moment it is read back.
     /// \ is what caught that.
-    #[serde(skip)]
     pub(super) first_dirty_wal_sequence: u64,
     /// The same claim against the INDEX LOG: the index-log sequence at which this bucket most
     /// recently went from clean to dirty, or 0 when it is clean or not known.
@@ -2567,31 +2644,334 @@ pub(super) struct BucketNode {
     ///
     /// Transient for the same reason as its WAL twin -- a load clears every dirty flag and
     /// recomputes from an empty dirty set, so a reloaded bucket holds no claim.
-    #[serde(skip)]
     pub(super) first_dirty_index_log_sequence: u64,
     pub(super) last_dump_sequence: u64,
-    #[serde(default, alias = "object_ids")]
     pub(super) object_index: ObjectIndex,
-    #[serde(default, alias = "deleted_object_ids")]
     pub(super) deleted_object_index: DeletedObjectIndex,
-    #[serde(rename = "page_index", default, alias = "page_refs")]
     pub(super) block_index: BlockIndexMap,
 }
 
 /// The widest per-item structure in the engine, and the one whose count is the bucket count.
 ///
-/// Most of it is the `BlockIndexMap` it carries inline: 104 of these 184 bytes are one page
+/// Most of it is the `BlockIndexMap` it carries inline: 104 of these 176 bytes are one page
 /// entry held inline plus its handle, and any accounting of this structure has to start there
 /// rather than with the flags.
 ///
 /// 202 bytes of field became 194 when `ttl_ms` stopped spending a word on a discriminant, and
 /// 186 when the tombstone index stopped spending sixteen on a case it is in 2.32% of the time;
 /// the struct went 208 -> 200 -> 192 with them, and 192 -> 184 when the address inside the inline
-/// page entry shed its derived `generation`. The six bytes left over are the aligner rounding
-/// `routing_bucket`, `layout` and the five flags -- ten bytes of small field -- up to sixteen,
-/// and they are ALIGNMENT, not width: narrowing any of those ten bytes moves nothing.
+/// page entry shed its derived `generation`. 184 -> 176 is the five `bool` becoming five BITS.
+///
+/// THE RULE THAT USED TO BE WRITTEN HERE WAS TRUE OF ONE FIELD AND FALSE IN GENERAL, and it is
+/// worth stating plainly because it is why nobody tried this for three changes. It said the six
+/// bytes left over were the aligner rounding `routing_bucket`, `layout` and the five flags -- ten
+/// bytes of small field -- up to sixteen, and that narrowing any of those ten bytes moved
+/// nothing. Every clause of that is correct except the last one's scope. Narrowing ONE of the ten
+/// moves nothing: 9, 6 and 4 all round back to 16, and no single field here can cross the step on
+/// its own. PACKING is not narrowing one field. It takes four bytes off at once, the tail lands
+/// on six, and six rounds to eight -- so the eight-aligned group is unchanged at 168 and the
+/// struct is 176. The general rule that holds is the one the accounting test states: only a
+/// change that takes the tail to eight bytes or fewer, or that takes a whole word out of the
+/// eight-aligned group, moves this structure at all.
+///
 /// `every_byte_of_the_bucket_node_is_accounted_for` states the whole of it field by field.
-const _: () = assert!(std::mem::size_of::<BucketNode>() == 184);
+const _: () = assert!(std::mem::size_of::<BucketNode>() == 176);
+
+impl BucketNode {
+    /// The five lifecycle flags, each read through its own mask and nothing else.
+    ///
+    /// These are ACCESSORS FOR FIELDS THAT USED TO BE PUBLIC, and they exist so that packing the
+    /// flags is a change to one declaration rather than to every reader's meaning. Each one is
+    /// the same question it was before, asked the same way round.
+    pub(super) const fn dirty(&self) -> bool {
+        self.flags.get(BucketFlags::DIRTY)
+    }
+
+    pub(super) fn set_dirty(&mut self, on: bool) {
+        self.flags.set(BucketFlags::DIRTY, on);
+    }
+
+    pub(super) const fn deleted(&self) -> bool {
+        self.flags.get(BucketFlags::DELETED)
+    }
+
+    pub(super) fn set_deleted(&mut self, on: bool) {
+        self.flags.set(BucketFlags::DELETED, on);
+    }
+
+    pub(super) const fn meta_loaded(&self) -> bool {
+        self.flags.get(BucketFlags::META_LOADED)
+    }
+
+    pub(super) fn set_meta_loaded(&mut self, on: bool) {
+        self.flags.set(BucketFlags::META_LOADED, on);
+    }
+
+    pub(super) const fn loading(&self) -> bool {
+        self.flags.get(BucketFlags::LOADING)
+    }
+
+    pub(super) fn set_loading(&mut self, on: bool) {
+        self.flags.set(BucketFlags::LOADING, on);
+    }
+
+    pub(super) const fn in_memory(&self) -> bool {
+        self.flags.get(BucketFlags::IN_MEMORY)
+    }
+
+    pub(super) fn set_in_memory(&mut self, on: bool) {
+        self.flags.set(BucketFlags::IN_MEMORY, on);
+    }
+}
+
+/// THE STORED SPELLING, WRITTEN OUT BY HAND BECAUSE THE DECLARATION NO LONGER MATCHES IT.
+///
+/// `BucketNode` is written into the shard index, so its field names ARE a stored format. The five
+/// flags are five separate boolean keys on the wire and one byte in memory, and the only way to
+/// hold both is to stop deriving this and say it. Thirteen keys, in this order, with `routing_slot`
+/// and `page_index` spelled as they always were.
+///
+/// WHAT A DERIVE WAS DOING THAT THIS HAS TO KEEP DOING, each one a stored-format fact rather than
+/// a style choice:
+///
+///   * the two `first_dirty_*` claims are NOT written -- they were `#[serde(skip)]`, a load
+///     clears them, and writing them would add a key carrying a number that is meaningless the
+///     moment it is read back;
+///   * `object_ids`, `deleted_object_ids` and `page_refs` are still accepted as aliases, which is
+///     what lets the oldest written index load -- `core_index_loads_legacy_bucket_page_field_names`
+///     holds that spelling and an alias dropped from here is a store that stops loading;
+///   * the fields that had `#[serde(default)]` still default when the key is absent, and the ones
+///     that did not still REFUSE a node that omits them. Presence comes from the wire.
+///
+/// A repeated key is an error rather than a last-one-wins, exactly as the derive had it: two
+/// disagreeing statements of the same fact must fail loudly and before anything is built from
+/// them.
+impl Serialize for BucketNode {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        use serde::ser::SerializeStruct;
+        let mut node = serializer.serialize_struct("BucketNode", 13)?;
+        node.serialize_field("routing_slot", &self.routing_bucket)?;
+        node.serialize_field("layout", &self.layout)?;
+        node.serialize_field("dirty", &self.dirty())?;
+        node.serialize_field("deleted", &self.deleted())?;
+        node.serialize_field("meta_loaded", &self.meta_loaded())?;
+        node.serialize_field("loading", &self.loading())?;
+        node.serialize_field("in_memory", &self.in_memory())?;
+        node.serialize_field("ttl_ms", &self.ttl_ms)?;
+        node.serialize_field("dirty_generation", &self.dirty_generation)?;
+        node.serialize_field("last_dump_sequence", &self.last_dump_sequence)?;
+        node.serialize_field("object_index", &self.object_index)?;
+        node.serialize_field("deleted_object_index", &self.deleted_object_index)?;
+        node.serialize_field("page_index", &self.block_index)?;
+        node.end()
+    }
+}
+
+/// The keys a stored bucket node can carry, including the three older spellings.
+///
+/// Resolved without allocating -- a `String` per key per bucket is a cost the derive did not pay
+/// and the load path should not start paying. An unrecognised key is IGNORED, which is what the
+/// derive did and what lets an index written by a newer engine load into an older one.
+enum BucketNodeField {
+    RoutingSlot,
+    Layout,
+    Dirty,
+    Deleted,
+    MetaLoaded,
+    Loading,
+    InMemory,
+    TtlMs,
+    DirtyGeneration,
+    LastDumpSequence,
+    ObjectIndex,
+    DeletedObjectIndex,
+    PageIndex,
+    Ignore,
+}
+
+const BUCKET_NODE_FIELDS: &[&str] = &[
+    "routing_slot",
+    "layout",
+    "dirty",
+    "deleted",
+    "meta_loaded",
+    "loading",
+    "in_memory",
+    "ttl_ms",
+    "dirty_generation",
+    "last_dump_sequence",
+    "object_index",
+    "deleted_object_index",
+    "page_index",
+];
+
+impl<'de> Deserialize<'de> for BucketNodeField {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        struct FieldVisitor;
+
+        impl serde::de::Visitor<'_> for FieldVisitor {
+            type Value = BucketNodeField;
+
+            fn expecting(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                formatter.write_str("a bucket node field name")
+            }
+
+            fn visit_str<E>(self, value: &str) -> Result<BucketNodeField, E>
+            where
+                E: serde::de::Error,
+            {
+                Ok(match value {
+                    "routing_slot" => BucketNodeField::RoutingSlot,
+                    "layout" => BucketNodeField::Layout,
+                    "dirty" => BucketNodeField::Dirty,
+                    "deleted" => BucketNodeField::Deleted,
+                    "meta_loaded" => BucketNodeField::MetaLoaded,
+                    "loading" => BucketNodeField::Loading,
+                    "in_memory" => BucketNodeField::InMemory,
+                    "ttl_ms" => BucketNodeField::TtlMs,
+                    "dirty_generation" => BucketNodeField::DirtyGeneration,
+                    "last_dump_sequence" => BucketNodeField::LastDumpSequence,
+                    // The three older spellings, each alongside the one that replaced it.
+                    "object_index" | "object_ids" => BucketNodeField::ObjectIndex,
+                    "deleted_object_index" | "deleted_object_ids" => {
+                        BucketNodeField::DeletedObjectIndex
+                    }
+                    "page_index" | "page_refs" => BucketNodeField::PageIndex,
+                    _ => BucketNodeField::Ignore,
+                })
+            }
+        }
+
+        deserializer.deserialize_identifier(FieldVisitor)
+    }
+}
+
+impl<'de> Deserialize<'de> for BucketNode {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        struct NodeVisitor;
+
+        impl<'de> serde::de::Visitor<'de> for NodeVisitor {
+            type Value = BucketNode;
+
+            fn expecting(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                formatter.write_str("a bucket node")
+            }
+
+            fn visit_map<M>(self, mut map: M) -> Result<BucketNode, M::Error>
+            where
+                M: serde::de::MapAccess<'de>,
+            {
+                use serde::de::Error as _;
+
+                let mut routing_bucket: Option<u32> = None;
+                let mut layout: Option<BucketLayoutState> = None;
+                let mut dirty: Option<bool> = None;
+                let mut deleted: Option<bool> = None;
+                let mut meta_loaded: Option<bool> = None;
+                let mut loading: Option<bool> = None;
+                let mut in_memory: Option<bool> = None;
+                let mut ttl_ms: Option<BucketTtl> = None;
+                let mut dirty_generation: Option<u64> = None;
+                let mut last_dump_sequence: Option<u64> = None;
+                let mut object_index: Option<ObjectIndex> = None;
+                let mut deleted_object_index: Option<DeletedObjectIndex> = None;
+                let mut block_index: Option<BlockIndexMap> = None;
+
+                // Each arm refuses a SECOND statement of the same fact rather than letting the
+                // later one win. `once` names the key in the error so a store that carries both
+                // an old and a new spelling of one field says which.
+                macro_rules! once {
+                    ($slot:ident, $name:literal) => {{
+                        if $slot.is_some() {
+                            return Err(M::Error::duplicate_field($name));
+                        }
+                        $slot = Some(map.next_value()?);
+                    }};
+                }
+
+                while let Some(key) = map.next_key::<BucketNodeField>()? {
+                    match key {
+                        BucketNodeField::RoutingSlot => once!(routing_bucket, "routing_slot"),
+                        BucketNodeField::Layout => once!(layout, "layout"),
+                        BucketNodeField::Dirty => once!(dirty, "dirty"),
+                        BucketNodeField::Deleted => once!(deleted, "deleted"),
+                        BucketNodeField::MetaLoaded => once!(meta_loaded, "meta_loaded"),
+                        BucketNodeField::Loading => once!(loading, "loading"),
+                        BucketNodeField::InMemory => once!(in_memory, "in_memory"),
+                        BucketNodeField::TtlMs => once!(ttl_ms, "ttl_ms"),
+                        BucketNodeField::DirtyGeneration => {
+                            once!(dirty_generation, "dirty_generation")
+                        }
+                        BucketNodeField::LastDumpSequence => {
+                            once!(last_dump_sequence, "last_dump_sequence")
+                        }
+                        BucketNodeField::ObjectIndex => once!(object_index, "object_index"),
+                        BucketNodeField::DeletedObjectIndex => {
+                            once!(deleted_object_index, "deleted_object_index")
+                        }
+                        BucketNodeField::PageIndex => once!(block_index, "page_index"),
+                        BucketNodeField::Ignore => {
+                            map.next_value::<serde::de::IgnoredAny>()?;
+                        }
+                    }
+                }
+
+                // PRESENCE COMES FROM THE WIRE. The seven keys that had no `#[serde(default)]`
+                // are still required, so a node that omits one is refused rather than filled in
+                // with a zero that would read as a real answer.
+                let mut flags = BucketFlags::default();
+                flags.set(
+                    BucketFlags::DIRTY,
+                    dirty.ok_or_else(|| M::Error::missing_field("dirty"))?,
+                );
+                flags.set(BucketFlags::DELETED, deleted.unwrap_or_default());
+                flags.set(
+                    BucketFlags::META_LOADED,
+                    meta_loaded.ok_or_else(|| M::Error::missing_field("meta_loaded"))?,
+                );
+                flags.set(
+                    BucketFlags::LOADING,
+                    loading.ok_or_else(|| M::Error::missing_field("loading"))?,
+                );
+                flags.set(
+                    BucketFlags::IN_MEMORY,
+                    in_memory.ok_or_else(|| M::Error::missing_field("in_memory"))?,
+                );
+
+                Ok(BucketNode {
+                    routing_bucket: routing_bucket
+                        .ok_or_else(|| M::Error::missing_field("routing_slot"))?,
+                    layout: layout.unwrap_or_default(),
+                    flags,
+                    ttl_ms: ttl_ms.unwrap_or_default(),
+                    dirty_generation: dirty_generation
+                        .ok_or_else(|| M::Error::missing_field("dirty_generation"))?,
+                    // Transient by declaration: a load clears every dirty flag, so a reloaded
+                    // bucket holds no claim over either log and these start at 0 whatever the
+                    // stored index says.
+                    first_dirty_wal_sequence: 0,
+                    first_dirty_index_log_sequence: 0,
+                    last_dump_sequence: last_dump_sequence
+                        .ok_or_else(|| M::Error::missing_field("last_dump_sequence"))?,
+                    object_index: object_index.unwrap_or_default(),
+                    deleted_object_index: deleted_object_index.unwrap_or_default(),
+                    block_index: block_index.unwrap_or_default(),
+                })
+            }
+        }
+
+        deserializer.deserialize_struct("BucketNode", BUCKET_NODE_FIELDS, NodeVisitor)
+    }
+}
 
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub(super) enum BucketLayoutState {

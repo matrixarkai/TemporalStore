@@ -40,10 +40,17 @@
 //!   1. THE ALIGNMENT ARITHMETIC IS NOT THE OBVIOUS ONE. The node is 178 bytes of field in 184 --
 //!      168 of eight-aligned field and a ten-byte tail rounded to sixteen, six bytes of slack.
 //!      The natural reading of four words in the eight-aligned group is that narrowing one buys
-//!      nothing. It is worth EIGHT: the freed `u32` leaves the group and lands in the tail, 14
-//!      bytes still round to 16, and the group is a word shorter. Narrowing a SECOND is worth
-//!      nothing on top of that -- 18 bytes round to 24 and hand the word straight back. Three
-//!      narrow to 176, four narrow to 176 as well, and REMOVING two reaches 176.
+//!      nothing, and with the node at 176 that reading is now RIGHT -- but not for its reason,
+//!      and it was wrong when this was written. The staircase is that every SECOND narrowing
+//!      collects one rounding: a freed `u64` takes a word off the group and puts a `u32` back
+//!      into the tail. Its PHASE depends on the tail. At ten bytes the first narrowing landed on
+//!      14, which still rounded to 16, so the first step was worth eight. At SIX bytes -- the
+//!      five `bool` are one `BucketFlags` byte since the node went 184 -> 176 -- the first
+//!      narrowing lands on 10, which rounds to 16, and the word is handed straight back. The
+//!      table is now 0, 8, 8, 16 where it read 8, 8, 16, 16, and the eight bytes that left the
+//!      head of it are the same eight the flag pack collected: two ways to take one rounding,
+//!      and only one of them could be paid. REMOVING two still reaches 160, because removed
+//!      bytes leave rather than move.
 //!      `what_narrowing_or_removing_each_sequence_would_make_the_node` prints the table against
 //!      mirrors of the declaration, with the live mirror as its control and the reconstruction
 //!      asserted on every row. So the saving belongs to the GROUP and there is no per-field
@@ -106,7 +113,8 @@ use super::*;
 use std::mem::{align_of, size_of};
 
 use crate::engine::state::{
-    BlockIndexMap, BucketLayoutState, BucketNode, BucketTtl, DeletedObjectIndex, ObjectIndex,
+    BlockIndexMap, BucketFlags, BucketLayoutState, BucketNode, BucketTtl, DeletedObjectIndex,
+    ObjectIndex,
 };
 
 #[cfg(feature = "alloc-probe")]
@@ -221,7 +229,7 @@ fn sequences_by_bucket(engine: &TemporalEngine) -> Vec<Sequences> {
         .iter()
         .map(|(routing_bucket, bucket)| Sequences {
             routing_bucket: *routing_bucket,
-            dirty: bucket.dirty,
+            dirty: bucket.dirty(),
             generation: bucket.dirty_generation,
             wal_claim: bucket.first_dirty_wal_sequence,
             index_log_claim: bucket.first_dirty_index_log_sequence,
@@ -376,11 +384,7 @@ fn what_each_of_the_four_sequences_reaches_at_two_corpus_sizes() {
 struct SeqMirrorLive {
     routing_bucket: u32,
     layout: BucketLayoutState,
-    dirty: bool,
-    deleted: bool,
-    meta_loaded: bool,
-    loading: bool,
-    in_memory: bool,
+    flags: BucketFlags,
     ttl_ms: BucketTtl,
     dirty_generation: u64,
     first_dirty_wal_sequence: u64,
@@ -396,11 +400,7 @@ struct SeqMirrorLive {
 struct SeqMirrorOneNarrowed {
     routing_bucket: u32,
     layout: BucketLayoutState,
-    dirty: bool,
-    deleted: bool,
-    meta_loaded: bool,
-    loading: bool,
-    in_memory: bool,
+    flags: BucketFlags,
     ttl_ms: BucketTtl,
     dirty_generation: u64,
     first_dirty_wal_sequence: u64,
@@ -416,11 +416,7 @@ struct SeqMirrorOneNarrowed {
 struct SeqMirrorTwoNarrowed {
     routing_bucket: u32,
     layout: BucketLayoutState,
-    dirty: bool,
-    deleted: bool,
-    meta_loaded: bool,
-    loading: bool,
-    in_memory: bool,
+    flags: BucketFlags,
     ttl_ms: BucketTtl,
     dirty_generation: u64,
     first_dirty_wal_sequence: u64,
@@ -436,11 +432,7 @@ struct SeqMirrorTwoNarrowed {
 struct SeqMirrorThreeNarrowed {
     routing_bucket: u32,
     layout: BucketLayoutState,
-    dirty: bool,
-    deleted: bool,
-    meta_loaded: bool,
-    loading: bool,
-    in_memory: bool,
+    flags: BucketFlags,
     ttl_ms: BucketTtl,
     dirty_generation: u64,
     first_dirty_wal_sequence: u32,
@@ -456,11 +448,7 @@ struct SeqMirrorThreeNarrowed {
 struct SeqMirrorFourNarrowed {
     routing_bucket: u32,
     layout: BucketLayoutState,
-    dirty: bool,
-    deleted: bool,
-    meta_loaded: bool,
-    loading: bool,
-    in_memory: bool,
+    flags: BucketFlags,
     ttl_ms: BucketTtl,
     dirty_generation: u32,
     first_dirty_wal_sequence: u32,
@@ -476,11 +464,7 @@ struct SeqMirrorFourNarrowed {
 struct SeqMirrorOneRemoved {
     routing_bucket: u32,
     layout: BucketLayoutState,
-    dirty: bool,
-    deleted: bool,
-    meta_loaded: bool,
-    loading: bool,
-    in_memory: bool,
+    flags: BucketFlags,
     ttl_ms: BucketTtl,
     dirty_generation: u64,
     first_dirty_wal_sequence: u64,
@@ -495,11 +479,7 @@ struct SeqMirrorOneRemoved {
 struct SeqMirrorTwoRemoved {
     routing_bucket: u32,
     layout: BucketLayoutState,
-    dirty: bool,
-    deleted: bool,
-    meta_loaded: bool,
-    loading: bool,
-    in_memory: bool,
+    flags: BucketFlags,
     ttl_ms: BucketTtl,
     dirty_generation: u64,
     last_dump_sequence: u64,
@@ -556,11 +536,22 @@ fn what_narrowing_or_removing_each_sequence_would_make_the_node() {
     assert_eq!(8, align, "BucketNode's alignment moved and the arithmetic below assumes 8");
 
     // The two groups, taken from the declaration rather than from a literal.
-    // 168, not 176, since the inline `BlockIndexMap` lost eight bytes when the `BlockAddress`
-    // inside its inline page entry stopped storing a `generation` it could derive. Every price
-    // below is a DIFFERENCE and so did not move; only the base did.
+    //
+    // 168 of eight-aligned field, since the inline `BlockIndexMap` lost eight bytes when the
+    // `BlockAddress` inside its inline page entry stopped storing a `generation` it could derive.
+    //
+    // AND A SIX-BYTE TAIL, NOT TEN, WHICH MOVED A CONCLUSION RATHER THAN A LITERAL. The five
+    // `bool` became five bits of one `BucketFlags` byte, so the tail is `routing_bucket` (4),
+    // `layout` (1) and the flag byte (1). The rows below are differences computed FROM these two
+    // constants, so they recompute -- but the first row's answer is not the one it used to be:
+    // narrowing ONE sequence used to be worth eight bytes, because the freed `u32` landed in a
+    // ten-byte tail that still rounded to sixteen while the group lost a word. With a six-byte
+    // tail the freed `u32` takes the tail to ten, which rounds to sixteen, and the word the group
+    // gave up is handed straight back. THE EIGHT BYTES ARE THE SAME EIGHT BYTES: packing the
+    // flags and narrowing one sequence were two ways to collect one rounding, and only one of
+    // them could be paid.
     const EIGHT_ALIGNED: usize = 168;
-    const TAIL: usize = 10;
+    const TAIL: usize = 6;
     let live = size_of::<BucketNode>();
     assert_eq!(
         EIGHT_ALIGNED + TAIL.div_ceil(align) * align,
@@ -598,30 +589,43 @@ fn what_narrowing_or_removing_each_sequence_would_make_the_node() {
         );
     }
 
-    // THE STEP, asserted as a step. This is the claim the module leads with.
+    // THE STEP, ASSERTED AS A STEP -- AND ITS PHASE MOVED WHEN THE TAIL DID.
+    //
+    // The staircase is the same shape it always was: every SECOND narrowing collects one
+    // rounding, because a freed `u64` takes a word off the eight-aligned group and puts a `u32`
+    // back into the tail. What changed is where it starts. With a ten-byte tail the first
+    // narrowing landed on 14, which still rounded to 16, so the word was kept and the first step
+    // was worth eight. With a SIX-byte tail -- the five `bool` are one byte now -- the first
+    // narrowing lands on 10, which rounds to 16, and the word the group gave up is handed
+    // straight back.
+    //
+    // So the eight bytes that used to be here are gone, and they are gone because something else
+    // took them: packing the flags and narrowing one sequence were two ways to collect the same
+    // rounding, and only one of them could be paid. 0, 8, 8, 16 where it used to be 8, 8, 16, 16.
     assert_eq!(
-        8,
+        0,
         live - narrowed_sizes[1],
-        "narrowing ONE of the four is priced at eight bytes a bucket; it measured {}",
+        "narrowing ONE of the four is worth NOTHING now that the tail is six bytes -- the freed \
+         word goes straight back into the rounding -- but it measured {}",
         live - narrowed_sizes[1]
     );
     assert_eq!(
-        narrowed_sizes[1], narrowed_sizes[2],
-        "narrowing a SECOND of the four is worth nothing on top of the first -- the freed word \
-         goes straight back into the tail's rounding -- but one measured {} and two measured {}",
-        narrowed_sizes[1], narrowed_sizes[2]
+        8,
+        live - narrowed_sizes[2],
+        "narrowing a SECOND of the four is priced at eight bytes a bucket; it measured {}",
+        live - narrowed_sizes[2]
+    );
+    assert_eq!(
+        narrowed_sizes[2], narrowed_sizes[3],
+        "narrowing a THIRD is worth nothing on top of the second, but two measured {} and three \
+         measured {}",
+        narrowed_sizes[2], narrowed_sizes[3]
     );
     assert_eq!(
         16,
-        live - narrowed_sizes[3],
-        "narrowing THREE is priced at sixteen bytes a bucket; it measured {}",
-        live - narrowed_sizes[3]
-    );
-    assert_eq!(
-        narrowed_sizes[3], narrowed_sizes[4],
-        "narrowing the FOURTH is worth nothing on top of the third, but three measured {} and \
-         four measured {}",
-        narrowed_sizes[3], narrowed_sizes[4]
+        live - narrowed_sizes[4],
+        "narrowing all FOUR is priced at sixteen bytes a bucket; it measured {}",
+        live - narrowed_sizes[4]
     );
 
     // --- Removing, which is a different arithmetic: the bytes leave rather than move. ---

@@ -55,7 +55,7 @@ pub(super) fn runtime_report(shard: &ShardState) -> ObjectManagerRuntimeReport {
     for bucket in shard.bucket_index.bucket_map.values() {
         for object_id in &bucket.object_index {
             object_ids.insert(*object_id);
-            let object_deleted = bucket.deleted || bucket.deleted_object_index.contains(object_id);
+            let object_deleted = bucket.deleted() || bucket.deleted_object_index.contains(object_id);
             let object = objects
                 .entry(*object_id)
                 .or_insert_with(|| ObjectRuntimeState {
@@ -68,16 +68,16 @@ pub(super) fn runtime_report(shard: &ShardState) -> ObjectManagerRuntimeReport {
                     cold_block_ref_count: 0,
                     deleted_block_ref_count: 0,
                     residency: "cold".to_string(),
-                    dirty: bucket.dirty,
+                    dirty: bucket.dirty(),
                     deleted: object_deleted,
-                    loading: bucket.loading,
-                    in_memory: bucket.in_memory,
+                    loading: bucket.loading(),
+                    in_memory: bucket.in_memory(),
                     ttl_ms: bucket.ttl_ms.ms(),
                 });
-            object.dirty |= bucket.dirty;
+            object.dirty |= bucket.dirty();
             object.deleted |= object_deleted;
-            object.loading |= bucket.loading;
-            object.in_memory |= bucket.in_memory;
+            object.loading |= bucket.loading();
+            object.in_memory |= bucket.in_memory();
             object.ttl_ms = match (object.ttl_ms, bucket.ttl_ms.ms()) {
                 (Some(existing), Some(next)) => Some(existing.min(next)),
                 (None, Some(next)) => Some(next),
@@ -110,19 +110,19 @@ pub(super) fn runtime_report(shard: &ShardState) -> ObjectManagerRuntimeReport {
                     ttl_ms: None,
                 });
             object.block_ref_count = object.block_ref_count.saturating_add(1);
-            object.dirty |= page.dirty || bucket.dirty;
+            object.dirty |= page.dirty || bucket.dirty();
             let object_deleted =
-                page.deleted || bucket.deleted || bucket.deleted_object_index.contains(&page.object_id());
+                page.deleted || bucket.deleted() || bucket.deleted_object_index.contains(&page.object_id());
             object.deleted |= object_deleted;
             if object_deleted {
                 object.deleted_block_ref_count = object.deleted_block_ref_count.saturating_add(1);
-            } else if bucket.in_memory && !page.log_backed {
+            } else if bucket.in_memory() && !page.log_backed {
                 object.hot_block_ref_count = object.hot_block_ref_count.saturating_add(1);
             } else {
                 object.cold_block_ref_count = object.cold_block_ref_count.saturating_add(1);
             }
-            object.loading |= bucket.loading;
-            object.in_memory |= bucket.in_memory;
+            object.loading |= bucket.loading();
+            object.in_memory |= bucket.in_memory();
             object.ttl_ms = match (object.ttl_ms, bucket.ttl_ms.ms()) {
                 (Some(existing), Some(next)) => Some(existing.min(next)),
                 (None, Some(next)) => Some(next),

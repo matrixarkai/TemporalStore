@@ -72,7 +72,7 @@ fn wal_claims_by_bucket(
         .bucket_index
         .bucket_map
         .iter()
-        .filter(|(_, bucket)| bucket.dirty)
+        .filter(|(_, bucket)| bucket.dirty())
         .map(|(routing_bucket, bucket)| (*routing_bucket, bucket.first_dirty_wal_sequence))
         .collect()
 }

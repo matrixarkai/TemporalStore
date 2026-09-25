@@ -1861,13 +1861,13 @@ fn releasing_a_mixed_batch_releases_exactly_the_clean_buckets_and_leaves_the_res
                 .block_index
                 .values()
                 .all(|page| !page.dirty && !page.deleted);
-            if bucket.in_memory
-                && !bucket.loading
-                && !bucket.deleted
+            if bucket.in_memory()
+                && !bucket.loading()
+                && !bucket.deleted()
                 && !bucket.block_index.is_empty()
                 && pages_clean
             {
-                if bucket.dirty {
+                if bucket.dirty() {
                     dirty.push(routing_bucket);
                 } else {
                     released.push(routing_bucket);
@@ -1968,7 +1968,7 @@ fn releasing_a_mixed_batch_releases_exactly_the_clean_buckets_and_leaves_the_res
                 bucket.block_index.len()
             );
             assert!(
-                bucket.in_memory,
+                bucket.in_memory(),
                 "bucket {routing_bucket} was refused but is no longer marked resident"
             );
         }

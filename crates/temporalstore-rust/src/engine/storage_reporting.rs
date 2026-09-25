@@ -220,7 +220,7 @@ pub(super) fn bucket_storage_summaries(
         // live-page summary; behaviour is unchanged for every pre-clear state (a bucket
         // with content is dirty today, so the branch was always taken).
         let has_live_summary = buckets.contains_key(routing_bucket);
-        if !bucket.dirty && !has_live_summary {
+        if !bucket.dirty() && !has_live_summary {
             continue;
         }
         let summary = buckets.entry(*routing_bucket).or_insert(BucketStorageSummary {
@@ -427,10 +427,10 @@ pub(super) fn storage_physical_index_report(
                 ..StoragePhysicalBucketNode::default()
             });
         bucket.layout = bucket_layout_name(runtime_bucket.layout).to_string();
-        bucket.dirty = runtime_bucket.dirty;
-        bucket.meta_loaded = runtime_bucket.meta_loaded;
-        bucket.loading = runtime_bucket.loading;
-        bucket.in_memory = runtime_bucket.in_memory;
+        bucket.dirty = runtime_bucket.dirty();
+        bucket.meta_loaded = runtime_bucket.meta_loaded();
+        bucket.loading = runtime_bucket.loading();
+        bucket.in_memory = runtime_bucket.in_memory();
         bucket.ttl_ms = runtime_bucket.ttl_ms.ms();
         bucket.object_count = runtime_bucket.object_index.len() as u64;
         bucket.block_ref_count = runtime_bucket.block_index.len() as u64;
@@ -585,7 +585,7 @@ pub(super) fn object_manager_runtime_report_from_entries(
             .bucket_index
             .bucket_map
             .values()
-            .filter(|bucket| bucket.dirty)
+            .filter(|bucket| bucket.dirty())
             .count() as u64,
         max_dirty_generation: shard
             .bucket_index
@@ -621,7 +621,7 @@ pub(super) fn object_manager_runtime_report_from_entries(
                 object_count: bucket.object_index.len() as u64,
             });
         }
-        if bucket.meta_loaded {
+        if bucket.meta_loaded() {
             report.meta_object_count = report.meta_object_count.saturating_add(1);
         }
         match bucket.layout {

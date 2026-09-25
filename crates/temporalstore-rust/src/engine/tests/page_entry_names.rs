@@ -693,8 +693,7 @@ fn capture_the_stored_spelling_of_a_page_entry() {
     let mut node = BucketNode {
         routing_bucket: 7,
         layout: BucketLayoutState::MultiObject,
-        meta_loaded: true,
-        in_memory: true,
+        flags: BucketFlags::default().with(BucketFlags::META_LOADED, true).with(BucketFlags::IN_MEMORY, true),
         dirty_generation: 3,
         last_dump_sequence: 11,
         ..BucketNode::default()

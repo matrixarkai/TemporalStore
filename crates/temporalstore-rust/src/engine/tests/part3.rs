@@ -1985,7 +1985,7 @@ fn rebuild_bucket_block_ownership_preserves_dirty_watermarks() {
         3,
         BucketNode {
             routing_bucket: 3,
-            meta_loaded: true,
+            flags: BucketFlags::default().with(BucketFlags::META_LOADED, true),
             dirty_generation: 7,
             last_dump_sequence: 4,
             ..BucketNode::default()
@@ -2430,7 +2430,7 @@ fn bucket_store_reports_all_layout_states_and_runtime_flags() {
         1,
         BucketNode {
             routing_bucket: 1,
-            meta_loaded: true,
+            flags: BucketFlags::default().with(BucketFlags::META_LOADED, true),
             ..BucketNode::default()
         },
     );
@@ -2439,10 +2439,7 @@ fn bucket_store_reports_all_layout_states_and_runtime_flags() {
         BucketNode {
             routing_bucket: 2,
             layout: BucketLayoutState::SingleObject,
-            dirty: true,
-            deleted: true,
-            meta_loaded: true,
-            in_memory: false,
+            flags: BucketFlags::default().with(BucketFlags::DIRTY, true).with(BucketFlags::DELETED, true).with(BucketFlags::META_LOADED, true).with(BucketFlags::IN_MEMORY, false),
             ttl_ms: BucketTtl::from_ms(Some(5_000)),
             dirty_generation: 7,
             object_index: [20].into_iter().collect(),
@@ -2454,8 +2451,7 @@ fn bucket_store_reports_all_layout_states_and_runtime_flags() {
         BucketNode {
             routing_bucket: 3,
             layout: BucketLayoutState::SingleBlockObject,
-            meta_loaded: true,
-            in_memory: true,
+            flags: BucketFlags::default().with(BucketFlags::META_LOADED, true).with(BucketFlags::IN_MEMORY, true),
             object_index: [30].into_iter().collect(),
             block_index: [(
                 "string:k::1:0".to_string(),
@@ -2480,9 +2476,7 @@ fn bucket_store_reports_all_layout_states_and_runtime_flags() {
         BucketNode {
             routing_bucket: 4,
             layout: BucketLayoutState::MultiBlockObject,
-            meta_loaded: true,
-            loading: true,
-            in_memory: true,
+            flags: BucketFlags::default().with(BucketFlags::META_LOADED, true).with(BucketFlags::LOADING, true).with(BucketFlags::IN_MEMORY, true),
             object_index: [40].into_iter().collect(),
             block_index: [
                 (
@@ -2521,8 +2515,7 @@ fn bucket_store_reports_all_layout_states_and_runtime_flags() {
         BucketNode {
             routing_bucket: 5,
             layout: BucketLayoutState::MultiObject,
-            meta_loaded: true,
-            in_memory: true,
+            flags: BucketFlags::default().with(BucketFlags::META_LOADED, true).with(BucketFlags::IN_MEMORY, true),
             object_index: [50, 51].into_iter().collect(),
             block_index: [
                 (
@@ -2774,7 +2767,7 @@ fn released_multi_object_buckets_are_not_counted_as_empty_buckets() {
             *routing_bucket,
             BucketNode {
                 routing_bucket: *routing_bucket,
-                meta_loaded: true,
+                flags: BucketFlags::default().with(BucketFlags::META_LOADED, true),
                 layout: classify_bucket_layout(object_index.len(), 0),
                 object_index,
                 ..BucketNode::default()
