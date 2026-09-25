@@ -60,17 +60,25 @@ CLAMPED = re.compile(
 
 
 def declared_floors() -> dict:
-    """env name -> the floor its accessor applies."""
-    if not os.path.exists(TUNING):
-        return {}
-    with open(TUNING, encoding="utf-8", errors="replace") as handle:
-        text = handle.read()
-    start = text.find("pub fn from_getter")
-    if start < 0:
-        return {}
-    body = text[start:text.find("\n    }\n", start)]
+    """env name -> the floor its accessor applies.
+
+    SCANNED OVER THE WHOLE FILE, NOT OVER ONE NAMED FUNCTION, and that is the third time
+    this file has learned the same lesson. It used to slice the body of `pub fn from_getter`
+    and read the clamps inside it. That slice was blinded twice: once by the cross-field
+    floor, which lives further down the file (the reason `CROSS_CLAMPED` below already scans
+    the whole text), and then by the accessor being SPLIT -- the parsing moved into its own
+    function so that a checked spelling and a panicking spelling could share it, and the
+    clamps moved with it. Nothing failed at the split except this guard, which reported ZERO
+    floors and would have passed every check below by checking nothing had
+    `test_the_scan_found_clamps` not held a count floor.
+
+    A function name is not the authority; the pattern is. `get(TS_NAME) ... .max(N)` occurs
+    only where a knob is read, so scanning the file finds every one of them and cannot be
+    moved away from.
+    """
+    text = _tuning_text()
     floors = {}
-    for match in CLAMPED.finditer(body):
+    for match in CLAMPED.finditer(text):
         floors[match.group(1)] = int(match.group(2).replace("_", ""))
     return floors
 
