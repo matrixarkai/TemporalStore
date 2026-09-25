@@ -21,8 +21,86 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 pub static ALLOC_CALLS: AtomicU64 = AtomicU64::new(0);
 pub static ALLOC_BYTES: AtomicU64 = AtomicU64::new(0);
+/// What the allocator actually SET ASIDE for those requests, header and rounding included.
+///
+/// `ALLOC_BYTES` charges `layout.size()`, which is what the caller ASKED FOR. An allocator
+/// serves a request out of a chunk that is at least as large and usually larger: glibc adds a
+/// header word and rounds to sixteen, with a floor of thirty-two, so a 112-byte request is a
+/// 128-byte chunk and a 1-byte request is a 32-byte one.
+///
+/// THE DIFFERENCE IS NOT A ROUNDING DETAIL WHEN THE CHANGE UNDER TEST MOVES BYTES OUT OF LINE.
+/// A field held inline in a structure costs its own width and nothing else. The same field
+/// behind a pointer costs the pointer, the chunk header, and the rounding -- and the request
+/// column cannot see any of the three. Comparing an inline shape against an out-of-line one on
+/// `ALLOC_BYTES` therefore UNDER-CHARGES the out-of-line side, systematically and in the
+/// direction that flatters it.
+///
+/// THIS IS READ FROM THE ALLOCATOR, NOT MODELLED. On glibc it is `malloc_usable_size` on the
+/// pointer that was just handed back, plus the header word. `the_chunk_counter_reads_more_than
+/// _the_request_counter_for_a_planted_odd_size` plants a size whose chunk is known and recovers
+/// it, and `the_chunk_counter_agrees_with_the_documented_glibc_chunk_rule` checks the reading
+/// against the rule over a sweep of sizes, so a platform whose allocator rounds differently is
+/// reported rather than assumed away.
+pub static ALLOC_CHUNK_BYTES: AtomicU64 = AtomicU64::new(0);
 pub static FREE_CALLS: AtomicU64 = AtomicU64::new(0);
 pub static FREE_BYTES: AtomicU64 = AtomicU64::new(0);
+
+/// The header word glibc puts in front of every chunk. `malloc_usable_size` reports the space
+/// the CALLER may use, which is the chunk minus this.
+const CHUNK_HEADER: usize = std::mem::size_of::<usize>();
+
+extern "C" {
+    /// glibc. Reports how many bytes are usable at `ptr`, which is the chunk it came from minus
+    /// the header word. Declared here rather than pulled in as a dependency: this module is
+    /// test-only and one symbol does not justify a crate.
+    #[cfg(all(target_os = "linux", target_env = "gnu"))]
+    fn malloc_usable_size(ptr: *mut std::ffi::c_void) -> usize;
+}
+
+/// What the allocator set aside for a request that was served at `ptr`.
+///
+/// On glibc this is READ BACK from the allocator. Everywhere else there is no portable way to ask,
+/// so the request is charged unchanged and the chunk column degrades to the request column -- which
+/// under-states the out-of-line side rather than inventing a number for it. The two planted-marker
+/// tests below state which of the two is running.
+#[inline]
+fn chunk_of(ptr: *mut u8, requested: usize) -> usize {
+    #[cfg(all(target_os = "linux", target_env = "gnu"))]
+    {
+        if ptr.is_null() {
+            return 0;
+        }
+        // SAFETY: `ptr` was just returned by `System.alloc`/`System.realloc`, which on this target
+        // is glibc `malloc`, so it is a live pointer into a chunk this allocator owns.
+        return unsafe { malloc_usable_size(ptr as *mut std::ffi::c_void) } + CHUNK_HEADER;
+    }
+    #[cfg(not(all(target_os = "linux", target_env = "gnu")))]
+    {
+        let _ = ptr;
+        requested
+    }
+}
+
+/// The chunk glibc is documented to serve a request of `request` bytes from: a header word added,
+/// rounded up to sixteen, with a floor of thirty-two.
+///
+/// This is the RULE, not the reading. It exists so the reading can be checked against it rather
+/// than trusted, and so a target where the two disagree says so out loud.
+pub fn documented_glibc_chunk(request: usize) -> usize {
+    let with_header = request + CHUNK_HEADER;
+    let rounded = with_header.div_ceil(16) * 16;
+    rounded.max(32)
+}
+
+/// The chunk the allocator actually set aside for a boxed value, read back from the allocator.
+///
+/// The safe way to ask the decisive question an out-of-line shape raises: a field moved behind a
+/// pointer costs the chunk, not its own width, and the two differ. Taking a live box rather than a
+/// raw pointer keeps the reading safe -- the pointer is guaranteed live and to have come from this
+/// allocator, which is exactly what the usable-size reading requires.
+pub fn chunk_behind<T>(boxed: &Box<T>) -> usize {
+    chunk_of(&**boxed as *const T as *mut u8, std::mem::size_of::<T>())
+}
 
 pub struct CountingAllocator;
 
@@ -31,7 +109,9 @@ unsafe impl GlobalAlloc for CountingAllocator {
         ALLOC_CALLS.fetch_add(1, Ordering::Relaxed);
         ALLOC_BYTES.fetch_add(layout.size() as u64, Ordering::Relaxed);
         charge_class_alloc(layout.size());
-        System.alloc(layout)
+        let ptr = System.alloc(layout);
+        ALLOC_CHUNK_BYTES.fetch_add(chunk_of(ptr, layout.size()) as u64, Ordering::Relaxed);
+        ptr
     }
 
     unsafe fn dealloc(&self, ptr: *mut u8, layout: Layout) {
@@ -53,7 +133,13 @@ unsafe impl GlobalAlloc for CountingAllocator {
         // total treat a grow identically and a `Vec` push storm cannot land in one and not the
         // other.
         charge_class_alloc(new_size.saturating_sub(layout.size()));
-        System.realloc(ptr, layout, new_size)
+        // The chunk column charges the GROWTH in set-aside bytes, the same net-change rule the
+        // request column above uses, so a `Vec` push storm lands identically in both.
+        let before = chunk_of(ptr, layout.size());
+        let grown = System.realloc(ptr, layout, new_size);
+        let after = chunk_of(grown, new_size);
+        ALLOC_CHUNK_BYTES.fetch_add(after.saturating_sub(before) as u64, Ordering::Relaxed);
+        grown
     }
 }
 
@@ -529,6 +615,7 @@ impl ClassifiedCounts {
             total: AllocCounts {
                 allocs: self.total.allocs + other.total.allocs,
                 alloc_bytes: self.total.alloc_bytes + other.total.alloc_bytes,
+                chunk_bytes: self.total.chunk_bytes + other.total.chunk_bytes,
                 frees: self.total.frees + other.total.frees,
                 free_bytes: self.total.free_bytes + other.total.free_bytes,
             },
@@ -543,6 +630,9 @@ impl ClassifiedCounts {
 pub struct AllocCounts {
     pub allocs: u64,
     pub alloc_bytes: u64,
+    /// What the allocator set aside for `alloc_bytes` of request. Never smaller, and the
+    /// difference is what an out-of-line shape pays that an inline one does not.
+    pub chunk_bytes: u64,
     pub frees: u64,
     pub free_bytes: u64,
 }
@@ -599,6 +689,7 @@ pub fn counted_now() -> Option<(u64, u64)> {
 pub struct Probe {
     allocs: u64,
     alloc_bytes: u64,
+    chunk_bytes: u64,
     frees: u64,
     free_bytes: u64,
 }
@@ -608,6 +699,7 @@ impl Probe {
         Probe {
             allocs: ALLOC_CALLS.load(Ordering::Relaxed),
             alloc_bytes: ALLOC_BYTES.load(Ordering::Relaxed),
+            chunk_bytes: ALLOC_CHUNK_BYTES.load(Ordering::Relaxed),
             frees: FREE_CALLS.load(Ordering::Relaxed),
             free_bytes: FREE_BYTES.load(Ordering::Relaxed),
         }
@@ -619,6 +711,9 @@ impl Probe {
             alloc_bytes: ALLOC_BYTES
                 .load(Ordering::Relaxed)
                 .saturating_sub(self.alloc_bytes),
+            chunk_bytes: ALLOC_CHUNK_BYTES
+                .load(Ordering::Relaxed)
+                .saturating_sub(self.chunk_bytes),
             frees: FREE_CALLS.load(Ordering::Relaxed).saturating_sub(self.frees),
             free_bytes: FREE_BYTES
                 .load(Ordering::Relaxed)
@@ -634,6 +729,137 @@ impl Probe {
 #[cfg(all(test, feature = "alloc-probe"))]
 mod tests {
     use super::*;
+
+    /// THE CHUNK COUNTER READS MORE THAN THE REQUEST COUNTER, BY THE AMOUNT THE ALLOCATOR ROUNDS.
+    ///
+    /// A counter that reported the request back would be indistinguishable from `ALLOC_BYTES` and
+    /// would silently flatter every out-of-line shape it was ever pointed at. So a size is planted
+    /// whose chunk is KNOWN and different from its request -- 100 bytes, which glibc serves from a
+    /// 112-byte chunk -- and the difference is recovered exactly.
+    ///
+    /// THIS IS ALSO THE NEGATIVE CONTROL ON THE PLATFORM FALLBACK. Where `chunk_of` cannot ask the
+    /// allocator it charges the request unchanged, and this test FAILS in that case rather than
+    /// passing quietly with a chunk column that is a copy of the request column.
+    #[test]
+    fn the_chunk_counter_reads_more_than_the_request_counter_for_a_planted_odd_size() {
+        const REQUEST: usize = 100;
+        const PLANTED: usize = 64;
+        let expected_chunk = documented_glibc_chunk(REQUEST);
+        assert_ne!(
+            REQUEST, expected_chunk,
+            "the planted size must be one the allocator rounds, or this control cannot tell a \
+             chunk reading from a request reading"
+        );
+
+        let probe = Probe::start();
+        let mut held: Vec<Vec<u8>> = Vec::with_capacity(PLANTED);
+        for _ in 0..PLANTED {
+            held.push(vec![0xA5u8; REQUEST]);
+        }
+        let counts = probe.stop();
+        std::hint::black_box(&held);
+
+        // `Vec::with_capacity` above is itself one allocation inside the span, so the planted
+        // requests are recovered as a FLOOR and the DIFFERENCE is what is asserted exactly.
+        let over = counts.chunk_bytes as i64 - counts.alloc_bytes as i64;
+        println!(
+            "planted {PLANTED} x {REQUEST} B: request {} B, chunk {} B, over {over} B",
+            counts.alloc_bytes, counts.chunk_bytes
+        );
+        assert!(
+            counts.chunk_bytes > counts.alloc_bytes,
+            "the chunk counter read {} B against the request counter's {} B; on a platform where \
+             the chunk cannot be read back this column degrades to the request column, and a \
+             comparison of an inline shape against an out-of-line one would then under-charge the \
+             out-of-line side by exactly the rounding this test exists to see",
+            counts.chunk_bytes,
+            counts.alloc_bytes
+        );
+        assert!(
+            over >= (PLANTED * (expected_chunk - REQUEST)) as i64,
+            "{PLANTED} planted {REQUEST}-byte requests are rounded to {expected_chunk} bytes each, \
+             so the chunk column owes at least {} B more than the request column and reported \
+             {over} B",
+            PLANTED * (expected_chunk - REQUEST)
+        );
+    }
+
+    /// A GROWING VECTOR IS CHARGED WHAT ITS REGROWS ACTUALLY SET ASIDE.
+    ///
+    /// `realloc` is the arm of this counter that is easiest to leave uncharged and hardest to
+    /// notice: a path that grows one buffer repeatedly takes almost no `alloc` calls, so a chunk
+    /// column that only charged `alloc` would look right on every test that does not push in a
+    /// loop. Dropping the realloc charge was planted as a mutant and SURVIVED, which is why this
+    /// exists.
+    ///
+    /// THE SPAN IS DELIBERATELY LARGE. These counters are process-global, so a parallel run's
+    /// other tests land in the reading; growing to roughly a megabyte means an uncharged realloc
+    /// arm cannot be masked without tens of thousands of foreign allocations inside the same
+    /// span, which no test in this binary does.
+    #[test]
+    fn the_chunk_counter_charges_a_growing_vector_and_not_only_its_first_allocation() {
+        const PUSHES: u64 = 1 << 17; // ~1 MiB of u64
+
+        let probe = Probe::start();
+        let mut growing: Vec<u64> = Vec::new();
+        for i in 0..PUSHES {
+            growing.push(i);
+        }
+        let counts = probe.stop();
+        std::hint::black_box(&growing);
+
+        println!(
+            "grew a vector to {} B: request {} B, chunk {} B over {} alloc call(s)",
+            PUSHES * 8,
+            counts.alloc_bytes,
+            counts.chunk_bytes,
+            counts.allocs
+        );
+        assert!(
+            counts.alloc_bytes >= PUSHES * 8,
+            "the request column charged {} B for {} B of pushes; the span did not capture the \
+             growth at all",
+            counts.alloc_bytes,
+            PUSHES * 8
+        );
+        assert!(
+            counts.chunk_bytes >= counts.alloc_bytes,
+            "the chunk column charged {} B against the request column's {} B. A chunk is never \
+             smaller than its request, so a chunk column that falls BEHIND the request column has \
+             an arm it is not charging -- and `realloc` is the arm a push storm goes through",
+            counts.chunk_bytes,
+            counts.alloc_bytes
+        );
+    }
+
+    /// THE READING AGREES WITH THE DOCUMENTED RULE, ACROSS A SWEEP OF SIZES.
+    ///
+    /// `chunk_of` asks the allocator and `documented_glibc_chunk` states the rule. Neither is
+    /// evidence for the other on its own, so they are compared here over sizes that land either
+    /// side of the floor and either side of a rounding step. A target whose allocator sizes
+    /// differently fails this rather than quietly reporting numbers from a different rule.
+    #[test]
+    fn the_chunk_counter_agrees_with_the_documented_glibc_chunk_rule() {
+        // 1 and 24 are under the 32-byte floor; 25 is the first size above it; 104/112 straddle a
+        // rounding step; 112 is the width the tagged bucket payload would ask for.
+        // READ FROM THE POINTER, NOT FROM THE SPAN. The span counters are process-global, so a
+        // test asserting an exact figure over them fails whenever any other test in the binary
+        // allocates at the same moment -- a flake that says nothing about the property. The rule
+        // check does not need a span: it needs one pointer and the chunk behind it, which is
+        // exactly what `chunk_of` reads.
+        for request in [1usize, 24, 25, 40, 104, 112, 120, 1000] {
+            let held = vec![0u8; request];
+            let read = chunk_of(held.as_ptr() as *mut u8, request);
+            let rule = documented_glibc_chunk(request);
+            println!("  request {request:>5} B  ->  read {read:>5} B chunk, rule says {rule:>5} B");
+            assert_eq!(
+                rule, read,
+                "a {request}-byte request read back a {read} B chunk against the documented \
+                 rule's {rule} B; the chunk column is not describing this allocator"
+            );
+            std::hint::black_box(&held);
+        }
+    }
 
     #[test]
     fn the_probe_counts_an_allocation_it_can_see() {
@@ -692,10 +918,11 @@ mod counting_allocator_gate {
     use std::path::Path;
 
     const GATE: &str = "#[cfg(feature = \"alloc-probe\")]";
-    const MARKERS: [&str; 6] = [
+    const MARKERS: [&str; 7] = [
         "alloc_probe::Probe::start",
         "alloc_probe::ALLOC_CALLS",
         "alloc_probe::ALLOC_BYTES",
+        "alloc_probe::ALLOC_CHUNK_BYTES",
         "alloc_probe::FREE_CALLS",
         "alloc_probe::FREE_BYTES",
         "alloc_probe::AllocCounts",

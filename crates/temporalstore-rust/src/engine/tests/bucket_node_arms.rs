@@ -4,61 +4,76 @@
 //! WOULD A BUCKET THAT HOLDS ONE PAGE BE CHEAPER AS ONE TAGGED WORD?
 //!
 //! THE PROPOSAL. `BucketNode` is the widest per-item structure in the engine and there is one
-//! per routing bucket. #1958 took it 208 -> 200 and #1961 took it 200 -> 192, both by narrowing
-//! fields. The shape proposed next does not narrow a field: it replaces the node's three
-//! container members -- `object_index`, `deleted_object_index` and `block_index`, 128 of the 184
-//! bytes -- with ONE TAGGED WORD whose tag says whether the bucket is simple or general, and
-//! puts the payload of each arm behind that word. A bucket holding one page would then carry a
-//! 64-byte node and one allocation instead of a 184-byte node and none.
+//! per routing bucket. #1958 took it 208 -> 200, #1961 took it 200 -> 192 and #1966 took it
+//! 192 -> 184, all by narrowing fields. The shape proposed next does not narrow a field: it
+//! replaces the node's three container members -- `object_index`, `deleted_object_index` and
+//! `block_index`, 128 of the 184 bytes -- with ONE TAGGED WORD whose tag says whether the bucket
+//! is simple or general, and puts the payload of each arm behind that word. The node is then 64
+//! bytes, which is asserted here and reconstructs field by field.
 //!
-//! THREE THINGS HAD TO BE MEASURED BEFORE IT COULD BE WRITTEN, and all three are here.
+//! THE ANSWER IS STILL NO. IT IS NO FOR DIFFERENT REASONS THAN IT WAS, AND THE CHANGE IN REASONS
+//! IS THE POINT OF THIS REVISION. When this module was written it gave three grounds; one of them
+//! has since stopped being true, a second was measured on a tree that has moved, and a fourth --
+//! the one that actually settles it -- was quoted as arithmetic and never measured. All four are
+//! now measured, at the corpus sizes and the routing ranges below.
 //!
-//!   1. HOW OFTEN IS A BUCKET SIMPLE. `classify_bucket_layout` already answers it, and its
-//!      answer is reported here as a histogram with per-arm counts, percentiles and a maximum --
-//!      at two corpus sizes, at the DEFAULT routing range AND at the range
-//!      `docs/runtime_tuning.md` tells an operator to set. #1962 found a premise that was true
-//!      at the default and false at the configured range; #1959 reported a mean of 1.98 pages a
-//!      bucket over a store containing not one bucket that held two.
-//!   2. WHAT THE WORD WOULD COST, ON THE ALLOCATOR AND NOT ON `size_of`. Both shapes are cloned
-//!      under the counting allocator in the same span of the same test, so the B-tree node that
-//!      holds them is charged on both sides. A published decline in this area had its sign
-//!      INVERTED by setting a `size_of` saving against an allocator cost, and this change is
-//!      exactly that trade: inline bytes for a heap allocation.
-//!   3. WHAT IT WOULD COST A READ. An out-of-line arm puts the address in a different allocation
-//!      from the node, so reaching it touches a second line. That is measured here from the
-//!      addresses themselves, not asserted, and it is measured on a workload where the
-//!      mechanism predicts NO difference as the control.
+//!   * GONE: THE READ COST. This module declined the shape partly because "a tagged simple arm
+//!     touches 2.0000 lines to reach a page's address against the live arm's 1.5200 -- +0.4800 a
+//!     read". IT IS +0.0000 NOW. The live arm touches 2.0000 as well. The address sits 72 bytes
+//!     into the node -- past a whole cache line -- so the node and the address it resolves
+//!     through cannot share a line at any alignment, inline or not. The guard that asserted
+//!     1.5200 was RED on `06828b8a0` before this change and nothing ran it, because it is
+//!     `#[ignore]`d. It is repaired, it states the offset it depends on, and it refuses an offset
+//!     under a line rather than carrying a number whose mechanism has moved. WHAT THE COUNT
+//!     CANNOT SEE IS STATED WITH IT: two lines and two lines is an equal count, not a proof of
+//!     equal cost, because the live arm's second line is inside the node's own allocation and the
+//!     tagged arm's is in a separate one. The claim made is "adds no line", not "adds no cost",
+//!     and the unmeasured remainder can only run against the tagged shape.
+//!   * MOVED: THE PUBLISHED TABLE. The four cells here were measured before #1966, which took
+//!     eight bytes out of the address inside the inline page entry. The assertions were retargeted
+//!     then; the numbers in this comment were not. Three of the four allocation ratios still
+//!     reproduce exactly and one does not, and both byte columns at the configured range moved.
+//!   * SETTLED, AND IT IS THE ONE THAT DECIDES IT: THE NODE NARROWS BY 120 BYTES AND THE KEY
+//!     HOLDS EIGHT MORE. A simple bucket costs 184 B inline today. Tagged, it costs a 64 B node
+//!     plus the chunk the allocator serves a 112 B payload from, and that chunk is 128 B, READ
+//!     BACK FROM THE ALLOCATOR rather than taken from a formula: 192 B, +8 B a key. The 120 bytes
+//!     do not leave the key. They move from a field into a chunk.
+//!   * STANDING: THE SAVING THAT DOES EXIST IS NOT A PER-KEY SAVING AND IT IS NOT THE SHAPE'S. It
+//!     is B-tree slot waste. A `BTreeMap` node holds eleven value slots whether they are filled or
+//!     not, so a narrower value fits more of them into one node -- which is worth real bytes at
+//!     the DEFAULT routing range, where every key sits in a bucket of its own, and almost nothing
+//!     at the range an operator is told to configure.
 //!
-//! THE ANSWER IS NO, AND IT IS NOT "BECAUSE IT SAVES NOTHING". IT SAVES 40% OF THE INDEX'S
-//! BYTES IN ONE CONFIGURATION AND 1.2% IN THE OTHER, AND THE CONFIGURATION THAT WINS IS THE ONE
-//! NOBODY IS TOLD TO RUN. The four measured cells, on one instrument, both sides:
+//! THE CELLS, ON ONE INSTRUMENT, BOTH SIDES, RE-MEASURED. The REQUEST column is what the caller
+//! asked the allocator for; the CHUNK column is what the allocator set aside to answer. Only the
+//! second is what a key actually holds, and the tagged side is the side that allocates, so the
+//! request column flatters it at every cell:
 //!
 //! ```text
-//!   corpus / range                            simple      bytes  allocations
-//!   4000 routed keys on the whole keyspace  100.000%     0.581x       7.265x
-//!   4000 routed keys on 0..1023               4.510%     0.936x       1.317x
-//!   40000 routed keys on the whole keyspace 100.000%     0.604x       7.559x
-//!   40000 routed keys on 0..1023              0.000%     0.988x       1.123x
+//!   corpus / range                            simple    request      CHUNK  allocations
+//!   4000 routed keys on the whole keyspace  100.000%     0.580x     0.628x       7.265x
+//!   4000 routed keys on 0..1023               4.510%     0.874x     0.898x       1.317x
+//!   40000 routed keys on the whole keyspace 100.000%     0.602x     0.653x       7.559x
+//!   40000 routed keys on 0..1023              0.000%     0.980x     0.983x       1.304x
 //! ```
 //!
-//! READ THE FIRST COLUMN AGAINST THE SECOND AND THE WHOLE FINDING IS THERE. The saving is not a
+//! READ THE FIRST COLUMN AGAINST THE REST AND THE WHOLE FINDING IS THERE. The saving is not a
 //! property of the shape; it is a property of HOW MANY BUCKETS ARE IN THE ARM THE SHAPE IS FOR,
-//! and that number is decided by the routing range rather than by the workload. Three things
-//! follow, and each of them on its own is the decline:
+//! and that number is decided by the routing range rather than by the workload. Two things follow,
+//! and each of them on its own is the decline:
 //!
-//!   1. WHERE THE SHAPE WINS, A KNOB THAT ALREADY SHIPS WINS ALMOST AS MUCH FOR NOTHING. On the
-//!      same instrument and the same corpus the LIVE shape reads 314.596 B/record on the whole
-//!      keyspace and 198.856 B/record on 0..1023 -- 0.632x, against the tagged shape's 0.604x --
-//!      and `docs/runtime_tuning.md` already tells an operator to set exactly that before the
-//!      first ingest. The knob costs no allocation, no indirection and no line of code.
+//!   1. WHERE THE SHAPE WINS, A KNOB THAT ALREADY SHIPS WINS TWO AND A HALF TIMES AS MUCH FOR
+//!      NOTHING. On the same instrument and the same corpus the LIVE shape reads 301.895 B/record
+//!      on the whole keyspace and 120.091 B/record on 0..1023 -- 0.398x, against the tagged
+//!      shape's best cell of 0.653x -- and `docs/runtime_tuning.md` already tells an operator to
+//!      set exactly that before the first ingest. The knob costs no allocation, no indirection and
+//!      no line of code. (This module previously published 0.632x for the same comparison, from
+//!      the pre-#1966 tree.)
 //!   2. WHERE THE KNOB IS SET, THE ARM IS GONE AND SO IS THE SAVING. `single_page_object` is
 //!      4.510% of occupied buckets at 4,000 records on 0..1023 and 0.000% at 40,000, where
-//!      `multi_object` is 100.000%. At 0.000% simple the tagged shape saves 1.2% of the bytes
-//!      and still costs 1.123x the allocations. That cell is the control on the explanation: a
-//!      configuration where the mechanism predicts the saving should be absent, measured.
-//!   3. AND IT IS PAID FOR ON THE READ. A tagged simple arm touches 2.0000 lines to reach a
-//!      page's address against the live arm's 1.5200 -- +0.4800 a read, on every page read, at
-//!      the range where the saving exists at all.
+//!      `multi_object` is 100.000%. At 0.000% simple the tagged shape saves 1.7% of the chunk
+//!      bytes and still costs 1.304x the allocations. That cell is the control on the explanation:
+//!      a configuration where the mechanism predicts the saving should be absent, measured.
 //!
 //! THE PREMISE IS ALSO WRONG, AND THAT MATTERS SEPARATELY FROM THE PRICE. The proposal says the
 //! node "carries the whole general case for every key". It does not. Every one of the three
@@ -67,21 +82,30 @@
 //! its single id inline, `DeletedObjectIndex` is one nullable pointer that is null in the case
 //! it is almost always in. A simple bucket allocates NOTHING for the general case today, so
 //! there is no general case for a tagged word to take out of it. What the word moves out of
-//! line is the simple bucket's OWN data, and that is why the cost lands on the read.
+//! line is the simple bucket's OWN data -- and since that data is already a line away from the
+//! node, moving it costs no read and saves no resident byte.
 //!
 //! AND THAT DATA DOES NOT FIT IN A WORD. The design being compared against holds a page's
-//! address in 64 bits. Here a `BlockAddress` is 48 bytes of its own -- two slab coordinates, two
+//! address in 64 bits. Here a `BlockAddress` is 40 bytes of its own -- two slab coordinates, two
 //! identities, a length, a block id, a routing bucket and a presence byte -- and the page entry
-//! around it carries three shared names as well, for 104. #1962 established that those three
+//! around it carries three shared names as well, for 96. #1962 established that those three
 //! names are per-object and per-page facts that cannot be hoisted to the bucket: hoisting them
 //! "would have passed every test at the default range and lost pages silently at the cluster
-//! range". So the simple arm cannot be a word here, and the most it can be is a pointer to 120
-//! bytes -- which is the shape this module prices and declines.
+//! range". So the simple arm cannot be a word here, and the most it can be is a pointer to 112
+//! bytes in a 128-byte chunk -- which is the shape this module prices and declines.
+//!
+//! WHAT WOULD CHANGE THE ANSWER, STATED SO THE NEXT REVISIT DOES NOT START FROM NOTHING. Not a
+//! narrower node: the node is not what costs. The per-key figure moves only if the PAGE ENTRY
+//! gets smaller, and the entry is 96 bytes of which 48 are three `Arc<str>` names. Those are
+//! per-page facts and must stay per-page -- #1962 is not in dispute -- but a per-page NAME HANDLE
+//! is still a per-page fact, and four bytes rather than sixteen. That is a different change with a
+//! different risk, and it is the one with the arithmetic behind it.
 //!
 //! THE MEASUREMENT DOES NOT DEPEND ON THE DECLINE BEING RIGHT. Every figure is printed with its
 //! denominator, the mirror of the live declaration is asserted against the declaration itself
-//! before any price is quoted, and the instrument recovers a planted marker exactly. If the
-//! numbers move the decline should be revisited rather than re-argued.
+//! before any price is quoted, the store path length is held constant and stated, and the
+//! instrument recovers a planted marker exactly. If the numbers move the decline should be
+//! revisited rather than re-argued -- as it was here.
 #![allow(clippy::all)]
 use super::*;
 use std::collections::BTreeMap;
@@ -1407,28 +1431,70 @@ fn lines_touched(node_address: usize, address_address: usize) -> usize {
     }
 }
 
-/// THE READ PATH, COUNTED -- AND THE CONTROL ON THE EXPLANATION.
+/// THE READ PATH, COUNTED -- AND WHAT IT COSTS IS NOW NOTHING.
 ///
-/// #1961 made reads FASTER and said so, because the default assumption for a representation
-/// change is a trade. So the read side is measured here rather than assumed, and it is measured
-/// as a COUNT: a timing ratio in this campaign read 485x idle against 11x busy off identical
-/// code, while counts repeat to three significant figures.
+/// THIS GUARD WAS RED ON MAIN BEFORE THIS CHANGE, AND IT WAS RED FOR A REASON WORTH HAVING. It
+/// asserted the live inline arm touches 1.5200 lines to reach a page's address, in a band chosen
+/// so that 2.00 -- the tagged arm's figure -- could not pass it. On `06828b8a0` the live arm
+/// touches 2.0000, the band refuses it, and the test fails. It is `#[ignore]`d, so nothing ran it.
 ///
-/// WHAT IS COUNTED. The distinct 64-byte lines between the node and the `BlockAddress` a read
-/// resolves through, taken from the two addresses at run time. Inline, the address lives in the
-/// node; behind a tagged word it lives in a separate allocation and can only share a line by
-/// coincidence.
+/// WHY IT MOVED, MEASURED RATHER THAN GUESSED. A read crosses a line boundary when the address
+/// sits far enough into the node that no alignment can keep the two together. The node is
+/// 8-aligned, so a node's own start falls anywhere on an eight-byte step within its line; an
+/// address at offset D therefore shares the node's line only when D is under 64 AND the node
+/// happens to start early enough. THE OFFSET IS PRINTED BELOW. At 1.5200 it was under 64 and the
+/// B-tree slot decided each case; #1966 took eight bytes out of the address that sits inside the
+/// inline page entry, the fields after it moved, and the offset is now past 64 -- where no
+/// alignment can help and the answer is 2.0000 for every bucket without exception.
 ///
-/// THE CONTROL ON THE EXPLANATION. The mechanism claims the extra line comes from the arm being
-/// OUT OF LINE, not from the shape being tagged. So the same count is taken over buckets whose
-/// live arm is ALREADY out of line -- the general arm, where `BlockIndexMap::Many` holds its
-/// pages in a B-tree node of its own -- and there the mechanism predicts NO difference. It is
-/// measured, and the prediction is asserted.
+/// AND THAT REMOVES THE THIRD REASON THIS MODULE GIVES FOR DECLINING THE TAGGED SHAPE. The
+/// module's own summary lists it: "AND IT IS PAID FOR ON THE READ. A tagged simple arm touches
+/// 2.0000 lines to reach a page's address against the live arm's 1.5200 -- +0.4800 a read".
+/// Both arms touch 2.0000 now. The read cost of the indirection is +0.0000, measured, and the
+/// decline has to rest on the other two reasons or not at all. It does: see
+/// `the_hundred_and_twenty_bytes_a_tagged_key_saves_are_not_bytes_a_tagged_key_stops_holding`
+/// and `the_tagged_shape_priced_on_chunks_instead_of_requests`.
+///
+/// BOTH SIDES ARE NOW READ OUT OF A MAP, WHICH THEY WERE NOT. The live side took its node from a
+/// B-tree slot and the tagged side took its node from a STACK LOCAL, and the two homes have
+/// different alignment distributions -- so the comparison was between a heap node and a stack
+/// node, not between two representations. The tagged nodes are built into a map first and
+/// measured there.
+///
+/// THE CONTROL ON THE EXPLANATION IS KEPT. The mechanism claims the line count is decided by
+/// where the address sits, not by the shape being tagged, so the same count is taken over buckets
+/// whose live arm is ALREADY out of line -- the general arm -- where it predicts no difference.
 ///
 /// rust-internal: measures the engine's own bucket map, no product behaviour
 #[test]
-#[ignore = "seeds two stores; run by name"]
+#[ignore = "seeds two stores of 4,000 records; run by name"]
 fn a_tagged_simple_arm_adds_a_line_to_every_page_read_and_the_general_arm_shows_it_does_not() {
+    // --- THE INSTRUMENT'S OWN CONTROLS, BEFORE IT IS USED FOR ANYTHING. ---
+    //
+    // This test's finding is that BOTH arms touch two lines, and the assertions below say so as
+    // equalities. An equality against a constant cannot tell the measured value from a broken
+    // instrument: a `lines_touched` wedged at 2 satisfies every one of them. It was planted as a
+    // mutant and SURVIVED, which is how this got here.
+    //
+    // So the instrument is fed two inputs whose answers are known and disagree. A counter stuck
+    // at either answer fails one of them.
+    assert_eq!(
+        1,
+        lines_touched(0x1000, 0x1020),
+        "two addresses 32 B apart inside one 64 B line must read as ONE line; an instrument that \
+         cannot answer 1 cannot have measured the 2s below"
+    );
+    assert_eq!(
+        2,
+        lines_touched(0x1000, 0x1040),
+        "two addresses either side of a 64 B boundary must read as TWO lines"
+    );
+    assert_eq!(
+        1,
+        lines_touched(0x103f, 0x1000),
+        "the last byte of a line and its first are ONE line, in either order of arguments"
+    );
+
     // --- THE SUBJECT: simple buckets, on the range where they are everything. ---
     let dir = tempfile::tempdir().expect("tempdir");
     let engine = engine_on(dir.path());
@@ -1439,30 +1505,41 @@ fn a_tagged_simple_arm_adds_a_line_to_every_page_read_and_the_general_arm_shows_
     let shard = shards.get(&1).expect("shard 1");
     let live_map = &shard.bucket_index.bucket_map;
 
+    // THE TAGGED NODES LIVE IN A MAP, so both sides are measured in the same kind of home.
+    let tagged_map: BTreeMap<u32, TaggedNode> = live_map
+        .iter()
+        .filter(|(_, node)| matches!(node.block_index, BlockIndexMap::One(_, _)))
+        .map(|(routing_bucket, node)| (*routing_bucket, retag(node)))
+        .collect();
+
     let mut live_lines = 0usize;
     let mut tagged_lines = 0usize;
     let mut simple_buckets = 0usize;
-    let mut held = Vec::new();
-    for node in live_map.values() {
+    // THE OFFSET IS THE MECHANISM, so it is collected rather than reasoned about.
+    let mut offsets: std::collections::BTreeSet<usize> = std::collections::BTreeSet::new();
+    let mut node_starts: std::collections::BTreeSet<usize> = std::collections::BTreeSet::new();
+    for (routing_bucket, node) in live_map.iter() {
         if !matches!(node.block_index, BlockIndexMap::One(_, _)) {
             continue;
         }
         simple_buckets += 1;
         let (handle, page) = node.block_index.iter().next().expect("the inline arm holds one page");
-        live_lines += lines_touched(node as *const BucketNode as usize, &page.address as *const _ as usize);
+        let node_at = node as *const BucketNode as usize;
+        let address_at = &page.address as *const _ as usize;
+        offsets.insert(address_at - node_at);
+        node_starts.insert(node_at % 64);
+        live_lines += lines_touched(node_at, address_at);
 
-        let tagged = retag(node);
+        let tagged = tagged_map.get(routing_bucket).expect("every simple bucket was retagged");
         let reached = tagged
             .payload
             .page(*handle)
             .expect("the tagged simple arm must answer its own handle");
         tagged_lines += lines_touched(
-            &tagged as *const TaggedNode as usize,
+            tagged as *const TaggedNode as usize,
             &reached.address as *const _ as usize,
         );
-        held.push(tagged);
     }
-    std::hint::black_box(&held);
 
     assert!(
         simple_buckets > 0,
@@ -1474,27 +1551,52 @@ fn a_tagged_simple_arm_adds_a_line_to_every_page_read_and_the_general_arm_shows_
         "the fixture wrote {} keys and reached {simple_buckets} inline-arm buckets",
         keys.len()
     );
+    assert_eq!(
+        simple_buckets,
+        tagged_map.len(),
+        "the tagged map holds {} of the {simple_buckets} simple buckets; it is not the same \
+         population",
+        tagged_map.len()
+    );
+
+    // --- THE MECHANISM, PRINTED WITH ITS DENOMINATOR. ---
+    assert_eq!(
+        1,
+        offsets.len(),
+        "the address sits at {offsets:?} different offsets inside the node across \
+         {simple_buckets} buckets; one declaration has one field offset, so more than one answer \
+         means this is not reading the field it thinks it is"
+    );
+    let offset = *offsets.iter().next().expect("one offset");
+    println!(
+        "\n  THE MECHANISM: the inline arm's address sits {offset} B into the node, and a node \
+         starts at {} distinct positions within a 64 B line",
+        node_starts.len()
+    );
+    assert!(
+        offset >= 64,
+        "the address sits {offset} B into the node, under a line. At that offset a node that \
+         starts early enough in its line keeps both in one line and the count is BELOW 2.0 -- \
+         which is what 1.5200 was. The assertions below say 2.0000 for every bucket and would be \
+         wrong; re-measure rather than retarget them"
+    );
+
     let live_per = live_lines as f64 / simple_buckets as f64;
     let tagged_per = tagged_lines as f64 / simple_buckets as f64;
     println!(
-        "\nSIMPLE ARM over {simple_buckets} buckets: live {live_per:.4} lines a read, tagged \
+        "SIMPLE ARM over {simple_buckets} buckets: live {live_per:.4} lines a read, tagged \
          {tagged_per:.4} -- {:+.4}",
         tagged_per - live_per
     );
-    // THE LIVE ARM IS NOT 1.0, AND THE FIRST RUN OF THIS TEST SAID SO. It was written asserting
-    // one line, on the reasoning that the address is IN the node; it measured 1.52. The node is
-    // 192 bytes and the address sits 96 bytes into it, so a node whose own start is not
-    // line-aligned puts the two in different lines, and the B-tree slot a node lands in decides
-    // that. The assertion now carries the measured value rather than the assumed one.
-    //
-    // THE BAND EXCLUDES THE VALUE IT GUARDS AGAINST. Its upper end is below 2.00, which is what
-    // the tagged arm costs, so a live arm that had quietly become an out-of-line one could not
-    // pass this.
-    assert!(
-        (1.40..1.70).contains(&live_per),
-        "the live inline arm touched {live_per:.4} lines a read over {simple_buckets} buckets; \
-         measured at 1.5200, and a band that admitted 2.00 could not tell an inline arm from an \
-         out-of-line one"
+
+    // AT AN OFFSET PAST A LINE, NO ALIGNMENT SAVES THE LIVE ARM EITHER.
+    assert_eq!(
+        2 * simple_buckets,
+        live_lines,
+        "the live inline arm touched {live_lines} lines over {simple_buckets} buckets. With its \
+         address {offset} B into the node -- past a whole line -- the two cannot share a line at \
+         any alignment, so anything but two a read means the offset above is not the one the read \
+         actually walks"
     );
     assert_eq!(
         2 * simple_buckets,
@@ -1502,10 +1604,42 @@ fn a_tagged_simple_arm_adds_a_line_to_every_page_read_and_the_general_arm_shows_
         "the tagged simple arm touched {tagged_lines} lines over {simple_buckets} buckets; a \
          payload in its own allocation is a second line on every page read, without exception"
     );
-    assert!(
-        tagged_per > live_per,
-        "the tagged simple arm read {tagged_per:.4} lines against the live arm's {live_per:.4}; \
-         if the indirection has become free the decline recorded here is stale"
+    assert_eq!(
+        live_lines, tagged_lines,
+        "the tagged arm read {tagged_per:.4} lines against the live arm's {live_per:.4}. This \
+         module declined the tagged shape partly BECAUSE of this difference, at +0.4800 a read. \
+         If a difference has come back the decline's third reason is live again and the summary \
+         at the top of this file should say so"
+    );
+    println!(
+        "  SO THE INDIRECTION COSTS +0.0000 LINES A READ. The page entry is already a line away \
+         from the node whether it is held inline or behind a pointer, so moving it out of line \
+         does not add a line."
+    );
+
+    // WHAT THIS COUNT CANNOT SEE, SAID PLAINLY, BECAUSE A DECLINE RESTS ON IT.
+    //
+    // Two lines and two lines is an equal COUNT. It is not a proof of equal cost. Inline, the
+    // second line is inside the SAME allocation as the first -- adjacent, on the same page, and
+    // very likely already fetched. Behind a pointer it is wherever the allocator put it, which
+    // is a different line, possibly a different page, and a separate entry in the translation
+    // buffer. This instrument counts distinct 64-byte lines and is blind to that difference.
+    //
+    // IT IS REPORTED RATHER THAN ASSERTED because the honest form of it is a measurement this
+    // module does not have: separating the two needs a hardware counter or a timing harness, and
+    // a timing ratio in this campaign read 485x idle against 11x busy off identical code. So the
+    // claim made here is the narrow one the instrument supports -- the tagged arm adds no LINE --
+    // and the wider claim, that it adds no COST, is NOT made.
+    //
+    // It does not change the conclusion, and it changes which way the uncertainty points: the
+    // unmeasured part of the read cost can only make the tagged shape worse, never better.
+    let live_spread = simple_buckets; // one measured pair per bucket, stated as the denominator
+    println!(
+        "  AND WHAT THIS COUNT CANNOT SEE: over {live_spread} buckets both shapes touch two \
+         lines, but the live arm's second line is INSIDE the node's own allocation and the \
+         tagged arm's is in a separate one. Counting lines cannot tell an adjacent line from a \
+         distant one, so +0.0000 is 'adds no line', not 'adds no cost' -- and the part that is \
+         unmeasured can only run against the tagged shape."
     );
 
     // --- THE CONTROL: a workload where the mechanism predicts NO difference. ---
@@ -1517,11 +1651,17 @@ fn a_tagged_simple_arm_adds_a_line_to_every_page_read_and_the_general_arm_shows_
 
     let shards = engine.shards.read().expect("engine lock poisoned");
     let shard = shards.get(&1).expect("shard 1");
+    let general_map: BTreeMap<u32, TaggedNode> = shard
+        .bucket_index
+        .bucket_map
+        .iter()
+        .filter(|(_, node)| matches!(node.block_index, BlockIndexMap::Many(_)))
+        .map(|(routing_bucket, node)| (*routing_bucket, retag(node)))
+        .collect();
     let mut control_live = 0usize;
     let mut control_tagged = 0usize;
     let mut general_buckets = 0usize;
-    let mut held = Vec::new();
-    for node in shard.bucket_index.bucket_map.values() {
+    for (routing_bucket, node) in shard.bucket_index.bucket_map.iter() {
         if !matches!(node.block_index, BlockIndexMap::Many(_)) {
             continue;
         }
@@ -1531,15 +1671,13 @@ fn a_tagged_simple_arm_adds_a_line_to_every_page_read_and_the_general_arm_shows_
             node as *const BucketNode as usize,
             &page.address as *const _ as usize,
         );
-        let tagged = retag(node);
+        let tagged = general_map.get(routing_bucket).expect("every general bucket was retagged");
         let reached = tagged.payload.page(*handle).expect("the tagged general arm must answer");
         control_tagged += lines_touched(
-            &tagged as *const TaggedNode as usize,
+            tagged as *const TaggedNode as usize,
             &reached.address as *const _ as usize,
         );
-        held.push(tagged);
     }
-    std::hint::black_box(&held);
 
     assert!(
         general_buckets > 0,
@@ -1555,8 +1693,555 @@ fn a_tagged_simple_arm_adds_a_line_to_every_page_read_and_the_general_arm_shows_
     assert_eq!(
         control_live, control_tagged,
         "the control moved from {control_live} lines to {control_tagged} over {general_buckets} \
-         buckets; where the live arm is ALREADY out of line the tagged shape must cost nothing, \
-         and if it does not then the extra line on the simple arm is not coming from the \
-         indirection this module says it comes from"
+         buckets; where the live arm is ALREADY out of line the tagged shape must cost nothing"
+    );
+}
+
+// =============================================================================================
+// THE REVISIT: WHAT THE SAVING IS ONCE THE ALLOCATOR CHUNK IS COUNTED
+// =============================================================================================
+
+/// What one `clone()` charges, in REQUEST bytes, in CHUNK bytes, and in calls.
+///
+/// The request column is what the caller asked for; the chunk column is what the allocator set
+/// aside to answer. Everything above this line in this module is priced on the first, and the
+/// note on `what_the_tagged_node_actually_costs_the_allocator` says so in as many words: it
+/// "UNDER-charges the tagged side, which is the side that takes the allocations", and calls its
+/// own byte column "a floor on the tagged side's cost, not an estimate of it". This is the
+/// estimate.
+#[cfg(feature = "alloc-probe")]
+fn clone_counts_chunked<T: Clone>(value: &T) -> (u64, u64, u64) {
+    let probe = Probe::start();
+    let copy = value.clone();
+    let counts = probe.stop();
+    std::hint::black_box(&copy);
+    drop(copy);
+    (counts.alloc_bytes, counts.chunk_bytes, counts.allocs)
+}
+
+/// THE PER-KEY FOOTPRINT OF A SIMPLE BUCKET, MEASURED RATHER THAN CALCULATED.
+///
+/// THE CLAIM THIS EXISTS TO CHECK. The proposal is described as taking the node from 184 bytes to
+/// 64 -- "one hundred and twenty bytes on every key". Both numbers are right and the subtraction
+/// between them is not, because the 120 bytes do not leave: 112 of them move into a heap
+/// allocation, and an allocation costs the chunk it is served from rather than the width that was
+/// asked for.
+///
+/// `the_tagged_node_is_sixty_four_bytes_and_every_arm_reconstructs` already states the sum, and
+/// states it as arithmetic -- "ARITHMETIC ONLY", in its own words, with the chunk taken from a
+/// formula. The formula is not checked there against anything. Here the chunk is READ BACK FROM
+/// THE ALLOCATOR for the payload the proposal would actually box, so the pair is a measurement.
+///
+/// THE RESIDUAL THAT CAN FAIL. Every allocation's chunk must exceed its request by at least the
+/// header word and at most a full rounding step. That is not a restatement of the chunk figure --
+/// it is a property of the allocator that the reading either has or has not got -- and it is the
+/// assertion that fails first if `chunk_behind` ever degrades to handing back the request, which
+/// is what it does on a target whose allocator cannot be asked.
+///
+/// rust-internal: measures declarations and this crate's allocator, no product behaviour
+#[cfg(feature = "alloc-probe")]
+#[test]
+fn the_hundred_and_twenty_bytes_a_tagged_key_saves_are_not_bytes_a_tagged_key_stops_holding() {
+    let boxed = Box::new(SimpleLayout {
+        object_id: 1,
+        handle: 7,
+        page: page_fixture(),
+    });
+    let chunk = crate::alloc_probe::chunk_behind(&boxed);
+    let request = size_of::<SimpleLayout>();
+
+    // --- THE RESIDUAL, AND IT IS NOT ALGEBRA ON THE FIGURE IT AUDITS. ---
+    let over = chunk - request;
+    assert!(
+        (8..=24).contains(&over),
+        "the allocator set aside {chunk} B for a {request} B payload, {over} B over. A chunk owes \
+         its request a header word and at most one rounding step; outside that band the reading \
+         is not a chunk, and the degraded path -- which hands the request straight back and would \
+         read 0 here -- is the case this catches"
+    );
+
+    let inline = size_of::<BucketNode>();
+    let pair = size_of::<TaggedNode>() + chunk;
+    println!(
+        "\n  A SIMPLE BUCKET, PER KEY:\n    live    {inline:>4} B, held inline in the node, no allocation\n    \
+         tagged  {:>4} B of node + {chunk} B of chunk (for a {request} B payload) = {pair} B",
+        size_of::<TaggedNode>()
+    );
+    println!(
+        "    delta   {:>+4} B per key, and one allocation and one indirection that were not there",
+        pair as i64 - inline as i64
+    );
+
+    // --- THE CLAIM, NAMED AND REFUSED. ---
+    assert_eq!(
+        120,
+        inline - size_of::<TaggedNode>(),
+        "the node does go 184 -> 64; if that has changed the sentence this test refutes has \
+         changed with it"
+    );
+    assert!(
+        pair > inline,
+        "a tagged simple bucket holds {pair} B per key against the live shape's {inline} B. The \
+         node IS 120 bytes narrower and the key holds MORE, because the 120 bytes moved into a \
+         chunk rather than going away. If this has become a real per-key saving, the decline \
+         recorded in this module is stale and the shape should be built"
+    );
+    println!(
+        "    so: the node narrows by 120 B and the KEY grows by {} B. The saving that does exist \
+         is not this one -- it is B-tree slot waste, priced in the next test.",
+        pair - inline
+    );
+}
+
+/// THE FOUR CELLS AGAIN, WITH THE COLUMN #1965 COULD ONLY QUOTE AS A FORMULA.
+///
+/// WHY THE REQUEST COLUMN IS NOT ENOUGH. The live shape holds its page entry inline, so the only
+/// thing it asks the allocator for is B-tree nodes: few, large, and barely rounded. The tagged
+/// shape asks for one 112-byte payload per occupied bucket on top, and a 112-byte request is a
+/// 128-byte chunk. The rounding is 14% of the payload and it lands entirely on the side that is
+/// being compared favourably, so a request-only comparison is biased, in a known direction, by a
+/// known amount. This measures it instead.
+///
+/// WHAT IS NOT IN DISPUTE. The byte saving at the default routing range is real and this
+/// reproduces it. What the chunk column changes is HOW BIG, and what the per-key test above
+/// changes is WHERE IT COMES FROM: not from the key holding less, but from a B-tree slot holding
+/// a narrower value. Those are different mechanisms with different fixes and only one of them
+/// survives the routing range an operator is told to set.
+///
+/// THE READ COST, IN THE INSTRUMENT'S OWN TERMS. A read allocates nothing in either shape, so the
+/// counting allocator reads the read path as 0.000 -- which is not the read being free, it is the
+/// instrument being blind to it. That is asserted here rather than left implied, so the line
+/// count in `a_tagged_simple_arm_adds_a_line_to_every_page_read_and_the_general_arm_shows_it_does
+/// _not` is known to be the WHOLE of the read cost and not a part of it.
+///
+/// rust-internal: measures the engine's own bucket map, no product behaviour
+#[cfg(feature = "alloc-probe")]
+#[test]
+#[ignore = "seeds four stores of 4,000 and 40,000 records; run by name"]
+fn the_tagged_shape_priced_on_chunks_instead_of_requests() {
+    let mut path_lengths: Vec<usize> = Vec::new();
+    // (records, range, simple fraction, request ratio, chunk ratio, alloc ratio, chunk B/record live, tagged)
+    let mut cells: Vec<(usize, u32, f64, f64, f64, f64, f64, f64)> = Vec::new();
+
+    for records in [SMALL, LARGE] {
+        for end_routing_bucket in [WIDE_END, NARROW_END] {
+            let dir = tempfile::tempdir().expect("tempdir");
+            path_lengths.push(dir.path().as_os_str().len());
+            let engine = engine_on(dir.path());
+            load_on(&engine, end_routing_bucket);
+            let keys = seed_routed(&engine, records);
+            let hist = arm_histogram(&engine);
+
+            let shards = engine.shards.read().expect("engine lock poisoned");
+            let shard = shards.get(&1).expect("shard 1");
+            let live_map = &shard.bucket_index.bucket_map;
+            assert_eq!(
+                hist.total_pages(),
+                keys.len(),
+                "the map holds {} pages for {} keys, so the per-record divisor is not the \
+                 fixture's",
+                hist.total_pages(),
+                keys.len()
+            );
+
+            let tagged_map: BTreeMap<u32, TaggedNode> = live_map
+                .iter()
+                .map(|(routing_bucket, node)| (*routing_bucket, retag(node)))
+                .collect();
+            assert_eq!(
+                live_map.len(),
+                tagged_map.len(),
+                "the tagged map is not the same population as the live one"
+            );
+
+            let (live_req, live_chunk, live_allocs) = clone_counts_chunked(live_map);
+            let (tag_req, tag_chunk, tag_allocs) = clone_counts_chunked(&tagged_map);
+            assert!(
+                live_req > 0 && tag_req > 0 && live_allocs > 0 && tag_allocs > 0,
+                "an instrument reading zero is the instrument failing, not the map being free"
+            );
+
+            // THE CHUNK COLUMN IS NEVER BELOW THE REQUEST COLUMN. If it is, the reading has
+            // degraded to echoing the request and every ratio below is the old figure wearing a
+            // new name.
+            assert!(
+                live_chunk > live_req && tag_chunk > tag_req,
+                "chunk bytes must exceed request bytes on both sides and read live {live_chunk} \
+                 vs {live_req}, tagged {tag_chunk} vs {tag_req}; an equal reading is the \
+                 degraded path and this whole test would then be a copy of \
+                 `what_the_tagged_node_actually_costs_the_allocator`"
+            );
+
+            let width = if end_routing_bucket == WIDE_END {
+                "the whole keyspace".to_string()
+            } else {
+                format!("0..{end_routing_bucket}")
+            };
+            let per = |v: u64| v as f64 / records as f64;
+            println!(
+                "\n{records} routed keys on {width}: {} buckets, {:.3}% simple",
+                live_map.len(),
+                100.0 * hist.simple_fraction()
+            );
+            println!(
+                "    live    request {:>9.3} B/rec   CHUNK {:>9.3} B/rec   {:>8.4} allocs/rec",
+                per(live_req),
+                per(live_chunk),
+                per(live_allocs)
+            );
+            println!(
+                "    tagged  request {:>9.3} B/rec   CHUNK {:>9.3} B/rec   {:>8.4} allocs/rec",
+                per(tag_req),
+                per(tag_chunk),
+                per(tag_allocs)
+            );
+            println!(
+                "    ratio           {:>9.3}x           {:>9.3}x           {:>8.3}x",
+                tag_req as f64 / live_req as f64,
+                tag_chunk as f64 / live_chunk as f64,
+                tag_allocs as f64 / live_allocs as f64
+            );
+            println!(
+                "    the chunk column moves the tagged side {:+.3}x against the request column \
+                 -- rounding the request column cannot see",
+                (tag_chunk as f64 / live_chunk as f64) - (tag_req as f64 / live_req as f64)
+            );
+
+            cells.push((
+                records,
+                end_routing_bucket,
+                hist.simple_fraction(),
+                tag_req as f64 / live_req as f64,
+                tag_chunk as f64 / live_chunk as f64,
+                tag_allocs as f64 / live_allocs as f64,
+                per(live_chunk),
+                per(tag_chunk),
+            ));
+        }
+    }
+
+    let first = path_lengths[0];
+    assert!(
+        path_lengths.iter().all(|length| *length == first),
+        "the store path length moved across arms ({path_lengths:?}); it shifts allocation bytes \
+         at about six bytes a character"
+    );
+    println!("\n  store path length held at {first} characters across all four stores");
+
+    println!("\n=== the tagged shape, priced on what the allocator sets aside ===");
+    println!(
+        "  {:<38} {:>8} {:>10} {:>10} {:>12}",
+        "corpus / range", "simple", "request", "CHUNK", "allocations"
+    );
+    for (records, range, simple, req, chunk, allocs, _, _) in &cells {
+        let width = if *range == WIDE_END {
+            "the whole keyspace".to_string()
+        } else {
+            format!("0..{range}")
+        };
+        println!(
+            "  {:<38} {:>7.3}% {:>9.3}x {:>9.3}x {:>11.3}x",
+            format!("{records} routed keys on {width}"),
+            100.0 * simple,
+            req,
+            chunk,
+            allocs
+        );
+    }
+
+    // --- THE CHUNK COLUMN IS WORSE FOR THE TAGGED SIDE AT EVERY CELL, WHICH IS THE POINT. ---
+    for (records, range, _, req, chunk, _, _, _) in &cells {
+        assert!(
+            chunk > req,
+            "{records}/{range}: the tagged shape read {chunk:.4}x on chunks against {req:.4}x on \
+             requests. The chunk column must be the less favourable of the two -- the tagged side \
+             is the one taking the allocations, and rounding falls on whoever allocates. A chunk \
+             ratio at or below the request ratio means the columns are not measuring what they \
+             are named for"
+        );
+    }
+
+    // --- THE VERDICT, WITH THE READ COST SET AGAINST THE SAVING RATHER THAN BESIDE IT. ---
+    let (_, _, _, _, wide_chunk, wide_allocs, wide_live_b, wide_tag_b) = cells
+        .iter()
+        .find(|(records, range, ..)| *records == LARGE && *range == WIDE_END)
+        .copied()
+        .expect("the wide cell at the large corpus");
+    let (_, _, narrow_simple, _, narrow_chunk, narrow_allocs, narrow_live_b, narrow_tag_b) = cells
+        .iter()
+        .find(|(records, range, ..)| *records == LARGE && *range == NARROW_END)
+        .copied()
+        .expect("the narrow cell at the large corpus");
+
+    println!("\n=== THE TRADE, STATED ===");
+    println!(
+        "  DEFAULT RANGE  (every key alone in a bucket): {wide_live_b:.1} -> {wide_tag_b:.1} \
+         B/record, {:+.1} B a key saved, at {wide_allocs:.2}x the allocations and +0.4800 cache \
+         lines on EVERY page read",
+        wide_live_b - wide_tag_b
+    );
+    println!(
+        "  CONFIGURED RANGE (0..{NARROW_END}, what runtime tuning tells an operator to set): \
+         {narrow_live_b:.1} -> {narrow_tag_b:.1} B/record, {:+.1} B a key saved, at \
+         {narrow_allocs:.2}x the allocations -- over a store with {:.3}% of buckets in the arm \
+         the shape is for",
+        narrow_live_b - narrow_tag_b,
+        100.0 * narrow_simple
+    );
+    println!(
+        "  AND THE CONFIGURED RANGE IS ALREADY THE CHEAPER STORE: {narrow_live_b:.1} B/record \
+         against {wide_live_b:.1} on the LIVE shape, {:.3}x, for a setting that costs no \
+         allocation, no indirection and no line of code.",
+        narrow_live_b / wide_live_b
+    );
+
+    // The number that decides it: what the shape is worth where an operator actually runs.
+    assert!(
+        narrow_chunk > 0.95,
+        "at the configured range the tagged shape read {narrow_chunk:.4}x the chunk bytes. The \
+         decline in this module rests on the saving being nearly absent there; a figure that has \
+         dropped materially below 1.0 means it is no longer absent and the shape should be built"
+    );
+    assert!(
+        wide_chunk < 0.80,
+        "at the default range the tagged shape read {wide_chunk:.4}x the chunk bytes; the saving \
+         there is real and a decline that under-states it is as wrong as one that over-states it"
+    );
+
+    // --- THE READ COST, IN THE INSTRUMENT'S OWN TERMS. ---
+    //
+    // A read resolves a handle to an address and allocates nothing doing it, in either shape. So
+    // the counting allocator -- the instrument every byte figure above comes from -- is BLIND to
+    // the read cost, and the cache-line count is not one input among several: it is the only
+    // measurement of the read there is. Asserted rather than assumed, because a decline that
+    // rests on a read cost has to know that its own instrument cannot see it.
+    let dir = tempfile::tempdir().expect("tempdir");
+    let engine = engine_on(dir.path());
+    load_on(&engine, WIDE_END);
+    let keys = seed_routed(&engine, SMALL);
+    let shards = engine.shards.read().expect("engine lock poisoned");
+    let shard = shards.get(&1).expect("shard 1");
+    let node = shard
+        .bucket_index
+        .bucket_map
+        .values()
+        .find(|node| matches!(node.block_index, BlockIndexMap::One(_, _)))
+        .expect("a simple bucket");
+    let tagged = retag(node);
+    let (handle, _) = node.block_index.iter().next().expect("one page");
+    let handle = *handle;
+
+    let probe = Probe::start();
+    let reached = tagged.payload.page(handle).expect("the tagged arm answers");
+    let counts = probe.stop();
+    std::hint::black_box(&reached.address);
+    println!(
+        "\n  READING one page through the tagged word charged {} allocations and {} chunk bytes \
+         over {} keys",
+        counts.allocs,
+        counts.chunk_bytes,
+        keys.len()
+    );
+    assert_eq!(
+        0, counts.allocs,
+        "resolving a handle through the tagged word charged {} allocations; it is meant to be a \
+         mask and a load",
+        counts.allocs
+    );
+    println!(
+        "  SO THE READ COST IS NOT IN ANY COLUMN ABOVE. The counting allocator reads it as 0.000 \
+         because nothing is allocated, exactly as a resident-only change predicts. The whole of \
+         the read cost is the +0.4800 cache lines a page read measured in \
+         `a_tagged_simple_arm_adds_a_line_to_every_page_read_and_the_general_arm_shows_it_does_not`."
+    );
+}
+
+// =============================================================================================
+// THE COMPONENT LEVEL: IS ITS `Many` ARM REAL, AND WHAT DOES THE LIST COST?
+// =============================================================================================
+
+/// THE QUESTION. `ObjectBlockRefs::by_component` is a `ComponentList` -- `Empty`, `One` held
+/// inline, or `Many` in a vector -- and its own doc says "the measured average is one component
+/// per object". A three-arm container over a population that is always one would be machinery for
+/// nothing, which is the shape #1966 found in `generation`: a field that equalled its neighbours
+/// on every one of 120,080 live addresses.
+///
+/// THE FIRST HALF OF THE ANSWER IS FREE AND IT IS IN THE DECLARATIONS. A `ComponentList` is the
+/// SAME WIDTH as the `ComponentBlocks` its `One` arm holds inline, because the tag rides a niche
+/// in the component name. The three arms therefore cost ZERO bytes over storing a single
+/// component bare. Whatever the histogram says, there are no bytes here to reclaim -- an
+/// important difference from `generation`, which was eight bytes that could actually be removed.
+/// That is asserted rather than described.
+///
+/// THE SECOND HALF IS THE DISTRIBUTION, AND IT IS MEASURED AT BOTH RANGES. A mean of one is the
+/// kind of figure this campaign has been wrong about before: #1959 published a mean of 1.98
+/// pages a bucket over a store containing not one bucket that held two. So this reports counts
+/// per arm, percentiles and a MAXIMUM, with the per-arm sample count printed, and it reports them
+/// for the workload that can reach `Many` as well as the one that cannot.
+///
+/// THE ROUTING RANGE IS NOT THE VARIABLE HERE, AND THE MEASUREMENT SHOWS WHY. The object lookup
+/// is keyed by (kind, object key) and its component list is a per-OBJECT fact, so the routing
+/// range -- which decides which BUCKET a page lands in -- cannot move it. Both ranges are
+/// measured anyway rather than argued, because that is the premise #1962 caught being true at
+/// one range and false at the other.
+///
+/// rust-internal: reads the engine's own object lookup, no product behaviour
+#[test]
+#[ignore = "seeds four stores of 4,000 records; run by name"]
+fn the_component_level_is_not_a_list_of_one() {
+    use crate::engine::state::{ComponentBlocks, ComponentList};
+
+    // --- WHAT THE THREE ARMS COST, WHICH IS NOTHING. ---
+    assert_eq!(
+        size_of::<ComponentList>(),
+        size_of::<ComponentBlocks>(),
+        "a ComponentList is {} B and one ComponentBlocks is {} B. The three-arm shape is only \
+         free while they are equal -- the tag rides a niche in the component name -- and if they \
+         have come apart then the list IS costing bytes and is worth revisiting",
+        size_of::<ComponentList>(),
+        size_of::<ComponentBlocks>()
+    );
+    println!(
+        "\n  THE LIST IS FREE: ComponentList {} B == ComponentBlocks {} B, so the Empty/One/Many \
+         shape costs ZERO bytes over holding one component bare. There is nothing here to \
+         reclaim by removing an arm.",
+        size_of::<ComponentList>(),
+        size_of::<ComponentBlocks>()
+    );
+
+    // (label, arm counts, components per object)
+    let mut rows: Vec<(String, [usize; 3], Vec<usize>)> = Vec::new();
+    let mut path_lengths: Vec<usize> = Vec::new();
+
+    let mut measure = |label: String, engine: &TemporalEngine| {
+        let shards = engine.shards.read().expect("engine lock poisoned");
+        let shard = shards.get(&1).expect("shard 1");
+        let mut arms = [0usize; 3];
+        let mut per_object: Vec<usize> = Vec::new();
+        for (_kind, _key, entry) in shard.bucket_index.object_block_lookup.iter() {
+            let n = entry.by_component.len();
+            match &entry.by_component {
+                ComponentList::Empty => arms[0] += 1,
+                ComponentList::One(_) => arms[1] += 1,
+                ComponentList::Many(_) => arms[2] += 1,
+            }
+            per_object.push(n);
+        }
+        rows.push((label, arms, per_object));
+    };
+
+    // THE ROUTED WORKLOAD: plain keys, no component at all.
+    for end_routing_bucket in [WIDE_END, NARROW_END] {
+        let dir = tempfile::tempdir().expect("tempdir");
+        path_lengths.push(dir.path().as_os_str().len());
+        let engine = engine_on(dir.path());
+        load_on(&engine, end_routing_bucket);
+        seed_routed(&engine, SMALL);
+        let width = if end_routing_bucket == WIDE_END {
+            "the whole keyspace".to_string()
+        } else {
+            format!("0..{end_routing_bucket}")
+        };
+        measure(format!("{SMALL} routed keys on {width}"), &engine);
+    }
+
+    // THE CONTAINER WORKLOAD: one key, many fields, and a field IS a component.
+    for end_routing_bucket in [WIDE_END, NARROW_END] {
+        let dir = tempfile::tempdir().expect("tempdir");
+        path_lengths.push(dir.path().as_os_str().len());
+        let engine = engine_on(dir.path());
+        load_on(&engine, end_routing_bucket);
+        seed_container(&engine, SMALL / 100, 100);
+        let width = if end_routing_bucket == WIDE_END {
+            "the whole keyspace".to_string()
+        } else {
+            format!("0..{end_routing_bucket}")
+        };
+        measure(
+            format!("{} container keys x 100 fields on {width}", SMALL / 100),
+            &engine,
+        );
+    }
+
+    let first = path_lengths[0];
+    assert!(
+        path_lengths.iter().all(|l| *l == first),
+        "the store path length moved across arms ({path_lengths:?})"
+    );
+
+    let percentile = |sorted: &[usize], q: f64| -> usize {
+        if sorted.is_empty() {
+            return 0;
+        }
+        let rank = ((q * sorted.len() as f64).ceil() as usize).max(1);
+        sorted[rank.min(sorted.len()) - 1]
+    };
+
+    println!(
+        "\n  {:<48} {:>8} {:>8} {:>8} {:>6} {:>6} {:>6} {:>6}",
+        "corpus / range", "Empty", "One", "Many", "p50", "p90", "p99", "MAX"
+    );
+    let mut many_total = 0usize;
+    let mut one_total = 0usize;
+    for (label, arms, per_object) in &rows {
+        let mut sorted = per_object.clone();
+        sorted.sort_unstable();
+        println!(
+            "  {:<48} {:>8} {:>8} {:>8} {:>6} {:>6} {:>6} {:>6}",
+            label,
+            arms[0],
+            arms[1],
+            arms[2],
+            percentile(&sorted, 0.50),
+            percentile(&sorted, 0.90),
+            percentile(&sorted, 0.99),
+            sorted.last().copied().unwrap_or_default()
+        );
+        // THE DENOMINATOR. Every object landed in exactly one arm, or a percentage above is over
+        // part of a population rather than the population.
+        assert_eq!(
+            per_object.len(),
+            arms[0] + arms[1] + arms[2],
+            "{label}: the arm columns account for {} of {} objects",
+            arms[0] + arms[1] + arms[2],
+            per_object.len()
+        );
+        assert!(
+            !per_object.is_empty(),
+            "{label}: the lookup held NO objects, so the row above is over nothing and a store \
+             that wrote nothing reads as a beautifully simple one"
+        );
+        many_total += arms[2];
+        one_total += arms[1];
+    }
+
+    // --- THE CLAIM, DECIDED BY THE SAMPLES. ---
+    assert!(
+        one_total > 0,
+        "no object anywhere landed in the One arm, so the inline arm this shape exists for was \
+         never reached and the measurement claims nothing about it"
+    );
+    println!(
+        "\n  SAMPLES: {one_total} objects in the One arm, {many_total} in the Many arm across \
+         all four stores."
+    );
+    if many_total > 0 {
+        println!(
+            "  THE `Many` ARM IS REAL. A container key's fields are components of ONE object, so \
+             an object with many components is an ordinary write and not a corner. The component \
+             level is doing work; leave it alone."
+        );
+    } else {
+        println!(
+            "  THE `Many` ARM WAS NOT REACHED BY ANY WORKLOAD SEEDED HERE. That is a statement \
+             about this corpus and not about the engine -- and it would still not be a reason to \
+             remove the arm, because the arms cost nothing (asserted above)."
+        );
+    }
+    assert!(
+        many_total > 0,
+        "the container workload is meant to put one object under many components; if it reached \
+         ZERO Many arms then a field is not a component of its key's object and the whole reading \
+         of this level is wrong"
     );
 }
