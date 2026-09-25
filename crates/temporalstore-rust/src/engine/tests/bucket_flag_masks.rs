@@ -350,3 +350,97 @@ fn every_flag_state_survives_the_stored_spelling_and_swapped_keys_do_not() {
          not distinguish them"
     );
 }
+
+
+// -------------------------------------------------------------------------------------------
+// 4. PRESENCE COMES FROM THE WIRE.
+// -------------------------------------------------------------------------------------------
+
+/// A NODE THAT OMITS A REQUIRED KEY IS REFUSED, AND ONE THAT OMITS AN OPTIONAL KEY IS NOT.
+///
+/// The hand-written deserializer has to reproduce the derive's two different answers to a missing
+/// key: the fields that carried `#[serde(default)]` fill in, and the seven that did not are
+/// errors. The difference matters because a flag filled in with `false` is not an absent flag --
+/// it is a bucket that reads as clean, or as not resident, on the strength of a key that was
+/// never written. A store whose index is truncated mid-node would load as a valid node with
+/// plausible flags.
+///
+/// THIS TEST EXISTS BECAUSE A MUTATION SURVIVED. Replacing the refusal on `dirty` with
+/// `unwrap_or_default()` passed every other test in this module and in `per_item_byte_budget`,
+/// which is to say the rule was stated in two comments and enforced nowhere. Each of the seven
+/// required keys is dropped in turn and the decode must FAIL; `deleted`, which really is
+/// optional, is dropped as the control and must SUCCEED.
+#[test]
+fn a_bucket_node_that_omits_a_required_key_is_refused_and_an_optional_one_is_not() {
+    let node = node_in_state(0b10101);
+    let json = serde_json::to_string(&node).expect("a bucket node serializes");
+
+    /// Remove one top-level key and its value from a flat JSON object.
+    fn without(json: &str, key: &str) -> String {
+        let needle = format!("\"{key}\":");
+        let at = json.find(&needle).unwrap_or_else(|| panic!("`{key}` is not in {json}"));
+        let end = json[at..]
+            .find(',')
+            .map(|offset| at + offset + 1)
+            .expect("every key under test is followed by another");
+        let mut out = String::with_capacity(json.len());
+        out.push_str(&json[..at]);
+        out.push_str(&json[end..]);
+        out
+    }
+
+    const REQUIRED: [&str; 7] = [
+        "routing_slot",
+        "dirty",
+        "meta_loaded",
+        "loading",
+        "in_memory",
+        "dirty_generation",
+        "last_dump_sequence",
+    ];
+
+    println!("\n=== a node missing each required key ===");
+    for key in REQUIRED {
+        let damaged = without(&json, key);
+        assert!(
+            !damaged.contains(&format!("\"{key}\":")),
+            "the fixture for `{key}` still contains the key, so it tests nothing: {damaged}"
+        );
+        let outcome = serde_json::from_str::<BucketNode>(&damaged);
+        let complaint = match &outcome {
+            Ok(_) => "ACCEPTED".to_string(),
+            Err(error) => error.to_string(),
+        };
+        println!("  {key:<20} {complaint}");
+        assert!(
+            outcome.is_err(),
+            "a bucket node with no `{key}` decoded successfully; the field would be filled in \
+             with a zero that reads as a real answer"
+        );
+        let message = outcome.unwrap_err().to_string();
+        assert!(
+            message.contains(key),
+            "the refusal for a missing `{key}` says {message:?}, which does not name the key \
+             that is missing"
+        );
+    }
+
+    // --- THE CONTROL. `deleted` carried `#[serde(default)]` and still must. ---
+    let without_deleted = without(&json, "deleted");
+    assert!(
+        !without_deleted.contains("\"deleted\":"),
+        "the control fixture still contains the key it is supposed to drop"
+    );
+    let loaded: BucketNode =
+        serde_json::from_str(&without_deleted).expect("a node without `deleted` must still load");
+    assert!(
+        !loaded.deleted(),
+        "an absent `deleted` must default to false, not to true"
+    );
+    assert_eq!(
+        node.dirty(),
+        loaded.dirty(),
+        "dropping the optional key must not disturb the flags that were written"
+    );
+    println!("  {:<20} accepted, and defaults to false", "deleted (optional)");
+}
