@@ -49,7 +49,8 @@ use std::sync::Arc;
 
 use crate::block_store::{BlockAddress, BlockStoreSlabDescriptor};
 use crate::engine::state::{
-    BlockIndex, BlockIndexMap, BlockLookupRef, BlockRefs, BucketLayoutState, BucketNode, BucketTtl,
+    BlockIndex, BlockIndexMap, BlockLookupRef, BlockRefs, BucketFlags, BucketLayoutState, BucketNode,
+    BucketTtl,
     ComponentBlocks, ComponentList, DeletedObjectIndex, DirtyKeySet, ObjectBlockRefs, ObjectIndex,
     WalResidentBlock,
 };
@@ -131,11 +132,11 @@ fn budget() -> Vec<Budgeted> {
             name: "BucketNode",
             size: size_of::<BucketNode>(),
             align: align_of::<BucketNode>(),
-            // routing_bucket u32, layout, five bools, ttl_ms BucketTtl, four u64 sequences,
-            // the live object index, the tombstone index, one BlockIndexMap
+            // routing_bucket u32, layout, the packed flag byte, ttl_ms BucketTtl, four u64
+            // sequences, the live object index, the tombstone index, one BlockIndexMap
             fields: size_of::<u32>()
                 + size_of::<BucketLayoutState>()
-                + 5 * size_of::<bool>()
+                + size_of::<BucketFlags>()
                 + size_of::<BucketTtl>()
                 + 4 * size_of::<u64>()
                 + size_of::<ObjectIndex>()
@@ -301,7 +302,7 @@ fn every_per_item_structure_states_its_width_and_its_padding() {
     assert_eq!(40, size_of::<BlockAddress>(), "BlockAddress width moved");
     assert_eq!(96, size_of::<BlockIndex>(), "BlockIndex width moved");
     assert_eq!(104, size_of::<BlockIndexMap>(), "BlockIndexMap width moved");
-    assert_eq!(184, size_of::<BucketNode>(), "BucketNode width moved");
+    assert_eq!(176, size_of::<BucketNode>(), "BucketNode width moved");
     assert_eq!(16, size_of::<BlockLookupRef>(), "BlockLookupRef width moved");
     assert_eq!(24, size_of::<BlockRefs>(), "BlockRefs width moved");
     assert_eq!(40, size_of::<ComponentBlocks>(), "ComponentBlocks width moved");
@@ -852,11 +853,7 @@ fn bucket_node_fields() -> Vec<Field> {
     vec![
         field!("routing_bucket", u32),
         field!("layout", BucketLayoutState),
-        field!("dirty", bool),
-        field!("deleted", bool),
-        field!("meta_loaded", bool),
-        field!("loading", bool),
-        field!("in_memory", bool),
+        field!("flags", BucketFlags),
         field!("ttl_ms", BucketTtl),
         field!("dirty_generation", u64),
         field!("first_dirty_wal_sequence", u64),
@@ -870,7 +867,7 @@ fn bucket_node_fields() -> Vec<Field> {
 
 /// EVERY BYTE OF THE BUCKET NODE, ACCOUNTED FOR.
 ///
-/// Fifteen fields, their widths summed, and the difference against `size_of` named as what it is:
+/// Eleven fields, their widths summed, and the difference against `size_of` named as what it is:
 /// the aligner's, not any field's. The sum is the discriminating half. A width that is stated
 /// without its field sum cannot tell a structure that is FULL from one that is half padding, and
 /// those two want opposite fixes -- one wants a narrower field, the other cannot be helped by any
@@ -878,19 +875,25 @@ fn bucket_node_fields() -> Vec<Field> {
 ///
 /// HOW RUST LAYS THIS OUT, and it is the whole explanation of the number. Fields reorder freely,
 /// so the layout is two groups: everything of alignment 8 packs solid, and everything smaller
-/// fills the tail, which is then rounded up to the struct's own alignment. Here that is 176 bytes
-/// of eight-aligned field and 10 bytes of small field rounded to 16. The consequence is blunt and
-/// worth stating in a test rather than a comment: NOTHING in the ten-byte tail can be narrowed to
-/// any effect -- not the routing bucket, not the layout, not the five flags -- because the tail
-/// is already inside a rounding. Only a change that takes the tail to 8 bytes or fewer, or that
-/// takes a whole word out of the eight-aligned group, moves this structure at all.
+/// fills the tail, which is then rounded up to the struct's own alignment. Here that is 168 bytes
+/// of eight-aligned field and 6 bytes of small field rounded to 8.
+///
+/// THE TAIL USED TO BE TEN BYTES AND THE RULE WRITTEN HERE WAS TOO STRONG. It said NOTHING in the
+/// ten-byte tail could be narrowed to any effect, because the tail was already inside a rounding.
+/// That is true of narrowing ONE field and it is what the per-field verdict below still says --
+/// 9, 6 and 4 all round back to 16 -- but it was read as though it applied to the tail as a
+/// whole, and it does not. Five `bool` became five BITS, four bytes left at once, and the tail
+/// crossed the step: 10-in-16 became 6-in-8 and the structure lost eight bytes. The rule that
+/// survives is the last clause, which was right all along: only a change that takes the tail to 8
+/// bytes or fewer, or that takes a whole word out of the eight-aligned group, moves this
+/// structure at all. Packing was such a change; narrowing any single tail field is not.
 #[test]
 fn every_byte_of_the_bucket_node_is_accounted_for() {
     let fields = bucket_node_fields();
     assert_eq!(
-        15,
+        11,
         fields.len(),
-        "the field table lists {} fields; `BucketNode` has fifteen and a table that has drifted \
+        "the field table lists {} fields; `BucketNode` has eleven and a table that has drifted \
          from the declaration proves nothing about it",
         fields.len()
     );
@@ -925,16 +928,16 @@ fn every_byte_of_the_bucket_node_is_accounted_for() {
         size - eight_aligned
     );
 
-    assert_eq!(178, sum, "the fields of BucketNode add up to {sum}, not 178");
-    assert_eq!(184, size, "BucketNode is {size} bytes wide, not 184");
-    assert_eq!(6, slack, "BucketNode carries {slack} bytes of alignment slack, not 6");
+    assert_eq!(174, sum, "the fields of BucketNode add up to {sum}, not 174");
+    assert_eq!(176, size, "BucketNode is {size} bytes wide, not 176");
+    assert_eq!(2, slack, "BucketNode carries {slack} bytes of alignment slack, not 2");
 
     // The layout rule itself, asserted rather than described: the eight-aligned group packs
     // solid and the rest is one rounding.
     let align = align_of::<BucketNode>();
     assert_eq!(8, align, "BucketNode's alignment moved, and the arithmetic below assumes 8");
     assert_eq!(168, eight_aligned, "the eight-aligned group is {eight_aligned} B, not 168");
-    assert_eq!(10, tail, "the tail group is {tail} B, not 10");
+    assert_eq!(6, tail, "the tail group is {tail} B, not 6");
     assert_eq!(
         eight_aligned + tail.div_ceil(align) * align,
         size,
@@ -950,8 +953,9 @@ fn every_byte_of_the_bucket_node_is_accounted_for() {
     println!("\n=== which fields could move this structure, and which could not ===");
     for field in &fields {
         let verdict = if field.align < align {
-            // In the rounding. Narrowing it cannot cross the boundary on its own.
-            "ALIGNMENT -- inside a 10-in-16 rounding; narrowing it moves nothing"
+            // In the rounding. Narrowing it cannot cross the boundary on its own -- but note
+            // that REMOVING enough of them at once can, which is how the tail got to six.
+            "ALIGNMENT -- inside a 6-in-8 rounding; narrowing it alone moves nothing"
         } else if field.size % align == 0 && field.size > align {
             "WIDTH -- a whole number of words, and every word of it is paid per bucket"
         } else {
@@ -961,10 +965,10 @@ fn every_byte_of_the_bucket_node_is_accounted_for() {
     }
     let tail_fields = fields.iter().filter(|field| field.align < align).count();
     assert_eq!(
-        7,
+        3,
         tail_fields,
-        "seven fields sit in the tail rounding -- the routing bucket, the layout and the five \
-         flags -- and this test found {tail_fields}"
+        "three fields sit in the tail rounding -- the routing bucket, the layout and the packed \
+         flag byte -- and this test found {tail_fields}"
     );
     let tail_bytes: usize = fields
         .iter()
@@ -1003,11 +1007,7 @@ fn every_byte_of_the_bucket_node_is_accounted_for() {
 struct MirrorLive {
     routing_bucket: u32,
     layout: BucketLayoutState,
-    dirty: bool,
-    deleted: bool,
-    meta_loaded: bool,
-    loading: bool,
-    in_memory: bool,
+    flags: BucketFlags,
     ttl_ms: BucketTtl,
     dirty_generation: u64,
     first_dirty_wal_sequence: u64,
@@ -1060,7 +1060,8 @@ struct MirrorWideTombstone {
     block_index: BlockIndexMap,
 }
 
-/// The five flags folded into one byte.
+/// The five flags folded into one byte -- the shape that SHIPPED, held here as a control on the
+/// live mirror rather than as a proposal.
 #[allow(dead_code)]
 struct MirrorPackedFlags {
     routing_bucket: u32,
@@ -1076,9 +1077,10 @@ struct MirrorPackedFlags {
     block_index: BlockIndexMap,
 }
 
-/// The two transient log claims moved out of the node into a side map of dirty buckets.
+/// The node immediately BEFORE this change: the same fields with the five flags as five
+/// independent `bool`, which is ten bytes of tail rounded to sixteen.
 #[allow(dead_code)]
-struct MirrorHoistedClaims {
+struct MirrorLooseFlags {
     routing_bucket: u32,
     layout: BucketLayoutState,
     dirty: bool,
@@ -1086,6 +1088,22 @@ struct MirrorHoistedClaims {
     meta_loaded: bool,
     loading: bool,
     in_memory: bool,
+    ttl_ms: BucketTtl,
+    dirty_generation: u64,
+    first_dirty_wal_sequence: u64,
+    first_dirty_index_log_sequence: u64,
+    last_dump_sequence: u64,
+    object_index: ObjectIndex,
+    deleted_object_index: DeletedObjectIndex,
+    block_index: BlockIndexMap,
+}
+
+/// The two transient log claims moved out of the node into a side map of dirty buckets.
+#[allow(dead_code)]
+struct MirrorHoistedClaims {
+    routing_bucket: u32,
+    layout: BucketLayoutState,
+    flags: BucketFlags,
     ttl_ms: BucketTtl,
     dirty_generation: u64,
     last_dump_sequence: u64,
@@ -1106,11 +1124,7 @@ enum MirrorBoxedBlockIndexMap {
 struct MirrorBoxedPage {
     routing_bucket: u32,
     layout: BucketLayoutState,
-    dirty: bool,
-    deleted: bool,
-    meta_loaded: bool,
-    loading: bool,
-    in_memory: bool,
+    flags: BucketFlags,
     ttl_ms: BucketTtl,
     dirty_generation: u64,
     first_dirty_wal_sequence: u64,
@@ -1132,12 +1146,16 @@ struct MirrorBoxedPage {
 /// for its discriminant. It is the only one of the four whose stored spelling does not move --
 /// the countdown is one JSON key either way, and the serde impls unbias across it.
 ///
-/// THE ONE THAT WAS DECLINED ON BLAST RADIUS. Folding the five flags into a byte is worth the
-/// same eight bytes, and it is a different kind of change: `dirty`, `deleted`, `meta_loaded`,
-/// `loading` and `in_memory` are five keys of the stored index and 137 read sites across the
-/// engine, and holding the stored spelling still would mean a hand-written serializer for the
-/// node. Eight bytes a bucket does not buy that here, and a mechanical rewrite of 137 sites is
-/// how a guard that reads one of those names stops seeing anything.
+/// THE OTHER ONE THAT WAS TAKEN, AND IT WAS DECLINED HERE FIRST. Folding the five flags into a
+/// byte is worth the same eight bytes. The decline was written on blast radius -- `dirty`,
+/// `deleted`, `meta_loaded`, `loading` and `in_memory` are five keys of the stored index and 90
+/// sites across the engine, and holding the stored spelling still means a hand-written
+/// serializer for the node. Every clause of that was accurate and it still cost eight bytes a
+/// bucket to believe. What made it payable was doing the rewrite from the COMPILER'S error
+/// positions rather than from a grep: the flags became accessors of the same name, so the sites
+/// are still `dirty` and `meta_loaded` to anything that reads this tree, and the enumeration ran
+/// to zero errors rather than to zero sites of a shape -- which is what caught the four
+/// multi-line assignments a line-oriented pass had quietly turned into reads.
 ///
 /// THE ONE THAT WAS DECLINED ON WHERE THE COST WOULD GO. The two `#[serde(skip)]` log claims are
 /// sixteen bytes and touch no stored shape at all, which makes them the cheapest bytes here to
@@ -1166,6 +1184,7 @@ fn what_each_declined_shape_of_the_bucket_node_would_cost() {
     let live = size_of::<BucketNode>();
     let wide_ttl = size_of::<MirrorWideTtl>();
     let wide_tombstone = size_of::<MirrorWideTombstone>();
+    let loose = size_of::<MirrorLooseFlags>();
     let packed = size_of::<MirrorPackedFlags>();
     let hoisted = size_of::<MirrorHoistedClaims>();
     let boxed = size_of::<MirrorBoxedPage>();
@@ -1174,9 +1193,10 @@ fn what_each_declined_shape_of_the_bucket_node_would_cost() {
     println!("  {:<44} {:>5} {:>9}", "shape", "bytes", "vs live");
     for (name, bytes) in [
         ("the node as it stands", live),
-        ("with the tombstone index back at the full enum (before)", wide_tombstone),
+        ("with the five flags back as five bools (before)", loose),
+        ("with the tombstone index back at the full enum as well", wide_tombstone),
         ("with the countdown back at two words as well", wide_ttl),
-        ("with the five flags folded into one byte", packed),
+        ("the packed-flag mirror, which must equal the live shape", packed),
         ("with the two transient log claims hoisted out", hoisted),
         ("with the inline page entry behind a pointer", boxed),
     ] {
@@ -1201,22 +1221,37 @@ fn what_each_declined_shape_of_the_bucket_node_would_cost() {
          page entry sheds its derived generation; it reads as {wide_tombstone}, so the eight \
          bytes that change claims are not the eight bytes it took"
     );
-    assert_eq!(184, live, "the node is {live} bytes, not 184");
+    assert_eq!(176, live, "the node is {live} bytes, not 176");
+    assert_eq!(
+        184, loose,
+        "the shape before the flags were packed was 184 bytes; it reads as {loose}, so the row \
+         that prices this change is not describing the shape it replaced"
+    );
     assert_eq!(
         8,
-        wide_tombstone - live,
-        "holding the tombstone index as one nullable pointer is priced at eight bytes a bucket; \
-         it measured {}",
-        wide_tombstone - live
+        wide_tombstone - loose,
+        "holding the tombstone index as one nullable pointer is priced at eight bytes a bucket, \
+         against the loose-flag shape it was measured on; it measured {}",
+        wide_tombstone - loose
     );
 
-    // --- The two declined savings, each a real eight and sixteen. ---
+    // --- WHAT THIS CHANGE TOOK, and the control that says the mirror describes it. ---
+    //
+    // `MirrorPackedFlags` is built from a bare `u8` where the declaration now has `BucketFlags`.
+    // They must come out the same width, or the newtype is costing something a byte does not.
+    assert_eq!(
+        live, packed,
+        "the packed-flag mirror is {packed} B against the declaration's {live}; `BucketFlags` is \
+         not laying out as the byte it wraps"
+    );
     assert_eq!(
         8,
-        live - packed,
-        "folding the flags is priced at eight bytes a bucket; it measured {}",
-        live - packed
+        loose - live,
+        "folding the five flags into one byte is priced at eight bytes a bucket; it measured {}",
+        loose - live
     );
+
+    // --- The one still on the table. ---
     assert_eq!(
         16,
         live - hoisted,
@@ -1266,11 +1301,7 @@ fn wire_fixture(ttl_ms: Option<u64>) -> BucketNode {
     BucketNode {
         routing_bucket: 7,
         layout: BucketLayoutState::SingleBlockObject,
-        dirty: false,
-        deleted: false,
-        meta_loaded: true,
-        loading: false,
-        in_memory: true,
+        flags: BucketFlags::default().with(BucketFlags::DIRTY, false).with(BucketFlags::DELETED, false).with(BucketFlags::META_LOADED, true).with(BucketFlags::LOADING, false).with(BucketFlags::IN_MEMORY, true),
         ttl_ms: BucketTtl::from_ms(ttl_ms),
         dirty_generation: 3,
         first_dirty_wal_sequence: 41,
@@ -1645,7 +1676,7 @@ fn what_the_bucket_node_costs_at_two_large_corpus_sizes() {
             .bucket_index
             .bucket_map
             .values()
-            .filter(|bucket| bucket.dirty)
+            .filter(|bucket| bucket.dirty())
             .count();
 
         println!("\n=== {label} ===");
@@ -2470,7 +2501,7 @@ fn what_the_object_side_of_the_bucket_node_costs() {
 
         // --- THE NEXT DOMINANT TERM ON THIS STRUCTURE, PRICED RATHER THAN NAMED. ---
         //
-        // With the object side at 24 bytes of field, the page index is 104 of the node's 184 --
+        // With the object side at 24 bytes of field, the page index is 104 of the node's 176 --
         // 56.5% -- and it is the same question one level along: an inline arm for the bucket
         // that holds one page, and a MAP for the bucket that holds several. The object side's
         // answer was that the multi-entry arm is not rare and a tree charges a node sized for
@@ -2976,11 +3007,7 @@ fn the_stored_spelling_of_the_object_side_did_not_move() {
         let node = BucketNode {
             routing_bucket: 7,
             layout: BucketLayoutState::MultiObject,
-            dirty: true,
-            deleted: false,
-            meta_loaded: true,
-            loading: false,
-            in_memory: true,
+            flags: BucketFlags::default().with(BucketFlags::DIRTY, true).with(BucketFlags::DELETED, false).with(BucketFlags::META_LOADED, true).with(BucketFlags::LOADING, false).with(BucketFlags::IN_MEMORY, true),
             ttl_ms: BucketTtl::from_ms(Some(5_000)),
             dirty_generation: 3,
             first_dirty_wal_sequence: 41,

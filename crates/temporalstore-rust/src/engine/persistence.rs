@@ -285,7 +285,7 @@ impl TemporalEngine {
         // the clear-dirty-on-load contract and keeps `bucket.dirty |= ...` from
         // resurrecting a stale persisted dirty flag.
         for bucket in shard.bucket_index.bucket_map.values_mut() {
-            bucket.dirty = false;
+            bucket.set_dirty(false);
             for page in bucket.block_index.blocks_mut_unaccounted() {
                 page.dirty = false;
             }

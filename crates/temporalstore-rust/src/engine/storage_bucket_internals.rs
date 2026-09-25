@@ -1302,10 +1302,10 @@ pub(super) fn mark_async_dirty_object(
         .entry(routing_bucket)
         .or_insert_with(|| BucketNode {
             routing_bucket,
-            meta_loaded: true,
+            flags: BucketFlags::default().with(BucketFlags::META_LOADED, true),
             ..BucketNode::default()
         });
-    bucket.dirty = true;
+    bucket.set_dirty(true);
     bucket.dirty_generation = bucket.dirty_generation.saturating_add(1).max(1);
     note_bucket_flags_stale(shard, routing_bucket);
 }
@@ -1367,8 +1367,7 @@ pub(super) fn rebuild_bucket_block_ownership(
                     .unwrap_or_default();
                 BucketNode {
                     routing_bucket,
-                    meta_loaded: true,
-                    in_memory: true,
+                    flags: BucketFlags::default().with(BucketFlags::META_LOADED, true).with(BucketFlags::IN_MEMORY, true),
                     dirty_generation,
                     last_dump_sequence,
                     ..BucketNode::default()
@@ -1398,11 +1397,12 @@ pub(super) fn rebuild_bucket_block_ownership(
     }
     shard.bucket_index.rebuild_object_block_lookup();
     for bucket in shard.bucket_index.bucket_map.values_mut() {
-        bucket.meta_loaded = true;
-        bucket.loading = false;
-        bucket.in_memory = !bucket.block_index.is_empty();
-        bucket.deleted =
+        bucket.set_meta_loaded(true);
+        bucket.set_loading(false);
+        bucket.set_in_memory(!bucket.block_index.is_empty());
+        let every_page_deleted =
             !bucket.block_index.is_empty() && bucket.block_index.values().all(|page| page.deleted);
+        bucket.set_deleted(every_page_deleted);
         update_bucket_layout(bucket);
     }
     // Every page above was charged as it was filed, and the tally started empty, so it now
@@ -2016,13 +2016,13 @@ pub(super) fn release_bucket_blocks(
         // The residency terms, tested in order so a refusal can name the one that decided it.
         // Same set, same order, same answer as the `||` chain this replaces -- what is new is
         // that the outcome can say WHICH, which is what makes one guard per term possible.
-        let residency_refusal = if !bucket.in_memory {
+        let residency_refusal = if !bucket.in_memory() {
             Some(BucketReleaseRefusal::NotInMemory)
-        } else if bucket.loading {
+        } else if bucket.loading() {
             Some(BucketReleaseRefusal::Loading)
-        } else if bucket.dirty {
+        } else if bucket.dirty() {
             Some(BucketReleaseRefusal::BucketDirty)
-        } else if bucket.deleted {
+        } else if bucket.deleted() {
             Some(BucketReleaseRefusal::BucketDeleted)
         } else if bucket.block_index.is_empty() {
             Some(BucketReleaseRefusal::EmptyBlockIndex)
@@ -2117,9 +2117,9 @@ pub(super) fn release_bucket_blocks(
             .get_mut(&routing_bucket)
             .expect("bucket read immutably above");
         bucket.block_index = crate::engine::state::BlockIndexMap::Empty;
-        bucket.meta_loaded = true;
-        bucket.loading = false;
-        bucket.in_memory = false;
+        bucket.set_meta_loaded(true);
+        bucket.set_loading(false);
+        bucket.set_in_memory(false);
         // `object_index` is deliberately kept: it is what keeps the bucket countable and is the
         // only thing distinguishing a released bucket from one that legitimately holds nothing.
         bucket.layout = classify_bucket_layout(bucket.object_index.len(), 0);
@@ -2147,7 +2147,7 @@ pub(super) fn reload_released_bucket(
         // Held across the derivation below. Under the shard write lock nothing can observe it
         // today; it is the state a queued concurrent loader would wait on if this ever became
         // asynchronous, and setting it is what makes that a wiring change rather than a design.
-        bucket.loading = true;
+        bucket.set_loading(true);
     } else {
         shard.bucket_index.released_buckets.remove(&routing_bucket);
         return false;
@@ -2197,9 +2197,9 @@ pub(super) fn reload_released_bucket(
         let handle = bucket.block_index.insert_released(page.clone());
         installed.push((handle, page));
     }
-    bucket.meta_loaded = true;
-    bucket.in_memory = !bucket.block_index.is_empty();
-    bucket.loading = false;
+    bucket.set_meta_loaded(true);
+    bucket.set_in_memory(!bucket.block_index.is_empty());
+    bucket.set_loading(false);
     if bucket.block_index.is_empty() {
         // Everything the bucket held was deleted while it was released. Nothing routes here any
         // more, so the node goes rather than lingering with a stale object index.
@@ -3044,16 +3044,15 @@ fn upsert_bucket_index_block_inner(
             .entry(routing_bucket)
             .or_insert_with(|| BucketNode {
                 routing_bucket,
-                meta_loaded: true,
-                in_memory: true,
+                flags: BucketFlags::default().with(BucketFlags::META_LOADED, true).with(BucketFlags::IN_MEMORY, true),
                 ..BucketNode::default()
             });
-        bucket.dirty |= dirty;
-        bucket.deleted = false;
+        bucket.set_dirty(bucket.dirty() | dirty);
+        bucket.set_deleted(false);
         if dirty {
             bucket.dirty_generation = bucket.dirty_generation.saturating_add(1);
         }
-        bucket.in_memory = true;
+        bucket.set_in_memory(true);
         bucket.object_index.insert(object_id);
         // The handle the map assigns is what the lookup records, so the two cannot disagree.
         block_ref_key = bucket.block_index.insert(block_index.clone(), &mut shard.bucket_index.block_slab_live);
@@ -3171,12 +3170,12 @@ pub(super) fn sync_bucket_index_object_blocks_with_mode(
         if bucket.block_index.len() != before {
             removed_any = true;
             touched_buckets.insert(routing_bucket);
-            bucket.dirty |= dirty;
-            bucket.deleted = bucket.block_index.is_empty();
+            bucket.set_dirty(bucket.dirty() | dirty);
+            bucket.set_deleted(bucket.block_index.is_empty());
             if dirty {
                 bucket.dirty_generation = bucket.dirty_generation.saturating_add(1);
             }
-            bucket.in_memory = !bucket.block_index.is_empty();
+            bucket.set_in_memory(!bucket.block_index.is_empty());
             update_bucket_layout(bucket);
         }
     }
@@ -3238,18 +3237,17 @@ pub(super) fn sync_bucket_index_object_blocks_with_mode(
             .entry(routing_bucket)
             .or_insert_with(|| BucketNode {
                 routing_bucket,
-                meta_loaded: true,
-                in_memory: true,
+                flags: BucketFlags::default().with(BucketFlags::META_LOADED, true).with(BucketFlags::IN_MEMORY, true),
                 ..BucketNode::default()
             });
-        bucket.dirty |= dirty;
-        bucket.deleted = false;
+        bucket.set_dirty(bucket.dirty() | dirty);
+        bucket.set_deleted(false);
         if dirty || touched_buckets.insert(routing_bucket) {
             bucket.dirty_generation = bucket.dirty_generation.saturating_add(1);
         }
-        bucket.meta_loaded = true;
-        bucket.loading = false;
-        bucket.in_memory = true;
+        bucket.set_meta_loaded(true);
+        bucket.set_loading(false);
+        bucket.set_in_memory(true);
         bucket.object_index.insert(object_id);
         bucket.deleted_object_index.remove(&object_id);
         let mut block_ref_key: u64 = 0;
@@ -3461,17 +3459,19 @@ fn refresh_one_bucket_runtime_flags(
     expires_at_ms: &BTreeMap<String, u64>,
     rebuild_object_index: bool,
 ) {
-    bucket.meta_loaded = true;
-    bucket.loading = false;
-    bucket.in_memory = !bucket.block_index.is_empty();
+    bucket.set_meta_loaded(true);
+    bucket.set_loading(false);
+    bucket.set_in_memory(!bucket.block_index.is_empty());
     // `all` and `any` stop at the first page that decides the answer, so neither is a reliable
     // full pass; during ingest the dirty check in particular answers on page one.
-    bucket.deleted =
+    let every_page_deleted =
         !bucket.block_index.is_empty() && bucket.block_index.values().all(|page| page.deleted);
-    bucket.dirty |= bucket
+    bucket.set_deleted(every_page_deleted);
+    let any_page_dirty = bucket
         .block_index
         .values()
         .any(|page| page.dirty || dirty_objects.contains(page.object_key.as_ref()));
+    bucket.set_dirty(bucket.dirty() | any_page_dirty);
     // The TTL is the one guaranteed full pass: a minimum has to look at every page, and each
     // look is a map lookup keyed by the page's object key. When nothing in the shard has an
     // expiry that whole pass is dead work -- the minimum over an empty selection is None, which
@@ -3622,10 +3622,11 @@ pub(super) fn clear_published_object_dirty_state(shard: &mut ShardState, object_
         }
         if touched {
             note_site(&bucket_visit_sites::CLEAR_DIRTY, bucket.block_index.len());
-            bucket.dirty = bucket
+            let any_page_dirty = bucket
                 .block_index
                 .values()
                 .any(|page| page.dirty || shard.dirty_objects.contains(page.object_key.as_ref()));
+            bucket.set_dirty(any_page_dirty);
             update_bucket_layout(bucket);
         }
     }
@@ -3668,16 +3669,15 @@ pub(super) fn rebuild_bucket_first_index(
             .entry(routing_bucket)
             .or_insert_with(|| BucketNode {
                 routing_bucket,
-                meta_loaded: true,
-                in_memory: true,
+                flags: BucketFlags::default().with(BucketFlags::META_LOADED, true).with(BucketFlags::IN_MEMORY, true),
                 ..BucketNode::default()
             });
         let block_dirty = shard.dirty_objects.contains(entry.object_key.as_ref()) || entry.dirty;
-        bucket.dirty |= block_dirty;
+        bucket.set_dirty(bucket.dirty() | block_dirty);
         if block_dirty {
             bucket.dirty_generation = bucket.dirty_generation.saturating_add(1);
         }
-        bucket.in_memory |= true;
+        bucket.set_in_memory(bucket.in_memory() | true);
         bucket.object_index.insert(object_id);
         bucket.block_index.insert(
             BlockIndex {
@@ -3706,7 +3706,7 @@ pub(super) fn rebuild_bucket_first_index(
             .entry(routing_bucket)
             .or_insert_with(|| BucketNode {
                 routing_bucket,
-                meta_loaded: true,
+                flags: BucketFlags::default().with(BucketFlags::META_LOADED, true),
                 ..BucketNode::default()
             });
         for object_id in &deleted {
@@ -4494,7 +4494,7 @@ mod release_refusal_guards {
         release_bucket_blocks, released_model_kind_is_addressable, BucketReleaseRefusals,
     };
     use crate::block_store::BlockAddress;
-    use crate::engine::state::{BlockIndex, BlockIndexMap, BucketNode, ObjectIndex, ShardState};
+    use crate::engine::state::{BlockIndex, BlockIndexMap, BucketFlags, BucketNode, ObjectIndex, ShardState};
     use std::sync::Arc;
 
     const OBJECT_ID: u64 = 22;
@@ -4525,11 +4525,7 @@ mod release_refusal_guards {
     fn node(routing_bucket: u32, held: BlockIndex) -> BucketNode {
         BucketNode {
             routing_bucket,
-            dirty: false,
-            deleted: false,
-            meta_loaded: true,
-            loading: false,
-            in_memory: true,
+            flags: BucketFlags::default().with(BucketFlags::DIRTY, false).with(BucketFlags::DELETED, false).with(BucketFlags::META_LOADED, true).with(BucketFlags::LOADING, false).with(BucketFlags::IN_MEMORY, true),
             object_index: ObjectIndex::One(OBJECT_ID),
             block_index: BlockIndexMap::One(1, held),
             ..BucketNode::default()
@@ -4585,7 +4581,7 @@ mod release_refusal_guards {
         // What release is FOR, and what makes a released bucket ineligible for re-selection.
         let bucket = shard.bucket_index.bucket_map.get(&7).expect("node kept");
         assert!(bucket.block_index.is_empty(), "the block index was not cleared");
-        assert!(!bucket.in_memory, "a released bucket must not read as resident");
+        assert!(!bucket.in_memory(), "a released bucket must not read as resident");
         assert_eq!(
             bucket.object_index.len(),
             1,
@@ -4605,7 +4601,7 @@ mod release_refusal_guards {
             .bucket_map
             .get_mut(&7)
             .expect("fixture bucket")
-            .dirty = true;
+            .set_dirty(true);
 
         let outcome = release_bucket_blocks(&mut shard, &[7]);
 
@@ -4618,7 +4614,7 @@ mod release_refusal_guards {
             "the refusal was not attributed to the dirty-bucket term",
         );
         assert!(
-            shard.bucket_index.bucket_map.get(&7).expect("node kept").in_memory,
+            shard.bucket_index.bucket_map.get(&7).expect("node kept").in_memory(),
             "a refused bucket must stay resident and re-selectable",
         );
     }
@@ -4755,7 +4751,7 @@ mod release_refusal_guards {
         bucket_holding_a_dirty_block(&mut shard, 3, "batch-dirty-block");
         releasable_bucket(&mut shard, 5, "batch-disagreement");
 
-        shard.bucket_index.bucket_map.get_mut(&2).expect("fixture").dirty = true;
+        shard.bucket_index.bucket_map.get_mut(&2).expect("fixture").set_dirty(true);
         let held = address(4, 64);
         shard
             .hashes

@@ -3397,8 +3397,7 @@ fn fold_delta_block_items(
             .entry(item.routing_bucket)
             .or_insert_with(|| BucketNode {
                 routing_bucket: item.routing_bucket,
-                meta_loaded: true,
-                in_memory: true,
+                flags: BucketFlags::default().with(BucketFlags::META_LOADED, true).with(BucketFlags::IN_MEMORY, true),
                 ..BucketNode::default()
             });
         bucket.object_index.insert(item.object_id);
@@ -4211,11 +4210,11 @@ fn mark_bucket_index_object_deleted(shard: &mut ShardState, key: &str) -> bool {
         if !deleted_object_ids.is_empty() {
             bucket.object_index.extend(deleted_object_ids.iter().copied());
             bucket.deleted_object_index.extend(deleted_object_ids);
-            bucket.dirty = true;
-            bucket.deleted = bucket.block_index.is_empty();
+            bucket.set_dirty(true);
+            bucket.set_deleted(bucket.block_index.is_empty());
             bucket.dirty_generation = bucket.dirty_generation.saturating_add(1);
-            bucket.meta_loaded = true;
-            bucket.in_memory = !bucket.block_index.is_empty();
+            bucket.set_meta_loaded(true);
+            bucket.set_in_memory(!bucket.block_index.is_empty());
             update_bucket_layout(bucket);
         }
     }
@@ -4339,11 +4338,11 @@ fn mark_bucket_index_block_deleted_with(
         if bucket_removed {
             bucket.object_index.extend(deleted_object_ids.iter().copied());
             bucket.deleted_object_index.extend(deleted_object_ids);
-            bucket.dirty = true;
-            bucket.deleted = bucket.block_index.is_empty();
+            bucket.set_dirty(true);
+            bucket.set_deleted(bucket.block_index.is_empty());
             bucket.dirty_generation = bucket.dirty_generation.saturating_add(1);
-            bucket.meta_loaded = true;
-            bucket.in_memory = !bucket.block_index.is_empty();
+            bucket.set_meta_loaded(true);
+            bucket.set_in_memory(!bucket.block_index.is_empty());
             update_bucket_layout(bucket);
         }
     }
@@ -5333,7 +5332,7 @@ fn object_manager_stats(
                 .bucket_index
                 .bucket_map
                 .iter()
-                .filter_map(|(bucket_id, bucket)| bucket.dirty.then_some(*bucket_id))
+                .filter_map(|(bucket_id, bucket)| bucket.dirty().then_some(*bucket_id))
                 .collect::<BTreeSet<_>>();
             // The loop below asks, per dirty object, which buckets hold its pages -- building a
             // composite lookup key each time. `dirty_objects` grows with the ingest, and this
@@ -5364,7 +5363,7 @@ fn object_manager_stats(
                 .bucket_map
                 .values()
                 .filter(|bucket| {
-                    bucket.dirty
+                    bucket.dirty()
                         || bucket.block_index.values().any(|page| {
                             page.dirty || shard.dirty_objects.contains(page.object_key.as_ref())
                         })
@@ -5438,7 +5437,7 @@ fn object_manager_stats(
         .bucket_index
         .bucket_map
         .iter()
-        .filter_map(|(bucket, node)| node.dirty.then_some(*bucket))
+        .filter_map(|(bucket, node)| node.dirty().then_some(*bucket))
         .collect::<BTreeSet<_>>();
     // The buckets the dirty index already holds these objects under. This was a hash per dirty
     // key to recompute `block_routing_bucket(key, start, end)`, which is the same function, with

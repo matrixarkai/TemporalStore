@@ -78,16 +78,16 @@ pub(super) fn runtime_report(shard: &ShardState) -> BucketStoreRuntimeReport {
 
     for bucket in shard.bucket_index.bucket_map.values() {
         report.block_ref_count = report.block_ref_count.saturating_add(bucket.block_index.len());
-        if bucket.dirty {
+        if bucket.dirty() {
             report.dirty_bucket_count = report.dirty_bucket_count.saturating_add(1);
         }
-        if bucket.deleted {
+        if bucket.deleted() {
             report.deleted_bucket_count = report.deleted_bucket_count.saturating_add(1);
         }
-        if bucket.loading {
+        if bucket.loading() {
             report.loading_bucket_count = report.loading_bucket_count.saturating_add(1);
         }
-        if bucket.in_memory {
+        if bucket.in_memory() {
             report.in_memory_bucket_count = report.in_memory_bucket_count.saturating_add(1);
         }
         if bucket.ttl_ms.is_some() {
@@ -118,11 +118,11 @@ pub(super) fn runtime_report(shard: &ShardState) -> BucketStoreRuntimeReport {
             layout: bucket_layout_name(bucket.layout).to_string(),
             object_ids: bucket.object_index.iter().copied().collect(),
             block_ref_count: bucket.block_index.len(),
-            dirty: bucket.dirty,
-            deleted: bucket.deleted,
-            meta_loaded: bucket.meta_loaded,
-            loading: bucket.loading,
-            in_memory: bucket.in_memory,
+            dirty: bucket.dirty(),
+            deleted: bucket.deleted(),
+            meta_loaded: bucket.meta_loaded(),
+            loading: bucket.loading(),
+            in_memory: bucket.in_memory(),
             ttl_ms: bucket.ttl_ms.ms(),
             dirty_generation: bucket.dirty_generation,
             last_dump_sequence: bucket.last_dump_sequence,

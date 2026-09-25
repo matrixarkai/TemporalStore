@@ -4181,8 +4181,8 @@ fn does_the_per_ingest_reconstruct_change_anything() {
                     bucket.object_index.len(),
                     bucket.deleted_object_index.len(),
                     format!("{:?}", bucket.layout),
-                    bucket.deleted,
-                    bucket.in_memory,
+                    bucket.deleted(),
+                    bucket.in_memory(),
                 )
             })
             .collect();

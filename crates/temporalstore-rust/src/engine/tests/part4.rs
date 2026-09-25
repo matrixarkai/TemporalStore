@@ -4327,9 +4327,9 @@ fn batch_bucket_maintenance_does_not_grow_with_the_store() {
                     (
                         *id,
                         (
-                            bucket.in_memory,
-                            bucket.deleted,
-                            bucket.dirty,
+                            bucket.in_memory(),
+                            bucket.deleted(),
+                            bucket.dirty(),
                             format!("{:?}", bucket.layout),
                             bucket.object_index.iter().copied().collect::<Vec<_>>(),
                         ),
@@ -4458,9 +4458,9 @@ fn bucket_runtime_flags_match_full_sweep() {
                 (
                     *routing_bucket,
                     BucketFlags {
-                        in_memory: bucket.in_memory,
-                        deleted: bucket.deleted,
-                        dirty: bucket.dirty,
+                        in_memory: bucket.in_memory(),
+                        deleted: bucket.deleted(),
+                        dirty: bucket.dirty(),
                         has_ttl: bucket.ttl_ms.is_some(),
                         layout: format!("{:?}", bucket.layout),
                         object_index: bucket.object_index.iter().copied().collect(),
@@ -7885,7 +7885,7 @@ fn dirty_bucket_count_matches_the_unshortened_scan() {
         .bucket_index
         .bucket_map
         .iter()
-        .filter_map(|(bucket_id, bucket)| bucket.dirty.then_some(*bucket_id))
+        .filter_map(|(bucket_id, bucket)| bucket.dirty().then_some(*bucket_id))
         .collect();
     for object_key in shard.dirty_objects.iter() {
         expected.extend(crate::engine::bucket_index_target_buckets_for_object_key(
@@ -18766,7 +18766,7 @@ fn a_released_bucket_serves_every_key_it_held() {
             .bucket_index
             .bucket_map
             .values()
-            .all(|bucket| !bucket.in_memory && bucket.meta_loaded && !bucket.loading),
+            .all(|bucket| !bucket.in_memory() && bucket.meta_loaded() && !bucket.loading()),
         "the residency flags do not say released"
     );
     assert!(
@@ -18942,7 +18942,7 @@ fn a_write_into_a_released_bucket_loads_it_back_first() {
         .get(&target)
         .expect("the written bucket");
     assert!(
-        bucket.in_memory && !bucket.block_index.is_empty(),
+        bucket.in_memory() && !bucket.block_index.is_empty(),
         "the bucket the write touched is neither resident nor released"
     );
     drop(shards);
