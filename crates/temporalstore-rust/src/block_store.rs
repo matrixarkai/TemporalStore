@@ -100,6 +100,9 @@ pub enum BlockStoreError {
 const ADDRESS_HAS_BLOCK_ID: u8 = 1 << 0;
 const ADDRESS_HAS_OBJECT_ID: u8 = 1 << 1;
 const ADDRESS_HAS_ROUTING_BUCKET: u8 = 1 << 2;
+/// Whether this address HAS a generation. Its VALUE is derived from the two identities above and
+/// is not stored; this bit is all that is left of the field, and it costs nothing because the
+/// presence byte was already here. See [`BlockAddress::generation`].
 const ADDRESS_HAS_GENERATION: u8 = 1 << 3;
 
 /// The address as it travels on the wire and on disk.
@@ -160,17 +163,58 @@ struct BlockAddressWire {
     sha256: Option<[u8; 32]>,
 }
 
-impl From<BlockAddressWire> for BlockAddress {
-    fn from(wire: BlockAddressWire) -> Self {
-        BlockAddress::from_parts(
+/// A STORED `g` THAT DISAGREES IS REFUSED, LOUDLY AND BEFORE THE DECODE COMPLETES.
+///
+/// `generation` is no longer a field: it is derived as `block_id.or(object_id)`. Every write path
+/// in this engine has always produced exactly that value, so a store this binary wrote round-trips
+/// unchanged and the stored shape does not move -- `g` is still written and still read.
+///
+/// The one thing that MUST NOT happen silently is loading a store whose `g` says something else.
+/// `generation` is hashed into [`block_index_handle`] and rendered into the block-ref key, and
+/// those handles are written to disk inside the lookup's refs. Deriving a different value for an
+/// index that stored its own would recompute every handle, and the refs already on disk would
+/// point at nothing -- which is precisely how a counter in this position lost an object once
+/// before. Rejecting the load surfaces that as a failure to open, not as a missing object later.
+///
+/// This is why the conversion is `try_from` rather than `from`: it is the only point where a
+/// disagreement can be seen at all.
+impl TryFrom<BlockAddressWire> for BlockAddress {
+    type Error = String;
+
+    fn try_from(wire: BlockAddressWire) -> Result<Self, Self::Error> {
+        let derived = wire.block_id.or(wire.object_id);
+        // A STORED VALUE is checked; a stored ABSENCE is honoured.
+        //
+        // Those are two different things and it matters which is which. A stored `g` of 7 beside a
+        // `block_id` of 4 is a disagreement: the writer recorded a generation this binary cannot
+        // reproduce, and deriving 4 instead would recompute the page handle. That is refused.
+        //
+        // A `g` that is not there at all is not a disagreement -- it is an index written before
+        // the field existed. The OLDEST spelling this tree still loads is exactly that shape:
+        // `page_segment_id` / `routing_slot` / `page_refs`, a `page_id`, and no generation key
+        // anywhere (`engine::tests::part3::core_index_loads_legacy_bucket_page_field_names` holds
+        // those bytes). Such an index has always loaded with NO generation, and it must keep
+        // doing so -- deriving one for it would move every key it resolves through. So the
+        // presence comes from the wire and only the VALUE is derived.
+        if let Some(stored) = wire.generation {
+            if Some(stored) != derived {
+                return Err(format!(
+                    "stored address generation {:?} disagrees with block_id.or(object_id) {:?} \
+                     at slab {} offset {}: this index was written in a shape this binary cannot \
+                     reproduce, and loading it would recompute every page handle",
+                    wire.generation, derived, wire.block_slab_id, wire.offset
+                ));
+            }
+        }
+        Ok(BlockAddress::from_wire_parts(
             wire.block_slab_id,
             wire.offset,
             wire.length,
             wire.block_id,
             wire.object_id,
             wire.routing_bucket,
-            wire.generation,
-        )
+            wire.generation.is_some(),
+        ))
     }
 }
 
@@ -206,34 +250,61 @@ impl From<BlockAddress> for BlockAddressWire {
 /// `BLOCK_RECORD_LENGTH_MASK` (2^30 - 1) bytes for a record, and above `u16::MAX` for a block
 /// id -- so the field holds four times the largest length that can ever reach it and sixty-five
 /// thousand times the largest block id. Everything else here stays 64 bits and has to:
-/// `object_id` is a full FNV-1a hash of the object identity, `generation` carries that same hash
-/// at several call sites, `block_slab_id` and `offset` are bounded only by a configurable slab
-/// target.
+/// `object_id` is a full FNV-1a hash of the object identity, and `block_slab_id` and `offset` are
+/// bounded only by a configurable slab target.
 ///
 /// Both narrow fields are read and written through `u64` (`length()`, `block_id()`,
 /// `from_parts`, `set_block_id`), so nothing outside this file knows the width, and every write
 /// SATURATES rather than truncating -- see `narrow` below. The stored form does not move: the
 /// address serializes through [`BlockAddressWire`], which still carries both as 64-bit fields.
+///
+/// `generation` used to sit here as a seventh field. It is now DERIVED -- see [`BlockAddress::generation`].
 #[derive(Debug, Default, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
-#[serde(from = "BlockAddressWire", into = "BlockAddressWire")]
+#[serde(try_from = "BlockAddressWire", into = "BlockAddressWire")]
 pub struct BlockAddress {
     pub block_slab_id: u64,
     pub offset: u64,
     length: u32,
     block_id: u32,
     object_id: u64,
-    generation: u64,
     routing_bucket: u32,
-    /// Which of the five above are actually set. See `ADDRESS_HAS_*`.
+    /// Which of the three optional fields above are set, plus whether a generation is present at
+    /// all -- four bits of the eight. The generation's VALUE is derived from the two identities;
+    /// only its presence is recorded, and recording it here is free. See `ADDRESS_HAS_*`.
     present: u8,
 }
 
 /// The width this structure is budgeted at, so a field added to it is a BUILD failure.
 ///
-/// 48 bytes: two 64-bit slab coordinates, two 64-bit identities, two 32-bit narrow fields, the
-/// 32-bit routing bucket and the presence byte -- 45 bytes of field and three of alignment.
+/// 40 bytes: two 64-bit slab coordinates, one 64-bit identity, two 32-bit narrow fields, the
+/// 32-bit routing bucket and the presence byte -- 37 bytes of field and three of alignment.
 /// Nothing stopped this growing before it was written down; it had already moved twice.
-const _: () = assert!(std::mem::size_of::<BlockAddress>() == 48);
+///
+/// IT WAS 48 UNTIL `generation` CAME OUT, AND NO SINGLE-FIELD NARROWING COULD HAVE DONE IT.
+/// At 48 the payload was 45 bytes inside an 8-aligned struct, so every field here shares one
+/// eight-aligned group: taking any ONE field from 8 bytes to 4 -- or from 4 to 2 -- lands the
+/// payload on 41 or 43, and both round straight back up to 48. The four narrowings that look
+/// available (`offset`, `object_id`, `block_slab_id`, `routing_bucket`) are each worth exactly
+/// ZERO on their own. Only shedding a whole eight-byte field crosses the step, which is why the
+/// question was never "can a field here be narrower" but "which field carries nothing of its
+/// own". `generation` was the answer: it was a COPY of `block_id.or(object_id)` at all six
+/// production write sites and on 120,080 of 120,080 live addresses measured.
+///
+/// 40 is now the FLOOR for this shape. The payload is 37 bytes; reaching 32 would mean shedding
+/// five more, and the three 64-bit fields that remain are each bounded only by a hash width or a
+/// configurable slab target -- see the field notes above.
+const _: () = assert!(std::mem::size_of::<BlockAddress>() == 40);
+
+/// The width is a RECONSTRUCTION, not a total: the eight-aligned group plus the rounded tail.
+///
+/// Asserted rather than restated, so that a field moving between the two groups cannot leave the
+/// documented arithmetic still adding up to the right answer for the wrong reason.
+const _: () = {
+    let eight_aligned = 3 * 8; // block_slab_id, offset, object_id
+    let tail = 4 + 4 + 4 + 1; // length, block_id, routing_bucket, present
+    let round_up_tail = (tail + 7) / 8 * 8;
+    assert!(eight_aligned + round_up_tail == std::mem::size_of::<BlockAddress>());
+};
 
 /// SATURATE, NEVER TRUNCATE.
 ///
@@ -260,6 +331,15 @@ impl BlockAddress {
     /// There is deliberately no digest parameter: the index does not hold one, and a parameter the
     /// constructor discarded would invite a caller to pass a freshly computed digest believing it
     /// was kept. The page envelope carries the digest that a read verifies against.
+    ///
+    /// There is deliberately no `generation` parameter either, and for the SAME reason. It was one
+    /// until the field came out, and every one of the six production callers passed exactly
+    /// `block_id.or(object_id)` -- so keeping the parameter and discarding its VALUE would have
+    /// invited a caller to pass an independent generation believing it was kept, which is the one
+    /// thing the derivation cannot honour. Removing it makes the compiler name every site instead.
+    ///
+    /// A generation is therefore PRESENT here exactly when an identity is present to derive it
+    /// from, which is what all six of those callers already did.
     #[allow(clippy::too_many_arguments)]
     pub fn from_parts(
         block_slab_id: u64,
@@ -268,7 +348,40 @@ impl BlockAddress {
         block_id: Option<u64>,
         object_id: Option<u64>,
         routing_bucket: Option<u32>,
-        generation: Option<u64>,
+    ) -> Self {
+        let has_generation = block_id.is_some() || object_id.is_some();
+        Self::from_wire_parts(
+            block_slab_id,
+            offset,
+            length,
+            block_id,
+            object_id,
+            routing_bucket,
+            has_generation,
+        )
+    }
+
+    /// The constructor the STORED form uses, which is the only one that may say whether a
+    /// generation is present independently of the identities.
+    ///
+    /// An index written before the generation existed carries a `page_id` and no generation key
+    /// at all, and it has always loaded with `generation() == None`. Deriving presence from the
+    /// identities would hand it a generation it never had, and every key it resolves through
+    /// would move. So the wire says, and only the wire: [`BlockAddress::from_parts`] derives the
+    /// bit because for a freshly built address the two are the same thing.
+    ///
+    /// The VALUE is still derived either way. [`TryFrom<BlockAddressWire>`] refuses any stored
+    /// generation that would disagree with it, so a `true` here always means a value that matches
+    /// what the writer recorded.
+    #[allow(clippy::too_many_arguments)]
+    fn from_wire_parts(
+        block_slab_id: u64,
+        offset: u64,
+        length: u64,
+        block_id: Option<u64>,
+        object_id: Option<u64>,
+        routing_bucket: Option<u32>,
+        has_generation: bool,
     ) -> Self {
         let mut present = 0u8;
         if block_id.is_some() {
@@ -280,7 +393,7 @@ impl BlockAddress {
         if routing_bucket.is_some() {
             present |= ADDRESS_HAS_ROUTING_BUCKET;
         }
-        if generation.is_some() {
+        if has_generation {
             present |= ADDRESS_HAS_GENERATION;
         }
         Self {
@@ -289,7 +402,6 @@ impl BlockAddress {
             length: narrow(length),
             block_id: narrow(block_id.unwrap_or_default()),
             object_id: object_id.unwrap_or_default(),
-            generation: generation.unwrap_or_default(),
             routing_bucket: routing_bucket.unwrap_or_default(),
             present,
         }
@@ -321,8 +433,26 @@ impl BlockAddress {
         (self.present & ADDRESS_HAS_ROUTING_BUCKET != 0).then_some(self.routing_bucket)
     }
 
+    /// THE VALUE IS DERIVED; THE PRESENCE IS STILL A BIT.
+    ///
+    /// Every production write site passed `block_id.or(object_id)` into the field this now
+    /// computes: the two block-store appends pass `Some(block_id)` beside a `block_id` argument of
+    /// `Some(block_id)`; the record decoder and the storage reporter pass the expression itself;
+    /// the hot-slab append passes `object_id` beside a `block_id` of `None`. Measured on a seeded
+    /// shard, the stored value equalled this expression on 120,080 of 120,080 live addresses at
+    /// 80,000 records and 12,008 of 12,008 at 8,000, and differed on none. So the eight bytes that
+    /// held it are gone.
+    ///
+    /// THE BIT STAYS, and it is not a leftover. An index written before the generation existed
+    /// carries an identity and no generation key, and has always answered `None` here; deriving
+    /// presence from the identity would hand it a generation it never had and move every key it
+    /// resolves through. The bit costs nothing -- the presence byte was already in the struct --
+    /// and it is what lets the oldest stored spelling keep loading unchanged.
     pub fn generation(&self) -> Option<u64> {
-        (self.present & ADDRESS_HAS_GENERATION != 0).then_some(self.generation)
+        if self.present & ADDRESS_HAS_GENERATION == 0 {
+            return None;
+        }
+        self.block_id().or_else(|| self.object_id())
     }
 
     /// The slab this address is in, which is the slab it is in.
@@ -351,11 +481,6 @@ impl BlockAddress {
     pub fn set_routing_bucket(&mut self, value: Option<u32>) {
         self.routing_bucket = value.unwrap_or_default();
         self.set_present(ADDRESS_HAS_ROUTING_BUCKET, value.is_some());
-    }
-
-    pub fn set_generation(&mut self, value: Option<u64>) {
-        self.generation = value.unwrap_or_default();
-        self.set_present(ADDRESS_HAS_GENERATION, value.is_some());
     }
 
     fn set_present(&mut self, bit: u8, on: bool) {
@@ -418,7 +543,6 @@ impl BlockAddress {
             compact_extract_slab_id(compact_slab_address) as u64,
             compact_extract_slab_offset(compact_slab_address) as u64,
             length,
-            None,
             None,
             None,
             None,
@@ -2598,7 +2722,6 @@ mod address_size_tests {
         block_id: Option<u64>,
         object_id: Option<u64>,
         routing_bucket: Option<u32>,
-        generation: Option<u64>,
         stored_slab_id: Option<u64>,
         sha256: Option<[u8; 32]>,
     }
@@ -2616,30 +2739,241 @@ mod address_size_tests {
         assert!(packed <= 104, "address grew to {packed} bytes");
     }
 
-    /// A presence bit is not the same as a zero value. `0` is a legitimate `routing_slot` and a
-    /// legitimate `generation`, so "zero means absent" would erase real values -- this is why the
-    /// byte exists instead of a sentinel.
+    /// Sum the widths and the slack of a laid-out struct, INDEPENDENTLY of the rows it audits.
     ///
-    /// The grouping id was a third example here and is no longer one: it is the slab's own id, so
+    /// Takes the measured `(name, offset, width)` of every field and the struct's own `size_of`,
+    /// and answers `(covered, padding)`, where `padding` is `total - covered`.
+    ///
+    /// THE OBVIOUS CROSS-CHECK IS A TAUTOLOGY, AND IS NOT HERE. It is tempting to also walk the
+    /// slack between the sorted fields, add the tail, and assert that it equals `total - covered`
+    /// -- "the padding from the two ends must agree with the holes I walked". This module carried
+    /// exactly that, and a mutation run killed it: the walked slack is
+    /// `sum(holes) + tail`, which telescopes to `total - sum(widths)`, which IS `total - covered`.
+    /// The two are the same quantity written twice, so the assertion held for every input,
+    /// including one with a field deliberately left off the list. An assertion that cannot fail
+    /// reads as a second opinion and is not one.
+    ///
+    /// WHAT ACTUALLY DETECTS A MISSING FIELD is the alignment invariant. A struct whose fields
+    /// are packed and then rounded cannot have `align` or more bytes of padding -- if it did, the
+    /// rounding would have landed a step lower. Padding at or above the alignment therefore means
+    /// the listed fields do not add up to the payload, whichever end the missing one is at. Both
+    /// planted controls below -- one omitting the LAST field, one omitting a MIDDLE field -- are
+    /// caught by this and only this.
+    fn account(
+        fields: &[(&'static str, usize, usize)],
+        total: usize,
+        align: usize,
+    ) -> (usize, usize) {
+        let mut sorted = fields.to_vec();
+        sorted.sort_by_key(|(_, offset, _)| *offset);
+        let mut covered = 0usize;
+        let mut cursor = 0usize;
+        for (name, offset, width) in &sorted {
+            // Overlap is a different defect from omission, and this one IS independent: two
+            // fields claiming the same byte cannot be seen in any total.
+            assert!(
+                *offset >= cursor,
+                "field {name} at {offset} overlaps the field before it (ends at {cursor})"
+            );
+            covered += width;
+            cursor = offset + width;
+        }
+        let residual = total - covered;
+        assert!(
+            residual < align,
+            "{residual} bytes of padding in a {align}-aligned {total}-byte struct: a packed \
+             layout rounded up cannot leave a whole alignment step, so a field is missing from \
+             the list -- most likely the last one, where the two sums above agree with each other"
+        );
+        (covered, residual)
+    }
+
+    /// EVERY ONE OF THE FORTY BYTES, MEASURED RATHER THAN ASSUMED.
+    ///
+    /// The layout is `repr(Rust)`, so the compiler is free to reorder: nothing here assumes a
+    /// declaration order. Each offset is measured with `offset_of!` and the padding falls out of
+    /// the slack between them.
+    ///
+    /// WIDTH VERSUS ALIGNMENT, WHICH IS THE WHOLE POINT. The payload is 37 bytes inside a
+    /// 40-byte, 8-aligned struct, so there are exactly 3 bytes of slack. Every field shares one
+    /// eight-aligned group, which means NO SINGLE-FIELD NARROWING IS WORTH ANYTHING: take
+    /// `routing_bucket` from 4 bytes to 2 and the payload is 35, which rounds back to 40. Take
+    /// `offset` from 8 to 4 and it is 33, which rounds back to 40. The only move that pays is
+    /// shedding a whole eight-byte field, which is what `generation` was.
+    ///
+    /// PROVEN RANGES, not assumed ones. `length` and `block_id` are 32 bits because the encoder
+    /// REFUSES anything wider -- `encode_block_record` errors above `BLOCK_RECORD_LENGTH_MASK`
+    /// and above `u16::MAX` respectively, and `narrow` saturates rather than truncating so a
+    /// value that got past them reads as broken. `object_id` is a full FNV-1a hash and uses its
+    /// range: measured at 18,403,644,112,878,577,117 on a seeded shard, which needs all 64 bits.
+    /// `routing_bucket` measured at 4,294,692,422, which needs all 32 -- so it cannot be narrowed
+    /// to 16 even if that were worth something, and it is not. `block_slab_id` and `offset` are
+    /// bounded only by a configurable slab target, so neither has a range to narrow to.
+    #[test]
+    fn every_byte_of_a_block_address_is_accounted_for() {
+        use std::mem::{align_of, offset_of, size_of};
+
+        let total = size_of::<BlockAddress>();
+        let fields: Vec<(&'static str, usize, usize)> = vec![
+            ("block_slab_id", offset_of!(BlockAddress, block_slab_id), size_of::<u64>()),
+            ("offset", offset_of!(BlockAddress, offset), size_of::<u64>()),
+            ("object_id", offset_of!(BlockAddress, object_id), size_of::<u64>()),
+            ("length", offset_of!(BlockAddress, length), size_of::<u32>()),
+            ("block_id", offset_of!(BlockAddress, block_id), size_of::<u32>()),
+            ("routing_bucket", offset_of!(BlockAddress, routing_bucket), size_of::<u32>()),
+            ("present", offset_of!(BlockAddress, present), size_of::<u8>()),
+        ];
+
+        let (covered, padding) = account(&fields, total, align_of::<BlockAddress>());
+
+        let mut sorted = fields.clone();
+        sorted.sort_by_key(|(_, offset, _)| *offset);
+        let mut cursor = 0usize;
+        println!("--- BlockAddress, {total} bytes, align {} ---", align_of::<BlockAddress>());
+        for (name, offset, width) in &sorted {
+            let before = offset - cursor;
+            println!("  +{offset:>2}  {name:<14} width {width}  padding before {before}");
+            cursor = offset + width;
+        }
+        println!("  tail padding {}", total - cursor);
+        println!("  field bytes {covered}, padding {padding}, total {total}");
+
+        assert_eq!(covered, 37, "the payload is 37 bytes of field");
+        assert_eq!(padding, 3, "and three of alignment");
+        assert_eq!(covered + padding, total);
+        assert_eq!(total, 40);
+        assert_eq!(align_of::<BlockAddress>(), 8);
+
+        // The reconstruction, not the total: the eight-aligned group plus the rounded tail.
+        let eight_aligned: usize = 3 * 8;
+        let tail: usize = 4 + 4 + 4 + 1;
+        assert_eq!(eight_aligned + tail.div_ceil(8) * 8, total);
+
+        // A NARROWING THAT DOES NOT CROSS THE STEP IS WORTH ZERO. Stated as arithmetic over the
+        // measured payload rather than as prose, so it cannot quietly stop being true.
+        for (name, _, width) in &fields {
+            if *width < 2 {
+                continue;
+            }
+            let halved = covered - width / 2;
+            assert_eq!(
+                halved.div_ceil(8) * 8,
+                total,
+                "halving {name} ({width} -> {}) changed the rounded width, which the accounting \
+                 above says is impossible",
+                width / 2
+            );
+        }
+    }
+
+    /// The residual instrument must FAIL on a shape it should fail on.
+    ///
+    /// `account` reports padding from the two ends and cross-checks it against the slack it walked.
+    /// Plant a field and leave it off the list: the two must disagree. Without this the residual
+    /// could be the sum of its own rows and would report zero for anything.
+    #[test]
+    #[should_panic(expected = "a field is missing from the list")]
+    fn the_accounting_notices_a_field_left_off_the_list() {
+        use std::mem::{offset_of, size_of};
+
+        #[repr(C)]
+        struct Planted {
+            a: u64,
+            b: u64,
+            planted: u64,
+        }
+
+        // `planted` is deliberately omitted, which is the defect this control plants. It is the
+        // LAST field, which is the case the residual-against-walked-slack check alone cannot see
+        // -- so this control is also the one that proves the alignment check earns its place.
+        let fields: Vec<(&'static str, usize, usize)> = vec![
+            ("a", offset_of!(Planted, a), size_of::<u64>()),
+            ("b", offset_of!(Planted, b), size_of::<u64>()),
+        ];
+        account(&fields, size_of::<Planted>(), std::mem::align_of::<Planted>());
+    }
+
+    /// And the MIDDLE case, which the other check is the one to catch.
+    ///
+    /// Two controls rather than one, because the two assertions inside `account` fire on
+    /// different defects and a single plant would leave one of them unproven.
+    #[test]
+    #[should_panic(expected = "a field is missing from the list")]
+    fn the_accounting_notices_a_field_left_out_of_the_middle() {
+        use std::mem::{offset_of, size_of};
+
+        #[repr(C)]
+        struct Planted {
+            a: u64,
+            planted: u64,
+            z: u64,
+        }
+
+        let fields: Vec<(&'static str, usize, usize)> = vec![
+            ("a", offset_of!(Planted, a), size_of::<u64>()),
+            ("z", offset_of!(Planted, z), size_of::<u64>()),
+        ];
+        account(&fields, size_of::<Planted>(), std::mem::align_of::<Planted>());
+    }
+
+    /// And it must PASS on the same shape once the planted field is listed -- otherwise the
+    /// control above would pass for any reason at all.
+    #[test]
+    fn the_accounting_balances_once_the_planted_field_is_listed() {
+        use std::mem::{offset_of, size_of};
+
+        #[repr(C)]
+        struct Planted {
+            a: u64,
+            b: u64,
+            planted: u64,
+        }
+
+        let fields: Vec<(&'static str, usize, usize)> = vec![
+            ("a", offset_of!(Planted, a), size_of::<u64>()),
+            ("b", offset_of!(Planted, b), size_of::<u64>()),
+            ("planted", offset_of!(Planted, planted), size_of::<u64>()),
+        ];
+        let (covered, padding) =
+            account(&fields, size_of::<Planted>(), std::mem::align_of::<Planted>());
+        assert_eq!(covered, 24);
+        assert_eq!(padding, 0);
+    }
+
+    /// A presence bit is not the same as a zero value. `0` is a legitimate `routing_slot`, so
+    /// "zero means absent" would erase real values -- this is why the byte exists instead of a
+    /// sentinel.
+    ///
+    /// The grouping id was a second example here and is no longer one: it is the slab's own id, so
     /// it is always known, never absent, and needs no bit.
+    ///
+    /// `generation` was a THIRD, and is no longer one either -- for a different reason. It is not
+    /// that its zero is always absent, but that it no longer has a presence of its own to
+    /// distinguish: it is `block_id.or(object_id)`, so a zero generation is present exactly when
+    /// a zero `block_id` is, and that is what the second pair below states.
     #[test]
     fn zero_is_distinguishable_from_absent() {
-        let zero = BlockAddress::from_parts(1, 0, 0, None, None, Some(0), Some(0));
-        let absent = BlockAddress::from_parts(1, 0, 0, None, None, None, None);
+        let zero = BlockAddress::from_parts(1, 0, 0, None, None, Some(0));
+        let absent = BlockAddress::from_parts(1, 0, 0, None, None, None);
         assert_eq!(zero.routing_bucket(), Some(0));
-        assert_eq!(zero.generation(), Some(0));
         assert_eq!(absent.routing_bucket(), None);
-        assert_eq!(absent.generation(), None);
         assert_ne!(zero, absent);
         assert_eq!(zero.slab_id(), Some(1), "the slab id is derived, present either way");
         assert_eq!(absent.slab_id(), Some(1));
+
+        // A zero generation is still distinguishable from an absent one -- through the identity
+        // it is derived from, which carries the presence bit that used to sit beside it.
+        let zero_generation = BlockAddress::from_parts(1, 0, 0, Some(0), None, None);
+        assert_eq!(zero_generation.generation(), Some(0));
+        assert_eq!(absent.generation(), None);
+        assert_ne!(zero_generation.generation(), absent.generation());
     }
 
     /// Clearing a value must clear its bit, or the next read reports a stale one as present.
     #[test]
     fn setters_track_presence_both_ways() {
         let mut address =
-            BlockAddress::from_parts(1, 0, 0, Some(7), None, None, None);
+            BlockAddress::from_parts(1, 0, 0, Some(7), None, None);
         assert_eq!(address.block_id(), Some(7));
         address.set_block_id(None);
         assert_eq!(address.block_id(), None);
@@ -2666,7 +3000,6 @@ mod address_size_tests {
             Some(1),
             Some(2),
             Some(3),
-            Some(4),
         );
         let json = serde_json::to_value(&address).unwrap();
         // What is written now: the short names, and nothing else.
@@ -2697,7 +3030,10 @@ mod address_size_tests {
             "page_id": 1_u64,
             "object_id": 2_u64,
             "routing_slot": 3_u32,
-            "generation": 4_u64,
+            // The generation an index on disk carries: `page_id.or(object_id)`, which is what
+            // every write path in this engine has always stored here. It was spelled `4` in this
+            // fixture -- a value no writer produces -- until the field became derived.
+            "generation": 1_u64,
             "band_id": 0_u64,
         });
         let from_long: BlockAddress = serde_json::from_value(long_form).unwrap();
@@ -2705,6 +3041,87 @@ mod address_size_tests {
             from_long, address,
             "an index written with the long names must still load as the same address"
         );
+    }
+
+    /// THE STORED BYTES DO NOT MOVE. An address written now is written with `g`, exactly as
+    /// before, and reads back as the same address.
+    ///
+    /// This is the round-trip control for the derivation: `generation` stopped being a field, but
+    /// it did NOT stop being a key on the wire, so an index this binary writes is loadable by one
+    /// that still has the field and vice versa -- as long as the value agrees, which is the whole
+    /// content of the guard below.
+    #[test]
+    fn the_stored_shape_does_not_move_when_the_field_becomes_derived() {
+        let address = BlockAddress::from_parts(5, 64, 128, Some(1), Some(2), Some(3));
+        let json = serde_json::to_value(&address).unwrap();
+        assert_eq!(json["g"], 1, "the generation is still WRITTEN, and still under its own key");
+        assert_eq!(json["pi"], 1, "and it is still the block id it is derived from");
+
+        let bytes = serde_json::to_vec(&address).unwrap();
+        let back: BlockAddress = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(back, address);
+        let rewritten = serde_json::to_vec(&back).unwrap();
+        assert_eq!(
+            bytes, rewritten,
+            "loading and rewriting must produce the SAME bytes, not merely an equal address"
+        );
+
+        // And the derived value is the one the persisted composite key is built from, which is
+        // what makes the agreement load-bearing rather than cosmetic.
+        assert_eq!(back.generation(), back.block_id());
+    }
+
+    /// A STORED GENERATION THAT DISAGREES IS REFUSED, AND REFUSED BEFORE THE DECODE COMPLETES.
+    ///
+    /// A stored VALUE that disagrees is refused. A stored ABSENCE is not a disagreement: it is an
+    /// index written before the field existed, it has always answered `None`, and it still does.
+    /// Both are driven here, because the difference between them is the whole design.
+    #[test]
+    fn an_index_whose_generation_disagrees_is_refused_loudly() {
+        let wrong_value = serde_json::json!({
+            "ps": 5_u64, "o": 64_u64, "l": 128_u64,
+            "pi": 4_u64, "oi": 2_u64, "rs": 3_u32, "g": 7_u64,
+        });
+        let err = serde_json::from_value::<BlockAddress>(wrong_value).unwrap_err();
+        let text = err.to_string();
+        assert!(
+            text.contains("disagrees with block_id.or(object_id)"),
+            "the refusal must say what disagreed, got: {text}"
+        );
+        assert!(text.contains("recompute every page handle"), "and why it matters, got: {text}");
+
+        // THE ABSENT CASE, which must LOAD rather than be refused. This is the shape of an index
+        // written before the generation existed: an identity, and no generation key at all. It
+        // has always answered `None`, and if deriving handed it `Some(4)` instead, every key it
+        // resolves through would move -- which is the same data loss the refusal above prevents,
+        // arriving from the opposite direction.
+        let absent_generation = serde_json::json!({
+            "ps": 5_u64, "o": 64_u64, "l": 128_u64,
+            "pi": 4_u64, "oi": 2_u64, "rs": 3_u32,
+        });
+        let loaded: BlockAddress = serde_json::from_value(absent_generation)
+            .expect("an index written before the generation existed must still load");
+        assert_eq!(
+            loaded.generation(),
+            None,
+            "an index that stored no generation must not acquire one on load"
+        );
+        assert_eq!(loaded.block_id(), Some(4), "and it keeps the identity it did store");
+
+        // THE NEGATIVE CONTROL: the guard must accept the shape it is not guarding against, or it
+        // would be refusing every index rather than the disagreeing ones.
+        let agreeing = serde_json::json!({
+            "ps": 5_u64, "o": 64_u64, "l": 128_u64,
+            "pi": 4_u64, "oi": 2_u64, "rs": 3_u32, "g": 4_u64,
+        });
+        let loaded: BlockAddress = serde_json::from_value(agreeing).unwrap();
+        assert_eq!(loaded.generation(), Some(4));
+
+        // And an address with NEITHER identity carries no generation, which is agreement, not
+        // disagreement -- the band the guard must exclude.
+        let neither = serde_json::json!({ "ps": 5_u64, "o": 64_u64, "l": 128_u64 });
+        let loaded: BlockAddress = serde_json::from_value(neither).unwrap();
+        assert_eq!(loaded.generation(), None);
     }
 }
 
@@ -3264,7 +3681,12 @@ const RETIRED_NAMES: &[&str] = &[
             "page_id": 9_u64,
             "object_id": 122110326161599232_u64,
             "routing_slot": 545210715_u32,
-            "generation": 2_u64,
+            // `page_id.or(object_id)`, which is the only generation any writer in this engine has
+            // ever stored. This fixture is about the NAMES still loading, and it spelled an
+            // independent `2` here until the field became derived; an index carrying that value
+            // is now refused rather than silently re-keyed, which
+            // `an_index_whose_generation_disagrees_is_refused_loudly` drives directly.
+            "generation": 9_u64,
             "zone_id": 4_u64,
             "checksum": "c38c2bf3055c516a98ac5d97f30e7c364e827bc0a1b2c3d4e5f60718293a4b5c"
         });
@@ -3278,7 +3700,12 @@ const RETIRED_NAMES: &[&str] = &[
         assert_eq!(address.block_id(), Some(9));
         assert_eq!(address.object_id(), Some(122110326161599232));
         assert_eq!(address.routing_bucket(), Some(545210715));
-        assert_eq!(address.generation(), Some(2));
+        // The generation this record stored, which is now the block id it is derived from. The
+        // fixture spelled an independent `2` here until the field became derived; a record that
+        // really carried one is refused rather than loaded, which
+        // `an_index_whose_generation_disagrees_is_refused_loudly` drives.
+        assert_eq!(address.generation(), Some(9));
+        assert_eq!(address.generation(), address.block_id());
         // A slab is the slab now, so a slab STORED against a different slab is accepted and
         // ignored rather than believed. This record says slab 3 and zone 4, which could only have
         // been written under a configuration that sized slabs and slabs differently -- one the
@@ -3304,7 +3731,6 @@ const RETIRED_NAMES: &[&str] = &[
             Some(9),
             Some(122110326161599232),
             Some(545210715),
-            Some(2),
         );
         let encoded = serde_json::to_string(&address).unwrap();
         // Not vacuous: the values must still be there before the size claim means anything.
@@ -3798,12 +4224,13 @@ const RETIRED_NAMES: &[&str] = &[
             4,
             "the field is the checksum and nothing else: no padding, no marker"
         );
-        // Four u64, three u32 and the presence byte: 45 bytes of field in 48. It was 64 while
+        // Three u64, three u32 and the presence byte: 37 bytes of field in 40. It was 64 while
         // the grouping id was a seventh field; it is the slab's own id, so it is read off
         // `block_slab_id` instead of stored. It was 56 while `length` and `block_id` were 64-bit
         // fields holding values the block-record encoder refuses above 2^30 and above `u16::MAX`
-        // respectively -- see the note on `BlockAddress` and `per_item_byte_budget`.
-        assert_eq!(std::mem::size_of::<BlockAddress>(), 48);
+        // respectively, and 48 while `generation` was stored rather than derived from
+        // `block_id.or(object_id)` -- see the note on `BlockAddress` and `per_item_byte_budget`.
+        assert_eq!(std::mem::size_of::<BlockAddress>(), 40);
     }
 
     #[test]
@@ -4933,7 +5360,7 @@ const RETIRED_NAMES: &[&str] = &[
     fn block_address_without_checksum_keeps_legacy_read_compatibility() {
         let dir = tempfile::tempdir().unwrap();
         let store = BlockStore::new(dir.path());
-        let legacy_address = BlockAddress::from_parts(0, 0, b"alteredpage".len() as u64, None, None, None, None);
+        let legacy_address = BlockAddress::from_parts(0, 0, b"alteredpage".len() as u64, None, None, None);
         fs::write(
             slab_path(dir.path(), legacy_address.block_slab_id),
             b"alteredpage",

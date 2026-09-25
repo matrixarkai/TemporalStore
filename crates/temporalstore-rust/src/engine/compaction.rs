@@ -906,7 +906,7 @@ mod compaction_selection_tests {
     use super::*;
 
     fn address_on(block_slab_id: u64, length: u64) -> BlockAddress {
-        BlockAddress::from_parts(block_slab_id, 0, length, Some(0), Some(1), Some(0), Some(0))
+        BlockAddress::from_parts(block_slab_id, 0, length, Some(0), Some(1), Some(0))
     }
 
     fn candidate(block_slab_id: u64, live_block_refs: u64) -> StorageReclaimCandidate {

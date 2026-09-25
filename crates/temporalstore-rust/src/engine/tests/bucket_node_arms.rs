@@ -6,10 +6,10 @@
 //! THE PROPOSAL. `BucketNode` is the widest per-item structure in the engine and there is one
 //! per routing bucket. #1958 took it 208 -> 200 and #1961 took it 200 -> 192, both by narrowing
 //! fields. The shape proposed next does not narrow a field: it replaces the node's three
-//! container members -- `object_index`, `deleted_object_index` and `block_index`, 136 of the 192
+//! container members -- `object_index`, `deleted_object_index` and `block_index`, 128 of the 184
 //! bytes -- with ONE TAGGED WORD whose tag says whether the bucket is simple or general, and
 //! puts the payload of each arm behind that word. A bucket holding one page would then carry a
-//! 64-byte node and one allocation instead of a 192-byte node and none.
+//! 64-byte node and one allocation instead of a 184-byte node and none.
 //!
 //! THREE THINGS HAD TO BE MEASURED BEFORE IT COULD BE WRITTEN, and all three are here.
 //!
@@ -585,9 +585,9 @@ fn the_arm_a_bucket_node_lands_in_is_decided_by_the_routing_range_not_by_the_wor
 fn a_simple_bucket_holds_no_general_case_to_take_away() {
     // Each member's EMPTY and SINGLE spellings, and the width they occupy in the node.
     assert_eq!(
-        112,
+        104,
         size_of::<BlockIndexMap>(),
-        "the page index is {} bytes in the node, not 112; the accounting below is stale",
+        "the page index is {} bytes in the node, not 104; the accounting below is stale",
         size_of::<BlockIndexMap>()
     );
     assert_eq!(16, size_of::<ObjectIndex>(), "the object index moved");
@@ -597,12 +597,14 @@ fn a_simple_bucket_holds_no_general_case_to_take_away() {
         "the tombstone index moved"
     );
 
-    // The three members sum to 136 of the node's 192 -- the bytes the proposal would replace
-    // with one word.
+    // The three members sum to 128 of the node's 184 -- the bytes the proposal would replace
+    // with one word. It was 136 of 192 until the address inside the inline page entry shed
+    // its derived generation; the members and the node each lost the same eight bytes, so
+    // what the proposal would replace is unchanged in kind and eight smaller in size.
     let members = size_of::<BlockIndexMap>() + size_of::<ObjectIndex>() + size_of::<DeletedObjectIndex>();
     assert_eq!(
-        136, members,
-        "the three container members are {members} bytes, not 136"
+        128, members,
+        "the three container members are {members} bytes, not 128"
     );
     assert!(
         members < size_of::<BucketNode>(),
@@ -634,15 +636,15 @@ fn a_simple_bucket_holds_no_general_case_to_take_away() {
 
     // THE ONE FACT THAT DECIDES THE SHAPE: what a simple bucket's data actually is.
     assert_eq!(
-        48,
+        40,
         size_of::<crate::block_store::BlockAddress>(),
-        "an address is {} bytes, not 48",
+        "an address is {} bytes, not 40",
         size_of::<crate::block_store::BlockAddress>()
     );
     assert_eq!(
-        104,
+        96,
         size_of::<BlockIndex>(),
-        "a page entry is {} bytes, not 104",
+        "a page entry is {} bytes, not 96",
         size_of::<BlockIndex>()
     );
     assert!(
@@ -665,7 +667,6 @@ fn page_fixture() -> BlockIndex {
             Some(9),
             Some(11),
             Some(3),
-            Some(1),
         ),
         dirty: false,
         deleted: false,
@@ -979,7 +980,7 @@ fn the_tagged_node_is_sixty_four_bytes_and_every_arm_reconstructs() {
         );
     }
 
-    assert_eq!(192, size_of::<BucketNode>(), "the live node moved");
+    assert_eq!(184, size_of::<BucketNode>(), "the live node moved");
     assert_eq!(
         64,
         size_of::<TaggedNode>(),
@@ -987,9 +988,9 @@ fn the_tagged_node_is_sixty_four_bytes_and_every_arm_reconstructs() {
         size_of::<TaggedNode>()
     );
     assert_eq!(
-        120,
+        112,
         size_of::<SimpleLayout>(),
-        "the simple payload is {} bytes, not 120",
+        "the simple payload is {} bytes, not 112",
         size_of::<SimpleLayout>()
     );
 

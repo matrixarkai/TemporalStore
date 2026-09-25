@@ -569,7 +569,7 @@ fn the_engines_own_decoder_produces_an_address_with_no_routing_bucket() {
     assert_eq!(older.length(), 64, "the rest of the record still decoded");
 
     // And a REAL address, round-tripped through the same shape with the key removed.
-    let current = BlockAddress::from_parts(3, 64, 128, Some(1), Some(2), Some(909), Some(2));
+    let current = BlockAddress::from_parts(3, 64, 128, Some(1), Some(2), Some(909));
     assert_eq!(
         current.routing_bucket(),
         Some(909),

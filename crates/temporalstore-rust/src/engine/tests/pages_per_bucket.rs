@@ -479,7 +479,7 @@ fn every_byte_of_the_page_index_is_accounted_for() {
         "the page entry no longer reconstructs as {index_eight_aligned} bytes of eight-aligned \
          field plus {index_tail} bytes of flag rounded up to {index_rounded_tail}"
     );
-    assert_eq!(104, size_of::<BlockIndex>(), "the page entry's budgeted width moved");
+    assert_eq!(96, size_of::<BlockIndex>(), "the page entry's budgeted width moved");
 
     // The three flags are ALREADY inside the rounding. Narrowing them reclaims nothing; only
     // removing the tail entirely would, and it is three keys of the stored index.
@@ -509,7 +509,7 @@ fn every_byte_of_the_page_index_is_accounted_for() {
         "the common arm is supposed to be the WIDE one here -- that is what makes boxing it a \
          loss rather than the win it is on ObjectIndex, where the rare arm is the wide one"
     );
-    assert_eq!(112, size_of::<BlockIndexMap>(), "the page index's budgeted width moved");
+    assert_eq!(104, size_of::<BlockIndexMap>(), "the page index's budgeted width moved");
 
     // --- And it is over half of the node, which is why any further accounting starts here. ---
     assert!(
@@ -1567,7 +1567,6 @@ fn page_for(seed: u64) -> BlockIndex {
             Some(seed),
             Some(seed.wrapping_mul(0x9E37_79B9_7F4A_7C15)),
             Some(11),
-            Some(1),
         ),
         dirty: false,
         deleted: false,
@@ -1587,7 +1586,6 @@ fn component_page(seed: u64, component: &str) -> BlockIndex {
             Some(seed),
             Some(seed.wrapping_mul(0x1000_0000_01B3)),
             Some(11),
-            Some(2),
         ),
         dirty: true,
         deleted: false,

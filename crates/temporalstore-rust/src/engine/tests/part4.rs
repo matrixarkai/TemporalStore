@@ -5215,7 +5215,7 @@ fn a_block_whose_address_carries_no_object_id_still_reports_one() {
         let mut shards = engine.shards.write().expect("shards lock poisoned");
         let shard = shards.get_mut(&1).expect("shard 1 loaded");
         // Deliberately no object id, and no routing slot either.
-        let address = BlockAddress::from_parts(0, 0, 16, Some(7), None, None, None);
+        let address = BlockAddress::from_parts(0, 0, 16, Some(7), None, None);
         assert!(address.object_id().is_none(), "the case under test");
         crate::engine::storage_bucket_internals::upsert_bucket_index_block(
             shard,
@@ -5402,7 +5402,7 @@ fn installing_the_same_block_twice_replaces_it() {
         object_key: Arc::from("twice".to_string()),
         model_id: Arc::from("string".to_string()),
         component: None,
-        address: BlockAddress::from_parts(1, 0, 4, Some(1), Some(30), Some(3), Some(1)),
+        address: BlockAddress::from_parts(1, 0, 4, Some(1), Some(30), Some(3)),
         dirty: false,
         deleted: false,
         log_backed: true,
@@ -5418,7 +5418,7 @@ fn installing_the_same_block_twice_replaces_it() {
 
     // A page differing in one identity field is a different page and keeps its own slot.
     let mut moved = page();
-    moved.address = BlockAddress::from_parts(1, 64, 4, Some(1), Some(30), Some(3), Some(1));
+    moved.address = BlockAddress::from_parts(1, 64, 4, Some(1), Some(30), Some(3));
     let third = map.insert(moved, &mut live);
     assert_ne!(first, third, "a page at another offset is not the same page");
     assert_eq!(map.len(), 2);

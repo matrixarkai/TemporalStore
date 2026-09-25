@@ -3,17 +3,20 @@
 
 //! What an in-memory `BlockAddress` costs, and what a compact form would buy.
 //!
-//! WHY THIS EXISTS. `BlockAddress` is 48 bytes. Three of its fields -- `block_slab_id`, `offset`,
-//! `length` -- are always meaningful. Four more -- `page_id`, `object_id`, `generation`,
-//! `routing_bucket` -- are OPTIONAL, gated by a `present` bitmask, and the struct allocates all
-//! four whether or not the bitmask says they are set. That is 24 bytes of optional payload plus
-//! one byte of bitmask, and the shard holds one of these per stored point: a 1,000-point feature
-//! series holds 1,000 of them.
+//! WHY THIS EXISTS. `BlockAddress` is 40 bytes. Three of its fields -- `block_slab_id`, `offset`,
+//! `length` -- are always meaningful. Three more -- `page_id`, `object_id`, `routing_bucket` --
+//! are OPTIONAL, gated by a `present` bitmask, and the struct allocates all three whether or not
+//! the bitmask says they are set. That is 16 bytes of optional payload plus one byte of bitmask,
+//! and the shard holds one of these per stored point: a 1,000-point feature series holds 1,000
+//! of them.
 //!
-//! So the obvious question is whether to pack it. The answer turns on a single number: how many
-//! live addresses actually carry NONE of the four optional fields. If most carry none, the
-//! optional payload is dead weight and a compact form reclaims it. If most carry all four, there
-//! is nothing to reclaim and packing buys only the bitmask byte and the padding.
+//! It was 48, with a FOURTH optional field, until `generation` was shown to be a copy of
+//! `page_id.or(object_id)` on every live address this census walked and was made derived.
+//!
+//! So the obvious question is whether to pack what is left. The answer turns on a single number:
+//! how many live addresses actually carry NONE of the three optional fields. If most carry none,
+//! the optional payload is dead weight and a compact form reclaims it. If most carry all three,
+//! there is nothing to reclaim and packing buys only the bitmask byte and the padding.
 //!
 //! `the_optional_payload_is_paid_for_on_every_live_address` measures that number. It is the whole
 //! task, and it is measured before anything else here.
@@ -21,7 +24,7 @@
 //! WHAT THESE PROBES ARE NOT. They are `#[ignore]`d because they seed tens of thousands of
 //! records and read process RSS, which is neither fast nor meaningful under a parallel test run.
 //! Run them by name. Two tests here are NOT ignored, and both are cheap:
-//! `an_address_is_forty_eight_bytes_and_half_of_them_are_optional` pins the width so that
+//! `an_address_is_forty_bytes_and_two_fifths_of_them_are_optional` pins the width so that
 //! widening the struct is noticed rather than absorbed, and
 //! `only_one_of_the_three_address_cross_checks_on_a_read_can_fire` pins how many of the address
 //! cross-checks on the read path can actually fire, which is the count that decides what dropping
@@ -70,23 +73,21 @@ struct AddressCensus {
     /// whether a field can be omitted; width tells you whether it can be shrunk. A field that is
     /// always set AND uses its full 64 bits cannot be made smaller without dropping information.
     widest: [u64; 7],
-    /// Addresses whose `generation` equals `page_id.or(object_id)` -- which is what every
-    /// production constructor in the tree passes for it.
-    ///
-    /// WHY THIS IS COUNTED. Presence and width are the two obvious questions about a field; this
-    /// is the third and it is worth more than either. `append.rs` builds an address with
-    /// `Some(page_id)` as the generation, and `record.rs` rebuilds one on read with
-    /// `header.page_id.or(header.object_id)`. If that holds for every live address then
-    /// `generation` carries no information of its own: it is a COPY of a neighbouring field, and
-    /// dropping it costs 8 bytes and imposes no capacity ceiling at all -- unlike narrowing,
-    /// which always does.
-    ///
-    /// Counted rather than asserted, because the wire carries `generation` as its own key and an
-    /// index written earlier could hold a value that disagrees. The number below is the evidence
-    /// for or against, and the disagreeing samples are printed.
-    generation_is_a_copy: usize,
-    generation_disagrees: usize,
-    generation_disagreement_samples: Vec<(u64, Option<u64>, Option<u64>)>,
+    // THE COPY COUNTER THAT USED TO SIT HERE IS GONE, BECAUSE IT CAN NO LONGER FAIL.
+    //
+    // It counted addresses whose `generation` equalled `page_id.or(object_id)`, and it answered
+    // 12,008 of 12,008 at 8,000 records and 120,080 of 120,080 at 80,000 -- differing on none.
+    // That number is what justified dropping the field: it carried no information of its own, so
+    // deriving it cost 8 bytes and imposed no capacity ceiling, which narrowing always does.
+    //
+    // `generation` is now computed as exactly that expression, so a counter comparing the two
+    // would be asserting `x == x` on every row and reporting 100% whatever the engine did. A
+    // tautology printed beside real measurements is worse than no measurement, because it reads
+    // like confirmation. What replaced it:
+    //   * the derivation itself, in `BlockAddress::generation`, which no caller can bypass;
+    //   * `block_store::address_size_tests::an_index_whose_generation_disagrees_is_refused_loudly`,
+    //     which drives a STORED generation that disagrees and requires the load to be refused --
+    //     the only place a disagreement can still arise, and the only place it can still be seen.
 }
 
 impl AddressCensus {
@@ -118,20 +119,6 @@ impl AddressCensus {
         }
         self.optional_field_histogram[set] += 1;
 
-        // Is the generation its own value, or a copy of a neighbour?
-        let derived = address.block_id().or(address.object_id());
-        if address.generation() == derived {
-            self.generation_is_a_copy += 1;
-        } else {
-            self.generation_disagrees += 1;
-            if self.generation_disagreement_samples.len() < 8 {
-                self.generation_disagreement_samples.push((
-                    address.offset,
-                    address.generation(),
-                    derived,
-                ));
-            }
-        }
     }
 
     fn note(&mut self, name: &'static str, count: usize) {
@@ -194,18 +181,11 @@ impl AddressCensus {
         );
 
         println!(
-            "  generation EQUALS page_id.or(object_id) on {} of {} addresses ({:.2}%); it differs on {}",
-            self.generation_is_a_copy,
-            self.total,
-            100.0 * self.generation_is_a_copy as f64 / self.total.max(1) as f64,
-            self.generation_disagrees,
+            "  generation is DERIVED as page_id.or(object_id) -- not stored, so not counted here"
         );
-        for (offset, held, derived) in &self.generation_disagreement_samples {
-            println!("    disagreement at offset {offset}: stored {held:?} vs derived {derived:?}");
-        }
 
         // Presence says whether a field can be OMITTED. Width says whether it can be SHRUNK.
-        // Both have to fail before the 48 bytes are justified.
+        // Both have to fail before the remaining 40 bytes are justified.
         let names = [
             "block_slab_id", "offset", "length",
             "page_id", "object_id", "generation", "routing_bucket",
@@ -481,7 +461,7 @@ fn a_btree_entry_costs_more_than_the_address_it_holds() {
     const N: usize = 400_000;
 
     fn address(i: u64) -> BlockAddress {
-        BlockAddress::from_parts(1, i * 64, 64, Some(i), Some(i), Some(7), Some(i))
+        BlockAddress::from_parts(1, i * 64, 64, Some(i), Some(i), Some(7))
     }
 
     let control_before = resident_bytes();
@@ -895,44 +875,56 @@ fn the_payload_checksum_cannot_tell_one_record_from_another_at_the_same_address(
 /// The width guard. Not ignored: it is free, and it is the thing that makes a future widening
 /// visible.
 ///
-/// `block_store.rs` already asserts the 48, and a `const _` beside the declaration makes a
-/// widening a BUILD failure. This adds the decomposition, because 48 on its own does not say
+/// `block_store.rs` already asserts the 40, and a `const _` beside the declaration makes a
+/// widening a BUILD failure. This adds the decomposition, because 40 on its own does not say
 /// WHERE it goes, and the whole packing argument is about the optional payload inside it. If a
 /// field is added, or an optional field is promoted to always-present, this fails with a number
 /// that names which half moved.
+///
+/// IT WAS 48, AND HALF OF IT WAS OPTIONAL, UNTIL `generation` CAME OUT. That field was one of
+/// four optional ones and a copy of `block_id.or(object_id)` at every write site; deriving it
+/// took eight bytes off the struct and the optional payload with it. The share below is 40%
+/// rather than 50% for that reason and no other -- no field was narrowed to get here, because at
+/// this width narrowing a field cannot pay. `block_store.rs` has the byte-by-byte accounting in
+/// `every_byte_of_a_block_address_is_accounted_for`, where the fields are still visible.
 #[test]
-fn an_address_is_forty_eight_bytes_and_half_of_them_are_optional() {
+fn an_address_is_forty_bytes_and_two_fifths_of_them_are_optional() {
     // Always meaningful: two u64 slab coordinates and the 32-bit byte count.
     const ALWAYS: usize = 2 * 8 + 4;
-    // Four optional fields: two u64 identities, the 32-bit block id and the routing bucket.
-    const OPTIONAL: usize = 2 * 8 + 4 + 4;
+    // Three optional fields: one u64 identity, the 32-bit block id and the routing bucket.
+    const OPTIONAL: usize = 8 + 4 + 4;
     // The presence bitmask.
     const BITMASK: usize = 1;
 
-    assert_eq!(48, std::mem::size_of::<BlockAddress>(), "the address width moved");
+    assert_eq!(40, std::mem::size_of::<BlockAddress>(), "the address width moved");
     assert_eq!(8, std::mem::align_of::<BlockAddress>());
     assert_eq!(20, ALWAYS);
-    assert_eq!(24, OPTIONAL);
+    assert_eq!(16, OPTIONAL);
     assert_eq!(
-        48,
+        40,
         ALWAYS + OPTIONAL + BITMASK + 3,
-        "20 always + 24 optional + 1 bitmask + 3 padding = 48; if this stops adding up, a field \
+        "20 always + 16 optional + 1 bitmask + 3 padding = 40; if this stops adding up, a field \
          changed shape and the packing arithmetic in this module is stale"
     );
 
-    // The optional payload is HALF the struct. That is the quantity every probe here is about.
+    // The optional payload is two fifths of the struct. That is the quantity every probe here is
+    // about, and it is the number that moved when the fourth optional field became derived.
     assert_eq!(
-        50,
+        40,
         100 * OPTIONAL / std::mem::size_of::<BlockAddress>(),
-        "the optional payload is 50% of the address"
+        "the optional payload is 40% of the address"
     );
 
-    // An address built with no optional field is the same 48 bytes as one built with all four.
+    // An address built with no optional field is the same 40 bytes as one built with all three.
     // This is the fact that makes the question worth asking at all.
-    let bare = BlockAddress::from_parts(1, 0, 64, None, None, None, None);
-    let full = BlockAddress::from_parts(1, 0, 64, Some(1), Some(2), Some(3), Some(4));
+    let bare = BlockAddress::from_parts(1, 0, 64, None, None, None);
+    let full = BlockAddress::from_parts(1, 0, 64, Some(1), Some(2), Some(3));
     assert_eq!(std::mem::size_of_val(&bare), std::mem::size_of_val(&full));
     assert!(bare.block_id().is_none() && full.block_id().is_some());
+
+    // The derived generation follows its identity, in both directions.
+    assert_eq!(bare.generation(), None);
+    assert_eq!(full.generation(), Some(1));
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -1009,9 +1001,9 @@ fn differing_fields(a: &BlockAddress, b: &BlockAddress) -> Vec<&'static str> {
     if a.object_id() != b.object_id() {
         out.push("object_id");
     }
-    if a.generation() != b.generation() {
-        out.push("generation");
-    }
+    // No `generation` row: it is derived as `page_id.or(object_id)` and both of those are
+    // compared above, so it cannot be the field that differs. Leaving the row in would offer a
+    // name this function can never report, which reads like coverage and is not.
     if a.routing_bucket() != b.routing_bucket() {
         out.push("routing_bucket");
     }
@@ -1340,7 +1332,7 @@ fn the_container_shapes_priced_against_the_population_each_one_pays_in() {
     const LONG_POINTS: usize = 1_000;
 
     fn address(i: u64) -> BlockAddress {
-        BlockAddress::from_parts(1, i * 64, 64, Some(i), Some(i), Some(7), Some(i))
+        BlockAddress::from_parts(1, i * 64, 64, Some(i), Some(i), Some(7))
     }
 
     // POSITIVE CONTROL first.
@@ -1803,11 +1795,17 @@ fn the_capacity_ceilings_each_narrowing_would_impose() {
     // change removed at least six bytes of payload, and that is what `length` and `block_id`
     // moving to 32 bits together did: 4*8 + 3*4 + 1 = 45, rounded to 48. The per-field question
     // was never "can this be narrower" but "does this cross an alignment step".
+    //
+    // 48 -> 40 is the same lesson a third time, and the cleanest instance of it: no field was
+    // narrowed at all. `generation` was REMOVED -- derived from `block_id.or(object_id)`, which it
+    // equalled on every address this census has ever walked -- taking a whole eight-byte step off
+    // the payload in one go: 3*8 + 3*4 + 1 = 37, rounded to 40. Three bytes of padding again,
+    // because the step size did not change.
     println!("--- what the struct actually costs ---");
     println!(
-        "  size_of BlockAddress = {} (payload 4*8 + 3*4 + 1 = 45, so {} bytes are padding)",
+        "  size_of BlockAddress = {} (payload 3*8 + 3*4 + 1 = 37, so {} bytes are padding)",
         std::mem::size_of::<BlockAddress>(),
-        std::mem::size_of::<BlockAddress>() - 45
+        std::mem::size_of::<BlockAddress>() - 37
     );
     println!(
         "  align_of BlockAddress = {}",

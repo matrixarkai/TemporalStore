@@ -432,7 +432,7 @@ pub(super) fn logical_range_from_slab(
 
     while physical_offset < slab.len() && out.len() < size as usize {
         let remaining = &slab[physical_offset..];
-        let address = BlockAddress::from_parts(block_slab_id, physical_offset as u64, 0, None, None, None, None);
+        let address = BlockAddress::from_parts(block_slab_id, physical_offset as u64, 0, None, None, None);
         if remaining.len() < BLOCK_RECORD_HEADER_LEN || !remaining.starts_with(BLOCK_RECORD_MAGIC) {
             return Err(corrupt_block_envelope(
                 &address,
@@ -450,7 +450,7 @@ pub(super) fn logical_range_from_slab(
                 "payload length mismatch".to_string(),
             ));
         }
-        let address = BlockAddress::from_parts(0, 0, record_len as u64, header.block_id, header.object_id, header.routing_bucket, header.block_id.or(header.object_id));
+        let address = BlockAddress::from_parts(0, 0, record_len as u64, header.block_id, header.object_id, header.routing_bucket);
         let payload = decode_block_record_payload(
             &remaining[header.header_len..record_len],
             &header,
@@ -712,7 +712,7 @@ pub(super) fn summarize_slab(
     let mut summary = SlabSummary::default();
     while physical_offset < slab.len() {
         let remaining = &slab[physical_offset..];
-        let address = BlockAddress::from_parts(block_slab_id, physical_offset as u64, 0, None, None, None, None);
+        let address = BlockAddress::from_parts(block_slab_id, physical_offset as u64, 0, None, None, None);
         if remaining.len() < BLOCK_RECORD_HEADER_LEN || !remaining.starts_with(BLOCK_RECORD_MAGIC) {
             return Err(corrupt_block_envelope(
                 &address,
@@ -823,7 +823,7 @@ pub(super) fn count_slab_blocks(slab: &[u8], block_slab_id: u64) -> (u64, u64) {
             break;
         }
         let address =
-            BlockAddress::from_parts(block_slab_id, physical_offset as u64, 0, None, None, None, None);
+            BlockAddress::from_parts(block_slab_id, physical_offset as u64, 0, None, None, None);
         let Ok(header) = parse_block_record_header(remaining, &address) else {
             break;
         };
@@ -858,7 +858,7 @@ pub(super) fn inspect_slab(slab: &[u8], block_slab_id: u64) -> BlockStoreSlabRep
     let mut physical_offset = 0usize;
     while physical_offset < slab.len() {
         let remaining = &slab[physical_offset..];
-        let mut address = BlockAddress::from_parts(block_slab_id, physical_offset as u64, 0, None, None, None, None);
+        let mut address = BlockAddress::from_parts(block_slab_id, physical_offset as u64, 0, None, None, None);
         if remaining.len() < BLOCK_RECORD_HEADER_LEN || !remaining.starts_with(BLOCK_RECORD_MAGIC) {
             record_slab_inspection_error(
                 &mut report,
@@ -1134,7 +1134,7 @@ mod reused_zstd_context_tests {
     }
 
     fn address_for(payload_len: usize) -> BlockAddress {
-        BlockAddress::from_parts(1, 0, payload_len as u64, Some(1), Some(1), Some(0), None)
+        BlockAddress::from_parts(1, 0, payload_len as u64, Some(1), Some(1), Some(0))
     }
 
     /// Round-trip at several sizes through the shared thread-local context.

@@ -63,7 +63,6 @@ fn address_at(index: u64, routing_bucket: u32) -> BlockAddress {
         Some(1_000 + index),
         Some(9_000 + index),
         Some(routing_bucket),
-        None,
     )
 }
 

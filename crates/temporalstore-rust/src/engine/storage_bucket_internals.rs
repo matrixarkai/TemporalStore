@@ -4507,7 +4507,6 @@ mod release_refusal_guards {
             Some(11),
             Some(OBJECT_ID),
             Some(routing_bucket),
-            Some(1),
         )
     }
 

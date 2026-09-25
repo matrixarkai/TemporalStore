@@ -662,7 +662,6 @@ fn capture_the_stored_spelling_of_a_page_entry() {
                 Some(4),
                 Some(42),
                 Some(7),
-                Some(9),
             ),
             dirty: flags.0,
             deleted: flags.1,
@@ -747,20 +746,32 @@ fn capture_the_stored_spelling_of_a_page_entry() {
 // `15583789e` -- the merge base of this change -- and pasted here verbatim.
 // ---------------------------------------------------------------------------------------------
 
-const PAGE_ENTRY_PLAIN: &str = r#"{"object_key":"k","model_id":"string","address":{"ps":1,"o":2,"l":3,"pi":4,"oi":42,"rs":7,"g":9,"h":null},"dirty":false,"deleted":false,"log_backed":true}"#;
+const PAGE_ENTRY_PLAIN: &str = r#"{"object_key":"k","model_id":"string","address":{"ps":1,"o":2,"l":3,"pi":4,"oi":42,"rs":7,"g":4,"h":null},"dirty":false,"deleted":false,"log_backed":true}"#;
 
-const PAGE_ENTRY_WITH_COMPONENT: &str = r#"{"object_key":"k","model_id":"string","component":"f0","address":{"ps":1,"o":2,"l":3,"pi":4,"oi":42,"rs":7,"g":9,"h":null},"dirty":false,"deleted":false,"log_backed":true}"#;
+const PAGE_ENTRY_WITH_COMPONENT: &str = r#"{"object_key":"k","model_id":"string","component":"f0","address":{"ps":1,"o":2,"l":3,"pi":4,"oi":42,"rs":7,"g":4,"h":null},"dirty":false,"deleted":false,"log_backed":true}"#;
 
-const PAGE_ENTRY_ALL_FLAGS: &str = r#"{"object_key":"k","model_id":"string","address":{"ps":1,"o":2,"l":3,"pi":4,"oi":42,"rs":7,"g":9,"h":null},"dirty":true,"deleted":true,"log_backed":true}"#;
+const PAGE_ENTRY_ALL_FLAGS: &str = r#"{"object_key":"k","model_id":"string","address":{"ps":1,"o":2,"l":3,"pi":4,"oi":42,"rs":7,"g":4,"h":null},"dirty":true,"deleted":true,"log_backed":true}"#;
 
-const PAGE_ENTRY_OVER_WIDE: &str = r#"{"object_key":"k","model_id":"string","address":{"ps":1,"o":2,"l":4294967295,"pi":4,"oi":42,"rs":7,"g":9,"h":null},"dirty":false,"deleted":false,"log_backed":true}"#;
+const PAGE_ENTRY_OVER_WIDE: &str = r#"{"object_key":"k","model_id":"string","address":{"ps":1,"o":2,"l":4294967295,"pi":4,"oi":42,"rs":7,"g":4,"h":null},"dirty":false,"deleted":false,"log_backed":true}"#;
 
 /// A whole shard index written at `15583789e`: one bucket holding six pages -- five of one object
 /// (four plain, one carrying a component and a different kind) and one of a SECOND object in the
 /// same bucket, which is what a cluster-range shard produces routinely.
-const OLD_STORE_INDEX: &str = r#"{"bucket_map":{"7":{"routing_slot":7,"layout":"MultiObject","dirty":false,"deleted":false,"meta_loaded":true,"loading":false,"in_memory":true,"ttl_ms":null,"dirty_generation":3,"last_dump_sequence":11,"object_index":[42],"deleted_object_index":[],"page_index":{"hash:k:f0:1:9:3:4:9":{"object_key":"k","model_id":"hash","component":"f0","address":{"ps":1,"o":9,"l":3,"pi":4,"oi":42,"rs":7,"g":9,"h":null},"dirty":true,"deleted":false,"log_backed":false},"string:k::1:0:3:4:9":{"object_key":"k","model_id":"string","address":{"ps":1,"o":0,"l":3,"pi":4,"oi":42,"rs":7,"g":9,"h":null},"dirty":false,"deleted":false,"log_backed":true},"string:k::1:1:3:4:9":{"object_key":"k","model_id":"string","address":{"ps":1,"o":1,"l":3,"pi":4,"oi":42,"rs":7,"g":9,"h":null},"dirty":false,"deleted":false,"log_backed":true},"string:k::1:2:3:4:9":{"object_key":"k","model_id":"string","address":{"ps":1,"o":2,"l":3,"pi":4,"oi":42,"rs":7,"g":9,"h":null},"dirty":false,"deleted":false,"log_backed":true},"string:k::1:3:3:4:9":{"object_key":"k","model_id":"string","address":{"ps":1,"o":3,"l":3,"pi":4,"oi":42,"rs":7,"g":9,"h":null},"dirty":false,"deleted":false,"log_backed":true},"string:other::2:1:5:4:9":{"object_key":"other","model_id":"string","address":{"ps":2,"o":1,"l":5,"pi":4,"oi":42,"rs":7,"g":9,"h":null},"dirty":false,"deleted":false,"log_backed":true}}}}}"#;
+const OLD_STORE_INDEX: &str = r#"{"bucket_map":{"7":{"routing_slot":7,"layout":"MultiObject","dirty":false,"deleted":false,"meta_loaded":true,"loading":false,"in_memory":true,"ttl_ms":null,"dirty_generation":3,"last_dump_sequence":11,"object_index":[42],"deleted_object_index":[],"page_index":{"hash:k:f0:1:9:3:4:4":{"object_key":"k","model_id":"hash","component":"f0","address":{"ps":1,"o":9,"l":3,"pi":4,"oi":42,"rs":7,"g":4,"h":null},"dirty":true,"deleted":false,"log_backed":false},"string:k::1:0:3:4:4":{"object_key":"k","model_id":"string","address":{"ps":1,"o":0,"l":3,"pi":4,"oi":42,"rs":7,"g":4,"h":null},"dirty":false,"deleted":false,"log_backed":true},"string:k::1:1:3:4:4":{"object_key":"k","model_id":"string","address":{"ps":1,"o":1,"l":3,"pi":4,"oi":42,"rs":7,"g":4,"h":null},"dirty":false,"deleted":false,"log_backed":true},"string:k::1:2:3:4:4":{"object_key":"k","model_id":"string","address":{"ps":1,"o":2,"l":3,"pi":4,"oi":42,"rs":7,"g":4,"h":null},"dirty":false,"deleted":false,"log_backed":true},"string:k::1:3:3:4:4":{"object_key":"k","model_id":"string","address":{"ps":1,"o":3,"l":3,"pi":4,"oi":42,"rs":7,"g":4,"h":null},"dirty":false,"deleted":false,"log_backed":true},"string:other::2:1:5:4:4":{"object_key":"other","model_id":"string","address":{"ps":2,"o":1,"l":5,"pi":4,"oi":42,"rs":7,"g":4,"h":null},"dirty":false,"deleted":false,"log_backed":true}}}}}"#;
 
-/// What this binary must write back after loading the text above: the same bytes.
+/// THE SAME INDEX, CARRYING THE COMBINATION NO WRITER PRODUCES.
+///
+/// Byte for byte the text above as it stood before `generation` became derived: `"g":9` beside a
+/// `"pi":4`, and block-ref keys ending `:4:9` to match. This engine has never written that --
+/// every production constructor passed `block_id.or(object_id)` -- but an index that DID carry it
+/// must not be loaded and silently re-keyed, because the generation is hashed into the page
+/// handle and rendered into the key, and those handles are on disk inside the lookup refs.
+const OLD_STORE_INDEX_WITH_AN_INDEPENDENT_GENERATION: &str = r#"{"bucket_map":{"7":{"routing_slot":7,"layout":"MultiObject","dirty":false,"deleted":false,"meta_loaded":true,"loading":false,"in_memory":true,"ttl_ms":null,"dirty_generation":3,"last_dump_sequence":11,"object_index":[42],"deleted_object_index":[],"page_index":{"hash:k:f0:1:9:3:4:9":{"object_key":"k","model_id":"hash","component":"f0","address":{"ps":1,"o":9,"l":3,"pi":4,"oi":42,"rs":7,"g":9,"h":null},"dirty":true,"deleted":false,"log_backed":false},"string:k::1:0:3:4:9":{"object_key":"k","model_id":"string","address":{"ps":1,"o":0,"l":3,"pi":4,"oi":42,"rs":7,"g":9,"h":null},"dirty":false,"deleted":false,"log_backed":true},"string:k::1:1:3:4:9":{"object_key":"k","model_id":"string","address":{"ps":1,"o":1,"l":3,"pi":4,"oi":42,"rs":7,"g":9,"h":null},"dirty":false,"deleted":false,"log_backed":true},"string:k::1:2:3:4:9":{"object_key":"k","model_id":"string","address":{"ps":1,"o":2,"l":3,"pi":4,"oi":42,"rs":7,"g":9,"h":null},"dirty":false,"deleted":false,"log_backed":true},"string:k::1:3:3:4:9":{"object_key":"k","model_id":"string","address":{"ps":1,"o":3,"l":3,"pi":4,"oi":42,"rs":7,"g":9,"h":null},"dirty":false,"deleted":false,"log_backed":true},"string:other::2:1:5:4:9":{"object_key":"other","model_id":"string","address":{"ps":2,"o":1,"l":5,"pi":4,"oi":42,"rs":7,"g":9,"h":null},"dirty":false,"deleted":false,"log_backed":true}}}}}"#;
+
+/// What this binary must write back after loading `OLD_STORE_INDEX`: the same bytes.
+///
+/// Named rather than called "the text above", because there are now two index fixtures here and
+/// only one of them is the one that loads.
 const OLD_STORE_INDEX_CANONICAL: &str = OLD_STORE_INDEX;
 
 /// Every page of that index, spelled out independently of the text it came from.
@@ -794,7 +805,6 @@ fn page_fixture(component: Option<&str>, length: u64, flags: (bool, bool, bool))
             Some(4),
             Some(42),
             Some(7),
-            Some(9),
         ),
         dirty: flags.0,
         deleted: flags.1,
@@ -910,6 +920,14 @@ fn the_stored_spelling_of_a_page_entry_did_not_move() {
 ///
 /// AND THE REVERSE, where it is meaningful: the index this binary re-serializes from what it
 /// loaded must be the SAME BYTES, so a store written by the new binary is one an old binary reads.
+///
+/// THE GENERATION IN THESE BYTES MOVED, AND ONLY IT. When `generation` became derived from
+/// `block_id.or(object_id)`, the fixture behind this capture stopped being able to express the
+/// independent `9` it had chosen beside a `block_id` of `4` -- a combination no production
+/// constructor in this engine has ever emitted. The bytes were regenerated with the capture
+/// instrument in this module rather than hand-edited, and they came back the same 1,349 bytes
+/// with `"g":4` and keys ending `:4:4`. An index that really did carry the old combination is
+/// REFUSED rather than re-keyed; the test directly below drives it.
 #[test]
 fn an_index_written_before_this_change_loads_page_for_page_and_writes_back_the_same_bytes() {
     let index: crate::engine::state::CoreIndex =
@@ -1013,6 +1031,62 @@ fn an_index_written_before_this_change_loads_page_for_page_and_writes_back_the_s
     assert_ne!(
         injected, loaded,
         "the element-by-element comparison cannot report a difference when one is injected"
+    );
+}
+
+/// A MIS-VERSIONED STORE IS DRIVEN, AND IT FAILS LOUDLY -- BEFORE THE DECODE COMPLETES.
+///
+/// The index here is the one above as it stood before `generation` became derived: `"g":9` beside
+/// a `"pi":4`, with block-ref keys ending `:4:9` to match. No production constructor in this
+/// engine emits that combination, but if one ever reached disk, loading it under the derivation
+/// would compute `4` where the writer stored `9` -- and the generation is hashed into the page
+/// handle and rendered into the key, so every page in the bucket would be filed under a name the
+/// refs already on disk do not use. That is a lost object, reported by nothing.
+///
+/// So the load must FAIL, and fail where it can still be understood: at the address, during
+/// deserialization, naming the two values. The assertions below are on the MESSAGE as well as the
+/// failure, because a load that fails for some unrelated reason would pass a bare `is_err`.
+///
+/// WITH ITS CONTROL, which is the test directly above: the same index with an agreeing generation
+/// loads page for page and rewrites as the same 1,349 bytes. Without that, this test would pass
+/// just as well if the loader had stopped accepting any index at all.
+#[test]
+fn an_old_store_whose_generation_disagrees_is_refused_before_the_decode() {
+    let outcome: Result<crate::engine::state::CoreIndex, _> =
+        serde_json::from_str(OLD_STORE_INDEX_WITH_AN_INDEPENDENT_GENERATION);
+
+    let error = outcome.err().expect(
+        "an index carrying a generation this binary cannot reproduce must NOT load: deriving a \
+         different one silently re-keys every page in the bucket",
+    );
+    let text = error.to_string();
+    println!("REFUSED WITH: {text}");
+    assert!(
+        text.contains("disagrees with block_id.or(object_id)"),
+        "the refusal must name what disagreed, got: {text}"
+    );
+    assert!(
+        text.contains("recompute every page handle"),
+        "and say why that matters, got: {text}"
+    );
+
+    // The two values themselves, so the message is actionable rather than merely alarming.
+    assert!(text.contains('9'), "the stored generation must appear in the message: {text}");
+    assert!(text.contains('4'), "and the derived one: {text}");
+
+    // NON-VACUITY: the text this test drives must actually be the disagreeing shape, or the
+    // refusal above could be about anything at all.
+    assert!(
+        OLD_STORE_INDEX_WITH_AN_INDEPENDENT_GENERATION.contains(r#""g":9"#),
+        "the fixture has stopped carrying the independent generation it exists to drive"
+    );
+    assert!(
+        OLD_STORE_INDEX_WITH_AN_INDEPENDENT_GENERATION.contains(r#":4:9""#),
+        "the fixture has stopped carrying the keys that match it"
+    );
+    assert_ne!(
+        OLD_STORE_INDEX, OLD_STORE_INDEX_WITH_AN_INDEPENDENT_GENERATION,
+        "the two fixtures are the same text, so one of them is not what it claims to be"
     );
 }
 

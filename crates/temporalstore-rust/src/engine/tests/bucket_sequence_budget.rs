@@ -4,9 +4,12 @@
 //! THE FOUR SEQUENCES ON EVERY BUCKET NODE: WHAT EACH ONE IS, AND WHETHER IT HAS TO BE THERE.
 //!
 //! #1958 accounted for every byte of `BucketNode` and put four `u64` sequences in the
-//! eight-aligned group -- 32 of the node's 192 bytes, once per routing bucket, one sixth of the
-//! widest per-item structure in the engine. It declined them in one clause, "the sequences are
-//! unbounded counters", which is a claim about their RANGE and not a measurement of it.
+//! eight-aligned group -- 32 of the node's 184 bytes, once per routing bucket, more than a sixth
+//! of the widest per-item structure in the engine. It declined them in one clause, "the sequences
+//! are unbounded counters", which is a claim about their RANGE and not a measurement of it.
+//!
+//! (The node was 192 when this was written and is 184 now: the `BlockAddress` inside the inline
+//! page entry stopped storing a `generation` it could derive. The sequences did not move.)
 //!
 //! THE ANSWER IS THAT ALL FOUR STAY, at 64 bits, on every key. This module is the accounting for
 //! that, and every row of it is a number rather than a reading of the code.
@@ -34,8 +37,8 @@
 //!
 //! WHAT WAS MEASURED, AND WHAT IT SAYS:
 //!
-//!   1. THE ALIGNMENT ARITHMETIC IS NOT THE OBVIOUS ONE. The node is 186 bytes of field in 192 --
-//!      176 of eight-aligned field and a ten-byte tail rounded to sixteen, six bytes of slack.
+//!   1. THE ALIGNMENT ARITHMETIC IS NOT THE OBVIOUS ONE. The node is 178 bytes of field in 184 --
+//!      168 of eight-aligned field and a ten-byte tail rounded to sixteen, six bytes of slack.
 //!      The natural reading of four words in the eight-aligned group is that narrowing one buys
 //!      nothing. It is worth EIGHT: the freed `u32` leaves the group and lands in the tail, 14
 //!      bytes still round to 16, and the group is a word shorter. Narrowing a SECOND is worth
@@ -508,17 +511,17 @@ struct SeqMirrorTwoRemoved {
 /// WHAT NARROWING OR REMOVING EACH SEQUENCE WOULD MAKE THE NODE -- and the answer is not the one
 /// the shape of the group suggests.
 ///
-/// The node is 176 bytes of eight-aligned field plus a ten-byte tail rounded to sixteen. A `u64`
+/// The node is 168 bytes of eight-aligned field plus a ten-byte tail rounded to sixteen. A `u64`
 /// narrowed to a `u32` does not vanish: it leaves the eight-aligned group and lands in the tail.
-/// So the arithmetic is `176 - 8n + round_up_8(10 + 4n)` and it steps, it does not slope:
+/// So the arithmetic is `168 - 8n + round_up_8(10 + 4n)` and it steps, it does not slope:
 ///
 /// ```text
 ///   narrowed   eight-aligned    tail -> rounded    size    vs live
-///     0            176            10 -> 16          192       --
-///     1            168            14 -> 16          184       -8
-///     2            160            18 -> 24          184       -8
-///     3            152            22 -> 24          176      -16
-///     4            144            26 -> 32          176      -16
+///     0            168            10 -> 16          184       --
+///     1            160            14 -> 16          176       -8
+///     2            152            18 -> 24          176       -8
+///     3            144            22 -> 24          168      -16
+///     4            136            26 -> 32          168      -16
 /// ```
 ///
 /// The second narrowing is worth NOTHING on top of the first, and the fourth nothing on top of
@@ -526,7 +529,13 @@ struct SeqMirrorTwoRemoved {
 /// saving belongs to the GROUP, and only the first and third crossings move it.
 ///
 /// Removing is different from narrowing because the bytes leave the structure instead of moving
-/// to the tail: one removed is 184, two removed is 176.
+/// to the tail: one removed is 176, two removed is 168.
+///
+/// THE BASE MOVED, THE PRICES DID NOT. Every figure in the table is eight bytes lower than when
+/// it was written, because the node went 192 -> 184 when the `BlockAddress` inside its inline
+/// page entry stopped storing a `generation` it could derive. Not one of the DIFFERENCES changed:
+/// the group structure is what sets them, and that change came out of the eight-aligned group
+/// whole, which is the same reason it was worth anything at all.
 ///
 /// THE RECONSTRUCTION IS ASSERTED, not the total. Every row has to satisfy
 /// `eight_aligned + round_up(tail) == size_of`, so a row that happened to land on the right
@@ -547,7 +556,10 @@ fn what_narrowing_or_removing_each_sequence_would_make_the_node() {
     assert_eq!(8, align, "BucketNode's alignment moved and the arithmetic below assumes 8");
 
     // The two groups, taken from the declaration rather than from a literal.
-    const EIGHT_ALIGNED: usize = 176;
+    // 168, not 176, since the inline `BlockIndexMap` lost eight bytes when the `BlockAddress`
+    // inside its inline page entry stopped storing a `generation` it could derive. Every price
+    // below is a DIFFERENCE and so did not move; only the base did.
+    const EIGHT_ALIGNED: usize = 168;
     const TAIL: usize = 10;
     let live = size_of::<BucketNode>();
     assert_eq!(

@@ -99,10 +99,13 @@ fn budget() -> Vec<Budgeted> {
             align: align_of::<BlockAddress>(),
             // block_slab_id, offset : u64 x 2
             // length, block_id      : u32 x 2
-            // object_id, generation : u64 x 2
+            // object_id             : u64
             // routing_bucket        : u32
             // present               : u8
-            fields: 4 * size_of::<u64>() + 3 * size_of::<u32>() + size_of::<u8>(),
+            //
+            // `generation` was a fourth u64 here until it became derived from
+            // `block_id.or(object_id)`; it is not a field any more, so it is not a row here.
+            fields: 3 * size_of::<u64>() + 3 * size_of::<u32>() + size_of::<u8>(),
             per_item: true,
         },
         Budgeted {
@@ -295,10 +298,10 @@ fn every_per_item_structure_states_its_width_and_its_padding() {
     }
 
     // --- The pinned widths. ---
-    assert_eq!(48, size_of::<BlockAddress>(), "BlockAddress width moved");
-    assert_eq!(104, size_of::<BlockIndex>(), "BlockIndex width moved");
-    assert_eq!(112, size_of::<BlockIndexMap>(), "BlockIndexMap width moved");
-    assert_eq!(192, size_of::<BucketNode>(), "BucketNode width moved");
+    assert_eq!(40, size_of::<BlockAddress>(), "BlockAddress width moved");
+    assert_eq!(96, size_of::<BlockIndex>(), "BlockIndex width moved");
+    assert_eq!(104, size_of::<BlockIndexMap>(), "BlockIndexMap width moved");
+    assert_eq!(184, size_of::<BucketNode>(), "BucketNode width moved");
     assert_eq!(16, size_of::<BlockLookupRef>(), "BlockLookupRef width moved");
     assert_eq!(24, size_of::<BlockRefs>(), "BlockRefs width moved");
     assert_eq!(40, size_of::<ComponentBlocks>(), "ComponentBlocks width moved");
@@ -308,7 +311,7 @@ fn every_per_item_structure_states_its_width_and_its_padding() {
     assert_eq!(8, size_of::<DeletedObjectIndex>(), "DeletedObjectIndex width moved");
     assert_eq!(24, size_of::<DirtyKeySet>(), "DirtyKeySet width moved");
     assert_eq!(16, size_of::<WalResidentBlock>(), "WalResidentBlock width moved");
-    assert_eq!(184, size_of::<IndexItem>(), "IndexItem width moved");
+    assert_eq!(176, size_of::<IndexItem>(), "IndexItem width moved");
     assert_eq!(104, size_of::<SlabCatalogEntry>(), "SlabCatalogEntry width moved");
     assert_eq!(
         168,
@@ -377,7 +380,7 @@ fn every_per_item_structure_states_its_width_and_its_padding() {
 /// a quarter of what the field now holds.
 #[test]
 fn a_length_that_does_not_fit_the_field_saturates_rather_than_wrapping() {
-    let just_under = BlockAddress::from_parts(1, 0, u64::from(u32::MAX) - 1, None, None, None, None);
+    let just_under = BlockAddress::from_parts(1, 0, u64::from(u32::MAX) - 1, None, None, None);
     assert_eq!(
         u64::from(u32::MAX) - 1,
         just_under.length(),
@@ -391,7 +394,7 @@ fn a_length_that_does_not_fit_the_field_saturates_rather_than_wrapping() {
         (1u64 << 32) + 7,
         u64::MAX,
     ] {
-        let address = BlockAddress::from_parts(1, 0, over, None, None, None, None);
+        let address = BlockAddress::from_parts(1, 0, over, None, None, None);
         assert_eq!(
             u64::from(u32::MAX),
             address.length(),
@@ -427,7 +430,7 @@ fn a_length_that_does_not_fit_the_field_saturates_rather_than_wrapping() {
 /// the write path allows: `encode_block_record` refuses a block id above `u16::MAX`.
 #[test]
 fn a_block_id_that_does_not_fit_the_field_saturates_rather_than_wrapping() {
-    let real = BlockAddress::from_parts(1, 0, 64, Some(u64::from(u16::MAX)), None, None, None);
+    let real = BlockAddress::from_parts(1, 0, 64, Some(u64::from(u16::MAX)), None, None);
     assert_eq!(
         Some(u64::from(u16::MAX)),
         real.block_id(),
@@ -435,7 +438,7 @@ fn a_block_id_that_does_not_fit_the_field_saturates_rather_than_wrapping() {
     );
 
     for over in [u64::from(u32::MAX) + 1, 1u64 << 33, u64::MAX] {
-        let address = BlockAddress::from_parts(1, 0, 64, Some(over), None, None, None);
+        let address = BlockAddress::from_parts(1, 0, 64, Some(over), None, None);
         assert_eq!(
             Some(u64::from(u32::MAX)),
             address.block_id(),
@@ -456,7 +459,7 @@ fn a_block_id_that_does_not_fit_the_field_saturates_rather_than_wrapping() {
         u64::from(u32::MAX),
         "the probe value must distinguish truncation from saturation, or this test cannot fail"
     );
-    let mut address = BlockAddress::from_parts(1, 0, 64, None, None, None, None);
+    let mut address = BlockAddress::from_parts(1, 0, 64, None, None, None);
     address.set_block_id(Some(OVER));
     assert_eq!(
         Some(u64::from(u32::MAX)),
@@ -467,7 +470,7 @@ fn a_block_id_that_does_not_fit_the_field_saturates_rather_than_wrapping() {
     assert_eq!(None, address.block_id(), "clearing the field must still clear it");
 
     // And the constructor, on the same discriminating value.
-    let built = BlockAddress::from_parts(1, 0, 64, Some(OVER), None, None, None);
+    let built = BlockAddress::from_parts(1, 0, 64, Some(OVER), None, None);
     assert_eq!(Some(u64::from(u32::MAX)), built.block_id(), "the constructor must saturate");
 }
 
@@ -479,7 +482,7 @@ fn a_block_id_that_does_not_fit_the_field_saturates_rather_than_wrapping() {
 /// record as zero-length. A mutation run found this uncovered.
 #[test]
 fn setting_a_length_after_the_fact_writes_it_and_saturates_it() {
-    let mut address = BlockAddress::from_parts(1, 0, 0, None, None, None, None);
+    let mut address = BlockAddress::from_parts(1, 0, 0, None, None, None);
     assert_eq!(0, address.length(), "it starts at the length it was built with");
 
     address.set_length(4_096);
@@ -505,6 +508,16 @@ fn setting_a_length_after_the_fact_writes_it_and_saturates_it() {
 /// narrowing resident-only: an index written before it reads back identically, and an index
 /// written after it is byte-identical to one written before. If this test fails, a stored format
 /// has moved and the change is not what its own pull request says it is.
+///
+/// THE ONE BYTE-LEVEL CHANGE SINCE, AND WHY IT IS NOT THAT. `generation` became DERIVED as
+/// `block_id.or(object_id)` rather than stored. The wire still carries `g`, still reads it, and
+/// still writes it -- so for every address this engine produces the spelling is unchanged, because
+/// every production constructor already passed exactly that expression. What moved is this
+/// FIXTURE: it had chosen an independent `0x0123456789ABCDEF` beside a `block_id` of 7, which no
+/// writer emits, and the address can no longer represent it. The golden below therefore reads
+/// `"g":7`. An index that really did carry a disagreeing generation is now REFUSED at load rather
+/// than re-keyed -- see
+/// `engine::tests::page_entry_names::an_old_store_whose_generation_disagrees_is_refused_before_the_decode`.
 #[test]
 fn narrowing_the_resident_fields_did_not_move_the_stored_form() {
     let address = BlockAddress::from_parts(
@@ -514,12 +527,11 @@ fn narrowing_the_resident_fields_did_not_move_the_stored_form() {
         Some(7),
         Some(0xDEAD_BEEF_CAFE_F00D),
         Some(4_294_967_290),
-        Some(0x0123_4567_89AB_CDEF),
     );
     let json = serde_json::to_string(&address).expect("an address serializes");
     assert_eq!(
         "{\"ps\":9876543210,\"o\":1234567,\"l\":1048576,\"pi\":7,\"oi\":16045690984503111693,\
-         \"rs\":4294967290,\"g\":81985529216486895,\"h\":null}",
+         \"rs\":4294967290,\"g\":7,\"h\":null}",
         json,
         "the stored spelling of an address moved"
     );
@@ -529,10 +541,18 @@ fn narrowing_the_resident_fields_did_not_move_the_stored_form() {
     // A stored length or block id above the resident field is already outside what the encoder
     // can have written, so reading one is reading a corrupt index. It must come back saturated,
     // never truncated: a truncated length is a plausible number and a saturated one is not.
+    // NO generation key here, deliberately. Besides the saturation it was written for, this
+    // is the shape of an index written before the generation existed: an identity and no
+    // generation at all. It must LOAD, and it must not acquire one.
     let wide = "{\"ps\":1,\"o\":0,\"l\":4294967296,\"pi\":4294967296}";
     let read: BlockAddress = serde_json::from_str(wide).expect("a wide stored value still loads");
     assert_eq!(u64::from(u32::MAX), read.length(), "a wide stored length saturates");
     assert_eq!(Some(u64::from(u32::MAX)), read.block_id(), "a wide stored block id saturates");
+    assert_eq!(
+        None,
+        read.generation(),
+        "an index that stored no generation must not acquire one when the field is derived"
+    );
 }
 
 // -------------------------------------------------------------------------------------------
@@ -905,15 +925,15 @@ fn every_byte_of_the_bucket_node_is_accounted_for() {
         size - eight_aligned
     );
 
-    assert_eq!(186, sum, "the fields of BucketNode add up to {sum}, not 186");
-    assert_eq!(192, size, "BucketNode is {size} bytes wide, not 192");
+    assert_eq!(178, sum, "the fields of BucketNode add up to {sum}, not 178");
+    assert_eq!(184, size, "BucketNode is {size} bytes wide, not 184");
     assert_eq!(6, slack, "BucketNode carries {slack} bytes of alignment slack, not 6");
 
     // The layout rule itself, asserted rather than described: the eight-aligned group packs
     // solid and the rest is one rounding.
     let align = align_of::<BucketNode>();
     assert_eq!(8, align, "BucketNode's alignment moved, and the arithmetic below assumes 8");
-    assert_eq!(176, eight_aligned, "the eight-aligned group is {eight_aligned} B, not 176");
+    assert_eq!(168, eight_aligned, "the eight-aligned group is {eight_aligned} B, not 168");
     assert_eq!(10, tail, "the tail group is {tail} B, not 10");
     assert_eq!(
         eight_aligned + tail.div_ceil(align) * align,
@@ -1170,16 +1190,18 @@ fn what_each_declined_shape_of_the_bucket_node_would_cost() {
 
     // --- The change this module documents. ---
     assert_eq!(
-        208, wide_ttl,
-        "the shape before #1958 was 208 bytes; it reads as {wide_ttl}, so the mirrors have \
+        200, wide_ttl,
+        "the shape before #1958 was 208 bytes and is 200 now that the address inside the inline \
+         page entry sheds its derived generation; it reads as {wide_ttl}, so the mirrors have \
          drifted from the history they claim to price"
     );
     assert_eq!(
-        200, wide_tombstone,
-        "the shape before THIS change was 200 bytes; it reads as {wide_tombstone}, so the eight \
-         bytes this change claims are not the eight bytes it took"
+        192, wide_tombstone,
+        "the shape before #1961 was 200 bytes and is 192 now that the address inside the inline \
+         page entry sheds its derived generation; it reads as {wide_tombstone}, so the eight \
+         bytes that change claims are not the eight bytes it took"
     );
-    assert_eq!(192, live, "the node is {live} bytes, not 192");
+    assert_eq!(184, live, "the node is {live} bytes, not 184");
     assert_eq!(
         8,
         wide_tombstone - live,
@@ -2448,8 +2470,8 @@ fn what_the_object_side_of_the_bucket_node_costs() {
 
         // --- THE NEXT DOMINANT TERM ON THIS STRUCTURE, PRICED RATHER THAN NAMED. ---
         //
-        // With the object side at 24 bytes of field, the page index is 112 of the node's 192 --
-        // 58.3% -- and it is the same question one level along: an inline arm for the bucket
+        // With the object side at 24 bytes of field, the page index is 104 of the node's 184 --
+        // 56.5% -- and it is the same question one level along: an inline arm for the bucket
         // that holds one page, and a MAP for the bucket that holds several. The object side's
         // answer was that the multi-entry arm is not rare and a tree charges a node sized for
         // eleven slots to hold two. The arm census and the allocator reading below are what the

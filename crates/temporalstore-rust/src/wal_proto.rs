@@ -398,7 +398,6 @@ fn address_from_proto(address: v1::WalBlockAddress, implied_length: Option<u64>)
         address.block_id,
         address.object_id,
         address.routing_bucket,
-        address.generation,
     )
 }
 /// The numeric key a component is carrying, if it is carrying one.
@@ -1606,11 +1605,11 @@ mod tests {
             None,
             // object_id repeats the item's, so `item_to_proto` drops it from the address.
             Some(crate::block_store::BlockAddress::from_parts(
-                42, 1_048_576, 4096, Some(7), Some(9), Some(8539), Some(3),
+                42, 1_048_576, 4096, Some(7), Some(9), Some(8539),
             )),
             // and one that does not repeat it, so it stays.
             Some(crate::block_store::BlockAddress::from_parts(
-                42, 0, 0, None, Some(4_242), None, None,
+                42, 0, 0, None, Some(4_242), None,
             )),
         ];
 
@@ -2068,7 +2067,6 @@ mod tests {
                 stored,
                 Some(1),
                 Some(0x1234_5678_9ABC_DEF0),
-                None,
                 None,
             )),
             ..outcome_with_object_id(0x1234_5678_9ABC_DEF0)

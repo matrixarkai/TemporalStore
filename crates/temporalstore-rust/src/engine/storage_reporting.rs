@@ -301,7 +301,7 @@ pub(super) fn native_packed_block_index_bytes(
     bytes[4] = u8::from(page.dirty) | (u8::from(page.log_backed) << 1);
     let page_size = if page.deleted { 0 } else { page.length as u32 };
     bytes[5..9].copy_from_slice(&page_size.to_le_bytes());
-    let address = physical_address_word(&BlockAddress::from_parts(page.block_slab_id, page.offset, page.length, page.block_id, page.object_id, Some(page.routing_bucket), page.block_id.or(page.object_id)));
+    let address = physical_address_word(&BlockAddress::from_parts(page.block_slab_id, page.offset, page.length, page.block_id, page.object_id, Some(page.routing_bucket)));
     bytes[9..17].copy_from_slice(&address.to_le_bytes());
     bytes
 }

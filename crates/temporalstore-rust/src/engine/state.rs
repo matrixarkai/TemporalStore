@@ -913,7 +913,13 @@ pub(super) enum BlockIndexMap {
 /// The `One` arm carries a whole page inline -- a handle plus a `BlockIndex` -- which is the
 /// point of the shape and what makes this the widest field of `BucketNode`. The `Many` arm is a
 /// 24-byte vector header and rides inside it.
-const _: () = assert!(std::mem::size_of::<BlockIndexMap>() == 112);
+///
+/// 104, not 112, since the address inside that inline page shed its derived `generation`. The
+/// eight bytes cross straight through: the handle is a `u64`, the page entry is 8-aligned, and
+/// the discriminant rides in the `Arc` niche, so this arm is exactly `8 + size_of::<BlockIndex>()`.
+const _: () = assert!(std::mem::size_of::<BlockIndexMap>() == 104);
+const _: () =
+    assert!(std::mem::size_of::<BlockIndexMap>() == 8 + std::mem::size_of::<BlockIndex>());
 
 /// Entries this process has examined looking a page up, counted under `cfg(test)` only.
 ///
@@ -2574,17 +2580,18 @@ pub(super) struct BucketNode {
 
 /// The widest per-item structure in the engine, and the one whose count is the bucket count.
 ///
-/// Most of it is the `BlockIndexMap` it carries inline: 112 of these 192 bytes are one page
+/// Most of it is the `BlockIndexMap` it carries inline: 104 of these 184 bytes are one page
 /// entry held inline plus its handle, and any accounting of this structure has to start there
 /// rather than with the flags.
 ///
 /// 202 bytes of field became 194 when `ttl_ms` stopped spending a word on a discriminant, and
 /// 186 when the tombstone index stopped spending sixteen on a case it is in 2.32% of the time;
-/// the struct went 208 -> 200 -> 192 with them. The six bytes left over are the aligner rounding
+/// the struct went 208 -> 200 -> 192 with them, and 192 -> 184 when the address inside the inline
+/// page entry shed its derived `generation`. The six bytes left over are the aligner rounding
 /// `routing_bucket`, `layout` and the five flags -- ten bytes of small field -- up to sixteen,
 /// and they are ALIGNMENT, not width: narrowing any of those ten bytes moves nothing.
 /// `every_byte_of_the_bucket_node_is_accounted_for` states the whole of it field by field.
-const _: () = assert!(std::mem::size_of::<BucketNode>() == 192);
+const _: () = assert!(std::mem::size_of::<BucketNode>() == 184);
 
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub(super) enum BucketLayoutState {
@@ -2608,10 +2615,14 @@ pub(super) struct BlockIndex {
     pub(super) log_backed: bool,
 }
 
-/// One per stored page. Three shared names, an address, and three flags -- 99 bytes of field in
-/// 104, so the three flag bytes are already inside the alignment slack and packing them would
+/// One per stored page. Three shared names, an address, and three flags -- 91 bytes of field in
+/// 96, so the three flag bytes are already inside the alignment slack and packing them would
 /// reclaim nothing (and would move the stored index, which spells each one as its own key).
-const _: () = assert!(std::mem::size_of::<BlockIndex>() == 104);
+///
+/// 96, not 104, since the address shed its derived `generation`. Note that the flags did NOT
+/// become worth packing when that happened: at 99 bytes of field the slack was five bytes and at
+/// 91 it is five bytes again, because the address left in a whole eight-byte step.
+const _: () = assert!(std::mem::size_of::<BlockIndex>() == 96);
 
 impl BlockIndex {
     /// The object this page belongs to.
@@ -2880,7 +2891,10 @@ fn same_block_address(left: &BlockAddress, right: &BlockAddress) -> bool {
         && left.block_id() == right.block_id()
         && left.object_id() == right.object_id()
         && left.routing_bucket() == right.routing_bucket()
-        && left.generation() == right.generation()
+    // `generation` is not compared, because it no longer CAN differ here: it is derived as
+    // `block_id.or(object_id)` and both of those are compared on the two lines above, so the
+    // clause that used to sit here was implied by them and could not fail. A comparison that
+    // cannot fail reads like extra safety and provides none.
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -2947,7 +2961,7 @@ mod component_lookup_tests {
             object_key: Arc::from(object.to_string()),
             model_id: Arc::from("hash".to_string()),
             component: component.map(str::to_string).map(Arc::from),
-            address: BlockAddress::from_parts(0, 0, 0, None, Some(0), None, None),
+            address: BlockAddress::from_parts(0, 0, 0, None, Some(0), None),
             dirty: false,
             deleted: false,
             log_backed: false,

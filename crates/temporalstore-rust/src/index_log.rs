@@ -670,7 +670,9 @@ pub struct IndexItem {
 
 /// One per changed page per write, and transient -- it lives for the length of an append.
 /// Pinned because it is the widest thing built per page anywhere in the engine.
-const _: () = assert!(std::mem::size_of::<IndexItem>() == 184);
+///
+/// 176, not 184, since the `BlockAddress` it carries shed its derived `generation`.
+const _: () = assert!(std::mem::size_of::<IndexItem>() == 176);
 
 /// A field whose value is its default says nothing, and every field here carries
 /// `#[serde(default)]` -- so a reader that meets an absent one fills in the same value it would
@@ -5634,7 +5636,6 @@ mod tests {
                 None,
                 None,
                 None,
-                None,
             );
             let block_ref_key = block_ref_key_from_parts(
                 "feature",
@@ -6772,11 +6773,11 @@ mod tests {
         let cases = [
             ("no address", None),
             ("address repeats both", Some(crate::block_store::BlockAddress::from_parts(
-                42, 1_048_576, 4096, Some(7), Some(object_id), Some(bucket), Some(3)))),
+                42, 1_048_576, 4096, Some(7), Some(object_id), Some(bucket), ))),
             ("address holds a DIFFERENT object", Some(crate::block_store::BlockAddress::from_parts(
-                42, 0, 0, None, Some(object_id + 1), Some(bucket + 1), None))),
+                42, 0, 0, None, Some(object_id + 1), Some(bucket + 1), ))),
             ("address holds neither", Some(crate::block_store::BlockAddress::from_parts(
-                42, 0, 0, None, None, None, None))),
+                42, 0, 0, None, None, None, ))),
         ];
 
         for (label, address) in cases {
@@ -6819,7 +6820,7 @@ mod tests {
     #[test]
     fn a_size_that_disagrees_with_the_address_is_not_stripped() {
         let address = crate::block_store::BlockAddress::from_parts(
-            7, 4096, 832, Some(3), None, None, None,
+            7, 4096, 832, Some(3), None, None,
         );
         let item = |size: u64| IndexItem {
             kind: IndexItemKind::Page,
@@ -6954,11 +6955,11 @@ flag exists to say",
 
         // As written today: the address repeats the item's object id and routing bucket.
         let repeats = item(Some(crate::block_store::BlockAddress::from_parts(
-            42, 1_048_576, 4096, Some(7), Some(object_id), Some(bucket), Some(3),
+            42, 1_048_576, 4096, Some(7), Some(object_id), Some(bucket),
         )));
         // The same address with the two the item already states left out.
         let deduped = item(Some(crate::block_store::BlockAddress::from_parts(
-            42, 1_048_576, 4096, Some(7), None, None, Some(3),
+            42, 1_048_576, 4096, Some(7), None, None,
         )));
 
         let a = encode_index_payload(&repeats, INDEX_LOG_SHAPE_DELTA).expect("encode").len();
@@ -6994,7 +6995,6 @@ flag exists to say",
             block_id: 7,
             address: Some(crate::block_store::BlockAddress::from_parts(
                 42, 1_048_576, 4096, Some(7), Some(12_345_678_901_234_567), Some(8539),
-                Some(3),
             )),
             size: 4096,
             in_log: false,
