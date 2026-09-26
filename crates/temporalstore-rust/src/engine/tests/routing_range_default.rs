@@ -1724,6 +1724,43 @@ fn the_routing_range_decision_covers_its_four_cases_in_the_right_order() {
          ordinary start"
     );
 
+    // CASE 3 AGAIN, THROUGH THE OTHER DOOR: a store with NO base index but durable bucket dump
+    // manifests. A load recovers from those, so such a store is not new -- and this arm exists
+    // because a mutation survived without it. Replacing the manifest check with `false` passed
+    // every other test in this module: the base-index half was asserted and the manifest half was
+    // not, so a store recoverable only from its manifests would have been called new and stamped
+    // with whatever range it was asked for.
+    std::fs::remove_file(index_dir.join("shard-1.index.json")).expect("removable");
+    assert!(
+        !store_has_on_disk_state(&index_dir, 1),
+        "with the base index removed and no manifests yet, the store still reports on-disk state, \
+         so the arm below would pass for the wrong reason"
+    );
+    let manifest_dir = index_dir.join("slot-dumps").join("shard-1");
+    std::fs::create_dir_all(&manifest_dir).expect("manifest dir");
+    std::fs::write(manifest_dir.join("dump-0001.json"), b"{}").expect("write a manifest");
+    assert!(
+        store_has_on_disk_state(&index_dir, 1),
+        "a shard with a durable bucket dump manifest and no base index is not reported as having \
+         on-disk state. A load recovers from those manifests, so such a store is NOT new, and \
+         calling it new stamps it with the range it was asked for instead of the range it was \
+         built on"
+    );
+    assert_eq!(
+        RoutingRangeDecision::Load {
+            start_routing_bucket: LEGACY_START_ROUTING_BUCKET,
+            end_routing_bucket: LEGACY_END_ROUTING_BUCKET,
+            write_stamp: true,
+            adopted_legacy: true,
+        },
+        decide_routing_range(&index_dir, 1, 0, 1023),
+        "a store recoverable only from its dump manifests was not honoured on the range it was \
+         built on"
+    );
+    // Put the base index back so the cases below are over the shape they describe.
+    std::fs::write(index_dir.join("shard-1.index.json"), b"{}").expect("write a base index");
+    std::fs::remove_file(manifest_dir.join("dump-0001.json")).expect("removable");
+
     // CASE 1: a stamp that agrees -- load, write nothing.
     write_routing_range_stamp(
         &index_dir,
