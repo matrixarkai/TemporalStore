@@ -2851,19 +2851,26 @@ impl<'de> serde::Deserialize<'de> for StoredModelKind {
 
 /// The byte the packed reporting path writes for a stored `model_id`.
 ///
-/// Live kinds, then the retired spellings, then a refusal that NAMES the id. The refusal is the
-/// behaviour change: this used to be a `_ => 0` arm, and 0 is the same byte the packed node
-/// writes for a bucket that holds no page at all, so an unrecognised kind was reported as an
-/// absence. A caller cannot handle what it cannot see.
+/// ONE LOOKUP OVER BOTH HALVES, then a refusal that NAMES the id. The refusal is the behaviour
+/// change #1970 made: this used to be a `_ => 0` arm, and 0 is the same byte the packed node writes
+/// for a bucket that holds no page at all, so an unrecognised kind was reported as an absence. A
+/// caller cannot handle what it cannot see.
+///
+/// IT USED TO BE TWO LOOKUPS -- `ModelKind::from_stored_name` and then a linear scan of
+/// `RETIRED_MODEL_REPORT_CODES` -- because the live set and the retired set were two different
+/// shapes. `StoredModelKind` is both halves of the declaration in one closed enum, so this is now a
+/// single match over seventeen spellings and the retired half is no longer a scan.
+///
+/// A MUTATION RUN IS WHY THIS CHANGED. Mutating `StoredModelKind::report_code` so every spelling
+/// packed as the same byte killed nothing, because at the time this function read
+/// `ModelKind::report_code` and the new accessor had no production caller at all -- a second
+/// derivation of the report byte that nothing reached. Routing the report through it makes the
+/// accessor reachable, and `a_zset_and_a_list_page_pack_as_their_own_kind_and_not_as_the_empty_code`
+/// then kills that mutant: it derives its expectation from `ModelKind::report_code`, which is a
+/// genuinely independent derivation rather than the same function compared against itself.
 pub(super) fn model_report_code(model_id: &str) -> u8 {
-    if let Some(kind) = ModelKind::from_stored_name(model_id) {
+    if let Some(kind) = StoredModelKind::from_stored_name(model_id) {
         return kind.report_code();
-    }
-    if let Some((_, code)) = RETIRED_MODEL_REPORT_CODES
-        .iter()
-        .find(|(name, _)| *name == model_id)
-    {
-        return *code;
     }
     panic!(
         "no packed report code for model id {model_id:?}. Every model id reaching here comes \

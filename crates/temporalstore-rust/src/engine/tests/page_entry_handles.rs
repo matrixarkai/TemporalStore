@@ -1253,7 +1253,7 @@ fn resolving_a_model_spelling_examines_no_page_index_entries() {
             folded = folded
                 .wrapping_mul(31)
                 .wrapping_add(spelling.len() as u64)
-                .wrapping_add(page.model_id.report_code() as u64);
+                .wrapping_add(spelling.as_bytes()[0] as u64);
             resolved += 1;
         }
     }
@@ -1459,6 +1459,77 @@ fn sample_entry() -> BlockIndex {
 #[should_panic(expected = "no stored model kind for model id \"not_a_model_kind\"")]
 fn a_written_spelling_with_no_row_is_refused_by_name() {
     crate::engine::storage_bucket_internals::stored_model_kind("not_a_model_kind");
+}
+
+/// THE TWO DERIVATIONS OF THE REPORT BYTE MUST AGREE, and they are independent.
+///
+/// `model_report_code` reads `StoredModelKind::report_code`; the registry's own guards derive their
+/// expectations from `ModelKind::report_code`. Those are two match arms generated from the same
+/// declaration, which is what makes the guards' comparison meaningful rather than a function
+/// checked against itself -- and what makes DRIFT between them possible. This pins the agreement
+/// over every live kind, and pins the retired half against the declared table.
+///
+/// It exists because a mutation run found the new accessor had no production caller at all: a
+/// second derivation nothing reached, so mutating it killed nothing. Routing the report through it
+/// fixed the reachability; this stops the two derivations diverging afterwards.
+#[test]
+fn the_two_derivations_of_the_report_byte_agree() {
+    use crate::engine::storage_bucket_internals::{
+        ModelKind, StoredModelKind as SMK, RETIRED_MODEL_REPORT_CODES,
+    };
+    let mut live = 0usize;
+    for kind in ModelKind::ALL {
+        let stored = SMK::from(*kind);
+        assert_eq!(
+            kind.report_code(),
+            stored.report_code(),
+            "the two derivations disagree for {:?}: ModelKind says {}, StoredModelKind says {}",
+            kind,
+            kind.report_code(),
+            stored.report_code()
+        );
+        assert_eq!(kind.as_str(), stored.as_str(), "and their spellings disagree for {kind:?}");
+        live += 1;
+    }
+    assert!(live >= 15, "only {live} live kinds were compared; the registry declares at least 15");
+
+    let mut retired = 0usize;
+    for (name, code) in RETIRED_MODEL_REPORT_CODES {
+        let stored = SMK::from_stored_name(name)
+            .unwrap_or_else(|| panic!("the entry's type cannot place the retired spelling {name:?}"));
+        assert!(stored.is_retired(), "{name:?} is declared retired and the entry's type says live");
+        assert_eq!(
+            *code,
+            stored.report_code(),
+            "the retired spelling {name:?} is declared as {code} and reads as {}",
+            stored.report_code()
+        );
+        retired += 1;
+    }
+    assert!(retired >= 2, "only {retired} retired spellings compared; the registry declares 2");
+
+    // AND NO TWO OF THE SEVENTEEN COLLIDE, read through the ACCESSOR rather than off the
+    // declaration. The declaration already has a const assert on its literals; that one cannot see
+    // a `report_code` whose arms stopped returning them, which is exactly the mutant that survived.
+    let mut seen: BTreeSet<u8> = BTreeSet::new();
+    for kind in SMK::ALL {
+        let code = kind.report_code();
+        assert_ne!(0, code, "{kind:?} packs as 0, the byte an empty bucket writes");
+        assert!(seen.insert(code), "two of the seventeen spellings pack as {code}");
+    }
+    assert_eq!(
+        SMK::ALL.len(),
+        seen.len(),
+        "{} spellings produced {} distinct bytes",
+        SMK::ALL.len(),
+        seen.len()
+    );
+    println!(
+        "\n=== the report byte ===\n  {live} live and {retired} retired spellings, {} distinct \
+         bytes over {} spellings, both derivations agreeing",
+        seen.len(),
+        SMK::ALL.len()
+    );
 }
 
 /// A RETIRED SPELLING STILL LOADS, which is why the entry's type covers BOTH halves of the
