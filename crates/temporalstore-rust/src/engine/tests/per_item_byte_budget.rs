@@ -98,15 +98,17 @@ fn budget() -> Vec<Budgeted> {
             name: "BlockAddress",
             size: size_of::<BlockAddress>(),
             align: align_of::<BlockAddress>(),
-            // block_slab_id, offset : u64 x 2
-            // length, block_id      : u32 x 2
+            // address               : u64  (slab id in the high 32 bits, offset in the low 32)
             // object_id             : u64
+            // length, block_id      : u32 x 2
             // routing_bucket        : u32
             // present               : u8
             //
             // `generation` was a fourth u64 here until it became derived from
             // `block_id.or(object_id)`; it is not a field any more, so it is not a row here.
-            fields: 3 * size_of::<u64>() + 3 * size_of::<u32>() + size_of::<u8>(),
+            // `block_slab_id` and `offset` were two more u64s until they became the two halves of
+            // `address` -- two rows became one for the same reason, and by the same eight bytes.
+            fields: 2 * size_of::<u64>() + 3 * size_of::<u32>() + size_of::<u8>(),
             per_item: true,
         },
         Budgeted {
@@ -312,7 +314,7 @@ fn every_per_item_structure_states_its_width_and_its_padding() {
     assert_eq!(8, size_of::<DeletedObjectIndex>(), "DeletedObjectIndex width moved");
     assert_eq!(24, size_of::<DirtyKeySet>(), "DirtyKeySet width moved");
     assert_eq!(16, size_of::<WalResidentBlock>(), "WalResidentBlock width moved");
-    assert_eq!(176, size_of::<IndexItem>(), "IndexItem width moved");
+    assert_eq!(168, size_of::<IndexItem>(), "IndexItem width moved");
     assert_eq!(104, size_of::<SlabCatalogEntry>(), "SlabCatalogEntry width moved");
     assert_eq!(
         168,
@@ -521,23 +523,43 @@ fn setting_a_length_after_the_fact_writes_it_and_saturates_it() {
 /// `engine::tests::page_entry_names::an_old_store_whose_generation_disagrees_is_refused_before_the_decode`.
 #[test]
 fn narrowing_the_resident_fields_did_not_move_the_stored_form() {
+    // THE SLAB AND THE OFFSET AT THEIR ADDRESSABLE MAXIMUMS, taken from the constants rather than
+    // written as a literal. This fixture used to carry a slab id of 9,876,543,210 -- above 2^32 --
+    // to state that the stored form kept 64-bit slab coordinates whatever the resident fields did.
+    // That premise is GONE: the two coordinates are now the two halves of one 32/32 word, so a
+    // slab id that large is refused rather than stored, and the largest one there is is what this
+    // pins instead.
+    let slab = crate::block_store::MAX_ADDRESSABLE_BLOCK_SLAB_ID;
+    let offset = crate::block_store::MAX_ADDRESSABLE_BLOCK_OFFSET;
     let address = BlockAddress::from_parts(
-        9_876_543_210,
-        1_234_567,
+        slab,
+        offset,
         1_048_576,
         Some(7),
         Some(0xDEAD_BEEF_CAFE_F00D),
         Some(4_294_967_290),
     );
+    let word = crate::block_store::make_block_address_word(slab as u32, offset as u32);
     let json = serde_json::to_string(&address).expect("an address serializes");
     assert_eq!(
-        "{\"ps\":9876543210,\"o\":1234567,\"l\":1048576,\"pi\":7,\"oi\":16045690984503111693,\
-         \"rs\":4294967290,\"g\":7,\"h\":null}",
+        format!(
+            "{{\"a\":{word},\"l\":1048576,\"pi\":7,\"oi\":16045690984503111693,\
+             \"rs\":4294967290,\"g\":7,\"h\":null}}"
+        ),
         json,
         "the stored spelling of an address moved"
     );
+    assert!(
+        !json.contains("\"ps\"") && !json.contains("\"o\":"),
+        "the split slab id and offset are still being written: {json}"
+    );
     let back: BlockAddress = serde_json::from_str(&json).expect("it reads back");
     assert_eq!(address, back, "an address must round-trip through its stored form");
+    assert_eq!(
+        (back.block_slab_id(), back.offset()),
+        (slab, offset),
+        "the packed word did not unpack to the two numbers that went into it"
+    );
 
     // A stored length or block id above the resident field is already outside what the encoder
     // can have written, so reading one is reading a corrupt index. It must come back saturated,
@@ -545,7 +567,7 @@ fn narrowing_the_resident_fields_did_not_move_the_stored_form() {
     // NO generation key here, deliberately. Besides the saturation it was written for, this
     // is the shape of an index written before the generation existed: an identity and no
     // generation at all. It must LOAD, and it must not acquire one.
-    let wide = "{\"ps\":1,\"o\":0,\"l\":4294967296,\"pi\":4294967296}";
+    let wide = "{\"a\":4294967296,\"l\":4294967296,\"pi\":4294967296}";
     let read: BlockAddress = serde_json::from_str(wide).expect("a wide stored value still loads");
     assert_eq!(u64::from(u32::MAX), read.length(), "a wide stored length saturates");
     assert_eq!(Some(u64::from(u32::MAX)), read.block_id(), "a wide stored block id saturates");
@@ -1207,11 +1229,13 @@ fn what_each_declined_shape_of_the_bucket_node_would_cost() {
 
     // --- The change this module documents. ---
     //
-    // EVERY ABSOLUTE FIGURE HERE IS EIGHT BYTES LOWER THAN IT WAS, AND NO DIFFERENCE MOVED. Each
-    // mirror is the live declaration plus one historical difference, so when the live node loses a
-    // word every mirror loses it too -- and it has to, or the differences below would be measured
-    // against a shape this engine does not have. `last_dump_sequence` left the eight-aligned group
-    // whole, which is the same reason the two earlier eight-byte changes came out of it whole.
+    // EVERY ABSOLUTE FIGURE HERE IS EIGHT BYTES LOWER THAN IT WAS, TWICE OVER, AND NO DIFFERENCE
+    // MOVED. Each mirror is the live declaration plus one historical difference, so when the live
+    // node loses a word every mirror loses it too -- and it has to, or the differences below would
+    // be measured against a shape this engine does not have. `last_dump_sequence` left the
+    // eight-aligned group whole, and the address inside the inline page entry merged its two slab
+    // coordinates into one word out of that same group, which is the same reason the two earlier
+    // eight-byte changes came out of it whole.
     assert_eq!(
         192, wide_ttl,
         "the shape before #1958 was 208 bytes, 200 once the address inside the inline page entry \

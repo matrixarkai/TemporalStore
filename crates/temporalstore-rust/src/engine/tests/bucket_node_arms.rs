@@ -4,10 +4,11 @@
 //! WOULD A BUCKET THAT HOLDS ONE PAGE BE CHEAPER AS ONE TAGGED WORD?
 //!
 //! THE PROPOSAL. `BucketNode` is the widest per-item structure in the engine and there is one
-//! per routing bucket. #1958 took it 208 -> 200, #1961 took it 200 -> 192 and #1966 took it
-//! 192 -> 184, all by narrowing fields. The shape proposed next does not narrow a field: it
+//! per routing bucket. #1958 took it 208 -> 200, #1961 took it 200 -> 192, #1966 took it
+//! 192 -> 184 and the address merge took it 184 -> 176, all by narrowing or merging fields. The
+//! shape proposed next does not narrow a field: it
 //! replaces the node's three container members -- `object_index`, `deleted_object_index` and
-//! `block_index`, 128 of the 176 bytes -- with ONE TAGGED WORD whose tag says whether the bucket
+//! `block_index`, 120 of the 168 bytes -- with ONE TAGGED WORD whose tag says whether the bucket
 //! is simple or general, and puts the payload of each arm behind that word. The node is then 56
 //! bytes, which is asserted here and reconstructs field by field.
 //!
@@ -33,11 +34,20 @@
 //!     eight bytes out of the address inside the inline page entry. The assertions were retargeted
 //!     then; the numbers in this comment were not. Three of the four allocation ratios still
 //!     reproduce exactly and one does not, and both byte columns at the configured range moved.
-//!   * SETTLED, AND IT IS THE ONE THAT DECIDES IT: THE NODE NARROWS BY 120 BYTES AND THE KEY
-//!     HOLDS EIGHT MORE. A simple bucket costs 176 B inline today. Tagged, it costs a 56 B node
-//!     plus the chunk the allocator serves a 112 B payload from, and that chunk is 128 B, READ
-//!     BACK FROM THE ALLOCATOR rather than taken from a formula: 184 B, +8 B a key. The 120 bytes
-//!     do not leave the key. They move from a field into a chunk.
+//!   * SETTLED, AND IT IS THE ONE THAT DECIDES IT: THE NODE NARROWS AND THE KEY DOES NOT. A
+//!     simple bucket costs 168 B inline today. Tagged, it costs a 56 B node plus the chunk the
+//!     allocator serves a 104 B payload from, READ BACK FROM THE ALLOCATOR rather than taken from
+//!     a formula. The bytes do not leave the key; they move from a field into a chunk.
+//!     RE-MEASURED TWICE SINCE, AND THE MARGIN HAS CLOSED TO ZERO: at 184 the pair was 192 and
+//!     the key held 8 B MORE; the flag packing took both sides down by eight (176 against 184)
+//!     and the address merge took both down by eight again (168 against 168), because each of
+//!     them shrinks the boxed payload by exactly what it shrinks the node by. The key now holds
+//!     the SAME bytes either way. The byte argument against the shape is spent; what is left
+//!     against it is one allocation and one indirection per occupied bucket, which no instrument
+//!     here prices.
+//!     `the_bytes_a_tagged_key_saves_are_not_bytes_a_tagged_key_stops_holding` reads the chunk
+//!     back and asserts the pair never comes in UNDER the inline width, which is the claim being
+//!     refuted, rather than pinning a delta that moves with the rounding step.
 //!   * STANDING: THE SAVING THAT DOES EXIST IS NOT A PER-KEY SAVING AND IT IS NOT THE SHAPE'S. It
 //!     is B-tree slot waste. A `BTreeMap` node holds eleven value slots whether they are filled or
 //!     not, so a narrower value fits more of them into one node -- which is worth real bytes at
@@ -85,18 +95,18 @@
 //! line is the simple bucket's OWN data -- and since that data is already a line away from the
 //! node, moving it costs no read and saves no resident byte.
 //!
-//! AND THAT DATA DOES NOT FIT IN A WORD. The design being compared against holds a page's
-//! address in 64 bits. Here a `BlockAddress` is 40 bytes of its own -- two slab coordinates, two
-//! identities, a length, a block id, a routing bucket and a presence byte -- and the page entry
-//! around it carries three shared names as well, for 96. #1962 established that those three
-//! names are per-object and per-page facts that cannot be hoisted to the bucket: hoisting them
-//! "would have passed every test at the default range and lost pages silently at the cluster
-//! range". So the simple arm cannot be a word here, and the most it can be is a pointer to 112
-//! bytes in a 128-byte chunk -- which is the shape this module prices and declines.
+//! AND THAT DATA DOES NOT FIT IN A WORD -- THOUGH THE ADDRESS INSIDE IT NOW DOES. A page's
+//! slab id and offset are one 64-bit word here as well, but a `BlockAddress` is 32 bytes around
+//! it: an identity, a length, a block id, a routing bucket and a presence byte all sit beside the
+//! word, and the page entry around THAT carries three shared names, for 88. #1962 established
+//! that those three names are per-object and per-page facts that cannot be hoisted to the bucket:
+//! hoisting them "would have passed every test at the default range and lost pages silently at the
+//! cluster range". So the simple arm cannot be a word here, and the most it can be is a pointer to
+//! 104 bytes in a 112-byte chunk -- which is the shape this module prices and declines.
 //!
 //! WHAT WOULD CHANGE THE ANSWER, STATED SO THE NEXT REVISIT DOES NOT START FROM NOTHING. Not a
 //! narrower node: the node is not what costs. The per-key figure moves only if the PAGE ENTRY
-//! gets smaller, and the entry is 96 bytes of which 48 are three `Arc<str>` names. Those are
+//! gets smaller, and the entry is 88 bytes of which 48 are three `Arc<str>` names. Those are
 //! per-page facts and must stay per-page -- #1962 is not in dispute -- but a per-page NAME HANDLE
 //! is still a per-page fact, and four bytes rather than sixteen. That is a different change with a
 //! different risk, and it is the one with the arithmetic behind it.
@@ -609,9 +619,9 @@ fn the_arm_a_bucket_node_lands_in_is_decided_by_the_routing_range_not_by_the_wor
 fn a_simple_bucket_holds_no_general_case_to_take_away() {
     // Each member's EMPTY and SINGLE spellings, and the width they occupy in the node.
     assert_eq!(
-        104,
+        96,
         size_of::<BlockIndexMap>(),
-        "the page index is {} bytes in the node, not 104; the accounting below is stale",
+        "the page index is {} bytes in the node, not 96; the accounting below is stale",
         size_of::<BlockIndexMap>()
     );
     assert_eq!(16, size_of::<ObjectIndex>(), "the object index moved");
@@ -621,14 +631,18 @@ fn a_simple_bucket_holds_no_general_case_to_take_away() {
         "the tombstone index moved"
     );
 
-    // The three members sum to 128 of the node's 176 -- the bytes the proposal would replace
-    // with one word. It was 136 of 192 until the address inside the inline page entry shed
-    // its derived generation; the members and the node each lost the same eight bytes, so
-    // what the proposal would replace is unchanged in kind and eight smaller in size.
+    // The three members sum to 120 of the node's 168 -- the bytes the proposal would replace
+    // with one word. It was 136 of 192, then 128 of 184 when the address inside the inline page
+    // entry shed its derived generation, 128 of 176 when the five flags became five bits (the
+    // node moved and the members did not -- the flags are not in them), and 120 of 168 when that
+    // address merged its slab id and its offset into one word. So of the three steps, two took
+    // the same eight bytes off the members AND off the node, and one took eight off the node
+    // alone. What the proposal would replace is unchanged in kind and smaller in size, which is
+    // the direction that makes the proposal worse rather than better.
     let members = size_of::<BlockIndexMap>() + size_of::<ObjectIndex>() + size_of::<DeletedObjectIndex>();
     assert_eq!(
-        128, members,
-        "the three container members are {members} bytes, not 128"
+        120, members,
+        "the three container members are {members} bytes, not 120"
     );
     assert!(
         members < size_of::<BucketNode>(),
@@ -660,15 +674,15 @@ fn a_simple_bucket_holds_no_general_case_to_take_away() {
 
     // THE ONE FACT THAT DECIDES THE SHAPE: what a simple bucket's data actually is.
     assert_eq!(
-        40,
+        32,
         size_of::<crate::block_store::BlockAddress>(),
-        "an address is {} bytes, not 40",
+        "an address is {} bytes, not 32",
         size_of::<crate::block_store::BlockAddress>()
     );
     assert_eq!(
-        96,
+        88,
         size_of::<BlockIndex>(),
-        "a page entry is {} bytes, not 96",
+        "a page entry is {} bytes, not 88",
         size_of::<BlockIndex>()
     );
     assert!(
@@ -989,11 +1003,13 @@ fn the_tagged_node_is_fifty_six_bytes_and_every_arm_reconstructs() {
         );
     }
 
-    assert_eq!(168, size_of::<BucketNode>(), "the live node moved");
-    // 48, not 56, and for the same reason the live node is 168 and not 176: this mirror carries
-     // the node's header, and the header lost a whole word when `last_dump_sequence` left it.
-     // (56 was itself 64 until the five flags became one byte and a ten-byte tail became six.)
-     // BOTH SIDES LOSE THE SAME EIGHT BYTES EACH TIME, so the verdict below is untouched.
+    assert_eq!(160, size_of::<BucketNode>(), "the live node moved");
+    // 48, not 56, and for the same reason the live node is 160 and not 168: this mirror carries
+    // the node's header, and the header lost a whole word when `last_dump_sequence` left it.
+    // (56 was itself 64 until the five flags became one byte and a ten-byte tail became six.) The
+    // address merge takes eight more off the LIVE node and off this mirror's boxed payload alike,
+    // because the payload holds that address too. BOTH SIDES LOSE THE SAME EIGHT BYTES EACH TIME,
+    // so the verdict below is untouched by any of the three.
     assert_eq!(
         48,
         size_of::<TaggedNode>(),
@@ -1001,18 +1017,20 @@ fn the_tagged_node_is_fifty_six_bytes_and_every_arm_reconstructs() {
         size_of::<TaggedNode>()
     );
     assert_eq!(
-        112,
+        104,
         size_of::<SimpleLayout>(),
-        "the simple payload is {} bytes, not 112",
+        "the simple payload is {} bytes, not 104",
         size_of::<SimpleLayout>()
     );
 
     // --- AND THE ARITHMETIC THAT READS AS A WIN, NAMED AS ARITHMETIC. ---
     //
-    // 128 bytes off the struct, and then a 120-byte allocation for very nearly every bucket at
-    // the default range. glibc serves a 120-byte request from a 128-byte chunk once it has taken
-    // its own header word and rounded to a multiple of sixteen, so the PAIR is 64 + 128 = 192 --
-    // exactly what it replaced, before the allocation itself and before the pointer chase. This
+    // 120 bytes off the struct, and then a 104-byte allocation for very nearly every bucket at
+    // the default range. glibc serves a 104-byte request from a 112-byte chunk once it has taken
+    // its own header word and rounded to a multiple of sixteen, so the PAIR is 64 + 112 = 176 --
+    // exactly what it replaced, before the allocation itself and before the pointer chase. The
+    // conclusion has survived both address narrowings unchanged, and for the same reason each
+    // time: the node and the out-of-line payload shrink together. This
     // is `size_of` arithmetic and is quoted as such; the measured figure is in
     // `what_the_tagged_node_actually_costs_the_allocator`.
     let chunk = |request: usize| (request + 8).div_ceil(16) * 16;
@@ -1710,11 +1728,27 @@ fn clone_counts_chunked<T: Clone>(value: &T) -> (u64, u64, u64) {
 
 /// THE PER-KEY FOOTPRINT OF A SIMPLE BUCKET, MEASURED RATHER THAN CALCULATED.
 ///
-/// THE CLAIM THIS EXISTS TO CHECK. The proposal is described as taking the node from 184 bytes to
-/// 64 -- "one hundred and twenty bytes on every key". Both numbers are right and the subtraction
-/// between them is not, because the 120 bytes do not leave: 112 of them move into a heap
-/// allocation, and an allocation costs the chunk it is served from rather than the width that was
-/// asked for.
+/// THE CLAIM THIS EXISTS TO CHECK. The proposal is described as taking the node from its full
+/// width down to 64 -- "one hundred and twenty bytes on every key" when the node was 184. Both
+/// numbers are right and the subtraction between them is not, because those bytes do not leave:
+/// all but sixteen of them move into a heap allocation, and an allocation costs the chunk it is
+/// served from rather than the width that was asked for.
+///
+/// THE COUNT IS NOT A CONSTANT, WHICH IS WHY IT IS NO LONGER IN THIS TEST'S NAME. The node has
+/// since gone 184 -> 176 (the address inside the inline page entry merged its slab id and its
+/// offset into one word) and the boxed payload went 112 -> 104 with it. The saving the sentence
+/// claims is therefore 112 bytes now, not 120, and it will move again the next time the page entry
+/// does. What does NOT move is the direction, which is the whole content of this test: the payload
+/// shrank by the same eight bytes as the node, so the chunk it is served from shrank by one
+/// rounding step too, and the pair still does not come in under the inline width.
+///
+/// AND THE MARGIN HAS CLOSED TO EXACTLY ZERO, WHICH IS A CHANGE IN THE ARGUMENT AND IS STATED AS
+/// ONE. At 184 the pair was 192 and the key held 8 bytes MORE. At 176 the pair is 176: the key
+/// holds the SAME bytes, and what is left against the shape is the allocation and the indirection
+/// rather than a byte count. So the assertion below is that the pair never comes in UNDER the
+/// inline width -- which is the claim being refuted -- and the delta is printed rather than
+/// pinned, because pinning it would make this test fail on the day the rounding step changes
+/// without the conclusion changing at all.
 ///
 /// `the_tagged_node_is_sixty_four_bytes_and_every_arm_reconstructs` already states the sum, and
 /// states it as arithmetic -- "ARITHMETIC ONLY", in its own words, with the chunk taken from a
@@ -1730,7 +1764,7 @@ fn clone_counts_chunked<T: Clone>(value: &T) -> (u64, u64, u64) {
 /// rust-internal: measures declarations and this crate's allocator, no product behaviour
 #[cfg(feature = "alloc-probe")]
 #[test]
-fn the_hundred_and_twenty_bytes_a_tagged_key_saves_are_not_bytes_a_tagged_key_stops_holding() {
+fn the_bytes_a_tagged_key_saves_are_not_bytes_a_tagged_key_stops_holding() {
     let boxed = Box::new(SimpleLayout {
         object_id: 1,
         handle: 7,
@@ -1762,34 +1796,49 @@ fn the_hundred_and_twenty_bytes_a_tagged_key_saves_are_not_bytes_a_tagged_key_st
     );
 
     // --- THE CLAIM, NAMED AND REFUSED. ---
+    //
+    // The count is DERIVED from the two widths rather than written down, so it moves when the
+    // node does instead of going stale beside it. It was 120 when the node was 184.
+    let claimed_saving = inline - size_of::<TaggedNode>();
     assert_eq!(
-        120,
-        inline - size_of::<TaggedNode>(),
-        "the node does go 176 -> 56; if that has changed the sentence this test refutes has \
-         changed with it"
+        112, claimed_saving,
+        "the node goes {inline} -> {} on this tree, a claimed saving of {claimed_saving} B; if \
+         that has changed, the sentence this test refutes has changed with it",
+        size_of::<TaggedNode>()
     );
     assert!(
-        pair > inline,
-        "a tagged simple bucket holds {pair} B per key against the live shape's {inline} B. The \
-         node IS 120 bytes narrower and the key holds MORE, because the 120 bytes moved into a \
-         chunk rather than going away. If this has become a real per-key saving, the decline \
-         recorded in this module is stale and the shape should be built"
+        pair >= inline,
+        "a tagged simple bucket holds {pair} B per key against the live shape's {inline} B, which \
+         is LESS -- a real per-key saving. The decline recorded in this module rests on the bytes \
+         not going away, so if they now do, the decline is stale and the shape should be built"
     );
     println!(
-        "    so: the node narrows by 120 B and the KEY grows by {} B. The saving that does exist \
-         is not this one -- it is B-tree slot waste, priced in the next test.",
+        "    so: the node narrows by {claimed_saving} B and the KEY holds {} B more. The saving \
+         that does exist is not this one -- it is B-tree slot waste, priced in the next test.",
         pair - inline
     );
+    // WHERE THE MARGIN NOW STANDS, stated rather than pinned. Equal is the interesting case and
+    // the one this tree is in: the byte argument against the shape has been spent, and what is
+    // left is the allocation and the indirection.
+    if pair == inline {
+        println!(
+            "    NOTE: the pair is EXACTLY the inline width. The byte argument against the tagged \
+             shape is spent at this node width; what remains against it is one allocation and one \
+             indirection per occupied bucket, which this instrument does not price."
+        );
+    }
 }
 
 /// THE FOUR CELLS AGAIN, WITH THE COLUMN #1965 COULD ONLY QUOTE AS A FORMULA.
 ///
 /// WHY THE REQUEST COLUMN IS NOT ENOUGH. The live shape holds its page entry inline, so the only
 /// thing it asks the allocator for is B-tree nodes: few, large, and barely rounded. The tagged
-/// shape asks for one 112-byte payload per occupied bucket on top, and a 112-byte request is a
-/// 128-byte chunk. The rounding is 14% of the payload and it lands entirely on the side that is
-/// being compared favourably, so a request-only comparison is biased, in a known direction, by a
-/// known amount. This measures it instead.
+/// shape asks for one payload per occupied bucket on top -- 104 bytes at this node width, served
+/// from a 112-byte chunk. The rounding lands entirely on the side that is being compared
+/// favourably, so a request-only comparison is biased, in a known direction, by a known amount.
+/// This measures it instead. The cells below were measured when the payload was 112 bytes in a
+/// 128-byte chunk; the payload lost eight bytes with the address merge and the chunk lost a
+/// rounding step with it, so the CELLS have moved and the direction has not.
 ///
 /// WHAT IS NOT IN DISPUTE. The byte saving at the default routing range is real and this
 /// reproduces it. What the chunk column changes is HOW BIG, and what the per-key test above

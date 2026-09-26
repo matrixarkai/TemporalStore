@@ -542,9 +542,12 @@ fn what_narrowing_or_removing_each_sequence_would_make_the_node() {
 
     // The two groups, taken from the declaration rather than from a literal.
     //
-    // 160 of eight-aligned field: 168 until `last_dump_sequence` left the node, which took a whole
-    // word out of the packed group. (168 itself was 176 until the `BlockAddress` inside the inline
-    // page entry stopped storing a `generation` it could derive.)
+    // 152 of eight-aligned field: 160 until the `BlockAddress` inside the inline page entry
+    // merged its slab id and its offset into ONE WORD, which takes a whole word out of the packed
+    // group one level in. 160 was itself 168 until `last_dump_sequence` left the node, which took
+    // a whole word out of the group directly, and 168 was 176 until that same address stopped
+    // storing a `generation` it could derive. Three eight-byte changes, all of them in THIS group
+    // and none of them in the tail.
     //
     // AND A SIX-BYTE TAIL, NOT TEN, WHICH MOVED A CONCLUSION RATHER THAN A LITERAL. The five
     // `bool` became five bits of one `BucketFlags` byte, so the tail is `routing_bucket` (4),
@@ -556,8 +559,9 @@ fn what_narrowing_or_removing_each_sequence_would_make_the_node() {
     // gave up is handed straight back. THE EIGHT BYTES ARE THE SAME EIGHT BYTES: packing the
     // flags and narrowing one sequence were two ways to collect one rounding, and only one of
     // them could be paid. Removing a word does NOT move the tail, which is why it crosses where a
-    // narrowing does not.
-    const EIGHT_ALIGNED: usize = 160;
+    // narrowing does not -- and MERGING two words into one is the same shape of change, which is
+    // why the address merge crosses too and leaves the conclusion above untouched.
+    const EIGHT_ALIGNED: usize = 152;
     const TAIL: usize = 6;
     let live = size_of::<BucketNode>();
     assert_eq!(

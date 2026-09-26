@@ -6578,10 +6578,16 @@ fn the_index_wire_keys_are_what_they_were() {
     assert_eq!(
         listed,
         vec![
+            // The MERGED ADDRESS WORD, which replaced "ps" and "o". One key where there were two:
+            // the slab id is its high 32 bits and the offset its low 32. The old pair is NOT an
+            // alias of this -- an index that spells them separately is refused at load, because
+            // read as a word a slab id of 1 beside an offset of 2 is slab 0 offset 1, a well-formed
+            // address for a different block.
+            "a",
             "address",
             "bucket_map",
             // "b", the older grouping id, is gone: a slab IS the unit, so an address derives it from
-            // `block_slab_id` rather than carrying it. An index written before this still has the
+            // the address word rather than carrying it. An index written before this still has the
             // key and still loads -- the wire struct does not deny unknown fields, so the stored
             // value is read and ignored.
             "component",
@@ -6601,13 +6607,12 @@ fn the_index_wire_keys_are_what_they_were() {
             "log_backed",
             "meta_loaded",
             "model_id",
-            "o",
+            // "o" and "ps" are gone -- merged into "a" at the top of this list.
             "object_index",
             "object_key",
             "oi",
             "page_index",
             "pi",
-            "ps",
             "routing_slot",
             "rs",
             "ttl_ms",
