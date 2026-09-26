@@ -65,7 +65,7 @@ Anything else is blank, and a blank means go and look.
 | numbers whose default this could read off the source | 70 |
 | **defaulting on, and set by nothing** | 7 |
 | offered on the portal | 27 |
-| **that nothing in this repository sets** | 177 |
+| **that nothing in this repository sets** | 175 |
 | documented as keeping an older path alive | 3 |
 | reaching more than two files | 15 |
 | whose doc comment is really about another flag | 38 |
@@ -110,8 +110,8 @@ Where this node is and what it talks to. Set by whoever provisions the node; not
 | `TS_SERVER_BIND_ADDR` | — | config, launch, script | 1 | — |
 | `TS_SERVER_LOCATION` | — | config | 1 | — |
 | `TS_SERVER_NODE_ID` | — | config, launch | 1 | — |
-| `TS_SHARD_END_ROUTING_BUCKET` | — | nothing | 1 | — |
-| `TS_SHARD_START_ROUTING_BUCKET` | — | nothing | 1 | — |
+| `TS_SHARD_END_ROUTING_BUCKET` | — | config | 1 | — |
+| `TS_SHARD_START_ROUTING_BUCKET` | — | config | 1 | — |
 | `TS_SHARD_URI` | — | test | 1 | — |
 | `TS_SHARED_STORE_CLUSTER_ID` | — | launch, script | 1 | — |
 | `TS_SHARED_STORE_DIR` | — | config, script | 1 | — |

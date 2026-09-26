@@ -5044,8 +5044,12 @@ fn open_engine(request: &RecordLogRequest) -> Result<RecordStore, String> {
         load_version: 0,
         local_node_id: None,
         shard_uri: String::new(),
-        start_routing_bucket: 0,
-        end_routing_bucket: u32::MAX,
+        // The named default rather than a literal whole keyspace, for the reason
+        // `drive_reassignments` in the metaserver states: two production sites that default the
+        // range differently file the same key's pages in two different bucket groups, and an
+        // existing store is honoured on the range it was built on either way.
+        start_routing_bucket: temporalstore_rust::DEFAULT_START_ROUTING_BUCKET,
+        end_routing_bucket: temporalstore_rust::DEFAULT_END_ROUTING_BUCKET,
         readonly: false,
         table_name: String::new(),
     });

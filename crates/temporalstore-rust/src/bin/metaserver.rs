@@ -998,13 +998,22 @@ fn drive_reassignments(
 ) {
     for plan in plans {
         let load_version = now_epoch_ms();
+        // THE ROUTING RANGE IS THE NAMED DEFAULT AND NOT A LITERAL, and this site is the reason
+        // the constant exists. A reassignment asks the TARGET to load the shard, and this asked
+        // for the whole keyspace while the target's own startup path asked for whatever
+        // TS_SHARD_END_ROUTING_BUCKET said -- so a shard created on 0..1023 and then reassigned
+        // was loaded on a range it was not built on. Routing decides which bucket a key's page is
+        // filed under, so every page written after the move landed in a bucket group the existing
+        // pages were not in, and nothing said so. It is now a refusal (`routing_range_mismatch`)
+        // rather than silence, and passing the named default is what keeps it from firing on an
+        // ordinary move.
         let load_request = LoadShardRequest {
             shard_id: plan.shard_id,
             load_version,
             local_node_id: None,
             shard_uri: String::new(),
-            start_routing_bucket: 0,
-            end_routing_bucket: u32::MAX,
+            start_routing_bucket: temporalstore_rust::DEFAULT_START_ROUTING_BUCKET,
+            end_routing_bucket: temporalstore_rust::DEFAULT_END_ROUTING_BUCKET,
             readonly: false,
             table_name: String::new(),
         };

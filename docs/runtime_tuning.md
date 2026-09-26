@@ -75,7 +75,20 @@ bash tools/run_ssd_blockcache_smoke_ubuntu22.sh
 | Environment variable | Default | Meaning |
 | --- | ---: | --- |
 | `TS_SHARD_START_ROUTING_BUCKET` | `0` | First routing bucket this shard owns. `TS_SHARD_START_ROUTING_SLOT` is the previous name and is still read. |
-| `TS_SHARD_END_ROUTING_BUCKET` | `4294967295` | Last routing bucket this shard owns. `TS_SHARD_END_ROUTING_SLOT` is the previous name and is still read. |
+| `TS_SHARD_END_ROUTING_BUCKET` | `1023` | Last routing bucket this shard owns. `TS_SHARD_END_ROUTING_SLOT` is the previous name and is still read. |
+
+**The default is `1023` — 1,024 buckets — and it was `4294967295` up to this
+release.** The whole `u32` range is 4.29 billion buckets, so every key landed alone
+in a bucket of its own by construction and this page then told an operator to set
+1,024 before the first ingest: the shipped default was not the configuration the
+documentation said to run. The new value was chosen by sweeping 255 / 1,023 / 4,095
+/ 65,535 at two corpus sizes rather than copied from the example below; the table
+under *What the sweep says* is that measurement.
+
+**An existing store keeps the range it was built on.** A store records its routing
+range beside its index (`shard-<id>.routing-range.json`), and a load honours that
+file rather than the default — see *Changing the range on a populated store* below.
+So this default reaches new stores only, and no upgrade re-ranges anything.
 
 A routing slot is derived by hashing the key, so with the full `u32` range every
 key lands in a slot of its own and each one materializes a `BucketNode` carrying
@@ -96,23 +109,55 @@ Narrowing the range makes records share slots. Measured on 40,000 records, a
 1024 slots, so there is little reason to go narrower. For a store of 4 million
 records that is roughly 24 GB against 13 GB.
 
-**It is not free, and below a certain fill it is a loss.** The figures above are
-whole-process resident memory. The bucket index itself moves the other way at a
-shallow fill, because a bucket holding one page holds it *inline* and allocates
-nothing, while a bucket holding several holds them in a `BTreeMap` whose node is
-sized for eleven entries whether or not it fills them. Measured on the bucket map
-with a counting allocator, routed string keys, store path held at 15 characters:
+### What the sweep says
 
-| records | buckets | pages a bucket | bytes / page | allocations / page |
-| ---: | ---: | ---: | ---: | ---: |
-| 4,000 | 4,000 (default) | 1.00 | 329.5 | 0.1452 |
-| 4,000 | 1,024 | 3.91 | **413.1 (+25.4%)** | **0.7625 (+425%)** |
-| 40,000 | 40,000 (default) | 1.00 | 327.9 | 0.1446 |
-| 40,000 | 1,024 | 39.06 | **209.9 (-36.0%)** | **0.3195 (+121%)** |
+Measured on the bucket map with a counting allocator, routed string keys, store path
+held at 15 characters, every distribution taken as a histogram with percentiles and a
+MAX rather than as a mean. **Both allocator columns are reported**: `ALLOC_BYTES`
+charges what the caller asked for and `ALLOC_CHUNK_BYTES` charges what the allocator
+actually set aside, and a container change moves the rounding between them.
 
-So narrow the range when the corpus is large enough to fill the buckets well past
-eleven pages, and not otherwise. At 40,000 records over 1,024 buckets the bytes
-fall by a third and the allocation count still more than doubles.
+40,000 routed records:
+
+| end | buckets | pages a bucket (p50 / MAX) | request B / record | chunk B / record | allocations / record | dump + release unit | read path, entries / lookup |
+| ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| `255` | 256 | 156 / 168 | 113.8 (−58.9%) | **114.1 (−59.2%)** | 0.0201 (−86.1%) | 168 pages | 6.42 |
+| `1023` | 1,024 | 39 / 50 | 119.3 (−56.9%) | **120.2 (−57.0%)** | 0.0803 (−44.5%) | 50 pages | 4.54 |
+| `4095` | 4,096 | 10 / 21 | 140.7 (−49.2%) | 144.1 (−48.4%) | 0.3207 (+121.9%) | 21 pages | 2.91 |
+| `65535` | 28,120 occupied of 65,536 | 1 / 6 | 243.0 (−12.3%) | 252.7 (−9.5%) | 0.7649 (+429.1%) | 6 pages | 0.83 |
+| `4294967295` | 40,000 | 1 / 1 | 277.0 | 279.3 | 0.1446 | 1 page | 0.00 |
+
+4,000 routed records, where the same bucket counts produce a tenth of the fill:
+
+| end | buckets | pages a bucket (p50 / MAX) | request B / record | chunk B / record | allocations / record |
+| ---: | ---: | ---: | ---: | ---: | ---: |
+| `255` | 256 | 16 / 21 | 130.3 (−53.2%) | 132.6 (−52.8%) | 0.2008 (+38.2%) |
+| `1023` | 1,024 | 4 / 8 | 183.4 (−34.1%) | 191.9 (−31.6%) | 0.7625 (+425.0%) |
+| `4095` | 2,754 occupied of 4,096 | 1 / 4 | 245.4 (−11.8%) | 256.2 (−8.7%) | 0.8480 (+483.8%) |
+| `65535` | 3,752 occupied of 65,536 | 1 / 2 | 253.4 (−9.0%) | 257.9 (−8.1%) | 0.3103 (+113.6%) |
+| `4294967295` | 4,000 | 1 / 1 | 278.3 | 280.7 | 0.1452 |
+
+**Why `1023` and not `255`, which is better on every byte column.** The byte saving
+*saturates* — `1023` is within 5% of the floor `255` reaches — while the dump and
+release unit grows *linearly in the corpus and without bound*, because the fill is
+`records / bucket-count`. At 40,000 records `255` costs a 168-page dump-and-release
+unit against `1023`'s 50; at 400,000 it would be 1,680 against 500. So the right
+default is the widest range that still reaches the amortisation floor.
+
+**And no fixed bucket count is right for every corpus.** The fill a range produces
+moves with the record count, which the engine does not know when it loads a shard:
+`1023` sits at 3.91 pages a bucket for a 4,000-record store and 39.06 for a
+40,000-record one. A store much smaller than 40,000 records is better served by a
+narrower range and one much larger by a wider one, and the figures above are what to
+choose from.
+
+**A prior version of this table had the sign wrong.** It reported 413.1 B a page at
+4,000 records on `1023` — a *loss* of 25.4% — against the 183.4 measured now. The
+`Many` arm of the page index was a `BTreeMap` when that figure was taken and is a
+flat sorted `Vec` now, which changed the sign of the byte column while leaving the
+allocation column almost exactly as it was (+425% then, +425.0% now). Nothing
+failed, because the guard behind the figure deliberately asserts the *mechanism*
+and not the sign.
 
 **And a routing bucket is the unit of more than memory.** It is the unit of
 eviction victim selection, of cache invalidation, of the dump's bucket budget, of
@@ -123,16 +168,36 @@ eight at 4,000 records on `1023`, one hot key holds the log floor for every key
 sharing its bucket, and one evicted bucket takes every key in it. Reads are
 unaffected -- they resolve through the model maps, not the bucket index.
 
+`0..1023` is now the default, so a new store needs no flags at all. Set them only to
+choose something *other* than the default — a narrower range for a store that will
+stay small, or a wider one for a store much larger than 40,000 records:
+
 ```bash
 TS_SHARD_START_ROUTING_BUCKET=0 \
-TS_SHARD_END_ROUTING_BUCKET=1023 \
+TS_SHARD_END_ROUTING_BUCKET=4095 \
 matrixark_rust_datanode
 ```
 
-**Set this before the first ingest, and narrowing it later is silent.** A page's
-bucket is written onto its address when the page is appended, and a reopened range
-is consulted only for an address that carries no bucket of its own. So changing the
-range on a populated store re-files nothing. Driven both ways over 2,000 records:
+### Changing the range on a populated store
+
+**A load refuses when the range disagrees with the range the store was built on.**
+A page's bucket is written onto its address when the page is appended, and a reopened
+range is consulted only for an address that carries no bucket of its own — so
+changing the range on a populated store re-files nothing, and every page stays where
+the old range put it. The engine therefore records the range a store was built under
+in `shard-<id>.routing-range.json` beside the base index, reads it *before* decoding
+anything, and refuses the load with `routing_range_mismatch` when the two disagree,
+naming both ranges and the file. Re-ingest into a new store to adopt a different
+range.
+
+A store written before the engine recorded the range carries no such file. It can
+only have been built on the whole `u32` keyspace, which was the only default, so it
+is **honoured on that range** — the requested range is overridden, the inference is
+logged at `warn`, and the file is written so the next load does not have to make it
+again. An upgrade therefore changes nothing about an existing store.
+
+This is what the refusal prevents, driven both ways over 2,000 records before it
+existed:
 
 * **Widening** (`1023` then the default) is safe. Every record readable, every page
   present, nothing outside the new range — because the wide range contains the
@@ -147,6 +212,12 @@ range on a populated store re-files nothing. Driven both ways over 2,000 records
 On a fresh store it is safe: sampled reads returned no missing and no mismatched
 values after the writes, after a dump, and after a restart that recovered from the
 on-disk artifacts.
+
+Both arms are now unreachable through a normal load: the narrowing one is refused,
+and the widening one is refused too. Widening leaves every page *inside* the new
+range, so it loses nothing — but it routes every subsequent write to a bucket a
+re-read of the same key would not compute, so it is not a safe operation either and
+is refused for the same reason.
 
 The range also bounds how finely slots can be divided between shards, so keep it
 comfortably above the shard count you expect to grow into.
