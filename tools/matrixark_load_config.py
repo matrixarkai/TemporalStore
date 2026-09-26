@@ -58,6 +58,12 @@ ENV_MAP: Dict[str, str] = {
     "server.advertise_addr": "TS_SERVER_ADVERTISE_ADDR",
     "server.node_id": "TS_SERVER_NODE_ID",
     "server.shard_id": "TS_SHARD_ID",
+    # The routing bucket range. Mapped to the CURRENT spellings only: the engine also reads
+    # TS_SHARD_START_ROUTING_SLOT / TS_SHARD_END_ROUTING_SLOT as the previous names, but a
+    # config file written today should not be emitting a name that is only read for
+    # compatibility.
+    "server.start_routing_bucket": "TS_SHARD_START_ROUTING_BUCKET",
+    "server.end_routing_bucket": "TS_SHARD_END_ROUTING_BUCKET",
     "server.worker_threads": "TS_SERVER_WORKER_THREADS",
     "server.max_queue_depth": "TS_SERVER_MAX_QUEUE_DEPTH",
     "server.max_background_queue_depth": "TS_SERVER_MAX_BACKGROUND_QUEUE_DEPTH",

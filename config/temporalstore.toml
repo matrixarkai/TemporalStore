@@ -36,6 +36,17 @@ bind_addr = "127.0.0.1:17002"          # TS_SERVER_BIND_ADDR    datanode listen 
 # advertise_addr = "127.0.0.1:17002"   # TS_SERVER_ADVERTISE_ADDR  address advertised to metaserver (default = bind_addr)
 node_id = 0                            # TS_SERVER_NODE_ID      stable numeric node id (0 = auto)
 shard_id = 1                           # TS_SHARD_ID            shard this datanode loads
+# The routing bucket range this shard owns. A page's bucket is the key's hash modulo the
+# range WIDTH, so this decides how many keys share a bucket -- see docs/runtime_tuning.md.
+# It applies to NEW stores only: an existing store is honoured on the range it was built
+# on, recorded in shard-<id>.routing-range.json, and a load whose range disagrees with that
+# file is REFUSED rather than serving pages filed outside the range the shard holds.
+# The previous spellings of these two keys are still read by the engine and are named in
+# docs/runtime_tuning.md. They are deliberately NOT written here: the flag inventory computes
+# "set by" from the names this file mentions, so naming them would credit this file with
+# setting a key it only documents.
+start_routing_bucket = 0               # TS_SHARD_START_ROUTING_BUCKET
+end_routing_bucket = 1023              # TS_SHARD_END_ROUTING_BUCKET
 worker_threads = 4                     # TS_SERVER_WORKER_THREADS   request worker pool size
 max_queue_depth = 1024                 # TS_SERVER_MAX_QUEUE_DEPTH  admission cap for foreground requests
 max_background_queue_depth = 128       # TS_SERVER_MAX_BACKGROUND_QUEUE_DEPTH  cap for background tasks

@@ -630,8 +630,25 @@ fn the_routing_range_field_changes_no_serialized_byte() {
 ///
 /// The second direction is the one with something to lose -- a store written on the whole range
 /// and read on `0..1023` has every whole-range bucket outside the reading range.
+/// AND IT IS NOW A REFUSAL -- the cross-range reopen this test drove is no longer reachable.
+///
+/// What this test established is not deleted, it is INVERTED, the same way
+/// `the_two_sites_that_file_a_page_now_file_it_under_the_shards_own_range` inverted mx#1949's
+/// measurement rather than removing it. It showed that a store written on one range reads back
+/// whole on the other -- true, and the reason the hazard was silent: every record read while every
+/// page sat in a bucket the reopened shard did not hold. `routing_range_stamp.rs` records the range
+/// a store was built under and the load REFUSES when the configured range disagrees.
+///
+/// REPLACED, NOT RETARGETED. Deleting the stamp to keep the old assertions passing would put both
+/// arms on the pre-stamp ADOPTION path, which honours the range the store was BUILT on -- so each
+/// arm would read on the range it wrote on while the name still said "on the other". A test that
+/// quietly starts measuring a different population is worse than a red one.
+///
+/// The `routing_range()` assertion this test carried -- that a reloaded shard carries the range it
+/// was LOADED with rather than the one it was written with -- is kept, over the arm where the load
+/// is now allowed.
 #[test]
-fn a_store_written_on_one_range_still_reads_back_whole_on_the_other() {
+fn a_store_written_on_one_range_is_refused_on_the_other() {
     for (write_end, read_end) in [(NARROW_END, WIDE_END), (WIDE_END, NARROW_END)] {
         let dir = tempfile::tempdir().expect("tempdir");
         let keys = {
@@ -643,33 +660,64 @@ fn a_store_written_on_one_range_still_reads_back_whole_on_the_other() {
             keys
         };
         let engine = engine_on(dir.path());
-        load_on(&engine, read_end);
+        let status = engine
+            .load_shard_with(crate::control::LoadShardRequest {
+                shard_id: 1,
+                table_name: "shard-carried-range".to_string(),
+                shard_uri: "local://shard-carried-range/1".to_string(),
+                start_routing_bucket: 0,
+                end_routing_bucket: read_end,
+                readonly: false,
+                load_version: 1,
+                local_node_id: Some(1),
+            })
+            .status;
+        println!(
+            "  wrote on 0..{write_end}, opened on 0..{read_end}: ok={} code={}",
+            status.ok, status.code
+        );
+        assert!(
+            !status.ok,
+            "wrote on 0..{write_end} and opened on 0..{read_end}: the load succeeded, so a \
+             populated store can still be opened on a range none of its pages are filed under"
+        );
+        assert_eq!(
+            "routing_range_mismatch", status.code,
+            "the load was refused with code `{}` rather than `routing_range_mismatch`",
+            status.code
+        );
+
+        // THE ARM WHERE THE LOAD IS ALLOWED, carrying every assertion that is still reachable.
+        load_on(&engine, write_end);
         let recovered = read_back(&engine, &keys);
         let shards = engine.shards.read().expect("shards lock poisoned");
         let shard = shards.get(&1).expect("shard 1 is loaded");
         let contents = bucket_contents(shard);
-        let outside = buckets_outside(&contents, 0, read_end);
+        let outside = buckets_outside(&contents, 0, write_end);
         println!(
-            "  wrote on 0..{write_end}, read on 0..{read_end}: {recovered}/{RECORDS} records, \
-             {} pages, {outside} buckets outside the reading range, stamp {:?}",
+            "  reopened on 0..{write_end}: {recovered}/{RECORDS} records, {} pages, {outside} \
+             buckets outside the range, stamp {:?}",
             page_total(&contents),
             shard.routing_range()
         );
         assert_eq!(
             RECORDS, recovered,
-            "wrote on 0..{write_end}, read on 0..{read_end}: {recovered} of {RECORDS} records \
-             came back"
+            "reopened on 0..{write_end}: {recovered} of {RECORDS} records came back"
         );
         assert!(
             page_total(&contents) >= RECORDS,
-            "wrote on 0..{write_end}, read on 0..{read_end}: {} pages for {RECORDS} records",
+            "reopened on 0..{write_end}: {} pages for {RECORDS} records",
             page_total(&contents)
         );
         assert_eq!(
-            (0, read_end),
+            0, outside,
+            "reopened on the range it was written on, {outside} buckets sit above the shard's end"
+        );
+        assert_eq!(
+            (0, write_end),
             shard.routing_range(),
-            "the reloaded shard carries the range it was written with, not the one it was read \
-             with"
+            "the reloaded shard carries {:?} rather than the range it was loaded with",
+            shard.routing_range()
         );
     }
 }

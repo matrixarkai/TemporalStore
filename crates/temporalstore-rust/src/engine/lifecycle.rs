@@ -594,6 +594,23 @@ impl TemporalEngine {
         )
     }
 
+    /// Load a shard on the WHOLE KEYSPACE, which is NO LONGER THE PRODUCTION DEFAULT.
+    ///
+    /// `startup_load_shard_request` -- the one path a deployment loads a shard through -- defaults
+    /// `end_routing_bucket` to [`crate::DEFAULT_END_ROUTING_BUCKET`]. This convenience keeps the
+    /// whole keyspace, and the divergence is DELIBERATE rather than an oversight:
+    ///
+    ///   * several hundred tests call this, and the range decides which arm of `BlockIndexMap`
+    ///     every one of them exercises. Moving it would change the shape under all of them at once,
+    ///     which is a different change from moving the shipped default; and
+    ///   * a fixture that wants the production shape should say so, because at the whole keyspace
+    ///     EVERY KEY LANDS ALONE IN ITS OWN BUCKET BY CONSTRUCTION -- the modulus is 4.29 billion.
+    ///     #1959 measured "almost every bucket holds exactly one page" off a fixture on this
+    ///     function and read it as a property of the workload.
+    ///
+    /// SO IF YOU ARE MEASURING ANYTHING PER BUCKET, DO NOT USE THIS. Call `load_shard_with` and
+    /// name the range. `the_convenience_load_is_deliberately_not_the_production_default` holds the
+    /// divergence as an assertion so it cannot drift into an accident.
     pub fn load_shard(&self, shard_id: ShardId) {
         let request = LoadShardRequest {
             shard_id,
@@ -621,6 +638,80 @@ impl TemporalEngine {
                 status: Status::error("already_exists", "shard already exists"),
             };
         }
+
+        // THE ROUTING RANGE IS SETTLED HERE, BEFORE ANY DECODE, and it is the one place it can be.
+        //
+        // A page's bucket is the key's hash modulo the RANGE WIDTH, so a store written on one range
+        // holds its pages under buckets another range never computes -- and nothing re-files them,
+        // because the write path stamps an explicit bucket onto every address. Measured: 2,000 of
+        // 2,000 pages of a store written on the whole keyspace come back filed ABOVE the end of a
+        // shard reopened on `0..1023`, every record still readable and every page outside the
+        // dump's bucket selection, eviction's victim sampling, the reclaim floor and the release
+        // pass. After the decode those pages are already in the wrong buckets in memory, which is
+        // why this runs first and why a mismatch is a REFUSAL rather than a warning.
+        //
+        // See `engine/routing_range_stamp.rs` for the three cases and why the pre-stamp store is
+        // honoured rather than refused.
+        let mut request = request;
+        match crate::engine::routing_range_stamp::decide_routing_range(
+            &self.index_dir,
+            request.shard_id,
+            request.start_routing_bucket,
+            request.end_routing_bucket,
+        ) {
+            crate::engine::routing_range_stamp::RoutingRangeDecision::Refuse { message } => {
+                return LoadShardResponse {
+                    status: Status::error("routing_range_mismatch", message),
+                };
+            }
+            crate::engine::routing_range_stamp::RoutingRangeDecision::Load {
+                start_routing_bucket,
+                end_routing_bucket,
+                write_stamp,
+                adopted_legacy,
+            } => {
+                if adopted_legacy {
+                    tracing::warn!(
+                        shard_id = request.shard_id,
+                        requested_start_routing_bucket = request.start_routing_bucket,
+                        requested_end_routing_bucket = request.end_routing_bucket,
+                        start_routing_bucket,
+                        end_routing_bucket,
+                        "shard has on-disk state and no recorded routing range, so it was built \
+                         before the engine recorded one and can only have been built on the whole \
+                         keyspace; honouring that range instead of the requested one. Re-ingest \
+                         into a new store to adopt the current default."
+                    );
+                }
+                request.start_routing_bucket = start_routing_bucket;
+                request.end_routing_bucket = end_routing_bucket;
+                if write_stamp {
+                    if let Err(error) = crate::engine::routing_range_stamp::write_routing_range_stamp(
+                        &self.index_dir,
+                        request.shard_id,
+                        crate::engine::routing_range_stamp::RoutingRangeStamp {
+                            start_routing_bucket,
+                            end_routing_bucket,
+                        },
+                    ) {
+                        // A stamp that cannot be written is not fatal to THIS load -- the range in
+                        // hand is the right one -- but the NEXT load would read no stamp, see
+                        // on-disk state, and honour the whole keyspace instead. Loud, because that
+                        // is a silent re-ranging one restart away.
+                        tracing::error!(
+                            shard_id = request.shard_id,
+                            start_routing_bucket,
+                            end_routing_bucket,
+                            %error,
+                            "could not record this shard's routing range; a later load will not \
+                             know the range this store was built on"
+                        );
+                    }
+                }
+            }
+        }
+        let request = request;
+
         #[cfg(test)]
         restore_phase_probe::begin();
         let (loaded, replay_watermark) = if wal_single_barrier() {
