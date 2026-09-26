@@ -954,8 +954,8 @@ fn every_byte_of_the_bucket_node_is_accounted_for() {
         size - eight_aligned
     );
 
-    assert_eq!(166, sum, "the fields of BucketNode add up to {sum}, not 166");
-    assert_eq!(168, size, "BucketNode is {size} bytes wide, not 168");
+    assert_eq!(158, sum, "the fields of BucketNode add up to {sum}, not 158");
+    assert_eq!(160, size, "BucketNode is {size} bytes wide, not 160");
     assert_eq!(2, slack, "BucketNode carries {slack} bytes of alignment slack, not 2");
 
     // The layout rule itself, asserted rather than described: the eight-aligned group packs
@@ -1242,19 +1242,20 @@ fn what_each_declined_shape_of_the_bucket_node_would_cost() {
     // coordinates into one word out of that same group, which is the same reason the two earlier
     // eight-byte changes came out of it whole.
     assert_eq!(
-        192, wide_ttl,
+        184, wide_ttl,
         "the shape before #1958 was 208 bytes, 200 once the address inside the inline page entry \
-         shed its derived generation, and 192 once the node stopped carrying a per-bucket \
-         last_dump_sequence; it reads as {wide_ttl}, so the mirrors have drifted from the history \
-         they claim to price"
+         shed its derived generation, 192 once the node stopped carrying a per-bucket \
+         last_dump_sequence, and 184 once that address merged its two slab coordinates; it reads \
+         as {wide_ttl}, so the mirrors have drifted from the history they claim to price"
     );
     assert_eq!(
-        184, wide_tombstone,
+        176, wide_tombstone,
         "the shape before #1961 was 200 bytes, 192 once the address shed its derived generation, \
-         and 184 once the node stopped carrying a per-bucket last_dump_sequence; it reads as \
-         {wide_tombstone}, so the eight bytes that change claims are not the eight bytes it took"
+         184 once the node stopped carrying a per-bucket last_dump_sequence, and 176 once that \
+         address merged its two slab coordinates; it reads as {wide_tombstone}, so the eight \
+         bytes that change claims are not the eight bytes it took"
     );
-    assert_eq!(168, live, "the node is {live} bytes, not 168");
+    assert_eq!(160, live, "the node is {live} bytes, not 160");
     assert_eq!(
         168, loose,
         "the shape before the flags were packed was 184 bytes, 176 once the node stopped \
