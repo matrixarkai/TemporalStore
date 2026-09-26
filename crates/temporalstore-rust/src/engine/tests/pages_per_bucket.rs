@@ -610,7 +610,7 @@ enum MirrorInlineAddress {
 #[allow(dead_code)]
 struct MirrorPageNoDeleted {
     object_key: Arc<str>,
-    model_id: Arc<str>,
+    model_id: crate::engine::storage_bucket_internals::StoredModelKind,
     component: Option<Arc<str>>,
     address: BlockAddress,
     dirty: bool,
@@ -621,7 +621,7 @@ struct MirrorPageNoDeleted {
 #[allow(dead_code)]
 struct MirrorPageOneFlagByte {
     object_key: Arc<str>,
-    model_id: Arc<str>,
+    model_id: crate::engine::storage_bucket_internals::StoredModelKind,
     component: Option<Arc<str>>,
     address: BlockAddress,
     flags: u8,
@@ -631,7 +631,18 @@ struct MirrorPageOneFlagByte {
 #[allow(dead_code)]
 struct MirrorPageNoFlags {
     object_key: Arc<str>,
-    model_id: Arc<str>,
+    model_id: crate::engine::storage_bucket_internals::StoredModelKind,
+    component: Option<Arc<str>>,
+    address: BlockAddress,
+}
+
+/// The page entry with the flags gone AND the model spelling with them -- an EMPTY tail.
+///
+/// The only shape that still crosses the rounding, and it is here to bound the negative claim
+/// below rather than as a proposal: the spelling is not removable, it is what names the kind.
+#[allow(dead_code)]
+struct MirrorPageEmptyTail {
+    object_key: Arc<str>,
     component: Option<Arc<str>>,
     address: BlockAddress,
 }
@@ -920,11 +931,21 @@ fn what_the_common_case_could_hold_inline_and_what_this_engines_page_entry_forbi
             format!("{:+}", width as isize - size_of::<BlockIndex>() as isize)
         );
     }
+    // A CONCLUSION MOVED HERE, not a literal. Until the model spelling became one byte the tail
+    // was three flag bytes in an eight-byte rounding, and removing ALL THREE was the one flag
+    // change that crossed it -- 0 in 0. The spelling now shares that rounding, so the tail is four
+    // bytes and cannot reach zero: the spelling is not removable, it is what names the kind. So
+    // NOTHING in the tail moves this entry any more. Packing does not, removing one does not, and
+    // removing all three does not either.
+    //
+    // That is a stronger statement than the one it replaces and it is the same shape of correction
+    // #1968 had to make in the other direction: a claim about what a tail can do is a claim about
+    // the tail's WIDTH, and it goes stale the moment anything else lands in it.
     assert_eq!(
         size_of::<BlockIndex>(),
         size_of::<MirrorPageNoDeleted>(),
-        "removing the `deleted` field moved the entry's width; the three flags are no longer \
-         sitting inside one rounding and the note above is stale"
+        "removing the `deleted` field moved the entry's width; the tail is no longer sitting \
+         inside one rounding and the note above is stale"
     );
     assert_eq!(
         size_of::<BlockIndex>(),
@@ -932,10 +953,33 @@ fn what_the_common_case_could_hold_inline_and_what_this_engines_page_entry_forbi
         "folding the three flags into one byte moved the entry's width, which would mean they had \
          been costing more than three bytes and they are not"
     );
+    assert_eq!(
+        size_of::<BlockIndex>(),
+        size_of::<MirrorPageNoFlags>(),
+        "removing ALL THREE flags moved the entry from {} B to {} B. That used to be the one flag \
+         change that crossed the rounding, and it stopped being one when the model spelling joined \
+         the tail -- so if it crosses again, something has left the tail and the claim below is \
+         stale",
+        size_of::<BlockIndex>(),
+        size_of::<MirrorPageNoFlags>()
+    );
+    // AND THE BOUND ON THAT NEGATIVE. A claim that nothing in the tail can pay is worth having
+    // only if something COULD: emptying the tail entirely does cross, by a whole word.
     assert!(
-        size_of::<MirrorPageNoFlags>() < size_of::<BlockIndex>(),
-        "removing ALL THREE flags is supposed to move the entry; it is the only flag change that \
-         crosses the rounding"
+        size_of::<MirrorPageEmptyTail>() < size_of::<BlockIndex>(),
+        "an entry with NO tail at all is {} B against {} B; if even that does not cross, this \
+         reconstruction is not describing the rounding it claims to",
+        size_of::<MirrorPageEmptyTail>(),
+        size_of::<BlockIndex>()
+    );
+    println!(
+        "  THE TAIL IS NOW DEAD WEIGHT AND CANNOT BE SPENT: {} B of tail in an {} B rounding, so \
+         packing the flags, dropping one and dropping all three all leave the entry at {} B. Only \
+         an EMPTY tail crosses ({} B), and the model byte is what stops it being emptied.",
+        size_of::<crate::engine::storage_bucket_internals::StoredModelKind>() + 3,
+        align_of::<BlockIndex>(),
+        size_of::<BlockIndex>(),
+        size_of::<MirrorPageEmptyTail>()
     );
 
     // --- AND THE SAVING THE WHOLE TIERING WOULD BUY, IF THE ENTRY EVER GOT THERE. ---
