@@ -1523,7 +1523,7 @@ pub(super) fn promote_model_maps_to_bucket_index_authority(
                     .unwrap_or(false);
                 if !released
                     && !shard.bucket_index.contains_object_block_address(
-                        kind,
+                        kind.as_str(),
                         object_key,
                         component,
                         address,
@@ -2554,6 +2554,175 @@ pub(super) fn sync_context_blocks_for_object(
     true
 }
 
+/// THE MODEL KINDS A LIVE-PAGE WALK CAN EMIT, AND THE BYTE EACH ONE PACKS AS, DECLARED ONCE.
+///
+/// WHAT THIS REPLACES, AND THE TWO SETS THAT WERE NEVER COMPARED. `storage_model_code` in
+/// `storage_reporting.rs` hand-listed fifteen `&str` arms beside the walk below, which emits a
+/// DIFFERENT fifteen. Both differences mattered, and in opposite ways:
+///
+///   * `zset` and `list` ARE emitted by the arms below and had no entry, so both fell through the
+///     list's `_ => 0` arm. Zero is also what that arm handed a model id the reporting path
+///     cannot name at all, so the packed block-index byte could not tell a zset page from a page
+///     whose kind the engine does not recognise. Three different answers behind one byte.
+///   * `sequence` and `context_embedding` had entries and are NOT emitted -- and those two are
+///     not drift. Both are RETIRED spellings a stored index can still carry:
+///     `ShardState::sequences` exists only to fold a pre-fold index's sequence map into
+///     `features` at load, and `restore_model_maps_from_bucket_index` says in as many words that
+///     `context_embedding` entries from pre-retirement indexes fall through to its ignore arm. An
+///     index written before either retirement still loads, so a report over one still has to be
+///     able to name what it finds. They are declared as retired rather than deleted, each with
+///     its reason beside it, because an exemption list whose entries are not justified is a
+///     hiding place.
+///
+/// HOW THE SET IS CLOSED AT COMPILE TIME, which is the part a table beside a walk cannot do.
+/// [`visit_model_live_blocks`] hands `emit` a `ModelKind`, not a `&str`. So an arm added to the
+/// walk cannot name a kind this declaration does not have -- that is a type error, not a missing
+/// table row -- and each variant's report code comes off the same declaration as the variant, so
+/// a kind that exists has a code by construction. Model ids are `&'static str` literals and this
+/// is the only place they are written, which is what makes the set genuinely closed rather than
+/// merely tidy.
+///
+/// THE ONE DIRECTION THE COMPILER CANNOT SEE is a variant no arm emits, and
+/// `the_walk_emits_every_model_kind_the_registry_declares` drives it on a shard holding one page
+/// in each map, comparing SETS by name rather than counting.
+///
+/// AND AN UNKNOWN NAME FAILS LOUDLY. [`model_report_code`] panics naming the model id rather
+/// than returning 0. Every model id that reaches it came either from an arm below or from a
+/// stored index this engine opened, so a name it cannot place is the engine and the store
+/// disagreeing about what kinds exist -- and 0 is now reserved for the one thing the packed byte
+/// still has to be able to say, which is that the bucket names no page at all.
+macro_rules! model_kind_registry {
+    (
+        live { $($variant:ident = $name:literal @ $code:literal,)+ }
+        retired { $($retired_name:literal @ $retired_code:literal,)+ }
+    ) => {
+        /// One model kind, spelled as the stored index spells it. Closed by declaration.
+        #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Debug)]
+        pub(super) enum ModelKind {
+            $($variant,)+
+        }
+
+        impl ModelKind {
+            /// Every kind that exists, in declaration order. Derived, so a variant cannot be
+            /// missing from it.
+            pub(super) const ALL: &'static [ModelKind] = &[$(ModelKind::$variant,)+];
+
+            /// The stored spelling. This IS the `model_id` the index writes.
+            pub(super) const fn as_str(self) -> &'static str {
+                match self {
+                    $(ModelKind::$variant => $name,)+
+                }
+            }
+
+            /// The byte the packed reporting path writes for this kind.
+            pub(super) const fn report_code(self) -> u8 {
+                match self {
+                    $(ModelKind::$variant => $code,)+
+                }
+            }
+
+            /// The kind a stored `model_id` names, or `None` for a name no live arm emits.
+            pub(super) fn from_stored_name(model_id: &str) -> Option<Self> {
+                match model_id {
+                    $($name => Some(ModelKind::$variant),)+
+                    _ => None,
+                }
+            }
+        }
+
+        /// Spellings a stored index can still carry that no live arm emits, with the code each
+        /// one already had. Not an escape hatch: adding a row here is a claim that an older
+        /// index can hold the name, and each row carries the reason it can.
+        pub(super) const RETIRED_MODEL_REPORT_CODES: &[(&str, u8)] =
+            &[$(($retired_name, $retired_code),)+];
+
+        /// FLOORS ON THE DERIVATION. The point of deriving the registry is that it cannot go
+        /// stale beside the walk; the point of these is that it cannot go EMPTY either. A
+        /// declaration that lost rows would otherwise compile, and a registry of one kind maps
+        /// every other kind onto the panic below rather than onto a code.
+        const _: () = assert!(ModelKind::ALL.len() >= 15);
+        const _: () = assert!(RETIRED_MODEL_REPORT_CODES.len() >= 2);
+
+        /// NO CODE IS 0, AND NO TWO CODES COLLIDE -- live and retired counted together, because
+        /// the reporting path reads one byte and does not know which list answered. A duplicate
+        /// would put two kinds back behind one value, which is the defect this registry exists
+        /// to remove; a 0 would collide with "this bucket names no page".
+        const _: () = {
+            let codes: &[u8] = &[$($code,)+ $($retired_code,)+];
+            let mut left = 0;
+            while left < codes.len() {
+                assert!(codes[left] != 0);
+                let mut right = left + 1;
+                while right < codes.len() {
+                    assert!(codes[left] != codes[right]);
+                    right += 1;
+                }
+                left += 1;
+            }
+        };
+    };
+}
+
+model_kind_registry! {
+    live {
+        String = "string" @ 1,
+        Hash = "hash" @ 2,
+        Set = "set" @ 3,
+        Feature = "feature" @ 4,
+        ControlState = "control_state" @ 7,
+        ContextNode = "context_node" @ 8,
+        ContextEvent = "context_event" @ 9,
+        ContextIndex = "context_index" @ 10,
+        ContextAudit = "context_audit" @ 11,
+        ContextEntity = "context_entity" @ 13,
+        ContextChild = "context_child" @ 14,
+        ContextSummary = "context_summary" @ 16,
+        ContextCompression = "context_compression" @ 17,
+        // THE TWO THE PACKED REPORT COULD NOT NAME. 6 and 12 are the two codes the old table
+        // skipped, so every code any engine has ever written keeps the meaning it had and these
+        // two stop sharing a byte with "unknown".
+        Zset = "zset" @ 6,
+        List = "list" @ 12,
+    }
+    retired {
+        // Sequence is Feature with a typed row codec over identical timestamped-KV storage; the
+        // fold moved its data into `features` and left `ShardState::sequences` behind only to
+        // fold a pre-fold on-disk index at load. No arm emits it; an index older than the fold
+        // still names it.
+        "sequence" @ 5,
+        // The rows `context_embedding` addressed have no readers left, and
+        // `restore_model_maps_from_bucket_index` drops the entries on purpose. An index written
+        // before that retirement still carries them, and a report over one still has to name
+        // the kind rather than calling it unknown.
+        "context_embedding" @ 15,
+    }
+}
+
+/// The byte the packed reporting path writes for a stored `model_id`.
+///
+/// Live kinds, then the retired spellings, then a refusal that NAMES the id. The refusal is the
+/// behaviour change: this used to be a `_ => 0` arm, and 0 is the same byte the packed node
+/// writes for a bucket that holds no page at all, so an unrecognised kind was reported as an
+/// absence. A caller cannot handle what it cannot see.
+pub(super) fn model_report_code(model_id: &str) -> u8 {
+    if let Some(kind) = ModelKind::from_stored_name(model_id) {
+        return kind.report_code();
+    }
+    if let Some((_, code)) = RETIRED_MODEL_REPORT_CODES
+        .iter()
+        .find(|(name, _)| *name == model_id)
+    {
+        return *code;
+    }
+    panic!(
+        "no packed report code for model id {model_id:?}. Every model id reaching here comes \
+         either from a live-page walk arm or from a stored index this engine opened, so a name \
+         that cannot be placed is the engine and the store disagreeing about which kinds exist. \
+         Declare it in `model_kind_registry`: under `live` if an arm of `visit_model_live_blocks` \
+         emits it, under `retired` -- with the reason an older index can carry it -- if not."
+    );
+}
+
 /// Offer every live model-map page in the shard to `accept`, and hand the accepted ones to
 /// `emit`.
 ///
@@ -2584,25 +2753,28 @@ fn visit_model_live_blocks(
     shard: &ShardState,
     tally: ModelWalkTally,
     accept: impl Fn(&BlockAddress) -> bool,
-    mut emit: impl FnMut(&'static str, &str, Option<&str>, &BlockAddress),
+    mut emit: impl FnMut(ModelKind, &str, Option<&str>, &BlockAddress),
 ) {
     // THE ARM LIST. Nested so that `visit_model_live_blocks` is the only thing in the tree that
-    // can reach it, and so the count wraps all fourteen arms at once instead of being repeated
+    // can reach it, and so the count wraps all fifteen arms at once instead of being repeated
     // in each -- an arm added below is charged without being told to be.
+    //
+    // The kind is a `ModelKind`, not a string literal: see `model_kind_registry` above for why
+    // an arm that could name its own kind is an arm the reporting registry can fall behind.
     fn arms(
         shard: &ShardState,
         accept: impl Fn(&BlockAddress) -> bool,
-        mut emit: impl FnMut(&'static str, &str, Option<&str>, &BlockAddress),
+        mut emit: impl FnMut(ModelKind, &str, Option<&str>, &BlockAddress),
     ) {
         for (key, address) in &shard.strings {
             if accept(address) {
-                emit("string", key, None, address);
+                emit(ModelKind::String, key, None, address);
             }
         }
         for (key, fields) in &shard.hashes {
             for (field, address) in fields.iter() {
                 if accept(address) {
-                    emit("hash", key, Some(field.as_str()), address);
+                    emit(ModelKind::Hash, key, Some(field.as_str()), address);
                 }
             }
         }
@@ -2610,7 +2782,7 @@ fn visit_model_live_blocks(
             for (member, (biased, address)) in members.iter() {
                 if accept(address) {
                     let component = format!("{biased:016x}{}", hex::encode(member));
-                    emit("zset", key, Some(component.as_str()), address);
+                    emit(ModelKind::Zset, key, Some(component.as_str()), address);
                 }
             }
         }
@@ -2618,7 +2790,7 @@ fn visit_model_live_blocks(
             for (seq, address) in elements.iter() {
                 if accept(address) {
                     let component = format!("{:016x}", (*seq as u64).wrapping_sub(i64::MIN as u64));
-                    emit("list", key, Some(component.as_str()), address);
+                    emit(ModelKind::List, key, Some(component.as_str()), address);
                 }
             }
         }
@@ -2626,24 +2798,39 @@ fn visit_model_live_blocks(
             for (member, address) in members.iter() {
                 if accept(address) {
                     let component = hex::encode(member);
-                    emit("set", key, Some(component.as_str()), address);
+                    emit(ModelKind::Set, key, Some(component.as_str()), address);
                 }
             }
         }
-        visit_timestamped_series(&shard.features, "feature", &accept, &mut emit);
+        visit_timestamped_series(&shard.features, ModelKind::Feature, &accept, &mut emit);
         for (key, address) in &shard.control_state_blocks {
             if accept(address) {
-                emit("control_state", key, None, address);
+                emit(ModelKind::ControlState, key, None, address);
             }
         }
         for (key, address) in &shard.context_nodes {
             if accept(address) {
-                emit("context_node", key, None, address);
+                emit(ModelKind::ContextNode, key, None, address);
             }
         }
-        visit_timestamped_series(&shard.context_events, "context_event", &accept, &mut emit);
-        visit_timestamped_series(&shard.context_indexes, "context_index", &accept, &mut emit);
-        visit_timestamped_series(&shard.context_audits, "context_audit", &accept, &mut emit);
+        visit_timestamped_series(
+            &shard.context_events,
+            ModelKind::ContextEvent,
+            &accept,
+            &mut emit,
+        );
+        visit_timestamped_series(
+            &shard.context_indexes,
+            ModelKind::ContextIndex,
+            &accept,
+            &mut emit,
+        );
+        visit_timestamped_series(
+            &shard.context_audits,
+            ModelKind::ContextAudit,
+            &accept,
+            &mut emit,
+        );
         // Entities live grouped by node in memory but persist one entry per entity, under the same
         // `ctx:entity:{tenant}:{node}:{entity_hash}` key as before the fold -- the collection key
         // plus the BTree key reproduce it exactly. Keeping the on-disk key per entity is what makes
@@ -2652,15 +2839,25 @@ fn visit_model_live_blocks(
             for (entity_hash, address) in series.iter() {
                 if accept(address) {
                     let composed = format!("{collection_key}:{entity_hash}");
-                    emit("context_entity", composed.as_str(), None, address);
+                    emit(ModelKind::ContextEntity, composed.as_str(), None, address);
                 }
             }
         }
-        visit_timestamped_series(&shard.context_children, "context_child", &accept, &mut emit);
-        visit_timestamped_series(&shard.context_summaries, "context_summary", &accept, &mut emit);
+        visit_timestamped_series(
+            &shard.context_children,
+            ModelKind::ContextChild,
+            &accept,
+            &mut emit,
+        );
+        visit_timestamped_series(
+            &shard.context_summaries,
+            ModelKind::ContextSummary,
+            &accept,
+            &mut emit,
+        );
         visit_timestamped_series(
             &shard.context_compressions,
-            "context_compression",
+            ModelKind::ContextCompression,
             &accept,
             &mut emit,
         );
@@ -2706,9 +2903,9 @@ fn visit_model_live_blocks(
 /// answer the caller would otherwise reach after allocating.
 fn visit_timestamped_series(
     map: &HashMap<String, BTreeMap<u64, BlockAddress>>,
-    kind: &'static str,
+    kind: ModelKind,
     accept: &impl Fn(&BlockAddress) -> bool,
-    emit: &mut impl FnMut(&'static str, &str, Option<&str>, &BlockAddress),
+    emit: &mut impl FnMut(ModelKind, &str, Option<&str>, &BlockAddress),
 ) {
     for (key, series) in map {
         if !series.values().any(accept) {
@@ -2732,7 +2929,7 @@ pub(super) fn collect_model_live_block_entries(shard: &ShardState) -> Vec<LiveBl
         |kind, object_key, component, address| {
             entries.push(live_block_entry(
                 object_key.to_string(),
-                kind,
+                kind.as_str(),
                 component.map(str::to_string),
                 address.clone(),
             ));
@@ -2759,7 +2956,7 @@ pub(super) fn collect_model_live_block_entries_in_bucket(
         |kind, object_key, component, address| {
             entries.push(live_block_entry(
                 object_key.to_string(),
-                kind,
+                kind.as_str(),
                 component.map(str::to_string),
                 address.clone(),
             ));
@@ -2806,7 +3003,7 @@ fn derive_released_block_identities(
                 .entry(routing_bucket)
                 .or_default()
                 .insert(released_block_identity_owned(
-                    kind.to_string(),
+                    kind.as_str().to_string(),
                     object_key.to_string(),
                     component.map(str::to_string),
                     address,
@@ -5199,5 +5396,310 @@ mod live_block_scan_coverage {
              offset: {small_unseen} unseen at {small_returned} pages and {large_unseen} at \
              {large_returned}",
         );
+    }
+}
+
+/// THE MODEL-KIND REGISTRY AGAINST THE WALK THAT IS ITS AUTHORITY.
+///
+/// The registry is derived from one declaration and the walk's `emit` takes a `ModelKind`, so the
+/// direction "an arm names a kind the registry does not have" is a type error and needs no test.
+/// What a compiler cannot see is the other direction and the report codes, and that is all this
+/// module is:
+///
+///   1. every variant the registry declares is actually EMITTED by a walk over a shard holding
+///      one page in each map -- set equality by name, with the count floored on
+///      `ModelKind::ALL.len()` so a derivation that produced fewer would fail rather than pass
+///      vacuously;
+///   2. `zset` and `list`, the two kinds that used to fall through to 0, now pack as their own
+///      codes, driven through `storage_physical_index_report` rather than asserted against the
+///      table;
+///   3. an unrecognised model id REFUSES and names itself, with a retired spelling as the
+///      control that the refusal is not simply "anything unusual panics";
+///   4. no code is 0 and no two collide, live and retired together.
+#[cfg(test)]
+mod model_kind_registry_guards {
+    use super::{
+        collect_model_live_block_entries, model_report_code, ModelKind,
+        RETIRED_MODEL_REPORT_CODES,
+    };
+    use crate::block_store::BlockAddress;
+    use crate::engine::state::ShardState;
+    use std::collections::{BTreeMap, BTreeSet};
+
+    fn address(routing_bucket: u32) -> BlockAddress {
+        BlockAddress::from_parts(3, 128, 64, Some(11), Some(22), Some(routing_bucket))
+    }
+
+    /// ONE PAGE IN EVERY MAP THE WALK READS.
+    ///
+    /// Written map by map rather than through commands on purpose: a command path that stopped
+    /// filing one of these kinds would make the completeness check below pass by holding fewer
+    /// kinds, which is the failure it exists to catch. Every field here is a field of
+    /// `ShardState` that an arm of `visit_model_live_blocks` reads.
+    fn shard_holding_one_page_of_every_kind() -> ShardState {
+        let mut shard = ShardState::default();
+        let at = address(7);
+        shard.strings.insert("s".to_string(), at.clone());
+        shard
+            .hashes
+            .insert("h".to_string(), [("f".to_string(), at.clone())].into_iter().collect());
+        shard
+            .zsets
+            .insert("z".to_string(), BTreeMap::from([(vec![1u8], (9u64, at.clone()))]));
+        shard
+            .lists
+            .insert("l".to_string(), BTreeMap::from([(0i64, at.clone())]));
+        shard
+            .sets
+            .insert("t".to_string(), BTreeMap::from([(vec![2u8], at.clone())]));
+        shard
+            .features
+            .insert("f".to_string(), BTreeMap::from([(1u64, at.clone())]));
+        shard.control_state_blocks.insert("c".to_string(), at.clone());
+        shard.context_nodes.insert("ctx:node:t:n".to_string(), at.clone());
+        shard
+            .context_events
+            .insert("ctx:event:t:n".to_string(), BTreeMap::from([(1u64, at.clone())]));
+        shard
+            .context_indexes
+            .insert("ctx:index:t:n".to_string(), BTreeMap::from([(1u64, at.clone())]));
+        shard
+            .context_audits
+            .insert("ctx:audit:t:n".to_string(), BTreeMap::from([(1u64, at.clone())]));
+        shard
+            .context_entities
+            .insert("ctx:entity:t:n".to_string(), BTreeMap::from([(1u64, at.clone())]));
+        shard
+            .context_children
+            .insert("ctx:child:t:n".to_string(), BTreeMap::from([(1u64, at.clone())]));
+        shard
+            .context_summaries
+            .insert("ctx:summary:t:n".to_string(), BTreeMap::from([(1u64, at.clone())]));
+        shard
+            .context_compressions
+            .insert("ctx:compression:t:n".to_string(), BTreeMap::from([(1u64, at)]));
+        shard
+    }
+
+    /// EVERY DECLARED KIND IS EMITTED, and the comparison is a set of NAMES.
+    ///
+    /// A count would be satisfied by fifteen pages of one kind. The floor is separate from the
+    /// equality and states the denominator: a registry that had silently shrunk would make the
+    /// equality trivially true against a walk that had shrunk with it, and
+    /// `ModelKind::ALL.len() >= 15` in the declaration is the other half of that.
+    #[test]
+    fn the_walk_emits_every_model_kind_the_registry_declares() {
+        let shard = shard_holding_one_page_of_every_kind();
+        let entries = collect_model_live_block_entries(&shard);
+
+        let mut per_kind: BTreeMap<String, usize> = BTreeMap::new();
+        for entry in &entries {
+            *per_kind.entry(entry.kind.to_string()).or_default() += 1;
+        }
+        println!("\n=== what the walk emitted, per kind ===");
+        println!("  {:<24} {:>6}", "kind", "pages");
+        for (kind, count) in &per_kind {
+            println!("  {kind:<24} {count:>6}");
+        }
+        println!("  {:<24} {:>6}", "TOTAL", entries.len());
+        println!("  declared kinds: {}", ModelKind::ALL.len());
+
+        let emitted: BTreeSet<String> = per_kind.keys().cloned().collect();
+        let declared: BTreeSet<String> = ModelKind::ALL
+            .iter()
+            .map(|kind| kind.as_str().to_string())
+            .collect();
+
+        assert_eq!(
+            declared.len(),
+            ModelKind::ALL.len(),
+            "two variants of `ModelKind` share a stored spelling, so the registry cannot map a \
+             stored name back to one kind: {declared:?}",
+        );
+        assert!(
+            emitted.len() >= ModelKind::ALL.len(),
+            "the walk emitted {} distinct kinds over a shard holding one page in every map, and \
+             the registry declares {}; with fewer the equality below can hold while both sides \
+             have shrunk",
+            emitted.len(),
+            ModelKind::ALL.len(),
+        );
+        assert_eq!(
+            declared, emitted,
+            "the registry and the walk name different kinds. Declared but not emitted: {:?}. \
+             Emitted but not declared: {:?}. The second is impossible while `emit` takes a \
+             `ModelKind`; the first is a variant no arm reaches, which gives the reporting path a \
+             code for a kind that cannot occur.",
+            declared.difference(&emitted).collect::<Vec<_>>(),
+            emitted.difference(&declared).collect::<Vec<_>>(),
+        );
+    }
+
+    /// THE TWO RETIRED SPELLINGS ARE RETIRED, and the walk is what says so.
+    ///
+    /// If either ever became live again this would fail, which is the point: a retired row whose
+    /// kind is emitted is a kind whose code is reachable from two lists.
+    #[test]
+    fn the_retired_model_spellings_are_not_emitted_by_any_arm() {
+        let shard = shard_holding_one_page_of_every_kind();
+        let emitted: BTreeSet<String> = collect_model_live_block_entries(&shard)
+            .iter()
+            .map(|entry| entry.kind.to_string())
+            .collect();
+
+        println!("\n=== retired spellings ===");
+        println!("  {:<24} {:>5}  emitted?", "name", "code");
+        for (name, code) in RETIRED_MODEL_REPORT_CODES {
+            println!("  {name:<24} {code:>5}  {}", emitted.contains(*name));
+            assert!(
+                !emitted.contains(*name),
+                "`{name}` is declared retired and an arm emits it; it belongs under `live`",
+            );
+            assert!(
+                ModelKind::from_stored_name(name).is_none(),
+                "`{name}` is declared retired and is also a live variant",
+            );
+            assert_eq!(
+                model_report_code(name), *code,
+                "a retired spelling must still report the code it had, or a report over an older \
+                 index renames the kind it finds",
+            );
+        }
+        assert_eq!(5, model_report_code("sequence"));
+        assert_eq!(15, model_report_code("context_embedding"));
+    }
+
+    /// NO CODE IS 0 AND NO TWO COLLIDE -- the runtime mirror of the declaration's const asserts,
+    /// printed, because a const assert that fires says nothing about which two rows collided.
+    #[test]
+    fn no_two_model_report_codes_collide_and_none_is_the_empty_bucket_code() {
+        let mut by_code: BTreeMap<u8, Vec<String>> = BTreeMap::new();
+        for kind in ModelKind::ALL {
+            by_code
+                .entry(kind.report_code())
+                .or_default()
+                .push(format!("{} (live)", kind.as_str()));
+        }
+        for (name, code) in RETIRED_MODEL_REPORT_CODES {
+            by_code
+                .entry(*code)
+                .or_default()
+                .push(format!("{name} (retired)"));
+        }
+        println!("\n=== the packed model byte, code by code ===");
+        println!("  {:>5}  {}", "code", "kinds");
+        for (code, names) in &by_code {
+            println!("  {code:>5}  {}", names.join(", "));
+        }
+        let rows = ModelKind::ALL.len() + RETIRED_MODEL_REPORT_CODES.len();
+        assert_eq!(
+            rows,
+            by_code.len(),
+            "{rows} declared rows share {} codes, so at least two kinds pack as one byte",
+            by_code.len(),
+        );
+        assert!(
+            !by_code.contains_key(&0),
+            "a kind packs as 0, which is the byte a bucket holding no page writes",
+        );
+    }
+
+    /// AN UNRECOGNISED MODEL ID REFUSES, AND THE REFUSAL NAMES IT.
+    ///
+    /// The old arm returned 0 -- the same byte as an empty bucket -- so a store the engine did
+    /// not understand reported as a store with nothing in it.
+    #[test]
+    #[should_panic(expected = "no packed report code for model id \"not_a_model_kind\"")]
+    fn an_unrecognised_model_id_refuses_rather_than_reporting_the_empty_bucket_code() {
+        model_report_code("not_a_model_kind");
+    }
+
+    /// THE LIVE DEFECT, DRIVEN THROUGH THE REPORT RATHER THAN AGAINST THE TABLE.
+    ///
+    /// `zset` and `list` pages reached `native_packed_block_index_bytes` and came out with byte 1
+    /// set to 0 -- the value an unrecognised kind got. This walks the shard into the physical
+    /// index report the way the reporting path does and reads the byte back out of the published
+    /// hex, so it fails if the registry is right and the packing stops using it.
+    #[test]
+    fn a_zset_and_a_list_page_pack_as_their_own_kind_and_not_as_the_empty_code() {
+        let shard = shard_holding_one_page_of_every_kind();
+        let report = crate::engine::storage_reporting::storage_physical_index_report(
+            1,
+            &shard,
+            Vec::new(),
+        );
+
+        let mut packed: BTreeMap<String, Vec<u8>> = BTreeMap::new();
+        for bucket in &report.bucket_nodes {
+            for page in &bucket.block_indexes {
+                let bytes = hex::decode(&page.native_packed_block_index_hex)
+                    .expect("the report publishes hex");
+                packed
+                    .entry(page.model_id.clone())
+                    .or_default()
+                    .push(bytes[1]);
+            }
+        }
+        println!("\n=== the packed model byte, per kind, off the report ===");
+        println!("  {:<24} {:>6}  {}", "model_id", "pages", "byte 1");
+        for (model_id, codes) in &packed {
+            println!("  {model_id:<24} {:>6}  {codes:?}", codes.len());
+        }
+
+        assert_eq!(
+            packed.len(),
+            ModelKind::ALL.len(),
+            "the report published {} kinds where the registry declares {}; a report that does \
+             not carry both of the kinds under test cannot show their byte",
+            packed.len(),
+            ModelKind::ALL.len(),
+        );
+        for name in ["zset", "list"] {
+            let codes = packed
+                .get(name)
+                .unwrap_or_else(|| panic!("the report carries no `{name}` page"));
+            let expected = ModelKind::from_stored_name(name)
+                .expect("both are live kinds")
+                .report_code();
+            assert!(
+                codes.iter().all(|code| *code == expected),
+                "a `{name}` page packs as {codes:?}, not {expected}; 0 is the byte an empty \
+                 bucket writes and is what this kind used to get",
+            );
+        }
+        // The denominator: no page in the whole report packs as the empty-bucket byte.
+        let zeroes: Vec<&String> = packed
+            .iter()
+            .filter(|(_, codes)| codes.iter().any(|code| *code == 0))
+            .map(|(name, _)| name)
+            .collect();
+        assert!(
+            zeroes.is_empty(),
+            "these kinds still pack as 0, which is the byte that means the bucket names no page: \
+             {zeroes:?}",
+        );
+    }
+
+    /// THE CONTROL ON THAT REFUSAL: the names that must NOT panic.
+    ///
+    /// Without this the guard above is satisfied by a `model_report_code` that panics on
+    /// everything, which would refuse every live kind as well.
+    #[test]
+    fn every_live_and_retired_spelling_answers_without_refusing() {
+        println!("\n=== live kinds ===");
+        for kind in ModelKind::ALL {
+            let code = model_report_code(kind.as_str());
+            println!("  {:<24} {:>3}", kind.as_str(), code);
+            assert_eq!(
+                code,
+                kind.report_code(),
+                "`{}` reports a different code through the stored-name lookup than off the \
+                 variant, so the two halves of the derivation disagree",
+                kind.as_str(),
+            );
+        }
+        for (name, code) in RETIRED_MODEL_REPORT_CODES {
+            assert_eq!(model_report_code(name), *code);
+        }
     }
 }

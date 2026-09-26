@@ -266,27 +266,6 @@ pub(super) fn bucket_storage_summaries(
 const NATIVE_PACKED_BLOCK_INDEX_SIZE: usize = 17;
 const NATIVE_PACKED_BUCKET_NODE_SIZE: usize = 24;
 
-pub(super) fn storage_model_code(kind: &str) -> u8 {
-    match kind {
-        "string" => 1,
-        "hash" => 2,
-        "set" => 3,
-        "feature" => 4,
-        "sequence" => 5,
-        "control_state" => 7,
-        "context_node" => 8,
-        "context_event" => 9,
-        "context_index" => 10,
-        "context_audit" => 11,
-        "context_entity" => 13,
-        "context_child" => 14,
-        "context_embedding" => 15,
-        "context_summary" => 16,
-        "context_compression" => 17,
-        _ => 0,
-    }
-}
-
 pub(super) fn physical_address_word(address: &BlockAddress) -> u64 {
     address.block_slab_id.wrapping_shl(32) | (address.offset & u32::MAX as u64)
 }
@@ -296,7 +275,7 @@ pub(super) fn native_packed_block_index_bytes(
 ) -> [u8; NATIVE_PACKED_BLOCK_INDEX_SIZE] {
     let mut bytes = [0u8; NATIVE_PACKED_BLOCK_INDEX_SIZE];
     bytes[0] = page.object_id.unwrap_or_default() as u8;
-    bytes[1] = storage_model_code(&page.model_id);
+    bytes[1] = model_report_code(&page.model_id);
     bytes[2..4].copy_from_slice(&(page.block_id.unwrap_or_default() as u16).to_le_bytes());
     bytes[4] = u8::from(page.dirty) | (u8::from(page.log_backed) << 1);
     let page_size = if page.deleted { 0 } else { page.length as u32 };
@@ -323,10 +302,14 @@ pub(super) fn native_packed_bucket_node_bytes(bucket: &StoragePhysicalBucketNode
     let flag_bytes = flags.to_le_bytes();
     bytes[0..3].copy_from_slice(&flag_bytes[0..3]);
     bytes[3..7].copy_from_slice(&(bucket.physical_bytes as u32).to_le_bytes());
+    // 0 HERE MEANS THE BUCKET NAMES NO PAGE, and now it means only that. Every declared kind
+    // packs as a non-zero code (`model_kind_registry` asserts it), and a kind the registry does
+    // not declare refuses rather than landing on this value -- so a reader can tell an empty
+    // bucket from one holding a zset, which it could not before.
     let model_code = bucket
         .block_indexes
         .first()
-        .map(|page| storage_model_code(&page.model_id))
+        .map(|page| model_report_code(&page.model_id))
         .unwrap_or_default();
     bytes[7] = model_code;
     bytes[8..16].copy_from_slice(&bucket.ttl_ms.unwrap_or_default().to_le_bytes());
