@@ -695,7 +695,6 @@ fn capture_the_stored_spelling_of_a_page_entry() {
         layout: BucketLayoutState::MultiObject,
         flags: BucketFlags::default().with(BucketFlags::META_LOADED, true).with(BucketFlags::IN_MEMORY, true),
         dirty_generation: 3,
-        last_dump_sequence: 11,
         ..BucketNode::default()
     };
     node.object_index.insert(42);
@@ -767,11 +766,17 @@ const OLD_STORE_INDEX: &str = r#"{"bucket_map":{"7":{"routing_slot":7,"layout":"
 /// handle and rendered into the key, and those handles are on disk inside the lookup refs.
 const OLD_STORE_INDEX_WITH_AN_INDEPENDENT_GENERATION: &str = r#"{"bucket_map":{"7":{"routing_slot":7,"layout":"MultiObject","dirty":false,"deleted":false,"meta_loaded":true,"loading":false,"in_memory":true,"ttl_ms":null,"dirty_generation":3,"last_dump_sequence":11,"object_index":[42],"deleted_object_index":[],"page_index":{"hash:k:f0:1:9:3:4:9":{"object_key":"k","model_id":"hash","component":"f0","address":{"ps":1,"o":9,"l":3,"pi":4,"oi":42,"rs":7,"g":9,"h":null},"dirty":true,"deleted":false,"log_backed":false},"string:k::1:0:3:4:9":{"object_key":"k","model_id":"string","address":{"ps":1,"o":0,"l":3,"pi":4,"oi":42,"rs":7,"g":9,"h":null},"dirty":false,"deleted":false,"log_backed":true},"string:k::1:1:3:4:9":{"object_key":"k","model_id":"string","address":{"ps":1,"o":1,"l":3,"pi":4,"oi":42,"rs":7,"g":9,"h":null},"dirty":false,"deleted":false,"log_backed":true},"string:k::1:2:3:4:9":{"object_key":"k","model_id":"string","address":{"ps":1,"o":2,"l":3,"pi":4,"oi":42,"rs":7,"g":9,"h":null},"dirty":false,"deleted":false,"log_backed":true},"string:k::1:3:3:4:9":{"object_key":"k","model_id":"string","address":{"ps":1,"o":3,"l":3,"pi":4,"oi":42,"rs":7,"g":9,"h":null},"dirty":false,"deleted":false,"log_backed":true},"string:other::2:1:5:4:9":{"object_key":"other","model_id":"string","address":{"ps":2,"o":1,"l":5,"pi":4,"oi":42,"rs":7,"g":9,"h":null},"dirty":false,"deleted":false,"log_backed":true}}}}}"#;
 
-/// What this binary must write back after loading `OLD_STORE_INDEX`: the same bytes.
+/// What this binary must write back after loading `OLD_STORE_INDEX`: the same bytes, MINUS the one
+/// key the node no longer holds.
 ///
 /// Named rather than called "the text above", because there are now two index fixtures here and
 /// only one of them is the one that loads.
-const OLD_STORE_INDEX_CANONICAL: &str = OLD_STORE_INDEX;
+///
+/// `last_dump_sequence` is DELETED FROM THE STORED TEXT rather than a second fixture typed out
+/// beside it, so every other byte of the comparison is still against what an older binary wrote.
+/// The test asserts the deletion actually changed the string, or the expectation would be the
+/// stored text unmodified and the round trip would be an equality with itself.
+const REMOVED_KEY: &str = "\"last_dump_sequence\":11,";
 
 /// Every page of that index, spelled out independently of the text it came from.
 ///
@@ -1010,11 +1015,18 @@ fn an_index_written_before_this_change_loads_page_for_page_and_writes_back_the_s
         bucket.block_index.len()
     );
 
-    // --- And back: the same bytes, so an old binary reads what this one writes. ---
+    // --- And back: the same bytes but for the one key the node no longer holds. ---
+    let canonical = OLD_STORE_INDEX.replace(REMOVED_KEY, "");
+    assert_ne!(
+        OLD_STORE_INDEX, canonical.as_str(),
+        "the stored fixture does not contain {REMOVED_KEY}, so the expectation below is the stored \
+         text unmodified and the round trip proves nothing about the removal"
+    );
     let rewritten = serde_json::to_string(&index).expect("the index re-serializes");
     assert_eq!(
-        OLD_STORE_INDEX_CANONICAL, rewritten,
-        "the index this binary writes back is not the index it was given"
+        canonical, rewritten,
+        "the index this binary writes back differs from the index it was given in some way other \
+         than dropping last_dump_sequence"
     );
     assert!(
         rewritten.len() > 500,

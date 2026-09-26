@@ -2645,7 +2645,6 @@ pub(super) struct BucketNode {
     /// Transient for the same reason as its WAL twin -- a load clears every dirty flag and
     /// recomputes from an empty dirty set, so a reloaded bucket holds no claim.
     pub(super) first_dirty_index_log_sequence: u64,
-    pub(super) last_dump_sequence: u64,
     pub(super) object_index: ObjectIndex,
     pub(super) deleted_object_index: DeletedObjectIndex,
     pub(super) block_index: BlockIndexMap,
@@ -2653,7 +2652,7 @@ pub(super) struct BucketNode {
 
 /// The widest per-item structure in the engine, and the one whose count is the bucket count.
 ///
-/// Most of it is the `BlockIndexMap` it carries inline: 104 of these 176 bytes are one page
+/// Most of it is the `BlockIndexMap` it carries inline: 104 of these 168 bytes are one page
 /// entry held inline plus its handle, and any accounting of this structure has to start there
 /// rather than with the flags.
 ///
@@ -2661,6 +2660,8 @@ pub(super) struct BucketNode {
 /// 186 when the tombstone index stopped spending sixteen on a case it is in 2.32% of the time;
 /// the struct went 208 -> 200 -> 192 with them, and 192 -> 184 when the address inside the inline
 /// page entry shed its derived `generation`. 184 -> 176 is the five `bool` becoming five BITS.
+/// 176 -> 168 is `last_dump_sequence` leaving: a whole word out of the eight-aligned group, which
+/// is one of the only two shapes of change this structure responds to.
 ///
 /// THE RULE THAT USED TO BE WRITTEN HERE WAS TRUE OF ONE FIELD AND FALSE IN GENERAL, and it is
 /// worth stating plainly because it is why nobody tried this for three changes. It said the six
@@ -2668,14 +2669,22 @@ pub(super) struct BucketNode {
 /// bytes of small field -- up to sixteen, and that narrowing any of those ten bytes moved
 /// nothing. Every clause of that is correct except the last one's scope. Narrowing ONE of the ten
 /// moves nothing: 9, 6 and 4 all round back to 16, and no single field here can cross the step on
-/// its own. PACKING is not narrowing one field. It takes four bytes off at once, the tail lands
-/// on six, and six rounds to eight -- so the eight-aligned group is unchanged at 168 and the
-/// struct is 176. The general rule that holds is the one the accounting test states: only a
-/// change that takes the tail to eight bytes or fewer, or that takes a whole word out of the
-/// eight-aligned group, moves this structure at all.
+/// its own. PACKING is not narrowing one field. It took four bytes off at once, the tail landed
+/// on six, and six rounds to eight. The general rule that holds is the one the accounting test
+/// states: only a change that takes the tail to eight bytes or fewer, or that takes a whole word
+/// out of the eight-aligned group, moves this structure at all.
 ///
-/// `every_byte_of_the_bucket_node_is_accounted_for` states the whole of it field by field.
-const _: () = assert!(std::mem::size_of::<BucketNode>() == 176);
+/// THE SECOND OF THOSE TWO SHAPES IS WHAT TOOK IT TO 168. `last_dump_sequence` was eight-aligned,
+/// so removing it takes a whole word out of the packed group and the six-byte tail does not move
+/// at all: 168 - 8 = 160 of eight-aligned field, 6 of small field rounded to 8, and the struct is
+/// 168. Removed bytes LEAVE rather than move, which is why this crosses where narrowing a
+/// sequence would not have: at a six-byte tail the first narrowing lands on ten, ten still rounds
+/// to sixteen, and the freed word is handed straight back.
+///
+/// `every_byte_of_the_bucket_node_is_accounted_for` states the whole of it field by field, and
+/// asserts the reconstruction -- eight-aligned group plus one rounding of the tail -- rather than
+/// a literal.
+const _: () = assert!(std::mem::size_of::<BucketNode>() == 168);
 
 impl BucketNode {
     /// The five lifecycle flags, each read through its own mask and nothing else.
@@ -2728,8 +2737,9 @@ impl BucketNode {
 ///
 /// `BucketNode` is written into the shard index, so its field names ARE a stored format. The five
 /// flags are five separate boolean keys on the wire and one byte in memory, and the only way to
-/// hold both is to stop deriving this and say it. Thirteen keys, in this order, with `routing_slot`
-/// and `page_index` spelled as they always were.
+/// hold both is to stop deriving this and say it. Twelve keys, in this order, with `routing_slot`
+/// and `page_index` spelled as they always were -- thirteen until `last_dump_sequence` left the
+/// node.
 ///
 /// WHAT A DERIVE WAS DOING THAT THIS HAS TO KEEP DOING, each one a stored-format fact rather than
 /// a style choice:
@@ -2737,6 +2747,15 @@ impl BucketNode {
 ///   * the two `first_dirty_*` claims are NOT written -- they were `#[serde(skip)]`, a load
 ///     clears them, and writing them would add a key carrying a number that is meaningless the
 ///     moment it is read back;
+///   * `last_dump_sequence` is NOT written either, and that one is a FORMAT BREAK rather than a
+///     field that was always transient. The node no longer holds it: it was read into two reports
+///     and nothing else, and the report takes it from the newest dump manifest now, exactly as
+///     `BucketStorageSummary` already did. The key is still RECOGNISED on the way in -- still
+///     type-checked as a `u64`, still refused if a node states it twice -- so every index ever
+///     written still loads. What it is no longer is REQUIRED, and it cannot be: an index this
+///     engine writes does not carry it, and an index this engine writes has to load. An index
+///     THIS engine writes will not load in an engine older than this change, which is the whole
+///     of the break and is why it is stated here rather than discovered;
 ///   * `object_ids`, `deleted_object_ids` and `page_refs` are still accepted as aliases, which is
 ///     what lets the oldest written index load -- `core_index_loads_legacy_bucket_page_field_names`
 ///     holds that spelling and an alias dropped from here is a store that stops loading;
@@ -2752,7 +2771,7 @@ impl Serialize for BucketNode {
         S: serde::Serializer,
     {
         use serde::ser::SerializeStruct;
-        let mut node = serializer.serialize_struct("BucketNode", 13)?;
+        let mut node = serializer.serialize_struct("BucketNode", 12)?;
         node.serialize_field("routing_slot", &self.routing_bucket)?;
         node.serialize_field("layout", &self.layout)?;
         node.serialize_field("dirty", &self.dirty())?;
@@ -2762,7 +2781,6 @@ impl Serialize for BucketNode {
         node.serialize_field("in_memory", &self.in_memory())?;
         node.serialize_field("ttl_ms", &self.ttl_ms)?;
         node.serialize_field("dirty_generation", &self.dirty_generation)?;
-        node.serialize_field("last_dump_sequence", &self.last_dump_sequence)?;
         node.serialize_field("object_index", &self.object_index)?;
         node.serialize_field("deleted_object_index", &self.deleted_object_index)?;
         node.serialize_field("page_index", &self.block_index)?;
@@ -2770,11 +2788,19 @@ impl Serialize for BucketNode {
     }
 }
 
-/// The keys a stored bucket node can carry, including the three older spellings.
+/// The keys a stored bucket node can carry, including the three older spellings and the one key
+/// the node no longer holds.
 ///
 /// Resolved without allocating -- a `String` per key per bucket is a cost the derive did not pay
 /// and the load path should not start paying. An unrecognised key is IGNORED, which is what the
 /// derive did and what lets an index written by a newer engine load into an older one.
+///
+/// `LastDumpSequence` is kept as a NAMED variant rather than folded into `Ignore` on purpose. The
+/// node discards the value, but the key is still part of the shape every index ever written
+/// carries, so it is still resolved by name, still decoded as a `u64` -- a node stating a string
+/// there is still refused -- and still refused if a node states it twice. Folding it into
+/// `Ignore` would drop all three of those, and it is the difference between a field that has been
+/// retired and one that is no longer read.
 enum BucketNodeField {
     RoutingSlot,
     Layout,
@@ -2881,6 +2907,8 @@ impl<'de> Deserialize<'de> for BucketNode {
                 let mut in_memory: Option<bool> = None;
                 let mut ttl_ms: Option<BucketTtl> = None;
                 let mut dirty_generation: Option<u64> = None;
+                // Decoded and discarded: the node does not hold this any more, and the key is
+                // still type-checked and still refused twice. See `BucketNodeField`.
                 let mut last_dump_sequence: Option<u64> = None;
                 let mut object_index: Option<ObjectIndex> = None;
                 let mut deleted_object_index: Option<DeletedObjectIndex> = None;
@@ -2925,9 +2953,18 @@ impl<'de> Deserialize<'de> for BucketNode {
                     }
                 }
 
-                // PRESENCE COMES FROM THE WIRE. The seven keys that had no `#[serde(default)]`
-                // are still required, so a node that omits one is refused rather than filled in
-                // with a zero that would read as a real answer.
+                // DECODED AND DISCARDED. The value is dropped here rather than never read,
+                // because the key is still part of the shape and the arm above is what
+                // type-checks it and refuses a second statement of it. Naming the drop is what
+                // stops it reading as an oversight.
+                let _ = last_dump_sequence;
+
+                // PRESENCE COMES FROM THE WIRE. The six keys that had no `#[serde(default)]` and
+                // whose values the node still holds are still required, so a node that omits one
+                // is refused rather than filled in with a zero that would read as a real answer.
+                // It was seven: `last_dump_sequence` is the one that left, and it left because
+                // this engine no longer writes it -- a key an index we write does not carry
+                // cannot be one we refuse an index for omitting.
                 let mut flags = BucketFlags::default();
                 flags.set(
                     BucketFlags::DIRTY,
@@ -2960,8 +2997,6 @@ impl<'de> Deserialize<'de> for BucketNode {
                     // stored index says.
                     first_dirty_wal_sequence: 0,
                     first_dirty_index_log_sequence: 0,
-                    last_dump_sequence: last_dump_sequence
-                        .ok_or_else(|| M::Error::missing_field("last_dump_sequence"))?,
                     object_index: object_index.unwrap_or_default(),
                     deleted_object_index: deleted_object_index.unwrap_or_default(),
                     block_index: block_index.unwrap_or_default(),

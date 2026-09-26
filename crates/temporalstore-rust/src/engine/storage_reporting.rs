@@ -418,7 +418,19 @@ pub(super) fn storage_physical_index_report(
         bucket.object_count = runtime_bucket.object_index.len() as u64;
         bucket.block_ref_count = runtime_bucket.block_index.len() as u64;
         bucket.dirty_generation = runtime_bucket.dirty_generation;
-        bucket.last_dump_sequence = runtime_bucket.last_dump_sequence;
+        // `last_dump_sequence` IS NOT OVERWRITTEN FROM THE NODE HERE, and that is the whole of
+        // this report's change. The value the row already carries came from the summary above,
+        // which `merge_last_dump_sequence` fills from the NEWEST dump manifest -- so the report
+        // now answers "is this bucket covered by the newest dump, and at what index-log
+        // sequence", the one figure a decision in this engine actually reads (as the dump
+        // ordering's tiebreaker). The node's own figure was a different number under the same
+        // name, `max(manifest.wal_sequence)` over every manifest that ever named the bucket, and
+        // nothing read it except this line and the bucket-store runtime report.
+        //
+        // WHAT IS LOST, stated rather than glossed: a bucket named by an older manifest and not
+        // by the newest one reported the older manifest's WAL sequence and now reports 0. That
+        // figure is not reconstructible from the newest manifest alone, and it was not readable
+        // by anything that decided anything.
         for page in runtime_bucket.block_index.values() {
             let already_present = bucket.block_indexes.iter().any(|existing| {
                 existing.object_key.as_str() == page.object_key.as_ref()

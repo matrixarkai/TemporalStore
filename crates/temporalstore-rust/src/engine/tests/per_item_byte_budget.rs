@@ -132,13 +132,13 @@ fn budget() -> Vec<Budgeted> {
             name: "BucketNode",
             size: size_of::<BucketNode>(),
             align: align_of::<BucketNode>(),
-            // routing_bucket u32, layout, the packed flag byte, ttl_ms BucketTtl, four u64
+            // routing_bucket u32, layout, the packed flag byte, ttl_ms BucketTtl, THREE u64
             // sequences, the live object index, the tombstone index, one BlockIndexMap
             fields: size_of::<u32>()
                 + size_of::<BucketLayoutState>()
                 + size_of::<BucketFlags>()
                 + size_of::<BucketTtl>()
-                + 4 * size_of::<u64>()
+                + 3 * size_of::<u64>()
                 + size_of::<ObjectIndex>()
                 + size_of::<DeletedObjectIndex>()
                 + size_of::<BlockIndexMap>(),
@@ -302,7 +302,7 @@ fn every_per_item_structure_states_its_width_and_its_padding() {
     assert_eq!(40, size_of::<BlockAddress>(), "BlockAddress width moved");
     assert_eq!(96, size_of::<BlockIndex>(), "BlockIndex width moved");
     assert_eq!(104, size_of::<BlockIndexMap>(), "BlockIndexMap width moved");
-    assert_eq!(176, size_of::<BucketNode>(), "BucketNode width moved");
+    assert_eq!(168, size_of::<BucketNode>(), "BucketNode width moved");
     assert_eq!(16, size_of::<BlockLookupRef>(), "BlockLookupRef width moved");
     assert_eq!(24, size_of::<BlockRefs>(), "BlockRefs width moved");
     assert_eq!(40, size_of::<ComponentBlocks>(), "ComponentBlocks width moved");
@@ -858,7 +858,6 @@ fn bucket_node_fields() -> Vec<Field> {
         field!("dirty_generation", u64),
         field!("first_dirty_wal_sequence", u64),
         field!("first_dirty_index_log_sequence", u64),
-        field!("last_dump_sequence", u64),
         field!("object_index", ObjectIndex),
         field!("deleted_object_index", DeletedObjectIndex),
         field!("block_index", BlockIndexMap),
@@ -867,7 +866,7 @@ fn bucket_node_fields() -> Vec<Field> {
 
 /// EVERY BYTE OF THE BUCKET NODE, ACCOUNTED FOR.
 ///
-/// Eleven fields, their widths summed, and the difference against `size_of` named as what it is:
+/// Ten fields, their widths summed, and the difference against `size_of` named as what it is:
 /// the aligner's, not any field's. The sum is the discriminating half. A width that is stated
 /// without its field sum cannot tell a structure that is FULL from one that is half padding, and
 /// those two want opposite fixes -- one wants a narrower field, the other cannot be helped by any
@@ -875,7 +874,7 @@ fn bucket_node_fields() -> Vec<Field> {
 ///
 /// HOW RUST LAYS THIS OUT, and it is the whole explanation of the number. Fields reorder freely,
 /// so the layout is two groups: everything of alignment 8 packs solid, and everything smaller
-/// fills the tail, which is then rounded up to the struct's own alignment. Here that is 168 bytes
+/// fills the tail, which is then rounded up to the struct's own alignment. Here that is 160 bytes
 /// of eight-aligned field and 6 bytes of small field rounded to 8.
 ///
 /// THE TAIL USED TO BE TEN BYTES AND THE RULE WRITTEN HERE WAS TOO STRONG. It said NOTHING in the
@@ -887,13 +886,18 @@ fn bucket_node_fields() -> Vec<Field> {
 /// survives is the last clause, which was right all along: only a change that takes the tail to 8
 /// bytes or fewer, or that takes a whole word out of the eight-aligned group, moves this
 /// structure at all. Packing was such a change; narrowing any single tail field is not.
+///
+/// AND THE OTHER CLAUSE IS WHAT TOOK IT TO 168. `last_dump_sequence` was a whole word of the
+/// eight-aligned group, and removing it takes that word out without touching the tail: 160 + 8.
+/// Removed bytes LEAVE, where a narrowed field's bytes move into the tail and are handed straight
+/// back at six -- which is why a removal crosses the step here and a narrowing does not.
 #[test]
 fn every_byte_of_the_bucket_node_is_accounted_for() {
     let fields = bucket_node_fields();
     assert_eq!(
-        11,
+        10,
         fields.len(),
-        "the field table lists {} fields; `BucketNode` has eleven and a table that has drifted \
+        "the field table lists {} fields; `BucketNode` has ten and a table that has drifted \
          from the declaration proves nothing about it",
         fields.len()
     );
@@ -928,15 +932,15 @@ fn every_byte_of_the_bucket_node_is_accounted_for() {
         size - eight_aligned
     );
 
-    assert_eq!(174, sum, "the fields of BucketNode add up to {sum}, not 174");
-    assert_eq!(176, size, "BucketNode is {size} bytes wide, not 176");
+    assert_eq!(166, sum, "the fields of BucketNode add up to {sum}, not 166");
+    assert_eq!(168, size, "BucketNode is {size} bytes wide, not 168");
     assert_eq!(2, slack, "BucketNode carries {slack} bytes of alignment slack, not 2");
 
     // The layout rule itself, asserted rather than described: the eight-aligned group packs
     // solid and the rest is one rounding.
     let align = align_of::<BucketNode>();
     assert_eq!(8, align, "BucketNode's alignment moved, and the arithmetic below assumes 8");
-    assert_eq!(168, eight_aligned, "the eight-aligned group is {eight_aligned} B, not 168");
+    assert_eq!(160, eight_aligned, "the eight-aligned group is {eight_aligned} B, not 160");
     assert_eq!(6, tail, "the tail group is {tail} B, not 6");
     assert_eq!(
         eight_aligned + tail.div_ceil(align) * align,
@@ -1012,7 +1016,6 @@ struct MirrorLive {
     dirty_generation: u64,
     first_dirty_wal_sequence: u64,
     first_dirty_index_log_sequence: u64,
-    last_dump_sequence: u64,
     object_index: ObjectIndex,
     deleted_object_index: DeletedObjectIndex,
     block_index: BlockIndexMap,
@@ -1033,7 +1036,6 @@ struct MirrorWideTtl {
     dirty_generation: u64,
     first_dirty_wal_sequence: u64,
     first_dirty_index_log_sequence: u64,
-    last_dump_sequence: u64,
     object_index: ObjectIndex,
     deleted_object_index: ObjectIndex,
     block_index: BlockIndexMap,
@@ -1054,7 +1056,6 @@ struct MirrorWideTombstone {
     dirty_generation: u64,
     first_dirty_wal_sequence: u64,
     first_dirty_index_log_sequence: u64,
-    last_dump_sequence: u64,
     object_index: ObjectIndex,
     deleted_object_index: ObjectIndex,
     block_index: BlockIndexMap,
@@ -1071,7 +1072,6 @@ struct MirrorPackedFlags {
     dirty_generation: u64,
     first_dirty_wal_sequence: u64,
     first_dirty_index_log_sequence: u64,
-    last_dump_sequence: u64,
     object_index: ObjectIndex,
     deleted_object_index: DeletedObjectIndex,
     block_index: BlockIndexMap,
@@ -1092,7 +1092,6 @@ struct MirrorLooseFlags {
     dirty_generation: u64,
     first_dirty_wal_sequence: u64,
     first_dirty_index_log_sequence: u64,
-    last_dump_sequence: u64,
     object_index: ObjectIndex,
     deleted_object_index: DeletedObjectIndex,
     block_index: BlockIndexMap,
@@ -1106,7 +1105,6 @@ struct MirrorHoistedClaims {
     flags: BucketFlags,
     ttl_ms: BucketTtl,
     dirty_generation: u64,
-    last_dump_sequence: u64,
     object_index: ObjectIndex,
     deleted_object_index: DeletedObjectIndex,
     block_index: BlockIndexMap,
@@ -1129,7 +1127,6 @@ struct MirrorBoxedPage {
     dirty_generation: u64,
     first_dirty_wal_sequence: u64,
     first_dirty_index_log_sequence: u64,
-    last_dump_sequence: u64,
     object_index: ObjectIndex,
     deleted_object_index: DeletedObjectIndex,
     block_index: MirrorBoxedBlockIndexMap,
@@ -1209,23 +1206,31 @@ fn what_each_declined_shape_of_the_bucket_node_would_cost() {
     }
 
     // --- The change this module documents. ---
+    //
+    // EVERY ABSOLUTE FIGURE HERE IS EIGHT BYTES LOWER THAN IT WAS, AND NO DIFFERENCE MOVED. Each
+    // mirror is the live declaration plus one historical difference, so when the live node loses a
+    // word every mirror loses it too -- and it has to, or the differences below would be measured
+    // against a shape this engine does not have. `last_dump_sequence` left the eight-aligned group
+    // whole, which is the same reason the two earlier eight-byte changes came out of it whole.
     assert_eq!(
-        200, wide_ttl,
-        "the shape before #1958 was 208 bytes and is 200 now that the address inside the inline \
-         page entry sheds its derived generation; it reads as {wide_ttl}, so the mirrors have \
-         drifted from the history they claim to price"
+        192, wide_ttl,
+        "the shape before #1958 was 208 bytes, 200 once the address inside the inline page entry \
+         shed its derived generation, and 192 once the node stopped carrying a per-bucket \
+         last_dump_sequence; it reads as {wide_ttl}, so the mirrors have drifted from the history \
+         they claim to price"
     );
     assert_eq!(
-        192, wide_tombstone,
-        "the shape before #1961 was 200 bytes and is 192 now that the address inside the inline \
-         page entry sheds its derived generation; it reads as {wide_tombstone}, so the eight \
-         bytes that change claims are not the eight bytes it took"
+        184, wide_tombstone,
+        "the shape before #1961 was 200 bytes, 192 once the address shed its derived generation, \
+         and 184 once the node stopped carrying a per-bucket last_dump_sequence; it reads as \
+         {wide_tombstone}, so the eight bytes that change claims are not the eight bytes it took"
     );
-    assert_eq!(176, live, "the node is {live} bytes, not 176");
+    assert_eq!(168, live, "the node is {live} bytes, not 168");
     assert_eq!(
-        184, loose,
-        "the shape before the flags were packed was 184 bytes; it reads as {loose}, so the row \
-         that prices this change is not describing the shape it replaced"
+        176, loose,
+        "the shape before the flags were packed was 184 bytes and is 176 now that the node \
+         carries no last_dump_sequence; it reads as {loose}, so the row that prices this change is \
+         not describing the shape it replaced"
     );
     assert_eq!(
         8,
@@ -1306,7 +1311,6 @@ fn wire_fixture(ttl_ms: Option<u64>) -> BucketNode {
         dirty_generation: 3,
         first_dirty_wal_sequence: 41,
         first_dirty_index_log_sequence: 42,
-        last_dump_sequence: 11,
         object_index: [42u64].into_iter().collect(),
         deleted_object_index: DeletedObjectIndex::default(),
         block_index: BlockIndexMap::default(),
@@ -1337,10 +1341,17 @@ fn the_stored_spelling_of_a_bucket_node_did_not_move() {
     assert_eq!(
         "{\"routing_slot\":7,\"layout\":\"SingleBlockObject\",\"dirty\":false,\"deleted\":false,\
          \"meta_loaded\":true,\"loading\":false,\"in_memory\":true,\"ttl_ms\":5000,\
-         \"dirty_generation\":3,\"last_dump_sequence\":11,\"object_index\":[42],\
+         \"dirty_generation\":3,\"object_index\":[42],\
          \"deleted_object_index\":[],\"page_index\":{}}",
         with_ttl,
         "the stored spelling of a bucket node moved"
+    );
+    // TWELVE KEYS, NOT THIRTEEN, AND THAT IS THE DELIBERATE PART OF THIS CHANGE.
+    // `last_dump_sequence` is not written any more -- the node does not hold it. It is still
+    // ACCEPTED on the way in, which is what the OLD READ fixtures below carry it for.
+    assert!(
+        !with_ttl.contains("last_dump_sequence"),
+        "the node still writes a last_dump_sequence it does not hold: {with_ttl}"
     );
     let without = serde_json::to_string(&wire_fixture(None)).expect("a node serializes");
     assert!(
@@ -3012,7 +3023,6 @@ fn the_stored_spelling_of_the_object_side_did_not_move() {
             dirty_generation: 3,
             first_dirty_wal_sequence: 41,
             first_dirty_index_log_sequence: 42,
-            last_dump_sequence: 11,
             object_index: live.iter().copied().collect(),
             deleted_object_index: dead.iter().copied().collect(),
             block_index: BlockIndexMap::default(),
@@ -3024,11 +3034,25 @@ fn the_stored_spelling_of_the_object_side_did_not_move() {
             reached_multi_dead += 1;
         }
 
-        // --- NEW WRITE, against the bytes the older binary produced. ---
+        // --- NEW WRITE, against the bytes the older binary produced, MINUS ONE KEY. ---
+        //
+        // `last_dump_sequence` is the only difference, and it is DERIVED from the captured string
+        // rather than written out again by hand: the expectation is the older binary's own bytes
+        // with that one key deleted, so every other byte is still being compared against what
+        // `5f86d420f` wrote. The assertion below that the deletion changed something is what stops
+        // this reading as an equality against itself.
+        let expected_now = captured.replace("\"last_dump_sequence\":11,", "");
+        assert_ne!(
+            *captured, expected_now,
+            "{name}: the captured spelling does not contain the key this change removes, so the \
+             expectation below is the captured string unmodified and proves nothing about the \
+             removal"
+        );
         let written = serde_json::to_string(&node).expect("a node serializes");
         assert_eq!(
-            *captured, written,
-            "{name}: the stored spelling moved against what 5f86d420f wrote"
+            expected_now, written,
+            "{name}: the stored spelling moved against what 5f86d420f wrote, in some way other \
+             than dropping last_dump_sequence"
         );
 
         // --- OLD WRITE, NEW READ, element by element against the control. ---
@@ -3061,9 +3085,10 @@ fn the_stored_spelling_of_the_object_side_did_not_move() {
             );
         }
 
-        // And what it loaded writes back to the same bytes, so a load is not a slow rewrite.
+        // And what it loaded writes back to the same bytes but for the one key, so a load is not a
+        // slow rewrite of anything else.
         let round = serde_json::to_string(&loaded).expect("a loaded node re-serializes");
-        assert_eq!(*captured, round, "{name}: a load-then-write did not round-trip");
+        assert_eq!(expected_now, round, "{name}: a load-then-write did not round-trip");
     }
 
     // --- NON-VACUITY: the fixtures must reach the arms this change touched. ---

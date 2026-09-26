@@ -1973,9 +1973,15 @@ fn bucket_storage_summaries_track_live_refs_dirty_buckets_and_manifest_sequence(
 #[test]
 fn rebuild_bucket_block_ownership_preserves_dirty_watermarks() {
     // rebuild clears + rebuilds bucket_map from the model maps; it must carry over the durable
-    // per-bucket dirty_generation / last_dump_sequence. Rebuilding them from BucketNode::default()
-    // (as manifest-install / promote do) zeroed the watermarks, making a restored shard mismatch
-    // its own dump-manifest generation and forcing unnecessary re-dumps.
+    // per-bucket dirty_generation. Rebuilding it from BucketNode::default() (as manifest-install
+    // / promote do) zeroed the watermark, making a restored shard mismatch its own dump-manifest
+    // generation and forcing unnecessary re-dumps.
+    //
+    // ONE watermark, where this checked two. `last_dump_sequence` no longer exists on the node --
+    // it was read into two reports and nothing else, and the report takes it from the newest dump
+    // manifest. There is nothing left for the rebuild to carry over, and
+    // `the_summary_last_dump_sequence_comes_from_the_manifest_not_from_the_node` is what holds
+    // that the surviving figure is the manifest's.
     let mut shard = ShardState::default();
     shard.strings.insert(
         "k".to_string(),
@@ -1987,7 +1993,6 @@ fn rebuild_bucket_block_ownership_preserves_dirty_watermarks() {
             routing_bucket: 3,
             flags: BucketFlags::default().with(BucketFlags::META_LOADED, true),
             dirty_generation: 7,
-            last_dump_sequence: 4,
             ..BucketNode::default()
         },
     );
@@ -2001,10 +2006,6 @@ fn rebuild_bucket_block_ownership_preserves_dirty_watermarks() {
     assert_eq!(
         bucket.dirty_generation, 7,
         "dirty_generation must survive the rebuild"
-    );
-    assert_eq!(
-        bucket.last_dump_sequence, 4,
-        "last_dump_sequence must survive the rebuild"
     );
 }
 

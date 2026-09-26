@@ -359,7 +359,7 @@ fn every_flag_state_survives_the_stored_spelling_and_swapped_keys_do_not() {
 /// A NODE THAT OMITS A REQUIRED KEY IS REFUSED, AND ONE THAT OMITS AN OPTIONAL KEY IS NOT.
 ///
 /// The hand-written deserializer has to reproduce the derive's two different answers to a missing
-/// key: the fields that carried `#[serde(default)]` fill in, and the seven that did not are
+/// key: the fields that carried `#[serde(default)]` fill in, and the six that did not are
 /// errors. The difference matters because a flag filled in with `false` is not an absent flag --
 /// it is a bucket that reads as clean, or as not resident, on the strength of a key that was
 /// never written. A store whose index is truncated mid-node would load as a valid node with
@@ -367,9 +367,14 @@ fn every_flag_state_survives_the_stored_spelling_and_swapped_keys_do_not() {
 ///
 /// THIS TEST EXISTS BECAUSE A MUTATION SURVIVED. Replacing the refusal on `dirty` with
 /// `unwrap_or_default()` passed every other test in this module and in `per_item_byte_budget`,
-/// which is to say the rule was stated in two comments and enforced nowhere. Each of the seven
+/// which is to say the rule was stated in two comments and enforced nowhere. Each of the six
 /// required keys is dropped in turn and the decode must FAIL; `deleted`, which really is
 /// optional, is dropped as the control and must SUCCEED.
+///
+/// IT WAS SEVEN. `last_dump_sequence` was required and is not, because the node no longer holds it
+/// and this engine no longer writes it -- a key an index we write does not carry cannot be one we
+/// refuse an index for omitting. It is still recognised and still decoded as a `u64` on the way in,
+/// which is a different property and is covered where the legacy spellings are.
 #[test]
 fn a_bucket_node_that_omits_a_required_key_is_refused_and_an_optional_one_is_not() {
     let node = node_in_state(0b10101);
@@ -389,14 +394,18 @@ fn a_bucket_node_that_omits_a_required_key_is_refused_and_an_optional_one_is_not
         out
     }
 
-    const REQUIRED: [&str; 7] = [
+    // SIX, NOT SEVEN. `last_dump_sequence` left this list because it left the node: an index this
+    // engine writes does not carry the key, so an index that omits it cannot be refused. The key
+    // is still RECOGNISED and still type-checked on the way in -- an older index carries it and
+    // must still load -- which the round-trip and legacy-read guards cover. Being recognised and
+    // being required are different things, and this list is the second one.
+    const REQUIRED: [&str; 6] = [
         "routing_slot",
         "dirty",
         "meta_loaded",
         "loading",
         "in_memory",
         "dirty_generation",
-        "last_dump_sequence",
     ];
 
     println!("\n=== a node missing each required key ===");
@@ -443,4 +452,99 @@ fn a_bucket_node_that_omits_a_required_key_is_refused_and_an_optional_one_is_not
         "dropping the optional key must not disturb the flags that were written"
     );
     println!("  {:<20} accepted, and defaults to false", "deleted (optional)");
+}
+
+/// A KEY THE NODE NO LONGER HOLDS IS STILL PART OF THE SHAPE.
+///
+/// `last_dump_sequence` left `BucketNode`: it was read into two reports and nothing else, and the
+/// reports take the figure from the newest dump manifest. Removing a field is easy; removing it
+/// WITHOUT loosening the way an index is read is the part that needs a guard, because the obvious
+/// implementation -- fold the key into the deserializer's `Ignore` arm -- silently drops three
+/// separate properties at once. All four are driven here:
+///
+///   1. AN INDEX THAT CARRIES IT STILL LOADS. Every index this engine has ever written carries the
+///      key, so this is the direction that must not break.
+///   2. AN INDEX THAT OMITS IT ALSO LOADS, and that is a deliberate LOOSENING: the key used to be
+///      required, and it cannot be any more, because an index this engine writes does not carry it
+///      and an index this engine writes has to load.
+///   3. THE VALUE IS STILL TYPE-CHECKED. A node stating a string where the `u64` was is refused.
+///      An `Ignore` arm would accept it.
+///   4. A SECOND STATEMENT OF IT IS STILL REFUSED, BY NAME. Two disagreeing statements of one fact
+///      must fail loudly rather than letting the later one win. An `Ignore` arm would accept both.
+///
+/// And the value goes nowhere, which is what makes this a removal rather than a field left at 0 --
+/// there is no accessor left to read it back through, so that half is the compiler's.
+#[test]
+fn a_retired_bucket_node_key_is_still_recognised_type_checked_and_refused_twice() {
+    let node = node_in_state(0b10101);
+    let written = serde_json::to_string(&node).expect("a bucket node serializes");
+    assert!(
+        !written.contains("last_dump_sequence"),
+        "this engine still writes a last_dump_sequence the node does not hold: {written}"
+    );
+
+    // 1. An index that carries the key -- which is every index written before this change.
+    let carried = written.replace(
+        "\"dirty_generation\":",
+        "\"last_dump_sequence\":11,\"dirty_generation\":",
+    );
+    assert_ne!(
+        written, carried,
+        "the fixture for the retired key is the same string as the new write, so nothing below is \
+         about the key"
+    );
+    let loaded: BucketNode =
+        serde_json::from_str(&carried).expect("an index carrying the retired key must still load");
+    assert_eq!(
+        node.dirty_generation, loaded.dirty_generation,
+        "the field after the retired key did not survive the load, so the key is being consumed \
+         wrongly rather than discarded"
+    );
+    assert_eq!(node.flags.bits(), loaded.flags.bits(), "the flags moved across the load");
+    println!("  carrying the retired key     loaded");
+
+    // 2. An index that omits it -- which is every index this engine writes from now on.
+    let omitted: BucketNode =
+        serde_json::from_str(&written).expect("an index omitting the retired key must load");
+    assert_eq!(node.dirty_generation, omitted.dirty_generation);
+    println!("  omitting the retired key     loaded (it is no longer required)");
+
+    // 3. The value is still decoded as a u64.
+    let wrong_type = written.replace(
+        "\"dirty_generation\":",
+        "\"last_dump_sequence\":\"eleven\",\"dirty_generation\":",
+    );
+    let outcome = serde_json::from_str::<BucketNode>(&wrong_type);
+    let complaint = match &outcome {
+        Ok(_) => "ACCEPTED".to_string(),
+        Err(error) => error.to_string(),
+    };
+    println!("  the retired key as a string  {complaint}");
+    assert!(
+        outcome.is_err(),
+        "a node stating a string where the retired key's u64 was decoded successfully; the key has \
+         been folded into an ignore arm and is no longer type-checked"
+    );
+
+    // 4. Stated twice: refused, and the refusal names the key.
+    let twice = written.replace(
+        "\"dirty_generation\":",
+        "\"last_dump_sequence\":11,\"last_dump_sequence\":12,\"dirty_generation\":",
+    );
+    let outcome = serde_json::from_str::<BucketNode>(&twice);
+    let complaint = match &outcome {
+        Ok(_) => "ACCEPTED".to_string(),
+        Err(error) => error.to_string(),
+    };
+    println!("  the retired key stated twice {complaint}");
+    assert!(
+        outcome.is_err(),
+        "a node stating the retired key twice decoded successfully; two disagreeing statements of \
+         one fact must fail loudly"
+    );
+    let message = outcome.unwrap_err().to_string();
+    assert!(
+        message.contains("last_dump_sequence"),
+        "the refusal for a repeated retired key says {message:?}, which does not name the key"
+    );
 }

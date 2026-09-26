@@ -918,9 +918,13 @@ fn dump_selection_prioritizes_the_least_recently_dumped_bucket_not_the_lowest_id
     // The WAL-reclaim routine dumps dirty buckets oldest-first (by first-dirty-log-id).
     // Rust selected dirty buckets by ascending routing_bucket id then
     // truncated to the per-round cap, so a high-id bucket dirtied once was starved forever by
-    // low-id buckets re-dirtied every round. The fix orders by last_dump_sequence (0 = never
-    // dumped) ascending. Here we dump the LOW-id bucket (raising its last_dump_sequence) then
-    // re-dirty it; a cap-1 plan must now pick the never-dumped HIGH-id bucket, not the low-id one.
+    // low-id buckets re-dirtied every round. The fix orders by `first_dirty_wal_sequence` -- the
+    // bucket's oldest undumped write, which is what actually holds the log -- with the SUMMARY's
+    // `last_dump_sequence` as the tiebreaker behind it. That summary field is filled from the
+    // newest dump manifest (`merge_last_dump_sequence`), not from the bucket node, which carries no
+    // such figure; 0 means "the newest dump does not cover this bucket". Here we dump the LOW-id
+    // bucket (so the newest manifest names it) then re-dirty it; a cap-1 plan must now pick the
+    // never-dumped HIGH-id bucket, not the low-id one.
     use std::collections::BTreeMap;
     let dir = tempfile::tempdir().unwrap();
     let engine = TemporalEngine::with_local_dirs(
@@ -954,7 +958,8 @@ fn dump_selection_prioritizes_the_least_recently_dumped_bucket_not_the_lowest_id
             },
         });
     }
-    // Dump ONLY the low-id bucket: raises its last_dump_sequence and clears its dirty flag.
+    // Dump ONLY the low-id bucket: the newest manifest then names it, which is what the summary's
+    // last_dump_sequence reports, and its dirty flag is cleared.
     engine.apply_storage_lifecycle(StorageLifecycleRequest {
         shard_id: 1,
         selected_dump_buckets: vec![low_bucket],
@@ -6505,6 +6510,19 @@ fn the_stats_report_a_floor_on_what_the_bucket_index_costs() {
     );
 }
 
+/// THE KEYS THE INDEX WRITES, LISTED, so a rename or a serde attribute cannot reach the format
+/// quietly.
+///
+/// `last_dump_sequence` IS DELIBERATELY GONE FROM THIS LIST, and this guard is the one that caught
+/// it going in: #1440 tried to persist a transient claim and this test refused the added key. It is
+/// refusing a REMOVED key now, and the removal is intended. The node does not hold a
+/// `last_dump_sequence` any more -- it was read into two reports and nothing else, and both take
+/// the figure from the newest dump manifest -- so there is no value for the index to write.
+///
+/// What that costs, stated rather than discovered: an index this engine writes will not load in an
+/// engine built before this change, which refuses a node that omits the key. The other direction
+/// still works, and has its own guards: the key is still recognised, still decoded as a `u64` and
+/// still refused twice on the way in, so every index ever written still loads here.
 #[test]
 fn the_index_wire_keys_are_what_they_were() {
     let dir = tempfile::tempdir().unwrap();
@@ -6577,7 +6595,7 @@ fn the_index_wire_keys_are_what_they_were() {
         "h",
             "in_memory",
             "l",
-            "last_dump_sequence",
+            // "last_dump_sequence" is gone on purpose: see this test's own note above.
             "layout",
             "loading",
             "log_backed",

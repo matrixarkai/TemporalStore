@@ -844,7 +844,6 @@ struct TaggedNode {
     dirty_generation: u64,
     first_dirty_wal_sequence: u64,
     first_dirty_index_log_sequence: u64,
-    last_dump_sequence: u64,
     payload: TaggedLayout,
 }
 
@@ -860,7 +859,6 @@ struct LiveNodeMirror {
     dirty_generation: u64,
     first_dirty_wal_sequence: u64,
     first_dirty_index_log_sequence: u64,
-    last_dump_sequence: u64,
     object_index: ObjectIndex,
     deleted_object_index: DeletedObjectIndex,
     block_index: BlockIndexMap,
@@ -903,7 +901,6 @@ fn retag(node: &BucketNode) -> TaggedNode {
         dirty_generation: node.dirty_generation,
         first_dirty_wal_sequence: node.first_dirty_wal_sequence,
         first_dirty_index_log_sequence: node.first_dirty_index_log_sequence,
-        last_dump_sequence: node.last_dump_sequence,
         payload,
     }
 }
@@ -955,7 +952,7 @@ fn the_tagged_node_is_fifty_six_bytes_and_every_arm_reconstructs() {
             "BucketNode (live)",
             size_of::<BucketNode>(),
             size_of::<BucketTtl>()
-                + 4 * size_of::<u64>()
+                + 3 * size_of::<u64>()
                 + size_of::<ObjectIndex>()
                 + size_of::<DeletedObjectIndex>()
                 + size_of::<BlockIndexMap>(),
@@ -964,7 +961,7 @@ fn the_tagged_node_is_fifty_six_bytes_and_every_arm_reconstructs() {
         (
             "TaggedNode (proposed)",
             size_of::<TaggedNode>(),
-            size_of::<BucketTtl>() + 4 * size_of::<u64>() + size_of::<TaggedLayout>(),
+            size_of::<BucketTtl>() + 3 * size_of::<u64>() + size_of::<TaggedLayout>(),
             size_of::<u32>() + size_of::<BucketLayoutState>() + size_of::<BucketFlags>(),
         ),
         (
@@ -992,14 +989,15 @@ fn the_tagged_node_is_fifty_six_bytes_and_every_arm_reconstructs() {
         );
     }
 
-    assert_eq!(176, size_of::<BucketNode>(), "the live node moved");
-    // 56, not 64, and for the same reason the live node is 176 and not 184: this mirror
-     // carries the node's header, the header's five flags are one byte now, and a ten-byte tail
-     // became six. BOTH SIDES LOSE THE SAME EIGHT BYTES, so the verdict below is untouched.
+    assert_eq!(168, size_of::<BucketNode>(), "the live node moved");
+    // 48, not 56, and for the same reason the live node is 168 and not 176: this mirror carries
+     // the node's header, and the header lost a whole word when `last_dump_sequence` left it.
+     // (56 was itself 64 until the five flags became one byte and a ten-byte tail became six.)
+     // BOTH SIDES LOSE THE SAME EIGHT BYTES EACH TIME, so the verdict below is untouched.
     assert_eq!(
-        56,
+        48,
         size_of::<TaggedNode>(),
-        "the tagged node is {} bytes, not 56",
+        "the tagged node is {} bytes, not 48",
         size_of::<TaggedNode>()
     );
     assert_eq!(
