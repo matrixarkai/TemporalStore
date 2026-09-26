@@ -90,24 +90,30 @@ range beside its index (`shard-<id>.routing-range.json`), and a load honours tha
 file rather than the default — see *Changing the range on a populated store* below.
 So this default reaches new stores only, and no upgrade re-ranges anything.
 
-A routing slot is derived by hashing the key, so with the full `u32` range every
-key lands in a slot of its own and each one materializes a `BucketNode` carrying
-its own page index and object sets. All of that per-slot machinery is then paid
-**per record**. Counted in-process at 20,000 records, `bucket_map` held 20,000
-slots — one per record.
+### What the old default cost, and how this was first found
 
-Narrowing the range makes records share slots. Measured on 40,000 records, a
-4-CPU node, resident memory sampled after the writes drained:
+A routing bucket is derived by hashing the key, so on the whole `u32` range every key
+landed in a bucket of its own and each one materialized a `BucketNode` carrying its
+own page index and object sets. All of that per-bucket machinery was then paid **per
+record**. Counted in-process at 20,000 records on the old default, `bucket_map` held
+20,000 buckets — one per record.
+
+Sharing buckets was first measured as whole-process resident memory on 40,000
+records, a 4-CPU node, sampled after the writes drained. Kept because it is the only
+figure here taken at the process level rather than on the bucket map alone:
 
 | `TS_SHARD_END_ROUTING_BUCKET` | buckets | resident / record (256 B values) | resident / record (1.2 KB values) | disk / record |
 | --- | ---: | ---: | ---: | ---: |
-| default | 4294967295 | 5552 B | 5843 B | unchanged |
-| `1023` | 1024 | **3071 B** | **3195 B** | unchanged |
+| `4294967295` (the old default) | 4294967295 | 5552 B | 5843 B | unchanged |
+| `1023` (the default now) | 1024 | **3071 B** | **3195 B** | unchanged |
 | `255` | 256 | 3049 B | — | unchanged |
 
-**About 45% less resident memory at no cost on disk**, and the benefit plateaus by
-1024 slots, so there is little reason to go narrower. For a store of 4 million
-records that is roughly 24 GB against 13 GB.
+**About 45% less resident memory at no cost on disk**, and it plateaus by 1,024
+buckets: 255 buys 22 B a record more. For a store of 4 million records that is roughly
+24 GB against 13 GB. The plateau is the same conclusion the bucket-map sweep below
+reaches on its own instrument, and the sweep is the one to read for a choice between
+candidates — it separates the two byte columns, the allocation count, and the costs
+this whole-process figure cannot see.
 
 ### What the sweep says
 
