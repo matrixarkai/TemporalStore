@@ -115,11 +115,18 @@ fn budget() -> Vec<Budgeted> {
             name: "BlockIndex",
             size: size_of::<BlockIndex>(),
             align: align_of::<BlockIndex>(),
-            // object_key, model_id : Arc<str> x 2
+            // object_key           : Arc<str>
+            // model_id             : StoredModelKind, ONE BYTE -- it was a second `Arc<str>`
+            //                        until the spelling became the one-byte discriminant of the
+            //                        seventeen-element set `model_kind_registry` declares
             // component            : Option<Arc<str>>
             // address              : BlockAddress
             // dirty/deleted/log_backed : bool x 3
-            fields: 2 * arc_str + opt_arc_str + size_of::<BlockAddress>() + 3 * size_of::<bool>(),
+            fields: arc_str
+                + size_of::<crate::engine::storage_bucket_internals::StoredModelKind>()
+                + opt_arc_str
+                + size_of::<BlockAddress>()
+                + 3 * size_of::<bool>(),
             per_item: true,
         },
         Budgeted {
@@ -302,9 +309,9 @@ fn every_per_item_structure_states_its_width_and_its_padding() {
 
     // --- The pinned widths. ---
     assert_eq!(32, size_of::<BlockAddress>(), "BlockAddress width moved");
-    assert_eq!(88, size_of::<BlockIndex>(), "BlockIndex width moved");
-    assert_eq!(96, size_of::<BlockIndexMap>(), "BlockIndexMap width moved");
-    assert_eq!(160, size_of::<BucketNode>(), "BucketNode width moved");
+    assert_eq!(72, size_of::<BlockIndex>(), "BlockIndex width moved");
+    assert_eq!(80, size_of::<BlockIndexMap>(), "BlockIndexMap width moved");
+    assert_eq!(144, size_of::<BucketNode>(), "BucketNode width moved");
     assert_eq!(16, size_of::<BlockLookupRef>(), "BlockLookupRef width moved");
     assert_eq!(24, size_of::<BlockRefs>(), "BlockRefs width moved");
     assert_eq!(40, size_of::<ComponentBlocks>(), "ComponentBlocks width moved");
@@ -954,20 +961,23 @@ fn every_byte_of_the_bucket_node_is_accounted_for() {
         size - eight_aligned
     );
 
-    assert_eq!(158, sum, "the fields of BucketNode add up to {sum}, not 158");
-    assert_eq!(160, size, "BucketNode is {size} bytes wide, not 160");
+    assert_eq!(142, sum, "the fields of BucketNode add up to {sum}, not 142");
+    assert_eq!(144, size, "BucketNode is {size} bytes wide, not 144");
     assert_eq!(2, slack, "BucketNode carries {slack} bytes of alignment slack, not 2");
 
     // The layout rule itself, asserted rather than described: the eight-aligned group packs
     // solid and the rest is one rounding.
     let align = align_of::<BucketNode>();
     assert_eq!(8, align, "BucketNode's alignment moved, and the arithmetic below assumes 8");
-    // 152, not 160, 168 or 176. THREE eight-byte changes have come out of THIS group and none
-    // out of the tail: the address inside the inline page entry shed a derived `generation`,
-    // `last_dump_sequence` left the node, and that same address merged its slab id and its
-    // offset into ONE WORD. The tail is six because the five flags became five bits, which is
-    // the other half of the structure entirely.
-    assert_eq!(152, eight_aligned, "the eight-aligned group is {eight_aligned} B, not 152");
+    // 136, not 152, 160, 168 or 176. FOUR eight-byte changes have now come out of THIS group
+    // and none out of the tail: the address inside the inline page entry shed a derived
+    // `generation`, `last_dump_sequence` left the node, that same address merged its slab id and
+    // its offset into ONE WORD, and the page entry's model spelling stopped being a sixteen-byte
+    // fat pointer to a string from a closed set of seventeen. The fourth is the first to take TWO
+    // words at once, which is what a sixteen-byte field leaving looks like from here. The tail is
+    // still six because the five flags became five bits, which is the other half of the structure
+    // entirely and no change to the page entry can reach it.
+    assert_eq!(136, eight_aligned, "the eight-aligned group is {eight_aligned} B, not 136");
     assert_eq!(6, tail, "the tail group is {tail} B, not 6");
     assert_eq!(
         eight_aligned + tail.div_ceil(align) * align,
@@ -1242,28 +1252,33 @@ fn what_each_declined_shape_of_the_bucket_node_would_cost() {
     // coordinates into one word out of that same group, which is the same reason the two earlier
     // eight-byte changes came out of it whole.
     assert_eq!(
-        184, wide_ttl,
+        168, wide_ttl,
         "the shape before #1958 was 208 bytes, 200 once the address inside the inline page entry \
          shed its derived generation, 192 once the node stopped carrying a per-bucket \
-         last_dump_sequence, and 184 once that address merged its two slab coordinates; it reads \
-         as {wide_ttl}, so the mirrors have drifted from the history they claim to price"
+         last_dump_sequence, 184 once that address merged its two slab coordinates, and 168 once \
+         the page entry's model spelling became one byte; it reads as {wide_ttl}, so the mirrors \
+         have drifted from the history they claim to price"
     );
     assert_eq!(
-        176, wide_tombstone,
+        160, wide_tombstone,
         "the shape before #1961 was 200 bytes, 192 once the address shed its derived generation, \
-         184 once the node stopped carrying a per-bucket last_dump_sequence, and 176 once that \
-         address merged its two slab coordinates; it reads as {wide_tombstone}, so the eight \
-         bytes that change claims are not the eight bytes it took"
+         184 once the node stopped carrying a per-bucket last_dump_sequence, 176 once that \
+         address merged its two slab coordinates, and 160 once the page entry's model spelling \
+         became one byte; it reads as {wide_tombstone}, so the eight bytes that change claims are \
+         not the eight bytes it took"
     );
-    assert_eq!(160, live, "the node is {live} bytes, not 160");
+    assert_eq!(144, live, "the node is {live} bytes, not 144");
     assert_eq!(
-        168, loose,
+        152, loose,
         "the shape before the flags were packed was 184 bytes, 176 once the node stopped \
-         carrying a per-bucket last_dump_sequence, and 168 once the address inside the inline \
-         page entry merged its two slab coordinates -- this mirror holds that address too, so \
-         it moved with the live shape and the EIGHT BYTES BETWEEN THEM is still what packing \
-         the flags is worth. It reads as {loose}, so the row that prices this change is not \
-         describing the shape it replaced"
+         carrying a per-bucket last_dump_sequence, 168 once the address inside the inline page \
+         entry merged its two slab coordinates, and 152 once that entry's model spelling became \
+         one byte -- this mirror holds the page entry too, so it moves with the live shape every \
+         time and the EIGHT BYTES BETWEEN THEM is still what packing the flags is worth. Which is \
+         the point of pricing by the GAP between mirrors rather than by either width: four \
+         changes to the page entry have moved both, and not one of them has moved this price. It \
+         reads as {loose}, so the row that prices this change is not describing the shape it \
+         replaced"
     );
     assert_eq!(
         8,
@@ -1299,13 +1314,24 @@ fn what_each_declined_shape_of_the_bucket_node_would_cost() {
 
     // --- The loss, and why the struct width alone would have read as a win. ---
     //
-    // The pointer takes eighty bytes off the struct and then buys a 104-byte allocation for the
+    // The pointer takes the inline entry off the struct and then buys an allocation for the
     // entry it moved out -- and it buys one for very nearly every bucket, because the page
-    // entries and the buckets are within a tenth of a percent of each other in count. A 104-byte
-    // request is served from a 112-byte chunk once the allocator has taken its header and rounded
-    // to a class, so the pair is WIDER than the inline form it replaced, before counting the
+    // entries and the buckets are within a tenth of a percent of each other in count. That
+    // request is served from a chunk once the allocator has taken its header and rounded to a
+    // class, so the pair is WIDER than the inline form it replaced, before counting the
     // allocation itself or the pointer chase on every page read.
-    const ALLOCATOR_CHUNK_FOR_A_PAGE_ENTRY: usize = 112;
+    //
+    // DERIVED, NOT WRITTEN DOWN. This was the literal 112 that a 104-byte entry needed, and the
+    // entry has been 88 and is now 72 -- so the literal had been describing a shape this engine
+    // did not have for two changes, and would have kept under-pricing the decline by a whole
+    // class each time the entry shrank. glibc serves a request from a chunk of
+    // `max(32, round_up(request + 8, 16))`, and #1969 corrected that to a FLOOR rather than an
+    // equality: a 104-byte request read 128 against the documented 112, because the allocator
+    // serves from a chunk that is merely big enough and the reading depends on the process's
+    // allocation history. A floor is what this row needs -- it under-prices the decline if it is
+    // too small, and the assertion below is what says it is not.
+    const ALLOCATOR_CHUNK_FOR_A_PAGE_ENTRY: usize =
+        if size_of::<BlockIndex>() + 8 < 32 { 32 } else { (size_of::<BlockIndex>() + 8 + 15) / 16 * 16 };
     assert!(
         boxed < live,
         "the boxed shape must make the STRUCT smaller, or the point of the row is lost"

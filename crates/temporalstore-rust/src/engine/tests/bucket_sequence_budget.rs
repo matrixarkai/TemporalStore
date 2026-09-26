@@ -599,7 +599,11 @@ fn what_narrowing_or_removing_each_sequence_would_make_the_node() {
     // them could be paid. Removing a word does NOT move the tail, which is why it crosses where a
     // narrowing does not -- and MERGING two words into one is the same shape of change, which is
     // why the address merge crosses too and leaves the conclusion above untouched.
-    const EIGHT_ALIGNED: usize = 152;
+    // 136, not 152: the page entry inside the inline `BlockIndexMap` gave up a sixteen-byte fat
+    // pointer for a one-byte model spelling, and those two words leave the eight-aligned group
+    // exactly as the address merge's one word did. The rows below are DIFFERENCES from these two
+    // constants, so the conclusion is untouched -- which is the point of pricing by difference.
+    const EIGHT_ALIGNED: usize = 136;
     const TAIL: usize = 6;
     let live = size_of::<BucketNode>();
     assert_eq!(

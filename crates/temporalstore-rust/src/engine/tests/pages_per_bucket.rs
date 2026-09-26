@@ -461,11 +461,16 @@ fn the_pages_a_bucket_holds_are_two_populations_and_not_one_mean() {
 /// A total-only assertion cannot tell "a field was added" from "the aligner rounded differently".
 #[test]
 fn every_byte_of_the_page_index_is_accounted_for() {
-    // --- BlockIndex: three shared names and an address pack solid; three flags round up. ---
+    // --- BlockIndex: TWO shared names and an address pack solid; the one-byte model spelling
+    // and three flags round up together. The model spelling used to be a second `Arc<str>` in the
+    // eight-aligned group; it is now one byte in the tail, which is why this step took SIXTEEN
+    // bytes off the structure and not the twelve a field-width subtraction would predict: four of
+    // them came out of the rounding the flags were already sitting in. ---
     let arc_str = size_of::<Arc<str>>();
     let opt_arc_str = size_of::<Option<Arc<str>>>();
-    let index_eight_aligned = 2 * arc_str + opt_arc_str + size_of::<BlockAddress>();
-    let index_tail = 3 * size_of::<bool>();
+    let index_eight_aligned = arc_str + opt_arc_str + size_of::<BlockAddress>();
+    let index_tail = size_of::<crate::engine::storage_bucket_internals::StoredModelKind>()
+        + 3 * size_of::<bool>();
     let index_rounded_tail = round_up_to(index_tail, 8);
     println!(
         "BlockIndex: {index_eight_aligned} B eight-aligned + {index_tail} B tail rounded to \
@@ -479,7 +484,7 @@ fn every_byte_of_the_page_index_is_accounted_for() {
         "the page entry no longer reconstructs as {index_eight_aligned} bytes of eight-aligned \
          field plus {index_tail} bytes of flag rounded up to {index_rounded_tail}"
     );
-    assert_eq!(88, size_of::<BlockIndex>(), "the page entry's budgeted width moved");
+    assert_eq!(72, size_of::<BlockIndex>(), "the page entry's budgeted width moved");
 
     // The three flags are ALREADY inside the rounding. Narrowing them reclaims nothing; only
     // removing the tail entirely would, and it is three keys of the stored index.
@@ -509,7 +514,7 @@ fn every_byte_of_the_page_index_is_accounted_for() {
         "the common arm is supposed to be the WIDE one here -- that is what makes boxing it a \
          loss rather than the win it is on ObjectIndex, where the rare arm is the wide one"
     );
-    assert_eq!(96, size_of::<BlockIndexMap>(), "the page index's budgeted width moved");
+    assert_eq!(80, size_of::<BlockIndexMap>(), "the page index's budgeted width moved");
 
     // --- And it is over half of the node, which is why any further accounting starts here. ---
     assert!(

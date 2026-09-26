@@ -21,17 +21,28 @@
 //!     of nothing else, and that distribution is measured here -- as a histogram with percentiles
 //!     and a MAX, never a mean, because a mean of 1.98 pages a bucket in this engine once
 //!     contained ZERO buckets holding two.
-//!   * `component` is per-PAGE by construction: a container key's fields are each their own page
-//!     and the component is the only thing that tells them apart, so distinct component names
-//!     GROW WITH THE PAGES. A table keyed by them costs an entry per page to save 14 bytes a
-//!     page. REFUTED, with the table's own chunk bytes measured rather than argued.
+//!   * `component` is TWO POPULATIONS, and this module was written expecting one. The reasoning
+//!     was that a container key's fields are each their own page and the component is the only
+//!     thing telling them apart, so distinct component names must grow with the pages -- true
+//!     WITHIN one object and false ACROSS a store, because a schema repeats: forty hashes sharing
+//!     a hundred field names hold 400 distinct components over 4,000 pages. The anti-vacuity
+//!     assertion caught that and refused to score, so the verdict is stated per population. A
+//!     repeated SCHEMA name pays; a CONTENT-DERIVED one -- which is what `zset_component` and
+//!     `timestamped_component` build -- does not, and cannot be replaced by an ordinal at all
+//!     without a second map to get back.
 //!
 //! AND ONE THING THE NAMES TURN OUT TO BE THAT IS WORTH MORE THAN THE POINTER. A component name is
 //! not a label -- `zset_component` is `format!("{biased:016x}{}", hex::encode(member))` and
 //! `timestamped_component` is `format!("{stored_key:016x}{identity:016x}")`. They are HEX TEXT FOR
 //! NUMBERS: sixteen characters carrying eight bytes, and `hex::encode` is exactly twice its input.
-//! That is measured here too, separately from the pointer, because it is a bigger term and it
-//! needs no table, no ordinal and no map.
+//! Measured here at 81.3% of component text in a container corpus and 97.1% with twenty-byte
+//! members -- separately from the pointer, because it is a bigger term and it needs no table, no
+//! ordinal and no map.
+//!
+//! WHAT SHIPPED IS `model_id` AND NOTHING ELSE. The other two names are priced here and declined,
+//! and the prices are the point: a proposal declined with a measured number is worth as much as one
+//! taken, and this is the third time in this campaign that the number came out the opposite way
+//! round from the reasoning that motivated it.
 //!
 //! WHAT IS MEASURED WHERE. Counts and structure sizes are unconditional. The table's own cost is
 //! only visible on the chunk column, so those arms are `alloc-probe` gated and named in the report

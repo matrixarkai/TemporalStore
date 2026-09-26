@@ -625,9 +625,9 @@ fn the_arm_a_bucket_node_lands_in_is_decided_by_the_routing_range_not_by_the_wor
 fn a_simple_bucket_holds_no_general_case_to_take_away() {
     // Each member's EMPTY and SINGLE spellings, and the width they occupy in the node.
     assert_eq!(
-        96,
+        80,
         size_of::<BlockIndexMap>(),
-        "the page index is {} bytes in the node, not 96; the accounting below is stale",
+        "the page index is {} bytes in the node, not 80; the accounting below is stale",
         size_of::<BlockIndexMap>()
     );
     assert_eq!(16, size_of::<ObjectIndex>(), "the object index moved");
@@ -637,18 +637,20 @@ fn a_simple_bucket_holds_no_general_case_to_take_away() {
         "the tombstone index moved"
     );
 
-    // The three members sum to 120 of the node's 168 -- the bytes the proposal would replace
+    // The three members sum to 104 of the node's 144 -- the bytes the proposal would replace
     // with one word. It was 136 of 192, then 128 of 184 when the address inside the inline page
     // entry shed its derived generation, 128 of 176 when the five flags became five bits (the
-    // node moved and the members did not -- the flags are not in them), and 120 of 168 when that
-    // address merged its slab id and its offset into one word. So of the three steps, two took
-    // the same eight bytes off the members AND off the node, and one took eight off the node
-    // alone. What the proposal would replace is unchanged in kind and smaller in size, which is
-    // the direction that makes the proposal worse rather than better.
+    // node moved and the members did not -- the flags are not in them), 120 of 168 when that
+    // address merged its slab id and its offset into one word, and 104 of 144 when the page
+    // entry's model spelling stopped being a sixteen-byte fat pointer to a string from a closed
+    // set. So of the four steps, THREE took the same bytes off the members AND off the node, and
+    // one took eight off the node alone. What the proposal would replace is unchanged in kind and
+    // smaller in size every time, which is the direction that makes the proposal worse rather
+    // than better -- and the fourth step is the largest of the four.
     let members = size_of::<BlockIndexMap>() + size_of::<ObjectIndex>() + size_of::<DeletedObjectIndex>();
     assert_eq!(
-        120, members,
-        "the three container members are {members} bytes, not 120"
+        104, members,
+        "the three container members are {members} bytes, not 104"
     );
     assert!(
         members < size_of::<BucketNode>(),
@@ -686,9 +688,9 @@ fn a_simple_bucket_holds_no_general_case_to_take_away() {
         size_of::<crate::block_store::BlockAddress>()
     );
     assert_eq!(
-        88,
+        72,
         size_of::<BlockIndex>(),
-        "a page entry is {} bytes, not 88",
+        "a page entry is {} bytes, not 72",
         size_of::<BlockIndex>()
     );
     assert!(
@@ -1011,13 +1013,14 @@ fn the_tagged_node_is_fifty_six_bytes_and_every_arm_reconstructs() {
         );
     }
 
-    assert_eq!(160, size_of::<BucketNode>(), "the live node moved");
-    // 48, not 56, and for the same reason the live node is 160 and not 168: this mirror carries
-    // the node's header, and the header lost a whole word when `last_dump_sequence` left it.
-    // (56 was itself 64 until the five flags became one byte and a ten-byte tail became six.) The
-    // address merge takes eight more off the LIVE node and off this mirror's boxed payload alike,
-    // because the payload holds that address too. BOTH SIDES LOSE THE SAME EIGHT BYTES EACH TIME,
-    // so the verdict below is untouched by any of the three.
+    assert_eq!(144, size_of::<BucketNode>(), "the live node moved");
+    // 48, and it has not moved while the live node has gone 168 -> 160 -> 144: this mirror carries
+    // the node's HEADER only, and the header lost a whole word when `last_dump_sequence` left it.
+    // (56 was itself 64 until the five flags became one byte and a ten-byte tail became six.)
+    // Every change to the page ENTRY takes bytes off the LIVE node and off this mirror's boxed
+    // payload alike, because the payload holds that entry -- the address merge took eight from
+    // each, and the model spelling took sixteen from each. BOTH SIDES LOSE THE SAME BYTES EVERY
+    // TIME, so the verdict below is untouched by any of the four.
     assert_eq!(
         48,
         size_of::<TaggedNode>(),
@@ -1025,22 +1028,23 @@ fn the_tagged_node_is_fifty_six_bytes_and_every_arm_reconstructs() {
         size_of::<TaggedNode>()
     );
     assert_eq!(
-        104,
+        88,
         size_of::<SimpleLayout>(),
-        "the simple payload is {} bytes, not 104",
+        "the simple payload is {} bytes, not 88",
         size_of::<SimpleLayout>()
     );
 
     // --- AND THE ARITHMETIC THAT READS AS A WIN, NAMED AS ARITHMETIC. ---
     //
-    // 120 bytes off the struct, and then a 104-byte allocation for very nearly every bucket at
-    // the default range. glibc serves a 104-byte request from a chunk of AT LEAST 112 B once it has taken
-    // its own header word and rounded to a multiple of sixteen, so the PAIR is 56 + 112 = 168 --
-    // exactly what it replaced, before the allocation itself and before the pointer chase. The
-    // conclusion has survived the flag packing and both address narrowings unchanged, and for the
-    // same reason each time: the node and the out-of-line payload shrink together. This
-    // is `size_of` arithmetic and is quoted as such; the measured figure is in
-    // `what_the_tagged_node_actually_costs_the_allocator`.
+    // 104 bytes off the struct, and then an 88-byte allocation for very nearly every bucket at
+    // the default range. glibc serves an 88-byte request from a chunk of AT LEAST 96 B once it has
+    // taken its own header word and rounded to a multiple of sixteen, so the PAIR is 48 + 96 = 144
+    // -- exactly what it replaced, before the allocation itself and before the pointer chase. The
+    // conclusion has now survived the flag packing, both address narrowings AND the model
+    // spelling unchanged, and for the same reason each time: the node and the out-of-line payload
+    // shrink together, so the pair tracks the inline form step for step. FOUR chances for this
+    // decline to become a win and it has not taken one. This is `size_of` arithmetic and is quoted
+    // as such; the measured figure is in `what_the_tagged_node_actually_costs_the_allocator`.
     let chunk = |request: usize| (request + 8).div_ceil(16) * 16;
     let pair = size_of::<TaggedNode>() + chunk(size_of::<SimpleLayout>());
     println!(
