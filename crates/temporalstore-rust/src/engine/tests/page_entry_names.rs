@@ -142,7 +142,7 @@ fn name_spread(engine: &TemporalEngine) -> NameSpread {
         for (_, page) in bucket.block_index.iter() {
             held += 1;
             keys.insert(page.object_key.as_ref());
-            models.insert(page.model_id.as_ref());
+            models.insert(page.model_id.as_str());
             components.insert(page.component.as_deref());
         }
         *spread.pages_held.entry(held).or_default() += 1;
@@ -510,7 +510,10 @@ fn key_allocation_census(engine: &TemporalEngine) -> KeyAllocationCensus {
                 .entry((page.model_id.to_string(), page.object_key.to_string()))
                 .or_default();
             slot.0.insert(page.object_key.as_ptr() as usize);
-            slot.1.insert(page.model_id.as_ptr() as usize);
+            // The spelling is a `&'static str` off the registry now, not an allocation: one
+            // address per kind for the whole process, so this census reads 1 BY CONSTRUCTION
+            // rather than because a pool happened to be consulted. Kept as the control it was.
+            slot.1.insert(page.model_id.as_str().as_ptr() as usize);
             slot.2 += 1;
         }
     }
@@ -616,7 +619,13 @@ fn the_pages_of_one_object_hold_one_allocation_of_its_object_key() {
     }
 
     // --- And the KIND is shared too, which is the control: a census that reported everything as
-    // shared regardless would say the same thing here whether or not the pool existed. ---
+    // shared regardless would say the same thing here whether or not the pool existed.
+    //
+    // SINCE THE ENTRY STOPPED HOLDING A STRING FOR IT, this control is structural: the spelling
+    // is a `&'static str` off `model_kind_registry`, so every page of a kind reads the same
+    // address and no allocation exists to be duplicated. It is kept because it still discriminates
+    // -- a census that reported two here would mean it is no longer reading the registry's
+    // spelling -- but it is no longer evidence about a pool. ---
     for (index, census) in containers.iter().enumerate() {
         assert_eq!(
             1,
@@ -653,7 +662,7 @@ fn capture_the_stored_spelling_of_a_page_entry() {
     ) -> BlockIndex {
         BlockIndex {
             object_key: Arc::from(key),
-            model_id: Arc::from(model),
+            model_id: crate::engine::storage_bucket_internals::stored_model_kind(model),
             component: component.map(Arc::from),
             address: BlockAddress::from_parts(
                 slab,
@@ -807,7 +816,7 @@ const OLD_STORE_PAGES: &[(&str, &str, Option<&str>, u64, u64, u64, bool, bool, b
 fn page_fixture(component: Option<&str>, length: u64, flags: (bool, bool, bool)) -> BlockIndex {
     BlockIndex {
         object_key: Arc::from("k"),
-        model_id: Arc::from("string"),
+        model_id: crate::engine::storage_bucket_internals::StoredModelKind::String,
         component: component.map(Arc::from),
         address: crate::block_store::BlockAddress::from_parts(
             1,
@@ -1150,7 +1159,7 @@ fn fold_every_name(engine: &TemporalEngine) -> u64 {
             for byte in page.object_key.as_bytes() {
                 sum = sum.wrapping_mul(31).wrapping_add(*byte as u64);
             }
-            for byte in page.model_id.as_bytes() {
+            for byte in page.model_id.as_str().as_bytes() {
                 sum = sum.wrapping_mul(31).wrapping_add(*byte as u64);
             }
             if let Some(component) = page.component.as_deref() {
@@ -1319,16 +1328,22 @@ fn what_a_container_store_charges_the_allocator_a_page() {
 
 /// A COMPONENT CANNOT CROWD A KIND OUT OF THE POOL THEY SHARE.
 ///
-/// `part4::blocks_of_one_kind_share_a_single_kind_string` already asserts that pages of one kind
-/// point at one allocation of it. Its fixture is 200 strings and 40 hashes whose field is always
-/// `"f"` -- ONE component name in the whole store -- so the pool it checks holds three entries
-/// against a cap of sixty-four and can never be full. The failure this test is about needs the
-/// pool FULL, and the only thing in this engine that fills it is a container.
+/// `part4::blocks_of_one_kind_spend_one_byte_and_share_one_static_spelling` asserts the PAGE's
+/// half of this: a page entry holds one byte for its kind and reads the registry's `&'static str`
+/// through it, so a page cannot hold a pooled copy at all. Its fixture is 200 strings and 40
+/// hashes whose field is always `"f"` -- ONE component name in the whole store -- so the pool it
+/// would have checked holds three entries against a cap of sixty-four and can never be full. The
+/// failure this test is about needs the pool FULL, and the only thing in this engine that fills it
+/// is a container.
 ///
-/// Both counts are read, and the kind count is the claim: a pool that took components would be
-/// at its cap, and the four kinds of a container store would be allocating one copy per page of a
-/// four-character string. The component pool is asserted to be AT ITS CAP in the same breath, so
-/// this cannot pass by the containers having quietly stopped producing components.
+/// WHO STILL NEEDS THE POOL, now that the entry does not: the object lookup, whose `by_model` head
+/// is keyed by the kind's SHARED name. That is the holder this test protects, and it is why a
+/// component crowding a kind out still costs something -- one allocation per (kind, object) head
+/// instead of one per kind.
+///
+/// Both counts are read, and the kind count is the claim. The component pool is asserted to be AT
+/// ITS CAP in the same breath, so this cannot pass by the containers having quietly stopped
+/// producing components.
 #[test]
 #[ignore = "seeds a container store; run by name"]
 fn a_container_cannot_fill_the_pool_the_kinds_are_interned_in() {
@@ -1359,38 +1374,41 @@ fn a_container_cannot_fill_the_pool_the_kinds_are_interned_in() {
          by the sum of the two ceilings"
     );
 
-    // And the consequence, which is the thing that actually costs: every page of a kind points at
-    // one allocation of it.
-    let mut first_of_kind: std::collections::HashMap<String, Arc<str>> =
-        std::collections::HashMap::new();
-    let mut pages = 0usize;
-    let mut shared = 0usize;
-    let mut compared = 0usize;
-    for bucket in shard.bucket_index.bucket_map.values() {
-        for (_, page) in bucket.block_index.iter() {
-            pages += 1;
-            match first_of_kind.get(page.model_id.as_ref()) {
-                None => {
-                    first_of_kind.insert(page.model_id.to_string(), Arc::clone(&page.model_id));
-                }
-                Some(first) => {
-                    compared += 1;
-                    if Arc::ptr_eq(first, &page.model_id) {
-                        shared += 1;
-                    }
-                }
+    // AND WHO STILL HOLDS THE POOLED NAME, which is the half of this test the entry no longer
+    // decides. A page entry carries the one-byte spelling and no string, so it cannot hold a
+    // pooled copy and cannot fail to. The remaining holder is the OBJECT LOOKUP, whose `by_model`
+    // head is keyed by the shared name -- that is why the pool is still consulted at all, and it
+    // is what the ceilings above are protecting.
+    let mut lookup_heads = 0usize;
+    let mut pooled_heads = 0usize;
+    for (model_id, _object_key, _refs) in shard.bucket_index.object_block_lookup.iter() {
+        lookup_heads += 1;
+        if let Some(pooled) = shard.bucket_index.kind_pool.get(model_id) {
+            if Arc::ptr_eq(pooled, model_id) {
+                pooled_heads += 1;
             }
         }
     }
-    assert!(pages > 0, "no pages were recorded; nothing was measured");
     assert!(
-        compared > 0,
-        "every page in this fixture is the first of its kind, so 'all shared' is true for free"
+        lookup_heads > 0,
+        "the lookup holds no (model, object) head, so there is nothing whose key could be pooled"
     );
     assert_eq!(
-        compared, shared,
-        "{shared} of {compared} pages share their kind string with the first page of that kind; \
-         the rest hold their own copy of a name with four distinct values in the whole store"
+        lookup_heads, pooled_heads,
+        "{pooled_heads} of {lookup_heads} lookup heads are keyed by the POOLED allocation of \
+         their kind; the rest hold a copy, which is the cost the pool exists to remove"
+    );
+
+    // And the page's own side of it: one byte, no string, nothing to pool.
+    let mut pages = 0usize;
+    for bucket in shard.bucket_index.bucket_map.values() {
+        pages += bucket.block_index.iter().count();
+    }
+    assert!(pages > 0, "no pages were recorded; nothing was measured");
+    assert_eq!(
+        1,
+        std::mem::size_of::<crate::engine::storage_bucket_internals::StoredModelKind>(),
+        "the page entry is supposed to spend one byte on the spelling the pool holds for the lookup",
     );
 }
 

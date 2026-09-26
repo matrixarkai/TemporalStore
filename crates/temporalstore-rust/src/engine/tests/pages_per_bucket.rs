@@ -1543,7 +1543,9 @@ fn reading_a_page_behind_a_pointer_costs_a_dependent_load_the_inline_arm_does_no
 fn page_for(seed: u64) -> BlockIndex {
     BlockIndex {
         object_key: Arc::from(format!("key-{seed}").as_str()),
-        model_id: Arc::from("strings"),
+        // Was `"strings"`, which is not a spelling the registry declares -- the plural was a
+        // fixture typo that a free-form string field could not catch.
+        model_id: crate::engine::storage_bucket_internals::StoredModelKind::String,
         component: None,
         address: BlockAddress::from_parts(
             7,
@@ -1562,7 +1564,8 @@ fn page_for(seed: u64) -> BlockIndex {
 fn component_page(seed: u64, component: &str) -> BlockIndex {
     BlockIndex {
         object_key: Arc::from("container"),
-        model_id: Arc::from("hashes"),
+        // Was `"hashes"`, likewise not a declared spelling.
+        model_id: crate::engine::storage_bucket_internals::StoredModelKind::Hash,
         component: Some(Arc::from(component)),
         address: BlockAddress::from_parts(
             9,

@@ -3099,7 +3099,7 @@ fn collect_command_index_items_for(
                 continue;
             }
             if let Some((kind, component)) = only {
-                if &*page.model_id != kind || page.component.as_deref() != component {
+                if page.model_id.as_str() != kind || page.component.as_deref() != component {
                     continue;
                 }
             }
@@ -3369,7 +3369,7 @@ fn fold_delta_block_items(
                 continue;
             };
             bucket.block_index.retain(&mut bucket_index.block_slab_live, |_, page| {
-                !(page.model_id.as_ref() == item.model_id
+                !(page.model_id.as_str() == item.model_id
                     && page.object_key.as_ref() == item.object_key.as_str()
                     && page.component.as_deref() == item.component.as_deref())
             });
@@ -3407,7 +3407,9 @@ fn fold_delta_block_items(
         bucket.block_index.insert(
             BlockIndex {
                 object_key: Arc::from(item.object_key.clone()),
-                model_id: Arc::from(item.model_id.clone()),
+                model_id: crate::engine::storage_bucket_internals::stored_model_kind(
+                    &item.model_id,
+                ),
                 component: item.component.clone().map(Arc::from),
                 address: {
                     // The record carries the id separately; the address holds it now.
@@ -4324,7 +4326,7 @@ fn mark_bucket_index_block_deleted_with(
         let mut bucket_removed = false;
         let mut deleted_object_ids = BTreeSet::new();
         bucket.block_index.retain(&mut shard.bucket_index.block_slab_live, |_, page| {
-            let matches = page.model_id.as_ref() == model_id
+            let matches = page.model_id.as_str() == model_id
                 && &*page.object_key == key
                 && page.component.as_deref() == component;
             if matches {
@@ -4690,7 +4692,7 @@ fn record_exists_exact(shard: &ShardState, key: &str) -> bool {
                             .get(&block_ref.routing_bucket)
                             .and_then(|bucket| bucket.block_index.get(&block_ref.block_ref_key))
                             .map(|page| {
-                                !page.deleted && page.model_id.as_ref() == *kind && &*page.object_key == key
+                                !page.deleted && page.model_id.as_str() == *kind && &*page.object_key == key
                             })
                             .unwrap_or(false)
                     })
@@ -5256,9 +5258,9 @@ fn object_manager_stats(
                     .iter()
                     .map(|page| {
                         (
-                            page.model_id.as_ref(),
+                            page.model_id.as_str(),
                             page.object_key.as_ref(),
-                            (page.model_id.as_ref() == "hash")
+                            (page.model_id.as_str() == "hash")
                                 .then(|| page.component.as_deref())
                                 .flatten(),
                         )
@@ -5270,9 +5272,9 @@ fn object_manager_stats(
                     .filter(|page| page.dirty || shard.dirty_objects.contains(page.object_key.as_ref()))
                     .map(|page| {
                         (
-                            page.model_id.as_ref(),
+                            page.model_id.as_str(),
                             page.object_key.as_ref(),
-                            (page.model_id.as_ref() == "hash")
+                            (page.model_id.as_str() == "hash")
                                 .then(|| page.component.as_deref())
                                 .flatten(),
                         )

@@ -167,6 +167,7 @@ fn bucket_take_arithmetic_with_explicit_clocks() {
     assert_eq!(u64::MAX, retry);
 }
 mod page_entry_names;
+mod page_entry_handles;
 
 mod bucket_sequence_budget;
 mod bucket_node_arms;

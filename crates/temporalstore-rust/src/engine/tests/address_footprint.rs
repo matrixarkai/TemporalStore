@@ -1808,18 +1808,36 @@ fn the_capacity_ceilings_each_narrowing_would_impose() {
     // equalled on every address this census has ever walked -- taking a whole eight-byte step off
     // the payload in one go: 3*8 + 3*4 + 1 = 37, rounded to 40. Three bytes of padding again,
     // because the step size did not change.
+    //
+    // 40 -> 32 is the FOURTH, and it is why the payload below is DERIVED rather than written down.
+    // The slab id and the offset merged into one word, taking the payload from 37 to 29 -- and the
+    // literal 37 stayed here, so this line computed `32 - 37` and the whole probe aborted on an
+    // unsigned underflow before printing a single ceiling. It is `#[ignore]`d, so no gate ever ran
+    // it and nothing said so. A payload figure beside a struct that moves is a hand-written
+    // subject list: it goes stale and nothing fails.
     println!("--- what the struct actually costs ---");
+    // Derived from the field widths, in declaration order, so the next step cannot leave it stale:
+    // one merged address word, the object id, three 32-bit fields and the presence byte.
+    const ADDRESS_PAYLOAD_BYTES: usize = 8 + 8 + 4 + 4 + 4 + 1;
+    assert!(
+        std::mem::size_of::<BlockAddress>() >= ADDRESS_PAYLOAD_BYTES,
+        "the derived payload {ADDRESS_PAYLOAD_BYTES} exceeds size_of BlockAddress {}, so a field \
+         has changed width and the derivation above has to change with it",
+        std::mem::size_of::<BlockAddress>()
+    );
     println!(
-        "  size_of BlockAddress = {} (payload 3*8 + 3*4 + 1 = 37, so {} bytes are padding)",
+        "  size_of BlockAddress = {} (payload 2*8 + 3*4 + 1 = {ADDRESS_PAYLOAD_BYTES}, so {} bytes \
+         are padding)",
         std::mem::size_of::<BlockAddress>(),
-        std::mem::size_of::<BlockAddress>() - 37
+        std::mem::size_of::<BlockAddress>() - ADDRESS_PAYLOAD_BYTES
     );
     println!(
         "  align_of BlockAddress = {}",
         std::mem::align_of::<BlockAddress>()
     );
     println!(
-        "  size_of BlockIndex = {} (it holds a BlockAddress plus 2 Arc<str>, an Option<Arc<str>> and 3 bools)",
+        "  size_of BlockIndex = {} (it holds a BlockAddress, an Arc<str>, an Option<Arc<str>>, a \
+         one-byte model spelling and 3 bools)",
         std::mem::size_of::<BlockIndex>()
     );
     println!(

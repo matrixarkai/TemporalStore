@@ -137,7 +137,7 @@ pub(super) fn bucket_dump_entries_by_key(
             let block_id = entry.address.block_id().unwrap_or_else(|| {
                 stable_block_object_id(
                     shard_id,
-                    &entry.kind,
+                    entry.kind.as_str(),
                     &entry.object_key,
                     (!component.is_empty()).then_some(component.as_ref()),
                 )
@@ -275,7 +275,7 @@ pub(super) fn native_packed_block_index_bytes(
 ) -> [u8; NATIVE_PACKED_BLOCK_INDEX_SIZE] {
     let mut bytes = [0u8; NATIVE_PACKED_BLOCK_INDEX_SIZE];
     bytes[0] = page.object_id.unwrap_or_default() as u8;
-    bytes[1] = model_report_code(&page.model_id);
+    bytes[1] = model_report_code(page.model_id.as_str());
     bytes[2..4].copy_from_slice(&(page.block_id.unwrap_or_default() as u16).to_le_bytes());
     bytes[4] = u8::from(page.dirty) | (u8::from(page.log_backed) << 1);
     let page_size = if page.deleted { 0 } else { page.length as u32 };
@@ -309,7 +309,7 @@ pub(super) fn native_packed_bucket_node_bytes(bucket: &StoragePhysicalBucketNode
     let model_code = bucket
         .block_indexes
         .first()
-        .map(|page| model_report_code(&page.model_id))
+        .map(|page| model_report_code(page.model_id.as_str()))
         .unwrap_or_default();
     bytes[7] = model_code;
     bytes[8..16].copy_from_slice(&bucket.ttl_ms.unwrap_or_default().to_le_bytes());
@@ -434,7 +434,7 @@ pub(super) fn storage_physical_index_report(
         for page in runtime_bucket.block_index.values() {
             let already_present = bucket.block_indexes.iter().any(|existing| {
                 existing.object_key.as_str() == page.object_key.as_ref()
-                    && *existing.model_id == *page.model_id
+                    && existing.model_id.as_str() == page.model_id.as_str()
                     && existing.component.as_deref() == page.component.as_deref()
                     && existing.block_slab_id == page.address.block_slab_id()
                     && existing.offset == page.address.offset()
@@ -662,7 +662,7 @@ pub(super) fn object_manager_runtime_report_from_entries(
     ];
     report.packed_timestamped_block_count = entries
         .iter()
-        .filter(|entry| TIMESTAMPED_KINDS.contains(&entry.kind.as_ref()))
+        .filter(|entry| TIMESTAMPED_KINDS.contains(&entry.kind.as_str()))
         .count() as u64;
     report.runtime_ready = report.blockers.is_empty();
     report
@@ -705,7 +705,7 @@ pub(super) fn bucket_object_block_ownership_report_from_entries(
         }
         let expected_object_id = stable_block_object_id(
             shard_id,
-            &entry.kind,
+            entry.kind.as_str(),
             &entry.object_key,
             entry.component.as_deref(),
         );
@@ -1028,7 +1028,7 @@ pub(super) fn storage_feature_block_layout_report(
             continue;
         }
         if !matches!(
-            entry.kind.as_ref(),
+            entry.kind.as_str(),
             "feature"
                 | "sequence"
                 | "context_event"
@@ -1048,7 +1048,7 @@ pub(super) fn storage_feature_block_layout_report(
         });
         report.unique_timestamped_block_refs = report.unique_timestamped_block_refs.saturating_add(1);
         family.unique_block_refs = family.unique_block_refs.saturating_add(1);
-        if &*entry.kind == "feature" {
+        if entry.kind.as_str() == "feature" {
             report.unique_feature_block_refs = report.unique_feature_block_refs.saturating_add(1);
         }
         match block_store.read(&entry.address) {
@@ -1057,14 +1057,14 @@ pub(super) fn storage_feature_block_layout_report(
                     report.packed_timestamped_blocks =
                         report.packed_timestamped_blocks.saturating_add(1);
                     family.packed_blocks = family.packed_blocks.saturating_add(1);
-                    if &*entry.kind == "feature" {
+                    if entry.kind.as_str() == "feature" {
                         report.packed_feature_blocks = report.packed_feature_blocks.saturating_add(1);
                     }
                     for point in points {
                         report
                             .orphan_packed_timestamps
                             .push(feature_block_timestamp_mismatch(
-                                &entry.kind,
+                                entry.kind.as_str(),
                                 &entry.object_key,
                                 point.timestamp_ms,
                                 &entry.address,
@@ -1074,7 +1074,7 @@ pub(super) fn storage_feature_block_layout_report(
                 }
                 PackedFeatureBlockDecode::Corrupt(error) => {
                     report.corrupt_packed_feature_blocks.push(feature_block_error(
-                        &entry.kind,
+                        entry.kind.as_str(),
                         &entry.object_key,
                         &entry.address,
                         error,
@@ -1085,7 +1085,7 @@ pub(super) fn storage_feature_block_layout_report(
                     report.legacy_timestamped_value_blocks =
                         report.legacy_timestamped_value_blocks.saturating_add(1);
                     family.legacy_value_blocks = family.legacy_value_blocks.saturating_add(1);
-                    if &*entry.kind == "feature" {
+                    if entry.kind.as_str() == "feature" {
                         report.legacy_feature_value_blocks =
                             report.legacy_feature_value_blocks.saturating_add(1);
                     }
@@ -1093,7 +1093,7 @@ pub(super) fn storage_feature_block_layout_report(
             },
             Err(err) => {
                 report.corrupt_packed_feature_blocks.push(feature_block_error(
-                    &entry.kind,
+                    entry.kind.as_str(),
                     &entry.object_key,
                     &entry.address,
                     err.to_string(),

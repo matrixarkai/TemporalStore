@@ -4818,13 +4818,20 @@ fn block_refs_serialize_as_a_sequence() {
     assert_eq!(round_tripped.len(), 2);
 }
 
-/// Pages of the same kind point at ONE string, not a copy each.
+/// Pages of the same kind hold ONE BYTE for it and no string at all.
 ///
-/// Changing the field's type to a shared pointer does not by itself share anything -- every page
-/// could still hold its own allocation and the type would look identical from outside, exactly as
-/// the measurement did before. So this compares pointers, not contents.
+/// THIS TEST USED TO ASSERT SOMETHING WEAKER, and the difference is the point. The field was an
+/// `Arc<str>` interned through a per-shard pool, so the strongest thing available was "every page
+/// after the first of its kind points at that first allocation" -- true, but it still spent a
+/// sixteen-byte fat pointer per page and a heap allocation per shard, and a page that had built
+/// its own copy would have looked identical from outside. The field is now the one-byte spelling
+/// off `model_kind_registry`, so there is no allocation to share: every page of a kind reads the
+/// same `&'static str`, and it reads it out of one byte of the entry.
+///
+/// Still compares POINTERS, for the reason it always did -- contents cannot tell one shared
+/// spelling from two equal ones -- and still refuses to score on a corpus where no kind repeats.
 #[test]
-fn blocks_of_one_kind_share_a_single_kind_string() {
+fn blocks_of_one_kind_spend_one_byte_and_share_one_static_spelling() {
     let dir = tempfile::tempdir().unwrap();
     let engine = TemporalEngine::with_local_dirs(
         1024 * 1024,
@@ -4856,25 +4863,32 @@ fn blocks_of_one_kind_share_a_single_kind_string() {
     let shards = engine.shards.read().expect("shards lock poisoned");
     let shard = shards.get(&1).expect("shard 1 loaded");
 
-    let mut first_of_kind: std::collections::HashMap<String, std::sync::Arc<str>> =
+    let mut first_of_kind: std::collections::HashMap<String, *const u8> =
         std::collections::HashMap::new();
     let mut pages = 0usize;
     let mut shared = 0usize;
     for bucket in shard.bucket_index.bucket_map.values() {
         for (_ref_key, page) in bucket.block_index.iter() {
             pages += 1;
-            match first_of_kind.get(page.model_id.as_ref()) {
+            let spelling = page.model_id.as_str().as_ptr();
+            match first_of_kind.get(page.model_id.as_str()) {
                 None => {
-                    first_of_kind.insert(page.model_id.to_string(), page.model_id.clone());
+                    first_of_kind.insert(page.model_id.to_string(), spelling);
                 }
                 Some(first) => {
-                    if std::sync::Arc::ptr_eq(first, &page.model_id) {
+                    if *first == spelling {
                         shared += 1;
                     }
                 }
             }
         }
     }
+    // The width is half the claim and it is the half a pointer census cannot see.
+    assert_eq!(
+        1,
+        std::mem::size_of::<crate::engine::storage_bucket_internals::StoredModelKind>(),
+        "the entry's model spelling is supposed to be one byte",
+    );
 
     // Anti-vacuity first: with no pages, or one page per kind, "everything is shared" is true for
     // free and proves nothing.
@@ -4888,7 +4902,7 @@ fn blocks_of_one_kind_share_a_single_kind_string() {
     assert_eq!(
         shared,
         pages - first_of_kind.len(),
-        "every page after the first of its kind should point at that first string; \
+        "every page after the first of its kind should read the same static spelling; \
          {} kinds over {} pages, {shared} shared",
         first_of_kind.len(),
         pages
@@ -5176,7 +5190,7 @@ fn the_block_and_the_lookup_point_at_one_object_key() {
             let Some(refs) = shard
                 .bucket_index
                 .object_block_lookup
-                .key_ptr(&page.model_id, page.object_key.as_ref())
+                .key_ptr(page.model_id.as_str(), page.object_key.as_ref())
             else {
                 continue;
             };
@@ -5405,7 +5419,7 @@ fn rewriting_a_block_does_not_reuse_its_index_key() {
 fn installing_the_same_block_twice_replaces_it() {
     let page = || crate::engine::state::BlockIndex {
         object_key: Arc::from("twice".to_string()),
-        model_id: Arc::from("string".to_string()),
+        model_id: crate::engine::storage_bucket_internals::StoredModelKind::String,
         component: None,
         address: BlockAddress::from_parts(1, 0, 4, Some(1), Some(30), Some(3)),
         dirty: false,
@@ -7504,10 +7518,12 @@ fn block_index_identity_string_cardinality() {
     for bucket in shard.bucket_index.bucket_map.values() {
         for (_ref_key, page) in bucket.block_index.iter() {
             pages += 1;
-            distinct_models.insert(page.model_id.as_ref());
-            model_allocations.insert(std::sync::Arc::as_ptr(&page.model_id).cast::<u8>());
+            distinct_models.insert(page.model_id.as_str());
+            // One address per spelling for the whole process, and not an allocation: the entry
+            // holds one byte and reads the registry's `&'static str` through it.
+            model_allocations.insert(page.model_id.as_str().as_ptr());
             distinct_keys.insert(page.object_key.as_ref());
-            model_bytes += page.model_id.len();
+            model_bytes += page.model_id.as_str().len();
             key_bytes += page.object_key.len();
             if let Some(component) = page.component.as_deref() {
                 distinct_components.insert(component);
@@ -7772,7 +7788,8 @@ fn per_record_structure_census() {
         .map(|(_handle, page)| {
             // The key is an inline number now, not text on the heap.
             page.object_key.len()
-                + page.model_id.len()
+                // One byte inline and a `&'static str`: no heap text for the spelling.
+                + 0
                 + page.component.as_ref().map_or(0, |name| name.len())
         })
         .sum();
@@ -13705,9 +13722,9 @@ fn what_one_block_costs_to_index() {
             ref_key_bytes += 0;
             // Shared with the lookup, so one allocation answers for both holders.
             object_key_bytes += page.object_key.len();
-            // One allocation across every page of that kind or component, not one per page.
-            shared_bytes += page.model_id.len()
-                + page.component.as_ref().map_or(0, |name| name.len());
+            // One allocation across every page of that component, not one per page. The kind
+            // contributes nothing at all now: one byte inline, spelled by a `&'static str`.
+            shared_bytes += page.component.as_ref().map_or(0, |name| name.len());
             heap += page.object_key.len();
         }
     }

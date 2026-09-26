@@ -291,7 +291,7 @@ impl StorageManagerPhaseExecutor {
 #[derive(Debug, Clone)]
 pub(super) struct LiveBlockEntry {
     pub(super) object_key: Arc<str>,
-    pub(super) kind: Arc<str>,
+    pub(super) kind: StoredModelKind,
     pub(super) component: Option<Arc<str>>,
     pub(super) address: BlockAddress,
     pub(super) dirty: bool,
@@ -347,13 +347,13 @@ pub(super) struct StorageBlockOwnershipValidation {
 
 pub(super) fn live_block_entry(
     object_key: impl Into<String>,
-    kind: impl Into<String>,
+    kind: impl AsRef<str>,
     component: Option<String>,
     address: BlockAddress,
 ) -> LiveBlockEntry {
     LiveBlockEntry {
         object_key: Arc::from(object_key.into()),
-        kind: Arc::from(kind.into()),
+        kind: stored_model_kind(kind.as_ref()),
         component: component.map(Arc::from),
         // A page materialized in the block store carries a real page_id; a page
         // backed only by the hot/append-log buffer does not. Evaluate before the
@@ -433,14 +433,14 @@ pub(super) fn storage_index_snapshot_with_samples_from_entries(
     let mut entries: Vec<&LiveBlockEntry> = entries.iter().collect();
     entries.sort_by(|left, right| {
         (
-            left.kind.as_ref(),
+            left.kind.as_str(),
             left.object_key.as_ref(),
             left.component.as_deref().unwrap_or(""),
             left.address.block_slab_id(),
             left.address.offset(),
         )
             .cmp(&(
-                right.kind.as_ref(),
+                right.kind.as_str(),
                 right.object_key.as_ref(),
                 right.component.as_deref().unwrap_or(""),
                 right.address.block_slab_id(),
@@ -632,7 +632,7 @@ pub(super) fn storage_gc_snapshot_with_samples_from_entries(
     entries.sort_by(|left, right| {
         (
             left.deleted,
-            left.kind.as_ref(),
+            left.kind.as_str(),
             left.object_key.as_ref(),
             left.component.as_deref().unwrap_or(""),
             left.address.block_slab_id(),
@@ -640,7 +640,7 @@ pub(super) fn storage_gc_snapshot_with_samples_from_entries(
         )
             .cmp(&(
                 right.deleted,
-                right.kind.as_ref(),
+                right.kind.as_str(),
                 right.object_key.as_ref(),
                 right.component.as_deref().unwrap_or(""),
                 right.address.block_slab_id(),
@@ -749,7 +749,7 @@ pub(super) fn storage_topology_snapshot_with_samples_from_entries(
                 .unwrap_or(left.address.block_slab_id()),
             left.address.block_slab_id(),
             left.address.offset(),
-            left.kind.as_ref(),
+            left.kind.as_str(),
             left.object_key.as_ref(),
         )
             .cmp(&(
@@ -759,7 +759,7 @@ pub(super) fn storage_topology_snapshot_with_samples_from_entries(
                     .unwrap_or(right.address.block_slab_id()),
                 right.address.block_slab_id(),
                 right.address.offset(),
-                right.kind.as_ref(),
+                right.kind.as_str(),
                 right.object_key.as_ref(),
             ))
     });
@@ -1351,7 +1351,7 @@ pub(super) fn rebuild_bucket_block_ownership(
         let object_id = entry.address.object_id().unwrap_or_else(|| {
             stable_block_object_id(
                 shard_id,
-                &entry.kind,
+                entry.kind.as_str(),
                 &entry.object_key,
                 entry.component.as_deref(),
             )
@@ -1593,7 +1593,7 @@ pub(super) fn rebuild_unserialized_model_maps_from_bucket_index(shard: &mut Shar
     }
     let mut hashes = HashMap::<String, HashMap<String, BlockAddress>>::new();
     for entry in collect_bucket_index_live_block_entries(shard) {
-        if entry.deleted || &*entry.kind != "hash" {
+        if entry.deleted || entry.kind.as_str() != "hash" {
             continue;
         }
         hashes
@@ -1619,7 +1619,7 @@ pub(super) fn collect_bucket_index_live_block_entries(shard: &ShardState) -> Vec
             from_index += 1;
             entries.push(LiveBlockEntry {
                 object_key: page.object_key.clone(),
-                kind: page.model_id.clone(),
+                kind: page.model_id,
                 // Both sides are `Option<Arc<str>>`; going through a String allocated the text
                 // twice per page to arrive at the same pointer a clone hands back for free.
                 component: page.component.clone(),
@@ -2042,7 +2042,7 @@ pub(super) fn release_bucket_blocks(
                 Some(BucketReleaseRefusal::BlockDeleted)
             } else if block.address.routing_bucket() != Some(routing_bucket) {
                 Some(BucketReleaseRefusal::BlockRoutingMismatch)
-            } else if !released_model_kind_is_addressable(&block.model_id) {
+            } else if !released_model_kind_is_addressable(block.model_id.as_str()) {
                 Some(BucketReleaseRefusal::BlockKindNotAddressable)
             } else {
                 None
@@ -2058,7 +2058,7 @@ pub(super) fn release_bucket_blocks(
             || bucket.block_index.values().all(|page| {
                 shard
                     .bucket_index
-                    .block_refs_for(&page.model_id, &page.object_key, page.component.as_deref())
+                    .block_refs_for(page.model_id.as_str(), &page.object_key, page.component.as_deref())
                     .map(|refs| refs.iter().all(|block_ref| block_ref.routing_bucket == routing_bucket))
                     .unwrap_or(false)
             });
@@ -2071,7 +2071,7 @@ pub(super) fn release_bucket_blocks(
             .values()
             .map(|page| {
                 released_block_identity(
-                    &page.model_id,
+                    page.model_id.as_str(),
                     &page.object_key,
                     page.component.as_deref(),
                     &page.address,
@@ -2089,12 +2089,12 @@ pub(super) fn release_bucket_blocks(
             outcome.refuse(BucketReleaseRefusal::ModelMapDisagreement);
             continue;
         }
-        let dropped: Vec<(Arc<str>, Arc<str>, Option<Arc<str>>)> = bucket
+        let dropped: Vec<(StoredModelKind, Arc<str>, Option<Arc<str>>)> = bucket
             .block_index
             .values()
             .map(|page| {
                 (
-                    page.model_id.clone(),
+                    page.model_id,
                     page.object_key.clone(),
                     page.component.clone(),
                 )
@@ -2104,7 +2104,7 @@ pub(super) fn release_bucket_blocks(
         if lookup_established {
             for (model_id, object_key, component) in &dropped {
                 shard.bucket_index.remove_object_block_lookup_entry(
-                    model_id,
+                    model_id.as_str(),
                     object_key,
                     component.as_deref(),
                 );
@@ -2159,7 +2159,7 @@ pub(super) fn reload_released_bucket(
         let object_id = entry.address.object_id().unwrap_or_else(|| {
             stable_block_object_id(
                 shard_id,
-                &entry.kind,
+                entry.kind.as_str(),
                 &entry.object_key,
                 entry.component.as_deref(),
             )
@@ -2593,7 +2593,7 @@ pub(super) fn sync_context_blocks_for_object(
 macro_rules! model_kind_registry {
     (
         live { $($variant:ident = $name:literal @ $code:literal,)+ }
-        retired { $($retired_name:literal @ $retired_code:literal,)+ }
+        retired { $($retired_variant:ident = $retired_name:literal @ $retired_code:literal,)+ }
     ) => {
         /// One model kind, spelled as the stored index spells it. Closed by declaration.
         #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Debug)]
@@ -2635,12 +2635,88 @@ macro_rules! model_kind_registry {
         pub(super) const RETIRED_MODEL_REPORT_CODES: &[(&str, u8)] =
             &[$(($retired_name, $retired_code),)+];
 
+        /// EVERY SPELLING A STORED PAGE ENTRY CAN CARRY, live and retired, in ONE BYTE.
+        ///
+        /// `ModelKind` is the LIVE walk's kind: `emit` hands one out, so it deliberately has no
+        /// variant for a spelling no arm emits, and that is what makes the walk's set closed.
+        /// A PAGE ENTRY asks a different question. It is read back off a store this engine may
+        /// not have written, and the two retired spellings are precisely the names such a store
+        /// can still hold -- so an entry typed as `ModelKind` would be unable to represent a
+        /// store that loads today. This enum is the entry's type: the SAME declaration, both
+        /// halves, and a live kind converts into it infallibly.
+        ///
+        /// ONE BYTE, floored below, which is the whole point -- the entry used to spend sixteen
+        /// on a fat pointer to a string drawn from this seventeen-element set.
+        #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Debug)]
+        pub(super) enum StoredModelKind {
+            $($variant,)+
+            $($retired_variant,)+
+        }
+
+        impl StoredModelKind {
+            /// Every spelling that exists, live then retired, in declaration order.
+            pub(super) const ALL: &'static [StoredModelKind] =
+                &[$(StoredModelKind::$variant,)+ $(StoredModelKind::$retired_variant,)+];
+
+            /// The stored spelling. This IS what the index writes and reads back.
+            pub(super) const fn as_str(self) -> &'static str {
+                match self {
+                    $(StoredModelKind::$variant => $name,)+
+                    $(StoredModelKind::$retired_variant => $retired_name,)+
+                }
+            }
+
+            /// The byte the packed reporting path writes for this spelling.
+            pub(super) const fn report_code(self) -> u8 {
+                match self {
+                    $(StoredModelKind::$variant => $code,)+
+                    $(StoredModelKind::$retired_variant => $retired_code,)+
+                }
+            }
+
+            /// The spelling a stored `model_id` names, or `None` for one NEITHER half declares.
+            /// Every caller turns that `None` into a refusal that names the spelling.
+            pub(super) fn from_stored_name(model_id: &str) -> Option<Self> {
+                match model_id {
+                    $($name => Some(StoredModelKind::$variant),)+
+                    $($retired_name => Some(StoredModelKind::$retired_variant),)+
+                    _ => None,
+                }
+            }
+
+            /// Whether NO live arm emits this spelling. Derived as the complement of the live
+            /// half rather than listed, so it cannot disagree with the declaration.
+            pub(super) const fn is_retired(self) -> bool {
+                match self {
+                    $(StoredModelKind::$variant => false,)+
+                    $(StoredModelKind::$retired_variant => true,)+
+                }
+            }
+        }
+
+        /// A live kind IS a stored spelling. Infallible, and exhaustive over `ModelKind`, so a
+        /// variant added to the walk cannot fail to have an entry spelling.
+        impl From<ModelKind> for StoredModelKind {
+            fn from(kind: ModelKind) -> Self {
+                match kind {
+                    $(ModelKind::$variant => StoredModelKind::$variant,)+
+                }
+            }
+        }
+
         /// FLOORS ON THE DERIVATION. The point of deriving the registry is that it cannot go
         /// stale beside the walk; the point of these is that it cannot go EMPTY either. A
         /// declaration that lost rows would otherwise compile, and a registry of one kind maps
         /// every other kind onto the panic below rather than onto a code.
         const _: () = assert!(ModelKind::ALL.len() >= 15);
         const _: () = assert!(RETIRED_MODEL_REPORT_CODES.len() >= 2);
+        /// The entry's spelling is BOTH halves, so its count is floored against the live half
+        /// rather than on its own: a retired row lost would otherwise still satisfy a bare
+        /// `>= 17`, and a store that carries the name would stop loading.
+        const _: () = assert!(StoredModelKind::ALL.len() == ModelKind::ALL.len() + RETIRED_MODEL_REPORT_CODES.len());
+        const _: () = assert!(StoredModelKind::ALL.len() >= 17);
+        /// ONE BYTE. The reason the entry can hold it where it held a fat pointer.
+        const _: () = assert!(std::mem::size_of::<StoredModelKind>() == 1);
 
         /// NO CODE IS 0, AND NO TWO CODES COLLIDE -- live and retired counted together, because
         /// the reporting path reads one byte and does not know which list answered. A duplicate
@@ -2688,12 +2764,88 @@ model_kind_registry! {
         // fold moved its data into `features` and left `ShardState::sequences` behind only to
         // fold a pre-fold on-disk index at load. No arm emits it; an index older than the fold
         // still names it.
-        "sequence" @ 5,
+        Sequence = "sequence" @ 5,
         // The rows `context_embedding` addressed have no readers left, and
         // `restore_model_maps_from_bucket_index` drops the entries on purpose. An index written
         // before that retirement still carries them, and a report over one still has to name
         // the kind rather than calling it unknown.
-        "context_embedding" @ 15,
+        ContextEmbedding = "context_embedding" @ 15,
+    }
+}
+
+/// The one-byte spelling for a kind THIS ENGINE spells itself, refusing loudly if the registry
+/// does not declare it.
+///
+/// Every caller passes a `&'static str` literal from a command arm or a walk, so a refusal here
+/// is a kind the engine writes and the registry has never heard of -- the same disagreement
+/// [`model_report_code`] refuses, caught at the write rather than at the report. Returning some
+/// default variant instead would file the page under a kind it does not have.
+pub(super) fn stored_model_kind(kind: &str) -> StoredModelKind {
+    StoredModelKind::from_stored_name(kind).unwrap_or_else(|| {
+        panic!(
+            "no stored model kind for model id {kind:?}. This spelling is written by this engine \
+             and the registry does not declare it, so the page would be filed under a kind it \
+             does not have. Declare it in `model_kind_registry`: under `live` if an arm of \
+             `visit_model_live_blocks` emits it, under `retired` -- with the reason an older \
+             index can carry it -- if not."
+        )
+    })
+}
+
+/// Reads as the stored spelling, so a message that used to interpolate the `Arc<str>` still
+/// says the same word.
+impl std::fmt::Display for StoredModelKind {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
+/// THE WIRE DOES NOT MOVE. A page entry's model spelling is written as the STRING it has always
+/// been written as, and read back as one; only the in-memory width changes, from a sixteen-byte
+/// fat pointer to one byte.
+///
+/// That is deliberate and it is the cheap half of the change. #1969 found the index log packs
+/// POSITIONALLY -- a plain `rmp_serde::Serializer`, no field names -- so every field after a
+/// changed one shifts, and a store written by an older engine would mis-parse. Keeping the
+/// spelling on the wire means there is no migration to get wrong, no decoy field to pay for, and
+/// `core_index_loads_legacy_bucket_page_field_names` keeps asserting what it always asserted.
+impl serde::Serialize for StoredModelKind {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        serializer.serialize_str(self.as_str())
+    }
+}
+
+/// AND AN UNKNOWN SPELLING FAILS LOUDLY, NAMING IT.
+///
+/// This is the one direction that must not be quiet. A page entry names the object a page belongs
+/// to; a spelling silently mapped onto some default variant would file the page under a kind it
+/// does not have, and a page filed under the wrong kind is still on its slab and nothing looks
+/// for it. That is silent corruption, not a failing test.
+///
+/// It refuses the same way [`model_report_code`] refuses, for the same reason and with the same
+/// instruction: a spelling neither half of `model_kind_registry` declares is the engine and the
+/// store disagreeing about which kinds exist, and the fix is a declared row, not a fallback.
+impl<'de> serde::Deserialize<'de> for StoredModelKind {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        let spelling = <std::borrow::Cow<'de, str> as serde::Deserialize>::deserialize(deserializer)?;
+        match StoredModelKind::from_stored_name(&spelling) {
+            Some(kind) => Ok(kind),
+            None => panic!(
+                "no stored model kind for model id {spelling:?}. A page entry's model spelling \
+                 comes either from a live-page walk arm or from a stored index this engine \
+                 opened, so a name that cannot be placed is the engine and the store disagreeing \
+                 about which kinds exist -- and mapping it onto a kind it does not have would \
+                 file the page under the wrong object. Declare it in `model_kind_registry`: \
+                 under `live` if an arm of `visit_model_live_blocks` emits it, under `retired` -- \
+                 with the reason an older index can carry it -- if not."
+            ),
+        }
     }
 }
 
@@ -3145,7 +3297,7 @@ fn upsert_bucket_index_block_inner(
         .unwrap_or_else(|| Arc::from(object_key));
     let entry = LiveBlockEntry {
         object_key: shared_object_key,
-        kind: crate::engine::state::intern_kind(&mut shard.bucket_index.kind_pool, kind),
+        kind: stored_model_kind(kind),
         component: component
             .map(|name| crate::engine::state::intern_shared(&mut shard.bucket_index.kind_pool, &name)),
         log_backed: address.block_id().is_none(),
@@ -3163,13 +3315,13 @@ fn upsert_bucket_index_block_inner(
     let direct_block_refs = if lookup_enabled {
         shard
             .bucket_index
-            .block_refs_for(&entry.kind, &entry.object_key, entry.component.as_deref())
+            .block_refs_for(entry.kind.as_str(), &entry.object_key, entry.component.as_deref())
             .map(<[crate::engine::state::BlockLookupRef]>::to_vec)
     } else {
         None
     };
     shard.bucket_index.remove_object_block_lookup_entry(
-        &entry.kind,
+        entry.kind.as_str(),
         &entry.object_key,
         entry.component.as_deref(),
     );
@@ -3357,7 +3509,7 @@ pub(super) fn sync_bucket_index_object_blocks_with_mode(
         };
         let before = bucket.block_index.len();
         bucket.block_index.retain(&mut shard.bucket_index.block_slab_live, |_, page| {
-            let matches_object = &*page.model_id == kind && &*page.object_key == object_key;
+            let matches_object = page.model_id.as_str() == kind && &*page.object_key == object_key;
             if matches_object {
                 removed_components.insert(page.component.clone());
             }
@@ -3407,7 +3559,7 @@ pub(super) fn sync_bucket_index_object_blocks_with_mode(
     // it -- four allocations per address published, for two values. Cloning an Arc is a refcount
     // bump.
     let object_key_arc: Arc<str> = Arc::from(object_key);
-    let kind_arc: Arc<str> = Arc::from(kind);
+    let entry_kind = stored_model_kind(kind);
     for address in unique_addresses.into_values() {
         let routing_bucket = address
             .routing_bucket()
@@ -3417,7 +3569,7 @@ pub(super) fn sync_bucket_index_object_blocks_with_mode(
             .unwrap_or_else(|| stable_block_object_id(shard_id, kind, object_key, None));
         let entry = LiveBlockEntry {
             object_key: Arc::clone(&object_key_arc),
-            kind: Arc::clone(&kind_arc),
+            kind: entry_kind,
             component: None,
             log_backed: address.block_id().is_none(),
             address,
@@ -3855,7 +4007,7 @@ pub(super) fn rebuild_bucket_first_index(
         let object_id = entry.address.object_id().unwrap_or_else(|| {
             stable_block_object_id(
                 shard_id,
-                &entry.kind,
+                entry.kind.as_str(),
                 &entry.object_key,
                 entry.component.as_deref(),
             )
@@ -4019,7 +4171,7 @@ pub(super) fn reconcile_secondary_views_from_bucket_index(
     let mut context_compressions = HashMap::<String, BTreeMap<u64, BlockAddress>>::new();
 
     for entry in entries {
-        match entry.kind.as_ref() {
+        match entry.kind.as_str() {
             "string" => {
                 saw_strings = true;
                 strings.insert(entry.object_key.to_string(), entry.address);
@@ -4409,7 +4561,7 @@ pub(super) fn insert_context_event_views(
 pub(super) fn expected_live_block_object_id(shard_id: ShardId, entry: &LiveBlockEntry) -> u64 {
     stable_block_object_id(
         shard_id,
-        &entry.kind,
+        entry.kind.as_str(),
         &entry.object_key,
         entry.component.as_deref(),
     )
@@ -4709,7 +4861,7 @@ mod release_refusal_guards {
     fn block(key: &str, model_id: &str, component: Option<&str>, address: BlockAddress) -> BlockIndex {
         BlockIndex {
             object_key: Arc::from(key),
-            model_id: Arc::from(model_id),
+            model_id: super::stored_model_kind(model_id),
             component: component.map(Arc::from),
             address,
             dirty: false,

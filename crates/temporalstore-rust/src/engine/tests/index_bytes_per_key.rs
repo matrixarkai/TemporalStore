@@ -91,7 +91,7 @@ fn component_list_arm(list: &ComponentList) -> &'static str {
 fn probe_page(object: &str, component: Option<&str>, slot: u64) -> BlockIndex {
     BlockIndex {
         object_key: Arc::from(object),
-        model_id: Arc::from("string"),
+        model_id: crate::engine::storage_bucket_internals::StoredModelKind::String,
         component: component.map(Arc::from),
         address: BlockAddress::from_parts(1, slot * 64, 64, Some(slot), Some(slot), Some(7)),
         dirty: false,
@@ -594,7 +594,9 @@ fn walk_bucket_index_strings(
     for bucket in bucket_index.bucket_map.values() {
         for (_handle, page) in bucket.block_index.iter() {
             bytes += arc_str_bytes(seen, &page.object_key);
-            bytes += arc_str_bytes(seen, &page.model_id);
+            // The page's model spelling is one byte inline and a `&'static str`, so it holds no
+            // shared allocation for this walk to find. The lookup's `by_model` head below still
+            // does, and is still counted -- once, which is the point of the walk.
             if let Some(component) = page.component.as_ref() {
                 bytes += arc_str_bytes(seen, component);
             }

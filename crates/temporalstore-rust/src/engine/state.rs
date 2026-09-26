@@ -914,11 +914,13 @@ pub(super) enum BlockIndexMap {
 /// point of the shape and what makes this the widest field of `BucketNode`. The `Many` arm is a
 /// 24-byte vector header and rides inside it.
 ///
-/// 96, not 104, since the address inside that inline page merged its slab id and its offset into
-/// one word. The eight bytes cross straight through, as the eight `generation` shed before them
-/// did: the handle is a `u64`, the page entry is 8-aligned, and the discriminant rides in the
-/// `Arc` niche, so this arm is exactly `8 + size_of::<BlockIndex>()`.
-const _: () = assert!(std::mem::size_of::<BlockIndexMap>() == 96);
+/// 80, not 96, since the inline page entry stopped spending a sixteen-byte fat pointer on a model
+/// spelling drawn from a seventeen-element set and now spends one byte on it. The sixteen cross
+/// straight through, as the eight the address merge shed before them did and the eight
+/// `generation` shed before that: the handle is a `u64`, the page entry is 8-aligned, and the
+/// discriminant still rides an `Arc` niche -- `object_key` is one, and `component` another -- so
+/// this arm is exactly `8 + size_of::<BlockIndex>()` and the relation below carries the claim.
+const _: () = assert!(std::mem::size_of::<BlockIndexMap>() == 80);
 const _: () =
     assert!(std::mem::size_of::<BlockIndexMap>() == 8 + std::mem::size_of::<BlockIndex>());
 
@@ -1557,7 +1559,7 @@ pub(super) fn block_index_handle(page: &BlockIndex) -> u64 {
 
 pub(super) fn block_index_written_key(page: &BlockIndex) -> String {
     crate::index_log::block_ref_key_from_parts(
-        &page.model_id,
+        page.model_id.as_str(),
         &page.object_key,
         page.component.as_deref(),
         page.address.block_slab_id(),
@@ -2697,19 +2699,21 @@ pub(super) struct BucketNode {
 /// fewer, or that takes a whole word out of the eight-aligned group, moves this structure at
 /// all.
 ///
-/// THE SECOND OF THOSE TWO SHAPES HAS NOW BEEN TAKEN TWICE. `last_dump_sequence` was
+/// THE SECOND OF THOSE TWO SHAPES HAS NOW BEEN TAKEN THREE TIMES. `last_dump_sequence` was
 /// eight-aligned, so removing it took a whole word out of the packed group and the six-byte
 /// tail did not move at all. The address merge does the same thing one level in: two 8-byte
-/// fields inside the inline page entry become one, so `BlockIndexMap` goes 104 -> 96 and the
-/// group goes 168 -> 160 -> 152, with the tail still six rounded to eight. The struct is 160.
-/// Bytes that LEAVE the group cross where narrowing a sequence would not have: at a six-byte
-/// tail the first narrowing lands on ten, ten still rounds to sixteen, and the freed word is
-/// handed straight back.
+/// fields inside the inline page entry become one, so `BlockIndexMap` went 104 -> 96 and the
+/// group went 168 -> 160, with the tail still six rounded to eight. The model spelling is the
+/// third and the largest: a sixteen-byte fat pointer inside that same inline entry becomes one
+/// byte, `BlockIndexMap` goes 96 -> 80, and TWO whole words leave the group at once, so the
+/// struct is 144. Bytes that LEAVE the group cross where narrowing a sequence would not have: at
+/// a six-byte tail the first narrowing lands on ten, ten still rounds to sixteen, and the freed
+/// word is handed straight back.
 ///
 /// `every_byte_of_the_bucket_node_is_accounted_for` states the whole of it field by field, and
 /// asserts the reconstruction -- eight-aligned group plus one rounding of the tail -- rather than
 /// a literal.
-const _: () = assert!(std::mem::size_of::<BucketNode>() == 160);
+const _: () = assert!(std::mem::size_of::<BucketNode>() == 144);
 
 impl BucketNode {
     /// The five lifecycle flags, each read through its own mask and nothing else.
@@ -3046,7 +3050,7 @@ pub(super) enum BucketLayoutState {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub(super) struct BlockIndex {
     pub(super) object_key: Arc<str>,
-    pub(super) model_id: Arc<str>,
+    pub(super) model_id: crate::engine::storage_bucket_internals::StoredModelKind,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(super) component: Option<Arc<str>>,
     pub(super) address: BlockAddress,
@@ -3055,16 +3059,25 @@ pub(super) struct BlockIndex {
     pub(super) log_backed: bool,
 }
 
-/// One per stored page. Three shared names, an address, and three flags -- 83 bytes of field in
-/// 88, so the three flag bytes are already inside the alignment slack and packing them would
-/// reclaim nothing (and would move the stored index, which spells each one as its own key).
+/// One per stored page. TWO shared names, a one-byte model spelling, an address, and three
+/// flags -- 68 bytes of field in 72.
 ///
-/// 88, not 96, since the address merged its slab id and its offset into one word; 96, not 104,
-/// since it shed its derived `generation` before that. Note that the flags did NOT become worth
-/// packing on either step: at 99 bytes of field the slack was five bytes, at 91 it was five
-/// again, and at 83 it is five again -- because the address has twice left in a whole
-/// eight-byte step, and a whole step is the only thing that moves this number.
-const _: () = assert!(std::mem::size_of::<BlockIndex>() == 88);
+/// 72, not 88, since the model spelling stopped being a sixteen-byte fat pointer to a string
+/// drawn from a seventeen-element set and became the one byte that set can be spelled in. That
+/// is the third time a whole eight-byte step has left this structure and the first time two have
+/// left at once: 88, not 96, since the address merged its slab id and its offset into one word;
+/// 96, not 104, since it shed its derived `generation` before that.
+///
+/// AND THE FLAGS STILL DO NOT PAY. At 99 bytes of field the slack was five, at 91 five, at 83
+/// five, and at 68 it is four -- the one byte of model spelling moved into the slack the flags
+/// were already sitting in, which is why this step is sixteen bytes and not twelve. Packing the
+/// three flags would reclaim nothing and would move the stored index, which spells each one as
+/// its own key.
+///
+/// WHAT DID NOT MOVE IS THE WIRE. The spelling is still written and read as the string it always
+/// was; only the in-memory width changed. `the_stored_spelling_of_a_page_entry_did_not_move` and
+/// `core_index_loads_legacy_bucket_page_field_names` are the guards on that.
+const _: () = assert!(std::mem::size_of::<BlockIndex>() == 72);
 
 impl BlockIndex {
     /// The object this page belongs to.
@@ -3111,9 +3124,17 @@ impl CoreIndex {
             return;
         }
         let added = {
+            // The lookup is keyed by the kind's SHARED name, and the page no longer carries one --
+            // it carries the one-byte spelling. `kind_pool` is where that shared name already
+            // lives: the kinds are a closed set of about fifteen, so only the first page of each
+            // allocates and the reserve in the pool exists for precisely this.
+            let kind = crate::engine::state::intern_kind(
+                &mut self.kind_pool,
+                page.model_id.as_str(),
+            );
             let entry = self
                 .object_block_lookup
-                .entry(&page.model_id, &page.object_key);
+                .entry(&kind, &page.object_key);
             let value = BlockLookupRef {
                 routing_bucket,
                 block_ref_key,
@@ -3235,7 +3256,7 @@ impl CoreIndex {
                     .and_then(|bucket| bucket.block_index.get(&block_ref.block_ref_key))
                     .map(|page| {
                         !page.deleted
-                            && &*page.model_id == model_id
+                            && page.model_id.as_str() == model_id
                             && &*page.object_key == object_key
                             && page.component.as_deref() == component
                             && same_block_address(&page.address, address)
@@ -3251,7 +3272,7 @@ impl CoreIndex {
         self.bucket_map.values().any(|bucket| {
             bucket.block_index.values().any(|page| {
                 !page.deleted
-                    && &*page.model_id == model_id
+                    && page.model_id.as_str() == model_id
                     && &*page.object_key == object_key
                     && page.component.as_deref() == component
                     && same_block_address(&page.address, address)
@@ -3291,7 +3312,7 @@ pub(super) fn next_block_index_for_object(
                 .block_index
                 .values()
                 .filter(|block| {
-                    block.model_id.as_ref() == model_id && block.object_key.as_ref() == object_key
+                    block.model_id.as_str() == model_id && block.object_key.as_ref() == object_key
                 })
                 .filter_map(|block| block.address.block_id())
                 .max()
@@ -3401,7 +3422,7 @@ mod component_lookup_tests {
     fn page(object: &str, component: Option<&str>) -> BlockIndex {
         BlockIndex {
             object_key: Arc::from(object.to_string()),
-            model_id: Arc::from("hash".to_string()),
+            model_id: crate::engine::storage_bucket_internals::StoredModelKind::Hash,
             component: component.map(str::to_string).map(Arc::from),
             address: BlockAddress::from_parts(0, 0, 0, None, Some(0), None),
             dirty: false,
