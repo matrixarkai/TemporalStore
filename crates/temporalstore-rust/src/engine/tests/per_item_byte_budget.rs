@@ -1275,7 +1275,7 @@ fn what_each_declined_shape_of_the_bucket_node_would_cost() {
          entry merged its two slab coordinates, and 152 once that entry's model spelling became \
          one byte -- this mirror holds the page entry too, so it moves with the live shape every \
          time and the EIGHT BYTES BETWEEN THEM is still what packing the flags is worth. Which is \
-         the point of pricing by the GAP between mirrors rather than by either width: four \
+         the point of pricing by the DISTANCE between mirrors rather than by either width: four \
          changes to the page entry have moved both, and not one of them has moved this price. It \
          reads as {loose}, so the row that prices this change is not describing the shape it \
          replaced"
