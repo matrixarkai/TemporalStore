@@ -124,6 +124,7 @@ mod routing_range_default;
 mod per_item_byte_budget;
 mod flat_page_list;
 mod range_free_bucket_id;
+mod container_member_shadow;
 
 
 /// The token-bucket arithmetic with explicit clocks -- the whole model is this pure function,
