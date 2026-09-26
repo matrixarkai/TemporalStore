@@ -121,13 +121,51 @@
 //!      `the_summary_last_dump_sequence_comes_from_the_manifest_not_from_the_node` now pins that
 //!      the report does too, with an uncovered bucket as the control.
 //!
+//!   7. A BOUNDED RING IS SAFE IN ONE DESIGN AND LOSES DATA IN THE OTHER, AND THE DIFFERENCE IS
+//!      WHETHER IT ALSO OWNS THE DIRTINESS. The two transient claims are `#[serde(skip)]` and
+//!      cleared on load, so they are runtime-only -- which is exactly what a shard-level side
+//!      structure could hold instead of sixteen bytes on every routing bucket, and a ring of slot
+//!      ids is the bounded shape such a structure takes. A ring that has wrapped has FORGOTTEN a
+//!      claim, and a claim is a retain FLOOR, so the wrap was DRIVEN rather than reasoned about.
+//!      48 buckets at distinct claims, ring capacity 24, the oldest 24 claims evicted -- which is
+//!      not an unlucky order, it is the order a ring has, and the oldest claims are the floor:
+//!
+//!      ```text
+//!        CONTROL                                safe=true   retain_from_wal=3   missing=0
+//!        ARM A  ring holds claims only          safe=FALSE  retain_from_wal=0   missing=24
+//!        ARM B  ring IS the dirty set           safe=true   retain_from_wal=27  missing=0
+//!      ```
+//!
+//!      ARM A retains the WHOLE log: a bucket that is still known dirty and can no longer name its
+//!      claim reads as NO CLAIM RECORDED, the plan refuses, and the floor cannot rise. That errs
+//!      CONSERVATIVE and is safe to take. ARM B moves the floor from 3 to 27, twenty-four records
+//!      PAST the lowest forgotten claim, and reclaim would free WAL records a bucket still needs.
+//!      That is committed data lost, and the design is refused.
+//!      `a_wrapped_claim_ring_errs_conservative_only_while_it_keeps_dirtiness` drives both, with
+//!      the control taken first on the same shard and the fixture's preconditions ENFORCED --
+//!      including that the ring forgot claims OLDER than the ones it kept, which a first version
+//!      of the fixture did not satisfy: batched writes stamp ONE sequence on every bucket the batch
+//!      touched, 694 buckets all claiming 3, and forgetting half of an identical set moves nothing.
+//!   8. AND WHAT THE PER-KEY CLAIM BUYS THAT A SINGLE WATERMARK CANNOT IS THE DUMP ORDER, NOT THE
+//!      FLOOR. A shard-level watermark over the whole index is the minimum of these claims, which
+//!      is the same floor the plan already computes, so the floor is not the argument. The argument
+//!      is `first_dirty_rank`, the dump ordering's PRIMARY key: it reads each bucket's own claim to
+//!      dump the bucket that is pinning the log FIRST, so the floor advances. A structure that
+//!      holds one number for the shard cannot answer "which bucket", and the ordering falls back to
+//!      what it used before -- which starved a bucket dirtied once behind low-id buckets re-dirtied
+//!      every round, and is what
+//!      `dump_selection_prioritizes_the_least_recently_dumped_bucket_not_the_lowest_id` exists for.
+//!      So all three sequences stay, and each is named with the reader that pins it above.
+//!
 //! HOW THE "IS IT READ" GUARDS WORK. Each one PERTURBS the field on a live shard and asserts the
 //! decision it is named for changes, against a control taken on the same shard before the edit. A
 //! guard that only reads the field back proves the field exists; these prove it is load-bearing,
 //! and a mutation that stops a reader reading it turns them red.
 //!
-//! WHAT THIS MODULE DOES NOT CLAIM. It proposes no change to `BucketNode`, so no stored shape
-//! moves and no reader of the node's spelling is touched. The only production edit is a comment.
+//! WHAT THIS MODULE DOES NOT CLAIM. It proposes no FURTHER change to `BucketNode`: the three
+//! sequences that remain all stay, at 64 bits, on every key, and the only production edit made
+//! alongside item 7 is a comment -- two words of one restored from the commit that wrote it, where
+//! a doc comment had lost them to a bare backslash.
 #![allow(clippy::all)]
 use super::*;
 use std::mem::{align_of, size_of};
@@ -1455,5 +1493,433 @@ fn the_read_path_of_the_hoisted_shape_is_priced() {
     assert!(
         hoisted_ns > 0 && inline_ns > 0,
         "one of the arms took no measurable time, so the ratio is not a reading"
+    );
+}
+
+// -------------------------------------------------------------------------------------------
+// 6. WHAT A BOUNDED RING OF CLAIMS DOES WHEN IT WRAPS, AND WHICH DIRECTION IT ERRS.
+// -------------------------------------------------------------------------------------------
+
+/// A BOUNDED ring of per-bucket claims, which is the shape a shard-level side structure takes when
+/// it is not allowed to grow with the bucket count.
+///
+/// `push` overwrites the OLDEST entry once the ring is full. That is what bounded means, and it is
+/// the whole of the hazard: a claim is a FLOOR the bucket holds over the log, the oldest claim is
+/// the lowest floor, and so a ring that has wrapped has forgotten precisely the claims that were
+/// holding the log down. It is not an unlucky eviction order, it is the eviction order a ring has.
+struct ClaimRing {
+    slots: Vec<(u32, u64)>,
+    capacity: usize,
+    next: usize,
+    wrapped: bool,
+}
+
+impl ClaimRing {
+    fn with_capacity(capacity: usize) -> Self {
+        assert!(capacity > 0, "a ring of no slots remembers nothing and measures nothing");
+        Self { slots: Vec::with_capacity(capacity), capacity, next: 0, wrapped: false }
+    }
+
+    fn push(&mut self, routing_bucket: u32, sequence: u64) {
+        if self.slots.len() < self.capacity {
+            self.slots.push((routing_bucket, sequence));
+            return;
+        }
+        self.wrapped = true;
+        self.slots[self.next] = (routing_bucket, sequence);
+        self.next = (self.next + 1) % self.capacity;
+    }
+
+    fn remembers(&self, routing_bucket: u32) -> bool {
+        self.slots.iter().any(|(bucket, _)| *bucket == routing_bucket)
+    }
+
+    fn has_wrapped(&self) -> bool {
+        self.wrapped
+    }
+}
+
+/// Make a bucket's claims unknown, as a ring that has forgotten its slot would leave them.
+fn forget_claims(engine: &TemporalEngine, routing_bucket: u32) {
+    perturb(engine, routing_bucket, |bucket| {
+        bucket.first_dirty_wal_sequence = 0;
+        bucket.first_dirty_index_log_sequence = 0;
+    });
+}
+
+/// PROVE THE TREATMENT RAN: a slot the ring forgot names NEITHER half.
+///
+/// A ring holds one entry per bucket, so a forgotten slot takes both halves with it. Half a claim
+/// is a different state, it is one the tree pins separately in
+/// `clearing_either_half_of_a_buckets_claim_stops_the_reclaim_plan`, and without this the arms
+/// below would read the same for either -- a mutation that cleared only the WAL half survived until
+/// this assertion existed.
+fn assert_forgotten_slots_name_nothing(engine: &TemporalEngine, forgotten: &[Sequences]) {
+    let rows = sequences_by_bucket(engine);
+    for row in forgotten {
+        let now = rows
+            .iter()
+            .find(|candidate| candidate.routing_bucket == row.routing_bucket)
+            .copied()
+            .expect("the forgotten bucket is still in the map");
+        assert_eq!(
+            (0, 0),
+            (now.wal_claim, now.index_log_claim),
+            "bucket {} still names ({}, {}) after its ring slot was forgotten; a ring holds one \
+             entry per bucket, so losing the slot loses both halves and a half-cleared claim is a \
+             different state",
+            row.routing_bucket,
+            now.wal_claim,
+            now.index_log_claim
+        );
+    }
+}
+
+/// Make a bucket's DIRTINESS unknown as well, which is the second arm's whole point.
+///
+/// `DirtyObjectIndex::drain_buckets` is the production drain a dump runs once its manifest is
+/// durable -- so "the structure no longer knows this bucket is dirty" is modelled by the shipped
+/// operation that stops knowing it, not by a hand-rolled edit to a private field.
+fn forget_dirtiness(engine: &TemporalEngine, routing_bucket: u32) -> usize {
+    let mut shards = engine.shards.write().expect("engine lock poisoned");
+    let shard = shards.get_mut(&SEQ_SHARD).expect("shard is loaded");
+    let dropped = shard.dirty_objects.drain_buckets(&[routing_bucket]);
+    if let Some(bucket) = shard.bucket_index.bucket_map.get_mut(&routing_bucket) {
+        bucket.set_dirty(false);
+    }
+    dropped
+}
+
+/// A WRAPPED RING ERRS CONSERVATIVE ONLY WHILE IT STILL KNOWS WHICH BUCKETS ARE DIRTY -- and the
+/// arm where it does not is DATA LOSS.
+///
+/// THE QUESTION. `first_dirty_wal_sequence` and its index-log twin are already `#[serde(skip)]` and
+/// cleared on load, so they are runtime-only, and runtime-only state is exactly what a shard-level
+/// side structure could hold instead of sixteen bytes on every routing bucket. A ring of slot ids
+/// is the bounded shape such a structure takes. A bounded ring that has wrapped has FORGOTTEN a
+/// claim, and a claim is the floor a bucket holds over the log -- so before any of that can be
+/// designed, a wrap has to be DRIVEN and the direction of its error measured. Two designs differ
+/// in one respect, and it is the respect that decides it:
+///
+///   * ARM A -- THE RING HOLDS THE CLAIMS, THE DIRTY SET STILL HOLDS THE DIRTINESS. A forgotten
+///     slot leaves a bucket that is still known to be dirty and can no longer name where it sits
+///     in the log. The reclaim plan reads that as NO CLAIM RECORDED and blocks: it retains at
+///     least as much log as before, never less. That is the SAFE direction, it is the direction
+///     `first_dirty_wal_sequence`'s own doc comment says 0 means, and this arm asserts it.
+///   * ARM B -- THE RING IS THE DIRTY SET. A forgotten slot leaves a bucket the structure does not
+///     know is dirty at all. The plan then counts it covered and contributing no floor, the floor
+///     rises PAST that bucket's own oldest undumped write, and reclaim frees log records the bucket
+///     still needs to be replayed from. That is committed data lost, and this arm asserts the
+///     floor moves the wrong way rather than arguing that it would.
+///
+/// WHICH SLOTS THE RING FORGETS IS NOT CHOSEN HERE. The claims are pushed in claim order, oldest
+/// first, and the ring's own eviction decides what survives -- which is the oldest half, the
+/// floor-holders. Asserting the ring actually wrapped and that the forgotten set is non-empty is
+/// what stops this passing on a ring that never lost anything.
+///
+/// THE CONTROL IS THE UNPERTURBED PLAN on the same shard, taken first, and the fixture's
+/// preconditions are ENFORCED rather than printed: the control has to be safe to reclaim and hold a
+/// floor above the log's start, or neither arm has a floor to move.
+#[test]
+#[ignore = "seeds 2,000 records twice and drives a ring wrap in each arm; run by name"]
+fn a_wrapped_claim_ring_errs_conservative_only_while_it_keeps_dirtiness() {
+    for arm in ["A: the ring holds the claims", "B: the ring IS the dirty set"] {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let engine = seq_engine(dir.path(), "ringwrap");
+        load_at(&engine, CONFIGURED_END_BUCKET);
+        // Write, dump everything so the shard has durable manifests, then write again: the state a
+        // running shard is in, with a floor the plan can actually compute.
+        write_batches(&engine, &seq_keys("first", 1_000), 118);
+        engine.run_storage_manager_cycle(StorageManagerCycleRequest {
+            shard_id: SEQ_SHARD,
+            min_undumped_wal_records: 0,
+            min_undumped_wal_bytes: 0,
+            max_dump_buckets_per_round: 0,
+            ..StorageManagerCycleRequest::default()
+        });
+        // STAGGERED CLAIMS, AND THE FIRST ATTEMPT AT THIS FIXTURE IS WHY THEY HAVE TO BE.
+        // `write_batches` sends 512 commands per batch, so ONE log sequence is stamped on every
+        // bucket that batch touched: 694 buckets all claiming sequence 3. Forgetting half of an
+        // identical set cannot move a floor the other half holds at the same number, so both arms
+        // read "unchanged" and arm A would have passed while measuring nothing. The enforced
+        // precondition below is what caught it. Single writes are one log record each, so every
+        // bucket's claim is its own.
+        write_singles(&engine, &seq_keys("stagger", 48), 119);
+
+        // The buckets a ring would be holding: dirty, able to name both halves of a claim, and --
+        // one per distinct claim, because two buckets at the same claim hold the same floor and
+        // forgetting one of them moves nothing.
+        let rows = sequences_by_bucket(&engine);
+        let mut claiming: Vec<Sequences> = rows
+            .iter()
+            .filter(|row| row.dirty && row.wal_claim > 0 && row.index_log_claim > 0)
+            .copied()
+            .collect();
+        claiming.sort_by_key(|row| (row.wal_claim, row.routing_bucket));
+        let mut seen_claims = std::collections::BTreeSet::new();
+        claiming.retain(|row| seen_claims.insert(row.wal_claim));
+        assert!(
+            claiming.len() >= 8,
+            "the fixture produced {} bucket(s) at distinct claims; a ring cannot be made to wrap \
+             over fewer than a handful and the forgotten set would be empty",
+            claiming.len()
+        );
+
+        // Push oldest-claim-first into a ring half the size of the population, and let the ring
+        // decide what it keeps.
+        let capacity = claiming.len() / 2;
+        let mut ring = ClaimRing::with_capacity(capacity);
+        for row in &claiming {
+            ring.push(row.routing_bucket, row.wal_claim);
+        }
+        assert!(
+            ring.has_wrapped(),
+            "the ring never wrapped over {} claims at capacity {capacity}, so nothing was forgotten \
+             and this test is about nothing",
+            claiming.len()
+        );
+        let forgotten: Vec<Sequences> = claiming
+            .iter()
+            .filter(|row| !ring.remembers(row.routing_bucket))
+            .copied()
+            .collect();
+        assert!(
+            !forgotten.is_empty(),
+            "the ring wrapped and still remembers every bucket, so the forgotten set is empty"
+        );
+        let lowest_forgotten_claim = forgotten
+            .iter()
+            .map(|row| row.wal_claim)
+            .min()
+            .expect("the forgotten set is not empty");
+        let lowest_remembered_claim = claiming
+            .iter()
+            .filter(|row| ring.remembers(row.routing_bucket))
+            .map(|row| row.wal_claim)
+            .min()
+            .unwrap_or(u64::MAX);
+
+        // THE CONTROL, and its preconditions enforced.
+        let before = engine.storage_wal_reclaim_plan(SEQ_SHARD, Vec::new(), Vec::new());
+        println!(
+            "\n=== {arm} ===\n  buckets holding a full claim: {}   ring capacity {capacity}   \
+             forgotten {}\n  lowest forgotten claim {lowest_forgotten_claim}, lowest remembered \
+             claim {lowest_remembered_claim}\n  CONTROL: safe={} retain_from_wal={} \
+             missing={} covered={}",
+            claiming.len(),
+            forgotten.len(),
+            before.safe_to_reclaim,
+            before.retain_from_wal_sequence,
+            before.missing_bucket_generations.len(),
+            before.covered_bucket_count
+        );
+        assert!(
+            before.safe_to_reclaim,
+            "the control plan refuses to reclaim ({:?}), so there is no floor for either arm to \
+             move and 'more conservative' could not be told from 'unchanged'",
+            before.blocker_reasons
+        );
+        assert!(
+            before.retain_from_wal_sequence > 1,
+            "the control floor is at {}, which is the start of the log; a floor that cannot fall \
+             makes arm A vacuous",
+            before.retain_from_wal_sequence
+        );
+        assert!(
+            lowest_forgotten_claim < lowest_remembered_claim,
+            "the ring forgot a claim that is NEWER than one it kept ({lowest_forgotten_claim} \
+             against {lowest_remembered_claim}); the eviction order this test is about is \
+             oldest-first and the fixture is not exercising it"
+        );
+
+        if arm.starts_with('A') {
+            for row in &forgotten {
+                forget_claims(&engine, row.routing_bucket);
+            }
+            assert_forgotten_slots_name_nothing(&engine, &forgotten);
+            let after = engine.storage_wal_reclaim_plan(SEQ_SHARD, Vec::new(), Vec::new());
+            println!(
+                "  ARM A  : safe={} retain_from_wal={} missing={} covered={}",
+                after.safe_to_reclaim,
+                after.retain_from_wal_sequence,
+                after.missing_bucket_generations.len(),
+                after.covered_bucket_count
+            );
+            // The bucket is still known dirty, so the plan sees a dirty bucket that cannot name
+            // its claim and blocks on it.
+            for row in &forgotten {
+                assert!(
+                    after.missing_bucket_generations.contains(&row.routing_bucket),
+                    "bucket {} lost its claim and the plan still covers it; a forgotten claim has \
+                     to read as unknown, not as nothing to retain",
+                    row.routing_bucket
+                );
+            }
+            assert!(
+                after.retain_from_wal_sequence <= before.retain_from_wal_sequence,
+                "a wrapped ring that keeps dirtiness moved the floor UP, from {} to {}: it would \
+                 free log the forgotten buckets still hold. This arm is supposed to be the safe \
+                 one and it is not",
+                before.retain_from_wal_sequence,
+                after.retain_from_wal_sequence
+            );
+            println!(
+                "  VERDICT: CONSERVATIVE -- the floor went {} -> {} ({:+}), so a wrap frees no \
+                 more log than no wrap. Safe, and takeable.",
+                before.retain_from_wal_sequence,
+                after.retain_from_wal_sequence,
+                after.retain_from_wal_sequence as i64 - before.retain_from_wal_sequence as i64
+            );
+        } else {
+            let mut dropped = 0usize;
+            for row in &forgotten {
+                forget_claims(&engine, row.routing_bucket);
+                dropped += forget_dirtiness(&engine, row.routing_bucket);
+            }
+            assert!(
+                dropped > 0,
+                "no dirty object was dropped, so the forgotten buckets are still dirty and this \
+                 arm is the same as arm A"
+            );
+            assert_forgotten_slots_name_nothing(&engine, &forgotten);
+            let after = engine.storage_wal_reclaim_plan(SEQ_SHARD, Vec::new(), Vec::new());
+            println!(
+                "  ARM B  : safe={} retain_from_wal={} missing={} covered={} (dropped {dropped} \
+                 dirty keys)",
+                after.safe_to_reclaim,
+                after.retain_from_wal_sequence,
+                after.missing_bucket_generations.len(),
+                after.covered_bucket_count
+            );
+            assert!(
+                after.retain_from_wal_sequence > before.retain_from_wal_sequence,
+                "a wrapped ring that is ALSO the dirty set left the floor at {} (control {}); this \
+                 arm is the one that is supposed to be unsafe and the measurement does not show it \
+                 -- do not conclude the design is safe from this, find out why the floor did not \
+                 move",
+                after.retain_from_wal_sequence,
+                before.retain_from_wal_sequence
+            );
+            // THE DATA LOSS, NAMED. The floor is now above the oldest undumped write of a bucket
+            // that has one, so reclaim would free a record that bucket still needs.
+            assert!(
+                after.retain_from_wal_sequence > lowest_forgotten_claim,
+                "the floor rose to {} but the lowest forgotten claim is {lowest_forgotten_claim}; \
+                 the floor has to pass a forgotten bucket's own oldest undumped write for this to \
+                 be the loss it is named for",
+                after.retain_from_wal_sequence
+            );
+            println!(
+                "  VERDICT: AGGRESSIVE -- the floor went {} -> {} ({:+}), past the lowest \
+                 forgotten claim {lowest_forgotten_claim}. Reclaim would free {} WAL record(s) \
+                 that a bucket still holds the log for. DATA LOSS: refuse this design.",
+                before.retain_from_wal_sequence,
+                after.retain_from_wal_sequence,
+                after.retain_from_wal_sequence as i64 - before.retain_from_wal_sequence as i64,
+                after.retain_from_wal_sequence.saturating_sub(lowest_forgotten_claim)
+            );
+        }
+    }
+}
+
+/// A BUCKET THAT CANNOT NAME ITS CLAIM SORTS LAST IN THE DUMP ORDER, NOT FIRST.
+///
+/// THIS GUARD EXISTS BECAUSE A MUTANT SURVIVED. `first_dirty_rank` maps a claim of 0 -- "no claim
+/// recorded" -- to `u64::MAX`, which sorts the bucket LAST, and the comment on it says why: a
+/// bucket we cannot place in the log is not evidence of being old, and the ones we can place are
+/// the ones whose dump moves the floor. Replacing that `u64::MAX` with `0`, so an unplaceable
+/// bucket is dumped FIRST, passed every guard in this module, the two reclaim guards, and
+/// `dump_selection_prioritizes_the_least_recently_dumped_bucket_not_the_lowest_id`. The rule was
+/// stated in a comment and enforced nowhere.
+///
+/// It matters because it is the whole of what a per-bucket claim buys over a shard-level watermark:
+/// the FLOOR is the minimum of these claims either way, but the ORDER is what makes the floor
+/// advance, and an order that spends its one capped slot on a bucket whose dump cannot move the
+/// floor leaves the log where it was.
+///
+/// THE CONTROL IS THE SAME PLAN ON THE SAME SHARD BEFORE THE EDIT, asserted to select the bucket
+/// with the OLDER claim -- so "it selected the other one afterwards" is the edit's doing and not a
+/// plan that was picking that bucket all along.
+#[test]
+#[ignore = "seeds a shard and runs two capped plans; run by name"]
+fn a_bucket_that_cannot_name_its_claim_is_dumped_last_and_not_first() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let engine = seq_engine(dir.path(), "rank");
+    load_at(&engine, CONFIGURED_END_BUCKET);
+    // Single writes, so each bucket's claim is its own log record rather than the batch's.
+    write_singles(&engine, &seq_keys("rank", 24), 118);
+
+    let rows = sequences_by_bucket(&engine);
+    let mut claiming: Vec<Sequences> = rows
+        .iter()
+        .filter(|row| row.dirty && row.wal_claim > 0 && row.index_log_claim > 0)
+        .copied()
+        .collect();
+    claiming.sort_by_key(|row| (row.wal_claim, row.routing_bucket));
+    let mut seen = std::collections::BTreeSet::new();
+    claiming.retain(|row| seen.insert(row.wal_claim));
+    assert!(
+        claiming.len() >= 2,
+        "the fixture produced {} bucket(s) at distinct claims; two are needed for an order to exist",
+        claiming.len()
+    );
+    let oldest = claiming[0];
+    let next = claiming[1];
+    assert!(
+        oldest.wal_claim < next.wal_claim,
+        "the two buckets chosen hold the same claim ({} and {}), so there is no order between them",
+        oldest.wal_claim,
+        next.wal_claim
+    );
+
+    // THE CONTROL: the older claim is dumped first.
+    let before = engine.storage_lifecycle_plan(StorageLifecycleRequest {
+        shard_id: SEQ_SHARD,
+        max_dump_buckets_per_round: 1,
+        ..Default::default()
+    });
+    println!(
+        "\n=== the dump order under a cap of one ===\n  bucket {} claims {}, bucket {} claims {}\n  \
+         CONTROL selects {:?}",
+        oldest.routing_bucket,
+        oldest.wal_claim,
+        next.routing_bucket,
+        next.wal_claim,
+        before.selected_dump_buckets
+    );
+    assert_eq!(
+        vec![oldest.routing_bucket],
+        before.selected_dump_buckets,
+        "the plan does not order by the oldest undumped write at all, so the edit below would not \
+         be changing the thing this test is named for"
+    );
+
+    // The bucket holding the oldest claim can no longer name it -- the state a wrapped ring or a
+    // reloaded node leaves behind.
+    perturb(&engine, oldest.routing_bucket, |bucket| {
+        bucket.first_dirty_wal_sequence = 0;
+        bucket.first_dirty_index_log_sequence = 0;
+    });
+
+    let after = engine.storage_lifecycle_plan(StorageLifecycleRequest {
+        shard_id: SEQ_SHARD,
+        max_dump_buckets_per_round: 1,
+        ..Default::default()
+    });
+    println!(
+        "  bucket {} now names no claim; the plan selects {:?}",
+        oldest.routing_bucket, after.selected_dump_buckets
+    );
+    assert_eq!(
+        vec![next.routing_bucket],
+        after.selected_dump_buckets,
+        "the bucket that can no longer name its claim was still selected first; a claim of 0 has \
+         to sort LAST -- an unplaceable bucket's dump cannot move the reclaim floor, so spending \
+         the capped slot on it leaves the log where it was"
+    );
+    assert!(
+        !after.selected_dump_buckets.contains(&oldest.routing_bucket),
+        "bucket {} claims nothing and is still in the selection",
+        oldest.routing_bucket
     );
 }

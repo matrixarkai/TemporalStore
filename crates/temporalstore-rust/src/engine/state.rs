@@ -2630,10 +2630,21 @@ pub(super) struct BucketNode {
     /// behaviour rather than as permission to reclaim more.
     ///
     /// NOT serialized. A load clears every dirty flag -- reloaded data is durable, hence clean --
-    /// and recomputes dirtiness from the live \ set, which is empty on load. So a
+    /// and recomputes dirtiness from the live `dirty_objects` set, which is empty on load. So a
     /// reloaded bucket holds no claim by definition, and persisting this would both add a key to
     /// the index wire format and carry a number that is meaningless the moment it is read back.
-    /// \ is what caught that.
+    /// `the_index_wire_keys_are_what_they_were` is what caught that.
+    ///
+    /// AND IT STAYS ON THE NODE. Two readers pin it, and neither can be answered by a shard-level
+    /// watermark: `storage_wal_reclaim_plan` takes this as the WAL retain FLOOR for a bucket no
+    /// manifest covers, and `first_dirty_rank` -- the dump ordering's PRIMARY key -- takes it as
+    /// "which bucket is holding the log", so the bucket whose dump moves the floor is dumped
+    /// first. A single watermark over the whole index gives the same FLOOR, because that floor is
+    /// the minimum of these claims either way; what it cannot give is the ORDER, and a dump order
+    /// that cannot see which bucket is pinning the log is the starvation
+    /// `dump_selection_prioritizes_the_least_recently_dumped_bucket_not_the_lowest_id` was written
+    /// for. `a_wrapped_claim_ring_errs_conservative_only_while_it_keeps_dirtiness` measures what a
+    /// BOUNDED side structure does instead, and which direction it errs.
     pub(super) first_dirty_wal_sequence: u64,
     /// The same claim against the INDEX LOG: the index-log sequence at which this bucket most
     /// recently went from clean to dirty, or 0 when it is clean or not known.
