@@ -832,12 +832,29 @@ mod tests {
         );
     }
 
-    /// THE READING AGREES WITH THE DOCUMENTED RULE, ACROSS A SWEEP OF SIZES.
+    /// THE READING AGREES WITH THE DOCUMENTED RULE AS A FLOOR, NOT AS AN EQUALITY.
     ///
     /// `chunk_of` asks the allocator and `documented_glibc_chunk` states the rule. Neither is
     /// evidence for the other on its own, so they are compared here over sizes that land either
     /// side of the floor and either side of a rounding step. A target whose allocator sizes
     /// differently fails this rather than quietly reporting numbers from a different rule.
+    ///
+    /// THIS USED TO ASSERT EQUALITY, AND EQUALITY IS NOT A PROPERTY OF THE ALLOCATOR. glibc serves
+    /// a request from a free chunk that is BIG ENOUGH, not from one that is exactly the rule's
+    /// size: when a larger chunk is on the relevant bin it is handed over whole, and
+    /// `malloc_usable_size` then reports that larger chunk. So the reading for one request size
+    /// depends on the allocation history of the whole process, and the equality held here only
+    /// because of what this binary happened to have allocated first. It stopped holding when an
+    /// unrelated change shifted that history: a 104-byte request read back 128 where the rule says
+    /// 112, deterministically, in a run of this module alone -- and the same size read 112 when the
+    /// test ran by itself.
+    ///
+    /// SO WHAT IS ASSERTED IS WHAT IS INVARIANT. The rule is a FLOOR (a chunk is never smaller
+    /// than header-plus-rounding), the reading is a multiple of sixteen, and -- the discriminating
+    /// property, and the one the equality was really standing in for -- a request above the floor
+    /// reads back STRICTLY MORE than it asked for. That last one is what fails on a target where
+    /// `chunk_of` degrades to handing the request straight back, which is the case this test
+    /// exists to catch; an equality against a formula caught it only by accident.
     #[test]
     fn the_chunk_counter_agrees_with_the_documented_glibc_chunk_rule() {
         // 1 and 24 are under the 32-byte floor; 25 is the first size above it; 104/112 straddle a
@@ -852,10 +869,24 @@ mod tests {
             let read = chunk_of(held.as_ptr() as *mut u8, request);
             let rule = documented_glibc_chunk(request);
             println!("  request {request:>5} B  ->  read {read:>5} B chunk, rule says {rule:>5} B");
+            assert!(
+                read >= rule,
+                "a {request}-byte request read back a {read} B chunk, BELOW the documented rule's \
+                 {rule} B. A chunk owes its request a header word and a rounding, so a reading \
+                 under the rule is not a chunk reading at all"
+            );
             assert_eq!(
-                rule, read,
-                "a {request}-byte request read back a {read} B chunk against the documented \
-                 rule's {rule} B; the chunk column is not describing this allocator"
+                read % 16,
+                0,
+                "a {request}-byte request read back a {read} B chunk, which is not a multiple of \
+                 sixteen; glibc sizes every chunk in sixteens"
+            );
+            assert!(
+                read > request,
+                "a {request}-byte request read back a chunk of exactly {read} B. A chunk is \
+                 strictly wider than its request -- it carries a header word -- so this is the \
+                 degraded path handing the request straight back, and every chunk figure this \
+                 module reports would be a request figure wearing its name"
             );
             std::hint::black_box(&held);
         }

@@ -1086,7 +1086,7 @@ fn fill(entries: usize, node_allocations: u64) -> (f64, f64) {
 /// BOXING THE SINGLE-PAGE ARM, MEASURED BY THE ALLOCATOR RATHER THAN ARGUED FROM ITS WIDTH.
 ///
 /// #1958 priced this shape from its width and the allocator's rounding: minus eighty bytes on the
-/// struct, plus a 104-byte request served out of a 112-byte chunk for very nearly every bucket. It
+/// struct, plus a 104-byte request served out of a chunk of at least 112 B for very nearly every bucket. It
 /// never ran the allocator over it, and its own headline result -- that the allocator charges
 /// 1.58x the `size_of` arithmetic on this map -- is precisely why arithmetic is not enough here.
 ///
