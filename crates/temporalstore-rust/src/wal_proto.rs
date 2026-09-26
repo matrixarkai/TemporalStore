@@ -355,8 +355,8 @@ pub(crate) fn implied_block_length(record: &WriteAheadLogRecord) -> Option<u64> 
 
 fn address_to_proto(address: &BlockAddress, implied_length: Option<u64>) -> v1::WalBlockAddress {
     v1::WalBlockAddress {
-        block_slab_id: address.block_slab_id,
-        offset: address.offset,
+        block_slab_id: address.block_slab_id(),
+        offset: address.offset(),
         // `length` is a plain field, so a zero is not written -- and a block record is never zero
         // bytes, since it always carries a header. Zero therefore reads as "the carried block
         // says it".

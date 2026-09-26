@@ -321,9 +321,9 @@ impl TemporalEngine {
         let mut live_object_ids = BTreeMap::<u64, BTreeSet<u64>>::new();
         let mut live_routing_buckets = BTreeMap::<u64, BTreeSet<u32>>::new();
         for address in &addresses {
-            let slab_report = reports.entry(address.block_slab_id).or_insert(
+            let slab_report = reports.entry(address.block_slab_id()).or_insert(
                 StorageRecoverySlabLiveReport {
-                    block_slab_id: address.block_slab_id,
+                    block_slab_id: address.block_slab_id(),
                     ..StorageRecoverySlabLiveReport::default()
                 },
             );
@@ -332,13 +332,13 @@ impl TemporalEngine {
                 .live_physical_bytes
                 .saturating_add(address.length());
             if let Some(object_id) = address.object_id() {
-                let objects = live_object_ids.entry(address.block_slab_id).or_default();
+                let objects = live_object_ids.entry(address.block_slab_id()).or_default();
                 objects.insert(object_id);
                 slab_report.live_object_count = objects.len() as u64;
             }
             if let Some(routing_bucket) = address.routing_bucket() {
                 let buckets = live_routing_buckets
-                    .entry(address.block_slab_id)
+                    .entry(address.block_slab_id())
                     .or_default();
                 buckets.insert(routing_bucket);
                 slab_report.live_routing_bucket_count = buckets.len() as u64;
@@ -444,7 +444,7 @@ impl TemporalEngine {
         let mut live_block_refs_by_slab = BTreeMap::<u64, u64>::new();
         for entry in &entries {
             *live_block_refs_by_slab
-                .entry(entry.address.block_slab_id)
+                .entry(entry.address.block_slab_id())
                 .or_default() += 1;
         }
 
@@ -627,9 +627,9 @@ impl TemporalEngine {
         for (position, live_entry) in live_entries.iter().enumerate() {
             let address = &live_entry.address;
             let slab_report = block_slab_live_reports
-                .entry(address.block_slab_id)
+                .entry(address.block_slab_id())
                 .or_insert(StorageRecoverySlabLiveReport {
-                    block_slab_id: address.block_slab_id,
+                    block_slab_id: address.block_slab_id(),
                     ..StorageRecoverySlabLiveReport::default()
                 });
             slab_report.live_block_refs = slab_report.live_block_refs.saturating_add(1);
@@ -637,13 +637,13 @@ impl TemporalEngine {
                 .live_physical_bytes
                 .saturating_add(address.length());
             if let Some(object_id) = address.object_id() {
-                let objects = live_object_ids.entry(address.block_slab_id).or_default();
+                let objects = live_object_ids.entry(address.block_slab_id()).or_default();
                 objects.insert(object_id);
                 slab_report.live_object_count = objects.len() as u64;
             }
             if let Some(routing_bucket) = address.routing_bucket() {
                 let buckets = live_routing_buckets
-                    .entry(address.block_slab_id)
+                    .entry(address.block_slab_id())
                     .or_default();
                 buckets.insert(routing_bucket);
                 slab_report.live_routing_bucket_count = buckets.len() as u64;
@@ -679,8 +679,8 @@ impl TemporalEngine {
                     slab_report.unreadable_live_block_refs =
                         slab_report.unreadable_live_block_refs.saturating_add(1);
                     unreadable_block_refs.push(StorageRecoveryBlockError {
-                        block_slab_id: address.block_slab_id,
-                        offset: address.offset,
+                        block_slab_id: address.block_slab_id(),
+                        offset: address.offset(),
                         length: address.length(),
                         error: err.to_string(),
                     });
@@ -691,7 +691,7 @@ impl TemporalEngine {
         // answer as the address vector this used to be built from.
         let mut live_block_slab_ids = live_entries
             .iter()
-            .map(|entry| entry.address.block_slab_id)
+            .map(|entry| entry.address.block_slab_id())
             .collect::<BTreeSet<_>>()
             .into_iter()
             .collect::<Vec<_>>();

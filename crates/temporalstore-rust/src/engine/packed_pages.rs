@@ -321,8 +321,8 @@ fn append_timestamped_kv_blocks_inner(
                 cache.put_memory_only(
                     CacheKey::page_with_slot(
                         shard_id,
-                        address.block_slab_id,
-                        address.offset,
+                        address.block_slab_id(),
+                        address.offset(),
                         address.length(),
                         address.routing_bucket(),
                     ),

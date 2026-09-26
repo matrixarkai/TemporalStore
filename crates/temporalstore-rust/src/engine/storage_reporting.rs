@@ -201,7 +201,7 @@ pub(super) fn bucket_storage_summaries(
         block_slabs_by_bucket
             .entry(routing_bucket)
             .or_default()
-            .insert(entry.address.block_slab_id);
+            .insert(entry.address.block_slab_id());
         if let Some(stored_slab_id) = entry.address.slab_id() {
             summary.last_compacted_slab = Some(
                 summary
@@ -267,7 +267,7 @@ const NATIVE_PACKED_BLOCK_INDEX_SIZE: usize = 17;
 const NATIVE_PACKED_BUCKET_NODE_SIZE: usize = 24;
 
 pub(super) fn physical_address_word(address: &BlockAddress) -> u64 {
-    address.block_slab_id.wrapping_shl(32) | (address.offset & u32::MAX as u64)
+    address.block_slab_id().wrapping_shl(32) | (address.offset() & u32::MAX as u64)
 }
 
 pub(super) fn native_packed_block_index_bytes(
@@ -383,8 +383,8 @@ pub(super) fn storage_physical_index_report(
             model_id: entry.kind.clone().to_string(),
             component: entry.component.clone().map(|value| value.to_string()),
             routing_bucket,
-            block_slab_id: entry.address.block_slab_id,
-            offset: entry.address.offset,
+            block_slab_id: entry.address.block_slab_id(),
+            offset: entry.address.offset(),
             length: entry.address.length(),
             block_id: entry.address.block_id(),
             object_id: entry.address.object_id(),
@@ -436,8 +436,8 @@ pub(super) fn storage_physical_index_report(
                 existing.object_key.as_str() == page.object_key.as_ref()
                     && *existing.model_id == *page.model_id
                     && existing.component.as_deref() == page.component.as_deref()
-                    && existing.block_slab_id == page.address.block_slab_id
-                    && existing.offset == page.address.offset
+                    && existing.block_slab_id == page.address.block_slab_id()
+                    && existing.offset == page.address.offset()
             });
             if already_present {
                 continue;
@@ -447,8 +447,8 @@ pub(super) fn storage_physical_index_report(
                 model_id: page.model_id.clone().to_string(),
                 component: page.component.clone().map(|value| value.to_string()),
                 routing_bucket: *routing_bucket,
-                block_slab_id: page.address.block_slab_id,
-                offset: page.address.offset,
+                block_slab_id: page.address.block_slab_id(),
+                offset: page.address.offset(),
                 length: page.address.length(),
                 block_id: page.address.block_id(),
                 object_id: Some(page.object_id()),
@@ -805,8 +805,8 @@ pub(super) fn bucket_generation_fingerprints_by_bucket(shard: &ShardState) -> BT
             entry.kind,
             entry.object_key,
             entry.component.unwrap_or_default(),
-            entry.address.block_slab_id,
-            entry.address.offset,
+            entry.address.block_slab_id(),
+            entry.address.offset(),
             entry.address.length(),
             entry.address.block_id().unwrap_or_default(),
             entry.address.object_id().unwrap_or_default(),
@@ -833,9 +833,9 @@ pub(super) fn unique_timestamped_kv_block_addresses(series: &BTreeMap<u64, Block
         .into_iter()
         .collect::<Vec<_>>();
     addresses.sort_by(|left, right| {
-        left.block_slab_id
-            .cmp(&right.block_slab_id)
-            .then(left.offset.cmp(&right.offset))
+        left.block_slab_id()
+            .cmp(&right.block_slab_id())
+            .then(left.offset().cmp(&right.offset()))
             .then(left.length().cmp(&right.length()))
     });
     addresses
@@ -1115,8 +1115,8 @@ pub(super) fn feature_block_error(
     StorageFeatureBlockError {
         kind: kind.to_string(),
         key: key.to_string(),
-        block_slab_id: address.block_slab_id,
-        offset: address.offset,
+        block_slab_id: address.block_slab_id(),
+        offset: address.offset(),
         length: address.length(),
         error: error.into(),
     }
@@ -1132,8 +1132,8 @@ pub(super) fn feature_block_timestamp_mismatch(
         kind: kind.to_string(),
         key: key.to_string(),
         timestamp_ms,
-        block_slab_id: address.block_slab_id,
-        offset: address.offset,
+        block_slab_id: address.block_slab_id(),
+        offset: address.offset(),
         length: address.length(),
     }
 }

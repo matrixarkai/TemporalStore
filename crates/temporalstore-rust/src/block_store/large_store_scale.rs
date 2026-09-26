@@ -312,9 +312,9 @@ fn build_appended_store(root: &std::path::Path, slabs: u64) -> (BlockStore, Stor
             let probe = Probe::start();
             let address = store.append(PAYLOAD).expect("append");
             append_allocs += probe.stop().allocs;
-            if last_slab != Some(address.block_slab_id) {
+            if last_slab != Some(address.block_slab_id()) {
                 slabs_observed += 1;
-                last_slab = Some(address.block_slab_id);
+                last_slab = Some(address.block_slab_id());
             }
             records += 1;
             record += 1;

@@ -3,15 +3,19 @@
 
 //! What an in-memory `BlockAddress` costs, and what a compact form would buy.
 //!
-//! WHY THIS EXISTS. `BlockAddress` is 40 bytes. Three of its fields -- `block_slab_id`, `offset`,
-//! `length` -- are always meaningful. Three more -- `page_id`, `object_id`, `routing_bucket` --
+//! WHY THIS EXISTS. `BlockAddress` is 32 bytes. Two of its fields -- the packed slab-and-offset
+//! `address` word and `length` -- are always meaningful. Three more -- `page_id`, `object_id`, `routing_bucket` --
 //! are OPTIONAL, gated by a `present` bitmask, and the struct allocates all three whether or not
 //! the bitmask says they are set. That is 16 bytes of optional payload plus one byte of bitmask,
 //! and the shard holds one of these per stored point: a 1,000-point feature series holds 1,000
 //! of them.
 //!
 //! It was 48, with a FOURTH optional field, until `generation` was shown to be a copy of
-//! `page_id.or(object_id)` on every live address this census walked and was made derived.
+//! `page_id.or(object_id)` on every live address this census walked and was made derived. It was
+//! 40 until the slab id and the offset merged into one 64-bit word, the slab in the high half and
+//! the offset in the low. Neither step touched the OPTIONAL payload, which is the same 16 bytes it
+//! has always been -- so the question below is the same question over a smaller struct, and the
+//! share it answers with has moved for a reason that has nothing to do with the answer.
 //!
 //! So the obvious question is whether to pack what is left. The answer turns on a single number:
 //! how many live addresses actually carry NONE of the three optional fields. If most carry none,
@@ -24,7 +28,7 @@
 //! WHAT THESE PROBES ARE NOT. They are `#[ignore]`d because they seed tens of thousands of
 //! records and read process RSS, which is neither fast nor meaningful under a parallel test run.
 //! Run them by name. Two tests here are NOT ignored, and both are cheap:
-//! `an_address_is_forty_bytes_and_two_fifths_of_them_are_optional` pins the width so that
+//! `an_address_is_thirty_two_bytes_and_half_of_them_are_optional` pins the width so that
 //! widening the struct is noticed rather than absorbed, and
 //! `only_one_of_the_three_address_cross_checks_on_a_read_can_fire` pins how many of the address
 //! cross-checks on the read path can actually fire, which is the count that decides what dropping
@@ -93,8 +97,8 @@ struct AddressCensus {
 impl AddressCensus {
     fn observe(&mut self, address: &BlockAddress) {
         self.total += 1;
-        self.widest[0] = self.widest[0].max(address.block_slab_id);
-        self.widest[1] = self.widest[1].max(address.offset);
+        self.widest[0] = self.widest[0].max(address.block_slab_id());
+        self.widest[1] = self.widest[1].max(address.offset());
         self.widest[2] = self.widest[2].max(address.length());
         self.widest[3] = self.widest[3].max(address.block_id().unwrap_or(0));
         self.widest[4] = self.widest[4].max(address.object_id().unwrap_or(0));
@@ -185,7 +189,7 @@ impl AddressCensus {
         );
 
         // Presence says whether a field can be OMITTED. Width says whether it can be SHRUNK.
-        // Both have to fail before the remaining 40 bytes are justified.
+        // Both have to fail before the remaining 32 bytes are justified.
         let names = [
             "block_slab_id", "offset", "length",
             "page_id", "object_id", "generation", "routing_bucket",
@@ -730,7 +734,7 @@ fn only_one_of_the_three_address_cross_checks_on_a_read_can_fire() {
     // slab a reader opened is the slab a reader opened -- true in every state, including one where
     // a slab id has been reused and a record in the new slab stamps the reused number.
     assert_eq!(
-        Some(good.block_slab_id),
+        Some(good.block_slab_id()),
         good.slab_id(),
         "the address's slab id IS its block_slab_id, so it cannot disagree with the file it named"
     );
@@ -829,10 +833,10 @@ fn the_payload_checksum_cannot_tell_one_record_from_another_at_the_same_address(
 
     // The two addresses agree on everything a read uses to FIND bytes.
     assert_eq!(
-        stale.block_slab_id, live.block_slab_id,
+        stale.block_slab_id(), live.block_slab_id(),
         "denominator: same slab id"
     );
-    assert_eq!(stale.offset, live.offset, "denominator: same offset");
+    assert_eq!(stale.offset(), live.offset(), "denominator: same offset");
     assert_eq!(stale.length(), live.length(), "denominator: same length");
     assert_eq!(
         stale.block_id(),
@@ -875,47 +879,50 @@ fn the_payload_checksum_cannot_tell_one_record_from_another_at_the_same_address(
 /// The width guard. Not ignored: it is free, and it is the thing that makes a future widening
 /// visible.
 ///
-/// `block_store.rs` already asserts the 40, and a `const _` beside the declaration makes a
-/// widening a BUILD failure. This adds the decomposition, because 40 on its own does not say
+/// `block_store.rs` already asserts the 32, and a `const _` beside the declaration makes a
+/// widening a BUILD failure. This adds the decomposition, because 32 on its own does not say
 /// WHERE it goes, and the whole packing argument is about the optional payload inside it. If a
 /// field is added, or an optional field is promoted to always-present, this fails with a number
 /// that names which half moved.
 ///
-/// IT WAS 48, AND HALF OF IT WAS OPTIONAL, UNTIL `generation` CAME OUT. That field was one of
-/// four optional ones and a copy of `block_id.or(object_id)` at every write site; deriving it
-/// took eight bytes off the struct and the optional payload with it. The share below is 40%
-/// rather than 50% for that reason and no other -- no field was narrowed to get here, because at
-/// this width narrowing a field cannot pay. `block_store.rs` has the byte-by-byte accounting in
+/// THE OPTIONAL SHARE HAS MOVED TWICE, BOTH TIMES BECAUSE THE ALWAYS-PRESENT HALF SHRANK. It was
+/// 48 bytes with half of it optional; `generation` -- one of four optional fields and a copy of
+/// `block_id.or(object_id)` at every write site -- became derived, taking eight bytes off the
+/// OPTIONAL half and leaving 40 with two fifths optional. Then the slab id and the offset merged
+/// into one word, taking eight off the ALWAYS half, and the share is back to a half of a smaller
+/// struct. The optional payload has not changed size since: it is the same 16 bytes it was at 40.
+/// `block_store.rs` has the byte-by-byte accounting in
 /// `every_byte_of_a_block_address_is_accounted_for`, where the fields are still visible.
 #[test]
-fn an_address_is_forty_bytes_and_two_fifths_of_them_are_optional() {
-    // Always meaningful: two u64 slab coordinates and the 32-bit byte count.
-    const ALWAYS: usize = 2 * 8 + 4;
+fn an_address_is_thirty_two_bytes_and_half_of_them_are_optional() {
+    // Always meaningful: the packed slab-and-offset word and the 32-bit byte count.
+    const ALWAYS: usize = 8 + 4;
     // Three optional fields: one u64 identity, the 32-bit block id and the routing bucket.
     const OPTIONAL: usize = 8 + 4 + 4;
     // The presence bitmask.
     const BITMASK: usize = 1;
 
-    assert_eq!(40, std::mem::size_of::<BlockAddress>(), "the address width moved");
+    assert_eq!(32, std::mem::size_of::<BlockAddress>(), "the address width moved");
     assert_eq!(8, std::mem::align_of::<BlockAddress>());
-    assert_eq!(20, ALWAYS);
+    assert_eq!(12, ALWAYS);
     assert_eq!(16, OPTIONAL);
     assert_eq!(
-        40,
+        32,
         ALWAYS + OPTIONAL + BITMASK + 3,
-        "20 always + 16 optional + 1 bitmask + 3 padding = 40; if this stops adding up, a field \
+        "12 always + 16 optional + 1 bitmask + 3 padding = 32; if this stops adding up, a field \
          changed shape and the packing arithmetic in this module is stale"
     );
 
-    // The optional payload is two fifths of the struct. That is the quantity every probe here is
-    // about, and it is the number that moved when the fourth optional field became derived.
+    // The optional payload is half the struct. That is the quantity every probe here is about,
+    // and the number moved when the always-present half lost its second slab coordinate -- NOT
+    // because the optional half changed, which the 16 above states separately.
     assert_eq!(
-        40,
+        50,
         100 * OPTIONAL / std::mem::size_of::<BlockAddress>(),
-        "the optional payload is 40% of the address"
+        "the optional payload is 50% of the address"
     );
 
-    // An address built with no optional field is the same 40 bytes as one built with all three.
+    // An address built with no optional field is the same 32 bytes as one built with all three.
     // This is the fact that makes the question worth asking at all.
     let bare = BlockAddress::from_parts(1, 0, 64, None, None, None);
     let full = BlockAddress::from_parts(1, 0, 64, Some(1), Some(2), Some(3));
@@ -963,7 +970,7 @@ impl DuplicationCensus {
         self.model_total += 1;
         *self.stores_per_value.entry(address.clone()).or_default() += 1;
         self.model_values_at
-            .entry((address.block_slab_id, address.offset))
+            .entry((address.block_slab_id(), address.offset()))
             .or_default()
             .insert(address.clone());
     }
@@ -971,7 +978,7 @@ impl DuplicationCensus {
     fn observe_bucket(&mut self, address: &BlockAddress) {
         self.bucket_total += 1;
         *self.stores_per_value.entry(address.clone()).or_default() += 1;
-        let key = (address.block_slab_id, address.offset);
+        let key = (address.block_slab_id(), address.offset());
         if let Some(existing) = self.bucket_value_at.get(&key) {
             if existing != address {
                 self.bucket_location_collisions += 1;

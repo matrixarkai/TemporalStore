@@ -556,16 +556,21 @@ fn a_wide_range_fixture_cannot_tell_the_two_placements_apart() {
 /// rust-internal: reads the engine's own index wire shape, no product behaviour
 #[test]
 fn the_engines_own_decoder_produces_an_address_with_no_routing_bucket() {
-    // As an older build wrote it: the three required fields, and nothing optional.
-    let older: BlockAddress = serde_json::from_slice(br#"{"ps":7,"o":128,"l":64}"#)
-        .expect("the decoder takes an address record with no optional fields");
+    // The required fields and nothing optional. The location is ONE word now -- slab 7 in the
+    // high half, offset 128 in the low -- and the split spelling this line used to carry is
+    // refused rather than read, which `a_split_address_is_refused_and_a_merged_one_round_trips`
+    // drives directly. What is being tested here is the OPTIONAL fields defaulting, so the
+    // location is written in the shape the engine writes today.
+    let older: BlockAddress =
+        serde_json::from_slice(br#"{"a":30064771200,"l":64}"#)
+            .expect("the decoder takes an address record with no optional fields");
     assert_eq!(
         older.routing_bucket(),
         None,
         "`BlockAddressWire::routing_bucket` is `Option<u32>` under `#[serde(default)]`, so a \
          record written before the field existed has to decode to None. It did not."
     );
-    assert_eq!(older.block_slab_id, 7, "the rest of the record still decoded");
+    assert_eq!(older.block_slab_id(), 7, "the rest of the record still decoded");
     assert_eq!(older.length(), 64, "the rest of the record still decoded");
 
     // And a REAL address, round-tripped through the same shape with the key removed.
@@ -582,7 +587,7 @@ fn the_engines_own_decoder_produces_an_address_with_no_routing_bucket() {
         "dropping `rs` from the wire shape has to produce an address with no routing bucket"
     );
     assert_eq!(
-        (older.block_slab_id, older.offset, older.length(), older.object_id()),
+        (older.block_slab_id(), older.offset(), older.length(), older.object_id()),
         (3, 64, 128, Some(2)),
         "dropping `rs` must drop ONLY the routing bucket; anything else changed makes the \
          construction below a different experiment"

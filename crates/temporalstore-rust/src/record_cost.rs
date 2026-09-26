@@ -1652,32 +1652,49 @@ fn a_narrower_record_field_would_save_nothing_because_the_encoding_is_value_leng
          producer's range"
     );
 
-    // The sentinels rule it out a second time, independently, and NOT because they collide with
-    // each other -- truncated they are still two different numbers. What breaks is that neither
-    // survives the round trip: a block that lives in the log rather than in a slab is marked by a
-    // slab id at the very top of the range, and `is_wal_resident` asks whether the id IS one of
-    // those two. Narrowed and widened back it is not, and a block in the log stops being
-    // recognisable as one -- which is a read that goes to a slab for bytes that were never
-    // written there.
-    assert_eq!(crate::engine::HOT_BLOCK_SLAB_ID, u64::MAX);
-    assert_eq!(crate::wal_record::WAL_LOG_SLAB_ID, u64::MAX - 1);
+    // THE SENTINELS USED TO RULE THE SLAB ID OUT TOO, AND NO LONGER DO -- THEY MOVED.
+    //
+    // This half of the guard used to read: a block that lives in the log rather than in a slab
+    // is marked by a slab id at the very top of the SIXTY-FOUR bit range, `is_wal_resident` asks
+    // whether the id IS one of those two, and neither survives `as u32` -- so the slab id cannot
+    // be narrowed. Every step of that was true. The conclusion was not, because it asked whether
+    // the sentinels survive a narrowing instead of asking where the sentinels have to live, and
+    // a sentinel is a RESERVED VALUE rather than a large number. Both now sit at the top of the
+    // 32-bit range, the slab id is 32 bits inside the address word, and the two halves of an
+    // address are one `u64` instead of two.
+    //
+    // What the guard holds now is the property that replaced it: the sentinels are reserved
+    // ABOVE every slab id a store can mint, and they round-trip through the address word
+    // unchanged. A sentinel that drifted into the addressable range would be a real slab's id,
+    // and a read for a log-resident block would go to that slab for bytes never written there --
+    // the same failure the old spelling was protecting against, caught at its actual cause.
+    assert_eq!(crate::engine::HOT_BLOCK_SLAB_ID, u32::MAX as u64);
+    assert_eq!(crate::wal_record::WAL_LOG_SLAB_ID, (u32::MAX as u64) - 1);
     for sentinel in [
         crate::engine::HOT_BLOCK_SLAB_ID,
         crate::wal_record::WAL_LOG_SLAB_ID,
     ] {
         assert!(
             crate::wal_record::is_wal_resident(sentinel),
-            "the sentinel is not recognised before any narrowing, so this says nothing"
-        );
-        let round_tripped = u64::from(sentinel as u32);
-        assert_ne!(
-            round_tripped, sentinel,
-            "the sentinel survived a 32-bit round trip, so this half of the argument does not \
-             hold and should be removed rather than left reading as proof"
+            "the sentinel is not recognised to begin with, so this says nothing"
         );
         assert!(
-            !crate::wal_record::is_wal_resident(round_tripped),
-            "a narrowed sentinel is still recognised as log-resident"
+            sentinel > crate::block_store::MAX_ADDRESSABLE_BLOCK_SLAB_ID,
+            "sentinel {sentinel} is inside the range a store mints slab ids from, so a real slab \
+             would be read as log-resident"
+        );
+        let round_tripped = u64::from(crate::block_store::extract_block_slab_id(
+            crate::block_store::make_block_address_word(sentinel as u32, 12_345),
+        ));
+        assert_eq!(
+            round_tripped, sentinel,
+            "the sentinel did not survive the address word, so a log-resident block stops being \
+             recognisable as one"
+        );
+        assert!(
+            crate::wal_record::is_wal_resident(round_tripped),
+            "a sentinel that went through the address word is no longer recognised as \
+             log-resident"
         );
     }
 }

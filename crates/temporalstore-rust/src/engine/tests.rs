@@ -90,6 +90,7 @@ mod claim_stamp_hold;
 mod command_surface;
 mod expiry_command_boundaries;
 mod address_footprint;
+mod address_word_footprint;
 mod serving_read_guard;
 mod poison_shard_guard;
 mod restore_serving_gate;

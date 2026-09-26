@@ -39,5 +39,12 @@ pub(super) const CONTEXT_NODE_FIELD: &str = "meta";
 ///
 /// `pub(crate)` so [`crate::wal_record::is_wal_resident`] can answer for both sentinels in one
 /// place rather than each site comparing by hand.
-pub(crate) const HOT_BLOCK_SLAB_ID: u64 = u64::MAX;
+/// AT THE TOP OF THE THIRTY-TWO BIT RANGE, NOT THE SIXTY-FOUR BIT ONE.
+///
+/// A block address packs its slab id into the high half of one 64-bit word, so a sentinel that
+/// only exists above `u32::MAX` cannot be carried at all. It is a reserved VALUE, not a large
+/// number: all it has to be is something no real slab id reaches, and
+/// `block_store::MAX_ADDRESSABLE_BLOCK_SLAB_ID` reserves this and the log-resident sentinel
+/// below it.
+pub(crate) const HOT_BLOCK_SLAB_ID: u64 = u32::MAX as u64;
 pub(super) static HOT_BLOCK_OFFSET: AtomicU64 = AtomicU64::new(1);

@@ -3618,8 +3618,8 @@ fn tiny_cache_dump_load_restart_refills_from_disk_block_cache() {
             .clone();
         CacheKey::page_with_slot(
             1,
-            address.block_slab_id,
-            address.offset,
+            address.block_slab_id(),
+            address.offset(),
             address.length(),
             address.routing_bucket(),
         )
@@ -4948,8 +4948,8 @@ fn what_each_address_field_actually_ranges_over() {
         for (_key, page) in bucket.block_index.iter() {
             pages += 1;
             let a = &page.address;
-            slab = slab.max(a.block_slab_id);
-            offset = offset.max(a.offset);
+            slab = slab.max(a.block_slab_id());
+            offset = offset.max(a.offset());
             length = length.max(a.length());
             block_id = block_id.max(a.block_id().unwrap_or(0));
             object_id = object_id.max(a.object_id().unwrap_or(0));
@@ -6578,10 +6578,16 @@ fn the_index_wire_keys_are_what_they_were() {
     assert_eq!(
         listed,
         vec![
+            // The MERGED ADDRESS WORD, which replaced "ps" and "o". One key where there were two:
+            // the slab id is its high 32 bits and the offset its low 32. The old pair is NOT an
+            // alias of this -- an index that spells them separately is refused at load, because
+            // read as a word a slab id of 1 beside an offset of 2 is slab 0 offset 1, a well-formed
+            // address for a different block.
+            "a",
             "address",
             "bucket_map",
             // "b", the older grouping id, is gone: a slab IS the unit, so an address derives it from
-            // `block_slab_id` rather than carrying it. An index written before this still has the
+            // the address word rather than carrying it. An index written before this still has the
             // key and still loads -- the wire struct does not deny unknown fields, so the stored
             // value is read and ignored.
             "component",
@@ -6601,13 +6607,12 @@ fn the_index_wire_keys_are_what_they_were() {
             "log_backed",
             "meta_loaded",
             "model_id",
-            "o",
+            // "o" and "ps" are gone -- merged into "a" at the top of this list.
             "object_index",
             "object_key",
             "oi",
             "page_index",
             "pi",
-            "ps",
             "routing_slot",
             "rs",
             "ttl_ms",
@@ -12051,8 +12056,8 @@ fn what_a_live_record_is_made_of() {
             if let Some(address) = item.resolved_address() {
                 println!(
                     "[census]   address: slab={} off={} len={} block_id={:?} object_id={:?} gen={:?} slab_id={:?}",
-                    address.block_slab_id,
-                    address.offset,
+                    address.block_slab_id(),
+                    address.offset(),
                     address.length(),
                     address.block_id(),
                     address.object_id(),
@@ -18341,8 +18346,8 @@ fn what_a_packed_block_looks_like_in_the_index() {
     for (timestamp, address) in series.iter() {
         eprintln!(
             "    ts={timestamp} slab={} off={} len={} page_id={:?}",
-            address.block_slab_id,
-            address.offset,
+            address.block_slab_id(),
+            address.offset(),
             address.length(),
             address.block_id()
         );
@@ -18888,8 +18893,8 @@ fn a_released_bucket_reloads_the_exact_block_list_it_released() {
                         page.model_id.to_string(),
                         page.object_key.to_string(),
                         page.component.as_ref().map(|name| name.to_string()),
-                        page.address.block_slab_id,
-                        page.address.offset,
+                        page.address.block_slab_id(),
+                        page.address.offset(),
                         page.address.length(),
                     )
                 })

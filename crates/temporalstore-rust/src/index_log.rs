@@ -672,7 +672,7 @@ pub struct IndexItem {
 /// Pinned because it is the widest thing built per page anywhere in the engine.
 ///
 /// 176, not 184, since the `BlockAddress` it carries shed its derived `generation`.
-const _: () = assert!(std::mem::size_of::<IndexItem>() == 176);
+const _: () = assert!(std::mem::size_of::<IndexItem>() == 168);
 
 /// A field whose value is its default says nothing, and every field here carries
 /// `#[serde(default)]` -- so a reader that meets an absent one fills in the same value it would
@@ -734,8 +734,8 @@ impl IndexItem {
             &self.model_id,
             &self.object_key,
             self.component.as_deref(),
-            address.block_slab_id,
-            address.offset,
+            address.block_slab_id(),
+            address.offset(),
             address.length(),
             address.block_id().unwrap_or_default(),
             address.generation().unwrap_or_default(),
@@ -760,8 +760,8 @@ impl IndexItem {
             &self.model_id,
             &self.object_key,
             self.component.as_deref(),
-            address.block_slab_id,
-            address.offset,
+            address.block_slab_id(),
+            address.offset(),
             address.length(),
             address.block_id().unwrap_or_default(),
             address.generation().unwrap_or_default(),
@@ -5641,8 +5641,8 @@ mod tests {
                 "feature",
                 key,
                 Some(component),
-                address.block_slab_id,
-                address.offset,
+                address.block_slab_id(),
+                address.offset(),
                 address.length(),
                 address.block_id().unwrap_or_default(),
                 address.generation().unwrap_or_default(),
@@ -6389,7 +6389,7 @@ mod tests {
         let line = r#"{"s":1,"q":1,"items":[{"k":"page","rb":545210715,
             "pk":"string:m:0::0:0:126:0:0","ok":"m:0","mi":"string",
             "oi":122110326161599232,"pi":0,
-            "a":{"ps":0,"o":0,"l":126,"pi":0,"oi":122110326161599232,
+            "a":{"a":0,"l":126,"pi":0,"oi":122110326161599232,
                  "rs":545210715,"g":0,"b":0},
             "sz":126,"il":false,"d":false}],
             "aw":1,"u":true,

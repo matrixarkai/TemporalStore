@@ -72,8 +72,15 @@ deployment profiles. `StorageTuningConfig::from_env()` reads:
 
 - `TS_CONTEXT_BLOCK_TARGET_BYTES`: target bytes for packed context timestamp blocks. `TS_CONTEXT_PAGE_TARGET_BYTES` is the previous name and is still read when this one is unset.
 - `TS_BLOCK_SLAB_TARGET_BYTES`: target local block segment size before rolling.
+  **Capped at 4294967296 (4 GiB).** A block address carries its slab id and its
+  offset inside that slab as the two halves of one 64-bit word, so an offset has
+  32 bits. A configuration whose effective target exceeds the cap is refused at
+  load and the engine does not start; it is never clamped, because a clamped
+  target would show up later as a read resolving to the wrong block.
 - `TS_STREAM_MAX_BLOB_SIZE`: stream blob cap; the block store rolls at the lower
-  of this value and `TS_BLOCK_SLAB_TARGET_BYTES`.
+  of this value and `TS_BLOCK_SLAB_TARGET_BYTES`. The effective target is the
+  LARGER of the two (a slab must hold the largest blob it stores), so this knob
+  is subject to the same 4 GiB ceiling.
 - `TS_COMPACTION_WATERMARK_BYTES`: compaction scheduling watermark.
 - `TS_COLD_SCAN_NO_CACHE_FILL`: default cold-scan behavior for lifecycle work.
 - `TS_PAGE_INDEX_CACHE_BYTES`: page-index cache budget for serving/range lookups.

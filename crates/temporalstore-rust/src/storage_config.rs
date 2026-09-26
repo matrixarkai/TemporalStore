@@ -40,6 +40,33 @@ pub const TS_BLOCK_SLAB_TARGET_BYTES_PREVIOUS_NAME: &str = "TS_BLOCK_SEGMENT_TAR
 
 pub const DEFAULT_CONTEXT_BLOCK_TARGET_BYTES: usize = 64 * 1024;
 pub const DEFAULT_BLOCK_SLAB_TARGET_BYTES: u64 = 1 << 30;
+
+/// THE CEILING THAT MAKES AN OFFSET FIT IN 32 BITS, AND WHY IT IS EXACTLY THIS NUMBER.
+///
+/// A block address carries its slab and its offset inside that slab in ONE 64-bit word, the
+/// slab in the high half and the offset in the low half -- see
+/// [`crate::block_store::make_block_address_word`]. The low half holds `0 ..= u32::MAX`, so the
+/// engine needs a bound on how large a recorded offset can get, and the only thing that bounds
+/// it is this knob.
+///
+/// The bound is not "the target", it is "the target minus one", and that is a fact about the
+/// roll predicate rather than about arithmetic. `block_store::should_roll_before_append` is
+/// `write_offset > 0 && write_offset.saturating_add(record_len) > slab_target_bytes`, and every
+/// append on both write paths goes through it. So a record is recorded at an offset `W` only
+/// when `W == 0` or `W + record_len <= target`; `encode_block_record` always emits at least
+/// `BLOCK_RECORD_HEADER_LEN` bytes, so `record_len >= 1` and therefore `W <= target - 1`. An
+/// offset can never EQUAL the target.
+///
+/// That makes `1 << 32` the largest target that still fits: the highest offset a store with
+/// that target can record is `2^32 - 1`, which is exactly `u32::MAX`. One byte more of target
+/// and the low half overflows.
+///
+/// This is a REAL REDUCTION IN WHAT AN OPERATOR MAY SET. The knob was a `u64` and accepted any
+/// value; a store configured above this now REFUSES TO START rather than recording an address
+/// that points somewhere else. It is checked, never clamped: a clamp would turn the
+/// misconfiguration into a wrong address later, which is the failure mode this exists to
+/// prevent.
+pub const MAX_BLOCK_SLAB_TARGET_BYTES: u64 = 1 << 32;
 pub const DEFAULT_STREAM_MAX_BLOB_SIZE: u64 = 10 * 1024 * 1024;
 pub const DEFAULT_COMPACTION_WATERMARK_BYTES: u64 = 256 * 1024 * 1024;
 pub const DEFAULT_COLD_SCAN_NO_CACHE_FILL: bool = true;
@@ -120,7 +147,49 @@ impl StorageTuningConfig {
         Self::from_getter(|name| std::env::var(name).ok())
     }
 
+    /// Read the configuration and REFUSE one that cannot be addressed.
+    ///
+    /// [`Self::from_getter`] panics on the same condition; this is the same check with the
+    /// failure returned rather than raised, so a test can feed an out-of-range value and read
+    /// the message instead of unwinding.
+    pub fn try_from_getter(get: impl Fn(&str) -> Option<String>) -> Result<Self, String> {
+        let config = Self::parse(get);
+        config.validate()?;
+        Ok(config)
+    }
+
+    /// Whether this configuration can be addressed at all.
+    ///
+    /// The effective target -- not the raw knob -- is what the roll predicate compares against,
+    /// and it is `block_slab_target_bytes.max(stream_max_blob_size)`. So BOTH knobs can push it
+    /// over the ceiling and both are named in the failure, because an operator who set only the
+    /// blob size within bounds would otherwise be told about a slab target they never touched.
+    pub fn validate(&self) -> Result<(), String> {
+        let effective = self.effective_slab_target_bytes();
+        if effective > MAX_BLOCK_SLAB_TARGET_BYTES {
+            return Err(format!(
+                "{TS_BLOCK_SLAB_TARGET_BYTES}={} with {TS_STREAM_MAX_BLOB_SIZE}={} gives an \
+                 effective slab target of {effective} bytes, above the {MAX_BLOCK_SLAB_TARGET_BYTES} \
+                 byte ceiling a block address can name. A block address holds its offset in 32 \
+                 bits, so a store with this target could record an offset that does not fit and \
+                 would resolve to the wrong block. Lower the target to {MAX_BLOCK_SLAB_TARGET_BYTES} \
+                 bytes or less; this is refused at startup rather than clamped, because a clamp \
+                 would surface as a mis-addressed read long after the configuration was set",
+                self.block_slab_target_bytes, self.stream_max_blob_size
+            ));
+        }
+        Ok(())
+    }
+
     pub fn from_getter(get: impl Fn(&str) -> Option<String>) -> Self {
+        let config = Self::parse(get);
+        if let Err(message) = config.validate() {
+            panic!("{message}");
+        }
+        config
+    }
+
+    fn parse(get: impl Fn(&str) -> Option<String>) -> Self {
         // A variable that is PRESENT AND BLANK is not a value. Without this, `get(NEW)` answers
         // `Some("")`, `or_else` never reaches the previous name below, and a deployment that set
         // the older spelling correctly gets the built-in default instead of what it asked for.
@@ -325,6 +394,73 @@ mod tests {
                 "TS_INDEX_GC_MIN_RECLAIMABLE_BYTES",
             ]
         );
+    }
+
+    /// A SLAB TARGET ABOVE THE CEILING IS REFUSED AT LOAD, NOT CLAMPED.
+    ///
+    /// The distinction is the whole point of this check. A clamp would accept the configuration,
+    /// serve happily at a target the operator did not set, and turn into a mis-addressed read
+    /// months later; a refusal is visible at the moment the configuration is wrong. So this
+    /// asserts BOTH that the load fails and that nothing came back holding a clamped value.
+    #[test]
+    fn a_slab_target_above_the_addressable_ceiling_is_refused() {
+        let over = HashMap::from([(
+            TS_BLOCK_SLAB_TARGET_BYTES,
+            (MAX_BLOCK_SLAB_TARGET_BYTES + 1).to_string(),
+        )]);
+        let refused =
+            StorageTuningConfig::try_from_getter(|name| over.get(name).map(|v| v.to_string()))
+                .expect_err("a slab target above the ceiling must be refused");
+        assert!(
+            refused.contains("effective slab target") && refused.contains("32 bits"),
+            "the refusal does not say why: {refused}"
+        );
+
+        // THE BOUNDARY, not just a large number: the ceiling itself loads.
+        let at = HashMap::from([(
+            TS_BLOCK_SLAB_TARGET_BYTES,
+            MAX_BLOCK_SLAB_TARGET_BYTES.to_string(),
+        )]);
+        let accepted =
+            StorageTuningConfig::try_from_getter(|name| at.get(name).map(|v| v.to_string()))
+                .expect("the ceiling itself must load");
+        assert_eq!(accepted.block_slab_target_bytes, MAX_BLOCK_SLAB_TARGET_BYTES);
+
+        // THE OTHER KNOB THAT REACHES THE SAME TARGET. `effective_slab_target_bytes` takes the
+        // MAXIMUM of the slab target and the blob size, so a blob size alone can push the
+        // effective target over the ceiling with the slab target untouched at its default. A
+        // check that read only the slab target would miss this entirely.
+        let by_blob = HashMap::from([(
+            TS_STREAM_MAX_BLOB_SIZE,
+            (MAX_BLOCK_SLAB_TARGET_BYTES + 1).to_string(),
+        )]);
+        let refused_by_blob =
+            StorageTuningConfig::try_from_getter(|name| by_blob.get(name).map(|v| v.to_string()))
+                .expect_err("a blob size above the ceiling must be refused too");
+        assert!(
+            refused_by_blob.contains(TS_STREAM_MAX_BLOB_SIZE),
+            "the refusal does not name the knob that was actually set: {refused_by_blob}"
+        );
+
+        // And the shipped default is nowhere near it, so no deployment that left this alone is
+        // affected.
+        let default = StorageTuningConfig::default();
+        assert!(
+            default.validate().is_ok(),
+            "the shipped default does not pass its own check"
+        );
+        assert!(default.effective_slab_target_bytes() <= MAX_BLOCK_SLAB_TARGET_BYTES / 4);
+    }
+
+    /// The panicking spelling raises what the checked one returns.
+    #[test]
+    #[should_panic(expected = "effective slab target")]
+    fn from_getter_panics_on_an_unaddressable_slab_target() {
+        let over = HashMap::from([(
+            TS_BLOCK_SLAB_TARGET_BYTES,
+            (MAX_BLOCK_SLAB_TARGET_BYTES * 2).to_string(),
+        )]);
+        let _ = StorageTuningConfig::from_getter(|name| over.get(name).map(|v| v.to_string()));
     }
 
     #[test]

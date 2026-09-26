@@ -26,7 +26,7 @@ pub static BLOCK_SLAB_LIVE_DRIFTS: std::sync::atomic::AtomicU64 =
 pub(super) fn recompute_block_slab_live(shard: &ShardState) -> BTreeMap<u64, SlabLiveTally> {
     let mut tallies: BTreeMap<u64, SlabLiveTally> = BTreeMap::new();
     for entry in collect_live_block_entries(shard) {
-        let tally = tallies.entry(entry.address.block_slab_id).or_default();
+        let tally = tallies.entry(entry.address.block_slab_id()).or_default();
         tally.block_refs = tally.block_refs.saturating_add(1);
         tally.bytes = tally.bytes.saturating_add(entry.address.length());
     }
@@ -375,10 +375,10 @@ pub(super) fn storage_page_address_sample(
 ) -> StoragePageAddressSample {
     StoragePageAddressSample {
         shard_id,
-        stored_slab_id: address.block_slab_id,
-        slab_id: address.block_slab_id,
-        block_id: address.block_id().unwrap_or(address.block_slab_id),
-        offset: address.offset,
+        stored_slab_id: address.block_slab_id(),
+        slab_id: address.block_slab_id(),
+        block_id: address.block_id().unwrap_or(address.block_slab_id()),
+        offset: address.offset(),
         length: address.length(),
         generation: address.object_id().unwrap_or(0),
     }
@@ -390,9 +390,9 @@ pub(super) fn storage_block_address_sample(
 ) -> StorageBlockAddressSample {
     StorageBlockAddressSample {
         shard_id,
-        stored_slab_id: address.block_slab_id,
-        block_id: address.block_slab_id,
-        offset: address.offset,
+        stored_slab_id: address.block_slab_id(),
+        block_id: address.block_slab_id(),
+        offset: address.offset(),
         length: address.length(),
         // Not carried in the index any more; the page envelope holds it.
         checksum: String::new(),
@@ -436,15 +436,15 @@ pub(super) fn storage_index_snapshot_with_samples_from_entries(
             left.kind.as_ref(),
             left.object_key.as_ref(),
             left.component.as_deref().unwrap_or(""),
-            left.address.block_slab_id,
-            left.address.offset,
+            left.address.block_slab_id(),
+            left.address.offset(),
         )
             .cmp(&(
                 right.kind.as_ref(),
                 right.object_key.as_ref(),
                 right.component.as_deref().unwrap_or(""),
-                right.address.block_slab_id,
-                right.address.offset,
+                right.address.block_slab_id(),
+                right.address.offset(),
             ))
     });
 
@@ -458,7 +458,7 @@ pub(super) fn storage_index_snapshot_with_samples_from_entries(
                 logical_key: entry.object_key.clone().to_string(),
                 timestamp_range: None,
                 block_addresses: vec![page_address],
-                append_watermark: entry.address.offset,
+                append_watermark: entry.address.offset(),
                 generation: entry.address.object_id().unwrap_or(0),
             }
         })
@@ -473,7 +473,7 @@ pub(super) fn storage_index_snapshot_with_samples_from_entries(
                 stored_slab_id: entry
                     .address
                     .slab_id()
-                    .unwrap_or(entry.address.block_slab_id),
+                    .unwrap_or(entry.address.block_slab_id()),
                 checksum: String::new(),
                 generation: entry.address.object_id().unwrap_or(0),
                 page_address,
@@ -635,16 +635,16 @@ pub(super) fn storage_gc_snapshot_with_samples_from_entries(
             left.kind.as_ref(),
             left.object_key.as_ref(),
             left.component.as_deref().unwrap_or(""),
-            left.address.block_slab_id,
-            left.address.offset,
+            left.address.block_slab_id(),
+            left.address.offset(),
         )
             .cmp(&(
                 right.deleted,
                 right.kind.as_ref(),
                 right.object_key.as_ref(),
                 right.component.as_deref().unwrap_or(""),
-                right.address.block_slab_id,
-                right.address.offset,
+                right.address.block_slab_id(),
+                right.address.offset(),
             ))
     });
 
@@ -746,9 +746,9 @@ pub(super) fn storage_topology_snapshot_with_samples_from_entries(
         (
             left.address
                 .slab_id()
-                .unwrap_or(left.address.block_slab_id),
-            left.address.block_slab_id,
-            left.address.offset,
+                .unwrap_or(left.address.block_slab_id()),
+            left.address.block_slab_id(),
+            left.address.offset(),
             left.kind.as_ref(),
             left.object_key.as_ref(),
         )
@@ -756,9 +756,9 @@ pub(super) fn storage_topology_snapshot_with_samples_from_entries(
                 right
                     .address
                     .slab_id()
-                    .unwrap_or(right.address.block_slab_id),
-                right.address.block_slab_id,
-                right.address.offset,
+                    .unwrap_or(right.address.block_slab_id()),
+                right.address.block_slab_id(),
+                right.address.offset(),
                 right.kind.as_ref(),
                 right.object_key.as_ref(),
             ))
@@ -805,8 +805,8 @@ pub(super) fn storage_topology_snapshot_with_samples_from_entries(
         let stored_slab_id = entry
             .address
             .slab_id()
-            .unwrap_or(entry.address.block_slab_id);
-        let slab_id = entry.address.block_slab_id;
+            .unwrap_or(entry.address.block_slab_id());
+        let slab_id = entry.address.block_slab_id();
         let generation = entry.address.object_id().unwrap_or(0);
         let usage = slabs_usage.entry(stored_slab_id).or_default();
         usage.slabs.insert(slab_id);
@@ -819,10 +819,10 @@ pub(super) fn storage_topology_snapshot_with_samples_from_entries(
 
         let slab = slabs.entry(slab_id).or_insert_with(|| SlabAcc {
             stored_slab_id,
-            start_offset: entry.address.offset,
+            start_offset: entry.address.offset(),
             ..SlabAcc::default()
         });
-        slab.start_offset = slab.start_offset.min(entry.address.offset);
+        slab.start_offset = slab.start_offset.min(entry.address.offset());
         slab.generation = slab.generation.max(generation);
         if entry.deleted {
             slab.deleted_refs = slab.deleted_refs.saturating_add(1);
@@ -833,14 +833,14 @@ pub(super) fn storage_topology_snapshot_with_samples_from_entries(
         let range = slab_ranges
             .entry(stored_slab_id)
             .or_insert_with(|| SlabAccumulator {
-                min_offset: entry.address.offset,
-                max_offset: entry.address.offset.saturating_add(entry.address.length()),
+                min_offset: entry.address.offset(),
+                max_offset: entry.address.offset().saturating_add(entry.address.length()),
                 ..SlabAccumulator::default()
             });
-        range.min_offset = range.min_offset.min(entry.address.offset);
+        range.min_offset = range.min_offset.min(entry.address.offset());
         range.max_offset = range
             .max_offset
-            .max(entry.address.offset.saturating_add(entry.address.length()));
+            .max(entry.address.offset().saturating_add(entry.address.length()));
         range.generation = range.generation.max(generation);
         if entry.deleted {
             range.deleted_refs = range.deleted_refs.saturating_add(1);
@@ -1701,8 +1701,8 @@ fn released_block_identity_owned(
         model_id,
         object_key,
         component,
-        address.block_slab_id,
-        address.offset,
+        address.block_slab_id(),
+        address.offset(),
         address.length(),
         address.block_id(),
         address.generation(),
@@ -2429,9 +2429,9 @@ pub(super) fn sync_context_blocks_for_object(
             if let Some(newest) = points
                 .values()
                 .max_by(|left, right| {
-                    left.block_slab_id
-                        .cmp(&right.block_slab_id)
-                        .then(left.offset.cmp(&right.offset))
+                    left.block_slab_id()
+                        .cmp(&right.block_slab_id())
+                        .then(left.offset().cmp(&right.offset()))
                         .then(left.length().cmp(&right.length()))
                 })
                 .cloned()
@@ -3024,8 +3024,8 @@ pub(super) fn block_physical_identity_key(
     Option<u64>,
 ) {
     (
-        address.block_slab_id,
-        address.offset,
+        address.block_slab_id(),
+        address.offset(),
         address.length(),
         address.block_id(),
         address.object_id(),
@@ -3789,7 +3789,7 @@ pub(super) fn object_still_has_hot_block(shard: &ShardState, object_key: &str) -
     shard
         .strings
         .get(object_key)
-        .map(|address| crate::wal_record::is_wal_resident(address.block_slab_id))
+        .map(|address| crate::wal_record::is_wal_resident(address.block_slab_id()))
         .unwrap_or(false)
         || shard
             .hashes
@@ -3797,7 +3797,7 @@ pub(super) fn object_still_has_hot_block(shard: &ShardState, object_key: &str) -
             .map(|fields| {
                 fields
                     .values()
-                    .any(|address| crate::wal_record::is_wal_resident(address.block_slab_id))
+                    .any(|address| crate::wal_record::is_wal_resident(address.block_slab_id()))
             })
             .unwrap_or(false)
 }
@@ -4099,8 +4099,8 @@ pub(super) fn reconcile_secondary_views_from_bucket_index(
                     if let Some(shard_id) = warm_shard {
                         let key = CacheKey::page_with_slot(
                             shard_id,
-                            entry.address.block_slab_id,
-                            entry.address.offset,
+                            entry.address.block_slab_id(),
+                            entry.address.offset(),
                             entry.address.length(),
                             entry.address.routing_bucket(),
                         );
@@ -4308,8 +4308,8 @@ pub(super) fn insert_timestamped_secondary_view(
     if let (Some(shard_id), Some(bytes)) = (warm_shard, bytes.as_ref()) {
         let key = CacheKey::page_with_slot(
             shard_id,
-            address.block_slab_id,
-            address.offset,
+            address.block_slab_id(),
+            address.offset(),
             address.length(),
             address.routing_bucket(),
         );
@@ -4373,8 +4373,8 @@ pub(super) fn insert_context_event_views(
     if let (Some(shard_id), Some(bytes)) = (warm_shard, bytes.as_ref()) {
         let key = CacheKey::page_with_slot(
             shard_id,
-            address.block_slab_id,
-            address.offset,
+            address.block_slab_id(),
+            address.offset(),
             address.length(),
             address.routing_bucket(),
         );
@@ -4467,8 +4467,8 @@ pub(super) fn validate_bucket_ownership_index_from_entries(
             .is_some_and(|bucket| {
                 bucket.object_index.contains(&expected_object_id)
                     && bucket.block_index.values().any(|page| {
-                        page.address.block_slab_id == entry.address.block_slab_id
-                            && page.address.offset == entry.address.offset
+                        page.address.block_slab_id() == entry.address.block_slab_id()
+                            && page.address.offset() == entry.address.offset()
                             && page.address.length() == entry.address.length()
                             && page.address.block_id() == expected_block_id
                             && page.model_id == entry.kind
@@ -4483,8 +4483,8 @@ pub(super) fn validate_bucket_ownership_index_from_entries(
                 .mismatches
                 .push(StorageRecoveryBlockOwnerMismatch {
                     object_key: entry.object_key.to_string(),
-                    block_slab_id: entry.address.block_slab_id,
-                    offset: entry.address.offset,
+                    block_slab_id: entry.address.block_slab_id(),
+                    offset: entry.address.offset(),
                     expected_object_id,
                     actual_object_id: entry.address.object_id(),
                     expected_routing_bucket,

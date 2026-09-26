@@ -820,7 +820,7 @@ impl TemporalEngine {
                 let mut publish_targets = shard
                     .strings
                     .iter()
-                    .filter(|(_, address)| crate::wal_record::is_wal_resident(address.block_slab_id))
+                    .filter(|(_, address)| crate::wal_record::is_wal_resident(address.block_slab_id()))
                     .map(|(key, address)| {
                         (PublishTarget::String { key: key.clone() }, address.clone())
                     })
@@ -831,7 +831,7 @@ impl TemporalEngine {
                         .iter()
                         .flat_map(|(key, fields)| {
                             fields.iter().filter_map(move |(field, address)| {
-                                crate::wal_record::is_wal_resident(address.block_slab_id).then(|| {
+                                crate::wal_record::is_wal_resident(address.block_slab_id()).then(|| {
                                     (
                                         PublishTarget::Hash {
                                             key: key.clone(),
@@ -849,7 +849,7 @@ impl TemporalEngine {
                 let mut publish_targets = Vec::new();
                 for key in &selected_keys {
                     if let Some(address) = shard.strings.get(key) {
-                        if crate::wal_record::is_wal_resident(address.block_slab_id) {
+                        if crate::wal_record::is_wal_resident(address.block_slab_id()) {
                             publish_targets.push((
                                 PublishTarget::String { key: key.clone() },
                                 address.clone(),
@@ -858,7 +858,7 @@ impl TemporalEngine {
                     }
                     if let Some(fields) = shard.hashes.get(key) {
                         publish_targets.extend(fields.iter().filter_map(|(field, address)| {
-                            crate::wal_record::is_wal_resident(address.block_slab_id).then(|| {
+                            crate::wal_record::is_wal_resident(address.block_slab_id()).then(|| {
                                 (
                                     PublishTarget::Hash {
                                         key: key.clone(),
@@ -929,8 +929,8 @@ impl TemporalEngine {
                         let _ = self.cache.put(
                             CacheKey::page_with_slot(
                                 shard_id,
-                                published.block_slab_id,
-                                published.offset,
+                                published.block_slab_id(),
+                                published.offset(),
                                 published.length(),
                                 published.routing_bucket(),
                             ),
@@ -956,8 +956,8 @@ impl TemporalEngine {
                         let _ = self.cache.put(
                             CacheKey::page_with_slot(
                                 shard_id,
-                                published.block_slab_id,
-                                published.offset,
+                                published.block_slab_id(),
+                                published.offset(),
                                 published.length(),
                                 published.routing_bucket(),
                             ),

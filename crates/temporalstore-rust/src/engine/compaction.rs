@@ -78,7 +78,7 @@ pub(super) fn compaction_utility_report_from_entries(
         .collect::<Vec<_>>();
     let live_block_slab_ids = addresses
         .iter()
-        .map(|address| address.block_slab_id)
+        .map(|address| address.block_slab_id())
         .collect::<BTreeSet<_>>();
     let slab_page_counts = slab_block_counts_by_slab(block_store);
     let total_block_count = live_block_slab_ids
@@ -126,7 +126,7 @@ pub(super) fn model_compaction_policy_reports(
             stats.deleted_block_refs = stats.deleted_block_refs.saturating_add(1);
         } else {
             stats.live_block_refs = stats.live_block_refs.saturating_add(1);
-            stats.slab_ids.insert(entry.address.block_slab_id);
+            stats.slab_ids.insert(entry.address.block_slab_id());
         }
     }
     for key in shard
@@ -359,13 +359,13 @@ impl CompactionRewriteStats {
     /// open for the next one -- and a round kept open by pages nobody will ever want moved never
     /// closes.
     pub(super) fn should_relocate(&mut self, address: &BlockAddress) -> bool {
-        if address.block_slab_id == self.target_block_slab_id {
+        if address.block_slab_id() == self.target_block_slab_id {
             return false;
         }
         if self
             .drain_block_slab_ids
             .as_ref()
-            .is_some_and(|drain| !drain.contains(&address.block_slab_id))
+            .is_some_and(|drain| !drain.contains(&address.block_slab_id()))
         {
             self.skipped_off_drain_set = self.skipped_off_drain_set.saturating_add(1);
             return false;
@@ -437,8 +437,8 @@ pub(super) fn block_memory_resident(cache: &MultiLayerCache, shard_id: ShardId, 
         cache
             .get_memory(&CacheKey::page_with_slot_generation(
                 shard_id,
-                address.block_slab_id,
-                address.offset,
+                address.block_slab_id(),
+                address.offset(),
                 address.length(),
                 address.routing_bucket(),
                 address.generation(),
@@ -595,7 +595,7 @@ pub(super) fn compaction_layout_from_addresses(
         .collect::<Vec<_>>();
     let live_slab_ids = unique_addresses
         .iter()
-        .map(|address| address.block_slab_id)
+        .map(|address| address.block_slab_id())
         .collect::<BTreeSet<_>>();
     let total_blocks_in_live_slabs = live_slab_ids
         .iter()
@@ -712,8 +712,8 @@ pub(super) fn compact_block_addresses<'a>(
         let _ = cache.put(
             CacheKey::page_with_slot_generation(
                 shard_id,
-                new_address.block_slab_id,
-                new_address.offset,
+                new_address.block_slab_id(),
+                new_address.offset(),
                 new_address.length(),
                 new_address.routing_bucket(),
                 new_address.generation(),
@@ -758,8 +758,8 @@ pub(super) fn compact_feature_block_addresses(
         let _ = cache.put(
             CacheKey::page_with_slot_generation(
                 shard_id,
-                new_address.block_slab_id,
-                new_address.offset,
+                new_address.block_slab_id(),
+                new_address.offset(),
                 new_address.length(),
                 new_address.routing_bucket(),
                 new_address.generation(),
@@ -833,7 +833,7 @@ pub(super) fn compaction_object_block_hint(
     object_blocks
         .iter()
         .enumerate()
-        .filter(|(_, address)| drain_block_slab_ids.contains(&address.block_slab_id))
+        .filter(|(_, address)| drain_block_slab_ids.contains(&address.block_slab_id()))
         .map(|(index, _)| index)
         .collect()
 }

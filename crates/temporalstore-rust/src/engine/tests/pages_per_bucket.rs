@@ -479,7 +479,7 @@ fn every_byte_of_the_page_index_is_accounted_for() {
         "the page entry no longer reconstructs as {index_eight_aligned} bytes of eight-aligned \
          field plus {index_tail} bytes of flag rounded up to {index_rounded_tail}"
     );
-    assert_eq!(96, size_of::<BlockIndex>(), "the page entry's budgeted width moved");
+    assert_eq!(88, size_of::<BlockIndex>(), "the page entry's budgeted width moved");
 
     // The three flags are ALREADY inside the rounding. Narrowing them reclaims nothing; only
     // removing the tail entirely would, and it is three keys of the stored index.
@@ -509,7 +509,7 @@ fn every_byte_of_the_page_index_is_accounted_for() {
         "the common arm is supposed to be the WIDE one here -- that is what makes boxing it a \
          loss rather than the win it is on ObjectIndex, where the rare arm is the wide one"
     );
-    assert_eq!(104, size_of::<BlockIndexMap>(), "the page index's budgeted width moved");
+    assert_eq!(96, size_of::<BlockIndexMap>(), "the page index's budgeted width moved");
 
     // --- And it is over half of the node, which is why any further accounting starts here. ---
     assert!(
@@ -1086,7 +1086,7 @@ fn fill(entries: usize, node_allocations: u64) -> (f64, f64) {
 /// BOXING THE SINGLE-PAGE ARM, MEASURED BY THE ALLOCATOR RATHER THAN ARGUED FROM ITS WIDTH.
 ///
 /// #1958 priced this shape from its width and the allocator's rounding: minus eighty bytes on the
-/// struct, plus a 104-byte request served out of a 112-byte chunk for very nearly every bucket. It
+/// struct, plus a 104-byte request served out of a chunk of at least 112 B for very nearly every bucket. It
 /// never ran the allocator over it, and its own headline result -- that the allocator charges
 /// 1.58x the `size_of` arithmetic on this map -- is precisely why arithmetic is not enough here.
 ///
@@ -1459,7 +1459,7 @@ fn reading_a_page_behind_a_pointer_costs_a_dependent_load_the_inline_arm_does_no
         for (handle, index) in &inline {
             if let BlockIndexMap::One(held, page) = index {
                 if held == handle {
-                    sum = sum.wrapping_add(page.address.block_slab_id);
+                    sum = sum.wrapping_add(page.address.block_slab_id());
                 }
             }
         }
@@ -1470,7 +1470,7 @@ fn reading_a_page_behind_a_pointer_costs_a_dependent_load_the_inline_arm_does_no
         for (handle, index) in &boxed {
             if let MirrorBoxedPageIndex::One(held, page) = index {
                 if held == handle {
-                    sum = sum.wrapping_add(page.address.block_slab_id);
+                    sum = sum.wrapping_add(page.address.block_slab_id());
                 }
             }
         }
