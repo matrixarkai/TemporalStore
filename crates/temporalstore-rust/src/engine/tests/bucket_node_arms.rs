@@ -1027,10 +1027,10 @@ fn the_tagged_node_is_fifty_six_bytes_and_every_arm_reconstructs() {
     //
     // 120 bytes off the struct, and then a 104-byte allocation for very nearly every bucket at
     // the default range. glibc serves a 104-byte request from a 112-byte chunk once it has taken
-    // its own header word and rounded to a multiple of sixteen, so the PAIR is 64 + 112 = 176 --
+    // its own header word and rounded to a multiple of sixteen, so the PAIR is 56 + 112 = 168 --
     // exactly what it replaced, before the allocation itself and before the pointer chase. The
-    // conclusion has survived both address narrowings unchanged, and for the same reason each
-    // time: the node and the out-of-line payload shrink together. This
+    // conclusion has survived the flag packing and both address narrowings unchanged, and for the
+    // same reason each time: the node and the out-of-line payload shrink together. This
     // is `size_of` arithmetic and is quoted as such; the measured figure is in
     // `what_the_tagged_node_actually_costs_the_allocator`.
     let chunk = |request: usize| (request + 8).div_ceil(16) * 16;

@@ -301,10 +301,10 @@ fn every_per_item_structure_states_its_width_and_its_padding() {
     }
 
     // --- The pinned widths. ---
-    assert_eq!(40, size_of::<BlockAddress>(), "BlockAddress width moved");
-    assert_eq!(96, size_of::<BlockIndex>(), "BlockIndex width moved");
-    assert_eq!(104, size_of::<BlockIndexMap>(), "BlockIndexMap width moved");
-    assert_eq!(168, size_of::<BucketNode>(), "BucketNode width moved");
+    assert_eq!(32, size_of::<BlockAddress>(), "BlockAddress width moved");
+    assert_eq!(88, size_of::<BlockIndex>(), "BlockIndex width moved");
+    assert_eq!(96, size_of::<BlockIndexMap>(), "BlockIndexMap width moved");
+    assert_eq!(160, size_of::<BucketNode>(), "BucketNode width moved");
     assert_eq!(16, size_of::<BlockLookupRef>(), "BlockLookupRef width moved");
     assert_eq!(24, size_of::<BlockRefs>(), "BlockRefs width moved");
     assert_eq!(40, size_of::<ComponentBlocks>(), "ComponentBlocks width moved");
@@ -962,7 +962,12 @@ fn every_byte_of_the_bucket_node_is_accounted_for() {
     // solid and the rest is one rounding.
     let align = align_of::<BucketNode>();
     assert_eq!(8, align, "BucketNode's alignment moved, and the arithmetic below assumes 8");
-    assert_eq!(160, eight_aligned, "the eight-aligned group is {eight_aligned} B, not 160");
+    // 152, not 160, 168 or 176. THREE eight-byte changes have come out of THIS group and none
+    // out of the tail: the address inside the inline page entry shed a derived `generation`,
+    // `last_dump_sequence` left the node, and that same address merged its slab id and its
+    // offset into ONE WORD. The tail is six because the five flags became five bits, which is
+    // the other half of the structure entirely.
+    assert_eq!(152, eight_aligned, "the eight-aligned group is {eight_aligned} B, not 152");
     assert_eq!(6, tail, "the tail group is {tail} B, not 6");
     assert_eq!(
         eight_aligned + tail.div_ceil(align) * align,
@@ -1251,10 +1256,13 @@ fn what_each_declined_shape_of_the_bucket_node_would_cost() {
     );
     assert_eq!(168, live, "the node is {live} bytes, not 168");
     assert_eq!(
-        176, loose,
-        "the shape before the flags were packed was 184 bytes and is 176 now that the node \
-         carries no last_dump_sequence; it reads as {loose}, so the row that prices this change is \
-         not describing the shape it replaced"
+        168, loose,
+        "the shape before the flags were packed was 184 bytes, 176 once the node stopped \
+         carrying a per-bucket last_dump_sequence, and 168 once the address inside the inline \
+         page entry merged its two slab coordinates -- this mirror holds that address too, so \
+         it moved with the live shape and the EIGHT BYTES BETWEEN THEM is still what packing \
+         the flags is worth. It reads as {loose}, so the row that prices this change is not \
+         describing the shape it replaced"
     );
     assert_eq!(
         8,
