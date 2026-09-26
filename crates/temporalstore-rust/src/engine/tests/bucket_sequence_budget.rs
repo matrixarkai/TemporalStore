@@ -1,7 +1,22 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright 2026 MatrixArkAI
 
-//! THE FOUR SEQUENCES ON EVERY BUCKET NODE: WHAT EACH ONE IS, AND WHETHER IT HAS TO BE THERE.
+//! THE SEQUENCES ON EVERY BUCKET NODE: WHAT EACH ONE IS, AND WHETHER IT HAS TO BE THERE.
+//!
+//! THERE ARE THREE. There were four when this module was written, and the fourth is the reason the
+//! heading changed: `last_dump_sequence` is gone from the node. This module's own item 6 below
+//! reported that the node's copy did not reach the dump ordering the comment on it claimed, and
+//! left the behaviour alone. Following that report to its end found that it did not reach anything
+//! else either -- a compiler enumeration over the field's every use gives nine production
+//! positions, and every one of them is the declaration, the wire, the rebuild that preserves it, the
+//! single write from `manifest.wal_sequence`, or one of two reports. Not one is a branch, a
+//! comparison or a sort key. So it was one shard-level watermark stored once per routing bucket, at
+//! eight bytes each, and the reports take the figure from the newest dump manifest now, exactly as
+//! `BucketStorageSummary` always did. The node is 168 bytes.
+//!
+//! Everything below is about the three that stay. Where a row read "one of the four" it now reads
+//! "one of the three", and the narrowing table is re-derived rather than shifted: it loses its last
+//! row and its base drops by a word.
 //!
 //! #1958 accounted for every byte of `BucketNode` and put four `u64` sequences in the
 //! eight-aligned group -- 32 of the node's 184 bytes, once per routing bucket, more than a sixth
@@ -11,10 +26,10 @@
 //! (The node was 192 when this was written and is 184 now: the `BlockAddress` inside the inline
 //! page entry stopped storing a `generation` it could derive. The sequences did not move.)
 //!
-//! THE ANSWER IS THAT ALL FOUR STAY, at 64 bits, on every key. This module is the accounting for
-//! that, and every row of it is a number rather than a reading of the code.
+//! THE ANSWER IS THAT THE THREE THAT REMAIN STAY, at 64 bits, on every key. This module is the
+//! accounting for that, and every row of it is a number rather than a reading of the code.
 //!
-//! THE FOUR, AND THEY ARE NOT FOUR OF A KIND:
+//! THE THREE, AND THEY ARE NOT THREE OF A KIND:
 //!
 //!   * `dirty_generation` -- a per-bucket COUNT, not a log position. WRITTEN by
 //!     `saturating_add(1)` at six sites (`mark_async_dirty_object` and five delete/expire paths)
@@ -31,35 +46,38 @@
 //!   * `first_dirty_index_log_sequence` -- the same claim against the index log, on a different
 //!     clock. `#[serde(skip)]`, the same two write sites, cleared by the same dump. READ as the
 //!     reclaim plan's index-log floor.
-//!   * `last_dump_sequence` -- the WAL sequence of the newest dump manifest that covered this
-//!     bucket. STORED. WRITTEN only by `clear_dumped_bucket_dirty_state`, for the buckets a
-//!     manifest names.
+//!   * and the one that left: `last_dump_sequence` -- the WAL sequence of the newest dump manifest
+//!     that covered this bucket. It was STORED and WRITTEN only by
+//!     `clear_dumped_bucket_dirty_state`, for the buckets a manifest names, and READ only into two
+//!     reports. It is not on the node any more; see the head of this module.
 //!
 //! WHAT WAS MEASURED, AND WHAT IT SAYS:
 //!
-//!   1. THE ALIGNMENT ARITHMETIC IS NOT THE OBVIOUS ONE. The node is 178 bytes of field in 184 --
-//!      168 of eight-aligned field and a ten-byte tail rounded to sixteen, six bytes of slack.
-//!      The natural reading of four words in the eight-aligned group is that narrowing one buys
-//!      nothing, and with the node at 176 that reading is now RIGHT -- but not for its reason,
+//!   1. THE ALIGNMENT ARITHMETIC IS NOT THE OBVIOUS ONE. The node is 166 bytes of field in 168 --
+//!      160 of eight-aligned field and a six-byte tail rounded to eight, two bytes of slack.
+//!      The natural reading of three words in the eight-aligned group is that narrowing one buys
+//!      nothing, and at a six-byte tail that reading is now RIGHT -- but not for its reason,
 //!      and it was wrong when this was written. The staircase is that every SECOND narrowing
 //!      collects one rounding: a freed `u64` takes a word off the group and puts a `u32` back
 //!      into the tail. Its PHASE depends on the tail. At ten bytes the first narrowing landed on
 //!      14, which still rounded to 16, so the first step was worth eight. At SIX bytes -- the
 //!      five `bool` are one `BucketFlags` byte since the node went 184 -> 176 -- the first
 //!      narrowing lands on 10, which rounds to 16, and the word is handed straight back. The
-//!      table is now 0, 8, 8, 16 where it read 8, 8, 16, 16, and the eight bytes that left the
-//!      head of it are the same eight the flag pack collected: two ways to take one rounding,
-//!      and only one of them could be paid. REMOVING two still reaches 160, because removed
-//!      bytes leave rather than move.
+//!      table is now 0, 8, 8 where it read 8, 8, 16, 16 over four sequences, and the eight bytes
+//!      that left the head of it are the same eight the flag pack collected: two ways to take one
+//!      rounding, and only one of them could be paid. REMOVING is different -- the bytes leave
+//!      rather than move and the tail does not shift -- which is exactly how
+//!      `last_dump_sequence` leaving took the node from 176 to 168 where narrowing it would have
+//!      taken nothing.
 //!      `what_narrowing_or_removing_each_sequence_would_make_the_node` prints the table against
 //!      mirrors of the declaration, with the live mirror as its control and the reconstruction
 //!      asserted on every row. So the saving belongs to the GROUP and there is no per-field
 //!      saving to quote.
-//!   2. NONE OF THE FOUR CAN NARROW, and the measured ranges are exactly the trap. Over a real
+//!   2. NONE OF THE THREE CAN NARROW, and the measured ranges are exactly the trap. Over a real
 //!      workload at two corpus sizes and two routing ranges the largest value any of them reached
-//!      was 106 -- seven bits. The bound is not the corpus, it is the STORE'S LIFETIME: three of
-//!      the four are positions in logs that are reclaimed but never renumbered, and the fourth is
-//!      a count a load preserves and nothing resets. Each of the three claims is read as a retain
+//!      was 106 -- seven bits. The bound is not the corpus, it is the STORE'S LIFETIME: two of
+//!      the three are positions in logs that are reclaimed but never renumbered, and the third is
+//!      a count a load preserves and nothing resets. Each of the two claims is read as a retain
 //!      FLOOR, and a wrapped claim is not a wrong number but a SMALLER one, so the floor falls
 //!      and reclaim frees records the bucket still holds the log for; saturation is wrong in the
 //!      other direction, naming a write newer than the one the bucket needs.
@@ -90,16 +108,18 @@
 //!   5. AND THE READ PATH IS THE OTHER HALF OF THAT TRADE. Today both claims are fields of a node
 //!      the reclaim plan already has in hand; hoisted, each read becomes a descent of a second
 //!      ordered map. Measured over the same buckets in the same order, ABBA: 46x.
-//!   6. ONE DISAGREEMENT, REPORTED RATHER THAN FIXED. The node's `last_dump_sequence` does not
-//!      reach the dump ordering that is commented on it. The sort reads
+//!   6. ONE DISAGREEMENT, REPORTED AND NOW FIXED. The node's `last_dump_sequence` did not reach
+//!      the dump ordering that was commented on it. The sort reads
 //!      `BucketStorageSummary::last_dump_sequence` -- a different field with the same name --
 //!      and `bucket_storage_summaries` never fills that from the node; `merge_last_dump_sequence`
 //!      fills it from the newest manifest's INDEX-LOG sequence, the same value for every bucket
 //!      that manifest names and 0 for every bucket it does not. So the key separates "covered by
-//!      the newest dump" from "not covered by it", which is not what it is described as doing.
-//!      It is a tiebreaker behind `first_dirty_rank`, so the behaviour is left alone and the
-//!      comment corrected; `the_summary_last_dump_sequence_comes_from_the_manifest_not_from_the_node`
-//!      pins it with a planted marker.
+//!      the newest dump" from "not covered by it", which was not what it was described as doing.
+//!      This module left the behaviour alone and corrected the comment. Following the report to
+//!      its end found the node's copy reached NO decision at all, and it is gone; the reports take
+//!      the figure from the manifest, and
+//!      `the_summary_last_dump_sequence_comes_from_the_manifest_not_from_the_node` now pins that
+//!      the report does too, with an uncovered bucket as the control.
 //!
 //! HOW THE "IS IT READ" GUARDS WORK. Each one PERTURBS the field on a live shard and asserts the
 //! decision it is named for changes, against a control taken on the same shard before the edit. A
@@ -206,7 +226,11 @@ fn one_round_at_the_configured_cap(engine: &TemporalEngine) {
     });
 }
 
-/// The four sequences of one bucket, plus the two flags that say which branch reads them.
+/// The sequences of one bucket, plus the two flags that say which branch reads them.
+///
+/// THREE, not four. `last_dump_sequence` is not a field of the node any more, so it cannot be read
+/// per bucket here: the figure lives on the newest dump manifest and the reports take it from
+/// there.
 #[derive(Clone, Copy, Debug)]
 struct Sequences {
     routing_bucket: u32,
@@ -214,7 +238,6 @@ struct Sequences {
     generation: u64,
     wal_claim: u64,
     index_log_claim: u64,
-    last_dump: u64,
 }
 
 /// Read straight off the bucket index, PER BUCKET and never reduced here.
@@ -233,14 +256,13 @@ fn sequences_by_bucket(engine: &TemporalEngine) -> Vec<Sequences> {
             generation: bucket.dirty_generation,
             wal_claim: bucket.first_dirty_wal_sequence,
             index_log_claim: bucket.first_dirty_index_log_sequence,
-            last_dump: bucket.last_dump_sequence,
         })
         .collect::<Vec<_>>();
     out.sort_by_key(|row| row.routing_bucket);
     out
 }
 
-/// min / max / how many are non-zero, over one of the four.
+/// min / max / how many are non-zero, over one of the three.
 fn spread(values: impl Iterator<Item = u64>) -> (u64, u64, usize, usize) {
     let mut total = 0usize;
     let mut non_zero = 0usize;
@@ -283,10 +305,10 @@ fn seeded_rows(
 }
 
 // -------------------------------------------------------------------------------------------
-// 1. WHAT EACH OF THE FOUR ACTUALLY REACHES.
+// 1. WHAT EACH OF THE THREE ACTUALLY REACHES.
 // -------------------------------------------------------------------------------------------
 
-/// WHAT EACH OF THE FOUR SEQUENCES REACHES, at two corpus sizes and two routing ranges.
+/// WHAT EACH OF THE THREE SEQUENCES REACHES, at two corpus sizes and two routing ranges.
 ///
 /// The routing range is the second axis on purpose. At `load_shard`'s `u32::MAX` default a key
 /// lands in a bucket of its own, so a bucket's `dirty_generation` counts the writes to ONE key;
@@ -299,7 +321,7 @@ fn seeded_rows(
 /// read off, and both denominators are asserted before anything is divided by them.
 #[test]
 #[ignore = "seeds four shards up to 40,000 records; run by name"]
-fn what_each_of_the_four_sequences_reaches_at_two_corpus_sizes() {
+fn what_each_of_the_three_sequences_reaches_at_two_corpus_sizes() {
     let mut path_lengths: Vec<usize> = Vec::new();
     let mut dirty_fractions: Vec<(String, f64)> = Vec::new();
 
@@ -339,10 +361,6 @@ fn what_each_of_the_four_sequences_reaches_at_two_corpus_sizes() {
             {
                 let (low, high, nz, total) = spread(rows.iter().map(|row| row.index_log_claim));
                 ("first_dirty_index_log_sequence", low, high, nz, total)
-            },
-            {
-                let (low, high, nz, total) = spread(rows.iter().map(|row| row.last_dump));
-                ("last_dump_sequence", low, high, nz, total)
             },
         ] {
             println!(
@@ -389,13 +407,12 @@ struct SeqMirrorLive {
     dirty_generation: u64,
     first_dirty_wal_sequence: u64,
     first_dirty_index_log_sequence: u64,
-    last_dump_sequence: u64,
     object_index: ObjectIndex,
     deleted_object_index: DeletedObjectIndex,
     block_index: BlockIndexMap,
 }
 
-/// One of the four narrowed to 32 bits.
+/// One of the three narrowed to 32 bits.
 #[allow(dead_code)]
 struct SeqMirrorOneNarrowed {
     routing_bucket: u32,
@@ -404,14 +421,13 @@ struct SeqMirrorOneNarrowed {
     ttl_ms: BucketTtl,
     dirty_generation: u64,
     first_dirty_wal_sequence: u64,
-    first_dirty_index_log_sequence: u64,
-    last_dump_sequence: u32,
+    first_dirty_index_log_sequence: u32,
     object_index: ObjectIndex,
     deleted_object_index: DeletedObjectIndex,
     block_index: BlockIndexMap,
 }
 
-/// Two of the four narrowed to 32 bits.
+/// Two of the three narrowed to 32 bits.
 #[allow(dead_code)]
 struct SeqMirrorTwoNarrowed {
     routing_bucket: u32,
@@ -419,33 +435,16 @@ struct SeqMirrorTwoNarrowed {
     flags: BucketFlags,
     ttl_ms: BucketTtl,
     dirty_generation: u64,
-    first_dirty_wal_sequence: u64,
-    first_dirty_index_log_sequence: u32,
-    last_dump_sequence: u32,
-    object_index: ObjectIndex,
-    deleted_object_index: DeletedObjectIndex,
-    block_index: BlockIndexMap,
-}
-
-/// Three of the four narrowed to 32 bits.
-#[allow(dead_code)]
-struct SeqMirrorThreeNarrowed {
-    routing_bucket: u32,
-    layout: BucketLayoutState,
-    flags: BucketFlags,
-    ttl_ms: BucketTtl,
-    dirty_generation: u64,
     first_dirty_wal_sequence: u32,
     first_dirty_index_log_sequence: u32,
-    last_dump_sequence: u32,
     object_index: ObjectIndex,
     deleted_object_index: DeletedObjectIndex,
     block_index: BlockIndexMap,
 }
 
-/// All four narrowed to 32 bits.
+/// All three narrowed to 32 bits.
 #[allow(dead_code)]
-struct SeqMirrorFourNarrowed {
+struct SeqMirrorThreeNarrowed {
     routing_bucket: u32,
     layout: BucketLayoutState,
     flags: BucketFlags,
@@ -453,13 +452,12 @@ struct SeqMirrorFourNarrowed {
     dirty_generation: u32,
     first_dirty_wal_sequence: u32,
     first_dirty_index_log_sequence: u32,
-    last_dump_sequence: u32,
     object_index: ObjectIndex,
     deleted_object_index: DeletedObjectIndex,
     block_index: BlockIndexMap,
 }
 
-/// One of the four gone entirely.
+/// One of the three gone entirely.
 #[allow(dead_code)]
 struct SeqMirrorOneRemoved {
     routing_bucket: u32,
@@ -468,7 +466,6 @@ struct SeqMirrorOneRemoved {
     ttl_ms: BucketTtl,
     dirty_generation: u64,
     first_dirty_wal_sequence: u64,
-    last_dump_sequence: u64,
     object_index: ObjectIndex,
     deleted_object_index: DeletedObjectIndex,
     block_index: BlockIndexMap,
@@ -482,7 +479,6 @@ struct SeqMirrorTwoRemoved {
     flags: BucketFlags,
     ttl_ms: BucketTtl,
     dirty_generation: u64,
-    last_dump_sequence: u64,
     object_index: ObjectIndex,
     deleted_object_index: DeletedObjectIndex,
     block_index: BlockIndexMap,
@@ -491,31 +487,40 @@ struct SeqMirrorTwoRemoved {
 /// WHAT NARROWING OR REMOVING EACH SEQUENCE WOULD MAKE THE NODE -- and the answer is not the one
 /// the shape of the group suggests.
 ///
-/// The node is 168 bytes of eight-aligned field plus a ten-byte tail rounded to sixteen. A `u64`
+/// THREE SEQUENCES, NOT FOUR, AND THE TABLE IS RE-DERIVED RATHER THAN SHIFTED.
+/// `last_dump_sequence` left the node: it was read into two reports and nothing else, and the
+/// report takes the figure from the newest dump manifest. That took a whole word out of the
+/// eight-aligned group, so the base is 160 + a six-byte tail = 168 where it was 168 + six = 176,
+/// and the narrowing series loses its last row. The DIFFERENCES are unchanged, because they are
+/// set by the group structure and not by the base -- which is the same reason the base moving to
+/// 184 and then to 176 never moved them either.
+///
+/// The node is 160 bytes of eight-aligned field plus a six-byte tail rounded to eight. A `u64`
 /// narrowed to a `u32` does not vanish: it leaves the eight-aligned group and lands in the tail.
-/// So the arithmetic is `168 - 8n + round_up_8(10 + 4n)` and it steps, it does not slope:
+/// So the arithmetic is `160 - 8n + round_up_8(6 + 4n)` and it steps, it does not slope:
 ///
 /// ```text
 ///   narrowed   eight-aligned    tail -> rounded    size    vs live
-///     0            168            10 -> 16          184       --
-///     1            160            14 -> 16          176       -8
-///     2            152            18 -> 24          176       -8
-///     3            144            22 -> 24          168      -16
-///     4            136            26 -> 32          168      -16
+///     0            160             6 -> 8           168       --
+///     1            152            10 -> 16          168       -0
+///     2            144            14 -> 16          160       -8
+///     3            136            18 -> 24          160       -8
 /// ```
 ///
-/// The second narrowing is worth NOTHING on top of the first, and the fourth nothing on top of
-/// the third. Stating a per-field saving here would be stating a number that does not exist: the
-/// saving belongs to the GROUP, and only the first and third crossings move it.
+/// The FIRST narrowing is worth nothing and the third nothing on top of the second. Stating a
+/// per-field saving here would be stating a number that does not exist: the saving belongs to the
+/// GROUP, and only the second crossing moves it.
+///
+/// THE PHASE OF THE STAIRCASE DEPENDS ON THE TAIL, and it has moved twice. At a ten-byte tail the
+/// first narrowing landed on 14, which still rounded to 16, so the first step was worth eight and
+/// the series read 8, 8, 16, 16. At SIX bytes -- the five `bool` are one `BucketFlags` byte -- the
+/// first narrowing lands on 10, which rounds to 16, and the word the group gave up is handed
+/// straight back: 0, 8, 8, 16. Those eight bytes at the head are the same eight the flag pack
+/// collected; two ways to take one rounding, and only one could be paid. With three sequences the
+/// series is that one truncated: 0, 8, 8.
 ///
 /// Removing is different from narrowing because the bytes leave the structure instead of moving
-/// to the tail: one removed is 176, two removed is 168.
-///
-/// THE BASE MOVED, THE PRICES DID NOT. Every figure in the table is eight bytes lower than when
-/// it was written, because the node went 192 -> 184 when the `BlockAddress` inside its inline
-/// page entry stopped storing a `generation` it could derive. Not one of the DIFFERENCES changed:
-/// the group structure is what sets them, and that change came out of the eight-aligned group
-/// whole, which is the same reason it was worth anything at all.
+/// to the tail, and the tail does not move at all: one removed is 160, two removed is 152.
 ///
 /// THE RECONSTRUCTION IS ASSERTED, not the total. Every row has to satisfy
 /// `eight_aligned + round_up(tail) == size_of`, so a row that happened to land on the right
@@ -537,8 +542,9 @@ fn what_narrowing_or_removing_each_sequence_would_make_the_node() {
 
     // The two groups, taken from the declaration rather than from a literal.
     //
-    // 168 of eight-aligned field, since the inline `BlockIndexMap` lost eight bytes when the
-    // `BlockAddress` inside its inline page entry stopped storing a `generation` it could derive.
+    // 160 of eight-aligned field: 168 until `last_dump_sequence` left the node, which took a whole
+    // word out of the packed group. (168 itself was 176 until the `BlockAddress` inside the inline
+    // page entry stopped storing a `generation` it could derive.)
     //
     // AND A SIX-BYTE TAIL, NOT TEN, WHICH MOVED A CONCLUSION RATHER THAN A LITERAL. The five
     // `bool` became five bits of one `BucketFlags` byte, so the tail is `routing_bucket` (4),
@@ -549,8 +555,9 @@ fn what_narrowing_or_removing_each_sequence_would_make_the_node() {
     // tail the freed `u32` takes the tail to ten, which rounds to sixteen, and the word the group
     // gave up is handed straight back. THE EIGHT BYTES ARE THE SAME EIGHT BYTES: packing the
     // flags and narrowing one sequence were two ways to collect one rounding, and only one of
-    // them could be paid.
-    const EIGHT_ALIGNED: usize = 168;
+    // them could be paid. Removing a word does NOT move the tail, which is why it crosses where a
+    // narrowing does not.
+    const EIGHT_ALIGNED: usize = 160;
     const TAIL: usize = 6;
     let live = size_of::<BucketNode>();
     assert_eq!(
@@ -560,7 +567,7 @@ fn what_narrowing_or_removing_each_sequence_would_make_the_node() {
          {TAIL} B tail, or the model every row below uses is wrong"
     );
 
-    println!("\n=== narrowing n of the four sequences to 32 bits ===");
+    println!("\n=== narrowing n of the three sequences to 32 bits ===");
     println!(
         "  {:<9} {:>14} {:>9} {:>8} {:>6} {:>9}",
         "narrowed", "eight-aligned", "tail", "rounded", "size", "vs live"
@@ -570,7 +577,6 @@ fn what_narrowing_or_removing_each_sequence_would_make_the_node() {
         size_of::<SeqMirrorOneNarrowed>(),
         size_of::<SeqMirrorTwoNarrowed>(),
         size_of::<SeqMirrorThreeNarrowed>(),
-        size_of::<SeqMirrorFourNarrowed>(),
     ];
     for (n, size) in narrowed_sizes.iter().copied().enumerate() {
         let eight_aligned = EIGHT_ALIGNED - 8 * n;
@@ -583,7 +589,7 @@ fn what_narrowing_or_removing_each_sequence_would_make_the_node() {
         assert_eq!(
             eight_aligned + rounded,
             size,
-            "narrowing {n} of the four reconstructs to {} B but `size_of` says {size}; the two \
+            "narrowing {n} of the three reconstructs to {} B but `size_of` says {size}; the two \
              groups plus one rounding must account for the width exactly",
             eight_aligned + rounded
         );
@@ -601,37 +607,32 @@ fn what_narrowing_or_removing_each_sequence_would_make_the_node() {
     //
     // So the eight bytes that used to be here are gone, and they are gone because something else
     // took them: packing the flags and narrowing one sequence were two ways to collect the same
-    // rounding, and only one of them could be paid. 0, 8, 8, 16 where it used to be 8, 8, 16, 16.
+    // rounding, and only one of them could be paid. With four sequences the series read 0, 8, 8, 16
+    // where it used to read 8, 8, 16, 16; with three it is that series truncated, 0, 8, 8.
     assert_eq!(
         0,
         live - narrowed_sizes[1],
-        "narrowing ONE of the four is worth NOTHING now that the tail is six bytes -- the freed \
+        "narrowing ONE of the three is worth NOTHING now that the tail is six bytes -- the freed \
          word goes straight back into the rounding -- but it measured {}",
         live - narrowed_sizes[1]
     );
     assert_eq!(
         8,
         live - narrowed_sizes[2],
-        "narrowing a SECOND of the four is priced at eight bytes a bucket; it measured {}",
+        "narrowing a SECOND of the three is priced at eight bytes a bucket; it measured {}",
         live - narrowed_sizes[2]
     );
     assert_eq!(
         narrowed_sizes[2], narrowed_sizes[3],
-        "narrowing a THIRD is worth nothing on top of the second, but two measured {} and three \
+        "narrowing the THIRD is worth nothing on top of the second, but two measured {} and three \
          measured {}",
         narrowed_sizes[2], narrowed_sizes[3]
-    );
-    assert_eq!(
-        16,
-        live - narrowed_sizes[4],
-        "narrowing all FOUR is priced at sixteen bytes a bucket; it measured {}",
-        live - narrowed_sizes[4]
     );
 
     // --- Removing, which is a different arithmetic: the bytes leave rather than move. ---
     let one_removed = size_of::<SeqMirrorOneRemoved>();
     let two_removed = size_of::<SeqMirrorTwoRemoved>();
-    println!("\n=== removing n of the four outright ===");
+    println!("\n=== removing n of the three outright ===");
     println!("  0 removed  {live:>4} B");
     println!("  1 removed  {one_removed:>4} B  {:+}", one_removed as i64 - live as i64);
     println!("  2 removed  {two_removed:>4} B  {:+}", two_removed as i64 - live as i64);
@@ -812,7 +813,7 @@ fn the_index_log_half_of_a_claim_cannot_be_derived_from_the_wal_half() {
 /// THE BOUND ON EACH SEQUENCE IS THE STORE'S LIFETIME, NOT THE CORPUS -- which is why a measured
 /// range that fits in 32 bits is not permission to use 32 of them.
 ///
-/// Three of the four are positions in a log. Reclaim FREES a log's records; it does not RENUMBER
+/// Two of the three are positions in a log. Reclaim FREES a log's records; it does not RENUMBER
 /// them, and the sequence a store hands out is monotonic across every reclaim and every restart.
 /// The fourth is a count that a load preserves (`rebuild_bucket_block_ownership` carries it over
 /// deliberately) and that nothing ever resets.
@@ -1022,25 +1023,27 @@ fn moving_every_buckets_dirty_generation_stops_the_manifests_covering_them() {
     );
 }
 
-/// THE SUMMARY'S `last_dump_sequence` COMES FROM THE MANIFEST, NOT FROM THE NODE.
+/// THE DUMPED-LOG WATERMARK COMES FROM THE MANIFEST, AND THERE IS NOWHERE ELSE LEFT FOR IT TO
+/// COME FROM.
 ///
-/// This is the one place in this module where the finding is a DISAGREEMENT rather than an
-/// accounting. `apply_storage_lifecycle` writes the node's field from `manifest.wal_sequence`,
-/// and `storage_lifecycle_methods` then sorts the dump candidates by `last_dump_sequence` under a
-/// comment calling it "the WAL sequence at the bucket's last dump". The sort reads
-/// `BucketStorageSummary::last_dump_sequence` -- a DIFFERENT field with the same name -- and
-/// `bucket_storage_summaries` never fills that one from the node. `merge_last_dump_sequence`
-/// fills it from the newest manifest's INDEX-LOG sequence.
+/// WHAT THIS TEST USED TO BE, because the change to it is the finding. The node carried its own
+/// `last_dump_sequence`, written from `manifest.wal_sequence`, and the dump ordering's comment
+/// claimed the sort read it. The sort reads `BucketStorageSummary::last_dump_sequence` -- a
+/// DIFFERENT field with the same name, filled by `merge_last_dump_sequence` from the newest
+/// manifest's INDEX-LOG sequence -- so the node's figure reached no decision at all. This test
+/// pinned that by planting a marker in the node's field and showing the summary did not follow it.
 ///
-/// So the two are filled from two different fields of the manifest, and the node's value does not
-/// reach the ordering. Two things are pinned here, and the second is the load-bearing one:
+/// THE MARKER IS GONE BECAUSE THE FIELD IS. There is no per-bucket field to plant in any more:
+/// the node's figure was read into two reports and nothing else, so it was one shard-level
+/// watermark stored once per routing bucket, at eight bytes each. What is pinned instead is the
+/// property that replaced it, in three parts:
 ///
-///   * the summary equals the newest manifest's INDEX-LOG sequence, which is what
-///     `merge_last_dump_sequence` writes into it; and
-///   * a MARKER is planted in the node's field -- a value no manifest, log or write in the
-///     fixture could have produced -- and the summary is shown not to follow it. That is the half
-///     that does not depend on the two manifest sequences reading different numbers, which in a
-///     fixture with one batch per record they need not.
+///   * the SUMMARY's figure is the newest manifest's index-log sequence, unchanged;
+///   * the physical index REPORT's per-bucket figure is now that same number, where it used to be
+///     overwritten from the node; and
+///   * a bucket the newest manifest does NOT name reports 0. That is the discriminating part.
+///     Without it "the report shows the manifest's number" is satisfied by a report that shows
+///     that number everywhere, including for buckets no dump has ever covered.
 ///
 /// Both manifest sequences are printed, so a run where they coincide is visible rather than
 /// silently making the first assertion undiscriminating.
@@ -1074,11 +1077,11 @@ fn the_summary_last_dump_sequence_comes_from_the_manifest_not_from_the_node() {
     );
 
     let rows = sequences_by_bucket(&engine);
-    let target = rows
+    let covered = rows
         .iter()
-        .find(|row| row.last_dump > 0 && manifest.bucket_ids.contains(&row.routing_bucket))
+        .find(|row| manifest.bucket_ids.contains(&row.routing_bucket))
         .copied()
-        .expect("no dumped bucket carries a last_dump_sequence on its node");
+        .expect("the newest manifest names no bucket that is still in the map");
 
     let summary_of = |engine: &TemporalEngine, routing_bucket: u32| -> u64 {
         engine
@@ -1088,57 +1091,84 @@ fn the_summary_last_dump_sequence_comes_from_the_manifest_not_from_the_node() {
             .map(|summary| summary.last_dump_sequence)
             .unwrap_or_default()
     };
+    let reported = |engine: &TemporalEngine, routing_bucket: u32| -> u64 {
+        engine
+            .storage_physical_index_report(SEQ_SHARD)
+            .bucket_nodes
+            .into_iter()
+            .find(|node| node.routing_bucket == routing_bucket)
+            .map(|node| node.last_dump_sequence)
+            .unwrap_or_default()
+    };
 
-    let summary_before = summary_of(&engine, target.routing_bucket);
+    let summary_covered = summary_of(&engine, covered.routing_bucket);
     println!(
-        "\n=== bucket {} ===\n  node.last_dump_sequence={} (manifest.wal_sequence={})\n  \
-         summary.last_dump_sequence={summary_before} (manifest.index_log_sequence={})",
-        target.routing_bucket, target.last_dump, manifest.wal_sequence, manifest.index_log_sequence
+        "\n=== a bucket the newest manifest NAMES: {} ===\n  \
+         summary.last_dump_sequence={summary_covered}\n  \
+         report.last_dump_sequence={}\n  \
+         manifest.index_log_sequence={}  manifest.wal_sequence={}",
+        covered.routing_bucket,
+        reported(&engine, covered.routing_bucket),
+        manifest.index_log_sequence,
+        manifest.wal_sequence
     );
 
     assert_eq!(
-        manifest.index_log_sequence, summary_before,
-        "the summary's last_dump_sequence is {summary_before}; the newest manifest's index-log \
+        manifest.index_log_sequence, summary_covered,
+        "the summary's last_dump_sequence is {summary_covered}; the newest manifest's index-log \
          sequence is {} and its WAL sequence is {}. If the summary has started following the WAL \
          clock, the dump ordering's comment has become true and this module's finding is stale",
         manifest.index_log_sequence, manifest.wal_sequence
     );
+    assert_eq!(
+        manifest.index_log_sequence,
+        reported(&engine, covered.routing_bucket),
+        "the physical index report publishes {} for a bucket the newest manifest names; it is \
+         supposed to carry the summary's figure now that the node holds none",
+        reported(&engine, covered.routing_bucket)
+    );
     println!(
         "  the manifest's two sequences read {} (WAL) and {} (index-log); they need not differ, \
-         and the marker below is what makes this test discriminating when they do not",
+         and the uncovered bucket below is what makes this test discriminating when they do not",
         manifest.wal_sequence, manifest.index_log_sequence
     );
 
-    // Plant a marker in the NODE's field and show the summary does not follow it.
-    const PLANTED: u64 = 7_654_321;
-    assert_ne!(
-        PLANTED, summary_before,
-        "the marker collides with the value the summary already holds, so 'the summary did not \
-         follow' could not be told from 'the summary followed exactly'"
-    );
-    perturb(&engine, target.routing_bucket, |bucket| {
-        bucket.last_dump_sequence = PLANTED;
-    });
-    let summary_after = summary_of(&engine, target.routing_bucket);
-    assert_eq!(
-        summary_before, summary_after,
-        "the node's last_dump_sequence was moved to {PLANTED} and the summary followed it \
-         ({summary_before} -> {summary_after}); the two fields have been connected since this was \
-         measured"
-    );
-
-    // And the marker did land, so the assertion above is about the summary and not about a write
-    // that never happened.
-    let after_rows = sequences_by_bucket(&engine);
-    let after = after_rows
+    // THE DISCRIMINATING HALF: a bucket the newest manifest does not name must report 0. Without
+    // it every assertion above is satisfied by a report that stamps the manifest's number on
+    // every row.
+    let uncovered = rows
         .iter()
-        .find(|row| row.routing_bucket == target.routing_bucket)
-        .copied()
-        .expect("the bucket is still in the map");
-    assert_eq!(
-        PLANTED, after.last_dump,
-        "the planted value did not reach the node, so the assertion above proved nothing"
-    );
+        .find(|row| !manifest.bucket_ids.contains(&row.routing_bucket))
+        .copied();
+    match uncovered {
+        Some(row) => {
+            let summary_uncovered = summary_of(&engine, row.routing_bucket);
+            let reported_uncovered = reported(&engine, row.routing_bucket);
+            println!(
+                "=== a bucket the newest manifest does NOT name: {} ===\n  \
+                 summary.last_dump_sequence={summary_uncovered}  \
+                 report.last_dump_sequence={reported_uncovered}",
+                row.routing_bucket
+            );
+            assert_eq!(
+                0, summary_uncovered,
+                "a bucket the newest manifest does not name carries {summary_uncovered} in its \
+                 summary, so `merge_last_dump_sequence` is no longer separating covered from \
+                 uncovered"
+            );
+            assert_eq!(
+                0, reported_uncovered,
+                "a bucket the newest manifest does not name is reported as dumped at \
+                 {reported_uncovered}; the report cannot be reading the manifest"
+            );
+        }
+        None => panic!(
+            "every one of the {} buckets in the map is named by the newest manifest, so the \
+             control that distinguishes covered from uncovered cannot run; the fixture needs a \
+             capped round that leaves a bucket out",
+            rows.len()
+        ),
+    }
 }
 
 // -------------------------------------------------------------------------------------------

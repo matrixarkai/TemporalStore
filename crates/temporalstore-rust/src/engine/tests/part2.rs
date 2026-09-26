@@ -2926,10 +2926,12 @@ fn the_shipped_dump_cap_still_lets_the_log_be_reclaimed() {
 /// until the disk did. Making the cycle run was the fix; this is the guard that it KEEPS working.
 ///
 /// Reclaim can only free the log below its floor, and the floor is held by the oldest bucket that
-/// has not been dumped. The dump selects buckets ordered by `last_dump_sequence` -- a proxy for
-/// "most overdue". If that proxy ever starves a bucket, the floor stops advancing and the log
-/// grows for ever while every round still reports success. Nothing else here would notice: the
-/// cycle completes, the stages report applied, and only the disk fills.
+/// has not been dumped. The dump selects buckets ordered by `first_dirty_wal_sequence` -- the
+/// bucket's own oldest undumped write, which is the thing holding the log -- with the summary's
+/// `last_dump_sequence`, "is the newest dump manifest covering this bucket", as the tiebreaker
+/// behind it. If that ordering ever starves a bucket, the floor stops advancing and the log grows
+/// for ever while every round still reports success. Nothing else here would notice: the cycle
+/// completes, the stages report applied, and only the disk fills.
 ///
 /// So this writes the same working set every round and requires the floor to reach the head each
 /// time. Twelve rounds and 6,000 writes: every round removes exactly what that round wrote, the

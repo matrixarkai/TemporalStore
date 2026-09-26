@@ -215,17 +215,21 @@ impl TemporalEngine {
         // ascending makes an overdue bucket rise to the top and guarantees every dirty bucket is
         // eventually selected; routing_bucket is a stable tiebreaker.
         //
-        // WHICH `last_dump_sequence` THIS IS, because there are two and they are not the same
-        // number. The sort below reads `BucketStorageSummary::last_dump_sequence`, and
-        // `bucket_storage_summaries` does not fill that one from the bucket node at all: the node
-        // carries its own `last_dump_sequence`, written from `manifest.wal_sequence` by
-        // `clear_dumped_bucket_dirty_state`, and the summary's is written by
-        // `merge_last_dump_sequence` from the NEWEST manifest's `index_log_sequence` -- the same
-        // value for every bucket that manifest names, and 0 for every bucket it does not. So what
-        // this key actually separates is "covered by the newest dump" from "not covered by it",
-        // not "dumped recently" from "dumped long ago", and the node's own figure never reaches
-        // it. `the_summary_last_dump_sequence_comes_from_the_manifest_not_from_the_node` pins
-        // that in both directions.
+        // WHICH `last_dump_sequence` THIS IS. There is now only one, and that is a change: there
+        // used to be two with the same name and different values. The sort below reads
+        // `BucketStorageSummary::last_dump_sequence`, written by `merge_last_dump_sequence` from
+        // the NEWEST manifest's `index_log_sequence` -- the same value for every bucket that
+        // manifest names, and 0 for every bucket it does not. So what this key separates is
+        // "covered by the newest dump" from "not covered by it", not "dumped recently" from
+        // "dumped long ago".
+        //
+        // The bucket NODE used to carry its own `last_dump_sequence`, written from
+        // `manifest.wal_sequence` by `clear_dumped_bucket_dirty_state`, and it never reached this
+        // sort -- it was read into two reports and nothing else, so it was a watermark of the
+        // whole shard's newest dump wearing a per-bucket costume, at eight bytes per routing
+        // bucket. It is gone, and both reports take the figure from the manifest.
+        // `the_summary_last_dump_sequence_comes_from_the_manifest_not_from_the_node` pins that the
+        // summary's figure is the manifest's, which is now the only place it can come from.
         //
         // Left as it is rather than repointed at the node: this is a TIEBREAKER behind
         // `first_dirty_rank` below, which is the key that decides the order for every bucket that
@@ -815,8 +819,14 @@ impl TemporalEngine {
                 // Hold the generation at the captured (derived) value so the reclaim
                 // fingerprint still matches once the dirty objects are cleared.
                 bucket.dirty_generation = bucket.dirty_generation.max(captured_generation);
-                // Record the dumped-log sequence (informational; not part of the fingerprint).
-                bucket.last_dump_sequence = bucket.last_dump_sequence.max(manifest.wal_sequence);
+                // THE DUMPED-LOG SEQUENCE IS NOT RECORDED HERE ANY MORE, and the comment that was
+                // here said why it did not need to be: "informational; not part of the
+                // fingerprint". A per-bucket `last_dump_sequence` was written from
+                // `manifest.wal_sequence` at this one site, preserved across rebuild, and read
+                // into two reports -- never into a branch, a sort key or a comparison. The
+                // manifest that named this bucket is the thing that knows the figure, and the
+                // report reads it from there (`merge_last_dump_sequence`) exactly as
+                // `BucketStorageSummary` always did.
                 bucket.set_dirty(false);
                 // The dump captured everything this bucket had, so it holds no claim over the
                 // log until it is written to again.

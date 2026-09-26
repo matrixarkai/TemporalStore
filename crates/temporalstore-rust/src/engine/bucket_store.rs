@@ -14,6 +14,14 @@ use super::state::{
     object_component_lookup_key, object_block_lookup_key, ShardState, BucketLayoutState,
 };
 
+/// One bucket's resident runtime state, for the bucket-store runtime report.
+///
+/// NO `last_dump_sequence`. This row used to carry one, read straight off `BucketNode`, and
+/// `runtime_report` is handed a shard and no manifest -- so the only per-bucket figure it could
+/// have published was the node's, and the node no longer holds one. The dumped-log watermark is a
+/// property of the newest dump manifest, not of a bucket, and the report that has a manifest in
+/// hand (`storage_physical_index_report`) is where it is published. Nothing reads this field: the
+/// whole of `runtime_report` has one caller, a test helper.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub(super) struct BucketRuntimeState {
     #[serde(rename = "routing_slot")]
@@ -28,7 +36,6 @@ pub(super) struct BucketRuntimeState {
     pub in_memory: bool,
     pub ttl_ms: Option<u64>,
     pub dirty_generation: u64,
-    pub last_dump_sequence: u64,
     pub deleted_block_ref_count: usize,
 }
 
@@ -125,7 +132,6 @@ pub(super) fn runtime_report(shard: &ShardState) -> BucketStoreRuntimeReport {
             in_memory: bucket.in_memory(),
             ttl_ms: bucket.ttl_ms.ms(),
             dirty_generation: bucket.dirty_generation,
-            last_dump_sequence: bucket.last_dump_sequence,
             deleted_block_ref_count,
         });
     }
