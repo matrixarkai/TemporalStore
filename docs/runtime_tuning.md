@@ -90,6 +90,11 @@ range beside its index (`shard-<id>.routing-range.json`), and a load honours tha
 file rather than the default — see *Changing the range on a populated store* below.
 So this default reaches new stores only, and no upgrade re-ranges anything.
 
+**A store with no such file does not load at all**, rather than being adopted onto a
+guessed range. If you are upgrading a store built before the engine recorded ranges,
+read *A store carrying no routing-range stamp is refused* below before you restart: the
+remedy is one small file per shard, and it needs the range the store was built on.
+
 ### What the old default cost, and how this was first found
 
 A routing bucket is derived by hashing the key, so on the whole `u32` range every key
@@ -196,11 +201,78 @@ anything, and refuses the load with `routing_range_mismatch` when the two disagr
 naming both ranges and the file. Re-ingest into a new store to adopt a different
 range.
 
-A store written before the engine recorded the range carries no such file. It can
-only have been built on the whole `u32` keyspace, which was the only default, so it
-is **honoured on that range** — the requested range is overridden, the inference is
-logged at `warn`, and the file is written so the next load does not have to make it
-again. An upgrade therefore changes nothing about an existing store.
+### A store carrying no routing-range stamp is refused
+
+**A store written before the engine recorded the range carries no such file, and it
+will not load.** The load is refused with `routing_range_unstamped` — a different code
+from the mismatch above, because the remedies differ: a mismatch means the range is
+known and the configuration disagrees with it, while an absent stamp means the range
+is **not recorded anywhere and cannot be recovered from the store**.
+
+This arm used to adopt the whole `u32` keyspace instead, reasoning that it was the only
+default such a store could have been built on. That is true of the *default* and false
+of the *configuration*: `TS_SHARD_END_ROUTING_BUCKET` is documented right here, and the
+instruction was to set it **before the first ingest**. So a store built narrow before
+the stamp existed was adopted onto the whole keyspace and quietly mis-ranged — measured
+at 600 of 600 blocks filed in buckets the adopted range never computes, every record
+still readable and every block outside every per-bucket sweep. A store cannot tell you
+which of the two it is, and when two cases are indistinguishable and one of them loses
+data silently, the load asks instead of guessing.
+
+#### If you know the range the store was built on
+
+Write the stamp beside the base index and load again. One shard:
+
+```bash
+printf '{"start_routing_bucket":0,"end_routing_bucket":1023}' \
+  > /var/lib/matrixark/indexes/shard-1.routing-range.json
+```
+
+Several shards in one index directory, with the range you built them on:
+
+```bash
+START=0 END=1023
+for f in /var/lib/matrixark/indexes/shard-*.index.json; do
+  id=$(basename "$f" .index.json); id=${id#shard-}
+  printf '{"start_routing_bucket":%s,"end_routing_bucket":%s}' "$START" "$END" \
+    > "/var/lib/matrixark/indexes/shard-$id.routing-range.json"
+done
+```
+
+The value must be the range the store was **built** on, not the one you want now. To
+change the range, stamp the built range, load, and re-ingest into a new store on the
+new range — nothing re-files an existing block.
+
+#### If you do NOT know the range it was built on
+
+There is no way to read it back: it was never recorded, and the base index is a
+compressed container rather than something you can inspect with `jq`. The reliable
+option is to **re-ingest into a new store**.
+
+A candidate range can still be *checked*, which turns a guess into something
+falsifiable. Stamp a candidate, set the same range in the configuration, load, and read
+the owner-mismatch count:
+
+```bash
+curl -s localhost:8080/server/storage/recovery_boundary/1 \
+  | jq '.owner_mismatch_block_refs | length'
+```
+
+`0` means the candidate is consistent with every live block in the store. Anything
+above `0` names the blocks whose address claims a bucket the candidate does not
+compute, so the candidate is wrong — try the other one. The same figure appears as
+`owner_mismatch_block_ref_count` on the production readiness report.
+
+**Note what this is and is not.** The arithmetic is the same one that was rejected as a
+way to *infer* the range, and the difference is having a candidate. "Which range was
+this built on?" is not answerable — a whole-keyspace store whose keys all happen to
+fall below 1024 looks exactly like a narrow one. "Is *this* range consistent with every
+block?" is answerable, because every block votes. Do not read a `0` as proof for a
+store with only a handful of keys: with one key the two candidates agree about one time
+in four million.
+
+**Do not skip the check by looking at whether records read.** A mis-ranged store serves
+every record perfectly; that is what made this state quiet enough to need a refusal.
 
 This is what the refusal prevents, driven both ways over 2,000 records before it
 existed:
