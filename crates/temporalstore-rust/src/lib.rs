@@ -210,8 +210,14 @@ pub const DEFAULT_START_ROUTING_BUCKET: u32 = 0;
 /// amortisation floor, which is this one, and not the narrowest range the byte column prefers.
 ///
 /// ONLY NEW STORES GET IT. See `engine/routing_range_stamp.rs`: a store records the range it was
-/// built under, an existing store is honoured on that range, and a store whose stamp disagrees with
+/// built under, an existing store is honoured on THAT range, and a store whose stamp disagrees with
 /// the configured range is REFUSED rather than loaded with every page filed out of range.
+///
+/// A STORE CARRYING NO STAMP AT ALL IS ALSO REFUSED, with `routing_range_unstamped`. It used to be
+/// adopted onto the whole keyspace on the reasoning that this was the only range it could have been
+/// built on -- true of the default, false of the configuration, since this setting is exactly what
+/// an operator was told to change before the first ingest. The range such a store was built on is
+/// not recorded anywhere and cannot be inferred reliably, so it is refused rather than guessed at.
 pub const DEFAULT_END_ROUTING_BUCKET: u32 = 1023;
 pub use index_log::{IndexLogRecord, IndexLogStats, LocalIndexLogStore};
 pub use ingestion::{

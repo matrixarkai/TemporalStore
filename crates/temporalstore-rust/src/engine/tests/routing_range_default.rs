@@ -64,6 +64,17 @@
 
 #![allow(clippy::all)]
 use super::*;
+
+/// The whole keyspace: what `load_shard`'s end bucket defaulted to before the default moved.
+///
+/// OWNED BY THIS MODULE, not by the engine. It used to be
+/// `routing_range_stamp::OLD_DEFAULT_END_ROUTING_BUCKET`, a production constant justifying the arm that
+/// ADOPTED this range for a store carrying no stamp. That arm is now a refusal, so the production
+/// constant went with it -- keeping it would have left a named "legacy range" in the engine with
+/// nothing reading it and a docstring for a decision the engine no longer takes. What the tests
+/// need is only a name for the old default, and that is a fact about the tests.
+const OLD_DEFAULT_END_ROUTING_BUCKET: u32 = u32::MAX;
+const OLD_DEFAULT_START_ROUTING_BUCKET: u32 = 0;
 use std::collections::{BTreeMap, BTreeSet};
 
 // Imported as a NAME rather than spelled out at the call site: the counting-allocator gate in
@@ -1259,8 +1270,7 @@ fn narrowing_the_range_changes_nothing_for_a_store_whose_pages_share_one_object_
 // =============================================================================================
 
 use crate::engine::routing_range_stamp::{
-    read_routing_range_stamp, routing_range_stamp_path, LEGACY_END_ROUTING_BUCKET,
-    LEGACY_START_ROUTING_BUCKET,
+    read_routing_range_stamp, routing_range_stamp_path, ROUTING_RANGE_UNSTAMPED,
 };
 
 /// The index directory `engine_on` hands the engine, and therefore where the stamp lives.
@@ -1328,7 +1338,7 @@ fn a_store_built_on_the_old_default_is_refused_under_the_new_default() {
     // PHASE ONE: build it on the old default, the range every store on disk today was built on.
     let keys = {
         let engine = engine_on(dir.path());
-        load_on(&engine, LEGACY_END_ROUTING_BUCKET);
+        load_on(&engine, OLD_DEFAULT_END_ROUTING_BUCKET);
         let keys = seed_routed(&engine, RECORDS);
         assert_eq!(
             RECORDS,
@@ -1346,7 +1356,7 @@ fn a_store_built_on_the_old_default_is_refused_under_the_new_default() {
     let stamped = read_routing_range_stamp(&index_dir_of(dir.path()), 1)
         .expect("phase one stamped the store it created");
     assert_eq!(
-        (LEGACY_START_ROUTING_BUCKET, LEGACY_END_ROUTING_BUCKET),
+        (OLD_DEFAULT_START_ROUTING_BUCKET, OLD_DEFAULT_END_ROUTING_BUCKET),
         (stamped.start_routing_bucket, stamped.end_routing_bucket),
         "phase one recorded {stamped:?}, not the old default it was loaded on"
     );
@@ -1355,7 +1365,7 @@ fn a_store_built_on_the_old_default_is_refused_under_the_new_default() {
     let engine = engine_on(dir.path());
     let status = try_load_on(&engine, crate::DEFAULT_END_ROUTING_BUCKET);
     println!(
-        "  built on 0..{LEGACY_END_ROUTING_BUCKET}, opened on \
+        "  built on 0..{OLD_DEFAULT_END_ROUTING_BUCKET}, opened on \
          0..{}: ok={} code={} message={}",
         crate::DEFAULT_END_ROUTING_BUCKET,
         status.ok,
@@ -1365,7 +1375,7 @@ fn a_store_built_on_the_old_default_is_refused_under_the_new_default() {
 
     assert!(
         !status.ok,
-        "a store built on 0..{LEGACY_END_ROUTING_BUCKET} loaded successfully on \
+        "a store built on 0..{OLD_DEFAULT_END_ROUTING_BUCKET} loaded successfully on \
          0..{}. Its pages are filed under nine-figure buckets the shard does not hold; the load \
          has to refuse, because nothing re-files them and every record still reads",
         crate::DEFAULT_END_ROUTING_BUCKET
@@ -1377,7 +1387,7 @@ fn a_store_built_on_the_old_default_is_refused_under_the_new_default() {
         status.code
     );
     for expected in [
-        LEGACY_END_ROUTING_BUCKET.to_string(),
+        OLD_DEFAULT_END_ROUTING_BUCKET.to_string(),
         crate::DEFAULT_END_ROUTING_BUCKET.to_string(),
         "routing-range.json".to_string(),
     ] {
@@ -1399,7 +1409,7 @@ fn a_store_built_on_the_old_default_is_refused_under_the_new_default() {
     );
 
     // AND THE STORE IS STILL LOADABLE ON ITS OWN RANGE -- the refusal is not a brick.
-    let status = try_load_on(&engine, LEGACY_END_ROUTING_BUCKET);
+    let status = try_load_on(&engine, OLD_DEFAULT_END_ROUTING_BUCKET);
     assert!(
         status.ok,
         "the same store could not be reopened on the range it was built on: {status:?}. A refusal \
@@ -1483,105 +1493,154 @@ fn a_store_built_on_the_new_default_round_trips_whole() {
     );
 }
 
-/// A STORE THAT PREDATES THE STAMP IS HONOURED ON THE RANGE IT WAS BUILT ON, NOT REFUSED.
+/// A STORE WITH STATE AND NO ROUTING-RANGE STAMP IS REFUSED, AND THE REMEDY IN THE MESSAGE WORKS.
 ///
-/// The third case, and the one that keeps the default move from stopping every existing deployment
-/// from starting. A store already on disk today carries no stamp, and its range is not unknown: the
-/// whole keyspace was the ONLY default a store could have been built on. So the requested range is
-/// OVERRIDDEN with the range the store was built under, the stamp is written so the next load does
-/// not have to infer it again, and the override is logged.
+/// This arm used to ADOPT the whole keyspace instead of refusing, on the reasoning that the whole
+/// keyspace "was the ONLY default a store could have been built on". True of the DEFAULT, false of
+/// the CONFIGURATION: `TS_SHARD_END_ROUTING_BUCKET` is documented and `docs/runtime_tuning.md` told
+/// operators to set it before the first ingest. So a store built narrow before the stamp existed was
+/// adopted onto the whole keyspace and silently mis-ranged -- 600 of 600 blocks, measured.
 ///
-/// THE PRE-STAMP STORE IS SIMULATED BY DELETING THE STAMP, and the deletion is ASSERTED to have
-/// removed a file that was there. A fixture that deleted nothing would be testing the ordinary
-/// matching-stamp path under this test's name.
+/// AN INFERENCE WAS CONSIDERED AND DECLINED. A store built on `0..1023` has every bucket at or below
+/// 1023 and a whole-keyspace store spreads over 4.29e9, so `max(bucket_map.keys())` separates them
+/// almost always -- and ALMOST is the problem. A whole-keyspace store whose keys all fall below 1024
+/// is indistinguishable from a narrow one, at about 2.4e-7 for a single key. A wrong inference is
+/// silent, and silence is the defect this whole file exists to remove, so the arm refuses instead.
 ///
-/// THIS IS ALSO THE NEGATIVE CONTROL ON THE REFUSAL. The arm above shows the gate firing; this arm
-/// shows it NOT firing on an input where it must not, over the same store, the same ranges and the
-/// same engine. Without it, a gate that refused every load at all would pass the arm above.
+/// FOUR LEVELS, because "it returned an error" would hold for the wrong error:
+///
+///   1. the load is NOT ok;
+///   2. the code is exactly `routing_range_unstamped` -- NOT `routing_range_mismatch`, because the
+///      remedies differ: a mismatch means the range is known and the configuration is wrong;
+///   3. the message names the file that would record the range, since that is the whole remedy; and
+///   4. the shard is NOT in the served map -- a refusal that still installed it would be a warning.
+///
+/// AND TWO CONTROLS, because a gate that fires everywhere is not a gate: the same store loads and
+/// serves every record with its stamp present, and a genuinely new store is still stamped and
+/// served rather than refused.
 ///
 /// rust-internal: drives the engine's own load path, no product behaviour
 #[test]
-fn a_store_that_predates_the_stamp_is_honoured_on_the_range_it_was_built_on() {
+fn a_store_that_predates_the_stamp_is_refused_rather_than_adopted_onto_a_guessed_range() {
     const RECORDS: usize = 200;
     let dir = tempfile::tempdir().expect("tempdir");
 
+    // PHASE ONE: an ordinary store on the shipped default, which stamps itself.
     let keys = {
         let engine = engine_on(dir.path());
-        load_on(&engine, LEGACY_END_ROUTING_BUCKET);
+        load_on(&engine, crate::DEFAULT_END_ROUTING_BUCKET);
         let keys = seed_routed(&engine, RECORDS);
-        assert_eq!(RECORDS, read_back(&engine, &keys), "the write arm cannot read itself back");
+        assert_eq!(
+            RECORDS,
+            read_back(&engine, &keys),
+            "the write arm cannot read its own store, so every verdict below is over a store that \
+             never worked"
+        );
         engine.flush_shard_index(1);
         engine.unload_shard(1);
         keys
     };
+    let index_dir = index_dir_of(dir.path());
 
-    // MAKE IT A PRE-STAMP STORE, and assert the deletion removed something.
-    let stamp = routing_range_stamp_path(&index_dir_of(dir.path()), 1);
+    // CONTROL ONE: WITH the stamp, this store loads and serves. Establishing this FIRST means a
+    // refusal below cannot be the store simply being broken.
+    {
+        let engine = engine_on(dir.path());
+        let status = try_load_on(&engine, crate::DEFAULT_END_ROUTING_BUCKET);
+        assert!(
+            status.ok,
+            "the stamped store did not load on the range it was built on: {status:?}"
+        );
+        assert_eq!(
+            RECORDS,
+            read_back(&engine, &keys),
+            "the stamped store served fewer than {RECORDS} records"
+        );
+        engine.unload_shard(1);
+    }
+
+    // Now make it a pre-stamp store: remove the file, which is byte-for-byte what a build older
+    // than the stamp left behind.
+    let stamp_path = routing_range_stamp_path(&index_dir, 1);
+    let saved = std::fs::read(&stamp_path).expect("the stamp exists to be saved");
+    std::fs::remove_file(&stamp_path).expect("the stamp is removable");
     assert!(
-        stamp.exists(),
-        "there is no stamp at {} to delete, so this fixture is not producing a pre-stamp store \
-         and every assertion below is about a different case",
-        stamp.display()
-    );
-    std::fs::remove_file(&stamp).expect("the stamp is removable");
-    assert!(
-        read_routing_range_stamp(&index_dir_of(dir.path()), 1).is_none(),
-        "the stamp is still readable after being removed"
+        read_routing_range_stamp(&index_dir, 1).is_none(),
+        "the stamp still reads back after removal, so the refusal below would be over a stamped \
+         store and would be testing nothing"
     );
 
-    // OPEN IT ASKING FOR THE NEW DEFAULT. It must LOAD, on the OLD range.
+    // THE REFUSAL.
     let engine = engine_on(dir.path());
+    let status = try_load_on(&engine, crate::DEFAULT_END_ROUTING_BUCKET);
+    println!(
+        "  unstamped store with state on disk, opened on 0..{}: ok={} code={} message={}",
+        crate::DEFAULT_END_ROUTING_BUCKET,
+        status.ok,
+        status.code,
+        status.message
+    );
+    assert!(
+        !status.ok,
+        "an unstamped store with {RECORDS} records on disk loaded successfully. The range its \
+         blocks are filed under is not recorded anywhere, so the load cannot know it and must not \
+         adopt one"
+    );
+    assert_eq!(
+        ROUTING_RANGE_UNSTAMPED, status.code,
+        "refused with code `{}` rather than `{ROUTING_RANGE_UNSTAMPED}`. A mismatch code would \
+         tell an operator to correct a range, and there is no range here to correct to",
+        status.code
+    );
+    assert!(
+        status.message.contains("routing-range.json"),
+        "the refusal does not name the file that records the range: {}. That file IS the remedy, \
+         so a message without it leaves an operator nothing to do",
+        status.message
+    );
+    assert!(
+        !engine
+            .shards
+            .read()
+            .expect("engine lock poisoned")
+            .contains_key(&1),
+        "the load was refused and the shard is in the served map anyway, so the refusal is a \
+         warning wearing an error's clothes"
+    );
+
+    // THE REMEDY THE MESSAGE PROMISES, DRIVEN. The message tells an operator to write the stamp if
+    // the range is known. If that did not actually recover the store the instruction would be a
+    // lie, and this is the only place that can catch it.
+    std::fs::write(&stamp_path, &saved).expect("the stamp is writable by hand");
     let status = try_load_on(&engine, crate::DEFAULT_END_ROUTING_BUCKET);
     assert!(
         status.ok,
-        "a store with pages on disk and no stamp was refused when asked for \
-         0..{}: {status:?}. Refusing here would stop every store written before the stamp existed \
-         from ever loading again",
-        crate::DEFAULT_END_ROUTING_BUCKET
+        "after writing the stamp the message asks for, the store still did not load: {status:?}. \
+         The refusal would then be a brick rather than a remedy"
     );
-
-    let carried = {
-        let shards = engine.shards.read().expect("engine lock poisoned");
-        shards.get(&1).expect("shard 1 is loaded").routing_range()
-    };
-    let readable = read_back(&engine, &keys);
-    let after = bucket_handle_sets(&engine);
-    let outside: Vec<u32> = after
-        .keys()
-        .copied()
-        .filter(|bucket| *bucket > carried.1)
-        .collect();
-    println!(
-        "  pre-stamp store asked for 0..{}: loaded carrying {carried:?}, {readable}/{RECORDS} \
-         readable, {} buckets, {} occupied above the carried end",
-        crate::DEFAULT_END_ROUTING_BUCKET,
-        after.len(),
-        outside.len()
-    );
-
-    // THE RANGE IT WAS BUILT ON WON, not the one it was asked for.
     assert_eq!(
-        (LEGACY_START_ROUTING_BUCKET, LEGACY_END_ROUTING_BUCKET),
-        carried,
-        "the pre-stamp store came up carrying {carried:?}. It was asked for 0..{}, and honouring \
-         that would file every subsequent write in a bucket group the existing pages are not in",
-        crate::DEFAULT_END_ROUTING_BUCKET
+        RECORDS,
+        read_back(&engine, &keys),
+        "the recovered store served fewer than {RECORDS} records, so the remedy restores the load \
+         without restoring the data"
     );
-    assert_eq!(RECORDS, readable, "{readable} of {RECORDS} records came back");
+
+    // CONTROL TWO: a genuinely new store -- no stamp AND no state -- is still stamped and served.
+    // This is the arm that says the refusal keys on STATE, not merely on the stamp's absence.
+    let fresh = tempfile::tempdir().expect("tempdir");
+    let engine = engine_on(fresh.path());
+    let status = try_load_on(&engine, crate::DEFAULT_END_ROUTING_BUCKET);
     assert!(
-        outside.is_empty(),
-        "{} buckets are occupied above the end the shard came up carrying: {outside:?}. The whole \
-         point of honouring the built range is that no page is out of range",
-        outside.len()
+        status.ok,
+        "a brand-new store with no stamp and nothing on disk was refused: {status:?}. The refusal \
+         must key on having STATE whose range is unknown, or no store could ever be created"
     );
-
-    // AND THE INFERENCE WAS RECORDED, so the next load does not have to make it again.
-    let stamped = read_routing_range_stamp(&index_dir_of(dir.path()), 1)
-        .expect("the adopted range was recorded");
+    let stamped = read_routing_range_stamp(&index_dir_of(fresh.path()), 1)
+        .expect("a new store records the range it was created on");
     assert_eq!(
-        (LEGACY_START_ROUTING_BUCKET, LEGACY_END_ROUTING_BUCKET),
+        (0, crate::DEFAULT_END_ROUTING_BUCKET),
         (stamped.start_routing_bucket, stamped.end_routing_bucket),
-        "the adoption recorded {stamped:?} rather than the range it adopted"
+        "a new store recorded {stamped:?} rather than the range it was asked for"
     );
 }
 
@@ -1596,7 +1655,7 @@ fn a_fresh_store_is_stamped_with_the_range_it_is_created_on() {
     for end_routing_bucket in [
         crate::DEFAULT_END_ROUTING_BUCKET,
         255,
-        LEGACY_END_ROUTING_BUCKET,
+        OLD_DEFAULT_END_ROUTING_BUCKET,
     ] {
         let dir = tempfile::tempdir().expect("tempdir");
         assert!(
@@ -1646,7 +1705,7 @@ fn the_convenience_load_is_deliberately_not_the_production_default() {
         crate::DEFAULT_END_ROUTING_BUCKET
     );
     assert_eq!(
-        (LEGACY_START_ROUTING_BUCKET, LEGACY_END_ROUTING_BUCKET),
+        (OLD_DEFAULT_START_ROUTING_BUCKET, OLD_DEFAULT_END_ROUTING_BUCKET),
         convenience,
         "`Engine::load_shard` now gives {convenience:?}. If it has been moved onto the production \
          default, every fixture that calls it has changed which `BlockIndexMap` arm it exercises \
@@ -1654,7 +1713,7 @@ fn the_convenience_load_is_deliberately_not_the_production_default() {
          and `load_shard`'s, are now wrong"
     );
     assert_ne!(
-        LEGACY_END_ROUTING_BUCKET,
+        OLD_DEFAULT_END_ROUTING_BUCKET,
         crate::DEFAULT_END_ROUTING_BUCKET,
         "the production default is still the whole keyspace, so the divergence this guard records \
          does not exist and the sweep in this module changed nothing"
@@ -1691,42 +1750,57 @@ fn the_routing_range_decision_covers_its_four_cases_in_the_right_order() {
             start_routing_bucket: 0,
             end_routing_bucket: 1023,
             write_stamp: true,
-            adopted_legacy: false,
         },
         decide_routing_range(&index_dir, 1, 0, 1023),
         "a new store was not given the range it asked for"
     );
 
-    // CASE 3: on-disk state, no stamp -- the built range is honoured and the request overridden.
+    // CASE 3: on-disk state, no stamp -- REFUSED. The range is not recoverable, so the load
+    // cannot be right about it and does not guess.
     std::fs::write(index_dir.join("shard-1.index.json"), b"{}").expect("write a base index");
     assert!(
         store_has_on_disk_state(&index_dir, 1),
         "a base index file on disk is not reported as on-disk state"
     );
-    assert_eq!(
-        RoutingRangeDecision::Load {
-            start_routing_bucket: LEGACY_START_ROUTING_BUCKET,
-            end_routing_bucket: LEGACY_END_ROUTING_BUCKET,
-            write_stamp: true,
-            adopted_legacy: true,
-        },
-        decide_routing_range(&index_dir, 1, 0, 1023),
-        "a pre-stamp store with pages was not honoured on the range it was built on"
-    );
-    // And asking for the legacy range is the SAME decision without the loud override, because
-    // nothing was overridden.
-    assert_eq!(
-        RoutingRangeDecision::Load {
-            start_routing_bucket: LEGACY_START_ROUTING_BUCKET,
-            end_routing_bucket: LEGACY_END_ROUTING_BUCKET,
-            write_stamp: true,
-            adopted_legacy: false,
-        },
-        decide_routing_range(&index_dir, 1, LEGACY_START_ROUTING_BUCKET, LEGACY_END_ROUTING_BUCKET),
-        "a pre-stamp store asked for the range it was built on reported an override anyway; \
-         `adopted_legacy` is what the caller logs, and logging it here would cry wolf on every \
-         ordinary start"
-    );
+    match decide_routing_range(&index_dir, 1, 0, 1023) {
+        RoutingRangeDecision::Refuse { code, message } => {
+            assert_eq!(
+                ROUTING_RANGE_UNSTAMPED, code,
+                "an unstamped store was refused with code `{code}`, not \
+                 `{ROUTING_RANGE_UNSTAMPED}`. The mismatch code means the range is KNOWN and the \
+                 configuration is wrong, which is a different remedy"
+            );
+            assert!(
+                message.contains("routing-range.json"),
+                "the refusal does not name the file that would record the range: {message}"
+            );
+        }
+        other => panic!(
+            "an unstamped store with state on disk was not refused: {other:?}. This arm used to \
+             ADOPT the whole keyspace, which silently mis-ranged every store built narrow before \
+             the stamp existed"
+        ),
+    }
+    // AND ASKING FOR THE OLD DEFAULT IS REFUSED TOO, which is the half most likely to be lost in a
+    // rewrite. The old behaviour treated a request for the whole keyspace as agreeing with what it
+    // assumed the store was built on, so that request loaded where every other one was overridden.
+    // There is nothing to agree WITH now: an absent stamp is absent whatever is asked for.
+    match decide_routing_range(
+        &index_dir,
+        1,
+        OLD_DEFAULT_START_ROUTING_BUCKET,
+        OLD_DEFAULT_END_ROUTING_BUCKET,
+    ) {
+        RoutingRangeDecision::Refuse { code, .. } => assert_eq!(
+            ROUTING_RANGE_UNSTAMPED, code,
+            "refused with `{code}` rather than `{ROUTING_RANGE_UNSTAMPED}`"
+        ),
+        other => panic!(
+            "an unstamped store asked for the OLD DEFAULT was not refused: {other:?}. A store \
+             built narrow before the stamp existed would load on the whole keyspace exactly as it \
+             did before this change"
+        ),
+    }
 
     // CASE 3 AGAIN, THROUGH THE OTHER DOOR: a store with NO base index but durable bucket dump
     // manifests. A load recovers from those, so such a store is not new -- and this arm exists
@@ -1750,17 +1824,17 @@ fn the_routing_range_decision_covers_its_four_cases_in_the_right_order() {
          calling it new stamps it with the range it was asked for instead of the range it was \
          built on"
     );
-    assert_eq!(
-        RoutingRangeDecision::Load {
-            start_routing_bucket: LEGACY_START_ROUTING_BUCKET,
-            end_routing_bucket: LEGACY_END_ROUTING_BUCKET,
-            write_stamp: true,
-            adopted_legacy: true,
-        },
-        decide_routing_range(&index_dir, 1, 0, 1023),
-        "a store recoverable only from its dump manifests was not honoured on the range it was \
-         built on"
-    );
+    match decide_routing_range(&index_dir, 1, 0, 1023) {
+        RoutingRangeDecision::Refuse { code, .. } => assert_eq!(
+            ROUTING_RANGE_UNSTAMPED, code,
+            "a store recoverable only from its dump manifests was refused with `{code}` rather \
+             than `{ROUTING_RANGE_UNSTAMPED}`"
+        ),
+        other => panic!(
+            "a store recoverable only from its dump manifests was not refused: {other:?}. It has \
+             state and no stamp, so its range is no more recoverable than one with a base index"
+        ),
+    }
     // Put the base index back so the cases below are over the shape they describe.
     std::fs::write(index_dir.join("shard-1.index.json"), b"{}").expect("write a base index");
     std::fs::remove_file(manifest_dir.join("dump-0001.json")).expect("removable");
@@ -1780,7 +1854,6 @@ fn the_routing_range_decision_covers_its_four_cases_in_the_right_order() {
             start_routing_bucket: 0,
             end_routing_bucket: 1023,
             write_stamp: false,
-            adopted_legacy: false,
         },
         decide_routing_range(&index_dir, 1, 0, 1023),
         "an agreeing stamp did not load cleanly"
@@ -1789,9 +1862,14 @@ fn the_routing_range_decision_covers_its_four_cases_in_the_right_order() {
     // CASE 2: a stamp that disagrees -- REFUSE. Both directions, because narrowing and widening
     // are not the same hazard and neither is safe: widening leaves blocks inside the new range but
     // routes every new write to a different bucket than a re-read would compute from the key.
-    for (requested_start, requested_end) in [(0, 255), (0, LEGACY_END_ROUTING_BUCKET), (1, 1023)] {
+    for (requested_start, requested_end) in [(0, 255), (0, OLD_DEFAULT_END_ROUTING_BUCKET), (1, 1023)] {
         match decide_routing_range(&index_dir, 1, requested_start, requested_end) {
-            RoutingRangeDecision::Refuse { message } => {
+            RoutingRangeDecision::Refuse { code, message } => {
+                assert_eq!(
+                    "routing_range_mismatch", code,
+                    "a DISAGREEING stamp was refused with `{code}`; the two refusals have \
+                     different remedies and must keep different codes"
+                );
                 assert!(
                     message.contains("1023") && message.contains(&requested_end.to_string()),
                     "the refusal for {requested_start}..{requested_end} names neither the stamped \
@@ -2164,5 +2242,126 @@ fn a_command_that_names_no_page_derives_no_bucket_and_a_read_derives_two() {
         0, keyless_key_bytes,
         "the keyless arm hashed {keyless_key_bytes} key bytes, which cannot happen if it derived no \
          bucket; the two counters disagree and one of them is not counting what it says"
+    );
+}
+
+/// A CANDIDATE RANGE CAN BE CHECKED AFTER STAMPING IT, WHICH IS WHAT MAKES THE UNKNOWN CASE
+/// RECOVERABLE.
+///
+/// The refusal above leaves an operator two situations. If the range the store was built on is
+/// KNOWN, they stamp it and load -- driven in that test. If it is NOT known, the honest answer is
+/// that the store cannot be recovered safely by guessing, and re-ingesting is the reliable option.
+/// But a guess is not unfalsifiable: a stamped range can be CHECKED, and this is the check.
+///
+/// `validate_bucket_ownership_index` recomputes every live block's bucket from the loaded range and
+/// counts the blocks whose address claims a different one. An operator reaches that count as
+/// `owner_mismatch_block_refs` on the recovery boundary report and as
+/// `owner_mismatch_block_ref_count` on the production readiness report. So the loop is: stamp a
+/// candidate, load on it, read the count. **Zero means the candidate is consistent with every block
+/// in the store; nonzero names the blocks that disagree.**
+///
+/// THIS IS THE SAME ARITHMETIC THAT WAS REJECTED AS AN INFERENCE, AND THE DISTINCTION IS THE POINT.
+/// Asking "which range was this built on?" unprompted is not answerable -- a whole-keyspace store
+/// whose keys all fall below 1024 looks exactly like a narrow one. Asking "is THIS range consistent
+/// with every block?" is answerable, because it has a candidate to test and every block votes. A
+/// wrong candidate is caught by the blocks that do not fit; it is only the absence of a candidate
+/// that cannot be resolved.
+///
+/// DRIVEN IN BOTH DIRECTIONS, because a check that answered zero for everything would read as a
+/// confirmation of whatever was tried first.
+///
+/// rust-internal: drives the engine's own ownership validation, no product behaviour
+#[test]
+fn a_stamped_candidate_range_is_checkable_even_when_the_built_range_was_not_known() {
+    const RECORDS: usize = 200;
+    let dir = tempfile::tempdir().expect("tempdir");
+
+    // A store genuinely built on the narrow range -- the population the old adoption mis-ranged.
+    let keys = {
+        let engine = engine_on(dir.path());
+        load_on(&engine, crate::DEFAULT_END_ROUTING_BUCKET);
+        let keys = seed_routed(&engine, RECORDS);
+        assert_eq!(RECORDS, read_back(&engine, &keys), "the write arm cannot read itself back");
+        engine.flush_shard_index(1);
+        engine.unload_shard(1);
+        keys
+    };
+    let index_dir = index_dir_of(dir.path());
+    let stamp_path = routing_range_stamp_path(&index_dir, 1);
+    std::fs::remove_file(&stamp_path).expect("the stamp is removable");
+
+    /// Stamp a candidate range, load on it, and report what the check says.
+    fn try_candidate(
+        dir: &std::path::Path,
+        index_dir: &std::path::Path,
+        end_routing_bucket: u32,
+        keys: &[String],
+    ) -> (usize, usize) {
+        std::fs::write(
+            routing_range_stamp_path(index_dir, 1),
+            format!(
+                "{{\"start_routing_bucket\":0,\"end_routing_bucket\":{end_routing_bucket}}}"
+            ),
+        )
+        .expect("the stamp is writable by hand");
+        let engine = engine_on(dir);
+        let status = try_load_on(&engine, end_routing_bucket);
+        assert!(
+            status.ok,
+            "a store stamped with 0..{end_routing_bucket} and loaded on the same range was \
+             refused: {status:?}. The candidate loop needs the load to SUCCEED so the check below \
+             is what rejects a wrong range, not the stamp comparison"
+        );
+        let boundary = engine.storage_recovery_boundary_report(1);
+        let mismatches = boundary.owner_mismatch_block_refs.len();
+        let readable = read_back(&engine, keys);
+        engine.unload_shard(1);
+        (mismatches, readable)
+    }
+
+    // THE WRONG CANDIDATE: the whole keyspace, which is exactly what the old arm adopted.
+    let (wrong_mismatches, wrong_readable) =
+        try_candidate(dir.path(), &index_dir, u32::MAX, &keys);
+    println!(
+        "  candidate 0..{}: {wrong_mismatches} blocks claim a bucket this range does not compute, \
+         {wrong_readable}/{RECORDS} records still readable",
+        u32::MAX
+    );
+
+    // THE RIGHT CANDIDATE: the range it was actually built on.
+    let (right_mismatches, right_readable) =
+        try_candidate(dir.path(), &index_dir, crate::DEFAULT_END_ROUTING_BUCKET, &keys);
+    println!(
+        "  candidate 0..{}: {right_mismatches} blocks disagree, {right_readable}/{RECORDS} records \
+         readable",
+        crate::DEFAULT_END_ROUTING_BUCKET
+    );
+
+    // THE CHECK DISCRIMINATES, which is the whole claim.
+    assert_eq!(
+        0, right_mismatches,
+        "the range the store was BUILT on reports {right_mismatches} owner mismatches. If the \
+         correct candidate does not come back clean the check cannot confirm anything"
+    );
+    assert!(
+        wrong_mismatches > 0,
+        "the WRONG candidate reported {wrong_mismatches} owner mismatches. A check that answers \
+         zero for a range the store was not built on would confirm whatever an operator tried \
+         first, which is worse than having no check at all"
+    );
+    // AND THE READS DO NOT DISTINGUISH THEM -- which is why the count is the instrument and
+    // "the records come back" is not.
+    assert_eq!(
+        (RECORDS, RECORDS),
+        (wrong_readable, right_readable),
+        "the two candidates served {wrong_readable} and {right_readable} of {RECORDS} records. \
+         Both are expected to serve everything: a mis-ranged store reads perfectly, and if reading \
+         could tell them apart the silent state this whole file addresses would never have existed"
+    );
+    println!(
+        "  the check discriminates ({wrong_mismatches} against {right_mismatches}) while reading \
+         does not ({wrong_readable} against {right_readable} of {RECORDS}); `max(bucket ids)` is \
+         rejected as an INFERENCE and sound as a VERIFICATION because a candidate gives every \
+         block a vote"
     );
 }
