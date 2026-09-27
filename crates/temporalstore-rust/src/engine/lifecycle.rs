@@ -1366,7 +1366,8 @@ impl TemporalEngine {
                         }
                     }
                     ("set", Some(encoded)) => {
-                        let Ok(member) = hex::decode(encoded) else {
+                        let Some(member) = super::execute_on_shard::parse_set_component(encoded)
+                        else {
                             return false;
                         };
                         if let Some(members) = shard.sets.get_mut(&item.object_key) {
@@ -1374,20 +1375,18 @@ impl TemporalEngine {
                         }
                     }
                     ("list", Some(encoded)) => {
-                        let Ok(biased) = u64::from_str_radix(encoded, 16) else {
+                        let Some(sequence) = super::execute_on_shard::parse_list_component(encoded)
+                        else {
                             return false;
                         };
-                        let sequence = biased.wrapping_add(i64::MIN as u64) as i64;
                         if let Some(elements) = shard.lists.get_mut(&item.object_key) {
                             elements.remove(&sequence);
                         }
                     }
                     ("zset", Some(encoded)) => {
-                        if encoded.len() < 16 {
-                            return false;
-                        }
-                        let (_score_hex, member_hex) = encoded.split_at(16);
-                        let Ok(member) = hex::decode(member_hex) else {
+                        let Some((_biased, member)) =
+                            super::execute_on_shard::parse_zset_component(encoded)
+                        else {
                             return false;
                         };
                         if let Some(members) = shard.zsets.get_mut(&item.object_key) {
@@ -1500,14 +1499,15 @@ impl TemporalEngine {
                     .insert(field, address);
                 true
             }
-            // set: the component is the member, hex encoded.
+            // set: the component is the member, spelled.
             "set" => {
                 let (Some(address), Some(component)) =
                     (item.resolved_address(), item.component.clone())
                 else {
                     return false;
                 };
-                let Ok(member) = hex::decode(&component) else {
+                let Some(member) = super::execute_on_shard::parse_set_component(&component)
+                else {
                     return false;
                 };
                 super::upsert_bucket_index_block(
@@ -1526,17 +1526,17 @@ impl TemporalEngine {
                     .insert(member, address);
                 true
             }
-            // list: sixteen hex digits of the sequence, biased so the text sorts in list order.
+            // list: the sequence, biased so the spelling sorts in list order.
             "list" => {
                 let (Some(address), Some(component)) =
                     (item.resolved_address(), item.component.clone())
                 else {
                     return false;
                 };
-                let Ok(biased) = u64::from_str_radix(&component, 16) else {
+                let Some(sequence) = super::execute_on_shard::parse_list_component(&component)
+                else {
                     return false;
                 };
-                let sequence = biased.wrapping_add(i64::MIN as u64) as i64;
                 super::upsert_bucket_index_block(
                     shard,
                     shard_id,
@@ -1553,19 +1553,15 @@ impl TemporalEngine {
                     .insert(sequence, address);
                 true
             }
-            // zset: sixteen hex digits of the biased score, then the member in hex.
+            // zset: the biased score, then the member -- both spelled.
             "zset" => {
                 let (Some(address), Some(component)) =
                     (item.resolved_address(), item.component.clone())
                 else {
                     return false;
                 };
-                if component.len() < 16 {
-                    return false;
-                }
-                let (score_hex, member_hex) = component.split_at(16);
-                let (Ok(biased), Ok(member)) =
-                    (u64::from_str_radix(score_hex, 16), hex::decode(member_hex))
+                let Some((biased, member)) =
+                    super::execute_on_shard::parse_zset_component(&component)
                 else {
                     return false;
                 };
@@ -1612,7 +1608,7 @@ impl TemporalEngine {
                 let Some(component) = item.component.clone() else {
                     return false;
                 };
-                let Ok(stored_key) = component.parse::<u64>() else {
+                let Some(stored_key) = crate::component_name::parse_u64(&component) else {
                     return false;
                 };
                 if !item.deleted && item.address.is_none() {
@@ -1653,22 +1649,24 @@ impl TemporalEngine {
                 true
             }
             // context_event: the page is timestamp-keyed but the index entry is keyed by the
-            // event id, so the component carries both -- sixteen hex digits of the timeline key,
-            // then sixteen of the id. Two maps have to move together: the primary, and the time
-            // index that every windowed read goes through. Installing only the primary leaves a
+            // event id, so the component carries both -- the timeline key spelled, then the id.
+            // Two maps have to move together: the primary, and the time index that every windowed
+            // read goes through. Installing only the primary leaves a
             // shard whose events exist and whose time queries return nothing.
             "context_event" => {
                 let Some(component) = item.component.clone() else {
                     return false;
                 };
-                if component.len() != 32 {
-                    return false;
-                }
-                let (timeline_hex, id_hex) = component.split_at(16);
-                let (Ok(timeline_key), Ok(event_id_hash)) = (
-                    u64::from_str_radix(timeline_hex, 16),
-                    u64::from_str_radix(id_hex, 16),
-                ) else {
+                let Some((timeline_key, event_id_hash)) = component
+                    .split_at_checked(crate::component_name::U64_CHARS)
+                    .filter(|(_, id)| id.len() == crate::component_name::U64_CHARS)
+                    .and_then(|(timeline, id)| {
+                        Some((
+                            crate::component_name::parse_u64(timeline)?,
+                            crate::component_name::parse_u64(id)?,
+                        ))
+                    })
+                else {
                     return false;
                 };
                 if !item.deleted && item.address.is_none() {
@@ -1744,7 +1742,7 @@ impl TemporalEngine {
                 else {
                     return false;
                 };
-                let Ok(entity_hash) = component.parse::<u64>() else {
+                let Some(entity_hash) = crate::component_name::parse_u64(&component) else {
                     return false;
                 };
                 shard
@@ -1774,8 +1772,8 @@ impl TemporalEngine {
                 else {
                     return false;
                 };
-                let (Ok(bucket_ms), Ok(total)) = (
-                    component.parse::<u64>(),
+                let (Some(bucket_ms), Ok(total)) = (
+                    crate::component_name::parse_u64(&component),
                     bytes.as_slice().try_into().map(i64::from_le_bytes),
                 ) else {
                     return false;
@@ -1794,7 +1792,7 @@ impl TemporalEngine {
                 else {
                     return false;
                 };
-                let Ok(bucket_ms) = component.parse::<u64>() else {
+                let Some(bucket_ms) = crate::component_name::parse_u64(&component) else {
                     return false;
                 };
                 super::hll::record_change(shard, &item.object_key, bucket_ms, value);

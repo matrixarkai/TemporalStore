@@ -2321,10 +2321,19 @@ pub(crate) fn eager_cache_warm_on_load() -> bool {
 ///
 /// 1 = pre-rekey: context_events keyed by timeline_key.
 /// 2 = context_events keyed by event_id_hash, with context_event_timeline carrying time order.
+/// 3 = derived component names spelled by `crate::component_name` instead of in hexadecimal or
+///     decimal. `component` is a `str` at both versions and every character of both spellings is a
+///     legal one, so a version-2 index decodes into a version-3 binary CLEANLY and names elements
+///     that no lookup will ever ask for: a zset member whose name was `{score:016x}` + hex(member)
+///     is asked for under an eleven-character score and a 1.334x member, finds nothing, and the
+///     write that should have replaced its page leaves it live and adds a second. An eighteen-
+///     character version-2 zset name (a one-byte member) is even a WELL-FORMED version-3 name for a
+///     five-byte member, so the mis-read is not merely unnoticed, it is undetectable per name.
+///     `a_store_written_at_the_hexadecimal_spelling_is_refused_not_misread` is the plant.
 ///
 /// Bump this whenever a field's MEANING changes, not only when its type does -- a same-typed
 /// reinterpretation is the case that decodes cleanly and serves wrong data.
-pub(super) const SHARD_INDEX_FORMAT_VERSION: u32 = 2;
+pub(super) const SHARD_INDEX_FORMAT_VERSION: u32 = 3;
 
 /// Serialize a shard index, stamping the current format version.
 ///
@@ -2919,9 +2928,11 @@ fn command_upsert_components(
                 member,
             )),
         )]),
-        Command::SetAdd { key, member } => {
-            Some(vec![("set", key.clone(), Some(hex::encode(member)))])
-        }
+        Command::SetAdd { key, member } => Some(vec![(
+            "set",
+            key.clone(),
+            Some(crate::engine::execute_on_shard::set_component(member)),
+        )]),
         // A push files its page under its sequence number, which is only knowable once the
         // write has landed: post-apply the pushed element is the list's FIRST entry for a left
         // push and its LAST for a right one. That is why this needs shard state and the other
@@ -2937,7 +2948,7 @@ fn command_upsert_components(
             Some(vec![(
                 "list",
                 key.clone(),
-                Some(format!("{:016x}", (seq as u64).wrapping_sub(i64::MIN as u64))),
+                Some(crate::engine::execute_on_shard::list_component(seq)),
             )])
         }
         _ => None,
@@ -2964,25 +2975,25 @@ fn collect_upsert_index_items(
                 .and_then(|fields| fields.get(field))
                 .cloned(),
             ("string", None) => shard.strings.get(object_key).cloned(),
-            // `zset_component` is `{biased:016x}` followed by hex(member), so the member the map is
-            // keyed by is recoverable from the component it was filed under.
-            ("zset", Some(component)) => component
-                .get(16..)
-                .and_then(|member_hex| hex::decode(member_hex).ok())
-                .and_then(|member| {
+            // `zset_component` is a spelled `u64` followed by the spelled member, so the member
+            // the map is keyed by is recoverable from the component it was filed under.
+            ("zset", Some(component)) => crate::engine::execute_on_shard::parse_zset_component(
+                component,
+            )
+                .and_then(|(_biased, member)| {
                     shard
                         .zsets
                         .get(object_key)
                         .and_then(|members| members.get(&member))
                         .map(|(_, address)| address.clone())
                 }),
-            // `hex::encode(member)` is the component a set add files its page under, so
-            // the member the map is keyed by is recoverable from the component itself.
-            // `{biased:016x}` of the entry's sequence, so the key the list map is keyed by
-            // is recoverable from the component it was filed under.
-            ("list", Some(component)) => u64::from_str_radix(component, 16)
-                .ok()
-                .map(|biased| biased.wrapping_add(i64::MIN as u64) as i64)
+            // The spelled sequence of the entry, so the key the list map is keyed by is
+            // recoverable from the component it was filed under. (The comment that used to sit
+            // here described the SET spelling, above the LIST arm, and named a spelling that has
+            // since changed -- a misfiled note is one nothing rereads.)
+            ("list", Some(component)) => crate::engine::execute_on_shard::parse_list_component(
+                component,
+            )
                 .and_then(|seq| {
                     shard
                         .lists
@@ -2990,8 +3001,9 @@ fn collect_upsert_index_items(
                         .and_then(|entries| entries.get(&seq))
                         .cloned()
                 }),
-            ("set", Some(component)) => hex::decode(component)
-                .ok()
+            ("set", Some(component)) => crate::engine::execute_on_shard::parse_set_component(
+                component,
+            )
                 .and_then(|member| {
                     shard
                         .sets
@@ -3047,7 +3059,10 @@ fn collect_upsert_index_items(
 /// keep restating the whole object until the component is carried out of the arm.
 fn command_removed_component(command: &Command) -> Option<(&'static str, Option<String>)> {
     match command {
-        Command::SetRemove { member, .. } => Some(("set", Some(hex::encode(member)))),
+        Command::SetRemove { member, .. } => Some((
+            "set",
+            Some(crate::engine::execute_on_shard::set_component(member)),
+        )),
         Command::HashDelete { field, .. } => Some(("hash", Some(field.clone()))),
         _ => None,
     }

@@ -230,7 +230,20 @@ impl TemporalEngine {
                     // Refusing is treated exactly like a corrupt or absent index: the caller
                     // falls back to WAL replay, which rebuilds both maps correctly through
                     // insert_context_event_views. Slower, and correct.
+                    //
+                    // SAID OUT LOUD, naming both versions. The container-level check in
+                    // `decode_index_bytes` already does; this one returned `Ok(None)` and nothing
+                    // else, so an index refused here was indistinguishable from an index that was
+                    // never written -- and the two call for opposite responses from an operator.
+                    // A refusal is still a fall-through to replay, so this logs rather than fails.
                     if shard.index_format_version < super::SHARD_INDEX_FORMAT_VERSION {
+                        eprintln!(
+                            "shard {shard_id}: refusing the served index, which was written at \
+                             on-disk shape {} and this binary reads {}; falling back to log \
+                             replay",
+                            shard.index_format_version,
+                            super::SHARD_INDEX_FORMAT_VERSION
+                        );
                         return Ok(None);
                     }
                     shard

@@ -2939,7 +2939,7 @@ fn visit_model_live_blocks(
         for (key, members) in &shard.zsets {
             for (member, (biased, address)) in members.iter() {
                 if accept(address) {
-                    let component = format!("{biased:016x}{}", hex::encode(member));
+                    let component = super::execute_on_shard::zset_component(*biased, member);
                     emit(ModelKind::Zset, key, Some(component.as_str()), address);
                 }
             }
@@ -2947,7 +2947,7 @@ fn visit_model_live_blocks(
         for (key, elements) in &shard.lists {
             for (seq, address) in elements.iter() {
                 if accept(address) {
-                    let component = format!("{:016x}", (*seq as u64).wrapping_sub(i64::MIN as u64));
+                    let component = super::execute_on_shard::list_component(*seq);
                     emit(ModelKind::List, key, Some(component.as_str()), address);
                 }
             }
@@ -2955,7 +2955,7 @@ fn visit_model_live_blocks(
         for (key, members) in &shard.sets {
             for (member, address) in members.iter() {
                 if accept(address) {
-                    let component = hex::encode(member);
+                    let component = super::execute_on_shard::set_component(member);
                     emit(ModelKind::Set, key, Some(component.as_str()), address);
                 }
             }
@@ -4195,7 +4195,7 @@ pub(super) fn reconcile_secondary_views_from_bucket_index(
                 let member = entry
                     .component
                     .as_deref()
-                    .and_then(|component| hex::decode(component).ok())
+                    .and_then(super::execute_on_shard::parse_set_component)
                     .unwrap_or_default();
                 sets.entry(entry.object_key.to_string())
                     .or_default()
@@ -4203,18 +4203,15 @@ pub(super) fn reconcile_secondary_views_from_bucket_index(
             }
             "zset" => {
                 saw_zsets = true;
-                if let Some(component) = entry.component.as_deref() {
-                    if component.len() > 16 {
-                        if let (Ok(biased), Ok(member)) = (
-                            u64::from_str_radix(&component[..16], 16),
-                            hex::decode(&component[16..]),
-                        ) {
-                            zsets
-                                .entry(entry.object_key.to_string())
-                                .or_default()
-                                .insert(member, (biased, entry.address));
-                        }
-                    }
+                if let Some((biased, member)) = entry
+                    .component
+                    .as_deref()
+                    .and_then(super::execute_on_shard::parse_zset_component)
+                {
+                    zsets
+                        .entry(entry.object_key.to_string())
+                        .or_default()
+                        .insert(member, (biased, entry.address));
                 }
             }
             "list" => {
@@ -4222,8 +4219,7 @@ pub(super) fn reconcile_secondary_views_from_bucket_index(
                 let seq = entry
                     .component
                     .as_deref()
-                    .and_then(|component| u64::from_str_radix(component, 16).ok())
-                    .map(|biased| biased.wrapping_add(i64::MIN as u64) as i64)
+                    .and_then(super::execute_on_shard::parse_list_component)
                     .unwrap_or_default();
                 lists
                     .entry(entry.object_key.to_string())

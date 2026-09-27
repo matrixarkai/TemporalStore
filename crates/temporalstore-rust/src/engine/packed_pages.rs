@@ -91,11 +91,23 @@ fn feature_point_encoded_len(point: &FeaturePoint) -> usize {
 /// entry. A context event is not: its page is timestamp-keyed but its index entry is keyed by the
 /// event id, so the timestamp alone names nothing and the identity has to travel with it. Packing
 /// both is what list and zset already do with their own keys.
+///
+/// NEITHER ARM CARRIES A BYTE OF USER DATA. Both are `u64`s, and both used to be spelled out as
+/// text: the pair as thirty-two hexadecimal characters for sixteen bytes, the lone key as up to
+/// twenty decimal ones for eight. They did not even share an alphabet, so the two arms of one
+/// function produced names that do not sort against each other. Both are now
+/// [`crate::component_name`]'s fixed-width spelling -- twenty-two characters and eleven -- one
+/// alphabet for both arms, sorting in the values' own order.
 pub(super) fn timestamped_component(stored_key: u64, identity: Option<u64>) -> String {
-    match identity {
-        Some(identity) => format!("{stored_key:016x}{identity:016x}"),
-        None => stored_key.to_string(),
+    let mut name = String::with_capacity(match identity {
+        Some(_) => 2 * crate::component_name::U64_CHARS,
+        None => crate::component_name::U64_CHARS,
+    });
+    crate::component_name::push_u64(&mut name, stored_key);
+    if let Some(identity) = identity {
+        crate::component_name::push_u64(&mut name, identity);
     }
+    name
 }
 
 fn stage_timestamped_outcomes(

@@ -779,7 +779,7 @@ pub(crate) fn execute_on_shard(
         }
         Command::SetAdd { key, member } => {
             remove_if_expired(shard, &key);
-            let member_component = hex::encode(&member);
+            let member_component = set_component(&member);
             let object_id = stable_block_object_id(shard_id, "set", &key, Some(&member_component));
             let routing_bucket =
                 block_routing_bucket(&key, start_routing_bucket, end_routing_bucket);
@@ -1258,9 +1258,7 @@ pub(crate) fn execute_on_shard(
                     list.keys().next_back().copied().map_or(0, |last| last + 1)
                 }
             };
-            // Two's-complement bias makes the hex component sort lexically in list order,
-            // which is what lets recovery and range reads walk the bucket index directly.
-            let component = format!("{:016x}", (seq as u64).wrapping_sub(i64::MIN as u64));
+            let component = list_component(seq);
             let object_id = stable_block_object_id(shard_id, "list", &key, Some(&component));
             let routing_bucket =
                 block_routing_bucket(&key, start_routing_bucket, end_routing_bucket);
@@ -1311,7 +1309,7 @@ pub(crate) fn execute_on_shard(
             match popped {
                 None => CommandResponse::Bytes { value: None },
                 Some((seq, address)) => {
-                    let component = format!("{:016x}", (seq as u64).wrapping_sub(i64::MIN as u64));
+                    let component = list_component(seq);
                     mutated = true;
                     mark_bucket_index_block_deleted(shard, shard_id, "list", &key, Some(&component));
                     if shard.lists.get(&key).is_some_and(BTreeMap::is_empty) {
@@ -1409,7 +1407,7 @@ pub(crate) fn execute_on_shard(
         }
         Command::SetRemove { key, member } => {
             mutated |= drop_if_expired(cache, shard_id, shard, &key);
-            let member_component = hex::encode(&member);
+            let member_component = set_component(&member);
             mutated |= mark_bucket_index_block_deleted(
                 shard,
                 shard_id,
@@ -1973,7 +1971,7 @@ pub(crate) fn execute_on_shard(
                 shard_id,
                 "control_counter",
                 &key,
-                Some(timestamp_ms.to_string()),
+                Some(crate::component_name::u64_text(timestamp_ms)),
                 block_routing_bucket(&key, start_routing_bucket, end_routing_bucket),
                 None,
                 Some(resulting.to_le_bytes().to_vec()),
@@ -2073,7 +2071,7 @@ pub(crate) fn execute_on_shard(
                 shard_id,
                 "control_change",
                 &key,
-                Some(bucket_ms.to_string()),
+                Some(crate::component_name::u64_text(bucket_ms)),
                 block_routing_bucket(&key, start_routing_bucket, end_routing_bucket),
                 None,
                 Some(value.clone()),
@@ -3433,7 +3431,7 @@ pub(crate) fn execute_on_shard(
                     shard_id,
                     "context_entity",
                     &collection_key,
-                    Some(entity.entity_hash.to_string()),
+                    Some(crate::component_name::u64_text(entity.entity_hash)),
                     routing_bucket,
                     Some(address.clone()),
                     None,
@@ -4021,8 +4019,57 @@ pub(super) fn zset_score_string(biased: u64) -> String {
 }
 
 /// The persisted component: score bits then member, so lexical order is (score, member) order.
+///
+/// Both halves are [`crate::component_name`]'s spelling, which is what keeps that sentence true:
+/// its alphabet ascends, so a byte-wise comparison of two names is still a comparison of
+/// (score bits, member). The hexadecimal it replaced spent sixteen characters on the eight bytes
+/// of score and two on every byte of member; this spends eleven and 1.334.
 pub(super) fn zset_component(biased: u64, member: &[u8]) -> String {
-    format!("{biased:016x}{}", hex::encode(member))
+    let mut name = String::with_capacity(
+        crate::component_name::U64_CHARS + crate::component_name::bytes_chars(member.len()),
+    );
+    crate::component_name::push_u64(&mut name, biased);
+    crate::component_name::push_bytes(&mut name, member);
+    name
+}
+
+/// The (score bits, member) a zset component names, or `None` for anything this did not write.
+///
+/// Three places used to spell this parse out and each one spelled it slightly differently: one
+/// demanded more than sixteen characters, one demanded at least sixteen, one demanded nothing and
+/// indexed. They agreed on every input the producer makes, which is exactly why a change of
+/// spelling would have left some of them reading the new names and some of them not.
+pub(super) fn parse_zset_component(component: &str) -> Option<(u64, Vec<u8>)> {
+    let (score, member) = component.split_at_checked(crate::component_name::U64_CHARS)?;
+    Some((
+        crate::component_name::parse_u64(score)?,
+        crate::component_name::parse_bytes(member)?,
+    ))
+}
+
+/// The component a set member is filed under: the member itself, spelled.
+pub(super) fn set_component(member: &[u8]) -> String {
+    crate::component_name::bytes_text(member)
+}
+
+/// The member a set component names.
+pub(super) fn parse_set_component(component: &str) -> Option<Vec<u8>> {
+    crate::component_name::parse_bytes(component)
+}
+
+/// The component a list entry is filed under.
+///
+/// Two's-complement bias makes the spelling sort in list order, which is what lets recovery and
+/// range reads walk the bucket index directly -- and it needs the spelling to be fixed width and
+/// order preserving, which is what `component_name` is.
+pub(super) fn list_component(sequence: i64) -> String {
+    crate::component_name::u64_text((sequence as u64).wrapping_sub(i64::MIN as u64))
+}
+
+/// The sequence a list component names.
+pub(super) fn parse_list_component(component: &str) -> Option<i64> {
+    crate::component_name::parse_u64(component)
+        .map(|biased| biased.wrapping_add(i64::MIN as u64) as i64)
 }
 
 /// The members whose score falls in `[min_bits, max_bits]`, in score order.

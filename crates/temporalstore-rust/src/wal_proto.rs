@@ -409,18 +409,22 @@ fn numeric_component(kind: &str, component: Option<&str>) -> Option<(u64, Option
     let component = component?;
     match kind {
         "context_event" => {
-            if component.len() != 32 {
+            // Exactly two spelled `u64`s and nothing else. A component of any other width, or one
+            // holding a character outside the spelling's alphabet, is refused rather than
+            // truncated -- which is what makes the hexadecimal spelling this replaced fail to
+            // parse here instead of parsing as some other pair of numbers.
+            if component.len() != 2 * crate::component_name::U64_CHARS {
                 return None;
             }
-            let (stored, entry) = component.split_at(16);
+            let (stored, entry) = component.split_at(crate::component_name::U64_CHARS);
             Some((
-                u64::from_str_radix(stored, 16).ok()?,
-                Some(u64::from_str_radix(entry, 16).ok()?),
+                crate::component_name::parse_u64(stored)?,
+                Some(crate::component_name::parse_u64(entry)?),
             ))
         }
         "feature" | "context_index" | "context_audit" | "context_child" | "context_summary"
         | "context_compression" | "control_counter" | "control_change" => {
-            Some((component.parse::<u64>().ok()?, None))
+            Some((crate::component_name::parse_u64(component)?, None))
         }
         _ => None,
     }
@@ -430,16 +434,37 @@ fn numeric_component(kind: &str, component: Option<&str>) -> Option<(u64, Option
 /// The component text a reader rebuilds from the numeric fields, absent if there are none.
 ///
 /// Shared with `item_from_proto` on purpose. The writer decides whether to drop the object id by
-/// deriving it, and it has to derive against the component the READER will hold -- a numeric
-/// component does not round trip character for character, since `007` is written as the number
-/// seven and read back as `7`. Deriving against the pre-trip form would drop an id that then
-/// comes back different.
+/// deriving it, and it has to derive against the component the READER will hold. Deriving against
+/// the pre-trip form would drop an id that then comes back different.
+///
+/// Both arms are now FIXED WIDTH, so the round trip is character for character and the reason this
+/// note used to give for it not being -- `007` written as seven and read back as `7` -- no longer
+/// applies. The sharing still does: what a reader rebuilds must be spelled in exactly one place.
+/// This has to stay in step with `engine::packed_pages::timestamped_component`, whose arms it
+/// mirrors; `the_proto_rebuilds_the_component_the_producer_spelled` is the check that it does.
 fn numeric_component_text(timestamp_ms: Option<u64>, entry_id: Option<u64>) -> Option<String> {
     match (timestamp_ms, entry_id) {
-        (Some(stored), Some(entry)) => Some(format!("{stored:016x}{entry:016x}")),
-        (Some(stored), None) => Some(stored.to_string()),
+        (Some(stored), Some(entry)) => {
+            let mut text = String::with_capacity(2 * crate::component_name::U64_CHARS);
+            crate::component_name::push_u64(&mut text, stored);
+            crate::component_name::push_u64(&mut text, entry);
+            Some(text)
+        }
+        (Some(stored), None) => Some(crate::component_name::u64_text(stored)),
         (None, _) => None,
     }
+}
+
+/// `numeric_component_text` for the test that checks it against the producer it mirrors.
+///
+/// The renderer stays private -- one spelling, one home -- so the check reaches it through a named
+/// door rather than the module widening for everybody.
+#[cfg(test)]
+pub(crate) fn numeric_component_text_for_test(
+    timestamp_ms: u64,
+    entry_id: Option<u64>,
+) -> Option<String> {
+    numeric_component_text(Some(timestamp_ms), entry_id)
 }
 
 /// The object id an item has to write, or absent when the rest of the item already says it.
