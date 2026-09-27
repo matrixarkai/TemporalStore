@@ -1845,6 +1845,38 @@ fn the_bucket_a_block_is_filed_in_is_the_bucket_its_key_computes_within_one_rang
         let after_release = check(&engine, end_routing_bucket);
         report("after release_bucket_index_blocks", &after_release);
 
+        // PATH FOUR: THE RECONSTRUCT, DRIVEN EXPLICITLY. The stage above checks the blocks STILL IN
+        // the bucket map -- every block EXCEPT the released ones -- so on its own it says nothing
+        // about a block that comes BACK. `reload_released_bucket` re-derives a released bucket's
+        // entries from the model maps, and `rebuild_bucket_first_index` stamps only the object id
+        // onto an address, so a block can come out of a reconstruct carrying no bucket of its own.
+        //
+        // A READ DOES NOT TRIGGER IT, which is worth writing down because it is the obvious guess and
+        // it is wrong: a released bucket's data is still in the model maps, so a read is served from
+        // there and nothing is reconstructed. Measured while writing this -- 1184 live blocks before
+        // the reads and 1184 after. So the reload is called.
+        let released_count = released.0;
+        assert!(
+            released_count > 0,
+            "no bucket was released, so nothing is reconstructed below and this arm is vacuous"
+        );
+        let mut reconstructed = 0usize;
+        for routing_bucket in &buckets {
+            if engine.reload_released_bucket_index_blocks(1, *routing_bucket) {
+                reconstructed += 1;
+            }
+        }
+        println!(
+            "      reconstructed {reconstructed} of the {} buckets offered to the release",
+            buckets.len()
+        );
+        assert!(
+            reconstructed > 0,
+            "not one of the {} buckets came back through `reload_released_bucket`, so the stage \
+             below is checking the same blocks the release stage already checked",
+            buckets.len()
+        );
+
         // Reads must still work, or a clean verdict above would only mean the store is empty.
         let readable = read_back(&engine, &routed);
         assert_eq!(
@@ -1855,12 +1887,33 @@ fn the_bucket_a_block_is_filed_in_is_the_bucket_its_key_computes_within_one_rang
             routed.len()
         );
 
+        // NOW the reconstruct can be measured.
+        let after_reload = check(&engine, end_routing_bucket);
+        report("after reload_released_bucket", &after_reload);
+        assert!(
+            after_reload.blocks > after_release.blocks,
+            "the bucket map holds {} live blocks after {reconstructed} reloads against {} straight \
+             after the release, so the reconstruct put nothing back and this arm measures the same \
+             blocks the release stage already measured",
+            after_reload.blocks,
+            after_release.blocks
+        );
+        println!(
+            "      the reconstruct: {} blocks came back through `reload_released_bucket` ({} -> {}), \
+             {} of them carrying no bucket of their own",
+            after_reload.blocks - after_release.blocks,
+            after_release.blocks,
+            after_reload.blocks,
+            after_reload.unstamped
+        );
+
         // THE VERDICT, at every stage.
         for (stage, v) in [
             ("after the writes", &fresh),
             ("after flush", &flushed),
             ("after compaction", &after_compact),
             ("after release", &after_release),
+            ("after the reconstruct", &after_reload),
         ] {
             assert!(
                 v.filed_elsewhere.is_empty(),
@@ -1873,10 +1926,12 @@ fn the_bucket_a_block_is_filed_in_is_the_bucket_its_key_computes_within_one_rang
             );
         }
         println!(
-            "  VERDICT on 0..{end_routing_bucket}: across {} live blocks and four stages, the bucket \
-             a block is FILED in -- the `bucket_map` key this walk read -- IS the bucket its key \
-             computes. Neither side of that is the address, which carries no bucket at all.",
-            after_release.blocks
+            "  VERDICT on 0..{end_routing_bucket}: across {} live blocks and FIVE stages -- the \
+             writes, a flush, a compaction, a release and an explicit reconstruct -- the \
+             bucket a block is filed in IS the bucket its key computes, and {} blocks carry no \
+             bucket of their own. Neither side of that is the address, which carries no bucket \
+             at all.",
+            after_reload.blocks, after_reload.unstamped
         );
     }
 }
