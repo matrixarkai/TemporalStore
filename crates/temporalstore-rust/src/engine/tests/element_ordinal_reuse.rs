@@ -72,20 +72,24 @@
 //! **THE FIRST DRAFT OF THIS MODULE REFUTED IT ON THE WRONG GROUND AND THE TEST WENT RED.** The claim
 //! was that the reusing write clears it, reasoning off
 //! `deleted_object_index.remove(&object_id)` sitting four statements before the page insert. That
-//! call exists and it is in `sync_bucket_index_object_blocks_with_mode` -- the WHOLE-OBJECT restate
-//! path. `upsert_bucket_index_block_inner`, the path every container ELEMENT write takes, does
-//! `object_index.insert(object_id)` and **never touches the tombstone**. Measured: after `ZSetAdd`,
-//! `ZSetRemove`, `ZSetAdd` of the same member the tombstone still holds that page's object id.
+//! call was in `sync_bucket_index_object_blocks_with_mode` -- the WHOLE-OBJECT restate path -- and
+//! NOT in `upsert_bucket_index_block_inner`, the path every container ELEMENT write takes, which
+//! did `object_index.insert(object_id)` and never touched the tombstone. Measured then: after
+//! `ZSetAdd`, `ZSetRemove`, `ZSetAdd` of the same member the tombstone still held that page's
+//! object id, and a LIVE page's object reported `deleted` through the public report. **That
+//! asymmetry was a reporting defect and is fixed**; the element path clears the id it files a live
+//! page for, and the test below holds the fixed arithmetic.
 //!
-//! So it is refuted on three other grounds, all in
-//! `the_tombstone_survives_the_element_rewrite_and_a_live_page_then_reads_as_deleted`:
+//! The reuse idea is refuted on three grounds that the fix does not touch, all in
+//! `the_element_rewrite_clears_the_tombstone_so_a_live_page_reads_as_hot`:
 //!
 //!   1. **IT IS A MEMBERSHIP SET, NOT A MARK.** It holds a HASH of the component. It answers "was
 //!      ordinal N used?" and cannot answer "what is the highest?", so an assignment on it probes
 //!      one candidate at a time and cannot reach a ceiling without 65,535 probes.
-//!   2. **THE ONE PATH THAT CLEARS IT CLEARS THE WHOLE OBJECT'S.** A restate drops the id of every
-//!      address it republishes, so an unrelated whole-object write discards every element's
-//!      reservation at once.
+//!   2. **CLEARING IS WHAT KEEPS THE REPORT HONEST, AND A RESERVATION CANNOT ALLOW IT.** Both
+//!      write paths now drop the id: the element one for the page it files, and a whole-object
+//!      restate for every address it republishes -- so an unrelated whole-object write discards
+//!      every element's reservation at once, and the element path discards its own on re-add.
 //!   3. **A RESERVATION IS NEVER CLEARED, AND THAT INVERTS ITS OWN MEASURED ECONOMICS.** The field's
 //!      doc chose its shape on a census -- 97.68% of buckets carry no tombstone, the widest carries a
 //!      single id -- and named the turnover: "the shape wins while fewer than about a quarter of
@@ -655,9 +659,11 @@ fn the_element_ordinal_a_delete_frees_is_handed_straight_back_to_the_next_elemen
 ///      component)` -- a HASH. It can answer "has ordinal N been used?" and it cannot answer "what is
 ///      the highest ordinal used?", so an assignment built on it probes 0, 1, 2, ... one hash at a
 ///      time and cannot report a ceiling without 65,535 probes.
-///   2. **THE ONE PATH THAT DOES CLEAR IT CLEARS THE WHOLE OBJECT'S.** A restate through
-///      `sync_bucket_index_object_blocks_with_mode` removes the id of every address it republishes,
-///      so any reservation an element held is dropped by an unrelated whole-object write.
+///   2. **BOTH WRITE PATHS CLEAR IT, AND THE WHOLE-OBJECT ONE CLEARS EVERY ELEMENT'S.** A restate
+///      through `sync_bucket_index_object_blocks_with_mode` removes the id of every address it
+///      republishes, so any reservation an element held is dropped by an unrelated whole-object
+///      write; and `upsert_bucket_index_block_inner` now clears the id it is filing a live page
+///      for, which is what keeps the report honest but is also a clear a reservation cannot allow.
 ///   3. **A RESERVATION MUST NEVER BE CLEARED, AND THAT INVERTS ITS OWN MEASURED ECONOMICS.** The
 ///      field's doc chose its shape on a census -- "97.68% of buckets carry no tombstone, and the
 ///      widest bucket that carries one carries a single id" -- and states where the trade turns over:
@@ -665,18 +671,24 @@ fn the_element_ordinal_a_delete_frees_is_handed_straight_back_to_the_next_elemen
 ///      against a measured 2.32%". A tombstone kept for ever puts every bucket that has ever had an
 ///      element removed on the losing side, carrying one id per removed element rather than one.
 ///
-/// # AND IN PASSING: A LIVE PAGE READS AS DELETED
+/// # AND THE DEFECT THAT CAME WITH IT, NOW FIXED
 ///
 /// `object_manager::runtime_report` computes `page.deleted || bucket.deleted() ||
-/// bucket.deleted_object_index.contains(&page.object_id())`, so the surviving tombstone makes a LIVE
-/// page's object report `deleted` and counts the page as a deleted block ref rather than a hot one.
-/// Reachable: `TemporalEngine::object_manager_runtime_report` is public and
-/// `recovery_sweep_compact` calls it twice. Driven through that public surface rather than argued,
-/// and FOUND, NOT FIXED -- the fix belongs beside the missing clear, not inside a test module.
+/// bucket.deleted_object_index.contains(&page.object_id())`. While the element write path left the
+/// id behind, a surviving tombstone made a LIVE page's object report `deleted` and counted its page
+/// as a deleted block ref rather than a hot one -- reaching the public report as
+/// `tombstone_object_count=1` on a store holding one live page. Reachable:
+/// `TemporalEngine::object_manager_runtime_report` is public and `recovery_sweep_compact` calls it
+/// twice.
+///
+/// The clear now happens on both write paths, and this test holds the fixed arithmetic: the
+/// tombstone is gone after the rewrite, the page reads HOT, and the public aggregate reports zero.
+/// The four assertions below were written to hold the defect and are inverted, not relaxed -- each
+/// one still names the denominator it reads, so a fixture that writes nothing cannot pass it.
 ///
 /// rust-internal: drives a removal and a re-add, no external surface
 #[test]
-fn the_tombstone_survives_the_element_rewrite_and_a_live_page_then_reads_as_deleted() {
+fn the_element_rewrite_clears_the_tombstone_so_a_live_page_reads_as_hot() {
     let dir = tempfile::tempdir().expect("tempdir");
     let engine = engine_on(dir.path());
     load_on(&engine, OPERATOR_END);
@@ -741,11 +753,11 @@ fn the_tombstone_survives_the_element_rewrite_and_a_live_page_then_reads_as_dele
         "the delete left no tombstone for {object_id}, so there was never a reservation to clear"
     );
     assert!(
-        held_after_rewrite,
-        "the tombstone was CLEARED by the next write of the same triple. If this is red, the \
-         element write path has gained the `deleted_object_index.remove` that only the whole-object \
-         restate path has today -- which is the fix this test's doc asks for, and this assertion \
-         should be inverted rather than relaxed."
+        !held_after_rewrite,
+        "the tombstone SURVIVED the next write of the same triple. The element write path clears \
+         `deleted_object_index` for the id it is filing a live page for; if this is red that \
+         `remove` has been lost from `upsert_bucket_index_block_inner` and the stale tombstone is \
+         back."
     );
     assert_eq!(
         pages_after_rewrite, 1,
@@ -796,30 +808,30 @@ fn the_tombstone_survives_the_element_rewrite_and_a_live_page_then_reads_as_dele
         "DENOMINATOR: the walk counts {row_block_refs} block refs for a live page, not one"
     );
     assert!(
-        row_deleted,
-        "the walk calls a LIVE page's object undeleted, so the stale tombstone has no consequence \
-         and this half of the finding is wrong"
+        !row_deleted,
+        "the walk still calls a LIVE page's object deleted, so a stale tombstone is still sitting \
+         beside it"
     );
     assert_eq!(
-        row_deleted_refs, 1,
-        "the walk counts {row_deleted_refs} of this object's block refs as deleted; the live page \
-         is counted as deleted exactly because of the stale tombstone"
+        row_deleted_refs, 0,
+        "the walk counts {row_deleted_refs} of this object's block refs as deleted; the page is \
+         live and no tombstone should be reclassifying it"
     );
     assert_eq!(
-        row_hot, 0,
-        "the live page was counted as HOT as well as deleted, which is not the arithmetic \
-         runtime_report performs"
+        row_hot, 1,
+        "the live page is counted as HOT now that no tombstone reclassifies it; {row_hot} says \
+         the arithmetic landed somewhere else"
     );
     assert!(
         public.block_ref_count >= 1,
         "DENOMINATOR: the public report counts {} block refs, so it is not seeing the store at all",
         public.block_ref_count
     );
-    assert!(
-        public.delete_marker_object_count >= 1,
-        "the PUBLIC report counts {} delete-marked objects while the store holds one live page \
-         whose member was removed and re-added; if this is red the stale tombstone no longer \
-         reaches the surface a recovery sweep reads",
+    assert_eq!(
+        public.delete_marker_object_count, 0,
+        "the PUBLIC report counts {} delete-marked objects on a store whose one page is LIVE. \
+         This is the surface a recovery sweep reads, and the count is what the fix on the element \
+         write path exists to make honest",
         public.delete_marker_object_count
     );
 }

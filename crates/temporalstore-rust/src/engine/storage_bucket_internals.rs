@@ -3472,6 +3472,20 @@ fn upsert_bucket_index_block_inner(
         }
         bucket.set_in_memory(true);
         bucket.object_index.insert(object_id);
+        // A RE-ADD CLEARS THE TOMBSTONE, and this was the one door that did not.
+        //
+        // Every per-element removal -- `ZSetRemove`, `SetRemove`, `ListPop`, `HashDelete` -- goes
+        // through `mark_bucket_index_block_deleted`, which drops the page and files the object id
+        // in `deleted_object_index`. Writing the member back files a LIVE page here. Leave the id
+        // behind and `object_manager::runtime_report` asks `deleted_object_index.contains` beside
+        // that live page, calls the object deleted, and counts its page as a deleted block ref
+        // instead of a hot one -- which leaves the shard through the public report as
+        // `tombstone_object_count` on a store whose only page is live.
+        //
+        // The whole-object restate path has always cleared it, one line after the same
+        // `object_index.insert` (`sync_bucket_index_object_blocks_with_mode`). The asymmetry was
+        // the whole defect; this is the same line, on the per-element door.
+        bucket.deleted_object_index.remove(&object_id);
         // The handle the map assigns is what the lookup records, so the two cannot disagree.
         block_ref_key = bucket.block_index.insert(block_index.clone(), &mut shard.bucket_index.block_slab_live);
         classify_bucket_layout_in_place(bucket);
