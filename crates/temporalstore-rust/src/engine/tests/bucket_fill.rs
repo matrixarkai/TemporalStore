@@ -1311,3 +1311,403 @@ fn filling_a_bucket_coarsens_the_dirty_set_by_exactly_the_keys_it_holds() {
          (One {narrow_one}, Many {narrow_many}) over {narrow_buckets}"
     );
 }
+
+/// WHY THE OBJECT-TO-BLOCKS LOOKUP CANNOT BE ANSWERED BY SCANNING ONE BUCKET.
+///
+/// `ObjectBlockLookup` holds six levels -- two `BTreeMap`s, `ComponentList`, `ComponentBlocks`,
+/// `BlockRefs` and `BlockLookupRef` -- and every block entry in a bucket already carries the
+/// object key that would let a scan answer the same question. The lookup is also already
+/// `skip_serializing` and rebuilt by `rebuild_object_block_lookup` on load, so it is provably a
+/// cache of the bucket map and nothing about it is authoritative.
+///
+/// So the question is not whether the ANSWER is derivable -- a load derives it -- but whether a
+/// READ can derive it, one object at a time, and the cache be dropped. That needs the bucket to
+/// scan. There is exactly one function that could supply it, `block_routing_bucket(key, start,
+/// end)`, and THE RANGE IT TAKES IS NOT A PROPERTY OF THE STORE. It is a deployment setting
+/// (`TS_SHARD_END_ROUTING_BUCKET`, documented at 1023, defaulted to `u32::MAX`), and this
+/// module's own header records that narrowing a populated store re-files nothing.
+///
+/// This turns that prose into an assertion. A page filed on one range sits where THAT range put
+/// it for the rest of its life, so a bucket recomputed from the key and the range in force names
+/// a bucket that does not hold the object -- and on a narrowed shard cannot even be a bucket the
+/// shard holds. `BlockLookupRef::routing_bucket` records where a block ACTUALLY is, which is the
+/// one thing the key cannot be asked for.
+///
+/// THE POSITIVE CONTROL IS THE SAME CALL AT THE RANGE THE STORE WAS WRITTEN ON, where it agrees
+/// for every key. Without it a computation that was simply broken would read as this finding.
+///
+/// rust-internal: reads the engine's own placement function, no product behaviour
+#[test]
+#[ignore = "seeds a routed store; run by name"]
+fn an_objects_bucket_cannot_be_recomputed_from_its_key_once_the_range_has_moved() {
+    const KEYS: usize = 4_000;
+    let dir = tempfile::tempdir().expect("tempdir");
+    let engine = engine_on(dir.path());
+    load_on(&engine, WIDE_END);
+    let keys = seed_routed(&engine, KEYS);
+
+    // Where every object's blocks ACTUALLY sit, read off the bucket map.
+    let contents = bucket_key_sets(&engine);
+    let mut actual: BTreeMap<String, u32> = BTreeMap::new();
+    for (routing_bucket, held) in &contents {
+        for key in held {
+            actual.insert(key.clone(), *routing_bucket);
+        }
+    }
+    assert_eq!(
+        actual.len(),
+        KEYS,
+        "the fixture placed {} of {KEYS} keys; every figure below divides by this denominator",
+        actual.len()
+    );
+
+    // --- POSITIVE CONTROL: recomputing at the range the store was WRITTEN on agrees. ---
+    let mut agreed_same_range = 0usize;
+    for (key, sits_in) in &actual {
+        if block_routing_bucket(key, 0, WIDE_END) == *sits_in {
+            agreed_same_range += 1;
+        }
+    }
+    assert_eq!(
+        agreed_same_range, KEYS,
+        "recomputing the bucket at the range the store was written on agreed for only \
+         {agreed_same_range} of {KEYS} keys; the placement call is not answering what the bucket \
+         map holds, and the disagreement measured below would be that defect rather than the \
+         range moving"
+    );
+
+    // --- THE FINDING: the operator narrows to the documented production range. ---
+    // Nothing is re-filed, so every block stays where the wide range put it while a recomputation
+    // answers inside 0..NARROW_END.
+    let mut disagreed = 0usize;
+    let mut unnameable = 0usize;
+    for (key, sits_in) in &actual {
+        if block_routing_bucket(key, 0, NARROW_END) != *sits_in {
+            disagreed += 1;
+        }
+        if *sits_in > NARROW_END {
+            unnameable += 1;
+        }
+    }
+    println!(
+        "  a store written on 0..{WIDE_END} and reopened on 0..{NARROW_END}: a bucket recomputed \
+         from the object key disagrees with the bucket the blocks are in for {disagreed} of \
+         {KEYS} objects ({:.2}%), and {unnameable} of {KEYS} ({:.2}%) sit above {NARROW_END}, \
+         which the narrowed shard cannot name at all",
+        disagreed as f64 * 100.0 / KEYS as f64,
+        unnameable as f64 * 100.0 / KEYS as f64,
+    );
+    assert!(
+        disagreed * 100 > KEYS * 99,
+        "only {disagreed} of {KEYS} objects moved; if a recomputed bucket were right for nearly \
+         all of them a read could derive its own bucket and this refutation would not hold"
+    );
+    assert!(
+        unnameable > 0,
+        "no object sits above {NARROW_END} on a store written over the whole keyspace, so the \
+         narrowed shard could reach every block it holds and the second half of this claim is \
+         unfounded"
+    );
+
+    // And the stored lookup is right exactly where the recomputation is wrong: its refs carry the
+    // bucket as filed rather than as computed.
+    let shards = engine.shards.read().expect("engine lock poisoned");
+    let shard = shards.get(&1).expect("shard is loaded");
+    let mut checked = 0usize;
+    for (_model, object, refs) in shard.bucket_index.object_block_lookup.iter() {
+        let sits_in = actual.get(object.as_ref()).copied();
+        for block_ref in refs.all_refs() {
+            assert_eq!(
+                Some(block_ref.routing_bucket),
+                sits_in,
+                "the lookup files {object} in bucket {} while the bucket map holds it in {sits_in:?}",
+                block_ref.routing_bucket
+            );
+            checked += 1;
+        }
+    }
+    assert_eq!(
+        checked, KEYS,
+        "checked {checked} stored block refs against {KEYS} objects; a lookup that held none \
+         would agree with the bucket map trivially"
+    );
+}
+
+/// WHAT A DERIVED READ WOULD COST, COUNTED, AT BOTH POPULATIONS.
+///
+/// Suppose the bucket were somehow known. A bucket's blocks are held as a flat list sorted by
+/// HANDLE, and `block_index_handle` hashes the object key, the component and the whole address
+/// together -- so the list's order carries no trace of the object key. Finding one object's
+/// blocks in it is a walk of the WHOLE list: there is no bisection, because the list is not
+/// ordered on what is being looked for, and no early stop, because nothing says how many blocks
+/// the object has.
+///
+/// A ONE-BLOCK OBJECT IS THE CASE THAT REGRESSES, and it must not be averaged with the other.
+/// Today its answer is `ComponentList::One` held inline: nothing is probed. Derived, it is the
+/// bucket's whole list. This reports the two populations separately, with the histogram of what
+/// a derived walk would examine.
+///
+/// rust-internal: reads the engine's own bucket map, no product behaviour
+#[test]
+#[ignore = "seeds two stores; run by name"]
+fn deriving_an_objects_blocks_from_the_flat_list_walks_the_whole_bucket() {
+    #[derive(Default)]
+    struct Walk {
+        lengths: Vec<usize>,
+        components: Vec<usize>,
+        scattered: usize,
+        objects: usize,
+    }
+
+    fn measure(engine: &TemporalEngine) -> Walk {
+        let shards = engine.shards.read().expect("engine lock poisoned");
+        let shard = shards.get(&1).expect("shard is loaded");
+        let mut walk = Walk::default();
+        for bucket in shard.bucket_index.bucket_map.values() {
+            let entries: Vec<(u64, String)> = bucket
+                .block_index
+                .iter()
+                .map(|(handle, page)| (*handle, page.object_key.to_string()))
+                .collect();
+            if entries.is_empty() {
+                continue;
+            }
+            let mut per_object: BTreeMap<String, Vec<usize>> = BTreeMap::new();
+            for (at, (_handle, key)) in entries.iter().enumerate() {
+                per_object.entry(key.clone()).or_default().push(at);
+            }
+            for positions in per_object.values() {
+                walk.objects += 1;
+                // A walk cannot stop before the end: it has no count to stop on.
+                walk.lengths.push(entries.len());
+                walk.components.push(positions.len());
+                let first = *positions.first().expect("non-empty");
+                let last = *positions.last().expect("non-empty");
+                if last - first + 1 != positions.len() {
+                    walk.scattered += 1;
+                }
+            }
+        }
+        walk
+    }
+
+    fn pct(sorted: &[usize], p: f64) -> usize {
+        if sorted.is_empty() {
+            return 0;
+        }
+        let at = ((sorted.len() as f64 - 1.0) * p).round() as usize;
+        sorted[at]
+    }
+
+    fn report(label: &str, walk: &Walk) {
+        let mut sorted = walk.lengths.clone();
+        sorted.sort_unstable();
+        let mean = sorted.iter().sum::<usize>() as f64 / sorted.len() as f64;
+        let blocks: usize = walk.components.iter().sum();
+        let mean_blocks = blocks as f64 / walk.objects as f64;
+        // What the shipped shape probes: the `One` arm is inline and probes nothing, the `Many`
+        // arm bisects.
+        let probes: f64 = walk
+            .components
+            .iter()
+            .map(|n| if *n <= 1 { 0.0 } else { (*n as f64).log2().ceil() })
+            .sum::<f64>()
+            / walk.objects as f64;
+        println!(
+            "  {label}: {} objects, blocks/object mean {mean_blocks:.3} (MAX {}) | a derived walk \
+             examines p50 {} p90 {} p99 {} MAX {} mean {mean:.4} entries | the shipped lookup \
+             probes {probes:.4} | {} of {} objects have their blocks SCATTERED through the list",
+            walk.objects,
+            walk.components.iter().copied().max().unwrap_or(0),
+            pct(&sorted, 0.50),
+            pct(&sorted, 0.90),
+            pct(&sorted, 0.99),
+            sorted.last().copied().unwrap_or(0),
+            walk.scattered,
+            walk.objects,
+        );
+    }
+
+    // POPULATION ONE: routed keys on the documented production range -- one block an object.
+    let routed = {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let engine = engine_on(dir.path());
+        load_on(&engine, NARROW_END);
+        let keys = seed_routed(&engine, LARGE);
+        assert_eq!(keys.len(), LARGE, "the routed fixture seeded {} keys", keys.len());
+        let walk = measure(&engine);
+        report("ROUTED, one block an object", &walk);
+        walk
+    };
+    assert!(
+        routed.objects > 0,
+        "the routed arm measured no objects, so every figure it reports is vacuous"
+    );
+    assert_eq!(
+        routed.components.iter().copied().max(),
+        Some(1),
+        "the routed arm's widest object holds {:?} blocks; this population is defined by holding \
+         one, and if it does not the two populations below are the same population",
+        routed.components.iter().copied().max()
+    );
+
+    // POPULATION TWO: containers on the same range -- a hundred blocks an object.
+    let container = {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let engine = engine_on(dir.path());
+        load_on(&engine, NARROW_END);
+        let keys = seed_container(&engine, 40, 100);
+        assert_eq!(keys.len(), 40, "the container fixture seeded {} keys", keys.len());
+        let walk = measure(&engine);
+        report("CONTAINER, a hundred blocks an object", &walk);
+        walk
+    };
+    assert_eq!(
+        container.components.iter().copied().max(),
+        Some(100),
+        "the container arm's widest object holds {:?} blocks rather than 100, so it is not the \
+         population it claims to be",
+        container.components.iter().copied().max()
+    );
+
+    // NEITHER ARM ABOVE CAN ANSWER WHETHER AN OBJECT'S BLOCKS ARE CONTIGUOUS IN THE LIST, and
+    // both reported zero scattered. That zero is vacuous, and saying so is the point: 40 containers
+    // on 1024 buckets is ONE multi-block object a bucket, and a routed object holds ONE block, so
+    // in both arms every object is trivially a contiguous run of the whole or of one. A third arm
+    // on a range narrow enough to put SEVERAL containers in one bucket is what exercises it.
+    let crowded = {
+        const CROWDED_END: u32 = 7;
+        let dir = tempfile::tempdir().expect("tempdir");
+        let engine = engine_on(dir.path());
+        load_on(&engine, CROWDED_END);
+        let keys = seed_container(&engine, 40, 100);
+        assert_eq!(keys.len(), 40, "the crowded fixture seeded {} keys", keys.len());
+        let walk = measure(&engine);
+        report("CROWDED, several containers to a bucket", &walk);
+        walk
+    };
+    assert!(
+        crowded.lengths.iter().copied().max().unwrap_or(0) > 100,
+        "the crowded arm's widest bucket holds {:?} entries, which is no more than one container's \
+         hundred; the range was not narrow enough to put two containers in one bucket and the \
+         scattering figure below is as vacuous as the two above",
+        crowded.lengths.iter().copied().max()
+    );
+    println!(
+        "  CONTIGUITY, on the one arm that can answer it: {} of {} objects have their blocks \
+         SCATTERED through their bucket's list rather than sitting in one run. The list is sorted \
+         by HANDLE and the handle hashes the object key, the component and the address together, \
+         so the order carries no trace of the object -- a derived walk cannot bisect to a run and \
+         cannot stop at the end of one.",
+        crowded.scattered, crowded.objects
+    );
+    assert_eq!(
+        crowded.scattered, crowded.objects,
+        "{} of {} objects sharing a bucket kept their blocks in one contiguous run; if handle \
+         order grouped an object's blocks a derived walk could bound itself and the claim above \
+         is wrong",
+        crowded.scattered, crowded.objects
+    );
+
+    // THE REGRESSION, STATED AS ONE. A one-block object is answered today without a probe.
+    let mut routed_sorted = routed.lengths.clone();
+    routed_sorted.sort_unstable();
+    let p50 = pct(&routed_sorted, 0.50);
+    assert!(
+        p50 > 1,
+        "the routed arm's median bucket holds {p50} entries, so a walk would be free and there is \
+         no regression to report; the fixture is not on a range that fills a bucket"
+    );
+    println!(
+        "  THE SERVING REGRESSION, NOT AVERAGED: an object holding ONE block is answered today by \
+         an inline arm with ZERO probes. Derived, the same answer is a walk of its bucket's whole \
+         list -- p50 {p50}, p99 {}, MAX {} entries, each a string comparison against the object \
+         key. There is no length at which the walk is the cheaper of the two.",
+        pct(&routed_sorted, 0.99),
+        routed_sorted.last().copied().unwrap_or(0),
+    );
+}
+
+/// A DERIVED ANSWER COMES BACK IN THE WRONG ORDER.
+///
+/// `ObjectBlockRefs::position` BISECTS `by_component`, and its doc says the order is the one "a
+/// caller would expect": components ascending, `None` first, matching `Option`'s own ordering.
+/// That order is a precondition of the bisection, not a convenience -- `refs_for` is `position`
+/// plus an index.
+///
+/// A walk of the bucket's flat list yields handle order, and the handle is a hash. So a derived
+/// answer would have to SORT its result on every read to be usable by the bisection that reads
+/// it, and a derived answer that skipped the sort would silently reorder a container's members
+/// while still type-checking. This asserts the two orders differ, so the sort is not optional.
+///
+/// rust-internal: reads the engine's own bucket map, no product behaviour
+#[test]
+#[ignore = "seeds a container store; run by name"]
+fn a_walk_of_the_flat_list_answers_in_handle_order_not_component_order() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let engine = engine_on(dir.path());
+    load_on(&engine, NARROW_END);
+    let keys = seed_container(&engine, 4, 100);
+
+    let shards = engine.shards.read().expect("engine lock poisoned");
+    let shard = shards.get(&1).expect("shard is loaded");
+
+    let mut compared = 0usize;
+    let mut differed = 0usize;
+    for key in &keys {
+        // The order a walk of the flat list would produce: handle order, filtered to this object.
+        let mut walked: Vec<String> = Vec::new();
+        for bucket in shard.bucket_index.bucket_map.values() {
+            for (_handle, page) in bucket.block_index.iter() {
+                if &*page.object_key == key.as_str() {
+                    walked.push(page.component.as_deref().unwrap_or("").to_string());
+                }
+            }
+        }
+        // The order the lookup holds, which is what `position` bisects.
+        let mut held: Vec<String> = Vec::new();
+        for kind in crate::engine::storage_model_kinds() {
+            if let Some(entry) = shard.bucket_index.object_block_refs(kind, key) {
+                for component in entry.by_component.iter() {
+                    held.push(component.component.as_deref().unwrap_or("").to_string());
+                }
+            }
+        }
+        if held.is_empty() {
+            continue;
+        }
+        assert_eq!(
+            walked.len(),
+            held.len(),
+            "{key}: a walk found {} blocks and the lookup holds {}; the two are not looking at \
+             the same object and the order comparison below is meaningless",
+            walked.len(),
+            held.len()
+        );
+        let mut sorted = walked.clone();
+        sorted.sort();
+        assert_eq!(
+            sorted, held,
+            "{key}: the lookup's order is not the walk's order SORTED, so the derived answer \
+             cannot be repaired by sorting and the two shapes disagree on content, not just order"
+        );
+        compared += 1;
+        if walked != held {
+            differed += 1;
+        }
+    }
+    assert!(
+        compared > 0,
+        "compared no objects, so this test asserts nothing about either order"
+    );
+    println!(
+        "  {differed} of {compared} container objects come back from a walk in an order that is \
+         NOT the component order the lookup holds and `position` bisects; a derived read must \
+         sort, and one that did not would reorder a container's members silently"
+    );
+    assert_eq!(
+        differed, compared,
+        "only {differed} of {compared} objects were reordered by the walk; if handle order and \
+         component order agreed, the sort would be free and this cost would not exist"
+    );
+}
