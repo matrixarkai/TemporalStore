@@ -1585,6 +1585,268 @@ fn aged_to(bytes: &[u8], version: u32) -> Option<(Vec<u8>, u8)> {
 }
 
 // =============================================================================================
+// 3a. THE LIVE PATH, DRIVEN: A STORE AT THE OLD SPELLING STILL SERVES, COMPLETE AND CORRECT
+// =============================================================================================
+
+/// A STORE WRITTEN AT THE OLD SPELLING MUST COME BACK COMPLETE, NOT MERELY COME BACK.
+///
+/// THERE IS ONE VERSION. The refusal is not a migration and there is no second decoder: a stale
+/// index is treated exactly as an ABSENT one, and the engine rebuilds from the log. That is the
+/// whole compatibility story, and it is only a safe one if the rebuild actually produces the store.
+///
+/// SO THIS ASSERTS THE CONTENTS, NOT THE EXIT CODE. A store that loads EMPTY and a store that loads
+/// CORRECTLY return the same status from `load_shard`, and every `assert!(response.status.ok)` in the
+/// suite is blind to the difference. Every value written here is read back and compared, and the
+/// counts are asserted first so that a fixture which silently wrote nothing cannot pass.
+///
+/// The aging is real rather than simulated: the store is written, dumped, its version stamp moved
+/// back to what the hexadecimal spelling shipped as, and then reopened by this binary. That is
+/// exactly what an existing store on disk looks like here.
+///
+/// rust-internal: drives the engine's own load path, no external surface
+#[test]
+fn a_store_at_the_old_spelling_still_serves_every_value_after_the_rebuild() {
+    let dir = tempfile::tempdir().unwrap();
+    let indexes = dir.path().join("indexes");
+
+    // A known workload across every kind whose component name this change respells, plus a string
+    // (no component) and a hash field (a caller's text) as the two controls.
+    let members: Vec<Vec<u8>> = (0..12)
+        .map(|element| member_bytes(0, element))
+        .collect();
+    let write = |engine: &TemporalEngine, command: Command| {
+        let response = engine.execute(ExecuteRequest {
+            shard_id: 1,
+            command,
+        });
+        assert!(response.status.ok, "the fixture write failed: {response:?}");
+    };
+
+    {
+        let engine = engine_on(dir.path());
+        load_on(&engine, OPERATOR_END);
+        write(&engine, Command::StringSet {
+            key: "live-string".to_string(),
+            value: b"string-value".to_vec(),
+        });
+        for (element, member) in members.iter().enumerate() {
+            write(&engine, Command::ZSetAdd {
+                key: "live-zset".to_string(),
+                member: member.clone(),
+                score: element as f64 + 0.25,
+            });
+            write(&engine, Command::SetAdd {
+                key: "live-set".to_string(),
+                member: member.clone(),
+            });
+            write(&engine, Command::ListPush {
+                key: "live-list".to_string(),
+                member: format!("element-{element}").into_bytes(),
+                left: false,
+            });
+            write(&engine, Command::HashSet {
+                key: "live-hash".to_string(),
+                field: format!("field-{element}"),
+                value: format!("hash-value-{element}").into_bytes(),
+            });
+        }
+        write(&engine, Command::FeatureAppend {
+            key: "live-feature".to_string(),
+            points: (0..12)
+                .map(|element| crate::types::FeaturePoint {
+                    timestamp_ms: 1_787_270_070_000 + element as u64 * 1_000,
+                    value: format!("point-{element}").into_bytes(),
+                })
+                .collect(),
+        });
+        // Materialise the base snapshot, so there is an index to age.
+        engine.unload_shard(1);
+    }
+
+    // AGE IT. Every file that carries a stamp, and at least one must.
+    let current = crate::engine::SHARD_INDEX_FORMAT_VERSION;
+    let aged_version = current - 1;
+    let mut aged = 0usize;
+    for entry in std::fs::read_dir(&indexes).expect("the index directory exists") {
+        let path = entry.expect("a directory entry").path();
+        if !path.is_file() {
+            continue;
+        }
+        let bytes = std::fs::read(&path).expect("the index reads");
+        if let Some((stamped, codec)) = aged_to(&bytes, aged_version) {
+            assert_ne!(stamped, bytes, "aging {path:?} moved nothing");
+            std::fs::write(&path, &stamped).expect("the index rewrites");
+            println!("[live] aged {:?} (codec {codec}) to shape {aged_version}", path.file_name());
+            aged += 1;
+        }
+    }
+    assert!(
+        aged > 0,
+        "nothing in {indexes:?} carried a version stamp, so the store was never aged and this test \
+         would pass on a store that was current all along"
+    );
+
+    // REOPEN. The stale index is refused and the shard rebuilds from the log.
+    let engine = engine_on(dir.path());
+    load_on(&engine, OPERATOR_END);
+
+    // COUNTS FIRST. A rebuild that produced nothing must not reach the content comparisons and
+    // pass them vacuously.
+    let read = |command: Command| {
+        let response = engine.execute(ExecuteRequest {
+            shard_id: 1,
+            command,
+        });
+        assert!(response.status.ok, "a read failed after the rebuild: {response:?}");
+        response.response
+    };
+
+    let zset_members = match read(Command::ZSetRange {
+        key: "live-zset".to_string(),
+        start: 0,
+        stop: -1,
+        rev: false,
+    }) {
+        crate::types::CommandResponse::Members { members } => members,
+        other => panic!("a zset range answered {other:?}"),
+    };
+    println!("[live] the zset came back with {} entry(ies)", zset_members.len());
+    assert!(
+        zset_members.len() >= members.len(),
+        "the zset held {} members before the rebuild and {} after; a store that loads EMPTY and a \
+         store that loads CORRECTLY return the same status, which is why this counts first",
+        members.len(),
+        zset_members.len()
+    );
+
+    let set_members = match read(Command::SetMembers {
+        key: "live-set".to_string(),
+    }) {
+        crate::types::CommandResponse::Members { members } => members,
+        other => panic!("a set read answered {other:?}"),
+    };
+    println!("[live] the set came back with {} member(s)", set_members.len());
+    assert_eq!(
+        set_members.len(),
+        members.len(),
+        "the set held {} members before the rebuild and {} after",
+        members.len(),
+        set_members.len()
+    );
+
+    // CONTENTS. Every value, compared.
+    for (element, member) in members.iter().enumerate() {
+        match read(Command::ZSetScore {
+            key: "live-zset".to_string(),
+            member: member.clone(),
+        }) {
+            crate::types::CommandResponse::Bytes { value: Some(bytes) } => {
+                let text = String::from_utf8_lossy(&bytes).to_string();
+                let score: f64 = text.parse().unwrap_or_else(|_| {
+                    panic!("a zset score came back as {text:?}, which is not a number")
+                });
+                assert!(
+                    (score - (element as f64 + 0.25)).abs() < 1e-9,
+                    "member {element} came back with score {score}, not {}",
+                    element as f64 + 0.25
+                );
+            }
+            other => panic!(
+                "member {element} of the zset is GONE after the rebuild: {other:?}. Its component \
+                 name was the only copy of its identity in the log, so losing it here is the \
+                 failure this whole change has to not cause."
+            ),
+        }
+        assert!(
+            set_members.iter().any(|held| held == member),
+            "member {element} of the set is gone after the rebuild"
+        );
+        let expected = format!("hash-value-{element}").into_bytes();
+        assert!(
+            matches!(
+                read(Command::HashGet {
+                    key: "live-hash".to_string(),
+                    field: format!("field-{element}"),
+                }),
+                crate::types::CommandResponse::Bytes { value: Some(ref got) } if *got == expected
+            ),
+            "field {element} of the hash did not come back as it was written"
+        );
+    }
+
+    // The two controls: a component-free record, and the series whose name lives only in the log.
+    assert!(
+        matches!(
+            read(Command::StringGet { key: "live-string".to_string() }),
+            crate::types::CommandResponse::Bytes { value: Some(ref got) } if got == b"string-value"
+        ),
+        "the string, which has no component at all, did not survive the rebuild"
+    );
+    let list = match read(Command::ListRange {
+        key: "live-list".to_string(),
+        start: 0,
+        stop: -1,
+    }) {
+        crate::types::CommandResponse::Members { members } => members,
+        other => panic!("a list range answered {other:?}"),
+    };
+    assert_eq!(
+        list.len(),
+        members.len(),
+        "the list came back with {} element(s), not {}",
+        list.len(),
+        members.len()
+    );
+    for (element, got) in list.iter().enumerate() {
+        assert_eq!(
+            got.as_slice(),
+            format!("element-{element}").as_bytes(),
+            "list element {element} came back as {:?}",
+            String::from_utf8_lossy(got)
+        );
+    }
+    let points = match read(Command::FeatureQuery {
+        key: "live-feature".to_string(),
+        start_ms: 0,
+        end_ms: u64::MAX,
+        count: None,
+    }) {
+        crate::types::CommandResponse::FeaturePoints { points } => points,
+        other => panic!("a feature range answered {other:?}"),
+    };
+    assert_eq!(
+        points.len(),
+        12,
+        "the series came back with {} point(s), not 12 -- and its component name lives ONLY in the \
+         log, so this is the arm the rebuild is most exposed on",
+        points.len()
+    );
+    for (element, point) in points.iter().enumerate() {
+        assert_eq!(
+            point.value,
+            format!("point-{element}").into_bytes(),
+            "point {element} came back with the wrong value"
+        );
+    }
+
+    // And nothing in the rebuilt index is a name the shipped parser cannot read.
+    let walked = walk(&engine);
+    assert_eq!(
+        walked.unparseable, 0,
+        "the rebuilt index holds {} component name(s) the shipped parser cannot read",
+        walked.unparseable
+    );
+    println!(
+        "[live] after refusing an index written at shape {aged_version}, the rebuild served \
+         {} zset member(s), {} list element(s), {} series point(s), the string and every hash \
+         field -- all compared, not counted",
+        members.len(),
+        list.len(),
+        points.len()
+    );
+}
+
+// =============================================================================================
 // 3b. THE DOORS THAT ARE NOT CLOSED
 // =============================================================================================
 

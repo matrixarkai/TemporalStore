@@ -233,13 +233,16 @@ pub(crate) fn parse_bytes(text: &str) -> Option<Vec<u8>> {
     Some(out)
 }
 
-/// THE SPELLING THIS REPLACED, kept because two callers genuinely need it.
+/// THE SPELLING THIS REPLACED, AND IT IS NOT A SECOND FORMAT.
 ///
-/// `component_name_bytes.rs` reports the saving, which means rendering what the old spelling WOULD
-/// have been for the same values; and `a_store_written_at_the_hexadecimal_spelling_is_refused`
-/// writes a store at the old spelling to prove the version gate refuses it rather than mis-reading
-/// it. Neither can be written without this, and a hand-rolled copy in a test is a copy that drifts
-/// from what was actually shipped.
+/// `#[cfg(test)]`, deliberately and load-bearingly: THERE IS ONE VERSION. A shipped binary holds
+/// exactly one spelling of a derived component name and no path that reads another, so nothing here
+/// can be reached by the serving or replay code even by mistake. What it exists for is two
+/// measurements that have to render what the old spelling WOULD have been for the same values --
+/// `component_name_bytes.rs`'s saving column, and the plant that proves a store at the old spelling
+/// is refused rather than mis-read. A hand-rolled copy inside a test would be a copy that drifts
+/// from what actually shipped; a `#[cfg(test)]` module cannot become a compatibility window.
+#[cfg(test)]
 pub(crate) mod legacy {
     /// `{value:016x}` -- what a derived `u64` component used to be.
     pub(crate) fn u64_text(value: u64) -> String {
