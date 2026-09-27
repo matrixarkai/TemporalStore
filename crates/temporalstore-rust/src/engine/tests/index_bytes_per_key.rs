@@ -97,7 +97,7 @@ fn probe_page(object: &str, component: Option<&str>, slot: u64) -> BlockIndex {
         object_key: Arc::from(object),
         model_id: crate::engine::storage_bucket_internals::StoredModelKind::String,
         component: component.map(Arc::from),
-        address: BlockAddress::from_parts(1, slot * 64, 64, Some(slot), Some(slot), Some(7)),
+        address: BlockAddress::from_parts(1, slot * 64, 64, Some(slot), Some(slot)),
         dirty: false,
         deleted: false,
         log_backed: false,
@@ -677,7 +677,7 @@ fn the_clone_probe_sees_a_container_whose_size_is_known() {
     // And on the shape whose node overhead is the whole question: a one-entry B-tree must cost MORE
     // than the value it carries, or the container cost reported below is being absorbed somewhere.
     let mut one: BTreeMap<u64, BlockAddress> = BTreeMap::new();
-    one.insert(1, BlockAddress::from_parts(1, 0, 64, Some(1), Some(1), Some(7)));
+    one.insert(1, BlockAddress::from_parts(1, 0, 64, Some(1), Some(1)));
     let one_bytes = deep_heap_bytes(&one);
     let value_width = std::mem::size_of::<BlockAddress>() as u64;
     println!(

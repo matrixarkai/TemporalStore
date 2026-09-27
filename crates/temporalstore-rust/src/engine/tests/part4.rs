@@ -3609,19 +3609,15 @@ fn tiny_cache_dump_load_restart_refills_from_disk_block_cache() {
     }
     let target_block_key = {
         let shards = engine.shards.read().expect("shards lock poisoned");
-        let address = shards
-            .get(&1)
-            .unwrap()
-            .strings
-            .get("target")
-            .unwrap()
-            .clone();
+        let shard = shards.get(&1).unwrap();
+        let address = shard.strings.get("target").unwrap().clone();
+        let (start, end) = shard.routing_range();
         CacheKey::page_with_slot(
             1,
             address.block_slab_id(),
             address.offset(),
             address.length(),
-            address.routing_bucket(),
+            Some(crate::engine::hashing::block_routing_bucket("target", start, end)),
         )
     };
 
@@ -4957,7 +4953,6 @@ fn what_each_address_field_actually_ranges_over() {
     let mut pages = 0usize;
     let (mut slab, mut offset, mut length) = (0u64, 0u64, 0u64);
     let (mut block_id, mut object_id, mut generation, mut derived_slab) = (0u64, 0u64, 0u64, 0u64);
-    let mut routing = 0u32;
     for bucket in shard.bucket_index.bucket_map.values() {
         for (_key, page) in bucket.block_index.iter() {
             pages += 1;
@@ -4969,7 +4964,6 @@ fn what_each_address_field_actually_ranges_over() {
             object_id = object_id.max(a.object_id().unwrap_or(0));
             generation = generation.max(a.generation().unwrap_or(0));
             derived_slab = derived_slab.max(a.slab_id().unwrap_or(0));
-            routing = routing.max(a.routing_bucket().unwrap_or(0));
         }
     }
     assert!(pages > 0, "no pages were recorded; nothing was measured");
@@ -4985,14 +4979,17 @@ fn what_each_address_field_actually_ranges_over() {
     object_id     {object_id:>22}  {:>2} bits   a hash -- bounded by nothing
     generation    {generation:>22}  {:>2} bits
     slab_id       {derived_slab:>22}  {:>2} bits
-    routing_slot  {routing:>22}  {:>2} bits   already u32
+
+    the routing bucket is no longer a field of the address at all: a page's
+    bucket is `block_routing_bucket(object_key, ..)` over the range the store
+    is stamped with, so the container answers for it
 
     a maximum observed here is NOT a bound: it says a field is a candidate,
     not that it is safe. Narrowing one needs the bound asserted where the
     value is produced, so a violation fails loudly instead of truncating.
 ",
         bits(slab), bits(offset), bits(length), bits(block_id),
-        bits(object_id), bits(generation), bits(derived_slab), bits(u64::from(routing)),
+        bits(object_id), bits(generation), bits(derived_slab),
     );
 }
 
@@ -5234,7 +5231,7 @@ fn a_block_whose_address_carries_no_object_id_still_reports_one() {
         let mut shards = engine.shards.write().expect("shards lock poisoned");
         let shard = shards.get_mut(&1).expect("shard 1 loaded");
         // Deliberately no object id, and no routing slot either.
-        let address = BlockAddress::from_parts(0, 0, 16, Some(7), None, None);
+        let address = BlockAddress::from_parts(0, 0, 16, Some(7), None);
         assert!(address.object_id().is_none(), "the case under test");
         crate::engine::storage_bucket_internals::upsert_bucket_index_block(
             shard,
@@ -5421,7 +5418,7 @@ fn installing_the_same_block_twice_replaces_it() {
         object_key: Arc::from("twice".to_string()),
         model_id: crate::engine::storage_bucket_internals::StoredModelKind::String,
         component: None,
-        address: BlockAddress::from_parts(1, 0, 4, Some(1), Some(30), Some(3)),
+        address: BlockAddress::from_parts(1, 0, 4, Some(1), Some(30)),
         dirty: false,
         deleted: false,
         log_backed: true,
@@ -5437,7 +5434,7 @@ fn installing_the_same_block_twice_replaces_it() {
 
     // A page differing in one identity field is a different page and keeps its own slot.
     let mut moved = page();
-    moved.address = BlockAddress::from_parts(1, 64, 4, Some(1), Some(30), Some(3));
+    moved.address = BlockAddress::from_parts(1, 64, 4, Some(1), Some(30));
     let third = map.insert(moved, &mut live);
     assert_ne!(first, third, "a page at another offset is not the same page");
     assert_eq!(map.len(), 2);
@@ -13834,7 +13831,7 @@ fn which_parts_of_a_block_address_are_populated() {
     let shard = shards.get(&1).expect("shard 1 loaded");
 
     let mut pages = 0usize;
-    let (mut block_id, mut object_id, mut routing_bucket) = (0usize, 0usize, 0usize);
+    let (mut block_id, mut object_id) = (0usize, 0usize);
     let (mut generation, mut slab_id, mut sha256) = (0usize, 0usize, 0usize);
     let mut compactable = 0usize;
     for bucket in shard.bucket_index.bucket_map.values() {
@@ -13843,7 +13840,6 @@ fn which_parts_of_a_block_address_are_populated() {
             let a = &page.address;
             block_id += usize::from(a.block_id().is_some());
             object_id += usize::from(a.object_id().is_some());
-            routing_bucket += usize::from(a.routing_bucket().is_some());
             generation += usize::from(a.generation().is_some());
             slab_id += usize::from(a.slab_id().is_some());
             compactable += usize::from(a.compact_slab_address().is_some());
@@ -13856,16 +13852,15 @@ fn which_parts_of_a_block_address_are_populated() {
         "
   {pages} pages, which of the address's optional fields are set
 
-    page_id          {block_id:>6}  {:>5.1}%   16 B each
-    object_id        {object_id:>6}  {:>5.1}%   16 B
-    routing_slot     {routing_bucket:>6}  {:>5.1}%    8 B
-    generation       {generation:>6}  {:>5.1}%   16 B
+    page_id          {block_id:>6}  {:>5.1}%    2 B each
+    object_id        {object_id:>6}  {:>5.1}%    8 B
+    generation       {generation:>6}  {:>5.1}%    0 B (derived)
     slab_id          {slab_id:>6}  {:>5.1}%   16 B
     sha256           {sha256:>6}  {:>5.1}%   24 B inline + heap
 
     fit the compact (slab, offset) u64: {compactable:>6}  {:>5.1}%
 ",
-        pct(block_id), pct(object_id), pct(routing_bucket),
+        pct(block_id), pct(object_id),
         pct(generation), pct(slab_id), pct(sha256), pct(compactable),
     );
 
@@ -13928,7 +13923,12 @@ fn which_parts_of_a_block_address_restate_their_surroundings() {
     for (bucket_key, bucket) in shard.bucket_index.bucket_map.iter() {
         for page in bucket.block_index.values() {
             pages += 1;
-            if page.address.routing_bucket() == Some(*bucket_key) {
+            // WHERE THE PAGE IS, against where its KEY routes. This used to compare the
+            // address's own copy of its bucket against the bucket holding it -- a comparison
+            // between a value and the expression that wrote it. The address carries no bucket, so
+            // the comparison is now between the container and the derivation, which is the one
+            // form of it that can disagree.
+            if block_routing_bucket(&page.object_key, 0, u32::MAX) == *bucket_key {
                 routing_matches_bucket += 1;
             }
             if page.address.object_id() == Some(page.object_id()) {
@@ -13943,16 +13943,17 @@ fn which_parts_of_a_block_address_restate_their_surroundings() {
         "
   {pages} pages
 
-    address.routing_slot == the bucket it is filed under   {routing_matches_bucket:>6}  {:>5.1}%   (8 B)
-    address.object_id    == the entry's own object_id      {object_id_matches_entry:>6}  {:>5.1}%  (16 B)
+    the key's derived bucket == the bucket it is filed in  {routing_matches_bucket:>6}  {:>5.1}%   (0 B, derived)
+    address.object_id        == the entry's own object_id  {object_id_matches_entry:>6}  {:>5.1}%   (8 B)
     the digest is no longer held here at all -- it lives in the page envelope,
     which is where a read already verifies against it
 
-    recoverable if both hold: {} B per page, of 235.6 B measured
+    recoverable if the object id holds: {} B per page, of 235.6 B measured
+    (the routing bucket is already recovered -- it is not a field any more)
 ",
         pct(routing_matches_bucket),
         pct(object_id_matches_entry),
-        8 + 16,
+        8,
     );
 
     // Report, with one thing asserted: a field that DISAGREES with its surroundings is a defect,
@@ -20858,26 +20859,21 @@ fn a_block_with_no_routing_bucket_is_summarised_inside_the_shards_own_range() {
         .sum();
     assert!(blocks_before > 0, "fixture stored no pages, so this measures nothing");
 
-    // Put the pages into the state this branch exists for.
-    for bucket in shard.bucket_index.bucket_map.values_mut() {
-        // Unaccounted on purpose: the routing bucket is not one of the two fields the live
-        // tally reads, so stripping it moves no bytes between slabs.
-        for page in bucket.block_index.blocks_mut_unaccounted() {
-            page.address.set_routing_bucket(None);
-        }
-    }
-
-    // DENOMINATOR TWO: the strip took, so the fallback is what answers below. Without this the
-    // test passes on a fixture where the addresses still carry a bucket and the branch under
-    // test never runs -- which is exactly how the live write path behaves.
-    let stripped = crate::engine::storage_bucket_internals::collect_live_block_entries(shard)
+    // NO STRIP, BECAUSE THERE IS NOTHING TO STRIP. This used to clear the routing bucket off every
+    // page's address so the summary walk would take its fallback; an address carries no bucket, so
+    // the fallback is the only branch and the production state is the state under test.
+    //
+    // DENOMINATOR TWO, in the form that survived: every live page reports which bucket it is filed
+    // in, which is what the summary walk credits it to. An entry that did not would be credited by
+    // a hash over the whole keyspace instead.
+    let filed = crate::engine::storage_bucket_internals::collect_live_block_entries(shard)
         .iter()
-        .filter(|entry| entry.address.routing_bucket().is_none())
+        .filter(|entry| entry.filed_bucket().is_some())
         .count();
     assert_eq!(
-        stripped, blocks_before,
-        "the fixture meant to leave {blocks_before} pages without a routing bucket and left \
-{stripped}; the fallback under test is not the code answering",
+        filed, blocks_before,
+        "{filed} of {blocks_before} live pages report a filing; the walk under test credits a page \
+that does not to a bucket derived over the WHOLE keyspace, which this shard does not hold",
     );
 
     let bucket_ids: BTreeSet<u32> = shard.bucket_index.bucket_map.keys().copied().collect();

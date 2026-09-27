@@ -32,17 +32,35 @@
 //!
 //! # 2. THE PAGE CAN BE CONSTRUCTED, AND HERE IT IS
 //!
-//! A page reaches the disagreeing state when its address carries no routing bucket. The door is
-//! the engine's own decoder, not a test: `BlockAddressWire::routing_bucket` is `Option<u32>` under
-//! `#[serde(default)]`, in a struct whose sibling aliases (`routing_slot`, `page_segment_id`,
-//! `extent_id`) exist precisely because older on-disk spellings still load, and whose doc comment
-//! says so -- "old to new is safe". `the_engines_own_decoder_produces_an_address_with_no_routing_bucket`
-//! feeds the decoder an address record with the field absent and gets `None` back.
+//! NO ADDRESS CARRIES A ROUTING BUCKET ANY MORE, so the disagreeing state this module was built to
+//! bound cannot arise: the bucket is derived from the object key over the range the store is stamped
+//! with, and a derived bucket is inside the range it was derived on. What remains on the wire is the
+//! `rs` slot itself, kept because the index log packs the address POSITIONALLY and removing the field
+//! would shift `g` and `h` down one place. It is read, ignored, and written nil.
+//!
+//! `dropping_the_routing_bucket_from_the_wire_decodes_to_the_same_address` is the door, and it is the
+//! engine's own decoder rather than a test: a record carrying a real bucket, a record carrying nil,
+//! and a record with the key absent altogether all decode to the SAME address. That is the property
+//! that makes the slot's presence a content change and not a schema change.
 //!
 //! Put pages in that state into a narrow shard and run the reconstruct the WAL-replay tail runs --
-//! `rebuild_bucket_first_index(shard_id, shard, 0, u32::MAX)`, which is `lifecycle.rs`'s own call
-//! with `lifecycle.rs`'s own arguments -- and every one of them is filed under a bucket the
-//! summary walk does not credit it to. Not a hypothetical: a count, at a stated denominator.
+//! `rebuild_bucket_first_index(shard_id, shard, 0, u32::MAX)`, which is `lifecycle.rs`'s own call with
+//! `lifecycle.rs`'s own arguments -- and every one of them is filed under a bucket a derivation over
+//! the SHARD'S range would not choose. Not a hypothetical: a count, at a stated denominator, 600 of
+//! 600.
+//!
+//! AND THAT NO LONGER COSTS ANYTHING, which is the half this file now has to say. The consequence it
+//! was built to price was "a page filed under one bucket and summarised under another", and the
+//! summary walk does not derive a placement any more -- `bucket_storage_summaries` credits each page
+//! to the bucket the walk FILED it in, keeping the derivation only for a model-map entry that has no
+//! filing to read. So the filed and the summarised bucket sets are equal at EVERY range, and a dump
+//! naming the buckets the summaries name carries every one of their slabs.
+//!
+//! The same correction is what stopped a cross-range manifest install refusing itself with
+//! `slot_dump_slot_summary_mismatch`: one half of a summary derived the bucket while the other half
+//! read `bucket_map`, so the two halves answered different questions about the same page. Two
+//! derivations of one quantity have to ask the same question -- and the cheapest way to make them is
+//! for one of them to stop deriving.
 //!
 //! # 3. WHAT THAT DOES TO A SCOPED WALK, MEASURED IN BOTH DIRECTIONS
 //!
@@ -306,13 +324,16 @@ fn as_an_older_build_wrote_it(address: &BlockAddress) -> BlockAddress {
     serde_json::from_value(wire).expect("the engine's decoder accepts an address with no `rs`")
 }
 
-/// Where the summary walk credits a page: the address first, the SHARD'S range as the fallback.
-/// This mirrors `bucket_storage_summaries`' live-page loop exactly.
+/// WHERE A RANGE WOULD PLACE A PAGE, which is not the same thing as where the summary walk credits
+/// it. Read the name as "the placement a derivation over this range produces".
+///
+/// IT USED TO MIRROR `bucket_storage_summaries`' live-page loop, and it deliberately no longer does.
+/// That loop read `address.routing_bucket()` with this derivation as the fallback; an address carries
+/// no routing bucket now, and the loop reads the entry's FILING with the derivation as the fallback --
+/// so mirroring it here would make every comparison below an identity. What this file compares is two
+/// RANGES as functions of one key, and that is what this helper is: one of the two.
 fn summarised_under(entry: &crate::engine::storage_bucket_internals::LiveBlockEntry, start: u32, end: u32) -> u32 {
-    entry
-        .address
-        .routing_bucket()
-        .unwrap_or_else(|| block_routing_bucket(&entry.object_key, start, end))
+    block_routing_bucket(&entry.object_key, start, end)
 }
 
 /// Where the dirty set files an object: always the shard's own range, never the address.
@@ -365,10 +386,7 @@ fn scoped_live_page_summaries(
         };
         for page in bucket.block_index.values() {
             visits += 1;
-            let credited_to = page
-                .address
-                .routing_bucket()
-                .unwrap_or_else(|| block_routing_bucket(&page.object_key, start, end));
+            let credited_to = block_routing_bucket(&page.object_key, start, end);
             *credited.entry(credited_to).or_default() += 1;
         }
     }
@@ -548,14 +566,18 @@ fn a_wide_range_fixture_cannot_tell_the_two_placements_apart() {
 // 2. The construction
 // =============================================================================================
 
-/// THE DOOR: THE ENGINE'S OWN DECODER PRODUCES AN ADDRESS WITH NO ROUTING BUCKET.
+/// THE DOOR: DROPPING `rs` FROM THE WIRE CHANGES NOTHING ABOUT THE ADDRESS IT DECODES TO.
 ///
-/// Two ways in, both the engine's, neither a setter: a hand-written record in the wire shape an
-/// older build wrote, and a round trip of a real address with the field dropped.
+/// This used to be "the engine's own decoder produces an address with no routing bucket", and it was
+/// the construction every measurement in this file rested on. An address holds no routing bucket at
+/// all now, so the door is the IDENTITY -- and what it demonstrates is worth more than what it used
+/// to build: an index written before the field left carries a real bucket in `rs`, one written now
+/// carries nil, one written before the field existed carries nothing, and all three decode the same.
+/// That is why the field's departure needs no migration step.
 ///
 /// rust-internal: reads the engine's own index wire shape, no product behaviour
 #[test]
-fn the_engines_own_decoder_produces_an_address_with_no_routing_bucket() {
+fn dropping_the_routing_bucket_from_the_wire_decodes_to_the_same_address() {
     // The required fields and nothing optional. The location is ONE word now -- slab 7 in the
     // high half, offset 128 in the low -- and the split spelling this line used to carry is
     // refused rather than read, which `a_split_address_is_refused_and_a_merged_one_round_trips`
@@ -564,51 +586,61 @@ fn the_engines_own_decoder_produces_an_address_with_no_routing_bucket() {
     let older: BlockAddress =
         serde_json::from_slice(br#"{"a":30064771200,"l":64}"#)
             .expect("the decoder takes an address record with no optional fields");
-    assert_eq!(
-        older.routing_bucket(),
-        None,
-        "`BlockAddressWire::routing_bucket` is `Option<u32>` under `#[serde(default)]`, so a \
-         record written before the field existed has to decode to None. It did not."
-    );
     assert_eq!(older.block_slab_id(), 7, "the rest of the record still decoded");
     assert_eq!(older.length(), 64, "the rest of the record still decoded");
+    assert_eq!(
+        older.object_id(),
+        None,
+        "`BlockAddressWire`'s optional fields are `#[serde(default)]`, so a record written before \
+         they existed has to decode to None. It did not."
+    );
 
     // And a REAL address, round-tripped through the same shape with the key removed.
-    let current = BlockAddress::from_parts(3, 64, 128, Some(1), Some(2), Some(909));
-    assert_eq!(
-        current.routing_bucket(),
-        Some(909),
-        "the fixture address has to carry a routing bucket for dropping it to mean anything"
-    );
+    let current = BlockAddress::from_parts(3, 64, 128, Some(1), Some(2));
     let older = as_an_older_build_wrote_it(&current);
     assert_eq!(
-        older.routing_bucket(),
-        None,
-        "dropping `rs` from the wire shape has to produce an address with no routing bucket"
+        older, current,
+        "dropping `rs` from the wire shape changed the address. The key is inert -- the address \
+         holds no routing bucket -- so this round trip has to be the identity; if it is not, an \
+         index written before the field left decodes to a DIFFERENT address."
     );
+
+    // AND A STORED BUCKET THE ADDRESS COULD NOT HAVE WRITTEN is accepted and ignored, which is the
+    // case an index already on disk actually presents.
+    let mut wire = serde_json::to_value(&current).expect("serializes");
+    wire.as_object_mut()
+        .expect("object")
+        .insert("rs".to_string(), serde_json::json!(909_u32));
+    let with_a_bucket: BlockAddress = serde_json::from_value(wire).expect("decodes");
     assert_eq!(
-        (older.block_slab_id(), older.offset(), older.length(), older.object_id()),
-        (3, 64, 128, Some(2)),
-        "dropping `rs` must drop ONLY the routing bucket; anything else changed makes the \
-         construction below a different experiment"
+        with_a_bucket, current,
+        "an index carrying a real routing bucket in `rs` must decode to the same address as one \
+         carrying none"
     );
 }
 
-/// A PAGE FILED UNDER ONE BUCKET AND SUMMARISED UNDER ANOTHER, CONSTRUCTED.
+/// THE TWO RANGES STILL PLACE A PAGE DIFFERENTLY, AND THE SUMMARY WALK NO LONGER CARES.
 ///
-/// The reconstruct is the production one, with the production arguments: `lifecycle.rs`'s WAL
-/// replay tail and `persistence.rs`'s bulk-ingest flush both call
-/// `rebuild_bucket_first_index(shard_id, shard, 0, u32::MAX)` and then persist what it produced.
-/// The shard is loaded on the production narrow range. The only thing the fixture supplies is
-/// addresses in the state the engine's own decoder produces.
+/// The reconstruct is the production one, with the production arguments: `lifecycle.rs`'s WAL replay
+/// tail and `persistence.rs`'s bulk-ingest flush both call
+/// `rebuild_bucket_first_index(shard_id, shard, 0, u32::MAX)` and then persist what it produced. The
+/// shard is loaded on the production narrow range. The only thing the fixture supplies is addresses in
+/// the state the engine's own decoder produces.
 ///
 /// SECOND ARM, SAME FIXTURE: the same reconstruct with the shard's OWN range, which is the
-/// reconciliation. It agrees. So the mismatch is not a property of unrouted pages -- it is a
-/// property of the argument those five call sites pass.
+/// reconciliation. It agrees. So the difference is not a property of the pages -- it is a property of
+/// the argument those call sites pass, and that is what the `misplaced` count below measures.
+///
+/// WHAT THIS TEST USED TO ASSERT AND NO LONGER CAN. It required at least one bucket holding pages
+/// nothing summarises, and that is no longer constructible: `bucket_storage_summaries` credits a page
+/// to the bucket it is FILED in rather than re-deriving one. The bucket-set equality is therefore
+/// asserted in BOTH arms now -- it is a property of the walk, not of the argument -- and the arms are
+/// still told apart by `misplaced`, which is 600 in one and 0 in the other. A test whose two arms
+/// stopped differing would be the thing to worry about; these still do.
 ///
 /// rust-internal: reads the engine's own reconstruct path, no product behaviour
 #[test]
-fn the_reconstruct_the_replay_tail_runs_files_a_page_where_the_summary_walk_does_not_look() {
+fn the_two_ranges_still_place_a_page_differently_and_the_summary_walk_follows_the_filing() {
     const RECORDS: usize = 600;
 
     for (label, rebuild_end, expect_disagreement) in [
@@ -661,22 +693,19 @@ fn the_reconstruct_the_replay_tail_runs_files_a_page_where_the_summary_walk_does
              arms are not comparing the same store",
             entries.len()
         );
-        // DENOMINATOR: the addresses are still unrouted after the reconstruct. It files a page
-        // under the bucket its ARGUMENTS name and stamps only the object id onto the address, so
-        // the fallback is what decided the filing and the fallback is what this measures. A run
-        // where the reconstruct had started stamping the bucket would make every count below zero
-        // for a reason that has nothing to do with the two ranges.
-        let unrouted = entries
+        // DENOMINATOR: every page reports which bucket the reconstruct FILED it in. That is where
+        // the two ranges part company -- the reconstruct places a page by the bucket its ARGUMENTS
+        // name -- and a page whose filing the walk cannot report would be credited by a hash over
+        // the whole keyspace instead, which is a different measurement.
+        let filed_count = entries
             .iter()
-            .filter(|entry| entry.address.routing_bucket().is_none())
+            .filter(|entry| entry.filed_bucket().is_some())
             .count();
         assert_eq!(
-            unrouted,
+            filed_count,
             entries.len(),
-            "{label}: {unrouted} of {} pages came out of the reconstruct without a routing \
-             bucket, and all of them should have. `rebuild_bucket_first_index` calls \
-             `set_object_id` on the address it files and nothing else, so an address that arrived \
-             unrouted stays unrouted and the FILING is where the two ranges part company.",
+            "{label}: {filed_count} of {} pages report a filing after the reconstruct, and all of \
+             them should: the bucket-index arm of the walk has the map key in hand.",
             entries.len()
         );
 
@@ -689,50 +718,52 @@ fn the_reconstruct_the_replay_tail_runs_files_a_page_where_the_summary_walk_does
         let mut misplaced = 0usize;
         for (routing_bucket, bucket) in &shard.bucket_index.bucket_map {
             for page in bucket.block_index.values() {
-                let credited = page
-                    .address
-                    .routing_bucket()
-                    .unwrap_or_else(|| block_routing_bucket(&page.object_key, start, end));
+                let credited = block_routing_bucket(&page.object_key, start, end);
                 if credited != *routing_bucket {
                     misplaced += 1;
                 }
             }
         }
         println!(
-            "  {label}: {} pages, {misplaced} filed under a bucket they are not summarised \
-             under; only-filed {} buckets, only-summarised {} buckets",
+            "  {label}: {} pages, {misplaced} placed differently by the two ranges; only-filed \
+             {} buckets, only-summarised {} buckets (both must be 0 -- the summary walk reads the \
+             filing rather than deriving a placement)",
             entries.len(),
             only_filed.len(),
             only_summarised.len()
+        );
+
+        // THE BUCKET SETS ARE EQUAL IN BOTH ARMS, and that is the change rather than the fixture.
+        // The summary walk credits a page to the bucket it is FILED in, so it cannot name a bucket
+        // the filing does not, whatever range the reconstruct was handed. This assertion is outside
+        // the arms on purpose: a property of the walk does not belong inside a branch on the
+        // argument, and putting it there is how the previous version came to require the opposite in
+        // one arm and this in the other.
+        assert!(
+            only_filed.is_empty() && only_summarised.is_empty(),
+            "{label}: the filed and summarised bucket sets must be equal at EVERY range, because \
+             the summary walk reads the filing rather than deriving a placement; only-filed \
+             {only_filed:?}, only-summarised {only_summarised:?}"
         );
 
         if expect_disagreement {
             assert_eq!(
                 misplaced,
                 entries.len(),
-                "the reconstruct the replay tail runs places every unrouted page by \
-                 `block_routing_bucket(key, 0, u32::MAX)`, and the summary walk credits it by \
-                 `block_routing_bucket(key, 0, {NARROW_END_BUCKET})`. Those are different \
-                 functions of the same key (asserted separately), so all {} pages have to be \
-                 misplaced and {misplaced} were. mx#1938 measured zero of these because its \
+                "the reconstruct the replay tail runs places every page by \
+                 `block_routing_bucket(key, 0, u32::MAX)`, and a derivation over the shard's range \
+                 would place it by `block_routing_bucket(key, 0, {NARROW_END_BUCKET})`. Those are \
+                 different functions of the same key (asserted separately), so all {} pages have to \
+                 land differently and {misplaced} did. mx#1938 measured zero of these because its \
                  shard made the two functions identical.",
                 entries.len()
-            );
-            assert!(
-                !only_filed.is_empty(),
-                "at least one bucket must hold pages nothing summarises; a dump naming the \
-                 bucket the summaries DO name carries none of that bucket's slabs"
             );
         } else {
             assert_eq!(
                 misplaced, 0,
-                "with the shard's own range passed to the SAME reconstruct, every page is filed \
-                 where it is summarised. This is the reconciliation, and it is one argument."
-            );
-            assert!(
-                only_filed.is_empty() && only_summarised.is_empty(),
-                "reconciled, the filed and summarised bucket sets must be equal; only-filed \
-                 {only_filed:?}, only-summarised {only_summarised:?}"
+                "with the shard's own range passed to the SAME reconstruct, the filing and the \
+                 derivation choose the same bucket for every page. This is the reconciliation, and \
+                 it is one argument."
             );
         }
     }
@@ -823,10 +854,7 @@ fn scoping_is_exact_only_while_every_page_carries_the_shards_own_placement() {
                 // HALF TWO -- WOULD IT CREDIT THE PAGE TO THE RIGHT BUCKET? Asserted separately,
                 // because a page that is reachable and credited elsewhere is a different defect
                 // from one that cannot be reached.
-                let credited = page
-                    .address
-                    .routing_bucket()
-                    .unwrap_or_else(|| block_routing_bucket(&page.object_key, start, end));
+                let credited = block_routing_bucket(&page.object_key, start, end);
                 if !witness.contains(&credited) {
                     miscredited += 1;
                 }
@@ -1592,7 +1620,7 @@ fn the_three_rebuild_call_sites_still_on_the_whole_range_are_each_right_to_be() 
         "the set of rebuild call sites filing pages under `0..u32::MAX` has moved.\n\
          If you FIXED one -- passed the shard's own range, which is what every other caller does \
          -- delete it from WHOLE_RANGE_SITES; that is the change this file exists to make safe, \
-         and `the_reconstruct_the_replay_tail_runs_files_a_page_where_the_summary_walk_does_not_look` \
+         and `the_two_ranges_still_place_a_page_differently_and_the_summary_walk_follows_the_filing` \
          is the measurement that says it works.\n\
          If you ADDED one, it is a new path on which a page can be filed under a bucket the dirty \
          set does not name, and a walk scoped to the dirty set would silently miss it."

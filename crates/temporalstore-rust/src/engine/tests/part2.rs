@@ -235,18 +235,15 @@ fn tiny_memory_cache_eviction_refills_from_persistence_then_block_cache() {
 
     let target_block_key = {
         let shards = engine.shards.read().expect("shards lock poisoned");
-        let address = shards
-            .get(&1)
-            .expect("shard should exist")
-            .strings
-            .get("target")
-            .expect("target address should exist");
+        let shard = shards.get(&1).expect("shard should exist");
+        let address = shard.strings.get("target").expect("target address should exist");
+        let (start, end) = shard.routing_range();
         CacheKey::page_with_slot(
             1,
             address.block_slab_id(),
             address.offset(),
             address.length(),
-            address.routing_bucket(),
+            Some(crate::engine::hashing::block_routing_bucket("target", start, end)),
         )
     };
     assert_eq!(
@@ -353,19 +350,19 @@ fn cache_replacement_policy_soak() {
 
     let target_block_key = {
         let shards = engine.shards.read().expect("shards lock poisoned");
-        let address = shards
-            .get(&1)
-            .expect("loaded shard")
+        let shard = shards.get(&1).expect("loaded shard");
+        let address = shard
             .strings
             .get("soak-target")
             .expect("target page address")
             .clone();
+        let (start, end) = shard.routing_range();
         CacheKey::page_with_slot(
             1,
             address.block_slab_id(),
             address.offset(),
             address.length(),
-            address.routing_bucket(),
+            Some(crate::engine::hashing::block_routing_bucket("soak-target", start, end)),
         )
     };
 
@@ -606,19 +603,21 @@ fn restarted_engine_refills_tiny_memory_cache_from_persistent_block_cache() {
     let restarted_block_store = restarted.block_store();
     let target_block_key = {
         let shards = restarted.shards.read().expect("shards lock poisoned");
-        let address = shards
+        let shard = shards
             .get(&1)
-            .expect("shard should exist after index replay")
+            .expect("shard should exist after index replay");
+        let address = shard
             .strings
             .get("target")
             .expect("target address should be restored from index")
             .clone();
+        let (start, end) = shard.routing_range();
         CacheKey::page_with_slot(
             1,
             address.block_slab_id(),
             address.offset(),
             address.length(),
-            address.routing_bucket(),
+            Some(crate::engine::hashing::block_routing_bucket("target", start, end)),
         )
     };
 

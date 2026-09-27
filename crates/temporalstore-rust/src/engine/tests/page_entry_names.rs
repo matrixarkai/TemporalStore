@@ -670,7 +670,6 @@ fn capture_the_stored_spelling_of_a_page_entry() {
                 length,
                 Some(4),
                 Some(42),
-                Some(7),
             ),
             dirty: flags.0,
             deleted: flags.1,
@@ -760,17 +759,22 @@ fn capture_the_stored_spelling_of_a_page_entry() {
 // and the offset are the only part of the stored spelling this change moves.
 // ---------------------------------------------------------------------------------------------
 
-const PAGE_ENTRY_PLAIN: &str = r#"{"object_key":"k","model_id":"string","address":{"a":4294967298,"l":3,"pi":4,"oi":42,"rs":7,"g":4,"h":null},"dirty":false,"deleted":false,"log_backed":true}"#;
+const PAGE_ENTRY_PLAIN: &str = r#"{"object_key":"k","model_id":"string","address":{"a":4294967298,"l":3,"pi":4,"oi":42,"rs":null,"g":4,"h":null},"dirty":false,"deleted":false,"log_backed":true}"#;
 
-const PAGE_ENTRY_WITH_COMPONENT: &str = r#"{"object_key":"k","model_id":"string","component":"f0","address":{"a":4294967298,"l":3,"pi":4,"oi":42,"rs":7,"g":4,"h":null},"dirty":false,"deleted":false,"log_backed":true}"#;
+const PAGE_ENTRY_WITH_COMPONENT: &str = r#"{"object_key":"k","model_id":"string","component":"f0","address":{"a":4294967298,"l":3,"pi":4,"oi":42,"rs":null,"g":4,"h":null},"dirty":false,"deleted":false,"log_backed":true}"#;
 
-const PAGE_ENTRY_ALL_FLAGS: &str = r#"{"object_key":"k","model_id":"string","address":{"a":4294967298,"l":3,"pi":4,"oi":42,"rs":7,"g":4,"h":null},"dirty":true,"deleted":true,"log_backed":true}"#;
+const PAGE_ENTRY_ALL_FLAGS: &str = r#"{"object_key":"k","model_id":"string","address":{"a":4294967298,"l":3,"pi":4,"oi":42,"rs":null,"g":4,"h":null},"dirty":true,"deleted":true,"log_backed":true}"#;
 
-const PAGE_ENTRY_OVER_WIDE: &str = r#"{"object_key":"k","model_id":"string","address":{"a":4294967298,"l":4294967295,"pi":4,"oi":42,"rs":7,"g":4,"h":null},"dirty":false,"deleted":false,"log_backed":true}"#;
+const PAGE_ENTRY_OVER_WIDE: &str = r#"{"object_key":"k","model_id":"string","address":{"a":4294967298,"l":4294967295,"pi":4,"oi":42,"rs":null,"g":4,"h":null},"dirty":false,"deleted":false,"log_backed":true}"#;
 
 /// A whole shard index written at `15583789e`: one bucket holding six pages -- five of one object
 /// (four plain, one carrying a component and a different kind) and one of a SECOND object in the
 /// same bucket, which is what a cluster-range shard produces routinely.
+/// The routing bucket an index written before this change carries, and what this binary writes in
+/// its place. See `an_index_written_before_this_change_loads_page_for_page_and_writes_back_the_same_bytes`.
+const STORED_ROUTING_BUCKET: &str = r#""rs":7,"#;
+const EMPTY_ROUTING_BUCKET: &str = r#""rs":null,"#;
+
 const OLD_STORE_INDEX: &str = r#"{"bucket_map":{"7":{"routing_slot":7,"layout":"MultiObject","dirty":false,"deleted":false,"meta_loaded":true,"loading":false,"in_memory":true,"ttl_ms":null,"dirty_generation":3,"last_dump_sequence":11,"object_index":[42],"deleted_object_index":[],"page_index":{"hash:k:f0:1:9:3:4:4":{"object_key":"k","model_id":"hash","component":"f0","address":{"a":4294967305,"l":3,"pi":4,"oi":42,"rs":7,"g":4,"h":null},"dirty":true,"deleted":false,"log_backed":false},"string:k::1:0:3:4:4":{"object_key":"k","model_id":"string","address":{"a":4294967296,"l":3,"pi":4,"oi":42,"rs":7,"g":4,"h":null},"dirty":false,"deleted":false,"log_backed":true},"string:k::1:1:3:4:4":{"object_key":"k","model_id":"string","address":{"a":4294967297,"l":3,"pi":4,"oi":42,"rs":7,"g":4,"h":null},"dirty":false,"deleted":false,"log_backed":true},"string:k::1:2:3:4:4":{"object_key":"k","model_id":"string","address":{"a":4294967298,"l":3,"pi":4,"oi":42,"rs":7,"g":4,"h":null},"dirty":false,"deleted":false,"log_backed":true},"string:k::1:3:3:4:4":{"object_key":"k","model_id":"string","address":{"a":4294967299,"l":3,"pi":4,"oi":42,"rs":7,"g":4,"h":null},"dirty":false,"deleted":false,"log_backed":true},"string:other::2:1:5:4:4":{"object_key":"other","model_id":"string","address":{"a":8589934593,"l":5,"pi":4,"oi":42,"rs":7,"g":4,"h":null},"dirty":false,"deleted":false,"log_backed":true}}}}}"#;
 
 /// THE SAME INDEX, CARRYING THE COMBINATION NO WRITER PRODUCES.
@@ -824,7 +828,6 @@ fn page_fixture(component: Option<&str>, length: u64, flags: (bool, bool, bool))
             length,
             Some(4),
             Some(42),
-            Some(7),
         ),
         dirty: flags.0,
         deleted: flags.1,
@@ -1032,11 +1035,28 @@ fn an_index_written_before_this_change_loads_page_for_page_and_writes_back_the_s
     );
 
     // --- And back: the same bytes but for the one key the node no longer holds. ---
-    let canonical = OLD_STORE_INDEX.replace(REMOVED_KEY, "");
+    let without_the_removed_key = OLD_STORE_INDEX.replace(REMOVED_KEY, "");
     assert_ne!(
-        OLD_STORE_INDEX, canonical.as_str(),
+        OLD_STORE_INDEX, without_the_removed_key.as_str(),
         "the stored fixture does not contain {REMOVED_KEY}, so the expectation below is the stored \
          text unmodified and the round trip proves nothing about the removal"
+    );
+    // AND THE ROUTING BUCKET IS WRITTEN BACK EMPTY, which is the second content change this
+    // round trip has to account for. The address does not hold a routing bucket; the SLOT stays on
+    // the wire, because the index log packs the address positionally and dropping the field would
+    // shift `g` and `h` down one place. So an index written before this loads with its `rs` read and
+    // ignored, and is written back with the slot nil -- the same trade `h` made when the digest left.
+    let canonical = without_the_removed_key.replace(STORED_ROUTING_BUCKET, EMPTY_ROUTING_BUCKET);
+    assert_ne!(
+        without_the_removed_key, canonical,
+        "the stored fixture does not contain {STORED_ROUTING_BUCKET}, so the expectation below \
+         cannot be reporting what happens to a stored routing bucket"
+    );
+    assert_eq!(
+        6,
+        canonical.matches(EMPTY_ROUTING_BUCKET).count(),
+        "the fixture holds six page entries and every one of them must have its routing bucket \
+         canonicalised, or this compares a partly-rewritten expectation"
     );
     let rewritten = serde_json::to_string(&index).expect("the index re-serializes");
     assert_eq!(

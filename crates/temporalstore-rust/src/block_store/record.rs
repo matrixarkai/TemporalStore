@@ -165,6 +165,12 @@ struct BlockRecordHeader {
     checksum: [u8; BLOCK_RECORD_CHECKSUM_LEN],
     block_id: Option<u64>,
     object_id: Option<u64>,
+    /// ALWAYS `None`, and kept so the header struct still says what the header does NOT carry.
+    ///
+    /// `parse_block_record_header` sets it unconditionally; `encode_block_record` discards the
+    /// argument it is handed. Read `the_header_carries_neither_identity_it_is_handed` for the
+    /// assertion, and `the_surviving_cross_check_refuses_a_mismatched_record` for the one arm on
+    /// this read path that a record CAN fail.
     routing_bucket: Option<u32>,
     pub(super) compression: BlockRecordCompression,
 }
@@ -325,23 +331,30 @@ pub(super) fn decode_block_record(
             ));
         }
     }
-    // THE TWO CHECKS BELOW CANNOT FIRE, AND THE ONE THAT USED TO SIT UNDER THEM IS GONE.
+    // THE CHECK BELOW CANNOT FIRE, AND THE ROUTING-BUCKET ARM THAT SAT UNDER IT IS NOW GONE.
     //
-    // `parse_block_record_header` returns `object_id: None` and `routing_bucket: None` -- the
-    // record header carries neither -- so both `if let` pairs below fail to match on every read
-    // ever taken. Mutating each to fail unconditionally (`|| true`) left 89 of 89 block-store and
-    // address-footprint tests green; the same mutation on the block-id arm above turned 23 of
+    // `parse_block_record_header` returns `object_id: None` and returned `routing_bucket: None` --
+    // the record header carries NEITHER FIELD AT ALL, and `encode_block_record` discards both
+    // (`let _ = (object_id, routing_bucket);`) -- so both `if let` pairs failed to match on every
+    // read ever taken. Mutating each to fail unconditionally (`|| true`) left 89 of 89 block-store
+    // and address-footprint tests green; the same mutation on the block-id arm above turned 23 of
     // those 89 red, so the harness does notice a check that breaks.
     //
-    // THEY ARE LEFT IN PLACE RATHER THAN DELETED, because the payload checksum does NOT cover
-    // what they name. `block_record_checksum_field` is a CRC32C over the payload alone: it binds
-    // a record to ITSELF, never to the address that reached it. An intact record belonging to a
-    // different object verifies perfectly. So the object-id arm is the one detector here worth
-    // having, and reinstating it means carrying the object id on the wire -- a FORMAT change and
-    // a decision for whoever owns the format, not a tidy-up. The routing bucket is a many-to-one
-    // function of the object, so it can only ever catch a subset of what the object id catches,
-    // for four more bytes on every record; if one of the two is ever carried it should be the
-    // object id.
+    // SO THERE WAS NO ADDRESS-VERSUS-RECORD CROSS-CHECK ON THE ROUTING BUCKET TO LOSE. Its address
+    // side is gone with the field, and its record side never existed: no record can be built that
+    // makes it fire, which is the strongest statement available about a check. What replaces it is
+    // not in this function -- `validate_bucket_ownership_index_from_entries` compares where a page
+    // is FILED against where its KEY routes, which are two independent answers, and
+    // `BucketReleaseRefusal::BlockRoutingMismatch` refuses a release on the same comparison.
+    //
+    // THE OBJECT-ID ARM IS LEFT IN PLACE rather than deleted, because the payload checksum does
+    // NOT cover what it names. `block_record_checksum_field` is a CRC32C over the payload alone:
+    // it binds a record to ITSELF, never to the address that reached it. An intact record belonging
+    // to a different object verifies perfectly. So the object-id arm is the one detector here worth
+    // having, and reinstating it means carrying the object id on the wire -- a FORMAT change and a
+    // decision for whoever owns the format, not a tidy-up. The routing bucket would only ever have
+    // caught a subset of what the object id catches, being a many-to-one function of it, for four
+    // more bytes on every record; if one of the two is ever carried it should be the object id.
     //
     // WHAT WAS DELETED, and why it is not the same case: a third arm compared
     // `address.slab_id()` against `header.slab_id`. That one was vacuous by construction rather
@@ -360,18 +373,6 @@ pub(super) fn decode_block_record(
                 address,
                 format!(
                     "object id mismatch: address {address_object_id}, record {record_object_id}"
-                ),
-            ));
-        }
-    }
-    if let (Some(address_routing_bucket), Some(record_routing_bucket)) =
-        (address.routing_bucket(), header.routing_bucket)
-    {
-        if address_routing_bucket != record_routing_bucket {
-            return Err(corrupt_block_envelope(
-                address,
-                format!(
-                    "routing slot mismatch: address {address_routing_bucket}, record {record_routing_bucket}"
                 ),
             ));
         }
@@ -432,7 +433,7 @@ pub(super) fn logical_range_from_slab(
 
     while physical_offset < slab.len() && out.len() < size as usize {
         let remaining = &slab[physical_offset..];
-        let address = BlockAddress::from_parts(block_slab_id, physical_offset as u64, 0, None, None, None);
+        let address = BlockAddress::from_parts(block_slab_id, physical_offset as u64, 0, None, None);
         if remaining.len() < BLOCK_RECORD_HEADER_LEN || !remaining.starts_with(BLOCK_RECORD_MAGIC) {
             return Err(corrupt_block_envelope(
                 &address,
@@ -450,7 +451,7 @@ pub(super) fn logical_range_from_slab(
                 "payload length mismatch".to_string(),
             ));
         }
-        let address = BlockAddress::from_parts(0, 0, record_len as u64, header.block_id, header.object_id, header.routing_bucket);
+        let address = BlockAddress::from_parts(0, 0, record_len as u64, header.block_id, header.object_id);
         let payload = decode_block_record_payload(
             &remaining[header.header_len..record_len],
             &header,
@@ -712,7 +713,7 @@ pub(super) fn summarize_slab(
     let mut summary = SlabSummary::default();
     while physical_offset < slab.len() {
         let remaining = &slab[physical_offset..];
-        let address = BlockAddress::from_parts(block_slab_id, physical_offset as u64, 0, None, None, None);
+        let address = BlockAddress::from_parts(block_slab_id, physical_offset as u64, 0, None, None);
         if remaining.len() < BLOCK_RECORD_HEADER_LEN || !remaining.starts_with(BLOCK_RECORD_MAGIC) {
             return Err(corrupt_block_envelope(
                 &address,
@@ -823,7 +824,7 @@ pub(super) fn count_slab_blocks(slab: &[u8], block_slab_id: u64) -> (u64, u64) {
             break;
         }
         let address =
-            BlockAddress::from_parts(block_slab_id, physical_offset as u64, 0, None, None, None);
+            BlockAddress::from_parts(block_slab_id, physical_offset as u64, 0, None, None);
         let Ok(header) = parse_block_record_header(remaining, &address) else {
             break;
         };
@@ -858,7 +859,7 @@ pub(super) fn inspect_slab(slab: &[u8], block_slab_id: u64) -> BlockStoreSlabRep
     let mut physical_offset = 0usize;
     while physical_offset < slab.len() {
         let remaining = &slab[physical_offset..];
-        let mut address = BlockAddress::from_parts(block_slab_id, physical_offset as u64, 0, None, None, None);
+        let mut address = BlockAddress::from_parts(block_slab_id, physical_offset as u64, 0, None, None);
         if remaining.len() < BLOCK_RECORD_HEADER_LEN || !remaining.starts_with(BLOCK_RECORD_MAGIC) {
             record_slab_inspection_error(
                 &mut report,
@@ -894,7 +895,6 @@ pub(super) fn inspect_slab(slab: &[u8], block_slab_id: u64) -> BlockStoreSlabRep
         address.set_length(record_len as u64);
         address.set_block_id(header.block_id);
         address.set_object_id(header.object_id);
-        address.set_routing_bucket(header.routing_bucket);
         match decode_block_record(&remaining[..record_len], &address) {
             Ok(decoded) => {
                 report.block_count = report.block_count.saturating_add(1);
@@ -982,7 +982,7 @@ mod block_record_format_tests {
     use super::*;
 
     fn address() -> BlockAddress {
-        BlockAddress::from_parts(1, 0, 0, None, None, None)
+        BlockAddress::from_parts(1, 0, 0, None, None)
     }
 
     /// What the record carries comes back; what the index carries does not.
@@ -1018,6 +1018,94 @@ mod block_record_format_tests {
         assert_eq!(header.routing_bucket, None, "the index holds the routing bucket");
         let decoded = decode_block_record(&encoded.bytes, &address()).expect("decode");
         assert_eq!(decoded.payload, payload);
+    }
+
+    /// THE RECORD HEADER CARRIES NEITHER IDENTITY IT IS HANDED, and that is what makes one of the
+    /// two cross-checks in `decode_block_record` unfireable rather than merely unfired.
+    ///
+    /// `encode_block_record` takes `object_id` and `routing_bucket` and discards both
+    /// (`let _ = (object_id, routing_bucket);`); `parse_block_record_header` returns both as `None`
+    /// unconditionally. So no record can be built whose header disagrees with an address about
+    /// either -- which is the strongest form of the statement #1969 made by mutation, and the reason
+    /// the routing-bucket arm was deleted with the field rather than left as a branch nothing
+    /// reaches.
+    #[test]
+    fn the_header_carries_neither_identity_it_is_handed() {
+        let encoded = encode_block_record(
+            b"a record handed an object id and a routing bucket",
+            7,
+            Some(0x0123_4567_89ab_cdef),
+            Some(4_155_475_953),
+            BlockStoreOptions::default(),
+        )
+        .expect("the record encodes");
+
+        // DENOMINATOR: the record really was built, and really carries the BLOCK ID it was handed --
+        // so "the header carries nothing" is not what is being asserted.
+        let at = crate::block_store::BlockAddress::from_parts(
+            0,
+            0,
+            encoded.bytes.len() as u64,
+            None,
+            None,
+        );
+        let header = parse_block_record_header(&encoded.bytes, &at).expect("the header parses");
+        assert_eq!(
+            Some(7),
+            header.block_id,
+            "the header must carry the block id it was handed, or this test cannot tell a field the \
+             format omits from a format it failed to write"
+        );
+
+        assert_eq!(
+            None, header.object_id,
+            "the record header has no object id field, so an address-versus-record check on the \
+             object id cannot fire. Carrying it is a FORMAT change and a decision for whoever owns \
+             the format."
+        );
+        assert_eq!(
+            None, header.routing_bucket,
+            "the record header has no routing bucket field either -- and the address does not carry \
+             one now, so BOTH sides of that comparison are gone. There was no cross-check to lose."
+        );
+    }
+
+    /// AND THE ONE CROSS-CHECK THAT CAN FIRE, DRIVEN WITH A MISMATCHED RECORD.
+    ///
+    /// The block-id arm is the only address-versus-record comparison on this read path with a record
+    /// side, and this is it failing: a record written as block 3 of its object, read through an
+    /// address that claims block 4, is REFUSED. Without this, "one of the two can fire" is a claim
+    /// about the source rather than about the decoder.
+    ///
+    /// WITH THE HONEST READ AS ITS DENOMINATOR, because a decoder that refused everything would pass
+    /// the refusal half on its own.
+    #[test]
+    fn the_surviving_cross_check_refuses_a_mismatched_record() {
+        let payload = b"block three of its object".to_vec();
+        let encoded = encode_block_record(&payload, 3, None, None, BlockStoreOptions::default())
+            .expect("the record encodes");
+        let len = encoded.bytes.len() as u64;
+
+        let honest = crate::block_store::BlockAddress::from_parts(0, 0, len, Some(3), None);
+        let decoded = decode_block_record(&encoded.bytes, &honest).expect("the honest read");
+        assert_eq!(payload, decoded.payload, "denominator: the honest address reads its record");
+
+        let mismatched = crate::block_store::BlockAddress::from_parts(0, 0, len, Some(4), None);
+        let refusal = decode_block_record(&encoded.bytes, &mismatched)
+            .expect_err("a record stating block 3 must not read through an address claiming 4");
+        assert!(
+            refusal.to_string().contains("page id mismatch"),
+            "the refusal must name the block id: {refusal}"
+        );
+
+        // AND AN ADDRESS THAT OMITS THE BLOCK ID READS THROUGH UNCHECKED, which is what
+        // "presence-gated" means and why dropping the field would disable the detector silently
+        // rather than loudly.
+        let stripped = crate::block_store::BlockAddress::from_parts(0, 0, len, None, None);
+        assert!(
+            decode_block_record(&encoded.bytes, &stripped).is_ok(),
+            "an address carrying no block id must read through: the check is gated on presence"
+        );
     }
 
     /// Every field sits at a constant offset, so a reader takes one without walking.
@@ -1129,7 +1217,7 @@ mod reused_zstd_context_tests {
     }
 
     fn address_for(payload_len: usize) -> BlockAddress {
-        BlockAddress::from_parts(1, 0, payload_len as u64, Some(1), Some(1), Some(0))
+        BlockAddress::from_parts(1, 0, payload_len as u64, Some(1), Some(1))
     }
 
     /// Round-trip at several sizes through the shared thread-local context.

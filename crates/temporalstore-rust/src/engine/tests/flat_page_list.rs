@@ -318,7 +318,6 @@ fn page(object_key: &str, component: Option<&str>, slab: u64, offset: u64) -> Bl
             32,
             Some(7),
             Some(11),
-            Some(3),
         ),
         dirty: false,
         deleted: false,

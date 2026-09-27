@@ -118,13 +118,14 @@ pub fn block_address_from_item(
     log_size: u64,
     item: &WalItem,
 ) -> Result<BlockAddress, crate::block_store::BlockAddressOutOfRange> {
+    // The item's own `routing_bucket` is not stamped onto the address any more: the WAL item IS the
+    // container that holds it, and every reader of this address reaches it through that item.
     BlockAddress::try_from_parts(
         WAL_LOG_SLAB_ID,
         log_id,
         log_size,
         Some(u64::from(item.block_id)),
         Some(u64::from(item.object_id)),
-        u32::try_from(item.routing_bucket).ok(),
     )
 }
 
@@ -283,7 +284,9 @@ mod tests {
         assert!(is_wal_resident(address.block_slab_id()));
         assert_eq!(address.offset(), 4096, "the address IS the log id");
         assert_eq!(address.length(), 512);
-        assert_eq!(address.routing_bucket(), Some(11));
+        // The item's routing bucket of 11 is NOT stamped onto the address: the item is the
+        // container that holds it, and every reader of this address reaches it through that item.
+        assert_eq!(item.routing_bucket, 11, "the item still carries the bucket");
         assert_eq!(address.block_id(), Some(7));
         assert_eq!(address.object_id(), Some(3));
     }

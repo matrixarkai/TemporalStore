@@ -27,8 +27,9 @@ pub(super) fn read_sequence_row(
     shard_id: ShardId,
     timestamp_ms: u64,
     address: &BlockAddress,
+    routing_bucket: Option<u32>,
 ) -> Option<SequenceFeatureRow> {
-    let bytes = read_block_bytes(cache, block_store, shard_id, address)?;
+    let bytes = read_block_bytes(cache, block_store, shard_id, address, routing_bucket)?;
     match decode_feature_block_strict(&bytes) {
         PackedFeatureBlockDecode::Packed(points) => points
             .into_iter()
@@ -68,6 +69,9 @@ pub(super) fn sequence_rows_in_range(
     count: usize,
     filters: &[FeatureFilter],
 ) -> Vec<SequenceFeatureRow> {
+    let (start_routing_bucket, end_routing_bucket) = shard.routing_range();
+    let routing_bucket =
+        crate::engine::hashing::block_routing_bucket(key, start_routing_bucket, end_routing_bucket);
     shard
         .features
         .get(key)
@@ -76,7 +80,14 @@ pub(super) fn sequence_rows_in_range(
                 .range(crate::engine::timestamp_range_bounds(start_ms, end_ms))
                 .take(count)
                 .filter_map(|(timestamp_ms, address)| {
-                    read_sequence_row(cache, block_store, shard_id, *timestamp_ms, address)
+                    read_sequence_row(
+                        cache,
+                        block_store,
+                        shard_id,
+                        *timestamp_ms,
+                        address,
+                        Some(routing_bucket),
+                    )
                 })
                 .filter(|row| {
                     filters

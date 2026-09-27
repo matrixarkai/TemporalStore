@@ -324,7 +324,7 @@ fn append_timestamped_kv_blocks_inner(
                         address.block_slab_id(),
                         address.offset(),
                         address.length(),
-                        address.routing_bucket(),
+                        Some(routing_bucket),
                     ),
                     packed,
                 );
@@ -496,8 +496,9 @@ pub(super) fn read_feature_point(
     shard_id: ShardId,
     timestamp_ms: u64,
     address: &BlockAddress,
+    routing_bucket: Option<u32>,
 ) -> Option<FeaturePoint> {
-    let bytes = read_block_bytes(cache, block_store, shard_id, address)?;
+    let bytes = read_block_bytes(cache, block_store, shard_id, address, routing_bucket)?;
     match decode_feature_block_strict(&bytes) {
         PackedFeatureBlockDecode::Packed(points) => points
             .into_iter()
@@ -535,6 +536,7 @@ pub(super) fn read_feature_point_cached(
     timestamp_ms: u64,
     address: &BlockAddress,
     packed_block_cache: &mut HashMap<BlockAddress, Option<Vec<FeaturePoint>>>,
+    routing_bucket: Option<u32>,
 ) -> Option<FeaturePoint> {
     if let Some(points) = packed_block_cache.get(address) {
         return points
@@ -547,7 +549,7 @@ pub(super) fn read_feature_point_cached(
             .cloned();
     }
 
-    let bytes = read_block_bytes(cache, block_store, shard_id, address)?;
+    let bytes = read_block_bytes(cache, block_store, shard_id, address, routing_bucket)?;
     match decode_feature_block_strict(&bytes) {
         PackedFeatureBlockDecode::Packed(points) => {
             let selected = points

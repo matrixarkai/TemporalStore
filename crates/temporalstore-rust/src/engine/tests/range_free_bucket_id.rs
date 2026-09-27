@@ -58,12 +58,20 @@
 //!
 //! `BucketNode::routing_bucket` duplicates the `BucketMap` key and `BlockAddress::routing_bucket`
 //! duplicates it again per block, so removing them looks like the saving that pays for the change.
-//! It is zero, twice, and for the reason both structures already have written down: only a change
-//! that takes the tail to eight bytes or fewer, or a whole word out of the eight-aligned group,
-//! moves either one. `BlockAddress` is a 29-byte payload in 32 bytes -- take four out and 25
-//! rounds back to 32. `BucketNode` is 80 bytes of eight-aligned field and a 6-byte tail rounded to
-//! 8 -- take four out of the tail and 2 still rounds to 8. `removing_the_routing_bucket_recovers_no_bytes`
-//! asserts both over the widths the compiler reports, not over a hand-written list.
+//! It is zero for EACH FIELD ON ITS OWN, and for the reason both structures already have written
+//! down: only a change that takes the tail to eight bytes or fewer, or a whole word out of the
+//! eight-aligned group, moves either one. `BucketNode` is 80 bytes of eight-aligned field and a
+//! 6-byte tail rounded to 8 -- take four out of the tail and 2 still rounds to 8, so that one is zero
+//! and stays zero. `BlockAddress` WAS a 29-byte payload in 32 bytes, and taking four out leaves 25,
+//! which rounds back to 32 -- also zero.
+//!
+//! IT IS NOT ZERO FOR THE PAIR, and the address is 24 bytes now because of it. The routing bucket left
+//! in the same change that narrowed `block_id` from 32 bits to 16: four bytes off 29 is 25 and rounds
+//! back, two bytes off is 27 and rounds back, and SIX bytes off is 23, which rounds to 24. A verdict on
+//! a field in isolation is not a verdict on the field, and this is the third alignment step in this
+//! campaign crossed only by a combination.
+//! `removing_the_routing_bucket_recovers_no_bytes_alone_and_eight_in_combination` asserts all three
+//! counterfactuals over the widths the compiler reports, not over a hand-written list.
 //!
 //! THE THIRD CARRIER IS THE EXCEPTION, AND IT IS THE ONE USEFUL NUMBER HERE.
 //! `BlockLookupRef` -- the entry `object_block_lookup` holds, and the one
@@ -473,32 +481,45 @@ fn the_fill_instrument_reproduces_the_published_figure() {
     );
 }
 
-/// REMOVING THE ROUTING BUCKET FROM EITHER STRUCTURE RECOVERS ZERO BYTES.
+/// REMOVING THE ROUTING BUCKET RECOVERS ZERO BYTES ON ITS OWN, AND EIGHT WHEN A SECOND NARROWING
+/// LANDS BESIDE IT.
 ///
-/// Both structures already state the rule that decides this, and both state it because it was got
-/// wrong before: only a change that takes the tail to eight bytes or fewer, or that takes a whole
-/// word out of the eight-aligned group, moves either one. `routing_bucket` is a four-byte field in
-/// the tail of both, and neither tail crosses a step when it leaves.
+/// Both structures state the rule that decides this, and both state it because it was got wrong
+/// before: only a change that takes the tail to eight bytes or fewer, or that takes a whole word out
+/// of the eight-aligned group, moves either one. `routing_bucket` is a four-byte field in the tail of
+/// both, and neither tail crosses a step when that field alone leaves.
+///
+/// THAT IS A VERDICT ON THE FIELD IN ISOLATION, WHICH IS NOT A VERDICT ON THE FIELD. The address is
+/// 24 bytes now, not 32, because the bucket left in the same change that narrowed `block_id` from 32
+/// bits to 16. Four bytes off a 29-byte payload is 25 and rounds back to 32; two bytes off is 27 and
+/// rounds back to 32; SIX bytes off is 23 and rounds to 24. Each narrowing alone is worth exactly the
+/// zero this test was written to report, and the pair is worth a whole word -- which is the third
+/// time in this campaign that an alignment step has only been crossed by a combination, after the
+/// bucket node's five bools and the address's two location words.
+///
+/// The three counterfactuals are kept below as arithmetic over the shape #1983 measured, so its
+/// finding survives verbatim rather than being replaced by the one that followed it.
 ///
 /// ASSERTED AGAINST THE WIDTHS THE COMPILER REPORTS. The group figures are cross-checked by
-/// reconstructing `size_of` from them first, so a field moving between the groups fails here
-/// rather than leaving the arithmetic adding up for the wrong reason. `BlockAddress`'s fields are
-/// private to `block_store`, so its payload is the 29 bytes
-/// `every_byte_of_a_block_address_is_accounted_for` measures with `offset_of!` and asserts; this
-/// test reconstructs the width from it and would fail if either moved.
+/// reconstructing `size_of` from them first, so a field moving between the groups fails here rather
+/// than leaving the arithmetic adding up for the wrong reason. `BlockAddress`'s fields are private to
+/// `block_store`, so its payload is what `every_byte_of_a_block_address_is_accounted_for` measures
+/// with `offset_of!` and asserts; this test reconstructs the width from it and fails if either moved.
 #[test]
-fn removing_the_routing_bucket_recovers_no_bytes() {
+fn removing_the_routing_bucket_recovers_no_bytes_alone_and_eight_in_combination() {
     use std::mem::{align_of, size_of};
 
     println!("\n=== what recovering the duplicated bucket id would free ===");
 
-    // --- BlockAddress: 29 bytes of payload in 32, so four fewer is 25, which rounds back to 32.
-    const ADDRESS_PAYLOAD: usize = 8 + 8 + 4 + 4 + 4 + 1;
+    // --- BlockAddress, LIVE: the merged slab word, the object id, a 32-bit length, a 16-bit block
+    // --- id and the presence byte -- 23 bytes of payload in 24. This is the drift check, so it has
+    // --- to describe the declaration as it stands.
+    const ADDRESS_PAYLOAD: usize = 8 + 8 + 4 + 2 + 1;
     let address_width = size_of::<BlockAddress>();
     let address_align = align_of::<BlockAddress>();
     assert_eq!(
-        29, ADDRESS_PAYLOAD,
-        "the derived address payload is {ADDRESS_PAYLOAD}, not the 29 bytes \
+        23, ADDRESS_PAYLOAD,
+        "the derived address payload is {ADDRESS_PAYLOAD}, not the 23 bytes \
          `every_byte_of_a_block_address_is_accounted_for` measures"
     );
     assert_eq!(
@@ -507,17 +528,62 @@ fn removing_the_routing_bucket_recovers_no_bytes() {
         "the address payload plus one rounding must reconstruct its width exactly, or the field \
          list above has drifted from the declaration"
     );
-    let address_without = ADDRESS_PAYLOAD - size_of::<u32>();
+
+    // --- AND THE THREE COUNTERFACTUALS, over the shape this module measured: a 29-byte payload in
+    // --- 32, carrying a four-byte routing bucket and a 32-bit block id.
+    const ADDRESS_PAYLOAD_BEFORE: usize = 8 + 8 + 4 + 4 + 4 + 1;
+    const WIDTH_BEFORE: usize = 32;
+    assert_eq!(29, ADDRESS_PAYLOAD_BEFORE, "the shape this module measured was 29 bytes of payload");
+    assert_eq!(
+        ADDRESS_PAYLOAD_BEFORE.div_ceil(address_align) * address_align,
+        WIDTH_BEFORE,
+        "the shape this module measured must reconstruct to 32, or the counterfactuals below are \
+         about a structure this engine never had"
+    );
+    let round = |payload: usize| payload.div_ceil(address_align) * address_align;
+    let without_bucket = ADDRESS_PAYLOAD_BEFORE - size_of::<u32>();
+    let without_narrow_id = ADDRESS_PAYLOAD_BEFORE - 2;
+    let without_both = ADDRESS_PAYLOAD_BEFORE - size_of::<u32>() - 2;
     println!(
-        "  BlockAddress  {address_width} B, payload {ADDRESS_PAYLOAD} B -> without the routing \
-         bucket {address_without} B, width {} B",
-        address_without.div_ceil(address_align) * address_align
+        "  BlockAddress  {address_width} B now, {WIDTH_BEFORE} B before (payload \
+         {ADDRESS_PAYLOAD_BEFORE} B)"
+    );
+    println!(
+        "    without the routing bucket alone : payload {without_bucket} B -> width {} B  (saves {})",
+        round(without_bucket),
+        WIDTH_BEFORE - round(without_bucket)
+    );
+    println!(
+        "    with a 16-bit block id alone     : payload {without_narrow_id} B -> width {} B  (saves {})",
+        round(without_narrow_id),
+        WIDTH_BEFORE - round(without_narrow_id)
+    );
+    println!(
+        "    both together                    : payload {without_both} B -> width {} B  (saves {})",
+        round(without_both),
+        WIDTH_BEFORE - round(without_both)
     );
     assert_eq!(
-        address_without.div_ceil(address_align) * address_align,
+        WIDTH_BEFORE,
+        round(without_bucket),
+        "removing the routing bucket ALONE must not change the width -- that is this module's \
+         finding, and the payload arithmetic says it is impossible for it to"
+    );
+    assert_eq!(
+        WIDTH_BEFORE,
+        round(without_narrow_id),
+        "narrowing the block id ALONE must not change the width either, for the same reason"
+    );
+    assert_eq!(
         address_width,
-        "removing the routing bucket from BlockAddress changed its width, which the payload \
-         arithmetic says is impossible"
+        round(without_both),
+        "the two TOGETHER must reconstruct the live width; if they do not, the eight bytes this \
+         address actually shed are not the eight this arithmetic describes"
+    );
+    assert_eq!(
+        8,
+        WIDTH_BEFORE - address_width,
+        "the pair is worth a whole eight-byte step, and each half of it is worth zero"
     );
 
     // --- BucketNode: 80 bytes of eight-aligned field and a 6-byte tail rounded to 8. Four out of

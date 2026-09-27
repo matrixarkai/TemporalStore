@@ -48,6 +48,18 @@ use crate::engine::storage_bucket_internals::{
 const SHARD: ShardId = 1;
 const SPREAD: u32 = 8;
 
+/// THE RANGE THE FIXTURE RUNS ON, AND WHY IT IS NARROW.
+///
+/// A page's bucket is `block_routing_bucket(object_key, start, end)` now, so nothing about this
+/// fixture chooses it -- it is decided by the key and the range. Over the WHOLE keyspace 64 keys land
+/// in 64 distinct buckets, and the positive arm below needs the orphan's bucket to hold OTHER pages:
+/// its whole point is that an implementation noticing only a wholly absent BUCKET would pass. Eight
+/// buckets is what makes that collision certain rather than a one-in-67-million accident.
+///
+/// Every call into the engine here passes the same range, and `bucket_of` computes over it, so the
+/// fixture and the code under test partition the shard the same way.
+const END: u32 = SPREAD - 1;
+
 /// A page address shaped like one the block store handed back.
 ///
 /// The object id is EXPLICIT. `rebuild_bucket_block_ownership` reads
@@ -55,14 +67,13 @@ const SPREAD: u32 = 8;
 /// address carrying none comes back from a rebuild carrying one -- and `same_block_address`
 /// compares object ids exactly. Supplying it keeps "the same page" the same page on both sides of
 /// a rebuild, which is what the positive arm has to assert.
-fn address_at(index: u64, routing_bucket: u32) -> BlockAddress {
+fn address_at(index: u64) -> BlockAddress {
     BlockAddress::from_parts(
         7,
         index * 128,
         128,
         Some(1_000 + index),
         Some(9_000 + index),
-        Some(routing_bucket),
     )
 }
 
@@ -70,19 +81,44 @@ fn key_of(index: u64) -> String {
     format!("k-{index:06}")
 }
 
+/// WHERE A PAGE OF THIS FIXTURE IS ACTUALLY FILED, and not a number this file picks.
+///
+/// The fixture used to choose a bucket (`index % SPREAD`) and stamp it onto the address, because the
+/// filing site read the bucket off the address. It derives the bucket from the KEY now, so a fixture
+/// that chose one would be filing pages into buckets the engine does not put them in -- and the
+/// vacuity checks below, which look the orphan's own bucket up in the map, would look in the wrong
+/// place. This is the engine's own expression.
+fn bucket_of(index: u64) -> u32 {
+    crate::engine::hashing::block_routing_bucket(&key_of(index), 0, END)
+}
+
 /// A shard holding `count` string pages in the model map, and in the bucket index too -- except
 /// for pages routing to `unfiled_bucket`, which are left in the map alone.
 ///
 /// Filed with `upsert_bucket_index_block`, the function a live write files through, so the index
 /// half of the fixture is built the way production builds it rather than assembled by hand.
-fn shard_with(count: u64, unfiled_bucket: Option<u32>) -> ShardState {
+fn shard_with(count: u64, unfiled_group: Option<u64>) -> ShardState {
+    shard_with_unfiled(count, unfiled_group).0
+}
+
+/// The same, returning the buckets whose pages were left OUT of the index.
+///
+/// `unfiled_group` selects by `index % SPREAD` rather than by bucket id, because the bucket a page
+/// lands in is now `block_routing_bucket(key, ..)` and nothing chooses it. The buckets those pages
+/// route to are returned, so the release test can record exactly them.
+fn shard_with_unfiled(count: u64, unfiled_group: Option<u64>) -> (ShardState, BTreeSet<u32>) {
     let mut shard = ShardState::default();
+    // `upsert_bucket_index_block` reads the shard's own range to decide where to file. An unstamped
+    // state answers the whole keyspace, which would put every key in a bucket of its own.
+    shard.set_routing_range(0, END);
+    let mut unfiled_buckets = BTreeSet::new();
     let mut index = 0u64;
     while index < count {
-        let routing_bucket = (index as u32) % SPREAD;
-        let address = address_at(index, routing_bucket);
+        let address = address_at(index);
         shard.strings.insert(key_of(index), address.clone());
-        if Some(routing_bucket) != unfiled_bucket {
+        if Some(index % u64::from(SPREAD)) == unfiled_group {
+            unfiled_buckets.insert(bucket_of(index));
+        } else {
             upsert_bucket_index_block(
                 &mut shard,
                 SHARD,
@@ -95,7 +131,7 @@ fn shard_with(count: u64, unfiled_bucket: Option<u32>) -> ShardState {
         }
         index += 1;
     }
-    shard
+    (shard, unfiled_buckets)
 }
 
 /// ARM 1 OF 5: no live model-map page at all -> `false`, having established nothing.
@@ -117,7 +153,7 @@ fn a_shard_with_no_live_model_page_establishes_nothing() {
     );
 
     reset_promote_model_map_check_counts();
-    let promoted = promote_model_maps_to_bucket_index_authority(SHARD, &mut shard, 0, u32::MAX);
+    let promoted = promote_model_maps_to_bucket_index_authority(SHARD, &mut shard, 0, END);
     let (checks, rebuilds, pages) = promote_model_map_check_counts();
 
     assert!(
@@ -137,7 +173,7 @@ fn a_shard_with_no_live_model_page_establishes_nothing() {
     // nothing and latches the fast-skip on the result.
     let mut fresh = ShardState::default();
     reset_promote_model_map_check_counts();
-    let promoted = promote_model_maps_to_bucket_index_authority(SHARD, &mut fresh, 0, u32::MAX);
+    let promoted = promote_model_maps_to_bucket_index_authority(SHARD, &mut fresh, 0, END);
     let (_, rebuilds, pages) = promote_model_map_check_counts();
     assert!(
         !promoted,
@@ -166,7 +202,7 @@ fn an_empty_bucket_index_under_live_model_pages_is_rebuilt_whole() {
     );
 
     reset_promote_model_map_check_counts();
-    let promoted = promote_model_maps_to_bucket_index_authority(SHARD, &mut shard, 0, u32::MAX);
+    let promoted = promote_model_maps_to_bucket_index_authority(SHARD, &mut shard, 0, END);
     let (checks, rebuilds, pages) = promote_model_map_check_counts();
 
     assert!(
@@ -182,7 +218,7 @@ fn an_empty_bucket_index_under_live_model_pages_is_rebuilt_whole() {
             "string",
             &key_of(index),
             None,
-            &address_at(index, (index as u32) % SPREAD),
+            &address_at(index),
         ) {
             named += 1;
         }
@@ -200,7 +236,7 @@ fn an_index_that_names_every_live_page_rebuilds_nothing() {
     let before: Vec<u32> = shard.bucket_index.bucket_map.keys().copied().collect();
 
     reset_promote_model_map_check_counts();
-    let promoted = promote_model_maps_to_bucket_index_authority(SHARD, &mut shard, 0, u32::MAX);
+    let promoted = promote_model_maps_to_bucket_index_authority(SHARD, &mut shard, 0, END);
     let (checks, rebuilds, pages) = promote_model_map_check_counts();
 
     assert!(
@@ -241,8 +277,8 @@ fn an_index_that_names_every_live_page_rebuilds_nothing() {
 fn a_page_only_the_model_maps_know_about_is_found_and_filed() {
     let mut shard = shard_with(64, None);
     let orphan = 64u64;
-    let orphan_bucket = (orphan as u32) % SPREAD;
-    let orphan_address = address_at(orphan, orphan_bucket);
+    let orphan_bucket = bucket_of(orphan);
+    let orphan_address = address_at(orphan);
     shard.strings.insert(key_of(orphan), orphan_address.clone());
 
     assert!(
@@ -269,7 +305,7 @@ fn a_page_only_the_model_maps_know_about_is_found_and_filed() {
     );
 
     reset_promote_model_map_check_counts();
-    let promoted = promote_model_maps_to_bucket_index_authority(SHARD, &mut shard, 0, u32::MAX);
+    let promoted = promote_model_maps_to_bucket_index_authority(SHARD, &mut shard, 0, END);
     let (checks, rebuilds, pages) = promote_model_map_check_counts();
 
     // "It noticed" is asserted before, and apart from, "the rebuild put the page back". They are
@@ -302,7 +338,7 @@ fn a_page_only_the_model_maps_know_about_is_found_and_filed() {
             "string",
             &key_of(index),
             None,
-            &address_at(index, (index as u32) % SPREAD),
+            &address_at(index),
         ) {
             named += 1;
         }
@@ -329,19 +365,26 @@ fn a_page_only_the_model_maps_know_about_is_found_and_filed() {
 /// whole shard, and undoes it.
 #[test]
 fn a_page_in_a_released_bucket_is_not_a_missing_page() {
-    let released_bucket = 3u32;
+    // ONE GROUP OF KEYS, and the buckets they route to. The fixture used to name a bucket id and
+    // stamp it; the bucket is derived from the key now, so the group is selected by key and the
+    // buckets it lands in are read back out.
+    let released_group = 3u64;
 
     // CONTROL FIRST, and it is the half that can go vacuous.
-    let mut control = shard_with(64, Some(released_bucket));
+    let (mut control, released_buckets) = shard_with_unfiled(64, Some(released_group));
+    assert!(
+        !released_buckets.is_empty(),
+        "the fixture left no page unfiled, so neither half below is presenting a missing page"
+    );
     reset_promote_model_map_check_counts();
     let control_promoted =
-        promote_model_maps_to_bucket_index_authority(SHARD, &mut control, 0, u32::MAX);
+        promote_model_maps_to_bucket_index_authority(SHARD, &mut control, 0, END);
     let (_, control_rebuilds, control_pages) = promote_model_map_check_counts();
     assert!(
         control_promoted,
-        "CONTROL: with bucket {released_bucket}'s pages unfiled and NOT recorded as released, \
-         they are missing and the check must notice -- if this fails the fixture is not \
-         presenting a missing page at all and the exemption below proves nothing"
+        "CONTROL: with {released_buckets:?}'s pages unfiled and NOT recorded as released, they are \
+         missing and the check must notice -- if this fails the fixture is not presenting a missing \
+         page at all and the exemption below proves nothing"
     );
     assert_eq!(
         (control_rebuilds, control_pages),
@@ -350,10 +393,12 @@ fn a_page_in_a_released_bucket_is_not_a_missing_page() {
     );
 
     // THE ARM. The identical fixture, plus the release record.
-    let mut shard = shard_with(64, Some(released_bucket));
-    shard.bucket_index.released_buckets.insert(released_bucket);
+    let mut shard = shard_with(64, Some(released_group));
+    for released_bucket in &released_buckets {
+        shard.bucket_index.released_buckets.insert(*released_bucket);
+    }
     reset_promote_model_map_check_counts();
-    let promoted = promote_model_maps_to_bucket_index_authority(SHARD, &mut shard, 0, u32::MAX);
+    let promoted = promote_model_maps_to_bucket_index_authority(SHARD, &mut shard, 0, END);
     let (_, rebuilds, pages) = promote_model_map_check_counts();
     assert!(
         !promoted,
@@ -382,7 +427,7 @@ fn the_check_does_not_allocate_per_page_it_walks() {
         reset_promote_model_map_check_counts();
         let before = crate::alloc_probe::counted_now().expect("built with `alloc-probe`");
         let promoted =
-            promote_model_maps_to_bucket_index_authority(SHARD, &mut shard, 0, u32::MAX);
+            promote_model_maps_to_bucket_index_authority(SHARD, &mut shard, 0, END);
         let after = crate::alloc_probe::counted_now().expect("built with `alloc-probe`");
         let (_, rebuilds, pages) = promote_model_map_check_counts();
         assert!(

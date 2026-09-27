@@ -299,7 +299,7 @@ fn one_real_page_free_standing() -> BlockIndex {
         object_key: std::sync::Arc::from("free-standing"),
         model_id: crate::engine::storage_bucket_internals::StoredModelKind::String,
         component: None,
-        address: crate::block_store::BlockAddress::from_parts(1, 64, 32, Some(7), Some(11), Some(3)),
+        address: crate::block_store::BlockAddress::from_parts(1, 64, 32, Some(7), Some(11)),
         dirty: false,
         deleted: false,
         log_backed: false,
@@ -1503,4 +1503,364 @@ fn the_instrument_used_here_recovers_a_planted_allocation_exactly() {
          the rule this module prices with does not apply to it",
         small.chunk_bytes
     );
+}
+
+// =============================================================================================
+// WHERE A NARROWER ENTRY LANDS ONCE THE ENTRY IS NO LONGER IN THE NODE
+// =============================================================================================
+
+/// The page entry's ADDRESS as it was before it shed its routing bucket and narrowed its block id.
+///
+/// Field for field the declaration this engine had: the packed slab word, the object id, the length,
+/// a 32-bit block id, the routing bucket, and the presence byte -- 29 bytes of payload in 32. A
+/// mirror rather than a literal 32, so the comparison below is between two SHAPES and the widths are
+/// read off the types.
+#[allow(dead_code)]
+#[derive(Clone)]
+struct MirrorWideAddress {
+    address: u64,
+    object_id: u64,
+    length: u32,
+    block_id: u32,
+    routing_bucket: u32,
+    present: u8,
+}
+
+/// The page entry as it was, which is the live entry with the wide address in it.
+#[allow(dead_code)]
+#[derive(Clone)]
+struct MirrorWideEntry {
+    object_key: std::sync::Arc<str>,
+    model_id: crate::engine::storage_bucket_internals::StoredModelKind,
+    component: Option<std::sync::Arc<str>>,
+    address: MirrorWideAddress,
+    dirty: bool,
+    deleted: bool,
+    log_backed: bool,
+}
+
+/// The SHIPPED page-index shape, generic over the entry so both widths go through one builder.
+///
+/// Generic on purpose: a second hand-written builder for the wide entry could differ from this one in
+/// the growth ladder or in whether the single arm boxes, and either difference would be reported as a
+/// saving. One builder, two instantiations.
+#[allow(dead_code)]
+enum MirrorShippedArm<E> {
+    Empty,
+    One(u64, Box<E>),
+    Many(Vec<(u64, E)>),
+}
+
+/// Grow one bucket's arm exactly as the shipped shape does: empty, boxed single, or a list grown one
+/// entry at a time in whole growth steps.
+#[cfg(feature = "alloc-probe")]
+fn mirror_arm<E: Clone>(held: usize, page: &E) -> MirrorShippedArm<E> {
+    match held {
+        0 => MirrorShippedArm::Empty,
+        1 => MirrorShippedArm::One(0, Box::new(page.clone())),
+        _ => {
+            let mut pages: Vec<(u64, E)> = Vec::new();
+            for entry in 0..held {
+                if pages.len() == pages.capacity() {
+                    let want = if pages.is_empty() {
+                        PAGE_LIST_GROWTH_STEP
+                    } else {
+                        (pages.len() + 1).div_ceil(PAGE_LIST_GROWTH_STEP) * PAGE_LIST_GROWTH_STEP
+                    };
+                    pages.reserve_exact(want - pages.len());
+                }
+                pages.push((entry as u64, page.clone()));
+            }
+            MirrorShippedArm::Many(pages)
+        }
+    }
+}
+
+/// One whole bucket population in the shipped shape, on the spine the engine uses.
+#[cfg(feature = "alloc-probe")]
+fn mirror_population<E: Clone>(plan: &[usize], page: &E) -> BTreeMap<u32, MirrorShippedArm<E>> {
+    let mut spine: BTreeMap<u32, MirrorShippedArm<E>> = BTreeMap::new();
+    for (index, held) in plan.iter().enumerate() {
+        spine.insert(index as u32, mirror_arm(*held, page));
+    }
+    spine
+}
+
+/// The plan -- one entry per bucket, holding that bucket's page count -- built OUTSIDE every probe
+/// span so building it is charged to neither shape.
+#[cfg(feature = "alloc-probe")]
+fn census_plan(census: &ArmCensus) -> Vec<usize> {
+    census
+        .held
+        .iter()
+        .flat_map(|(held, count)| std::iter::repeat(*held).take(*count))
+        .collect()
+}
+
+/// WHAT THE NARROWER ENTRY IS WORTH ON THE HEAP, NOW THAT THE ENTRY IS NOT IN THE NODE.
+///
+/// #1975 moved the single page out of `BucketNode` and behind a pointer, and its own note says the
+/// node is 88 and the page index 24 REGARDLESS of entry width. That is correct and it changes what
+/// this change is worth measuring: before it, eight bytes off the entry was eight bytes off every
+/// node in the bucket map and `size_of` said so. After it, the entry lives in an ALLOCATION -- boxed
+/// for a single-page bucket, inside a `Vec` for every other -- and an allocation is served from a
+/// size CLASS, so eight bytes off the request can round away completely.
+///
+/// IT ROUNDS AWAY IN ONE ARM AND LANDS WHOLE IN THE OTHER, and that is the finding. glibc serves a
+/// request from `max(32, round_up(request + 8, 16))`: a boxed entry asks for 64 now and asked for 72
+/// before, and both land in the 80-byte class, so a single-page bucket saves NOTHING on the chunk
+/// column. A list of n entries asks for n x 72 now against n x 80 before, and at the shipped range
+/// p50 is 39 pages a bucket, so the eight bytes land n times over with only the list's own rounding
+/// taken off. Which arm dominates is a property of the routing range, and both are measured.
+///
+/// BOTH COLUMNS, BOTH RANGES, BOTH CORPUS SIZES, and the ARM-WISE split as well as the total --
+/// because a total over a population that is 100% single-page at one range and 0.000% at the other
+/// would report the same mechanism as two different results without saying why.
+///
+/// rust-internal: measures the engine's own declarations through the counting allocator
+#[cfg(feature = "alloc-probe")]
+#[test]
+#[ignore = "reads the process-wide allocation probe; run by name"]
+fn what_the_narrower_entry_is_worth_on_the_heap_now_that_it_is_behind_a_pointer() {
+    // The two widths, read off the types rather than written down. If the mirror is not the entry's
+    // former width every byte below is a comparison with a shape this engine never had.
+    let narrow = size_of::<BlockIndex>();
+    let wide = size_of::<MirrorWideEntry>();
+    assert_eq!(64, narrow, "the live page entry is {narrow} B, not 64");
+    assert_eq!(
+        72, wide,
+        "the mirror of the former entry is {wide} B, not 72; it is not the shape this change replaced"
+    );
+    assert_eq!(
+        32,
+        size_of::<MirrorWideAddress>(),
+        "the mirror of the former address is {} B, not 32",
+        size_of::<MirrorWideAddress>()
+    );
+    assert_eq!(
+        8,
+        wide - narrow,
+        "the two shapes differ by {} B, and this whole measurement is about eight",
+        wide - narrow
+    );
+
+    // The size class the two boxed requests land in, DERIVED from the rule rather than asserted as a
+    // literal -- and then checked against what the allocator actually charges, below.
+    let class = |request: usize| {
+        if request + 8 < 32 {
+            32
+        } else {
+            (request + 8 + 15) / 16 * 16
+        }
+    };
+    println!(
+        "=== a boxed entry: {narrow} B asks for class {}, {wide} B asks for class {} ===",
+        class(narrow),
+        class(wide)
+    );
+
+    for (label, end, records) in [
+        ("0..1023 (the operator's)", NARROW_END, SMALL),
+        ("0..1023 (the operator's)", NARROW_END, LARGE),
+        ("0..u32::MAX", WIDE_END, SMALL),
+        ("0..u32::MAX", WIDE_END, LARGE),
+    ] {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let engine = engine_on(dir.path());
+        load_on(&engine, end);
+        seed_routed(&engine, records);
+        let census = arm_census(&engine);
+        census.assert_denominators(&format!("{label} @ {records}"));
+        let page = one_real_page(&engine);
+        let wide_page = MirrorWideEntry {
+            object_key: std::sync::Arc::clone(&page.object_key),
+            model_id: page.model_id,
+            component: page.component.clone(),
+            address: MirrorWideAddress {
+                address: 0,
+                object_id: 0,
+                length: 0,
+                block_id: 0,
+                routing_bucket: 0,
+                present: 0,
+            },
+            dirty: page.dirty,
+            deleted: page.deleted,
+            log_backed: page.log_backed,
+        };
+
+        let plan = census_plan(&census);
+        let buckets = census.buckets();
+        let (empty_arms, one_arms, many_arms) = census.arm_samples();
+
+        // THE WHOLE POPULATION, both shapes, one instrument.
+        let now = measure(size_of::<BlockIndexMap>(), buckets, || {
+            mirror_population(&plan, &page)
+        });
+        let before = measure(size_of::<BlockIndexMap>(), buckets, || {
+            mirror_population(&plan, &wide_page)
+        });
+
+        // AND THE SINGLE-PAGE ARM ON ITS OWN, which is where the rounding is predicted to eat it.
+        let single_plan: Vec<usize> = std::iter::repeat(1).take(one_arms.max(1)).collect();
+        let one_now = measure(0, one_arms.max(1), || mirror_population(&single_plan, &page));
+        let one_before = measure(0, one_arms.max(1), || {
+            mirror_population(&single_plan, &wide_page)
+        });
+
+        // AND THE MANY ARM ON ITS OWN.
+        let many_plan: Vec<usize> = plan.iter().copied().filter(|held| *held > 1).collect();
+        let many_count = many_plan.len().max(1);
+        let many_now = measure(0, many_count, || mirror_population(&many_plan, &page));
+        let many_before = measure(0, many_count, || mirror_population(&many_plan, &wide_page));
+
+        println!(
+            "--- {label} @ {records} records: {buckets} buckets (Empty {empty_arms} / One \
+             {one_arms} / Many {many_arms}), p50 {} pages ---",
+            census.percentile(0.50)
+        );
+        for (arm, was, is, denominator) in [
+            ("whole population", &before, &now, buckets),
+            ("the boxed single-page arm", &one_before, &one_now, one_arms),
+            ("the page-list arm", &many_before, &many_now, many_count),
+        ] {
+            let den = denominator.max(1) as f64;
+            println!(
+                "    {arm:<26} REQUEST {:>9.2} -> {:>9.2} B ({:>+7.2})   CHUNK {:>9.2} -> \
+                 {:>9.2} B ({:>+7.2})   over {denominator}",
+                was.request_bytes as f64 / den,
+                is.request_bytes as f64 / den,
+                is.request_bytes as f64 / den - was.request_bytes as f64 / den,
+                was.chunk_bytes as f64 / den,
+                is.chunk_bytes as f64 / den,
+                is.chunk_bytes as f64 / den - was.chunk_bytes as f64 / den,
+            );
+        }
+
+        // THE CHUNK RULE IS A FLOOR, NOT AN EQUALITY, and it is checked as one on every reading: the
+        // allocator serves from a chunk merely big enough, and what it actually hands back depends on
+        // the process's allocation history.
+        for (what, cost) in [
+            ("now", &now),
+            ("before", &before),
+            ("one/now", &one_now),
+            ("one/before", &one_before),
+            ("many/now", &many_now),
+            ("many/before", &many_before),
+        ] {
+            if cost.request_bytes == 0 {
+                // An absent arm allocates nothing, and a floor over zero says nothing. Printed
+                // rather than skipped silently, because a vacuous row that reads as a pass is how a
+                // whole column comes to be believed.
+                println!("    ({what}: this arm is absent at this range, so no chunk reading)");
+                continue;
+            }
+            assert!(
+                cost.chunk_bytes >= cost.request_bytes,
+                "{label} {what}: chunk {} B is below request {} B, which the chunk rule forbids",
+                cost.chunk_bytes,
+                cost.request_bytes
+            );
+            assert_eq!(
+                0,
+                cost.chunk_bytes % 16,
+                "{label} {what}: chunk {} B is not a multiple of 16",
+                cost.chunk_bytes
+            );
+            assert!(
+                cost.chunk_bytes > cost.request_bytes,
+                "{label} {what}: chunk {} B equals the request; a chunk carries a header, so an \
+                 equality means the column is not reading `malloc_usable_size`",
+                cost.chunk_bytes
+            );
+        }
+
+        // THE REQUEST COLUMN SAVES EIGHT BYTES AN ENTRY SLOT, EVERYWHERE -- and the slot count is
+        // not the page count.
+        //
+        // A list grown in whole steps of four ends at a capacity of `ceil(n / 4) * 4`, so the
+        // allocator is asked for slots and not for pages: this population holds `pages` entries in
+        // rather more slots than that, and a narrower entry saves eight bytes on every one. Written
+        // as `pages` first, this assertion read 32,000 against a measured 42,864 and the measurement
+        // was right. The slot count is derived from the SAME plan both populations were built from,
+        // so the check still fails on a mirror of the wrong width or on the two builders disagreeing
+        // about the growth ladder, which is what it is for.
+        let slots: u64 = plan
+            .iter()
+            .map(|held| match *held {
+                0 => 0u64,
+                1 => 1u64,
+                n => (n.div_ceil(PAGE_LIST_GROWTH_STEP) * PAGE_LIST_GROWTH_STEP) as u64,
+            })
+            .sum();
+        let pages = census.pages() as u64;
+        assert!(
+            slots >= pages,
+            "{label} @ {records}: {slots} entry slots for {pages} pages, which cannot be -- the \
+             slot arithmetic does not describe the lists the builder grew"
+        );
+        if slots > 0 {
+            assert_eq!(
+                8 * slots,
+                before.request_bytes - now.request_bytes,
+                "{label} @ {records}: the request column saved {} B over {slots} entry slots \
+                 ({pages} pages), not 8 a slot. Either the mirror is not the former shape or the \
+                 two populations were not built to the same growth ladder",
+                before.request_bytes - now.request_bytes
+            );
+            println!(
+                "    the request column saves 8 B on every one of {slots} entry slots holding \
+                 {pages} pages = {} B, all of it real; what the chunk column keeps of it is the \
+                 line above",
+                8 * slots
+            );
+        }
+
+        // AND THE BOXED ARM SAVES NOTHING ON THE CHUNK COLUMN, which is the finding #1975 creates.
+        // Asserted where the arm exists; at the narrow range at 40,000 records it does not, and that
+        // absence is printed rather than silently skipped.
+        if one_arms > 0 {
+            // NOT AN EQUALITY, BECAUSE THE CHUNK RULE IS A FLOOR. Over 4,000 boxed buckets the
+            // narrower entry read 0.60 B a bucket MORE than the wider one: the allocator serves from
+            // a chunk merely big enough, and which one it picks depends on the process's allocation
+            // history, so the same request size does not have to read the same twice. What is
+            // asserted is the CLAIM -- that the eight bytes do not survive the size class here -- and
+            // it fails if the boxed arm ever keeps a byte of them.
+            let kept = (one_before.chunk_bytes as f64 - one_now.chunk_bytes as f64)
+                / one_arms as f64;
+            println!(
+                "    the boxed arm keeps {kept:+.2} B a bucket of the 8.00 the request column saved, \
+                 over {one_arms} buckets -- both widths ask for the {} B class",
+                class(wide)
+            );
+            assert!(
+                kept < 1.0,
+                "{label} @ {records}: the boxed single-page arm kept {kept:.2} B a bucket of the \
+                 eight, over {one_arms} buckets ({} B before, {} B now). Both widths ask for the \
+                 same size class, so keeping a whole byte of them would mean the class rule stated \
+                 above is not the one this allocator uses -- and the whole-population figure would \
+                 then be a different mechanism than the one claimed",
+                one_before.chunk_bytes,
+                one_now.chunk_bytes
+            );
+        } else {
+            println!(
+                "    no single-page bucket at this range and size, so the arm that rounds the \
+                 saving away is absent from the total above"
+            );
+        }
+
+        // AND THE LIST ARM DOES SAVE, where it exists.
+        if many_plan.len() > 0 {
+            assert!(
+                many_now.chunk_bytes < many_before.chunk_bytes,
+                "{label} @ {records}: the page-list arm charged {} B now against {} B before over \
+                 {} buckets. A list of n entries is one allocation of n x width, so a narrower \
+                 entry has to show here or the list is not holding the entry inline",
+                many_now.chunk_bytes,
+                many_before.chunk_bytes,
+                many_plan.len()
+            );
+        }
+    }
 }

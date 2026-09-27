@@ -1882,19 +1882,30 @@ impl TemporalEngine {
         shard_id: ShardId,
         wanted: impl Fn(u64) -> bool,
     ) -> usize {
-        let addresses: Vec<(String, crate::block_store::BlockAddress)> = {
+        // The range is read under the same guard as the addresses, so a page is read and
+        // rewritten under the bucket the shard is actually loaded on.
+        let (addresses, start_routing_bucket, end_routing_bucket): (
+            Vec<(String, crate::block_store::BlockAddress)>,
+            u32,
+            u32,
+        ) = {
             let shards = self.shards.read().expect("engine lock poisoned");
             let Some(shard) = shards.get(&shard_id) else {
                 return 0;
             };
-            shard
-                .strings
-                .iter()
-                .filter(|(_, address)| {
-                    crate::wal_record::is_wal_resident(address.block_slab_id())
-                })
-                .map(|(key, address)| (key.clone(), address.clone()))
-                .collect()
+            let (start_routing_bucket, end_routing_bucket) = shard.routing_range();
+            (
+                shard
+                    .strings
+                    .iter()
+                    .filter(|(_, address)| {
+                        crate::wal_record::is_wal_resident(address.block_slab_id())
+                    })
+                    .map(|(key, address)| (key.clone(), address.clone()))
+                    .collect(),
+                start_routing_bucket,
+                end_routing_bucket,
+            )
         };
         let mut moved = 0usize;
         for (key, address) in addresses {
@@ -1902,10 +1913,20 @@ impl TemporalEngine {
             if !wanted(object_id) {
                 continue;
             }
+            let routing_bucket = super::hashing::block_routing_bucket(
+                &key,
+                start_routing_bucket,
+                end_routing_bucket,
+            );
             // Read it the way a reader here would -- through the registry that still works in
             // this process -- and write it where anyone can find it.
-            let Some(bytes) = super::read_block_bytes(&self.cache, &self.block_store, shard_id, &address)
-            else {
+            let Some(bytes) = super::read_block_bytes(
+                &self.cache,
+                &self.block_store,
+                shard_id,
+                &address,
+                Some(routing_bucket),
+            ) else {
                 continue;
             };
             let Ok(durable) = super::append_value(
@@ -1914,7 +1935,7 @@ impl TemporalEngine {
                 shard_id,
                 &bytes,
                 Some(object_id),
-                address.routing_bucket(),
+                Some(routing_bucket),
                 false,
             ) else {
                 continue;

@@ -8,45 +8,40 @@
 //! shipping no engine change. This file is the engine change, and what had to be true before it
 //! could be made.
 //!
-//! # THE ASYMMETRY THAT SPLITS THE NINE
+//! # THE ASYMMETRY THAT SPLIT THE NINE, AND WHY IT IS GONE
 //!
-//! The three rebuilds do NOT react to the range the same way, and the difference decides whether
-//! passing the shard's range is safe:
+//! The three rebuilds used to react to the range differently, and the difference decided whether
+//! passing the shard's range was safe:
 //!
-//! * `rebuild_bucket_first_index` uses the range ONLY as the fallback placement for an address
-//!   that carries no routing bucket of its own. Narrowing it moves unrouted pages; it can drop
-//!   nothing.
-//! * `rebuild_bucket_block_ownership` does the same AND THEN FILTERS -- `if routing_bucket <
-//!   start_routing_bucket || routing_bucket > end_routing_bucket { continue; }`. On `0..u32::MAX`
-//!   that filter cannot fire. On the shard's own range it can, and a page whose address carries an
-//!   EXPLICIT bucket outside the range is dropped from the index entirely.
-//! * `promote_model_maps_to_bucket_index_authority` delegates to ownership, so it inherits the
+//! * `rebuild_bucket_first_index` used the range ONLY as the fallback placement for an address that
+//!   carried no routing bucket of its own. Narrowing it moved unrouted pages; it could drop nothing.
+//! * `rebuild_bucket_block_ownership` did the same AND THEN FILTERED -- `if routing_bucket < start
+//!   || routing_bucket > end { continue; }` -- so a page whose address carried an EXPLICIT bucket
+//!   outside the range was dropped from the index entirely.
+//! * `promote_model_maps_to_bucket_index_authority` delegates to ownership, so it inherited the
 //!   filter.
 //!
-//! `only_ownership_drops_a_page_whose_explicit_bucket_is_outside_the_shards_range` measures both
-//! directions rather than reading the source: the same fixture, the same pages, one carrying an
-//! in-range explicit bucket and one carrying an out-of-range one, through both functions.
+//! A `BlockAddress` NO LONGER CARRIES A ROUTING BUCKET. A page's bucket is
+//! `start + FNV-1a-64(object_key) % (end - start + 1)` over the range the shard is stamped with, so
+//! every rebuild derives it and every derived bucket is inside the range it was derived on
+//! (`engine::hashing::derived_bucket_range` drives that, with a control). Both filters are therefore
+//! gone, and the hazard they created is gone with them: there is no state in which a rebuild can
+//! drop a page for being out of range, because there is no bucket that came from anywhere else.
 //!
-//! WHAT BOUNDS THAT HAZARD is that the state it needs does not arise. The live write path stamps
-//! `block_routing_bucket(key, start, end)` -- the shard's own range -- at `append_value`, so an
-//! explicit bucket is in range by construction; and the reconstruct stamps only the object id onto
-//! an address, so a page filed under the whole range does NOT acquire that bucket explicitly. Both
-//! halves are asserted with a denominator rather than assumed, because "it cannot happen" is the
-//! claim this campaign has twice found to be a fixture artefact.
-//!
-//! And the filter is not new behaviour being introduced: ELEVEN production call sites already pass
-//! the shard's own range to these same rebuilds, so the filter already fires on the narrow range
-//! everywhere else in the engine. The change makes the outliers agree with the majority.
+//! So the distinction this file was built on -- a ROUTED page, placed by its own address, against an
+//! UNROUTED one, placed by the argument -- has collapsed into one case. Every page is placed by the
+//! argument, and the tests below measure that rather than the difference between two populations
+//! that no longer exist. `neither_rebuild_can_drop_a_page_because_every_bucket_is_derived_in_range`
+//! is what used to be the asymmetry measurement, inverted.
 //!
 //! # MIGRATION, DRIVEN RATHER THAN ARGUED
 //!
-//! Pages already filed under the whole range exist in any store written by the current code.
-//! Changing the argument fixes new writes; it does not move old pages.
-//! `a_store_filed_under_the_whole_range_reads_back_whole_after_the_change` writes a store with the
-//! OLD argument, restarts on it, and asserts what comes back: every record readable, every page
-//! present, and -- the load-bearing observation -- every address still UNROUTED, which is why the
-//! next rebuild re-files them in range on its own. No migration step is needed, and that is a
-//! measurement here, not a hope.
+//! Pages already filed under the whole range exist in any store written before this.
+//! `a_store_filed_under_the_whole_range_reads_back_whole_after_the_change` writes such a store,
+//! restarts on it, and asserts what comes back: every record readable, every page present, and --
+//! the load-bearing observation -- every page filed INSIDE the shard's own range, because the
+//! rebuild the load runs derives the placement rather than reading it off an address. No migration
+//! step is needed, and that is a measurement here, not a hope.
 
 use super::*;
 use crate::engine::hashing::block_routing_bucket;
@@ -126,9 +121,16 @@ fn read_back(engine: &TemporalEngine, keys: &[String]) -> usize {
         .count()
 }
 
-/// An address as an index written before the routing-bucket field carried it holds one, produced
-/// by the ENGINE'S OWN DECODER rather than by the setter -- mx#1942's door, reused so the two
-/// files construct the same state the same way.
+/// An address with the `rs` key taken off the wire, produced by the ENGINE'S OWN DECODER rather
+/// than by a setter -- mx#1942's door, kept because what it now demonstrates is worth more than what
+/// it used to build.
+///
+/// IT USED TO PRODUCE AN UNROUTED ADDRESS. There is no such thing now: the slot is still written
+/// (empty) so the index log's positional layout does not shift, and the address has nowhere to put a
+/// bucket whether the key is there or not. So this is the IDENTITY, and
+/// `an_older_index_decodes_to_exactly_the_same_address` asserts that it is -- which is the statement
+/// that an index carrying a real `rs` loads to the same address as one carrying none, and therefore
+/// that no migration is needed for the field's departure.
 fn as_an_older_build_wrote_it(address: &BlockAddress) -> BlockAddress {
     let mut wire = serde_json::to_value(address).expect("an address serializes to its wire shape");
     let object = wire
@@ -136,21 +138,80 @@ fn as_an_older_build_wrote_it(address: &BlockAddress) -> BlockAddress {
         .expect("the address wire shape is a JSON object");
     assert!(
         object.remove("rs").is_some(),
-        "the address wire shape carried no `rs` key to remove, so this helper is a no-op and \
-         every count taken through it is zero for the wrong reason"
+        "the address wire shape carried no `rs` key to remove. The slot is kept deliberately -- the \
+         index log packs the wire struct POSITIONALLY, so removing the field would shift `g` and `h` \
+         down one -- and this helper exists to prove the key is inert, which it cannot do if the key \
+         is absent."
     );
     serde_json::from_value(wire).expect("the engine's decoder accepts an address with no `rs`")
 }
 
-/// Put every string page into the state an older index decodes into. Returns how many it changed,
-/// so a caller can assert the fixture did something.
-fn strip_routing_buckets(shard: &mut crate::engine::state::ShardState) -> usize {
+/// Round-trip every string page through the wire with `rs` removed, asserting the identity per page.
+///
+/// It used to STRIP the routing bucket, which was the state the range-argument tests needed. There is
+/// nothing to strip, so what is left is the per-page assertion that the key is inert -- and a fixture
+/// that still covers every page, which is what the callers assert on.
+fn round_trip_every_page_through_the_wire(
+    shard: &mut crate::engine::state::ShardState,
+) -> usize {
     let keys: Vec<String> = shard.strings.keys().cloned().collect();
     for key in &keys {
-        let older = as_an_older_build_wrote_it(shard.strings.get(key).expect("key present"));
+        let before = shard.strings.get(key).expect("key present").clone();
+        let older = as_an_older_build_wrote_it(&before);
+        assert_eq!(
+            older, before,
+            "page {key} changed when its `rs` key was removed from the wire; the key is inert and \
+             this round trip has to be the identity"
+        );
         shard.strings.insert(key.clone(), older);
     }
     keys.len()
+}
+
+/// THE `rs` KEY IS INERT, IN BOTH DIRECTIONS.
+///
+/// An index written before the routing bucket left carries a real bucket in `rs`; one written now
+/// carries nil; one written before the field existed carries nothing at all. All three decode to the
+/// SAME address, which is why the field's departure needs no migration step -- and it is asserted
+/// here rather than argued, because a silently-ignored wire field is exactly the shape that lost this
+/// tree an object once before.
+///
+/// rust-internal: reads the address wire shape, no product behaviour
+#[test]
+fn an_older_index_decodes_to_exactly_the_same_address() {
+    let address = BlockAddress::from_parts(3, 4096, 128, Some(1), Some(2));
+
+    // (1) THE KEY REMOVED ENTIRELY -- the oldest spelling.
+    assert_eq!(
+        as_an_older_build_wrote_it(&address),
+        address,
+        "removing `rs` from the wire changed the address it decodes to"
+    );
+
+    // (2) A REAL BUCKET IN THE KEY -- what every index written before this change holds. The value
+    // is one the address could not have produced, so a decoder that used it would be visible.
+    let mut wire = serde_json::to_value(&address).expect("serializes");
+    wire.as_object_mut()
+        .expect("object")
+        .insert("rs".to_string(), serde_json::json!(545_210_715_u32));
+    let with_a_bucket: BlockAddress = serde_json::from_value(wire).expect("decodes");
+    assert_eq!(
+        with_a_bucket, address,
+        "an index carrying a real routing bucket in `rs` must decode to the same address as one \
+         carrying none: the bucket is the container's answer now, and an address that absorbed the \
+         stored value would be carrying a second opinion about it"
+    );
+
+    // (3) AND THE SLOT IS STILL WRITTEN, which is what keeps the positional layout put.
+    assert_eq!(
+        serde_json::to_value(&address)
+            .expect("serializes")
+            .get("rs")
+            .cloned(),
+        Some(serde_json::Value::Null),
+        "the `rs` slot must still be written -- as nil -- or the index log's array shortens and \
+         every field after it shifts position"
+    );
 }
 
 /// Every bucket that holds at least one page, with the object keys it holds, sorted. The element
@@ -180,27 +241,28 @@ fn page_total(contents: &BTreeMap<u32, Vec<String>>) -> usize {
 // 1. The asymmetry: which rebuild can DROP a page, and which cannot
 // =============================================================================================
 
-/// ONLY `rebuild_bucket_block_ownership` HAS A DROP FILTER, AND IT IS WHY THE NINE ARE NOT ONE
-/// CHANGE.
+/// NEITHER REBUILD CAN DROP A PAGE, AND THAT IS WHAT REMOVING THE DROP FILTERS REST ON.
 ///
-/// Passing the shard's own range to `rebuild_bucket_first_index` can only move an unrouted page.
-/// Passing it to `rebuild_bucket_block_ownership` also starts ENFORCING the range against pages
-/// that carry an explicit bucket, and a page outside it is dropped from the index rather than
-/// moved. Measured both ways so the claim is a count rather than a reading of the source.
+/// This is the inversion of what stood here. `rebuild_bucket_block_ownership` used to FILTER on the
+/// range -- `if routing_bucket < start || routing_bucket > end { continue; }` -- and a page whose
+/// address carried an EXPLICIT bucket outside the range was dropped from the index entirely. That
+/// was the losing direction of mx#1974 and the reason its argument change needed bounding.
 ///
-/// This is the hazard that had to be bounded before the argument could be changed at the two
-/// ownership sites and the two promote sites, and the two tests after this one are what bound it.
+/// An address carries no bucket. Both rebuilds DERIVE it as
+/// `block_routing_bucket(object_key, start, end)`, which is inside `start..=end` by construction, so
+/// a state in which either rebuild drops a page cannot be built -- and the fixture that used to
+/// build it (`set_routing_bucket(Some(900_000))`) cannot be written.
+///
+/// So what is measured is the claim that replaced it: both rebuilds keep every page, at BOTH ranges,
+/// and both file it where the shard's own range puts it. The element-by-element comparison against a
+/// witness built outside the index is the control -- two rebuilds that both kept 400 pages and put
+/// them in different buckets would read as agreement on a count.
 ///
 /// rust-internal: reads the engine's own rebuilds, no product behaviour
 #[test]
-fn only_ownership_drops_a_page_whose_explicit_bucket_is_outside_the_shards_range() {
-    // Well outside a 0..1023 shard, and a value no key on this fixture can hash to under the
-    // narrow range, so a page found under it got there by the stamp and not by the fallback.
-    const OUTSIDE: u32 = 900_000;
-    const INSIDE: u32 = 7;
-
-    let mut observed: BTreeMap<(&str, &str), usize> = BTreeMap::new();
-    for (placement, explicit_bucket) in [("inside", INSIDE), ("outside", OUTSIDE)] {
+fn neither_rebuild_can_drop_a_page_because_every_bucket_is_derived_in_range() {
+    let mut observed: BTreeMap<(u32, &str), BTreeMap<u32, Vec<String>>> = BTreeMap::new();
+    for rebuild_end in [NARROW_END, WIDE_END] {
         for (rebuild, is_ownership) in [("ownership", true), ("first_index", false)] {
             let dir = tempfile::tempdir().expect("tempdir");
             let engine = engine_on(dir.path());
@@ -210,188 +272,158 @@ fn only_ownership_drops_a_page_whose_explicit_bucket_is_outside_the_shards_range
             let mut shards = engine.shards.write().expect("engine lock poisoned");
             let shard = shards.get_mut(&1).expect("shard 1");
 
-            // Stamp the explicit bucket under test onto every page's address.
-            let model_keys: Vec<String> = shard.strings.keys().cloned().collect();
+            // DENOMINATOR: the fixture really wrote what the rebuild is about to re-file, read off
+            // the MODEL MAP rather than the bucket index -- both rebuilds repopulate the index FROM
+            // the model maps, so the model map is the input and the index is the output.
             assert_eq!(
-                model_keys.len(),
+                shard.strings.len(),
                 keys.len(),
-                "{placement}/{rebuild}: the model map holds {} of {} written keys, so the stamp \
-                 below does not cover the fixture",
-                model_keys.len(),
-                keys.len()
-            );
-            for key in &model_keys {
-                let mut address = shard.strings.get(key).expect("key present").clone();
-                address.set_routing_bucket(Some(explicit_bucket));
-                shard.strings.insert(key.clone(), address);
-            }
-
-            // DENOMINATOR: the stamp took, so the filter is what answers below.
-            //
-            // Read off the MODEL MAP, not off `collect_live_block_entries`. Both rebuilds
-            // repopulate the bucket index FROM `collect_model_live_block_entries`, while
-            // `collect_live_block_entries` answers from the bucket INDEX whenever `bucket_map` is
-            // non-empty -- which it is here, the fixture having just written it. Asking the index
-            // whether the model map was stamped reports 0 for every stamp, however well it took,
-            // and the first draft of this test did exactly that: the denominator went red and the
-            // verdict below would have been a clean pass on a fixture where nothing was stamped.
-            let stamped = shard
-                .strings
-                .values()
-                .filter(|address| address.routing_bucket() == Some(explicit_bucket))
-                .count();
-            assert_eq!(
-                stamped,
-                keys.len(),
-                "{placement}/{rebuild}: meant to stamp {} pages with bucket {explicit_bucket} and \
-                 stamped {stamped}; the branch under test is not the code answering",
+                "{rebuild}/0..{rebuild_end}: the model map holds {} of {} written keys, so the \
+                 rebuild below is not being handed the fixture",
+                shard.strings.len(),
                 keys.len()
             );
 
             if is_ownership {
-                rebuild_bucket_block_ownership(1, shard, 0, NARROW_END);
+                rebuild_bucket_block_ownership(1, shard, 0, rebuild_end);
             } else {
-                rebuild_bucket_first_index(1, shard, 0, NARROW_END);
+                rebuild_bucket_first_index(1, shard, 0, rebuild_end);
             }
             refresh_bucket_runtime_flags(shard);
-            observed.insert((placement, rebuild), page_total(&bucket_contents(shard)));
+            observed.insert((rebuild_end, rebuild), bucket_contents(shard));
         }
     }
 
-    for ((placement, rebuild), pages) in &observed {
-        println!("  explicit bucket {placement}, {rebuild}: {pages} pages survived");
+    for ((rebuild_end, rebuild), contents) in &observed {
+        println!(
+            "  0..{rebuild_end} {rebuild}: {} pages in {} buckets",
+            page_total(contents),
+            contents.len()
+        );
     }
 
-    // An IN-RANGE explicit bucket survives both, which is the control: it says the drop below is
-    // attributable to the RANGE and not to the rebuild having lost the pages for some other
-    // reason.
-    assert_eq!(
-        observed.get(&("inside", "ownership")).copied(),
-        Some(RECORDS),
-        "an explicit bucket INSIDE the shard's range must survive the ownership rebuild"
-    );
-    assert_eq!(
-        observed.get(&("inside", "first_index")).copied(),
-        Some(RECORDS),
-        "an explicit bucket INSIDE the shard's range must survive the first-index rebuild"
-    );
+    for rebuild_end in [NARROW_END, WIDE_END] {
+        // THE WITNESS, built outside the index from the fixture's own key list.
+        let mut expected: BTreeMap<u32, Vec<String>> = BTreeMap::new();
+        for index in 0..RECORDS {
+            let key = format!("filing-{index:06}");
+            expected
+                .entry(block_routing_bucket(&key, 0, rebuild_end))
+                .or_default()
+                .push(key);
+        }
+        for bucket_keys in expected.values_mut() {
+            bucket_keys.sort();
+        }
+        for rebuild in ["ownership", "first_index"] {
+            let contents = observed
+                .get(&(rebuild_end, rebuild))
+                .expect("both arms ran");
+            assert_eq!(
+                page_total(contents),
+                RECORDS,
+                "0..{rebuild_end} {rebuild}: {} of {RECORDS} pages survived. Neither rebuild has a \
+                 drop filter any more, and a derived bucket cannot be out of range, so nothing can \
+                 legitimately be lost here.",
+                page_total(contents)
+            );
+            assert_eq!(
+                contents, &expected,
+                "0..{rebuild_end} {rebuild}: the buckets the rebuild filed pages into are not the \
+                 buckets the range puts those keys in"
+            );
+        }
+        // And the two rebuilds agree with EACH OTHER, which is the statement the asymmetry used to
+        // deny. Asserted separately from the witness: two arms that both disagreed with the witness
+        // in the same way would still be an asymmetry this file has to report.
+        assert_eq!(
+            observed.get(&(rebuild_end, "ownership")),
+            observed.get(&(rebuild_end, "first_index")),
+            "0..{rebuild_end}: the two rebuilds no longer differ in what they keep or where they \
+             put it, and this is the assertion that says so"
+        );
+    }
 
-    // `rebuild_bucket_first_index` has no filter, so an out-of-range explicit bucket survives it.
-    assert_eq!(
-        observed.get(&("outside", "first_index")).copied(),
-        Some(RECORDS),
-        "`rebuild_bucket_first_index` files a page under its address's own bucket and filters \
-         nothing, so all {RECORDS} pages must survive even with an out-of-range explicit bucket. \
-         If this ever stops holding, the four first-index call sites this change moved to the \
-         shard's range acquire a drop they did not have."
-    );
-
-    // And ownership drops every one of them. This is the whole reason the four ownership/promote
-    // sites needed the two tests below before their argument could be changed.
-    assert_eq!(
-        observed.get(&("outside", "ownership")).copied(),
-        Some(0),
-        "`rebuild_bucket_block_ownership` filters `routing_bucket < start || routing_bucket > end` \
-         and drops the page rather than re-filing it, so on a 0..{NARROW_END} shard every page \
-         carrying an explicit bucket of {OUTSIDE} must be dropped. This is the losing direction of \
-         this whole change: it is safe ONLY because the state it needs does not arise, which is \
-         what `the_live_write_path_never_stamps_a_bucket_outside_the_shards_range` and \
-         `a_store_filed_under_the_whole_range_reads_back_whole_after_the_change` measure."
+    // AND THE TWO RANGES REALLY DID PUT THE PAGES SOMEWHERE DIFFERENT. Without this the four
+    // comparisons above could all hold on a fixture where the range decided nothing, and the test
+    // would be asserting that two identical things are identical.
+    assert_ne!(
+        observed.get(&(NARROW_END, "ownership")),
+        observed.get(&(WIDE_END, "ownership")),
+        "the narrow and wide rebuilds filed the pages into the SAME buckets, so this test is not \
+         measuring a placement the range decides"
     );
 }
 
-/// THE STATE THE DROP NEEDS IS NOT ONE THE ENGINE PRODUCES, WITH A DENOMINATOR.
+/// EVERY PAGE THE LIVE WRITE PATH FILES LANDS INSIDE THE SHARD'S OWN RANGE, WITH A DENOMINATOR.
 ///
-/// Two halves, asserted separately because they fail for different reasons:
+/// This used to be two halves, because a page could be placed in two ways: by an explicit bucket
+/// stamped onto its address, or by the range as a fallback. One case remains -- the range -- so what
+/// is asserted is the FILING, read off the keys of the bucket map, which is where a page now is.
 ///
-///   1. the LIVE WRITE PATH stamps `block_routing_bucket(key, start, end)` at `append_value`, so
-///      every explicit bucket it produces is in range by construction; and
-///   2. the RECONSTRUCT does not stamp a bucket at all -- it calls `set_object_id` on the address
-///      it files and nothing else -- so a page filed under the whole range does NOT come away
-///      carrying that bucket explicitly.
-///
-/// Together they are what says the filter above cannot fire on a store this engine wrote. Both
-/// widths, because on the wide shard the two placements are the same expression and a fixture that
-/// only ran there could not tell the halves apart.
+/// Both widths, separately. On the wide shard every key has a bucket of its own by construction and
+/// the assertion cannot fail; it is carried anyway as the control that says the narrow arm's
+/// agreement is the change and not the fixture.
 ///
 /// rust-internal: reads the engine's own write path, no product behaviour
 #[test]
-fn the_live_write_path_never_stamps_a_bucket_outside_the_shards_range() {
+fn every_page_the_live_write_path_files_lands_inside_the_shards_range() {
     for end_routing_bucket in [NARROW_END, WIDE_END] {
         let dir = tempfile::tempdir().expect("tempdir");
         let engine = engine_on(dir.path());
         load_on(&engine, end_routing_bucket);
         let keys = seed(&engine, RECORDS);
 
-        let mut shards = engine.shards.write().expect("engine lock poisoned");
-        let shard = shards.get_mut(&1).expect("shard 1");
+        let shards = engine.shards.read().expect("engine lock poisoned");
+        let shard = shards.get(&1).expect("shard 1");
 
-        // HALF ONE: the live write path.
-        let entries = collect_live_block_entries(shard);
+        let contents = bucket_contents(shard);
         assert_eq!(
-            entries.len(),
+            page_total(&contents),
             keys.len(),
             "0..{end_routing_bucket}: the fixture wrote {} keys and the index holds {} pages",
             keys.len(),
-            entries.len()
+            page_total(&contents)
         );
-        let unrouted = entries
-            .iter()
-            .filter(|entry| entry.address.routing_bucket().is_none())
-            .count();
-        let outside: Vec<u32> = entries
-            .iter()
-            .filter_map(|entry| entry.address.routing_bucket())
+
+        let outside: Vec<u32> = contents
+            .keys()
+            .copied()
             .filter(|routing_bucket| *routing_bucket > end_routing_bucket)
             .collect();
         println!(
-            "  0..{end_routing_bucket}: {} live pages, {unrouted} unrouted, {} outside the range",
-            entries.len(),
+            "  0..{end_routing_bucket}: {} live pages in {} buckets, {} buckets outside the range",
+            page_total(&contents),
+            contents.len(),
             outside.len()
         );
         assert!(
             outside.is_empty(),
-            "0..{end_routing_bucket}: {} of {} pages the LIVE WRITE PATH produced carry an \
-             explicit routing bucket above the shard's end; the first few are {:?}. \
-             `append_value` stamps `block_routing_bucket(key, start, end)`, so this cannot \
-             happen -- and if it ever does, the ownership rebuild drops exactly these pages.",
+            "0..{end_routing_bucket}: {} buckets hold pages but sit above the shard's end; the \
+             first few are {:?}. `append_value` is handed \
+             `block_routing_bucket(key, start, end)` and every filing site derives the same \
+             expression, so a page there is invisible to every reader that scopes by bucket.",
             outside.len(),
-            entries.len(),
             &outside[..outside.len().min(5)]
         );
-        assert_eq!(
-            unrouted, 0,
-            "0..{end_routing_bucket}: {unrouted} of {} pages arrived unrouted off the live write \
-             path. That is not itself a defect, but it means the denominator for the half below \
-             is not the fixture this test thinks it is.",
-            entries.len()
-        );
 
-        // HALF TWO: the reconstruct does not stamp a bucket, so the whole-range filing does not
-        // become explicit and does not stick.
-        let stripped = strip_routing_buckets(shard);
+        // AND THE FILING IS THE DERIVATION, key by key. "Inside the range" is satisfied by filing
+        // everything into bucket 0, so the agreement with the witness is what makes the assertion
+        // above worth having.
+        let mut expected: BTreeMap<u32, Vec<String>> = BTreeMap::new();
+        for key in &keys {
+            expected
+                .entry(block_routing_bucket(key, 0, end_routing_bucket))
+                .or_default()
+                .push(key.clone());
+        }
+        for bucket_keys in expected.values_mut() {
+            bucket_keys.sort();
+        }
         assert_eq!(
-            stripped,
-            keys.len(),
-            "0..{end_routing_bucket}: the strip covered {stripped} of {} keys",
-            keys.len()
-        );
-        rebuild_bucket_first_index(1, shard, 0, WIDE_END);
-        refresh_bucket_runtime_flags(shard);
-        let after = collect_live_block_entries(shard);
-        let still_unrouted = after
-            .iter()
-            .filter(|entry| entry.address.routing_bucket().is_none())
-            .count();
-        assert_eq!(
-            still_unrouted,
-            after.len(),
-            "0..{end_routing_bucket}: {still_unrouted} of {} pages came out of a WHOLE-RANGE \
-             reconstruct unrouted, and all of them should have. If the reconstruct ever starts \
-             stamping the bucket it chose, a whole-range filing becomes an EXPLICIT out-of-range \
-             bucket that the ownership rebuild then drops -- and the migration this change relies \
-             on stops being free.",
-            after.len()
+            contents, expected,
+            "0..{end_routing_bucket}: the write path filed pages into buckets the shard's own \
+             range does not put those keys in"
         );
     }
 }
@@ -423,19 +455,10 @@ fn the_production_flush_files_every_page_where_the_shards_own_range_puts_it() {
         load_on(&engine, end_routing_bucket);
         let keys = seed(&engine, RECORDS);
 
-        // Put the model maps into the older-build state, which is the state on which the argument
-        // decides anything at all. Without this the addresses answer and the fallback never runs.
-        {
-            let mut shards = engine.shards.write().expect("engine lock poisoned");
-            let shard = shards.get_mut(&1).expect("shard 1");
-            let stripped = strip_routing_buckets(shard);
-            assert_eq!(
-                stripped,
-                keys.len(),
-                "0..{end_routing_bucket}: the strip covered {stripped} of {} keys",
-                keys.len()
-            );
-        }
+        // NO FIXTURE SURGERY. This used to strip the routing bucket off every address first,
+        // because the argument only decided a placement for an address that carried none. The
+        // argument decides EVERY placement now, so what runs below is the production state and the
+        // production path -- which makes this test stronger than it was, not weaker.
 
         // THE PRODUCTION PATH.
         engine.flush_shard_index(1);
@@ -519,35 +542,30 @@ fn the_production_flush_files_every_page_where_the_shards_own_range_puts_it() {
 /// each bucket holds, compared element by element against a control, so a page that quietly moved
 /// somewhere neither arm intended is a failure rather than a matching count.
 ///
-/// THE CONTROL IS THE SAME FIXTURE WITH ROUTED ADDRESSES. A page whose address carries its own
-/// routing bucket is placed by that bucket under BOTH arguments -- the range is only consulted
-/// when the address is silent. So the routed control must come out bucket-for-bucket IDENTICAL
-/// under the two ranges, and the unrouted arm must differ on every page. Two directions, because
-/// an arm that moved nothing and an arm that moved everything both read as "a number changed".
+/// THE CONTROL IS THE SAME RANGE TWICE. There is no "routed" population left to compare against:
+/// every page is placed by the argument. So the control that says the comparison can express
+/// sameness is a rebuild at the SAME range run twice -- which must be identical -- and the subject is
+/// two DIFFERENT ranges, which must differ on every page. Two directions, because an arm that moved
+/// nothing and an arm that moved everything both read as "a number changed".
 ///
 /// rust-internal: reads the engine's own rebuild, no product behaviour
 #[test]
-fn no_page_changes_bucket_except_the_unrouted_ones_the_range_decides() {
-    /// Build the fixture, optionally strip the routing buckets, rebuild on `rebuild_end`, and
-    /// return what each bucket holds.
-    fn contents_after(strip: bool, rebuild_end: u32) -> BTreeMap<u32, Vec<String>> {
+fn every_page_changes_bucket_with_the_range_because_the_range_decides_every_placement() {
+    /// Build the fixture, rebuild on `rebuild_end`, and return what each bucket holds.
+    fn contents_after(rebuild_end: u32) -> BTreeMap<u32, Vec<String>> {
         let dir = tempfile::tempdir().expect("tempdir");
         let engine = engine_on(dir.path());
         load_on(&engine, NARROW_END);
         let keys = seed(&engine, RECORDS);
         let mut shards = engine.shards.write().expect("engine lock poisoned");
         let shard = shards.get_mut(&1).expect("shard 1");
-        if strip {
-            let stripped = strip_routing_buckets(shard);
-            assert_eq!(stripped, keys.len(), "the strip covered {stripped} keys");
-        }
         rebuild_bucket_first_index(1, shard, 0, rebuild_end);
         refresh_bucket_runtime_flags(shard);
         let contents = bucket_contents(shard);
         assert_eq!(
             page_total(&contents),
             keys.len(),
-            "strip={strip} end={rebuild_end}: {} pages went in and {} came out",
+            "end={rebuild_end}: {} pages went in and {} came out",
             keys.len(),
             page_total(&contents)
         );
@@ -566,23 +584,23 @@ fn no_page_changes_bucket_except_the_unrouted_ones_the_range_decides() {
         placed
     }
 
-    // THE CONTROL: addresses left alone, so the range decides nothing.
-    let routed_wide = contents_after(false, WIDE_END);
-    let routed_narrow = contents_after(false, NARROW_END);
+    // THE CONTROL: the SAME range twice, over two independently built fixtures. It must come out
+    // bucket-for-bucket identical, or the comparison below cannot express sameness and "everything
+    // moved" would be the only answer it could ever give.
+    let same_range_once = contents_after(NARROW_END);
+    let same_range_again = contents_after(NARROW_END);
     assert_eq!(
-        routed_wide, routed_narrow,
-        "a page whose address carries its own routing bucket is filed under THAT bucket whatever \
-         range the rebuild is given, so the control must be identical under both. It is not, which \
-         means the range is reaching pages it does not decide and every count in this file is \
-         measuring something else."
+        same_range_once, same_range_again,
+        "two rebuilds at the SAME range filed the pages differently, so this comparison cannot \
+         tell a placement the range decided from noise in the fixture"
     );
 
-    // THE SUBJECT: addresses in the older-build state, so the range decides every placement.
-    let unrouted_wide = contents_after(true, WIDE_END);
-    let unrouted_narrow = contents_after(true, NARROW_END);
+    // THE SUBJECT: two different ranges, which decide every placement.
+    let wide = contents_after(WIDE_END);
+    let narrow = contents_after(NARROW_END);
 
-    let wide_placement = placement(&unrouted_wide);
-    let narrow_placement = placement(&unrouted_narrow);
+    let wide_placement = placement(&wide);
+    let narrow_placement = placement(&narrow);
     assert_eq!(
         wide_placement.keys().collect::<BTreeSet<_>>(),
         narrow_placement.keys().collect::<BTreeSet<_>>(),
@@ -597,33 +615,33 @@ fn no_page_changes_bucket_except_the_unrouted_ones_the_range_decides() {
         })
         .map(|(key, _)| key)
         .collect();
-    let outside_after: Vec<u32> = unrouted_narrow
+    let outside_after: Vec<u32> = narrow
         .keys()
         .copied()
         .filter(|routing_bucket| *routing_bucket > NARROW_END)
         .collect();
 
     println!(
-        "  control (routed): {} buckets, identical under both ranges",
-        routed_wide.len()
+        "  control (same range twice): {} buckets, identical",
+        same_range_once.len()
     );
     println!(
-        "  subject (unrouted): wide {} buckets -> narrow {} buckets, {} of {RECORDS} pages changed \
+        "  subject: wide {} buckets -> narrow {} buckets, {} of {RECORDS} pages changed \
          bucket, {} buckets outside the shard's range after",
-        unrouted_wide.len(),
-        unrouted_narrow.len(),
+        wide.len(),
+        narrow.len(),
         moved.len(),
         outside_after.len()
     );
 
-    // EVERY unrouted page moves, and that is the intended set: the two placement functions differ
-    // on every key whose hash exceeds the narrow bucket count, which is every key at a 64-bit hash.
+    // EVERY page moves, and that is the intended set: the two placement functions differ on every
+    // key whose hash exceeds the narrow bucket count, which is every key at a 64-bit hash.
     assert_eq!(
         moved.len(),
         RECORDS,
-        "{} of {RECORDS} unrouted pages changed bucket between the two ranges. These are exactly \
-         the pages the range decides, so all of them must move; a smaller number means some page \
-         was placed by something other than the argument.",
+        "{} of {RECORDS} pages changed bucket between the two ranges. Every page is placed by the \
+         argument now, so all of them must move; a smaller number means some page was placed by \
+         something other than the argument.",
         moved.len()
     );
     // And they all land inside the shard, which is the point of moving them.
@@ -632,6 +650,90 @@ fn no_page_changes_bucket_except_the_unrouted_ones_the_range_decides() {
         "after the narrow rebuild {} buckets still sit above the shard's end: {:?}",
         outside_after.len(),
         &outside_after[..outside_after.len().min(5)]
+    );
+}
+
+/// THE OWNERSHIP REPORT NAMES A PAGE FILED WHERE ITS KEY DOES NOT ROUTE.
+///
+/// `validate_bucket_ownership_index_from_entries` compares each live page's bucket against
+/// `block_routing_bucket(object_key, start, end)`. It used to read the page's bucket off the ADDRESS,
+/// which the filing site had just written with that same expression -- so the comparison was between
+/// a value and a copy of itself, and only an address carrying NONE could make it fire. It now reads
+/// the bucket the INDEX has the page under, which is an independent answer.
+///
+/// SO THE CHECK CAN FAIL, AND THIS IS IT FAILING. Without a guard the change would have replaced one
+/// unfireable comparison with another and nothing would have said so.
+///
+/// WITH THE HONEST INDEX AS ITS DENOMINATOR: the same fixture before the move must report no
+/// mismatch, or a report that flagged everything would pass the half below.
+///
+/// rust-internal: reads the engine's own validation, no product behaviour
+#[test]
+fn the_ownership_report_names_a_page_filed_where_its_key_does_not_route() {
+    use crate::engine::storage_bucket_internals::validate_bucket_ownership_index_from_entries;
+
+    let dir = tempfile::tempdir().expect("tempdir");
+    let engine = engine_on(dir.path());
+    load_on(&engine, NARROW_END);
+    let keys = seed(&engine, 32);
+
+    let mut shards = engine.shards.write().expect("engine lock poisoned");
+    let shard = shards.get_mut(&1).expect("shard 1");
+
+    // DENOMINATOR: the honest index reports nothing.
+    let entries = collect_live_block_entries(shard);
+    assert_eq!(entries.len(), keys.len(), "the fixture must hold one page per key");
+    let honest = validate_bucket_ownership_index_from_entries(1, shard, &entries, 0, NARROW_END);
+    assert!(
+        honest.mismatches.is_empty(),
+        "the untouched index already reports {} mismatch(es), so the report below cannot be \
+         attributed to the move: {:?}",
+        honest.mismatches.len(),
+        honest.mismatches
+    );
+
+    // THE MOVE: take one bucket's node and file it under a bucket its key does not route to.
+    let moved_from = *shard
+        .bucket_index
+        .bucket_map
+        .iter()
+        .find(|(_, bucket)| !bucket.block_index.is_empty())
+        .map(|(routing_bucket, _)| routing_bucket)
+        .expect("some bucket holds a page");
+    let node = shard.bucket_index.bucket_map.remove(&moved_from).expect("the node");
+    let moved_to = (0..=NARROW_END)
+        .find(|candidate| !shard.bucket_index.bucket_map.contains_key(candidate) && *candidate != moved_from)
+        .expect("some bucket is free");
+    let pages_moved = node.block_index.len();
+    shard.bucket_index.bucket_map.insert(
+        moved_to,
+        crate::engine::state::BucketNode { routing_bucket: moved_to, ..node },
+    );
+    assert!(pages_moved > 0, "the move carried no page");
+
+    let entries = collect_live_block_entries(shard);
+    let after = validate_bucket_ownership_index_from_entries(1, shard, &entries, 0, NARROW_END);
+    println!(
+        "  moved {pages_moved} page(s) from bucket {moved_from} to {moved_to}: {} mismatch(es)",
+        after.mismatches.len()
+    );
+    assert_eq!(
+        pages_moved,
+        after.mismatches.len(),
+        "the report named {} of {pages_moved} moved page(s). A page filed where its key does not \
+         route is what this check exists to find, and it is the only comparison on this path with \
+         two independent sides.",
+        after.mismatches.len()
+    );
+    let named = after.mismatches.first().expect("one mismatch");
+    assert_eq!(
+        Some(moved_to),
+        named.actual_routing_bucket,
+        "the report must name the bucket the page is FILED in"
+    );
+    assert_eq!(
+        moved_from, named.expected_routing_bucket,
+        "and the bucket its KEY routes to, which is where it was"
     );
 }
 
@@ -647,13 +749,17 @@ fn no_page_changes_bucket_except_the_unrouted_ones_the_range_decides() {
 /// `install_bucket_dump_manifest` rebuilds ownership over `decode_index_bytes(&manifest
 /// .index_bytes)` -- a WHOLE-SHARD image, written by whatever routing range the SOURCE shard ran
 /// on, whose pages already carry explicit routing buckets from that range.
-/// `rebuild_bucket_block_ownership` does not merely PLACE an unrouted page by the range it is
-/// handed; it also FILTERS on it. So passing the INSTALLING shard's range deletes every page whose
-/// source bucket falls outside it, and the record is simply gone.
+/// `rebuild_bucket_block_ownership` used to FILTER on the range as well as place by it, so passing
+/// the INSTALLING shard's range deleted every page whose source bucket fell outside it and the record
+/// was simply gone. That filter is gone -- a derived bucket cannot be out of range -- so this test
+/// now measures the property rather than the workaround: the install RE-DERIVES each page's bucket on
+/// the target's range and keeps every page.
 ///
 /// The denominator is asserted before the verdict, and it is the whole point: the fixture is only
-/// meaningful if the source pages really do carry buckets the target's range excludes. On a source
-/// loaded `0..u32::MAX` and a target loaded `0..1023` they do, for essentially every key.
+/// meaningful if the source's pages really do route outside the target's range. On a source loaded
+/// `0..u32::MAX` and a target loaded `0..1023` they do, for essentially every key -- and that is
+/// computed from the KEYS rather than read off an address, because an address no longer has an
+/// opinion about it.
 ///
 /// rust-internal: drives the engine's own manifest install, no product behaviour
 #[test]
@@ -673,21 +779,25 @@ fn a_manifest_installed_on_a_narrower_shard_keeps_every_page() {
     let outside_the_target: usize = {
         let shards = source.shards.read().expect("engine lock poisoned");
         let shard = shards.get(&1).expect("shard 1");
-        collect_live_block_entries(shard)
+        // Read off the bucket map -- where the pages ARE on the source -- rather than off an
+        // address, which carries no bucket to read.
+        shard
+            .bucket_index
+            .bucket_map
             .iter()
-            .filter_map(|entry| entry.address.routing_bucket())
-            .filter(|routing_bucket| *routing_bucket > NARROW_END)
-            .count()
+            .filter(|(routing_bucket, _)| **routing_bucket > NARROW_END)
+            .map(|(_, bucket)| bucket.block_index.len())
+            .sum()
     };
     println!(
-        "  source on 0..{WIDE_END}: {outside_the_target} of {RECORDS} pages carry a bucket above \
+        "  source on 0..{WIDE_END}: {outside_the_target} of {RECORDS} pages sit in a bucket above \
          {NARROW_END}"
     );
     assert!(
         outside_the_target > RECORDS / 2,
-        "only {outside_the_target} of {RECORDS} source pages carry a routing bucket above \
-         {NARROW_END}, so a narrowed install would drop almost nothing and this test cannot see \
-         the defect it exists for"
+        "only {outside_the_target} of {RECORDS} source pages sit in a bucket above {NARROW_END}, \
+         so a narrowed install would have nothing to re-file and this test cannot see the defect \
+         it exists for"
     );
 
     let buckets: Vec<u32> = {
@@ -772,8 +882,12 @@ fn a_store_filed_under_the_whole_range_reads_back_whole_after_the_change() {
         {
             let mut shards = engine.shards.write().expect("engine lock poisoned");
             let shard = shards.get_mut(&1).expect("shard 1");
-            let stripped = strip_routing_buckets(shard);
-            assert_eq!(stripped, keys.len(), "the strip covered {stripped} keys");
+            let round_tripped = round_trip_every_page_through_the_wire(shard);
+            assert_eq!(
+                round_tripped,
+                keys.len(),
+                "the door covered {round_tripped} keys"
+            );
             // THE OLD ARGUMENT, which is what every one of the nine sites passed.
             rebuild_bucket_first_index(1, shard, 0, WIDE_END);
             refresh_bucket_runtime_flags(shard);
@@ -831,32 +945,40 @@ fn a_store_filed_under_the_whole_range_reads_back_whole_after_the_change() {
             entries.len()
         );
 
-        // PART THREE -- THE LOAD-BEARING ONE. The addresses are still unrouted, which is WHY no
-        // migration step is needed: the bucket the old argument chose was never written onto the
-        // address, so the rebuild the load runs re-derives the placement from the shard's own
-        // range. Had that bucket stuck, it would be an EXPLICIT out-of-range bucket and the
-        // ownership rebuild would DROP the page -- measured in
-        // `only_ownership_drops_a_page_whose_explicit_bucket_is_outside_the_shards_range`.
-        let carrying_a_bucket: Vec<u32> = entries
-            .iter()
-            .filter_map(|entry| entry.address.routing_bucket())
-            .filter(|routing_bucket| *routing_bucket > NARROW_END)
-            .collect();
+        // PART THREE -- THE LOAD-BEARING ONE. Every page came back filed INSIDE the shard's own
+        // range, which is WHY no migration step is needed: the bucket the old argument chose was
+        // never written onto the address, so the rebuild the load runs derives the placement from
+        // the range the shard is stamped with. This used to be asserted as "the addresses are still
+        // unrouted"; an address cannot be routed now, so the statement moves to where the pages
+        // actually are -- the keys of the bucket map.
+        let outside: Vec<u32> = {
+            let shards = engine.shards.read().expect("engine lock poisoned");
+            let shard = shards.get(&1).expect("shard 1");
+            shard
+                .bucket_index
+                .bucket_map
+                .iter()
+                .filter(|(routing_bucket, bucket)| {
+                    **routing_bucket > NARROW_END && !bucket.block_index.is_empty()
+                })
+                .map(|(routing_bucket, _)| *routing_bucket)
+                .collect()
+        };
         println!(
-            "  after the restart: {readable} of {} records readable, {} pages, {} carrying an \
-             explicit bucket outside the shard's range",
+            "  after the restart: {readable} of {} records readable, {} pages, {} buckets above \
+             the shard's end still holding pages",
             keys.len(),
             entries.len(),
-            carrying_a_bucket.len()
+            outside.len()
         );
         assert!(
-            carrying_a_bucket.is_empty(),
-            "{} pages came back carrying an EXPLICIT routing bucket above the shard's end; the \
-             first few are {:?}. Those are precisely the pages `rebuild_bucket_block_ownership` \
-             now drops, so if this ever holds, a store written before this change needs a rebuild \
-             before it is loaded with it and this test is the one that has to say so.",
-            carrying_a_bucket.len(),
-            &carrying_a_bucket[..carrying_a_bucket.len().min(5)]
+            outside.is_empty(),
+            "{} buckets above the shard's end came back holding pages; the first few are {:?}. A \
+             page there is invisible to every reader that scopes by bucket, so if this ever holds, \
+             a store written before this change needs a rebuild before it is loaded with it and \
+             this test is the one that has to say so.",
+            outside.len(),
+            &outside[..outside.len().min(5)]
         );
     }
 }

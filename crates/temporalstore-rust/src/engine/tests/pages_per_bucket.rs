@@ -475,9 +475,14 @@ fn the_pages_a_bucket_holds_are_two_populations_and_not_one_mean() {
 fn every_byte_of_the_page_index_is_accounted_for() {
     // --- BlockIndex: TWO shared names and an address pack solid; the one-byte model spelling
     // and three flags round up together. The model spelling used to be a second `Arc<str>` in the
-    // eight-aligned group; it is now one byte in the tail, which is why this step took SIXTEEN
+    // eight-aligned group; it is now one byte in the tail, which is why that step took SIXTEEN
     // bytes off the structure and not the twelve a field-width subtraction would predict: four of
-    // them came out of the rounding the flags were already sitting in. ---
+    // them came out of the rounding the flags were already sitting in.
+    //
+    // THE ADDRESS THEN TOOK A WORD OUT OF THE SAME GROUP, and that step is the other direction of
+    // the same lesson: SIX bytes of its payload left, in two narrowings of which neither crosses a
+    // multiple of eight alone, so the group moved by a whole word and the tail did not move at
+    // all. A field-width subtraction would have predicted nothing here twice over. ---
     let arc_str = size_of::<Arc<str>>();
     let opt_arc_str = size_of::<Option<Arc<str>>>();
     let index_eight_aligned = arc_str + opt_arc_str + size_of::<BlockAddress>();
@@ -496,7 +501,7 @@ fn every_byte_of_the_page_index_is_accounted_for() {
         "the page entry no longer reconstructs as {index_eight_aligned} bytes of eight-aligned \
          field plus {index_tail} bytes of flag rounded up to {index_rounded_tail}"
     );
-    assert_eq!(72, size_of::<BlockIndex>(), "the page entry's budgeted width moved");
+    assert_eq!(64, size_of::<BlockIndex>(), "the page entry's budgeted width moved");
 
     // The three flags are ALREADY inside the rounding. Narrowing them reclaims nothing; only
     // removing the tail entirely would, and it is three keys of the stored index.
@@ -1748,7 +1753,6 @@ fn page_for(seed: u64) -> BlockIndex {
             64,
             Some(seed),
             Some(seed.wrapping_mul(0x9E37_79B9_7F4A_7C15)),
-            Some(11),
         ),
         dirty: false,
         deleted: false,
@@ -1768,7 +1772,6 @@ fn component_page(seed: u64, component: &str) -> BlockIndex {
             96,
             Some(seed),
             Some(seed.wrapping_mul(0x1000_0000_01B3)),
-            Some(11),
         ),
         dirty: true,
         deleted: false,

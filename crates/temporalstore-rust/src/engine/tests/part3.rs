@@ -1992,15 +1992,21 @@ fn rebuild_bucket_block_ownership_preserves_dirty_watermarks() {
     // manifest. There is nothing left for the rebuild to carry over, and
     // `the_summary_last_dump_sequence_comes_from_the_manifest_not_from_the_node` is what holds
     // that the surviving figure is the manifest's.
+    // THE BUCKET IS DERIVED FROM THE KEY, not chosen. This fixture used to file the page under
+    // bucket 3 by writing `Some(3)` into the ADDRESS and letting the rebuild read it back; the rebuild
+    // derives from the object key over the range it is handed now, so a hand-picked bucket id names a
+    // bucket the rebuild will not produce. Deriving here asserts the same property -- a watermark
+    // survives the rebuild -- against the filing the rebuild actually performs.
     let mut shard = ShardState::default();
+    let derived_bucket = crate::engine::hashing::bucket_for_object("k", 0, u32::MAX);
     shard.strings.insert(
         "k".to_string(),
-        BlockAddress::from_parts(1, 0, 4, Some(1), Some(30), Some(3)),
+        BlockAddress::from_parts(1, 0, 4, Some(1), Some(30)),
     );
     shard.bucket_index.bucket_map.insert(
-        3,
+        derived_bucket,
         BucketNode {
-            routing_bucket: 3,
+            routing_bucket: derived_bucket,
             flags: BucketFlags::default().with(BucketFlags::META_LOADED, true),
             dirty_generation: 7,
             ..BucketNode::default()
@@ -2010,8 +2016,8 @@ fn rebuild_bucket_block_ownership_preserves_dirty_watermarks() {
     let bucket = shard
         .bucket_index
         .bucket_map
-        .get(&3)
-        .expect("bucket 3 should be rebuilt from the string page");
+        .get(&derived_bucket)
+        .expect("the bucket the key routes to should be rebuilt from the string page");
     assert!(!bucket.block_index.is_empty(), "the page should be re-indexed");
     assert_eq!(
         bucket.dirty_generation, 7,
@@ -2208,7 +2214,9 @@ fn storage_recovery_uses_bucket_index_not_stale_secondary_model_maps() {
             .get_mut("slot-authority")
             .expect("secondary string view");
         stale.set_object_id(Some(stale.object_id().unwrap_or_default().wrapping_add(99)));
-        stale.set_routing_bucket(Some(stale.routing_bucket().unwrap_or_default().wrapping_add(99)));
+        // The routing bucket used to be planted here too. An address does not hold one, so what
+        // made this address STALE is now the object id and the slab coordinates below -- which is
+        // the whole of what a reader reads off it.
         // The slab id is half of one packed word now, so it is planted by rebuilding the address
         // through the checked constructor rather than by assigning a field. Every other part is
         // carried across unchanged, which is what makes this a STALE address and not a new one.
@@ -2218,7 +2226,6 @@ fn storage_recovery_uses_bucket_index_not_stale_secondary_model_maps() {
             stale.length(),
             stale.block_id(),
             stale.object_id(),
-            stale.routing_bucket(),
         );
     }
 
@@ -2472,7 +2479,9 @@ fn core_index_loads_legacy_bucket_page_field_names() {
         .values()
         .next()
         .expect("legacy page index should load");
-    assert_eq!(page.address.routing_bucket(), Some(7));
+    // The legacy record's `routing_slot` of 7 is READ AND IGNORED: the address has nowhere to put
+    // it, and where the page IS is the key of the bucket map it was loaded into -- asserted by the
+    // `bucket_map.get(&7)` this test already performs above.
     assert_eq!(
         (page.address.block_slab_id(), page.address.offset()),
         (1, 2),
@@ -2517,7 +2526,7 @@ fn bucket_store_reports_all_layout_states_and_runtime_flags() {
                     object_key: Arc::from("k".to_string()),
                     model_id: crate::engine::storage_bucket_internals::StoredModelKind::String,
                     component: None,
-                    address: BlockAddress::from_parts(1, 0, 4, Some(1), Some(30), Some(3)),
+                    address: BlockAddress::from_parts(1, 0, 4, Some(1), Some(30)),
                     dirty: false,
                     deleted: false,
                     log_backed: true,
@@ -2543,7 +2552,7 @@ fn bucket_store_reports_all_layout_states_and_runtime_flags() {
                         object_key: Arc::from("feature-key".to_string()),
                         model_id: crate::engine::storage_bucket_internals::StoredModelKind::Feature,
                         component: None,
-                        address: BlockAddress::from_parts(2, 0, 4, Some(2), Some(40), Some(4)),
+                        address: BlockAddress::from_parts(2, 0, 4, Some(2), Some(40)),
                         dirty: false,
                         deleted: false,
                         log_backed: true,
@@ -2555,7 +2564,7 @@ fn bucket_store_reports_all_layout_states_and_runtime_flags() {
                         object_key: Arc::from("feature-key".to_string()),
                         model_id: crate::engine::storage_bucket_internals::StoredModelKind::Feature,
                         component: None,
-                        address: BlockAddress::from_parts(2, 4, 4, Some(3), Some(40), Some(4)),
+                        address: BlockAddress::from_parts(2, 4, 4, Some(3), Some(40)),
                         dirty: false,
                         deleted: false,
                         log_backed: true,
@@ -2582,7 +2591,7 @@ fn bucket_store_reports_all_layout_states_and_runtime_flags() {
                         object_key: Arc::from("hash-key".to_string()),
                         model_id: crate::engine::storage_bucket_internals::StoredModelKind::Hash,
                         component: Some(Arc::from("a".to_string())),
-                        address: BlockAddress::from_parts(3, 0, 1, Some(4), Some(50), Some(5)),
+                        address: BlockAddress::from_parts(3, 0, 1, Some(4), Some(50)),
                         dirty: false,
                         deleted: false,
                         log_backed: true,
@@ -2594,7 +2603,7 @@ fn bucket_store_reports_all_layout_states_and_runtime_flags() {
                         object_key: Arc::from("hash-key".to_string()),
                         model_id: crate::engine::storage_bucket_internals::StoredModelKind::Hash,
                         component: Some(Arc::from("b".to_string())),
-                        address: BlockAddress::from_parts(3, 1, 1, Some(5), Some(51), Some(5)),
+                        address: BlockAddress::from_parts(3, 1, 1, Some(5), Some(51)),
                         dirty: false,
                         deleted: false,
                         log_backed: true,

@@ -284,11 +284,16 @@ impl TemporalEngine {
             .get(&shard_id)
             .filter(|shard| shard.bucket_index.block_slab_live.is_ready())
             .map(|shard| shard.bucket_index.block_slab_live.iter().collect::<Vec<_>>());
-        let addresses = match maintained {
+        // ENTRIES, NOT ADDRESSES, AND THAT IS NOT A NEW COST. `collect_live_block_addresses` is
+        // `collect_live_block_entries(..).map(|entry| entry.address)`, so the entries were already
+        // being materialized and thrown away; keeping them drops a second `Vec` rather than adding
+        // work. What the key buys is `live_routing_bucket_count`, which the address alone can no
+        // longer answer.
+        let live_entries = match maintained {
             Some(_) => Vec::new(),
             None => shards
                 .get(&shard_id)
-                .map(collect_live_block_addresses)
+                .map(collect_live_block_entries)
                 .unwrap_or_default(),
         };
         let mut reports = block_slab_counts
@@ -320,7 +325,8 @@ impl TemporalEngine {
         }
         let mut live_object_ids = BTreeMap::<u64, BTreeSet<u64>>::new();
         let mut live_routing_buckets = BTreeMap::<u64, BTreeSet<u32>>::new();
-        for address in &addresses {
+        for live_entry in &live_entries {
+            let address = &live_entry.address;
             let slab_report = reports.entry(address.block_slab_id()).or_insert(
                 StorageRecoverySlabLiveReport {
                     block_slab_id: address.block_slab_id(),
@@ -336,7 +342,7 @@ impl TemporalEngine {
                 objects.insert(object_id);
                 slab_report.live_object_count = objects.len() as u64;
             }
-            if let Some(routing_bucket) = address.routing_bucket() {
+            if let Some(routing_bucket) = live_entry.filed_bucket() {
                 let buckets = live_routing_buckets
                     .entry(address.block_slab_id())
                     .or_default();
@@ -641,7 +647,7 @@ impl TemporalEngine {
                 objects.insert(object_id);
                 slab_report.live_object_count = objects.len() as u64;
             }
-            if let Some(routing_bucket) = address.routing_bucket() {
+            if let Some(routing_bucket) = live_entry.filed_bucket() {
                 let buckets = live_routing_buckets
                     .entry(address.block_slab_id())
                     .or_default();
@@ -1502,55 +1508,74 @@ fn expiry_scan_budget(limit: usize) -> usize {
         // consistent partial state instead of leaving the volatile index half-advanced but
         // unpersisted -- see the `if let Err(err)` handler after this block for why.
         let relocation_result: Result<(), Status> = (|| {
+        // EVERY ARM NOW PAIRS AN ADDRESS WITH ITS KEY'S BUCKET, and the arms that iterated
+        // `values_mut()` iterate `iter_mut()` to get it. Nothing new is computed per PAGE: a bucket
+        // is one FNV-1a over the key, and the keyed arms compute it once per key for however many
+        // pages that key owns.
+        let bucket_of = |key: &str| {
+            block_routing_bucket(key, start_routing_bucket, end_routing_bucket)
+        };
         compact_block_addresses(
             &self.block_store,
             &self.cache,
             shard_id,
             "string",
-            shard.strings.values_mut(),
+            shard
+                .strings
+                .iter_mut()
+                .map(|(key, address)| (bucket_of(key), address)),
             &mut rewrite_stats,
         )?;
-        for fields in shard.hashes.values_mut() {
+        for (key, fields) in shard.hashes.iter_mut() {
+            let routing_bucket = bucket_of(key);
             compact_block_addresses(
                 &self.block_store,
                 &self.cache,
                 shard_id,
                 "hash",
-                fields.values_mut(),
+                fields.values_mut().map(|address| (routing_bucket, address)),
                 &mut rewrite_stats,
             )?;
         }
-        for members in shard.zsets.values_mut() {
+        for (key, members) in shard.zsets.iter_mut() {
+            let routing_bucket = bucket_of(key);
             compact_block_addresses(
                 &self.block_store,
                 &self.cache,
                 shard_id,
                 "zset",
-                members.values_mut().map(|entry| &mut entry.1),
+                members
+                    .values_mut()
+                    .map(|entry| (routing_bucket, &mut entry.1)),
                 &mut rewrite_stats,
             )?;
         }
-        for elements in shard.lists.values_mut() {
+        for (key, elements) in shard.lists.iter_mut() {
+            let routing_bucket = bucket_of(key);
             compact_block_addresses(
                 &self.block_store,
                 &self.cache,
                 shard_id,
                 "list",
-                elements.values_mut(),
+                elements
+                    .values_mut()
+                    .map(|address| (routing_bucket, address)),
                 &mut rewrite_stats,
             )?;
         }
-        for members in shard.sets.values_mut() {
+        for (key, members) in shard.sets.iter_mut() {
+            let routing_bucket = bucket_of(key);
             compact_block_addresses(
                 &self.block_store,
                 &self.cache,
                 shard_id,
                 "set",
-                members.values_mut(),
+                members.values_mut().map(|address| (routing_bucket, address)),
                 &mut rewrite_stats,
             )?;
         }
-        for series in shard.features.values_mut() {
+        for (key, series) in shard.features.iter_mut() {
+            let routing_bucket = bucket_of(key);
             compact_feature_block_addresses(
                 &self.block_store,
                 &self.cache,
@@ -1558,6 +1583,7 @@ fn expiry_scan_budget(limit: usize) -> usize {
                 "feature",
                 series,
                 &mut rewrite_stats,
+                routing_bucket,
             )?;
         }
         compact_block_addresses(
@@ -1565,7 +1591,10 @@ fn expiry_scan_budget(limit: usize) -> usize {
             &self.cache,
             shard_id,
             "control_state",
-            shard.control_state_blocks.values_mut(),
+            shard
+                .control_state_blocks
+                .iter_mut()
+                .map(|(key, address)| (bucket_of(key), address)),
             &mut rewrite_stats,
         )?;
         compact_block_addresses(
@@ -1573,10 +1602,14 @@ fn expiry_scan_budget(limit: usize) -> usize {
             &self.cache,
             shard_id,
             "context_node",
-            shard.context_nodes.values_mut(),
+            shard
+                .context_nodes
+                .iter_mut()
+                .map(|(key, address)| (bucket_of(key), address)),
             &mut rewrite_stats,
         )?;
-        for series in shard.context_events.values_mut() {
+        for (key, series) in shard.context_events.iter_mut() {
+            let routing_bucket = bucket_of(key);
             compact_feature_block_addresses(
                 &self.block_store,
                 &self.cache,
@@ -1584,9 +1617,11 @@ fn expiry_scan_budget(limit: usize) -> usize {
                 "context_event",
                 series,
                 &mut rewrite_stats,
+                routing_bucket,
             )?;
         }
-        for series in shard.context_indexes.values_mut() {
+        for (key, series) in shard.context_indexes.iter_mut() {
+            let routing_bucket = bucket_of(key);
             compact_feature_block_addresses(
                 &self.block_store,
                 &self.cache,
@@ -1594,9 +1629,11 @@ fn expiry_scan_budget(limit: usize) -> usize {
                 "context_index",
                 series,
                 &mut rewrite_stats,
+                routing_bucket,
             )?;
         }
-        for series in shard.context_audits.values_mut() {
+        for (key, series) in shard.context_audits.iter_mut() {
+            let routing_bucket = bucket_of(key);
             compact_feature_block_addresses(
                 &self.block_store,
                 &self.cache,
@@ -1604,9 +1641,11 @@ fn expiry_scan_budget(limit: usize) -> usize {
                 "context_audit",
                 series,
                 &mut rewrite_stats,
+                routing_bucket,
             )?;
         }
-        for series in shard.context_children.values_mut() {
+        for (key, series) in shard.context_children.iter_mut() {
+            let routing_bucket = bucket_of(key);
             compact_feature_block_addresses(
                 &self.block_store,
                 &self.cache,
@@ -1614,9 +1653,11 @@ fn expiry_scan_budget(limit: usize) -> usize {
                 "context_child",
                 series,
                 &mut rewrite_stats,
+                routing_bucket,
             )?;
         }
-        for series in shard.context_summaries.values_mut() {
+        for (key, series) in shard.context_summaries.iter_mut() {
+            let routing_bucket = bucket_of(key);
             compact_feature_block_addresses(
                 &self.block_store,
                 &self.cache,
@@ -1624,9 +1665,11 @@ fn expiry_scan_budget(limit: usize) -> usize {
                 "context_summary",
                 series,
                 &mut rewrite_stats,
+                routing_bucket,
             )?;
         }
-        for series in shard.context_compressions.values_mut() {
+        for (key, series) in shard.context_compressions.iter_mut() {
+            let routing_bucket = bucket_of(key);
             compact_feature_block_addresses(
                 &self.block_store,
                 &self.cache,
@@ -1634,17 +1677,31 @@ fn expiry_scan_budget(limit: usize) -> usize {
                 "context_compression",
                 series,
                 &mut rewrite_stats,
+                routing_bucket,
             )?;
         }
+        // THE ENTITY ARM DERIVES ITS BUCKET FROM THE PER-ENTITY KEY, not from the collection key
+        // this map is keyed by: `ContextUpsertEntity` files the page under
+        // `context_entity_key(..)`, which is the collection key with the entity hash appended, and
+        // that is the string the bucket comes from. Composing it per entity is what the model-map
+        // walk does for the same reason.
         compact_block_addresses(
             &self.block_store,
             &self.cache,
             shard_id,
             "context_entity",
-            shard
-                .context_entities
-                .values_mut()
-                .flat_map(|series| series.values_mut()),
+            shard.context_entities.iter_mut().flat_map(|(key, series)| {
+                series.iter_mut().map(move |(entity_hash, address)| {
+                    (
+                        block_routing_bucket(
+                            &format!("{key}:{entity_hash}"),
+                            start_routing_bucket,
+                            end_routing_bucket,
+                        ),
+                        address,
+                    )
+                })
+            }),
             &mut rewrite_stats,
         )?;
             Ok(())

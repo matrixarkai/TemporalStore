@@ -2047,9 +2047,7 @@ impl TemporalEngine {
                     .into_iter()
                     .filter_map(|entry| {
                         let bucket = entry
-                            .address
-                            .routing_bucket()
-                            .or(entry.filed_bucket())
+                            .filed_bucket()
                             .unwrap_or_else(|| bucket_for_object(&entry.object_key, 0, u32::MAX));
                         victim_buckets.contains(&bucket).then_some(entry.object_key)
                     })

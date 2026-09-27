@@ -208,16 +208,19 @@ fn encode_wal_payload(record: &WriteAheadLogRecord) -> Result<Vec<u8>, WriteAhea
     })
 }
 impl WalOutcomeItem {
-    /// The address with the routing bucket the item carries put back.
+    /// The address a recorded page installs at.
     ///
-    /// Anything installing a recorded page must go through this rather than reading `address`
-    /// directly, or the index entry it builds is missing its routing bucket -- which the
-    /// bucket-index half of the equivalence gate fails on.
+    /// IT USED TO PUT THE ROUTING BUCKET BACK, and there is nothing left to put back: a
+    /// `BlockAddress` does not hold one. The item still carries `routing_bucket` as its own field
+    /// and that is where the bucket comes from -- the item IS the container, and every caller here
+    /// has it in hand beside the address.
+    ///
+    /// KEPT AS A NAMED ACCESSOR rather than folded into `self.address.clone()` at fifteen sites,
+    /// because what it names is still a distinction worth reading: `address` is an `Option` that is
+    /// `None` for an item that recorded no page, and "the address this item installs at, if it
+    /// installs one" is the question every caller is asking.
     pub fn resolved_address(&self) -> Option<crate::block_store::BlockAddress> {
-        self.address.clone().map(|mut address| {
-            address.set_routing_bucket(Some(self.routing_bucket));
-            address
-        })
+        self.address.clone()
     }
 }
 
@@ -403,14 +406,11 @@ mod outcome_address_serde {
     where
         S: Serializer,
     {
-        match value {
-            None => serializer.serialize_none(),
-            Some(address) => {
-                let mut trimmed = address.clone();
-                trimmed.set_routing_bucket(None);
-                Some(trimmed).serialize(serializer)
-            }
-        }
+        // NOTHING TO TRIM ANY MORE. This used to clear the routing bucket before writing, because
+        // the item carries its own and a second copy inside the address was bytes on every record.
+        // The address no longer holds one, so the serialized form is the same bytes this produced
+        // before -- which is why the trim goes rather than being kept as a no-op.
+        value.serialize(serializer)
     }
 
     pub fn deserialize<'de, D>(deserializer: D) -> Result<Option<BlockAddress>, D::Error>

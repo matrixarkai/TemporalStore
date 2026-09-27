@@ -1452,9 +1452,15 @@ impl TemporalEngine {
                     {
                         return None;
                     }
+                    let (start_routing_bucket, end_routing_bucket) = shard.routing_range();
                     FastPathRead::String {
                         key: key.as_str(),
                         address: shard.strings.get(key).cloned(),
+                        routing_bucket: block_routing_bucket(
+                            key,
+                            start_routing_bucket,
+                            end_routing_bucket,
+                        ),
                     }
                 }
                 Command::HashGetAll { key } => {
@@ -1466,6 +1472,7 @@ impl TemporalEngine {
                     {
                         return None;
                     }
+                    let (start_routing_bucket, end_routing_bucket) = shard.routing_range();
                     FastPathRead::Hash {
                         fields: shard
                             .hashes
@@ -1477,6 +1484,11 @@ impl TemporalEngine {
                                     .collect::<Vec<_>>()
                             })
                             .unwrap_or_default(),
+                        routing_bucket: block_routing_bucket(
+                            key,
+                            start_routing_bucket,
+                            end_routing_bucket,
+                        ),
                     }
                 }
                 _ => return None,
@@ -1493,7 +1505,11 @@ impl TemporalEngine {
         };
 
         match plan {
-            FastPathRead::String { key, address } => Some(ExecuteResponse {
+            FastPathRead::String {
+                key,
+                address,
+                routing_bucket,
+            } => Some(ExecuteResponse {
                 status: Status::ok(),
                 response: cached_response(
                     &self.cache,
@@ -1505,17 +1521,27 @@ impl TemporalEngine {
                                 &self.block_store,
                                 request.shard_id,
                                 address,
+                                Some(routing_bucket),
                             )
                         }),
                     },
                 ),
             }),
-            FastPathRead::Hash { fields } => {
+            FastPathRead::Hash {
+                fields,
+                routing_bucket,
+            } => {
                 let mut entries = fields
                     .iter()
                     .filter_map(|(field, address)| {
-                        read_block_bytes(&self.cache, &self.block_store, request.shard_id, address)
-                            .map(|value| (field.clone(), value))
+                        read_block_bytes(
+                            &self.cache,
+                            &self.block_store,
+                            request.shard_id,
+                            address,
+                            Some(routing_bucket),
+                        )
+                        .map(|value| (field.clone(), value))
                     })
                     .collect::<Vec<_>>();
                 entries.sort_by(|a, b| a.0.cmp(&b.0));
@@ -1786,13 +1812,15 @@ impl TemporalEngine {
     #[doc(hidden)]
     pub fn string_block_cache_key_for_test(&self, shard_id: ShardId, key: &str) -> Option<CacheKey> {
         let shards = self.shards.read().expect("engine lock poisoned");
-        let address = shards.get(&shard_id)?.strings.get(key)?;
+        let shard = shards.get(&shard_id)?;
+        let address = shard.strings.get(key)?;
+        let (start_routing_bucket, end_routing_bucket) = shard.routing_range();
         Some(CacheKey::page_with_slot(
             shard_id,
             address.block_slab_id(),
             address.offset(),
             address.length(),
-            address.routing_bucket()))
+            Some(block_routing_bucket(key, start_routing_bucket, end_routing_bucket))))
     }
 
     #[doc(hidden)]
@@ -2360,9 +2388,16 @@ enum FastPathRead<'a> {
     String {
         key: &'a str,
         address: Option<BlockAddress>,
+        /// The bucket the page cache is keyed by, resolved while the shard guard is HELD.
+        ///
+        /// It has to be: the bucket is `block_routing_bucket(key, ..)` over the range the shard is
+        /// stamped with, and the whole point of this plan is that the reads below happen after the
+        /// guard drops. Carrying the number rather than the shard is what keeps that true.
+        routing_bucket: u32,
     },
     Hash {
         fields: Vec<(String, BlockAddress)>,
+        routing_bucket: u32,
     },
 }
 
@@ -3002,11 +3037,8 @@ fn collect_upsert_index_items(
             _ => None,
         };
         let Some(address) = address else { continue };
-        let routing_bucket = address
-            .routing_bucket()
-            .unwrap_or_else(|| {
-                block_routing_bucket(object_key, start_routing_bucket, end_routing_bucket)
-            });
+        let routing_bucket =
+            block_routing_bucket(object_key, start_routing_bucket, end_routing_bucket);
         let object_id = address.object_id().unwrap_or_else(|| {
             stable_block_object_id(shard_id, kind, object_key, component.as_deref())
         });
@@ -4585,7 +4617,7 @@ fn append_value_inner(
     // truncating does the same thing without even reaching the boundary. So the mint is checked,
     // and a process that exhausts its tickets stops minting hot addresses instead of aliasing
     // them. The counter is process-local and a reload starts it again at one.
-    let address = BlockAddress::try_from_parts(HOT_BLOCK_SLAB_ID, HOT_BLOCK_OFFSET.fetch_add(1, Ordering::Relaxed), bytes.len() as u64, None, object_id, routing_bucket)?;
+    let address = BlockAddress::try_from_parts(HOT_BLOCK_SLAB_ID, HOT_BLOCK_OFFSET.fetch_add(1, Ordering::Relaxed), bytes.len() as u64, None, object_id)?;
     // Put the page aside for this write's record. It is often derived state rather than the
     // command's own bytes, so the record has to carry it for a read to serve it back.
     if let Some(object_id) = object_id {
@@ -4599,7 +4631,7 @@ fn append_value_inner(
                 address.block_slab_id(),
                 address.offset(),
                 address.length(),
-                address.routing_bucket()),
+                routing_bucket),
             bytes,
         );
     });
@@ -5076,18 +5108,32 @@ fn invalidate_records_all_batched<K: AsRef<str>>(
     cache.invalidate_batch(&batch).unwrap_or(0)
 }
 
+/// THE BUCKET IS AN ARGUMENT, WHICH IS WHAT THE WRITE PATH ALWAYS DID.
+///
+/// `append_value` has taken `routing_bucket: Option<u32>` since it existed, and stamped it into the
+/// address only so that this function could read it back out. `CacheKey::page_with_slot` is written
+/// by that write path and read here, so the two sides have to agree or a warm read misses -- which
+/// is a performance cliff and not a failure, so nothing would fail. They agree because BOTH sides
+/// name the bucket the same way: `block_routing_bucket(object_key, start, end)` over the range the
+/// shard is stamped with. `the_warm_page_is_found_under_the_key_the_write_path_wrote` drives one
+/// write and one read and asserts the two keys are equal rather than reasoning about it.
+///
+/// `None` is accepted and means "no bucket to key by", which is what a caller with no object key in
+/// hand passes -- a slab walk, a report over raw addresses. It was reachable before this change too,
+/// for an address that carried no bucket.
 fn read_block_bytes(
     cache: &MultiLayerCache,
     block_store: &BlockStore,
     shard_id: ShardId,
     address: &BlockAddress,
+    routing_bucket: Option<u32>,
 ) -> Option<Vec<u8>> {
     let cache_key = CacheKey::page_with_slot(
         shard_id,
         address.block_slab_id(),
         address.offset(),
         address.length(),
-        address.routing_bucket());
+        routing_bucket);
     let cached = crate::alloc_probe::in_class(crate::alloc_probe::AllocClass::CacheRead, || {
         cache.get(&cache_key)
     });
@@ -5165,13 +5211,14 @@ fn read_block_shared(
     block_store: &BlockStore,
     shard_id: ShardId,
     address: &BlockAddress,
+    routing_bucket: Option<u32>,
 ) -> Option<std::sync::Arc<[u8]>> {
     let cache_key = CacheKey::page_with_slot(
         shard_id,
         address.block_slab_id(),
         address.offset(),
         address.length(),
-        address.routing_bucket());
+        routing_bucket);
     let cached = crate::alloc_probe::in_class(crate::alloc_probe::AllocClass::CacheRead, || {
         cache.get_shared(&cache_key)
     });
@@ -5181,7 +5228,8 @@ fn read_block_shared(
     // Every path below writes to the cache and hands back what it wrote, so going through
     // `read_block_bytes` keeps the spill redirect, the in-log read and the block-store read in one
     // place rather than duplicating three fallbacks that must not drift apart.
-    read_block_bytes(cache, block_store, shard_id, address).map(std::sync::Arc::from)
+    read_block_bytes(cache, block_store, shard_id, address, routing_bucket)
+        .map(std::sync::Arc::from)
 }
 
 fn read_block_bytes_cold(block_store: &BlockStore, address: &BlockAddress) -> Option<Vec<u8>> {

@@ -803,6 +803,20 @@ impl TemporalEngine {
             Hash { key: String, field: String },
         }
 
+        impl PublishTarget {
+            /// The OBJECT key of the page, which is the key its routing bucket is derived from.
+            ///
+            /// A hash field's page is filed under the hash's key, not under the field -- the field
+            /// is the page's COMPONENT. Reading the bucket from the field would key the cache under
+            /// a bucket nothing wrote.
+            fn object_key(&self) -> &str {
+                match self {
+                    PublishTarget::String { key } => key,
+                    PublishTarget::Hash { key, .. } => key,
+                }
+            }
+        }
+
         let selected_keys = selected_keys
             .into_iter()
             .filter(|key| !key.trim().is_empty())
@@ -873,16 +887,27 @@ impl TemporalEngine {
                 publish_targets
             }
         };
+        let (start_routing_bucket, end_routing_bucket) = self.shard_routing_range(shard_id);
         let mut publish_records = Vec::with_capacity(publish_targets.len());
         for (target, address) in publish_targets {
-            if let Some(bytes) = read_block_bytes(&self.cache, &self.block_store, shard_id, &address)
-            {
+            let routing_bucket = crate::engine::hashing::block_routing_bucket(
+                target.object_key(),
+                start_routing_bucket,
+                end_routing_bucket,
+            );
+            if let Some(bytes) = read_block_bytes(
+                &self.cache,
+                &self.block_store,
+                shard_id,
+                &address,
+                Some(routing_bucket),
+            ) {
                 publish_records.push((
                     target,
                     address.clone(),
                     bytes,
                     address.object_id(),
-                    address.routing_bucket(),
+                    Some(routing_bucket),
                 ));
             }
         }
@@ -932,7 +957,11 @@ impl TemporalEngine {
                                 published.block_slab_id(),
                                 published.offset(),
                                 published.length(),
-                                published.routing_bucket(),
+                                Some(crate::engine::hashing::block_routing_bucket(
+                                    &key,
+                                    start_routing_bucket,
+                                    end_routing_bucket,
+                                )),
                             ),
                             bytes,
                         );
@@ -959,7 +988,11 @@ impl TemporalEngine {
                                 published.block_slab_id(),
                                 published.offset(),
                                 published.length(),
-                                published.routing_bucket(),
+                                Some(crate::engine::hashing::block_routing_bucket(
+                                    &key,
+                                    start_routing_bucket,
+                                    end_routing_bucket,
+                                )),
                             ),
                             bytes,
                         );

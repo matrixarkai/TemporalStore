@@ -26,6 +26,24 @@ pub(super) fn storage_object_lifecycle_report_for_buckets(
     )
 }
 
+/// WHERE THE INDEX BESIDE THESE MAPS FILES EACH KEY, so a model-map walk can be scoped by bucket.
+///
+/// A model-map walk knows no filing, and the bucket a key's pages belong to is the one the bucket
+/// index files them under -- NOT a hash over whatever range the reading process runs on. That
+/// distinction is the whole of a cross-range manifest install: a restored dump image was written
+/// under the SOURCE shard's range, so deriving the bucket from the reader's range partitions the same
+/// store two different ways and the comparison finds nothing in common. The address used to carry the
+/// source's bucket and answered this for free; the index that ships with the image answers it now.
+fn filing_by_object_key(shard: &ShardState) -> HashMap<Arc<str>, u32> {
+    let mut filed = HashMap::new();
+    for (routing_bucket, bucket) in &shard.bucket_index.bucket_map {
+        for page in bucket.block_index.values() {
+            filed.insert(page.object_key.clone(), *routing_bucket);
+        }
+    }
+    filed
+}
+
 /// Same object-lifecycle report, but derived from the secondary model maps
 /// (strings/hashes/feature series/...) instead of the bucket index. Used to detect
 /// a bucket-dump manifest whose serialized model maps disagree with its bucket index
@@ -36,12 +54,18 @@ pub(super) fn storage_object_lifecycle_report_for_buckets_from_model_maps(
     selected_buckets: &BTreeSet<u32>,
     routing_bucket_for_key: impl Fn(&str) -> u32,
 ) -> StorageObjectLifecycleReport {
+    let filed = filing_by_object_key(shard);
     object_lifecycle_report_from_entries(
         shard_id,
         shard,
         collect_model_live_block_entries(shard),
         selected_buckets,
-        routing_bucket_for_key,
+        |key| {
+            filed
+                .get(key)
+                .copied()
+                .unwrap_or_else(|| routing_bucket_for_key(key))
+        },
     )
 }
 
@@ -52,12 +76,17 @@ pub(super) fn object_lifecycle_report_from_entries(
     selected_buckets: &BTreeSet<u32>,
     routing_bucket_for_key: impl Fn(&str) -> u32,
 ) -> StorageObjectLifecycleReport {
+    // THE FILING FIRST, THE DERIVATION AS THE FALLBACK, and `selected_buckets` is why. That set
+    // comes from OUTSIDE this shard -- a dump manifest's bucket ids, an eviction round's victims --
+    // so the bucket each entry is tested against has to be the bucket the entry's own CONTAINER
+    // files it under. Deriving it from the key over the reader's range answers a different question
+    // whenever the two ranges differ, which on a cross-range manifest install matched nothing at
+    // all. The fallback is for an entry from a model-map walk, where there is no filing to read.
     let entries = entries
         .into_iter()
         .filter(|entry| {
             let routing_bucket = entry
-                .address
-                .routing_bucket()
+                .filed_bucket()
                 .unwrap_or_else(|| routing_bucket_for_key(&entry.object_key));
             selected_buckets.is_empty() || selected_buckets.contains(&routing_bucket)
         })
@@ -70,7 +99,18 @@ pub(super) fn object_lifecycle_report_from_entries(
     for entry in &entries {
         let expected_object_id = expected_live_block_object_id(shard_id, entry);
         expected_object_ids.insert(expected_object_id);
-        if entry.address.object_id().is_none() || entry.address.routing_bucket().is_none() {
+        // THE OBJECT ID IS THE WHOLE OF "OWNER" NOW. This counted a page whose address named
+        // neither its object nor its bucket, and the bucket half has stopped being answerable HERE:
+        // a bucket-index walk knows the filing for every page, so the term would be vacuous, and a
+        // MODEL-MAP walk knows it for none, so the term would be universal. Either way it reports a
+        // property of the walk rather than of the page -- and the two derivations this report is
+        // compared against are one of each, so keeping it made a consistent dump refuse to install.
+        //
+        // What is still a fact about the PAGE is whether its address names its object, which is the
+        // identity the address still carries. `validate_bucket_ownership_index_from_entries` is where
+        // the filing is checked, against where the key routes, which is a comparison of two
+        // independent answers rather than of a walk with itself.
+        if entry.address.object_id().is_none() {
             missing_owner_block_refs = missing_owner_block_refs.saturating_add(1);
         }
         match entry.address.object_id() {
@@ -126,9 +166,10 @@ pub(super) fn bucket_dump_entries_by_key(
     collect_live_block_entries(shard)
         .into_iter()
         .filter(|entry| {
+            // The filing first -- see `object_lifecycle_report_from_entries` for why a set that came
+            // from outside this shard has to be tested against the container's own answer.
             let routing_bucket = entry
-                .address
-                .routing_bucket()
+                .filed_bucket()
                 .unwrap_or_else(|| routing_bucket_for_key(&entry.object_key));
             selected_buckets.is_empty() || selected_buckets.contains(&routing_bucket)
         })
@@ -180,12 +221,24 @@ pub(super) fn bucket_storage_summaries(
         // summary for a bucket `bucket_map` does not hold while the bucket that does hold the
         // page reports no pages at all. A dump naming that bucket then carries no slabs for it.
         //
-        // MEASURED FIRST: on the live write path this branch does not fire. Every one of 2 000
-        // live page entries carried an explicit routing bucket, so the count of summaries
-        // outside the range was 0 before this change as well as after it. What follows is the
-        // latent half -- an address that reaches here without one (a page rebuilt from a source
-        // that did not carry it) is placed where the rest of the engine already places it.
-        let routing_bucket = entry.address.routing_bucket().unwrap_or_else(|| {
+        // THE WALK'S OWN FILING FIRST, THE DERIVATION AS THE FALLBACK -- and this site is the one
+        // that proves why the order matters.
+        //
+        // The address used to carry the bucket and this read was
+        // `address.routing_bucket().unwrap_or_else(derive)`. Replacing it with the derivation ALONE
+        // drops the container's answer rather than moving to it, and for a MANIFEST INSTALL that is
+        // the wrong question: the embedded index is the SOURCE shard's `bucket_map`, written under the
+        // SOURCE's routing range, so deriving over the reader's range names a bucket the manifest
+        // never mentions. The object-count loop below reads `bucket_map` directly, so it kept
+        // answering the container's question -- which is how a summary came to read `object_count: 1`
+        // beside `block_ref_count: 0` and refuse every cross-range install with
+        // `slot_dump_slot_summary_mismatch`. One half of one summary asking a different question from
+        // the other half.
+        //
+        // The fallback is for an entry from a MODEL-MAP walk, where there is no filing to read: the
+        // map holds pages by key and kind and knows nothing about buckets. That is the only shape the
+        // derivation is right for here.
+        let routing_bucket = entry.filed_bucket().unwrap_or_else(|| {
             block_routing_bucket(&entry.object_key, start_routing_bucket, end_routing_bucket)
         });
         let summary = buckets.entry(routing_bucket).or_insert(BucketStorageSummary {
@@ -280,7 +333,7 @@ pub(super) fn native_packed_block_index_bytes(
     bytes[4] = u8::from(page.dirty) | (u8::from(page.log_backed) << 1);
     let page_size = if page.deleted { 0 } else { page.length as u32 };
     bytes[5..9].copy_from_slice(&page_size.to_le_bytes());
-    let address = physical_address_word(&BlockAddress::from_parts(page.block_slab_id, page.offset, page.length, page.block_id, page.object_id, Some(page.routing_bucket)));
+    let address = physical_address_word(&BlockAddress::from_parts(page.block_slab_id, page.offset, page.length, page.block_id, page.object_id));
     bytes[9..17].copy_from_slice(&address.to_le_bytes());
     bytes
 }
@@ -358,15 +411,18 @@ pub(super) fn storage_physical_index_report(
         })
         .collect::<BTreeMap<_, _>>();
 
+    // WHAT "MISSING" MEANS NOW. It used to count pages whose ADDRESS carried no routing bucket --
+    // a page rebuilt from a source that did not stamp one. An address carries none by construction
+    // today, so counting that would count every page. What is still answerable, and is the same
+    // question the count was asked for, is a page the INDEX cannot say the filing of: an entry from
+    // a model-map walk, where there is no filing to report.
     let mut missing_routing_bucket_count = 0usize;
     for entry in collect_live_block_entries(shard) {
-        if entry.address.routing_bucket().is_none() {
+        if entry.filed_bucket().is_none() {
             missing_routing_bucket_count = missing_routing_bucket_count.saturating_add(1);
         }
         let routing_bucket = entry
-            .address
-            .routing_bucket()
-            .or(entry.filed_bucket())
+            .filed_bucket()
             .unwrap_or_else(|| bucket_for_object(&entry.object_key, 0, u32::MAX));
         let bucket = buckets
             .entry(routing_bucket)
@@ -699,10 +755,27 @@ pub(super) fn bucket_object_block_ownership_report_from_entries(
     };
     report.block_ref_count = entries.len();
     for entry in entries {
-        let routing_bucket = entry.address.routing_bucket().unwrap_or_default();
-        if routing_bucket < start_routing_bucket || routing_bucket > end_routing_bucket {
-            continue;
-        }
+        // THE FILING FIRST HERE TOO, for the reason `bucket_storage_summaries` above spells out: this
+        // report is one of the two derivations a manifest install compares, and the other is built
+        // from the restored image's own `bucket_map`. Two derivations of one quantity have to ask the
+        // same question, or a consistent dump refuses to install.
+        let routing_bucket = entry.filed_bucket().unwrap_or_else(|| {
+            block_routing_bucket(&entry.object_key, start_routing_bucket, end_routing_bucket)
+        });
+        // THE SAME OUT-OF-RANGE FILTER, AND THE SAME REASON IT IS GONE. This report skipped a page
+        // whose explicit bucket fell outside the range; a derived bucket cannot.
+        //
+        // It read `if routing_bucket < start || routing_bucket > end { continue; }` and its only
+        // possible input was an EXPLICIT bucket carried on the address -- a page whose stored bucket
+        // fell outside the range the shard was loaded on. There are no explicit buckets: the line
+        // above DERIVES the bucket as `start + FNV-1a-64(key) % (end - start + 1)`, which is inside
+        // `start..=end` by construction (and `start` itself for a degenerate range).
+        // `a_derived_bucket_is_always_inside_the_range_it_was_derived_on` drives that over many keys
+        // and several ranges rather than leaving it as arithmetic in a comment.
+        //
+        // What this removes is not a check but a HAZARD: mx#1974 measured this filter dropping a
+        // page from the index entirely when an explicit bucket sat outside the range, and bounded it
+        // by showing the engine does not produce that state. It now cannot be produced at all.
         let expected_object_id = stable_block_object_id(
             shard_id,
             entry.kind.as_str(),
@@ -796,9 +869,7 @@ pub(super) fn bucket_generation_fingerprints_by_bucket(shard: &ShardState) -> BT
     let mut by_bucket = BTreeMap::<u32, BTreeSet<String>>::new();
     for entry in collect_live_block_entries(shard) {
         let routing_bucket = entry
-            .address
-            .routing_bucket()
-            .or(entry.filed_bucket())
+            .filed_bucket()
             .unwrap_or_else(|| bucket_for_object(&entry.object_key, 0, u32::MAX));
         by_bucket.entry(routing_bucket).or_default().insert(format!(
             "{}|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}",
@@ -810,7 +881,7 @@ pub(super) fn bucket_generation_fingerprints_by_bucket(shard: &ShardState) -> BT
             entry.address.length(),
             entry.address.block_id().unwrap_or_default(),
             entry.address.object_id().unwrap_or_default(),
-            entry.address.routing_bucket().unwrap_or(routing_bucket),
+            routing_bucket,
             entry.address.generation().unwrap_or_default(),
             String::new()
         ));

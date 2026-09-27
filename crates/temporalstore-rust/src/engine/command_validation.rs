@@ -942,7 +942,20 @@ pub(super) fn validate_command_preconditions(
             .hashes
             .get(key)
             .and_then(|entries| entries.get(field))
-            .and_then(|address| read_block_bytes(cache, block_store, shard_id, address))
+            .and_then(|address| {
+                let (start_routing_bucket, end_routing_bucket) = shard.routing_range();
+                read_block_bytes(
+                    cache,
+                    block_store,
+                    shard_id,
+                    address,
+                    Some(crate::engine::hashing::block_routing_bucket(
+                        key,
+                        start_routing_bucket,
+                        end_routing_bucket,
+                    )),
+                )
+            })
         else {
             return 0_i64
                 .checked_add(*increment)

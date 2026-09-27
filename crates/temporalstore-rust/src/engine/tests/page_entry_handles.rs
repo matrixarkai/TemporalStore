@@ -1151,7 +1151,7 @@ fn an_ordinal_does_not_cost_the_component_list_its_tag() {
 /// AND WHAT EACH OF THE THREE NAMES WOULD BE WORTH, measured on mirrors rather than projected, so
 /// the remaining two verdicts are stated against the same arithmetic as the one that shipped.
 #[test]
-fn the_entry_is_seventy_two_bytes_and_every_one_is_accounted_for() {
+fn the_entry_is_sixty_four_bytes_and_every_one_is_accounted_for() {
     use std::mem::{align_of, offset_of, size_of};
 
     let address = size_of::<crate::block_store::BlockAddress>();
@@ -1193,7 +1193,11 @@ fn the_entry_is_seventy_two_bytes_and_every_one_is_accounted_for() {
         align_of::<BlockIndex>(),
         size_of::<BlockIndex>()
     );
-    assert_eq!(72, size_of::<BlockIndex>());
+    // 64 AND NOT 72: the address inside the entry shed its routing bucket and narrowed its block
+    // id. The accounting above is a RECONSTRUCTION and needed no change for it -- which is the point
+    // of reconstructing rather than totalling -- but this literal did, and nothing but running it
+    // could have said so.
+    assert_eq!(64, size_of::<BlockIndex>());
 
     // The slack, which is why every step here is sixteen bytes and not twelve.
     let slack = size_of::<BlockIndex>() - (eight_aligned + tail);
@@ -1477,7 +1481,7 @@ fn sample_entry() -> BlockIndex {
         object_key: Arc::from("k"),
         model_id: StoredModelKind::String,
         component: Some(Arc::from("a")),
-        address: crate::block_store::BlockAddress::from_parts(1, 2, 4, Some(5), Some(6), Some(7)),
+        address: crate::block_store::BlockAddress::from_parts(1, 2, 4, Some(5), Some(6)),
         dirty: true,
         deleted: false,
         log_backed: true,
@@ -1663,19 +1667,34 @@ fn the_stored_bytes_of_an_entry_did_not_move_at_all() {
         assert_eq!(page.log_backed, decoded.log_backed, "{label}: log_backed moved");
     }
 
-    // THE ABSENT EFFECT, as a number. The entry lost sixteen bytes in memory and zero on the wire.
+    // THE ABSENT EFFECT, as a number -- and now as TWO numbers, because two changes have taken
+    // bytes off this entry and a single subtraction would let either absorb the other's.
+    //
+    // The model spelling took it 88 -> 72, which is the sixteen this test was written for. The
+    // address inside it then took it 72 -> 64 by shedding its routing bucket and narrowing its block
+    // id. Both steps are asserted, so neither can be credited with the other's bytes, and the wire
+    // is still zero for both: the spelling is written as a string and the address's routing slot is
+    // still on the wire, read and written nil.
     let in_memory_before = 88usize;
+    let after_the_spelling = 72usize;
     let in_memory_after = std::mem::size_of::<BlockIndex>();
     let wire_delta = 0i64;
     println!(
-        "  in memory {in_memory_before} -> {in_memory_after} B ({:.2}%), on the wire {wire_delta} B \
-         (0.00%)",
+        "  in memory {in_memory_before} -> {after_the_spelling} -> {in_memory_after} B ({:.2}% in \
+         total), on the wire {wire_delta} B (0.00%)",
         100.0 * (in_memory_before - in_memory_after) as f64 / in_memory_before as f64
     );
     assert_eq!(
         16,
-        in_memory_before - in_memory_after,
-        "the in-memory effect is supposed to be sixteen bytes"
+        in_memory_before - after_the_spelling,
+        "the model spelling's in-memory effect is supposed to be sixteen bytes"
+    );
+    assert_eq!(
+        8,
+        after_the_spelling - in_memory_after,
+        "the address narrowing's in-memory effect is supposed to be eight bytes, and it is eight \
+         because SIX bytes of address payload left in two narrowings of which neither crosses a \
+         multiple of eight alone"
     );
     assert_eq!(0, wire_delta, "the wire is supposed to be untouched");
 }
@@ -1775,6 +1794,26 @@ mod tail_layout {
         pub(super) flags: PageFlags,
     }
 
+    /// TODAY: both names as `Arc`s and the address at 24. This is the live shape, and it is the one
+    /// the assertion below pins against `BlockIndex` -- `A0` was that shape until the address shed
+    /// its routing bucket and narrowed its block id, and `A0` is kept as the row BEFORE that.
+    pub(super) struct E0 {
+        pub(super) object_key: Arc<str>,
+        pub(super) component: Option<Arc<str>>,
+        pub(super) address: [u64; 3],
+        pub(super) model: u8,
+        pub(super) dirty: bool,
+        pub(super) deleted: bool,
+        pub(super) log_backed: bool,
+    }
+    pub(super) struct E1 {
+        pub(super) object_key: Arc<str>,
+        pub(super) component: Option<Arc<str>>,
+        pub(super) address: [u64; 3],
+        pub(super) model: u8,
+        pub(super) flags: PageFlags,
+    }
+
     /// Both names as ordinals AND the address at 24, which a sibling thread owns.
     pub(super) struct D0 {
         pub(super) object_key: Option<NonZeroU32>,
@@ -1815,9 +1854,10 @@ fn packing_the_flag_bytes_is_worth_nothing_alone_and_a_step_in_combination() {
     use tail_layout::*;
 
     let rows = [
-        ("names, 32 B address", size_of::<A0>(), size_of::<A1>()),
-        ("component ordinal", size_of::<B0>(), size_of::<B1>()),
-        ("both names ordinals", size_of::<C0>(), size_of::<C1>()),
+        ("names, 32 B address (before)", size_of::<A0>(), size_of::<A1>()),
+        ("names, 24 B address (TODAY)", size_of::<E0>(), size_of::<E1>()),
+        ("component ordinal, 32 B", size_of::<B0>(), size_of::<B1>()),
+        ("both names ordinals, 32 B", size_of::<C0>(), size_of::<C1>()),
         ("both names + 24 B address", size_of::<D0>(), size_of::<D1>()),
     ];
     println!("\n=== the entry's tail: three bools against one flag byte ===");
@@ -1835,13 +1875,24 @@ fn packing_the_flag_bytes_is_worth_nothing_alone_and_a_step_in_combination() {
     }
 
     // TODAY'S ARM MUST MATCH THE REAL STRUCT, or the mirrors are measuring something else.
+    //
+    // It is `E0` and not `A0` now: `A0` carries a 32-byte address and the live one is 24, so `A0` is
+    // the row BEFORE this change and `E0` is today. This assertion is what said so -- it reported
+    // "the mirror of today's entry is 72 B against the real 64 B", which is a mirror naming a shape
+    // the engine no longer has, and no compiler pass can reach a claim of that kind.
     assert_eq!(
         size_of::<BlockIndex>(),
-        size_of::<A0>(),
+        size_of::<E0>(),
         "the mirror of today's entry is {} B against the real {} B; every row below is then about \
          a different structure",
-        size_of::<A0>(),
+        size_of::<E0>(),
         size_of::<BlockIndex>()
+    );
+    assert_eq!(
+        72,
+        size_of::<A0>(),
+        "`A0` is supposed to be the entry as it was before the address narrowed, and it reads {} B",
+        size_of::<A0>()
     );
 
     // THE TWO HALVES OF THE CLAIM. Both must hold, or the honest answer is one of them.
@@ -1856,8 +1907,8 @@ fn packing_the_flag_bytes_is_worth_nothing_alone_and_a_step_in_combination() {
          of the old comment that was false -- and it saved nothing anywhere"
     );
     assert_eq!(
-        size_of::<A0>(),
-        size_of::<A1>(),
+        size_of::<E0>(),
+        size_of::<E1>(),
         "at today's width the tail has four bytes of slack and three bools fit inside it, so \
          packing is supposed to move nothing"
     );

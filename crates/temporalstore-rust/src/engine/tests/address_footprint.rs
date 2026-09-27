@@ -3,34 +3,44 @@
 
 //! What an in-memory `BlockAddress` costs, and what a compact form would buy.
 //!
-//! WHY THIS EXISTS. `BlockAddress` is 32 bytes. Two of its fields -- the packed slab-and-offset
-//! `address` word and `length` -- are always meaningful. Three more -- `page_id`, `object_id`, `routing_bucket` --
-//! are OPTIONAL, gated by a `present` bitmask, and the struct allocates all three whether or not
-//! the bitmask says they are set. That is 16 bytes of optional payload plus one byte of bitmask,
-//! and the shard holds one of these per stored point: a 1,000-point feature series holds 1,000
-//! of them.
+//! WHY THIS EXISTS. `BlockAddress` is 24 bytes. Two of its fields -- the packed slab-and-offset
+//! `address` word and `length` -- are always meaningful. Two more -- `page_id` and `object_id` --
+//! are OPTIONAL, gated by a `present` bitmask, and the struct allocates both whether or not the
+//! bitmask says they are set. That is 10 bytes of optional payload plus one byte of bitmask, and
+//! the shard holds one of these per stored point: a 1,000-point feature series holds 1,000 of them.
 //!
 //! It was 48, with a FOURTH optional field, until `generation` was shown to be a copy of
 //! `page_id.or(object_id)` on every live address this census walked and was made derived. It was
 //! 40 until the slab id and the offset merged into one 64-bit word, the slab in the high half and
-//! the offset in the low. Neither step touched the OPTIONAL payload, which is the same 16 bytes it
-//! has always been -- so the question below is the same question over a smaller struct, and the
-//! share it answers with has moved for a reason that has nothing to do with the answer.
+//! the offset in the low. It was 32 until `routing_bucket` -- a THIRD optional field, and 4 bytes
+//! of the optional payload -- stopped being held at all: a page's bucket is
+//! `block_routing_bucket(object_key, ..)` over the range the store is STAMPED with, so the
+//! container a page is read through answers it and the page does not have to carry it.
 //!
 //! So the obvious question is whether to pack what is left. The answer turns on a single number:
-//! how many live addresses actually carry NONE of the three optional fields. If most carry none,
-//! the optional payload is dead weight and a compact form reclaims it. If most carry all three,
-//! there is nothing to reclaim and packing buys only the bitmask byte and the padding.
+//! how many live addresses actually carry NONE of the two optional fields. If most carry none, the
+//! optional payload is dead weight and a compact form reclaims it. If most carry both, there is
+//! nothing to reclaim and packing buys only the bitmask byte and the padding.
+//!
+//! AND THE ANSWER HAS A SECOND HALF NOW, because the struct is 24 and not 32. The payload without
+//! `object_id` is 15 bytes, so `object_id` at ONE byte would take the struct to 16 and at TWO bytes
+//! would leave it at 24. Packing the optional half is therefore not a question about two fields any
+//! more: it is a question about whether an object identity fits in eight bits.
 //!
 //! `the_optional_payload_is_paid_for_on_every_live_address` measures that number. It is the whole
 //! task, and it is measured before anything else here.
 //!
+//! WHAT THE ROUTING BUCKET'S DEPARTURE DID TO THIS FILE, stated rather than left to be inferred:
+//! every count of "how many optional fields are set" went from four to three, the tamper probe
+//! `only_one_of_the_two_address_cross_checks_on_a_read_can_fire` lost an arm that could never fire,
+//! and `differing_fields` lost a row it could never report. None of the VERDICTS moved.
+//!
 //! WHAT THESE PROBES ARE NOT. They are `#[ignore]`d because they seed tens of thousands of
 //! records and read process RSS, which is neither fast nor meaningful under a parallel test run.
 //! Run them by name. Two tests here are NOT ignored, and both are cheap:
-//! `an_address_is_thirty_two_bytes_and_half_of_them_are_optional` pins the width so that
+//! `an_address_is_twenty_four_bytes_and_ten_of_them_are_optional` pins the width so that
 //! widening the struct is noticed rather than absorbed, and
-//! `only_one_of_the_three_address_cross_checks_on_a_read_can_fire` pins how many of the address
+//! `only_one_of_the_two_address_cross_checks_on_a_read_can_fire` pins how many of the address
 //! cross-checks on the read path can actually fire, which is the count that decides what dropping
 //! an optional field would cost.
 //!
@@ -64,19 +74,29 @@ struct AddressCensus {
     with_block_id: usize,
     with_object_id: usize,
     with_generation: usize,
-    with_routing_bucket: usize,
-    /// How many addresses carry exactly 0, 1, 2, 3 or 4 of the optional fields.
-    optional_field_histogram: [usize; 5],
+    /// How many addresses carry exactly 0, 1, 2 or 3 of the optional fields.
+    ///
+    /// THREE, NOT FOUR. `routing_bucket` was the fourth and is not a field any more; `generation`
+    /// is the third and has no bytes of its own -- it is a presence bit over a derived value --
+    /// which is why `dead_optional_bytes` below counts BYTES directly rather than scaling this
+    /// histogram by an average width.
+    optional_field_histogram: [usize; 4],
+    /// Bytes of optional payload that are allocated and NOT set, summed over every address.
+    ///
+    /// Counted per field rather than as `absent_count * average_width`. The average was defensible
+    /// while the two optional fields were 8 and 4 bytes wide; at 8 and 2 it would report a number
+    /// no address ever pays.
+    dead_optional_bytes: usize,
     /// Entries held in a `BTreeMap<_, BlockAddress>` rather than a `HashMap`, which is the
     /// population a node-overhead figure applies to.
     in_btree: usize,
     /// The largest value observed in each field, in walk order:
-    /// block_slab_id, offset, length, page_id, object_id, generation, routing_bucket.
+    /// block_slab_id, offset, length, page_id, object_id, generation.
     ///
     /// This is what decides whether a LOSSLESS narrower form exists at all. Presence tells you
     /// whether a field can be omitted; width tells you whether it can be shrunk. A field that is
     /// always set AND uses its full 64 bits cannot be made smaller without dropping information.
-    widest: [u64; 7],
+    widest: [u64; 6],
     // THE COPY COUNTER THAT USED TO SIT HERE IS GONE, BECAUSE IT CAN NO LONGER FAIL.
     //
     // It counted addresses whose `generation` equalled `page_id.or(object_id)`, and it answered
@@ -103,42 +123,41 @@ impl AddressCensus {
         self.widest[3] = self.widest[3].max(address.block_id().unwrap_or(0));
         self.widest[4] = self.widest[4].max(address.object_id().unwrap_or(0));
         self.widest[5] = self.widest[5].max(address.generation().unwrap_or(0));
-        self.widest[6] = self.widest[6].max(address.routing_bucket().unwrap_or(0) as u64);
         let mut set = 0usize;
         if address.block_id().is_some() {
             self.with_block_id += 1;
             set += 1;
+        } else {
+            // The block id is TWO bytes now, not four: the encoder has always refused anything
+            // above `u16::MAX`, so the field never needed more.
+            self.dead_optional_bytes += 2;
         }
         if address.object_id().is_some() {
             self.with_object_id += 1;
             set += 1;
+        } else {
+            self.dead_optional_bytes += 8;
         }
         if address.generation().is_some() {
             self.with_generation += 1;
             set += 1;
         }
-        if address.routing_bucket().is_some() {
-            self.with_routing_bucket += 1;
-            set += 1;
-        }
         self.optional_field_histogram[set] += 1;
-
     }
 
     fn note(&mut self, name: &'static str, count: usize) {
         self.per_map.push((name, count));
     }
 
-    /// The optional payload is 28 bytes. An address carrying none of it pays 28 bytes for
-    /// nothing; one carrying all four pays nothing for nothing.
+    /// The optional payload is 10 bytes. An address carrying none of it pays 10 bytes for
+    /// nothing; one carrying both pays nothing for nothing.
+    ///
+    /// SUMMED PER FIELD AS IT IS WALKED, not reconstructed from the histogram. The two optional
+    /// fields are 8 and 2 bytes wide, so "how many are unset" cannot price them: an address missing
+    /// only the block id wastes 2 bytes and one missing only the object id wastes 8, and both
+    /// appear in the same histogram bucket.
     fn dead_optional_bytes(&self) -> usize {
-        // Six bytes is the AVERAGE width of the four optional fields: two 64-bit identities and
-        // two 32-bit ones, 24 bytes over four. It was seven while `block_id` was 64 bits.
-        self.optional_field_histogram
-            .iter()
-            .enumerate()
-            .map(|(set, count)| count * (4 - set) * 6)
-            .sum()
+        self.dead_optional_bytes
     }
 
     fn report(&self, label: &str) {
@@ -150,7 +169,7 @@ impl AddressCensus {
         }
         println!("  TOTAL live addresses: {} (of which {} sit in a BTreeMap)", self.total, self.in_btree);
         println!(
-            "  optional fields SET, of {} addresses: page_id {} ({:.1}%), object_id {} ({:.1}%), generation {} ({:.1}%), routing_bucket {} ({:.1}%)",
+            "  optional fields SET, of {} addresses: page_id {} ({:.1}%), object_id {} ({:.1}%), generation {} ({:.1}%)",
             self.total,
             self.with_block_id,
             100.0 * self.with_block_id as f64 / self.total.max(1) as f64,
@@ -158,12 +177,10 @@ impl AddressCensus {
             100.0 * self.with_object_id as f64 / self.total.max(1) as f64,
             self.with_generation,
             100.0 * self.with_generation as f64 / self.total.max(1) as f64,
-            self.with_routing_bucket,
-            100.0 * self.with_routing_bucket as f64 / self.total.max(1) as f64,
         );
         for (set, count) in self.optional_field_histogram.iter().enumerate() {
             println!(
-                "  carrying exactly {set} of 4 optional fields: {count} ({:.1}% of {})",
+                "  carrying exactly {set} of 3 optional fields: {count} ({:.1}% of {})",
                 100.0 * *count as f64 / self.total.max(1) as f64,
                 self.total
             );
@@ -192,7 +209,7 @@ impl AddressCensus {
         // Both have to fail before the remaining 32 bytes are justified.
         let names = [
             "block_slab_id", "offset", "length",
-            "page_id", "object_id", "generation", "routing_bucket",
+            "page_id", "object_id", "generation",
         ];
         let mut lossless_bits = 0u32;
         println!("  observed field widths (the bits a LOSSLESS narrower form would still need):");
@@ -204,7 +221,7 @@ impl AddressCensus {
         println!(
             "  a form sized to the values ACTUALLY observed here needs {lossless_bits} bits = {} bytes, \
              but those maxima are a property of THIS fixture, not of the type: every one of these \
-             fields is declared u64 (routing_bucket u32) and a production shard is free to use the range",
+             fields is read as u64 and a production shard is free to use the range",
             (lossless_bits + 7) / 8,
         );
     }
@@ -317,6 +334,20 @@ fn census(engine: &TemporalEngine, shard_id: ShardId) -> AddressCensus {
     c
 }
 
+/// An engine with NO shard loaded, so the caller can load one on a chosen routing range.
+///
+/// `new_engine` above loads shard 1 on the engine's default range, which is what every census here
+/// wants; a probe that has to vary the RANGE cannot use it, because a second `load_shard_with` on the
+/// same shard answers `already_exists` and the arm silently measures the default instead.
+fn engine_without_a_shard(dir: &std::path::Path) -> Arc<TemporalEngine> {
+    Arc::new(TemporalEngine::with_local_dirs(
+        64 * 1024 * 1024,
+        dir.join("cache"),
+        dir.join("pages"),
+        dir.join("indexes"),
+    ))
+}
+
 fn new_engine(dir: &std::path::Path) -> Arc<TemporalEngine> {
     let engine = Arc::new(TemporalEngine::with_local_dirs(
         64 * 1024 * 1024,
@@ -375,8 +406,8 @@ fn seed(engine: &TemporalEngine, strings_n: usize, series_keys: usize, series_po
 
 /// THE NUMBER THIS TASK TURNS ON, at both scales.
 ///
-/// If most live addresses carry none of the four optional fields, packing reclaims 28 bytes each
-/// and is worth doing. If most carry all four, packing reclaims the bitmask byte and the padding
+/// If most live addresses carry none of the three optional fields, packing reclaims 10 bytes each
+/// and is worth doing. If most carry all three, packing reclaims the bitmask byte and the padding
 /// and is not.
 #[test]
 #[ignore = "seeds 80,000 records; run by name"]
@@ -424,12 +455,12 @@ fn the_optional_payload_is_paid_for_on_every_live_address() {
 
         // The claim, stated as a number rather than a direction.
         let none_set = c.optional_field_histogram[0];
-        let all_four = c.optional_field_histogram[4];
+        let all_three = c.optional_field_histogram[3];
         println!(
-            "{label}: {none_set} of {} addresses ({:.1}%) carry NO optional field; {all_four} ({:.1}%) carry all four",
+            "{label}: {none_set} of {} addresses ({:.1}%) carry NO optional field; {all_three} ({:.1}%) carry all three",
             c.total,
             100.0 * none_set as f64 / c.total as f64,
-            100.0 * all_four as f64 / c.total as f64,
+            100.0 * all_three as f64 / c.total as f64,
         );
         println!(
             "{label}: packing the optional payload away entirely would reclaim at most {} of {} resident address bytes ({:.1}%)",
@@ -464,8 +495,15 @@ fn the_optional_payload_is_paid_for_on_every_live_address() {
 fn a_btree_entry_costs_more_than_the_address_it_holds() {
     const N: usize = 400_000;
 
+    // THE BLOCK ID IS MASKED TO SIXTEEN BITS, and that is not cosmetic. `try_from_parts` REFUSES a
+    // block id wider than `u16::MAX` rather than truncating it -- a truncated block id names a
+    // different page of the same object -- so this fixture's synthetic `i` panicked at 65,536 of its
+    // 400,000 entries the moment the field narrowed. Masking keeps the footprint identical (the field
+    // is a fixed width whatever value it holds) and keeps every value legal, which is what the
+    // refusal is for. `the_container_shapes_priced_against_the_population_each_one_pays_in` carries
+    // the same fixture at 200,000 and the same mask.
     fn address(i: u64) -> BlockAddress {
-        BlockAddress::from_parts(1, i * 64, 64, Some(i), Some(i), Some(7))
+        BlockAddress::from_parts(1, i * 64, 64, Some(i & u64::from(u16::MAX)), Some(i))
     }
 
     let control_before = resident_bytes();
@@ -478,10 +516,18 @@ fn a_btree_entry_costs_more_than_the_address_it_holds() {
         control_per_entry,
         std::mem::size_of::<(u64, BlockAddress)>()
     );
+    // THE FLOOR IS DERIVED FROM THE ELEMENT, not written down. It read `> 40.0` beside a doc
+    // comment claiming 56 bytes an element, and the element is now 32 -- so the literal was already
+    // describing a shape this engine did not have, and would have turned a narrower address into a
+    // blind-harness report. Half the element width is the vacuity guard: a near-zero reading fails,
+    // and a correct reading cannot.
+    let control_floor = size_of::<(u64, BlockAddress)>() as f64 / 2.0;
     assert!(
-        control_per_entry > 40.0,
-        "positive control must see the Vec it just built: {control_per_entry:.1} bytes/entry -- \
-         if this is near zero the RSS harness is blind and every arm below is meaningless"
+        control_per_entry > control_floor,
+        "positive control must see the Vec it just built: {control_per_entry:.1} bytes/entry \
+         against a floor of {control_floor:.1} for a {} B element -- if this is near zero the RSS \
+         harness is blind and every arm below is meaningless",
+        size_of::<(u64, BlockAddress)>()
     );
 
     // Packed widths FIRST, fat value last: if the allocator were recycling anything, the fat arm
@@ -656,8 +702,16 @@ fn the_census_reads_every_map_that_holds_an_address() {
 /// there, which left the claim it carries -- that of the address cross-checks on the read path
 /// exactly ONE can fire -- documented and unenforced. Every argument about dropping an optional
 /// field from the address rests on that count, so it belongs in the gate.
+///
+/// IT WAS THREE ARMS AND IS NOW TWO, and the arm that went is the one that could never fire. The
+/// routing-bucket cross-check compared `address.routing_bucket()` against `header.routing_bucket`,
+/// and `parse_block_record_header` returns that field as `None` unconditionally because the record
+/// header HAS NO SUCH FIELD -- `encode_block_record` is handed the value and discards it. So there
+/// was no address-versus-record check on the routing bucket to lose: its address side is gone with
+/// the field and its record side never existed. The two arms below are unchanged, and the one that
+/// CAN fire is driven with a mismatched record rather than asserted about.
 #[test]
-fn only_one_of_the_three_address_cross_checks_on_a_read_can_fire() {
+fn only_one_of_the_two_address_cross_checks_on_a_read_can_fire() {
     let dir = tempfile::tempdir().expect("tempdir");
     let store = BlockStore::new(dir.path());
 
@@ -687,10 +741,6 @@ fn only_one_of_the_three_address_cross_checks_on_a_read_can_fire() {
     );
     assert!(good.block_id().is_some(), "fixture must produce an address carrying page_id");
     assert!(good.object_id().is_some(), "fixture must produce an address carrying object_id");
-    assert!(
-        good.routing_bucket().is_some(),
-        "fixture must produce an address carrying routing_bucket"
-    );
 
     // Tamper with each field in turn and record whether the read noticed.
     let mut noticed: Vec<&str> = Vec::new();
@@ -717,16 +767,13 @@ fn only_one_of_the_three_address_cross_checks_on_a_read_can_fire() {
         }
     }
 
-    let mut tampered = good.clone();
-    tampered.set_routing_bucket(Some(routing_bucket ^ 1));
-    match store.read(&tampered) {
-        Err(_) => noticed.push("routing_bucket"),
-        Ok(bytes) => {
-            assert_eq!(payload, bytes);
-            ignored.push("routing_bucket");
-            println!("  routing_bucket wrong -> read succeeded: the header carries no routing bucket");
-        }
-    }
+    // THE ROUTING-BUCKET ARM CANNOT BE WRITTEN ANY MORE, and that is the strongest form of the
+    // statement it used to make. `routing_bucket` was passed to `append_block_of_object` above and
+    // the encoder discarded it; there is no accessor to tamper with and no header field to compare
+    // against, so no record exists that could make such a check fire. The `routing_bucket` binding
+    // is deliberately still handed to the append: it is what a caller passes, and a record that
+    // started carrying it would make this arm expressible again.
+    let _ = routing_bucket;
 
     // The arm that was deleted, and why it is not the same case as the two above. `slab_id()` is
     // derived, not stored: it hands back the address's own `block_slab_id`, and that is the slab
@@ -746,7 +793,7 @@ fn only_one_of_the_three_address_cross_checks_on_a_read_can_fire() {
     let stripped_reads = store.read(&stripped).is_ok();
 
     println!(
-        "of 3 address cross-checks on the read path, {} can fire ({:?}) and {} cannot ({:?})",
+        "of 2 address cross-checks on the read path, {} can fire ({:?}) and {} cannot ({:?})",
         noticed.len(),
         noticed,
         ignored.len(),
@@ -760,10 +807,10 @@ fn only_one_of_the_three_address_cross_checks_on_a_read_can_fire() {
          cost of dropping an optional field went up"
     );
     assert_eq!(
-        vec!["object_id", "routing_bucket"],
+        vec!["object_id"],
         ignored,
-        "object_id and routing_bucket are not in the record header, so the checks guarding them \
-         are unreachable in the current format"
+        "object_id is not in the record header, so the check guarding it is unreachable in the \
+         current format"
     );
     assert!(
         stripped_reads,
@@ -778,9 +825,9 @@ fn only_one_of_the_three_address_cross_checks_on_a_read_can_fire() {
 /// I/O is that compaction relocates by append-and-repoint, that slab ids are strictly monotonic so
 /// a stale address can never resolve to a different record, and that a lost race "fails block-id +
 /// checksum and answers absent". The last clause is the one worth testing, because
-/// `only_one_of_the_three_address_cross_checks_on_a_read_can_fire` has already shown that the
-/// object-id and routing-bucket arms cannot fire -- which leaves the block ordinal and the
-/// checksum holding the whole of it.
+/// `only_one_of_the_two_address_cross_checks_on_a_read_can_fire` has already shown that the
+/// object-id arm cannot fire -- which leaves the block ordinal and the checksum holding the whole
+/// of it.
 ///
 /// The checksum holds none of it. `block_record_checksum_field` is a CRC32C over the payload
 /// alone, stored in that record's own header. It binds a record to ITSELF. Any intact record
@@ -889,43 +936,49 @@ fn the_payload_checksum_cannot_tell_one_record_from_another_at_the_same_address(
 /// 48 bytes with half of it optional; `generation` -- one of four optional fields and a copy of
 /// `block_id.or(object_id)` at every write site -- became derived, taking eight bytes off the
 /// OPTIONAL half and leaving 40 with two fifths optional. Then the slab id and the offset merged
-/// into one word, taking eight off the ALWAYS half, and the share is back to a half of a smaller
-/// struct. The optional payload has not changed size since: it is the same 16 bytes it was at 40.
-/// `block_store.rs` has the byte-by-byte accounting in
+/// into one word, taking eight off the ALWAYS half, and the share went back to a half of a smaller
+/// struct. Then the ROUTING BUCKET left -- four bytes off the OPTIONAL half, this time, the first
+/// step since `generation` to take any -- beside the block id narrowing from 32 bits to 16, which
+/// takes two more off the same half.
+///
+/// SO THE OPTIONAL HALF HAS FINALLY MOVED, from 16 bytes to 10, and the share it holds has fallen
+/// from a half to 41%. Both numbers are asserted, and asserted separately, because they move for
+/// different reasons: the 10 is what this change did to the optional payload, and the 41% is that
+/// 10 against a struct the same change shrank. `block_store.rs` has the byte-by-byte accounting in
 /// `every_byte_of_a_block_address_is_accounted_for`, where the fields are still visible.
 #[test]
-fn an_address_is_thirty_two_bytes_and_half_of_them_are_optional() {
+fn an_address_is_twenty_four_bytes_and_ten_of_them_are_optional() {
     // Always meaningful: the packed slab-and-offset word and the 32-bit byte count.
     const ALWAYS: usize = 8 + 4;
-    // Three optional fields: one u64 identity, the 32-bit block id and the routing bucket.
-    const OPTIONAL: usize = 8 + 4 + 4;
+    // Two optional fields: one u64 identity and the 16-bit block id.
+    const OPTIONAL: usize = 8 + 2;
     // The presence bitmask.
     const BITMASK: usize = 1;
 
-    assert_eq!(32, std::mem::size_of::<BlockAddress>(), "the address width moved");
+    assert_eq!(24, std::mem::size_of::<BlockAddress>(), "the address width moved");
     assert_eq!(8, std::mem::align_of::<BlockAddress>());
     assert_eq!(12, ALWAYS);
-    assert_eq!(16, OPTIONAL);
+    assert_eq!(10, OPTIONAL);
     assert_eq!(
-        32,
-        ALWAYS + OPTIONAL + BITMASK + 3,
-        "12 always + 16 optional + 1 bitmask + 3 padding = 32; if this stops adding up, a field \
+        24,
+        ALWAYS + OPTIONAL + BITMASK + 1,
+        "12 always + 10 optional + 1 bitmask + 1 padding = 24; if this stops adding up, a field \
          changed shape and the packing arithmetic in this module is stale"
     );
 
-    // The optional payload is half the struct. That is the quantity every probe here is about,
-    // and the number moved when the always-present half lost its second slab coordinate -- NOT
-    // because the optional half changed, which the 16 above states separately.
+    // The optional payload is 41% of the struct. That is the quantity every probe here is about,
+    // and it has moved for the FIRST time since `generation` became derived -- the 10 above states
+    // the absolute change separately, because a share moves when either half does.
     assert_eq!(
-        50,
+        41,
         100 * OPTIONAL / std::mem::size_of::<BlockAddress>(),
-        "the optional payload is 50% of the address"
+        "the optional payload is 41% of the address"
     );
 
-    // An address built with no optional field is the same 32 bytes as one built with all three.
+    // An address built with no optional field is the same 24 bytes as one built with both.
     // This is the fact that makes the question worth asking at all.
-    let bare = BlockAddress::from_parts(1, 0, 64, None, None, None);
-    let full = BlockAddress::from_parts(1, 0, 64, Some(1), Some(2), Some(3));
+    let bare = BlockAddress::from_parts(1, 0, 64, None, None);
+    let full = BlockAddress::from_parts(1, 0, 64, Some(1), Some(2));
     assert_eq!(std::mem::size_of_val(&bare), std::mem::size_of_val(&full));
     assert!(bare.block_id().is_none() && full.block_id().is_some());
 
@@ -1011,9 +1064,10 @@ fn differing_fields(a: &BlockAddress, b: &BlockAddress) -> Vec<&'static str> {
     // No `generation` row: it is derived as `page_id.or(object_id)` and both of those are
     // compared above, so it cannot be the field that differs. Leaving the row in would offer a
     // name this function can never report, which reads like coverage and is not.
-    if a.routing_bucket() != b.routing_bucket() {
-        out.push("routing_bucket");
-    }
+    //
+    // No `routing_bucket` row either, and for the same reason one step further along: it is not a
+    // field at all. Where a page is filed is the key of the bucket map holding it, which two
+    // addresses cannot disagree about because neither of them carries it.
     out
 }
 
@@ -1339,7 +1393,7 @@ fn the_container_shapes_priced_against_the_population_each_one_pays_in() {
     const LONG_POINTS: usize = 1_000;
 
     fn address(i: u64) -> BlockAddress {
-        BlockAddress::from_parts(1, i * 64, 64, Some(i), Some(i), Some(7))
+        BlockAddress::from_parts(1, i * 64, 64, Some(i & u64::from(u16::MAX)), Some(i))
     }
 
     // POSITIVE CONTROL first.
@@ -1824,10 +1878,18 @@ fn the_capacity_ceilings_each_narrowing_would_impose() {
     // unsigned underflow before printing a single ceiling. It is `#[ignore]`d, so no gate ever ran
     // it and nothing said so. A payload figure beside a struct that moves is a hand-written
     // subject list: it goes stale and nothing fails.
+    //
+    // 32 -> 24 IS THE FIFTH, and it went stale the same way -- this constant read 29 against a
+    // 24-byte struct, and the assertion below is what said so rather than an underflow. It is also
+    // the clearest instance of the lesson: `routing_bucket` LEFT (payload 25, still rounding to 32,
+    // worth zero) and `block_id` narrowed to sixteen bits (payload 27, still rounding to 32, worth
+    // zero), and only the two TOGETHER reach 23 and cross. Neither field could have been read as
+    // worth anything on its own.
     println!("--- what the struct actually costs ---");
     // Derived from the field widths, in declaration order, so the next step cannot leave it stale:
-    // one merged address word, the object id, three 32-bit fields and the presence byte.
-    const ADDRESS_PAYLOAD_BYTES: usize = 8 + 8 + 4 + 4 + 4 + 1;
+    // one merged address word, the object id, a 32-bit length, a 16-bit block id and the presence
+    // byte.
+    const ADDRESS_PAYLOAD_BYTES: usize = 8 + 8 + 4 + 2 + 1;
     assert!(
         std::mem::size_of::<BlockAddress>() >= ADDRESS_PAYLOAD_BYTES,
         "the derived payload {ADDRESS_PAYLOAD_BYTES} exceeds size_of BlockAddress {}, so a field \
@@ -1835,8 +1897,8 @@ fn the_capacity_ceilings_each_narrowing_would_impose() {
         std::mem::size_of::<BlockAddress>()
     );
     println!(
-        "  size_of BlockAddress = {} (payload 2*8 + 3*4 + 1 = {ADDRESS_PAYLOAD_BYTES}, so {} bytes \
-         are padding)",
+        "  size_of BlockAddress = {} (payload 2*8 + 4 + 2 + 1 = {ADDRESS_PAYLOAD_BYTES}, so {} \
+         bytes are padding)",
         std::mem::size_of::<BlockAddress>(),
         std::mem::size_of::<BlockAddress>() - ADDRESS_PAYLOAD_BYTES
     );
@@ -1940,5 +2002,591 @@ fn the_capacity_ceilings_each_narrowing_would_impose() {
     println!(
         "  NOTE: blocks-per-object is {max_blocks_in_an_object} because component identity is folded \
          into the OBJECT id, so a component is its own object rather than another block"
+    );
+}
+
+// =============================================================================================
+// THE BUCKET IS AN ARGUMENT NOW: what that costs, and what it stops being able to go wrong
+// =============================================================================================
+
+/// THE WARM PAGE IS FOUND UNDER THE KEY THE OTHER SIDE WROTE.
+///
+/// `CacheKey::page_with_slot` is built by SEVERAL paths and read by one, and its slot is the page's
+/// routing bucket. While the bucket was a field of the `BlockAddress` every one of those paths read
+/// it off the same struct and could not disagree. It is an ARGUMENT now, so they agree only because
+/// each names it the same way -- `block_routing_bucket(object_key, start, end)` over the range the
+/// shard is stamped with.
+///
+/// A DISAGREEMENT HERE IS SILENT. The read would miss, go to the block store, answer correctly, and
+/// put the page back under its own key: every test still green, every read paying an I/O it should
+/// not, and the cache holding two copies of every page. So the agreement is DRIVEN rather than
+/// reasoned about.
+///
+/// TWO ARMS, because they are two different pairs of paths:
+///
+///   * WITHIN ONE PROCESS -- a read populates the cache and the next read must find it. This fails if
+///     the read path's own key is not a function of the shard state alone.
+///   * ACROSS A RESTART -- the LOAD path's `reconcile_secondary_views_from_bucket_index` warms the
+///     cache from the index, and a read afterwards must find what IT wrote. That is a genuine
+///     cross-path agreement: two functions, two argument lists, one key.
+///
+/// THE SECOND ARM USES A FEATURE SERIES, AND IT HAS TO. The reconcile walk warms the cache only for
+/// the kinds it rebuilds a secondary VIEW for -- features, control state and the context series --
+/// and `insert_timestamped_secondary_view` is one of the sites this change had to thread the bucket
+/// through. A plain string page is not warmed by that walk at all: a cold read of one goes to the
+/// block store on this tree today (`part4`'s tier probe measured one store read per warm read and
+/// says so in as many words), so an arm written over strings would assert a property the engine does
+/// not have and fail for a reason that has nothing to do with the key.
+///
+/// WITH THE WRONG BUCKET AS THE CONTROL. A test that only asserted "the read hits" would pass on a
+/// cache that hit for any key at all, so the same page is also looked up under a DIFFERENT bucket and
+/// that lookup must MISS.
+///
+/// rust-internal: reads the engine's own cache keys, no product behaviour
+#[test]
+fn the_warm_page_is_found_under_the_key_the_other_side_wrote() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    const KEYS: usize = 16;
+    let keys: Vec<String> = (0..KEYS).map(|index| format!("bucket-arg-{index:03}")).collect();
+
+    {
+        let engine = new_engine(dir.path());
+        for key in &keys {
+            let response = engine.execute(ExecuteRequest {
+                shard_id: 1,
+                command: Command::StringSet {
+                    key: key.clone(),
+                    value: b"a page read through its bucket".to_vec(),
+                },
+            });
+            assert!(response.status.ok, "write {key}: {:?}", response.status);
+        }
+
+        // ARM ONE: the read path against itself. The first read populates; the second must find it.
+        for key in &keys {
+            let response = engine.execute(ExecuteRequest {
+                shard_id: 1,
+                command: Command::StringGet { key: key.clone() },
+            });
+            assert!(response.status.ok, "first read {key}: {:?}", response.status);
+        }
+        let before = engine.block_store().stats().reads;
+        for key in &keys {
+            let response = engine.execute(ExecuteRequest {
+                shard_id: 1,
+                command: Command::StringGet { key: key.clone() },
+            });
+            assert!(response.status.ok, "second read {key}: {:?}", response.status);
+        }
+        let warm_reads = engine.block_store().stats().reads - before;
+        println!("  within one process: {warm_reads} block-store read(s) for {KEYS} warm reads");
+        assert_eq!(
+            0, warm_reads,
+            "{warm_reads} of {KEYS} warm reads went to the block store. The read path built a key \
+             the read path had just written, so a miss here means the key is not a function of the \
+             shard state alone"
+        );
+
+        // AND THE ENGINE'S OWN ACCESSOR NAMES THE SAME PAGE, which is what every other test in this
+        // tree reaches for when it wants "the key this page is cached under".
+        let (address, start, end) = {
+            let shards = engine.shards.read().expect("engine lock poisoned");
+            let shard = shards.get(&1).expect("shard is loaded");
+            let (start, end) = shard.routing_range();
+            (shard.strings.get(&keys[0]).expect("indexed").clone(), start, end)
+        };
+        let derived = crate::engine::hashing::block_routing_bucket(&keys[0], start, end);
+        let read_key = matrixcache::CacheKey::page_with_slot(
+            1,
+            address.block_slab_id(),
+            address.offset(),
+            address.length(),
+            Some(derived),
+        );
+        assert_eq!(
+            engine
+                .string_block_cache_key_for_test(1, &keys[0])
+                .expect("the page is indexed"),
+            read_key,
+            "the engine's own page-cache-key accessor and the key the read path builds disagree"
+        );
+        assert!(
+            engine.cache().peek_tier(&read_key).is_some(),
+            "nothing is cached under the key both sides built, so the equality above compares two \
+             keys neither of which names anything"
+        );
+
+        // THE CONTROL: the same page under a DIFFERENT bucket must not be found.
+        let wrong = matrixcache::CacheKey::page_with_slot(
+            1,
+            address.block_slab_id(),
+            address.offset(),
+            address.length(),
+            Some(derived.wrapping_add(1)),
+        );
+        assert_ne!(read_key, wrong, "the slot must be part of the key");
+        assert!(
+            engine.cache().peek_tier(&wrong).is_none(),
+            "the cache answered for a bucket nothing wrote, so the slot is not part of the key and \
+             this test cannot see a disagreement"
+        );
+
+        engine.flush_shard_index(1);
+    }
+
+    // ARM TWO: ACROSS A RESTART, with a FRESH cache directory so nothing survives except what the
+    // load path itself writes. The reconcile walk warms the cache from the index through
+    // `insert_timestamped_secondary_view`; a read afterwards has to find what that walk wrote, and
+    // the two build their keys in different functions with different argument lists.
+    const POINTS: u64 = 8;
+    let series: Vec<String> = (0..KEYS).map(|index| format!("bucket-arg-series-{index:03}")).collect();
+    {
+        let engine = new_engine(dir.path());
+        for key in &series {
+            let response = engine.execute(ExecuteRequest {
+                shard_id: 1,
+                command: Command::FeatureAppend {
+                    key: key.clone(),
+                    points: (0..POINTS)
+                        .map(|point| crate::types::FeaturePoint {
+                            timestamp_ms: 1_000 + point,
+                            value: format!("{point}").into_bytes(),
+                        })
+                        .collect(),
+                },
+            });
+            assert!(response.status.ok, "feature write {key}: {:?}", response.status);
+        }
+        engine.flush_shard_index(1);
+    }
+
+    let reopened = Arc::new(TemporalEngine::with_local_dirs(
+        64 * 1024 * 1024,
+        dir.path().join("cache-b"),
+        dir.path().join("pages"),
+        dir.path().join("indexes"),
+    ));
+    reopened.load_shard(1);
+
+    let before = reopened.block_store().stats().reads;
+    let mut served = 0usize;
+    for key in &series {
+        let response = reopened.execute(ExecuteRequest {
+            shard_id: 1,
+            command: Command::FeatureQuery {
+                key: key.clone(),
+                start_ms: 0,
+                end_ms: u64::MAX,
+                count: None,
+            },
+        });
+        if let crate::types::CommandResponse::FeaturePoints { points } = &response.response {
+            if !points.is_empty() {
+                served += 1;
+            }
+        }
+    }
+    let cold_reads = reopened.block_store().stats().reads - before;
+    println!(
+        "  across a restart: {served} of {KEYS} series served, {cold_reads} block-store read(s)"
+    );
+    assert_eq!(
+        KEYS, served,
+        "{served} of {KEYS} series came back after the restart; a key disagreement would not lose a \
+         record, so this is a different defect and the count below would be measuring it"
+    );
+    assert_eq!(
+        0, cold_reads,
+        "{cold_reads} block-store read(s) for {KEYS} series read after the restart. The LOAD path's \
+         reconcile walk warmed the cache from the index under the key IT built and the read path \
+         built its own; both derive the bucket from the object key over the shard's stamped range, so \
+         a read that misses means the two derivations disagree -- silently, because the read still \
+         answers."
+    );
+}
+
+/// WHAT DERIVING THE BUCKET COSTS ON A READ, COUNTED, AGAINST THE ALTERNATIVE ITEM 2 PROPOSED.
+///
+/// Two numbers, one instrument each, over the SAME workload:
+///
+///   * `ROUTING_BUCKET_KEY_BYTES` -- the bytes FNV-1a walks to derive a page's bucket. The hash is
+///     one xor and one multiply per byte, so the byte total is the work up to a constant.
+///   * `OBJECT_INDEX_ENTRIES_EXAMINED` -- the entries a membership question in a bucket's own object
+///     list touches. That list is `ObjectIndex`: `One` inline, `Many` a sorted `Vec` bisected, so the
+///     count is logarithmic in the objects the bucket holds.
+///
+/// WHY BOTH, IN ONE TEST. Item 2 of this change proposed replacing the 64-bit `object_id` hash with a
+/// per-bucket ORDINAL, on the grounds that `BucketNode::object_index` is already a key-to-ordinal
+/// map. It is not -- it is a sorted set of the HASHES, with no key in it -- but the cost comparison it
+/// asked for is still the right question to answer, and this is the answer: what a lookup in that
+/// list costs against what the hash costs.
+///
+/// rust-internal: reads the engine's own counters, no product behaviour
+#[test]
+#[ignore = "seeds a shard and reads process-wide counters; run by name"]
+fn what_consulting_the_object_index_costs_against_computing_the_hash() {
+    for (label, end_routing_bucket) in [("whole keyspace", u32::MAX), ("the operator's 1023", 1023)] {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let engine = engine_without_a_shard(dir.path());
+        {
+            let response = engine.load_shard_with(crate::control::LoadShardRequest {
+                shard_id: 1,
+                table_name: "object-index-cost".to_string(),
+                shard_uri: "local://object-index-cost/1".to_string(),
+                start_routing_bucket: 0,
+                end_routing_bucket,
+                readonly: false,
+                load_version: 1,
+                local_node_id: Some(1),
+            });
+            assert!(response.status.ok, "{label}: {:?}", response.status);
+        }
+
+        const RECORDS: usize = 2_000;
+        for index in 0..RECORDS {
+            let response = engine.execute(ExecuteRequest {
+                shard_id: 1,
+                command: Command::StringSet {
+                    key: format!("cost-{index:06}"),
+                    value: vec![b'v'; 64],
+                },
+            });
+            assert!(response.status.ok, "{label} write {index}: {:?}", response.status);
+        }
+
+        // THE READS, COUNTED FROM ZERO. Both counters are process-wide, so they are reset here and
+        // this test is `#[ignore]`d for the same reason every process-wide probe in this tree is.
+        crate::engine::hashing::reset_routing_bucket_derivations();
+        crate::engine::state::reset_object_index_entries_examined();
+        let mut read = 0usize;
+        for index in 0..RECORDS {
+            let response = engine.execute(ExecuteRequest {
+                shard_id: 1,
+                command: Command::StringGet {
+                    key: format!("cost-{index:06}"),
+                },
+            });
+            if response.status.ok {
+                read += 1;
+            }
+        }
+        let (derivations, key_bytes) = crate::engine::hashing::routing_bucket_derivations();
+        let entries = crate::engine::state::object_index_entries_examined();
+
+        assert_eq!(read, RECORDS, "{label}: {read} of {RECORDS} reads answered");
+        assert!(
+            derivations > 0,
+            "{label}: the read path derived no bucket at all, so neither number below is about it"
+        );
+
+        // The objects a bucket actually holds, which is what the alternative's cost is a function of.
+        let (max_objects, buckets) = {
+            let shards = engine.shards.read().expect("engine lock poisoned");
+            let shard = shards.get(&1).expect("shard is loaded");
+            let max = shard
+                .bucket_index
+                .bucket_map
+                .values()
+                .map(|bucket| bucket.object_index.len())
+                .max()
+                .unwrap_or(0);
+            (max, shard.bucket_index.bucket_map.len())
+        };
+
+        println!("--- {label}: what a read pays for its bucket ---");
+        println!("  reads: {read}, buckets: {buckets}, max objects in one bucket: {max_objects}");
+        println!(
+            "  bucket derivations: {derivations} ({:.2} a read), key bytes hashed: {key_bytes} \
+             ({:.2} a read)",
+            derivations as f64 / read as f64,
+            key_bytes as f64 / read as f64,
+        );
+        println!(
+            "  object-index entries examined: {entries} ({:.2} a read); a bisection of the widest \
+             bucket would touch {}",
+            entries as f64 / read as f64,
+            crate::engine::state::entries_a_bisection_examines(max_objects),
+        );
+
+        // THE FLOOR THAT MAKES THE COMPARISON MEAN SOMETHING. A key of this fixture is 11 bytes, so
+        // a derivation walks 11 bytes; a bisection of a bucket holding `max_objects` touches
+        // `log2 + 1` entries. Both are stated as counts rather than as a verdict, because which is
+        // cheaper depends on what an entry costs against a byte -- and an entry here is a cache-line
+        // probe into a heap vector while a byte is a register operation.
+        assert!(
+            key_bytes >= derivations * 8,
+            "{label}: {key_bytes} bytes over {derivations} derivations is under 8 bytes a key, which \
+             is shorter than any key this fixture writes"
+        );
+
+        // AND THE OTHER SIDE OF THE COMPARISON HAS TO BE A REAL NUMBER. A bisection cost that read
+        // zero would make the alternative look free, which is the direction that flatters the
+        // proposal -- so the widest bucket's cost is asserted non-zero over a non-empty bucket.
+        assert!(
+            max_objects > 0,
+            "{label}: no bucket holds an object, so the bisection cost below is over an empty list"
+        );
+        assert!(
+            crate::engine::state::entries_a_bisection_examines(max_objects) > 0,
+            "{label}: a bisection of a bucket holding {max_objects} objects was priced at zero \
+             entries, which would make a lookup look free against the hash"
+        );
+
+        // THE READ PATH CONSULTS THE OBJECT INDEX ZERO TIMES TODAY, which is the finding that
+        // decides the direction: replacing the hash with a lookup is not a substitution, it is NEW
+        // work on a path that does not touch that list at all.
+        assert_eq!(
+            0, entries,
+            "{label}: the read path examined {entries} object-index entries. It examines none -- an \
+             object's identity is computed from its key, never looked up -- and if that ever changes \
+             the comparison this test makes is between two things the read path both does."
+        );
+    }
+}
+
+/// HOW MANY OBJECTS A BUCKET HOLDS, AS PERCENTILES AND A MAX, AT BOTH RANGES.
+///
+/// THE NUMBER ITEM 2 TURNS ON, and the reason it is measured rather than assumed. #1973 measured
+/// PAGES per bucket at the operator's range (p50 39, MAX 50 at 40,000 records); OBJECTS per bucket is
+/// a different distribution, because our object identity folds the COMPONENT in -- a hash field is
+/// its own object rather than another page of one -- so a single key with many components contributes
+/// many objects to one bucket.
+///
+/// WHY IT DECIDES ANYTHING. A per-bucket ordinal has to fit in a field, and the field width is the
+/// whole proposal: `BlockAddress` is 24 bytes with a 15-byte payload beside `object_id`, so an
+/// ordinal at EIGHT bits would take the struct to 16 and one at sixteen bits would leave it at 24.
+/// Eight bits is 255 objects to a bucket. So this histogram is not a curiosity -- it is the question
+/// of whether the proposal is worth anything at all.
+///
+/// NEVER A MEAN: percentiles, MAX and the denominator, for the reason #1959 established.
+///
+/// rust-internal: reads the engine's own index, no product behaviour
+#[test]
+#[ignore = "seeds two stores of 40,000 records; run by name"]
+fn how_many_objects_a_bucket_holds_as_percentiles_and_max() {
+    const RECORDS: usize = 40_000;
+    const COMPONENTS: usize = 8;
+
+    for (label, end_routing_bucket) in [("the operator's 1023", 1023u32), ("whole keyspace", u32::MAX)] {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let engine = engine_without_a_shard(dir.path());
+        let response = engine.load_shard_with(crate::control::LoadShardRequest {
+            shard_id: 1,
+            table_name: "objects-per-bucket".to_string(),
+            shard_uri: "local://objects-per-bucket/1".to_string(),
+            start_routing_bucket: 0,
+            end_routing_bucket,
+            readonly: false,
+            load_version: 1,
+            local_node_id: Some(1),
+        });
+        assert!(response.status.ok, "{label}: {:?}", response.status);
+
+        // MANY COMPONENTS UNDER ONE KEY, which is what puts many OBJECTS in one bucket: routing takes
+        // the object key and never the component, while the object id folds the component in.
+        let keys = RECORDS / COMPONENTS;
+        for key_index in 0..keys {
+            let commands = (0..COMPONENTS)
+                .map(|component| Command::HashSet {
+                    key: format!("obj-{key_index:06}"),
+                    field: format!("f{component}"),
+                    value: vec![b'h'; 32],
+                })
+                .collect::<Vec<_>>();
+            let response = engine.batch_execute(crate::types::BatchExecuteRequest {
+                shard_id: 1,
+                commands,
+            });
+            assert!(response.status.ok, "{label}: seed: {:?}", response.status);
+        }
+
+        let mut per_bucket: Vec<usize> = {
+            let shards = engine.shards.read().expect("engine lock poisoned");
+            let shard = shards.get(&1).expect("shard is loaded");
+            shard
+                .bucket_index
+                .bucket_map
+                .values()
+                .map(|bucket| bucket.object_index.len())
+                .filter(|count| *count > 0)
+                .collect()
+        };
+        per_bucket.sort_unstable();
+
+        // DENOMINATOR FIRST.
+        assert!(
+            !per_bucket.is_empty(),
+            "{label}: no bucket holds an object, so every percentile below is over an empty set"
+        );
+        let total_objects: usize = per_bucket.iter().sum();
+        assert!(
+            total_objects >= RECORDS,
+            "{label}: {total_objects} objects for {RECORDS} written components; the fixture is not \
+             producing one object per component and the distribution is of something else"
+        );
+
+        let at = |q: f64| -> usize {
+            let index = ((per_bucket.len() as f64 - 1.0) * q).round() as usize;
+            per_bucket[index]
+        };
+        let max = *per_bucket.last().expect("non-empty");
+        println!("--- {label}: objects per occupied bucket, {RECORDS} components ---");
+        println!(
+            "  occupied buckets {}, objects {total_objects}, p50 {}, p90 {}, p99 {}, MAX {max}",
+            per_bucket.len(),
+            at(0.50),
+            at(0.90),
+            at(0.99),
+        );
+        println!(
+            "  an 8-bit ordinal holds 255: {} of {} occupied buckets are already over it",
+            per_bucket.iter().filter(|count| **count > 255).count(),
+            per_bucket.len()
+        );
+        println!(
+            "  a 16-bit ordinal holds 65535: {} of {} occupied buckets are over it",
+            per_bucket.iter().filter(|count| **count > 65_535).count(),
+            per_bucket.len()
+        );
+
+        // THE VERDICT, STATED AS A CEILING AND NOT AS A WIDTH.
+        //
+        // An 8-bit ordinal FITS AT THIS CORPUS -- 0 of 1,022 occupied buckets are over 255 -- so the
+        // 16-byte form of `BlockAddress` is arithmetically reachable. What it would cost is not a
+        // width but a HARD CAPACITY LIMIT: objects per bucket is `records x objects-per-record /
+        // buckets`, which contains the RECORD COUNT, so a fixed bucket count crosses 255 at a
+        // computable store size. That number is what decides the proposal, and it is computed here
+        // from the measured fill rather than asserted as a comfort.
+        if end_routing_bucket == 1023 {
+            assert!(
+                max <= 255,
+                "{label}: the widest bucket already holds {max} objects, over the 255 an 8-bit \
+                 ordinal holds, so the 16-byte form is not reachable even at this corpus"
+            );
+            let buckets = 1024u64;
+            let objects_per_record = total_objects as f64 / RECORDS as f64;
+            // The records at which the WIDEST bucket would reach 255, scaled from the measured max:
+            // the fill is linear in the record count at a fixed bucket count.
+            let records_at_the_ceiling = (RECORDS as f64) * 255.0 / max as f64;
+            println!(
+                "  {objects_per_record:.2} objects a record over {buckets} buckets: the widest \
+                 bucket reaches 255 objects at about {records_at_the_ceiling:.0} records"
+            );
+            assert!(
+                records_at_the_ceiling < 1_000_000.0,
+                "the widest bucket would not reach 255 objects until {records_at_the_ceiling:.0} \
+                 records. If an 8-bit ordinal's ceiling really is that far away it is headroom \
+                 rather than a limit, and the argument against the 16-byte form has to be made on \
+                 something else -- which is what this assertion exists to force."
+            );
+            println!(
+                "  VERDICT: an 8-bit ordinal reaches 16 bytes and imposes a ceiling at about \
+                 {records_at_the_ceiling:.0} records a shard; a 16-bit ordinal has no reachable \
+                 ceiling and is worth NOTHING, because 8 + 2 + 4 + 2 + 1 = 17 rounds back to 24"
+            );
+        }
+    }
+}
+
+/// TWO BUCKETS HOLDING ONE OBJECT ID ARE REPORTED AS ONE OBJECT, IN THE BUCKET SEEN FIRST.
+///
+/// FOUND WHILE ASKING WHETHER A PER-BUCKET ORDINAL COULD BE READ BACK, and it is a defect in its own
+/// right whether or not anything is ever narrowed. `object_manager::runtime_report` walks every
+/// bucket of a shard into ONE `BTreeMap<u64, ObjectRuntimeState>` keyed by object id, and records
+/// `routing_bucket` with `or_insert_with` -- so the second bucket's pages are folded into the first
+/// bucket's entry and the report names a bucket that holds only some of them.
+///
+/// `reused_object_ids` does not catch it: that counts ids with more than one BLOCK REF, which is the
+/// ordinary multi-page object. There is no term in the report for the same id in two buckets.
+///
+/// NOT `#[allow(dead_code)]` EITHER, though it is marked so: `storage_reporting.rs` calls it, which
+/// `native_persistence_workflow` reaches through `object_manager_runtime_report`.
+///
+/// rust-internal: reads the engine's own report, no product behaviour
+#[test]
+fn two_buckets_holding_one_object_id_are_reported_as_one_object() {
+    use crate::engine::state::{BlockIndex, BucketNode, ShardState};
+
+    let mut shard = ShardState::default();
+    let object_id = 0x0123_4567_89ab_cdefu64;
+
+    // The same object id filed in two different buckets. Reachable without any tampering: the
+    // routing range is the MODULUS, so a store re-ranged between writes files one key's pages under
+    // two buckets, and `bucket_map` holds both.
+    for (routing_bucket, offset) in [(11u32, 0u64), (2_222u32, 4_096u64)] {
+        let mut bucket = BucketNode {
+            routing_bucket,
+            ..BucketNode::default()
+        };
+        bucket.object_index.insert(object_id);
+        bucket.block_index.insert(
+            BlockIndex {
+                object_key: std::sync::Arc::from("one-key"),
+                model_id: crate::engine::storage_bucket_internals::StoredModelKind::String,
+                component: None,
+                address: BlockAddress::from_parts(1, offset, 64, Some(0), Some(object_id)),
+                dirty: false,
+                deleted: false,
+                log_backed: false,
+            },
+            &mut Default::default(),
+        );
+        shard.bucket_index.bucket_map.insert(routing_bucket, bucket);
+    }
+
+    // DENOMINATOR: the fixture really does hold the id twice, in two buckets.
+    let holders: Vec<u32> = shard
+        .bucket_index
+        .bucket_map
+        .iter()
+        .filter(|(_, bucket)| bucket.object_index.contains(&object_id))
+        .map(|(routing_bucket, _)| *routing_bucket)
+        .collect();
+    assert_eq!(
+        holders,
+        vec![11, 2_222],
+        "the fixture must file one object id in two buckets, or the report below has nothing to fold"
+    );
+
+    let report = crate::engine::object_manager::runtime_report(&shard);
+    println!(
+        "  buckets holding the id: {holders:?}; report says {} object(s), {} block ref(s), \
+         reused_object_ids {}",
+        report.live_object_count, report.live_block_ref_count, report.reused_object_ids
+    );
+    for object in &report.objects {
+        println!(
+            "    object {} -> routing_bucket {}, block_refs {}",
+            object.object_id, object.routing_bucket, object.block_ref_count
+        );
+    }
+
+    assert_eq!(
+        1, report.live_object_count,
+        "the report folds the two buckets' entries into ONE object, which is the finding: a \
+         per-bucket ordinal cannot be read back out of a report keyed on the ordinal alone"
+    );
+    assert_eq!(
+        2, report.live_block_ref_count,
+        "both pages must be counted, or the fold is not what this test claims"
+    );
+    let state = report.objects.first().expect("one object");
+    assert_eq!(
+        11, state.routing_bucket,
+        "the report records the bucket it saw FIRST -- the lowest bucket id, `bucket_map` being \
+         ordered -- so the object it describes is reported in a bucket holding half its pages"
+    );
+    assert_eq!(
+        2, state.block_ref_count,
+        "and it carries both buckets' refs under that one bucket"
+    );
+
+    // AND THE REPORT HAS NO TERM THAT NOTICES. `reused_object_ids` counts an id with more than one
+    // BLOCK REF, which every multi-page object has, so it cannot be the detector for this.
+    assert_eq!(
+        1, report.reused_object_ids,
+        "`reused_object_ids` counts ids with more than one block ref. It reads 1 here -- and it \
+         would read 1 for one object with two pages in ONE bucket too, which is why it is not a \
+         detector for the same id in two buckets."
     );
 }

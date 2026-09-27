@@ -187,7 +187,7 @@ fn entry_named(object_key: &str, component: Option<&str>) -> BlockIndex {
         object_key: Arc::from(object_key),
         model_id: FIXTURE_KIND,
         component: component.map(Arc::from),
-        address: BlockAddress::from_parts(9, 4_096, 96, Some(7), Some(object_id), Some(11)),
+        address: BlockAddress::from_parts(9, 4_096, 96, Some(7), Some(object_id)),
         dirty: false,
         deleted: false,
         log_backed: true,

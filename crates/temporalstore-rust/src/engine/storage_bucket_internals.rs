@@ -369,6 +369,26 @@ pub(super) fn live_block_entry(
     }
 }
 
+/// The same entry from a walk that DOES know the filing.
+///
+/// A bucket-scoped model-map walk selected this page BY its bucket, so it knows the answer as
+/// exactly as the bucket-index walk does -- and an entry that reported "not filed" would send the
+/// five `filed_bucket()` readers to a hash over the WHOLE keyspace, which names a bucket a shard
+/// loaded on a narrow range does not hold. That fallback used to be unreachable because the address
+/// answered first; it is reachable now, so the walks that know have to say so.
+pub(super) fn live_block_entry_filed(
+    object_key: impl Into<String>,
+    kind: impl AsRef<str>,
+    component: Option<String>,
+    address: BlockAddress,
+    routing_bucket: u32,
+) -> LiveBlockEntry {
+    let mut entry = live_block_entry(object_key, kind, component, address);
+    entry.filed_routing_bucket = routing_bucket;
+    entry.filing_is_known = true;
+    entry
+}
+
 pub(super) fn storage_page_address_sample(
     shard_id: ShardId,
     address: &BlockAddress,
@@ -564,9 +584,7 @@ pub(super) fn storage_watermark_snapshot_with_samples_from_entries(
     }
     for entry in entries {
         let bucket_id = entry
-            .address
-            .routing_bucket()
-            .or(entry.filed_bucket())
+            .filed_bucket()
             .unwrap_or_else(|| bucket_for_object(&entry.object_key, 0, u32::MAX));
         let generation = entry.address.object_id().unwrap_or(0);
         bucket_watermarks
@@ -849,9 +867,7 @@ pub(super) fn storage_topology_snapshot_with_samples_from_entries(
         }
 
         let bucket_id = entry
-            .address
-            .routing_bucket()
-            .or(entry.filed_bucket())
+            .filed_bucket()
             .unwrap_or_else(|| bucket_for_object(&entry.object_key, 0, u32::MAX));
         let bucket = buckets.entry(bucket_id).or_default();
         bucket.dirty_generation = bucket.dirty_generation.max(generation);
@@ -1342,12 +1358,22 @@ pub(super) fn rebuild_bucket_block_ownership(
     // names would make the page walk supplement buckets that are already whole.
     shard.bucket_index.released_buckets.clear();
     for entry in collect_model_live_block_entries(shard) {
-        let routing_bucket = entry.address.routing_bucket().unwrap_or_else(|| {
-            block_routing_bucket(&entry.object_key, start_routing_bucket, end_routing_bucket)
-        });
-        if routing_bucket < start_routing_bucket || routing_bucket > end_routing_bucket {
-            continue;
-        }
+        let routing_bucket =
+            block_routing_bucket(&entry.object_key, start_routing_bucket, end_routing_bucket);
+        // THE OUT-OF-RANGE FILTER THAT STOOD HERE CANNOT FIRE ANY MORE, so it is gone rather than
+        // kept as a `continue` nothing reaches.
+        //
+        // It read `if routing_bucket < start || routing_bucket > end { continue; }` and its only
+        // possible input was an EXPLICIT bucket carried on the address -- a page whose stored bucket
+        // fell outside the range the shard was loaded on. There are no explicit buckets: the line
+        // above DERIVES the bucket as `start + FNV-1a-64(key) % (end - start + 1)`, which is inside
+        // `start..=end` by construction (and `start` itself for a degenerate range).
+        // `a_derived_bucket_is_always_inside_the_range_it_was_derived_on` drives that over many keys
+        // and several ranges rather than leaving it as arithmetic in a comment.
+        //
+        // What this removes is not a check but a HAZARD: mx#1974 measured this filter dropping a
+        // page from the index entirely when an explicit bucket sat outside the range, and bounded it
+        // by showing the engine does not produce that state. It now cannot be produced at all.
         let object_id = entry.address.object_id().unwrap_or_else(|| {
             stable_block_object_id(
                 shard_id,
@@ -1500,7 +1526,7 @@ pub(super) fn promote_model_maps_to_bucket_index_authority(
         visit_model_live_blocks(
             shard,
             ModelWalkTally::PromotionCheckPages,
-            |_| true,
+            |_, _| true,
             |kind, object_key, component, address| {
                 saw_model_entry = true;
                 // The early return below bypasses the LOOKUP, not the count. `visit_model_live_blocks`
@@ -1514,12 +1540,9 @@ pub(super) fn promote_model_maps_to_bucket_index_authority(
                 // release would find every released page "missing" from the index and rebuild the
                 // whole shard -- which is a correct index and a release that never survives one
                 // execute.
-                let released = address
-                    .routing_bucket()
-                    .map(|routing_bucket| {
-                        shard.bucket_index.released_buckets.contains(&routing_bucket)
-                    })
-                    .unwrap_or(false);
+                let released = shard.bucket_index.released_buckets.contains(
+                    &block_routing_bucket(object_key, start_routing_bucket, end_routing_bucket),
+                );
                 if !released
                     && !shard.bucket_index.contains_object_block_address(
                         kind.as_str(),
@@ -1643,18 +1666,22 @@ pub(super) fn collect_bucket_index_live_block_entries(shard: &ShardState) -> Vec
     // source `reload_released_bucket` would rebuild them from: what this returns is what the
     // bucket index WOULD say if nothing were released.
     //
-    // Exact, not approximate, because release refuses any bucket whose pages do not each carry an
-    // explicit routing bucket equal to the bucket's own -- so the filter below needs no hash
-    // fallback and cannot claim a page for the wrong bucket.
+    // Exact, not approximate, because a release refuses any bucket holding a page whose KEY does
+    // not route to it -- `BucketReleaseRefusal::BlockRoutingMismatch` -- so the bucket computed
+    // below is the bucket the released node held the page under, and cannot claim a page for the
+    // wrong bucket.
     if !shard.bucket_index.released_buckets.is_empty() {
+        let (start_routing_bucket, end_routing_bucket) = shard.routing_range();
         for mut entry in collect_model_live_block_entries(shard) {
-            let Some(routing_bucket) = entry.address.routing_bucket() else {
-                continue;
-            };
+            let routing_bucket = block_routing_bucket(
+                &entry.object_key,
+                start_routing_bucket,
+                end_routing_bucket,
+            );
             if shard.bucket_index.released_buckets.contains(&routing_bucket) {
-                // A released bucket admits a page only when the page's own explicit bucket IS
-                // the bucket's -- the filter three lines up -- so the filing is known exactly
-                // here too, and a supplemented entry must not read as "not filed".
+                // The filing is known exactly here too, and a supplemented entry must not read as
+                // "not filed": the five readers downstream would then fall back to a hash over the
+                // WHOLE keyspace and name a bucket a narrow shard does not hold.
                 entry.filed_routing_bucket = routing_bucket;
                 entry.filing_is_known = true;
                 entries.push(entry);
@@ -1766,7 +1793,14 @@ pub(super) fn released_bucket_block_address(
         return None;
     }
     let address = model_map_block_address(shard, model_id, object_key, component)?;
-    let routing_bucket = address.routing_bucket()?;
+    // THE CONTAINER'S ABSENCE IS THE CONDITION; THE BUCKET ID IS STILL KNOWN. This asks whether a
+    // SPECIFIC bucket is released, and which bucket that is comes from the key, not from the page:
+    // `released_buckets` is keyed by bucket id and the key's bucket is what a release recorded.
+    // The address used to carry it and an address carrying none returned `None` here, which was a
+    // second answer to a question the key already answers.
+    let (start_routing_bucket, end_routing_bucket) = shard.routing_range();
+    let routing_bucket =
+        block_routing_bucket(object_key, start_routing_bucket, end_routing_bucket);
     shard
         .bucket_index
         .released_buckets
@@ -1816,6 +1850,7 @@ pub(super) fn settle_released_bucket_object_delete(
     if shard.bucket_index.released_buckets.is_empty() {
         return false;
     }
+    let (start_routing_bucket, end_routing_bucket) = shard.routing_range();
     let mut settled = false;
     for model_id in RELEASABLE_MODEL_KINDS {
         // Answers only for a page whose bucket really is released -- a resident bucket with a
@@ -1823,13 +1858,13 @@ pub(super) fn settle_released_bucket_object_delete(
         let Some(address) = released_bucket_block_address(shard, model_id, object_key, None) else {
             continue;
         };
-        // A release refuses any page whose address does not name its own bucket, so the first of
-        // these holds by construction and is checked rather than assumed. The second may not: an
-        // address that carries no object id names no member to drop, and recomputing one needs a
-        // shard id this path does not carry. Skipping leaves exactly today's behaviour.
-        let (Some(routing_bucket), Some(object_id)) =
-            (address.routing_bucket(), address.object_id())
-        else {
+        // The bucket is the KEY's bucket -- `released_bucket_block_address` above answered for
+        // exactly that bucket, so asking again here gets the same number. The object id may still
+        // be absent: an address that carries none names no member to drop, and recomputing one
+        // needs a shard id this path does not carry. Skipping leaves exactly today's behaviour.
+        let routing_bucket =
+            block_routing_bucket(object_key, start_routing_bucket, end_routing_bucket);
+        let Some(object_id) = address.object_id() else {
             continue;
         };
         let Some(bucket) = shard.bucket_index.bucket_map.get_mut(&routing_bucket) else {
@@ -2006,6 +2041,8 @@ pub(super) fn release_bucket_blocks(
     // candidate order.
     let mut derived: Option<BTreeMap<u32, BTreeSet<ReleasedBlockIdentity>>> = None;
     let lookup_established = !shard.bucket_index.object_block_lookup.is_empty();
+    // The shard's own range, for the per-block routing term below.
+    let (start_routing_bucket, end_routing_bucket) = shard.routing_range();
     // Iterated by reference rather than consumed, because the derivation below is handed the same
     // set and is now reached from inside the loop. Same order, same elements, no allocation.
     for routing_bucket in wanted.iter().copied() {
@@ -2040,7 +2077,17 @@ pub(super) fn release_bucket_blocks(
                 Some(BucketReleaseRefusal::BlockDirty)
             } else if block.deleted {
                 Some(BucketReleaseRefusal::BlockDeleted)
-            } else if block.address.routing_bucket() != Some(routing_bucket) {
+            } else if block_routing_bucket(
+                &block.object_key,
+                start_routing_bucket,
+                end_routing_bucket,
+            ) != routing_bucket
+            {
+                // STILL A CHECK THAT CAN FAIL, and it now compares two INDEPENDENT things rather
+                // than a page's copy of its bucket against the bucket holding it. Where the page
+                // IS (the key of the map being walked) against where its KEY routes: a page filed
+                // under a stale range, or moved by hand, fails here. The old form compared a field
+                // the filing site had just written against the filing site's own key.
                 Some(BucketReleaseRefusal::BlockRoutingMismatch)
             } else if !released_model_kind_is_addressable(block.model_id.as_str()) {
                 Some(BucketReleaseRefusal::BlockKindNotAddressable)
@@ -2891,11 +2938,18 @@ pub(super) fn model_report_code(model_id: &str) -> u8 {
 /// reload would rebuild" derivation disagree with what the reload actually rebuilds, and it would
 /// disagree in the direction that silently ALLOWS a release rather than refusing one.
 ///
-/// `accept` is given the ADDRESS, which is all a routing-bucket filter needs and is a field read.
-/// Everything owned is built after it: several arms compose their component with `format!` or
-/// `hex::encode`, and a `LiveBlockEntry` costs four allocations -- an owned key and an owned kind,
-/// each built as a `String` and then copied into an `Arc<str>`. None of that runs for a page the
-/// caller is not going to keep.
+/// `accept` is given the OBJECT KEY AND THE ADDRESS, and the key is what a routing-bucket filter
+/// needs now that a page's bucket is `block_routing_bucket(object_key, ..)` rather than a field on
+/// the address. Everything owned is still built after it: several arms compose their component with
+/// `format!` or `hex::encode`, and a `LiveBlockEntry` costs four allocations -- an owned key and an
+/// owned kind, each built as a `String` and then copied into an `Arc<str>`. None of that runs for a
+/// page the caller is not going to keep.
+///
+/// ONE ARM PAYS FOR THE KEY EARLIER THAN IT DID. `context_entities` emits a COMPOSED key
+/// (`{collection_key}:{entity_hash}`), and that string is what the page is filed under -- so a
+/// bucket filter has to see it. The `format!` therefore moves ahead of `accept` on that arm only,
+/// which means a bucket-scoped walk now builds one `String` for an entity it goes on to reject.
+/// Every other arm's key is borrowed from the map and costs nothing.
 ///
 /// The timestamped-series kinds dedup and sort their addresses, and that helper allocates, so the
 /// series is first asked -- without allocating -- whether ANY of its addresses is accepted. The
@@ -2910,7 +2964,7 @@ pub(super) fn model_report_code(model_id: &str) -> u8 {
 fn visit_model_live_blocks(
     shard: &ShardState,
     tally: ModelWalkTally,
-    accept: impl Fn(&BlockAddress) -> bool,
+    accept: impl Fn(&str, &BlockAddress) -> bool,
     mut emit: impl FnMut(ModelKind, &str, Option<&str>, &BlockAddress),
 ) {
     // THE ARM LIST. Nested so that `visit_model_live_blocks` is the only thing in the tree that
@@ -2921,24 +2975,24 @@ fn visit_model_live_blocks(
     // an arm that could name its own kind is an arm the reporting registry can fall behind.
     fn arms(
         shard: &ShardState,
-        accept: impl Fn(&BlockAddress) -> bool,
+        accept: impl Fn(&str, &BlockAddress) -> bool,
         mut emit: impl FnMut(ModelKind, &str, Option<&str>, &BlockAddress),
     ) {
         for (key, address) in &shard.strings {
-            if accept(address) {
+            if accept(key, address) {
                 emit(ModelKind::String, key, None, address);
             }
         }
         for (key, fields) in &shard.hashes {
             for (field, address) in fields.iter() {
-                if accept(address) {
+                if accept(key, address) {
                     emit(ModelKind::Hash, key, Some(field.as_str()), address);
                 }
             }
         }
         for (key, members) in &shard.zsets {
             for (member, (biased, address)) in members.iter() {
-                if accept(address) {
+                if accept(key, address) {
                     let component = format!("{biased:016x}{}", hex::encode(member));
                     emit(ModelKind::Zset, key, Some(component.as_str()), address);
                 }
@@ -2946,7 +3000,7 @@ fn visit_model_live_blocks(
         }
         for (key, elements) in &shard.lists {
             for (seq, address) in elements.iter() {
-                if accept(address) {
+                if accept(key, address) {
                     let component = format!("{:016x}", (*seq as u64).wrapping_sub(i64::MIN as u64));
                     emit(ModelKind::List, key, Some(component.as_str()), address);
                 }
@@ -2954,7 +3008,7 @@ fn visit_model_live_blocks(
         }
         for (key, members) in &shard.sets {
             for (member, address) in members.iter() {
-                if accept(address) {
+                if accept(key, address) {
                     let component = hex::encode(member);
                     emit(ModelKind::Set, key, Some(component.as_str()), address);
                 }
@@ -2962,12 +3016,12 @@ fn visit_model_live_blocks(
         }
         visit_timestamped_series(&shard.features, ModelKind::Feature, &accept, &mut emit);
         for (key, address) in &shard.control_state_blocks {
-            if accept(address) {
+            if accept(key, address) {
                 emit(ModelKind::ControlState, key, None, address);
             }
         }
         for (key, address) in &shard.context_nodes {
-            if accept(address) {
+            if accept(key, address) {
                 emit(ModelKind::ContextNode, key, None, address);
             }
         }
@@ -2995,8 +3049,11 @@ fn visit_model_live_blocks(
         // this change format-compatible in both directions.
         for (collection_key, series) in &shard.context_entities {
             for (entity_hash, address) in series.iter() {
-                if accept(address) {
-                    let composed = format!("{collection_key}:{entity_hash}");
+                // COMPOSED BEFORE ACCEPT, and only on this arm. The page is filed under this
+                // composed key, so it is the string a bucket filter has to hash; see the note on
+                // this function for what that costs.
+                let composed = format!("{collection_key}:{entity_hash}");
+                if accept(composed.as_str(), address) {
                     emit(ModelKind::ContextEntity, composed.as_str(), None, address);
                 }
             }
@@ -3026,9 +3083,9 @@ fn visit_model_live_blocks(
     // three tallies below track what came out. Counted in a local cell and charged once, so the
     // walk pays one atomic rather than one per address.
     let visited = std::cell::Cell::new(0u64);
-    let counting_accept = |address: &BlockAddress| {
+    let counting_accept = |object_key: &str, address: &BlockAddress| {
         visited.set(visited.get().saturating_add(1));
-        accept(address)
+        accept(object_key, address)
     };
     let mut emitted = 0usize;
     arms(
@@ -3062,15 +3119,15 @@ fn visit_model_live_blocks(
 fn visit_timestamped_series(
     map: &HashMap<String, BTreeMap<u64, BlockAddress>>,
     kind: ModelKind,
-    accept: &impl Fn(&BlockAddress) -> bool,
+    accept: &impl Fn(&str, &BlockAddress) -> bool,
     emit: &mut impl FnMut(ModelKind, &str, Option<&str>, &BlockAddress),
 ) {
     for (key, series) in map {
-        if !series.values().any(accept) {
+        if !series.values().any(|address| accept(key, address)) {
             continue;
         }
         for address in unique_timestamped_kv_block_addresses(series) {
-            if accept(&address) {
+            if accept(key, &address) {
                 emit(kind, key, None, &address);
             }
         }
@@ -3083,7 +3140,7 @@ pub(super) fn collect_model_live_block_entries(shard: &ShardState) -> Vec<LiveBl
     visit_model_live_blocks(
         shard,
         ModelWalkTally::WholeShardEntries,
-        |_| true,
+        |_, _| true,
         |kind, object_key, component, address| {
             entries.push(live_block_entry(
                 object_key.to_string(),
@@ -3107,16 +3164,26 @@ pub(super) fn collect_model_live_block_entries_in_bucket(
     routing_bucket: u32,
 ) -> Vec<LiveBlockEntry> {
     let mut entries = Vec::new();
+    // THE SHARD'S OWN RANGE, so that "routes to this bucket" means the same thing here as it does
+    // at the site that FILED the page. This used to read the bucket off the address; the address
+    // does not carry one, and the range a store is loaded on is the range it was built on -- a
+    // disagreeing stamp is refused before the decode, so this is the same number the writer
+    // stamped rather than a second opinion about it.
+    let (start_routing_bucket, end_routing_bucket) = shard.routing_range();
     visit_model_live_blocks(
         shard,
         ModelWalkTally::BucketScopedEntries,
-        |address| address.routing_bucket() == Some(routing_bucket),
+        |object_key, _| {
+            block_routing_bucket(object_key, start_routing_bucket, end_routing_bucket)
+                == routing_bucket
+        },
         |kind, object_key, component, address| {
-            entries.push(live_block_entry(
+            entries.push(live_block_entry_filed(
                 object_key.to_string(),
                 kind.as_str(),
                 component.map(str::to_string),
                 address.clone(),
+                routing_bucket,
             ));
         },
     );
@@ -3145,18 +3212,20 @@ fn derive_released_block_identities(
     wanted: &BTreeSet<u32>,
 ) -> BTreeMap<u32, BTreeSet<ReleasedBlockIdentity>> {
     let mut derived: BTreeMap<u32, BTreeSet<ReleasedBlockIdentity>> = BTreeMap::new();
+    let (start_routing_bucket, end_routing_bucket) = shard.routing_range();
     visit_model_live_blocks(
         shard,
         ModelWalkTally::BucketScopedEntries,
-        |address| {
-            address
-                .routing_bucket()
-                .is_some_and(|routing_bucket| wanted.contains(&routing_bucket))
+        |object_key, _| {
+            wanted.contains(&block_routing_bucket(
+                object_key,
+                start_routing_bucket,
+                end_routing_bucket,
+            ))
         },
         |kind, object_key, component, address| {
-            let routing_bucket = address
-                .routing_bucket()
-                .expect("accepted only with a routing bucket");
+            let routing_bucket =
+                block_routing_bucket(object_key, start_routing_bucket, end_routing_bucket);
             derived
                 .entry(routing_bucket)
                 .or_default()
@@ -3171,24 +3240,20 @@ fn derive_released_block_identities(
     derived
 }
 
+/// SIX TERMS, NOT SEVEN. The routing bucket left the address, and with it this key's copy of it.
+///
+/// It was never discriminating here: this key dedupes the addresses of ONE object key inside one
+/// publish, and every address of one key routes to one bucket. A term equal across every element of
+/// the set it partitions cannot split it.
 pub(super) fn block_physical_identity_key(
     address: &BlockAddress,
-) -> (
-    u64,
-    u64,
-    u64,
-    Option<u64>,
-    Option<u64>,
-    Option<u32>,
-    Option<u64>,
-) {
+) -> (u64, u64, u64, Option<u64>, Option<u64>, Option<u64>) {
     (
         address.block_slab_id(),
         address.offset(),
         address.length(),
         address.block_id(),
         address.object_id(),
-        address.routing_bucket(),
         address.generation(),
     )
 }
@@ -3259,9 +3324,7 @@ fn upsert_bucket_index_block_inner(
     // where nothing scoped to the shard will look for it. An unstamped state still answers the
     // whole range, which is what this line passed unconditionally before.
     let (start_routing_bucket, end_routing_bucket) = shard.routing_range();
-    let routing_bucket = address
-        .routing_bucket()
-        .unwrap_or_else(|| block_routing_bucket(object_key, start_routing_bucket, end_routing_bucket));
+    let routing_bucket = block_routing_bucket(object_key, start_routing_bucket, end_routing_bucket);
     // Filing a page into a RELEASED bucket would leave the node holding one page and claiming to
     // be resident, with the rest of its pages still only in the model maps -- neither released
     // nor whole. Load it back first; a no-op for every bucket that was never released.
@@ -3466,10 +3529,13 @@ pub(super) fn sync_bucket_index_object_blocks_with_mode(
     // Same reason as `upsert_bucket_index_block_with`: publish into a released bucket and the node
     // is left half-resident. Reload every bucket these addresses land in first.
     if !shard.bucket_index.released_buckets.is_empty() {
-        let landing: BTreeSet<u32> = addresses
-            .iter()
-            .filter_map(|address| address.routing_bucket())
-            .collect();
+        // One bucket, not a set gathered from the addresses: every address published here belongs
+        // to ONE object key, so they all land in the key's bucket. The set was a set of one.
+        let landing = [block_routing_bucket(
+            object_key,
+            start_routing_bucket,
+            end_routing_bucket,
+        )];
         for routing_bucket in landing {
             reload_released_bucket(shard, shard_id, routing_bucket);
         }
@@ -3547,15 +3613,7 @@ pub(super) fn sync_bucket_index_object_blocks_with_mode(
     }
 
     let mut unique_addresses = BTreeMap::<
-        (
-            u64,
-            u64,
-            u64,
-            Option<u64>,
-            Option<u64>,
-            Option<u32>,
-            Option<u64>,
-        ),
+        (u64, u64, u64, Option<u64>, Option<u64>, Option<u64>),
         BlockAddress,
     >::new();
     for address in addresses {
@@ -3568,9 +3626,8 @@ pub(super) fn sync_bucket_index_object_blocks_with_mode(
     let object_key_arc: Arc<str> = Arc::from(object_key);
     let entry_kind = stored_model_kind(kind);
     for address in unique_addresses.into_values() {
-        let routing_bucket = address
-            .routing_bucket()
-            .unwrap_or_else(|| block_routing_bucket(object_key, start_routing_bucket, end_routing_bucket));
+        let routing_bucket =
+            block_routing_bucket(object_key, start_routing_bucket, end_routing_bucket);
         let object_id = address
             .object_id()
             .unwrap_or_else(|| stable_block_object_id(shard_id, kind, object_key, None));
@@ -4008,9 +4065,8 @@ pub(super) fn rebuild_bucket_first_index(
         .collect();
     let mut bucket_index = CoreIndex::default();
     for entry in collect_model_live_block_entries(shard) {
-        let routing_bucket = entry.address.routing_bucket().unwrap_or_else(|| {
-            block_routing_bucket(&entry.object_key, start_routing_bucket, end_routing_bucket)
-        });
+        let routing_bucket =
+            block_routing_bucket(&entry.object_key, start_routing_bucket, end_routing_bucket);
         let object_id = entry.address.object_id().unwrap_or_else(|| {
             stable_block_object_id(
                 shard_id,
@@ -4144,6 +4200,12 @@ pub(super) fn reconcile_secondary_views_from_bucket_index(
     // at the end promotes them all under one lock instead of one lock cycle per page.
     let warm_shard = warm.map(|(_, shard_id)| shard_id);
     let mut warm_batch: Vec<(CacheKey, Vec<u8>)> = Vec::new();
+    // THE KEY A PAGE IS WARMED UNDER MUST BE THE KEY THE READ PATH BUILDS, and the read path now
+    // derives the bucket from the object key over the shard's range. Deriving it the same way here
+    // is what keeps a warmed page findable; taking the bucket from where the page is FILED would
+    // differ for a page filed under a stale range, and the miss would be silent -- a cold read
+    // that still answers, which no test can see as a failure.
+    let (start_routing_bucket, end_routing_bucket) = shard.routing_range();
 
     let mut saw_strings = false;
     let mut saw_hashes = false;
@@ -4239,6 +4301,11 @@ pub(super) fn reconcile_secondary_views_from_bucket_index(
                     &mut features,
                     entry.object_key.to_string(),
                     entry.address,
+                    Some(block_routing_bucket(
+                        &entry.object_key,
+                        start_routing_bucket,
+                        end_routing_bucket,
+                    )),
                 );
             }
             "sequence" => {
@@ -4250,6 +4317,11 @@ pub(super) fn reconcile_secondary_views_from_bucket_index(
                     &mut features,
                     entry.object_key.to_string(),
                     entry.address,
+                    Some(block_routing_bucket(
+                        &entry.object_key,
+                        start_routing_bucket,
+                        end_routing_bucket,
+                    )),
                 );
             }
             "control_state" => {
@@ -4261,7 +4333,11 @@ pub(super) fn reconcile_secondary_views_from_bucket_index(
                             entry.address.block_slab_id(),
                             entry.address.offset(),
                             entry.address.length(),
-                            entry.address.routing_bucket(),
+                            Some(block_routing_bucket(
+                                &entry.object_key,
+                                start_routing_bucket,
+                                end_routing_bucket,
+                            )),
                         );
                         warm_batch.push((key, bytes.clone()));
                     }
@@ -4281,6 +4357,11 @@ pub(super) fn reconcile_secondary_views_from_bucket_index(
                     &mut context_event_timeline,
                     entry.object_key.to_string(),
                     entry.address,
+                    Some(block_routing_bucket(
+                        &entry.object_key,
+                        start_routing_bucket,
+                        end_routing_bucket,
+                    )),
                 );
             }
             "context_index" => {
@@ -4292,6 +4373,11 @@ pub(super) fn reconcile_secondary_views_from_bucket_index(
                     &mut context_indexes,
                     entry.object_key.to_string(),
                     entry.address,
+                    Some(block_routing_bucket(
+                        &entry.object_key,
+                        start_routing_bucket,
+                        end_routing_bucket,
+                    )),
                 );
             }
             "context_audit" => {
@@ -4303,6 +4389,11 @@ pub(super) fn reconcile_secondary_views_from_bucket_index(
                     &mut context_audits,
                     entry.object_key.to_string(),
                     entry.address,
+                    Some(block_routing_bucket(
+                        &entry.object_key,
+                        start_routing_bucket,
+                        end_routing_bucket,
+                    )),
                 );
             }
             "context_entity" => {
@@ -4325,6 +4416,11 @@ pub(super) fn reconcile_secondary_views_from_bucket_index(
                     &mut context_children,
                     entry.object_key.to_string(),
                     entry.address,
+                    Some(block_routing_bucket(
+                        &entry.object_key,
+                        start_routing_bucket,
+                        end_routing_bucket,
+                    )),
                 );
             }
             // "context_embedding" entries from pre-retirement indexes fall through to the
@@ -4338,6 +4434,11 @@ pub(super) fn reconcile_secondary_views_from_bucket_index(
                     &mut context_summaries,
                     entry.object_key.to_string(),
                     entry.address,
+                    Some(block_routing_bucket(
+                        &entry.object_key,
+                        start_routing_bucket,
+                        end_routing_bucket,
+                    )),
                 );
             }
             "context_compression" => {
@@ -4349,6 +4450,11 @@ pub(super) fn reconcile_secondary_views_from_bucket_index(
                     &mut context_compressions,
                     entry.object_key.to_string(),
                     entry.address,
+                    Some(block_routing_bucket(
+                        &entry.object_key,
+                        start_routing_bucket,
+                        end_routing_bucket,
+                    )),
                 );
             }
             _ => {}
@@ -4449,6 +4555,7 @@ pub(super) fn reconcile_secondary_views_from_bucket_index(
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 pub(super) fn insert_timestamped_secondary_view(
     block_store: &BlockStore,
     warm_shard: Option<ShardId>,
@@ -4456,6 +4563,7 @@ pub(super) fn insert_timestamped_secondary_view(
     target: &mut HashMap<String, BTreeMap<u64, BlockAddress>>,
     object_key: String,
     address: BlockAddress,
+    routing_bucket: Option<u32>,
 ) {
     let bytes = block_store.read(&address).ok();
     // Fold the disk->memory promotion into the load read we already perform here.
@@ -4470,7 +4578,7 @@ pub(super) fn insert_timestamped_secondary_view(
             address.block_slab_id(),
             address.offset(),
             address.length(),
-            address.routing_bucket(),
+            routing_bucket,
         );
         warm_batch.push((key, bytes.clone()));
     }
@@ -4519,6 +4627,7 @@ pub(super) fn insert_timestamped_secondary_view(
 /// logical record can physically live in several pages, and reconstruction visits pages in
 /// slab/offset order, not write order.
 #[allow(clippy::too_many_arguments)]
+#[allow(clippy::too_many_arguments)]
 pub(super) fn insert_context_event_views(
     block_store: &BlockStore,
     warm_shard: Option<ShardId>,
@@ -4527,6 +4636,7 @@ pub(super) fn insert_context_event_views(
     timeline: &mut HashMap<String, BTreeMap<u64, u64>>,
     object_key: String,
     address: BlockAddress,
+    routing_bucket: Option<u32>,
 ) {
     let bytes = block_store.read(&address).ok();
     if let (Some(shard_id), Some(bytes)) = (warm_shard, bytes.as_ref()) {
@@ -4535,7 +4645,7 @@ pub(super) fn insert_context_event_views(
             address.block_slab_id(),
             address.offset(),
             address.length(),
-            address.routing_bucket(),
+            routing_bucket,
         );
         warm_batch.push((key, bytes.clone()));
     }
@@ -4611,11 +4721,16 @@ pub(super) fn validate_bucket_ownership_index_from_entries(
             .address
             .object_id()
             .is_some_and(|actual| actual != expected_object_id);
+        // WHERE THE PAGE IS, against where its KEY routes -- two independent answers, which is what
+        // this report has to compare. It used to read the bucket off the ADDRESS, and an address's
+        // bucket was written by the same expression `expected_routing_bucket` is: the comparison
+        // was between a value and a copy of itself, and only an address carrying NONE could make it
+        // fire. `filed_bucket()` is the key of the map the walk was iterating, so a page filed in a
+        // bucket its key does not route to -- a stale range, a hand-moved entry -- fails here.
         let bucket_mismatch = entry
-            .address
-            .routing_bucket()
+            .filed_bucket()
             .is_some_and(|actual| actual != expected_routing_bucket);
-        if entry.address.object_id().is_none() || entry.address.routing_bucket().is_none() {
+        if entry.address.object_id().is_none() || entry.filed_bucket().is_none() {
             validation.missing_owner_block_refs =
                 validation.missing_owner_block_refs.saturating_add(1);
         }
@@ -4647,7 +4762,7 @@ pub(super) fn validate_bucket_ownership_index_from_entries(
                     expected_object_id,
                     actual_object_id: entry.address.object_id(),
                     expected_routing_bucket,
-                    actual_routing_bucket: entry.address.routing_bucket(),
+                    actual_routing_bucket: entry.filed_bucket(),
                 });
         }
     }
@@ -4701,11 +4816,11 @@ mod released_supplement_guards {
     #[test]
     fn the_filing_comparison_can_report_a_missing_filing() {
         let mut shard = ShardState::default();
-        releasable_bucket(&mut shard, 7, "control-key");
+        let control_key = releasable_bucket(&mut shard, 7, "control-key");
 
         let from_the_index = filings(&shard);
         assert_eq!(
-            from_the_index.get("control-key"),
+            from_the_index.get(&control_key),
             Some(&Some(7)),
             "the bucket-index arm must report a filing, or the plant below proves nothing",
         );
@@ -4722,7 +4837,7 @@ mod released_supplement_guards {
             from_the_model_maps.len(),
         );
         assert_eq!(
-            from_the_model_maps.get("control-key"),
+            from_the_model_maps.get(&control_key),
             Some(&None),
             "the comparison used below cannot express a missing filing, so its equality is \
              satisfied by a walk that reports nothing at all",
@@ -4739,15 +4854,19 @@ mod released_supplement_guards {
     #[test]
     fn a_released_buckets_pages_still_report_the_bucket_they_are_filed_in() {
         let mut shard = ShardState::default();
-        releasable_bucket(&mut shard, 7, "released-key");
-        releasable_bucket(&mut shard, 9, "resident-key");
+        let released_key = releasable_bucket(&mut shard, 7, "released-key");
+        let resident_key = releasable_bucket(&mut shard, 9, "resident-key");
+        assert_ne!(
+            released_key, resident_key,
+            "the two fixture keys must differ, or one page overwrote the other",
+        );
 
         let before = filings(&shard);
         assert_eq!(
             before,
             BTreeMap::from([
-                ("released-key".to_string(), Some(7u32)),
-                ("resident-key".to_string(), Some(9u32)),
+                (released_key.clone(), Some(7u32)),
+                (resident_key.clone(), Some(9u32)),
             ]),
             "the fixture does not start in the state this test compares against",
         );
@@ -4781,29 +4900,34 @@ mod released_supplement_guards {
         );
         // Named separately, so a failure says which half moved rather than printing two maps.
         assert_eq!(
-            after.get("released-key"),
+            after.get(&released_key),
             Some(&Some(7)),
             "the page of the RELEASED bucket lost the bucket it is filed in",
         );
         assert_eq!(
-            after.get("resident-key"),
+            after.get(&resident_key),
             Some(&Some(9)),
             "the page of the bucket that was NOT released moved, which is a different defect",
         );
     }
 
-    /// AND THE SUPPLEMENT'S FILING IS PRODUCTION-INERT, which is why no reader could see it.
+    /// AND THE SUPPLEMENT'S FILING IS NOW WHAT EVERY READER GETS -- it was production-inert, and
+    /// that is exactly what changed.
     ///
-    /// mx#1949's five readers all spell `address.routing_bucket().or(entry.filed_bucket())`. The
-    /// supplement's own filter admits a page only when `address.routing_bucket()` is `Some`, so
-    /// on this path the left side always answers and the right side is never evaluated. That is
-    /// asserted here rather than read off the source: it is what makes the test above a
-    /// statement about the WALK's contract rather than about any reader's answer, and it is what
-    /// a reader added later would be relying on without knowing it.
+    /// mx#1949's five readers spelled `address.routing_bucket().or(entry.filed_bucket())`, and the
+    /// supplement admitted a page only when the address carried a bucket -- so the left side always
+    /// answered, the right side was never evaluated, and a mutant that broke the supplement's filing
+    /// survived by construction.
+    ///
+    /// AN ADDRESS CARRIES NO BUCKET. The five readers are `entry.filed_bucket()` with a whole-range
+    /// hash as the last resort, so the supplement's filing is the ONLY thing standing between a
+    /// released bucket's page and a bucket the shard does not hold. What was inert is load-bearing,
+    /// and this test is inverted to say so: it asserts the reader's own expression answers the
+    /// SUPPLEMENT'S filing and not the fallback.
     #[test]
-    fn no_reader_can_reach_the_supplements_filing_because_the_address_always_answers_first() {
+    fn every_reader_now_gets_the_supplements_filing_because_nothing_answers_before_it() {
         let mut shard = ShardState::default();
-        releasable_bucket(&mut shard, 7, "inert-key");
+        let _inert_key = releasable_bucket(&mut shard, 7, "inert-key");
         let outcome = release_bucket_blocks(&mut shard, &[7]);
         assert_eq!(outcome.released_buckets, vec![7], "{outcome:?}");
 
@@ -4811,18 +4935,18 @@ mod released_supplement_guards {
         assert_eq!(entries.len(), 1, "the supplement returned {} pages", entries.len());
         for entry in &entries {
             assert_eq!(
-                entry.address.routing_bucket(),
+                entry.filed_bucket(),
                 Some(7),
-                "a supplemented page whose address carries no routing bucket would send every \
-                 reader to `filed_bucket()`, and the walk above would then be observable from \
-                 production rather than inert",
+                "a supplemented page that reports no filing sends every one of the five readers to \
+                 `bucket_for_object(key, 0, u32::MAX)`, which on a shard loaded on a narrow range \
+                 names a bucket it does not hold. This walk is the only answer now.",
             );
-            // The reader's own expression, spelled out: the left side answers, so the right one
-            // is dead on this path.
-            assert_eq!(
-                entry.address.routing_bucket().or(entry.filed_bucket()),
-                entry.address.routing_bucket(),
-                "the five readers' fallback is reachable on the supplement path",
+            // The reader's own expression, spelled out. There is no left side any more, which is
+            // the statement: the fallback below is reached only when the walk does not know.
+            assert_ne!(
+                entry.filed_bucket(),
+                None,
+                "the five readers' whole-keyspace fallback is reachable on the supplement path",
             );
         }
     }
@@ -4854,6 +4978,39 @@ mod release_refusal_guards {
 
     const OBJECT_ID: u64 = 22;
 
+    /// THE RANGE THE FIXTURE STAMPS, AND WHY IT IS NARROW.
+    ///
+    /// A page's bucket is `block_routing_bucket(object_key, start, end)`. The guards here choose the
+    /// BUCKET -- they assert on it by number -- so the KEY is what has to be chosen to match, and a
+    /// search for one terminates in about `end + 1` tries. Over the whole keyspace that is four
+    /// billion. 128 buckets is enough for every bucket id these guards name.
+    const RELEASE_RANGE_END: u32 = 127;
+
+    /// A key that routes to `routing_bucket` on [`RELEASE_RANGE_END`], found by trying suffixes.
+    ///
+    /// WHY THE FIXTURE HAS TO DO THIS. `release_bucket_blocks` refuses a bucket holding a page whose
+    /// key does not route to it (`BlockRoutingMismatch`), and it has to: a release is reversible only
+    /// because `reload_released_bucket` re-derives that bucket's pages from the model maps by the SAME
+    /// expression, so a page filed where its key does not route would simply be lost by the reload.
+    /// The fixture used to stamp the bucket onto the page's address, which is how it could name a
+    /// bucket and a key independently; an address carries no bucket now.
+    fn key_routing_to(prefix: &str, routing_bucket: u32) -> String {
+        assert!(
+            routing_bucket <= RELEASE_RANGE_END,
+            "bucket {routing_bucket} is outside the fixture's own range 0..{RELEASE_RANGE_END}, so \
+             no key can route to it and the search below would spin"
+        );
+        for suffix in 0..100_000u32 {
+            let key = format!("{prefix}-{suffix}");
+            if crate::engine::hashing::block_routing_bucket(&key, 0, RELEASE_RANGE_END)
+                == routing_bucket
+            {
+                return key;
+            }
+        }
+        panic!("no key with prefix {prefix} routes to bucket {routing_bucket} in 100,000 tries");
+    }
+
     fn address(routing_bucket: u32, length: u64) -> BlockAddress {
         BlockAddress::from_parts(
             3,
@@ -4861,7 +5018,6 @@ mod release_refusal_guards {
             length,
             Some(11),
             Some(OBJECT_ID),
-            Some(routing_bucket),
         )
     }
 
@@ -4891,42 +5047,82 @@ mod release_refusal_guards {
     /// One bucket that satisfies every precondition: resident, not loading, clean, undeleted,
     /// holding one clean, undeleted, correctly routed `string` block that the model maps derive
     /// exactly. Anything a guard changes is a change from THIS.
-    pub(super) fn releasable_bucket(shard: &mut ShardState, routing_bucket: u32, key: &str) {
+    ///
+    /// RETURNS THE KEY IT USED, which the caller names by prefix rather than in full: the key has to
+    /// route to `routing_bucket` and only a search can produce one. See [`key_routing_to`].
+    pub(super) fn releasable_bucket(
+        shard: &mut ShardState,
+        routing_bucket: u32,
+        key_prefix: &str,
+    ) -> String {
+        // The shard must carry the range the key was chosen on, or `release_bucket_blocks` derives
+        // the page's bucket over the whole keyspace and refuses every fixture here.
+        shard.set_routing_range(0, RELEASE_RANGE_END);
+        let key = key_routing_to(key_prefix, routing_bucket);
+        let held = address(routing_bucket, 64);
+        shard.strings.insert(key.clone(), held.clone());
+        shard
+            .bucket_index
+            .bucket_map
+            .insert(routing_bucket, node(routing_bucket, block(&key, "string", None, held)));
+        key
+    }
+
+    /// A releasable bucket for a key that is GIVEN, with the bucket DERIVED and returned.
+    ///
+    /// The scale fixtures want N distinct buckets and do not care which; searching for a key per
+    /// chosen bucket would cost a coupon-collector's sweep over thousands of them. So they give the
+    /// key and take the bucket -- and they take it over the WHOLE keyspace, where four thousand keys
+    /// land in four thousand distinct buckets almost surely, which is what those fixtures assert.
+    ///
+    /// The refusal guards cannot use this: they name a bucket by number and assert on it, so for them
+    /// the key is what has to be chosen. See [`key_routing_to`].
+    pub(super) fn releasable_bucket_for_key(shard: &mut ShardState, key: &str) -> u32 {
+        shard.set_routing_range(0, u32::MAX);
+        let routing_bucket = crate::engine::hashing::block_routing_bucket(key, 0, u32::MAX);
         let held = address(routing_bucket, 64);
         shard.strings.insert(key.to_string(), held.clone());
         shard
             .bucket_index
             .bucket_map
             .insert(routing_bucket, node(routing_bucket, block(key, "string", None, held)));
+        routing_bucket
     }
 
-    fn releasable_shard(routing_bucket: u32, key: &str) -> ShardState {
+    fn releasable_shard(routing_bucket: u32, key_prefix: &str) -> (ShardState, String) {
         let mut shard = ShardState::default();
-        releasable_bucket(&mut shard, routing_bucket, key);
-        shard
+        let key = releasable_bucket(&mut shard, routing_bucket, key_prefix);
+        (shard, key)
     }
 
     /// The same bucket, whose one block carries an unwritten change. The model maps still derive
     /// it -- `dirty` is not part of a block's identity -- so the map-agreement term is satisfied
     /// and the dirty-block term is the only one left to refuse on.
-    fn bucket_holding_a_dirty_block(shard: &mut ShardState, routing_bucket: u32, key: &str) {
+    fn bucket_holding_a_dirty_block(
+        shard: &mut ShardState,
+        routing_bucket: u32,
+        key_prefix: &str,
+    ) -> String {
+        shard.set_routing_range(0, RELEASE_RANGE_END);
+        let key = key_routing_to(key_prefix, routing_bucket);
         let held = address(routing_bucket, 64);
-        shard.strings.insert(key.to_string(), held.clone());
+        shard.strings.insert(key.clone(), held.clone());
         let dirty = BlockIndex {
             dirty: true,
-            ..block(key, "string", None, held)
+            ..block(&key, "string", None, held)
         };
         shard
             .bucket_index
             .bucket_map
             .insert(routing_bucket, node(routing_bucket, dirty));
+        key
     }
 
     /// THE DENOMINATOR. Without this every guard below could pass because the fixture never
     /// released anything, which is the shape that makes a refusal guard worthless.
     #[test]
     fn a_bucket_that_satisfies_every_precondition_is_released() {
-        let mut shard = releasable_shard(7, "denominator-key");
+        let (mut shard, _key) = releasable_shard(7, "denominator-key");
         let outcome = release_bucket_blocks(&mut shard, &[7]);
 
         assert_eq!(outcome.released_buckets, vec![7], "{outcome:?}");
@@ -4951,7 +5147,7 @@ mod release_refusal_guards {
     /// them from.
     #[test]
     fn a_dirty_bucket_is_refused_and_the_refusal_names_the_dirty_bucket_term() {
-        let mut shard = releasable_shard(7, "dirty-bucket-key");
+        let (mut shard, _key) = releasable_shard(7, "dirty-bucket-key");
         shard
             .bucket_index
             .bucket_map
@@ -4980,7 +5176,7 @@ mod release_refusal_guards {
     #[test]
     fn a_dirty_block_is_refused_and_the_refusal_names_the_dirty_block_term() {
         let mut shard = ShardState::default();
-        bucket_holding_a_dirty_block(&mut shard, 7, "dirty-block-key");
+        let _key = bucket_holding_a_dirty_block(&mut shard, 7, "dirty-block-key");
 
         let outcome = release_bucket_blocks(&mut shard, &[7]);
 
@@ -5004,15 +5200,17 @@ mod release_refusal_guards {
     #[test]
     fn an_unaddressable_kind_is_refused_and_the_refusal_names_the_kind_term() {
         let mut shard = ShardState::default();
+        shard.set_routing_range(0, RELEASE_RANGE_END);
+        let key = key_routing_to("hash-kind-key", 7);
         let held = address(7, 64);
         shard
             .hashes
-            .entry("hash-kind-key".to_string())
+            .entry(key.clone())
             .or_default()
             .insert("field".to_string(), held.clone());
         shard.bucket_index.bucket_map.insert(
             7,
-            node(7, block("hash-kind-key", "hash", Some("field"), held)),
+            node(7, block(&key, "hash", Some("field"), held)),
         );
 
         let outcome = release_bucket_blocks(&mut shard, &[7]);
@@ -5031,6 +5229,72 @@ mod release_refusal_guards {
             },
             "the refusal was not attributed to the kind term -- if this says \
              model_map_disagreement instead, the fixture stopped being derivable and the guard \
+             would pass for the wrong reason",
+        );
+    }
+
+    /// TERM: the page's KEY must route to the bucket holding it.
+    ///
+    /// THE TERM THAT REPLACED A COMPARISON WITH ITSELF, and the one guard this change owes. It used to
+    /// read `block.address.routing_bucket() != Some(routing_bucket)` -- the page's own copy of its
+    /// bucket against the bucket holding it, written by the same expression that filed it, so only an
+    /// address carrying NONE could make it fire. It now compares where the page IS against where its
+    /// KEY routes, which are two independent answers.
+    ///
+    /// AND IT IS LOAD-BEARING, not decorative: a release is reversible only because
+    /// `reload_released_bucket` re-derives the bucket's pages from the model maps by that same
+    /// expression. A page filed where its key does not route would simply not be re-derived, so the
+    /// release would lose it -- which is why the refusal has to fire and why this is the guard that
+    /// says so.
+    ///
+    /// THE FIXTURE MOVES THE PAGE, not the address: there is no address field left to tamper with.
+    #[test]
+    fn a_page_whose_key_does_not_route_here_is_refused_and_the_refusal_names_the_routing_term() {
+        let mut shard = ShardState::default();
+        let key = releasable_bucket(&mut shard, 7, "misfiled-key");
+
+        // DENOMINATOR: the fixture starts releasable, which is what makes the move below the only
+        // difference. `a_bucket_that_satisfies_every_precondition_is_released` is this module's
+        // denominator for that, and this is the same fixture.
+        assert_eq!(
+            7,
+            crate::engine::hashing::block_routing_bucket(&key, 0, RELEASE_RANGE_END),
+            "the fixture's key must route to bucket 7 before it is moved, or the refusal below is \
+             about the fixture and not about the move",
+        );
+
+        // THE MOVE: file the very same node under a bucket the key does not route to.
+        let node = shard
+            .bucket_index
+            .bucket_map
+            .remove(&7)
+            .expect("the fixture bucket");
+        let elsewhere = (0..=RELEASE_RANGE_END)
+            .find(|candidate| {
+                *candidate != crate::engine::hashing::block_routing_bucket(&key, 0, RELEASE_RANGE_END)
+            })
+            .expect("some bucket is not the key's");
+        shard.bucket_index.bucket_map.insert(
+            elsewhere,
+            BucketNode { routing_bucket: elsewhere, ..node },
+        );
+
+        let outcome = release_bucket_blocks(&mut shard, &[elsewhere]);
+
+        assert!(
+            outcome.released_buckets.is_empty(),
+            "a bucket holding a page whose key routes elsewhere was released: {outcome:?}",
+        );
+        assert_eq!(outcome.released_blocks, 0, "{outcome:?}");
+        assert_eq!(outcome.refused_buckets, 1, "{outcome:?}");
+        assert_eq!(
+            outcome.refusals,
+            BucketReleaseRefusals {
+                block_routing_mismatch: 1,
+                ..BucketReleaseRefusals::default()
+            },
+            "the refusal was not attributed to the routing term -- if it says \
+             model_map_disagreement instead, the move broke the map agreement too and the guard \
              would pass for the wrong reason",
         );
     }
@@ -5073,10 +5337,8 @@ mod release_refusal_guards {
     /// released -- the disagreement this term exists to refuse across.
     #[test]
     fn a_model_map_disagreement_is_refused_and_the_refusal_names_the_map_term() {
-        let mut shard = releasable_shard(7, "disagreement-key");
-        shard
-            .strings
-            .insert("disagreement-key".to_string(), address(7, 4_096));
+        let (mut shard, key) = releasable_shard(7, "disagreement-key");
+        shard.strings.insert(key, address(7, 4_096));
 
         let outcome = release_bucket_blocks(&mut shard, &[7]);
 
@@ -5102,25 +5364,24 @@ mod release_refusal_guards {
     #[test]
     fn four_refusal_terms_and_one_release_are_counted_separately_in_one_batch() {
         let mut shard = ShardState::default();
-        releasable_bucket(&mut shard, 1, "batch-releasable");
-        releasable_bucket(&mut shard, 2, "batch-dirty-bucket");
-        bucket_holding_a_dirty_block(&mut shard, 3, "batch-dirty-block");
-        releasable_bucket(&mut shard, 5, "batch-disagreement");
+        let _releasable = releasable_bucket(&mut shard, 1, "batch-releasable");
+        let _dirty_bucket = releasable_bucket(&mut shard, 2, "batch-dirty-bucket");
+        let _dirty_block = bucket_holding_a_dirty_block(&mut shard, 3, "batch-dirty-block");
+        let disagreement_key = releasable_bucket(&mut shard, 5, "batch-disagreement");
 
         shard.bucket_index.bucket_map.get_mut(&2).expect("fixture").set_dirty(true);
+        let kind_key = key_routing_to("batch-kind", 4);
         let held = address(4, 64);
         shard
             .hashes
-            .entry("batch-kind".to_string())
+            .entry(kind_key.clone())
             .or_default()
             .insert("field".to_string(), held.clone());
         shard
             .bucket_index
             .bucket_map
-            .insert(4, node(4, block("batch-kind", "hash", Some("field"), held)));
-        shard
-            .strings
-            .insert("batch-disagreement".to_string(), address(5, 4_096));
+            .insert(4, node(4, block(&kind_key, "hash", Some("field"), held)));
+        shard.strings.insert(disagreement_key, address(5, 4_096));
 
         let candidates = [1u32, 2, 3, 4, 5];
         let outcome = release_bucket_blocks(&mut shard, &candidates);
@@ -5172,26 +5433,42 @@ mod release_refusal_guards {
 /// control below fails on exactly that.
 #[cfg(test)]
 mod release_walk_scale {
-    use super::release_refusal_guards::releasable_bucket;
+    use super::release_refusal_guards::releasable_bucket_for_key;
     use super::{
         bucket_scoped_model_entries, release_bucket_blocks, reload_released_bucket,
         reset_bucket_scoped_model_entries,
     };
     use crate::engine::state::ShardState;
 
-    /// `buckets` releasable buckets, one live `string` page each, numbered from 1.
-    fn shard_with(buckets: u32) -> ShardState {
+    /// `buckets` releasable buckets, one live `string` page each, and THE BUCKETS THEY LANDED IN.
+    ///
+    /// The bucket is derived from the key rather than chosen, because a page filed where its key does
+    /// not route is a bucket a release REFUSES -- see `releasable_bucket_for_key`. The caller takes its
+    /// victims from the returned list rather than assuming they are numbered from one.
+    fn shard_with(buckets: u32) -> (ShardState, Vec<u32>) {
         let mut shard = ShardState::default();
-        let mut routing_bucket = 1u32;
-        while routing_bucket <= buckets {
-            releasable_bucket(
+        let mut landed = Vec::with_capacity(buckets as usize);
+        let mut index = 1u32;
+        while index <= buckets {
+            landed.push(releasable_bucket_for_key(
                 &mut shard,
-                routing_bucket,
-                &format!("walk-scale-key-{routing_bucket}"),
-            );
-            routing_bucket += 1;
+                &format!("walk-scale-key-{index}"),
+            ));
+            index += 1;
         }
-        shard
+        // DENOMINATOR: the keys really did land in distinct buckets. Over the whole keyspace a
+        // collision is a one-in-two-million accident at this size, and if one ever happens the
+        // per-bucket claims below would be measuring a bucket holding two pages.
+        let distinct: std::collections::BTreeSet<u32> = landed.iter().copied().collect();
+        assert_eq!(
+            distinct.len(),
+            landed.len(),
+            "{} of {} keys collided into a shared bucket, so the fixture no longer holds one page \
+             per bucket",
+            landed.len() - distinct.len(),
+            landed.len(),
+        );
+        (shard, landed)
     }
 
     /// What one release of the SAME four victims costs out of a store of `buckets`.
@@ -5201,9 +5478,9 @@ mod release_walk_scale {
     /// materialize, and a fixture whose two sizes did not differ in it would make the claim below
     /// a comparison of a store with itself.
     fn release_four_of(buckets: u32) -> (u64, usize, usize, usize) {
-        let mut shard = shard_with(buckets);
+        let (mut shard, landed) = shard_with(buckets);
         let live_pages = shard.strings.len();
-        let candidates = [1u32, 2, 3, 4];
+        let candidates = [landed[0], landed[1], landed[2], landed[3]];
 
         reset_bucket_scoped_model_entries();
         let outcome = release_bucket_blocks(&mut shard, &candidates);
@@ -5303,13 +5580,14 @@ mod release_walk_scale {
         const LARGE: u32 = 4_000;
 
         fn reload_one_of(buckets: u32) -> (u64, usize) {
-            let mut shard = shard_with(buckets);
+            let (mut shard, landed) = shard_with(buckets);
+            let victim = landed[0];
             let live_pages = shard.strings.len();
-            let outcome = release_bucket_blocks(&mut shard, &[1]);
-            assert_eq!(outcome.released_buckets, vec![1], "{outcome:?}");
+            let outcome = release_bucket_blocks(&mut shard, &[victim]);
+            assert_eq!(outcome.released_buckets, vec![victim], "{outcome:?}");
 
             reset_bucket_scoped_model_entries();
-            let reloaded = reload_released_bucket(&mut shard, 1, 1);
+            let reloaded = reload_released_bucket(&mut shard, 1, victim);
             let materialized = bucket_scoped_model_entries();
 
             assert!(reloaded, "the bucket must have been reloaded, or nothing was walked for");
@@ -5317,7 +5595,7 @@ mod release_walk_scale {
                 shard
                     .bucket_index
                     .bucket_map
-                    .get(&1)
+                    .get(&victim)
                     .map(|bucket| bucket.block_index.len()),
                 Some(1),
                 "the reload must have installed the page it released",
@@ -5357,7 +5635,7 @@ mod release_walk_scale {
 /// suite is read single-threaded -- the same contract as [`bucket_scoped_model_entries`].
 #[cfg(test)]
 mod live_block_scan_coverage {
-    use super::release_refusal_guards::releasable_bucket;
+    use super::release_refusal_guards::releasable_bucket_for_key;
     use super::{
         collect_bucket_index_live_block_entries, collect_live_block_entries,
         collect_model_live_block_entries, live_block_scan_entries, release_bucket_blocks,
@@ -5367,19 +5645,29 @@ mod live_block_scan_coverage {
 
     const BUCKETS: u32 = 64;
 
-    /// `BUCKETS` buckets, one live `string` page each, numbered from 1.
-    fn shard_with(buckets: u32) -> ShardState {
+    /// `BUCKETS` buckets, one live `string` page each, and THE BUCKETS THEY LANDED IN.
+    ///
+    /// Derived rather than chosen, for the reason `releasable_bucket_for_key` gives: a page filed
+    /// where its key does not route is a bucket a release refuses.
+    fn shard_with(buckets: u32) -> (ShardState, Vec<u32>) {
         let mut shard = ShardState::default();
-        let mut routing_bucket = 1u32;
-        while routing_bucket <= buckets {
-            releasable_bucket(
+        let mut landed = Vec::with_capacity(buckets as usize);
+        let mut index = 1u32;
+        while index <= buckets {
+            landed.push(releasable_bucket_for_key(
                 &mut shard,
-                routing_bucket,
-                &format!("scan-coverage-key-{routing_bucket}"),
-            );
-            routing_bucket += 1;
+                &format!("scan-coverage-key-{index}"),
+            ));
+            index += 1;
         }
-        shard
+        let distinct: std::collections::BTreeSet<u32> = landed.iter().copied().collect();
+        assert_eq!(
+            distinct.len(),
+            landed.len(),
+            "the fixture's keys collided into a shared bucket, so it no longer holds one page per \
+             bucket",
+        );
+        (shard, landed)
     }
 
     /// THE FIXTURE'S OWN DENOMINATOR, as its own test so a failure here cannot stop the claims
@@ -5387,7 +5675,7 @@ mod live_block_scan_coverage {
     /// walk from a bucket-scoped one.
     #[test]
     fn the_fixture_spreads_its_pages_over_many_buckets() {
-        let shard = shard_with(BUCKETS);
+        let (shard, _landed) = shard_with(BUCKETS);
 
         assert_eq!(
             shard.strings.len(),
@@ -5406,7 +5694,7 @@ mod live_block_scan_coverage {
     /// A whole-shard model-map walk reached DIRECTLY, as five production callers reach it.
     #[test]
     fn a_direct_whole_shard_model_walk_is_counted() {
-        let shard = shard_with(BUCKETS);
+        let (shard, _landed) = shard_with(BUCKETS);
 
         reset_live_block_scan_entries();
         let entries = collect_model_live_block_entries(&shard);
@@ -5429,7 +5717,7 @@ mod live_block_scan_coverage {
     /// A bucket-index walk reached DIRECTLY, as three production callers reach it.
     #[test]
     fn a_direct_bucket_index_walk_is_counted() {
-        let shard = shard_with(BUCKETS);
+        let (shard, _landed) = shard_with(BUCKETS);
 
         reset_live_block_scan_entries();
         let entries = collect_bucket_index_live_block_entries(&shard);
@@ -5457,9 +5745,10 @@ mod live_block_scan_coverage {
     /// per page in the store, so the miss grows with the store rather than being a fixed offset.
     #[test]
     fn the_released_bucket_supplement_is_counted() {
-        let mut shard = shard_with(BUCKETS);
-        let outcome = release_bucket_blocks(&mut shard, &[1]);
-        assert_eq!(outcome.released_buckets, vec![1], "{outcome:?}");
+        let (mut shard, landed) = shard_with(BUCKETS);
+        let victim = landed[0];
+        let outcome = release_bucket_blocks(&mut shard, &[victim]);
+        assert_eq!(outcome.released_buckets, vec![victim], "{outcome:?}");
 
         let live_pages = shard.strings.len();
         let indexed_pages = shard
@@ -5509,9 +5798,10 @@ mod live_block_scan_coverage {
     #[test]
     fn what_a_return_value_charge_could_not_see_grows_with_the_store() {
         fn charged_and_returned(buckets: u32) -> (u64, usize) {
-            let mut shard = shard_with(buckets);
-            let outcome = release_bucket_blocks(&mut shard, &[1]);
-            assert_eq!(outcome.released_buckets, vec![1], "{outcome:?}");
+            let (mut shard, landed) = shard_with(buckets);
+            let victim = landed[0];
+            let outcome = release_bucket_blocks(&mut shard, &[victim]);
+            assert_eq!(outcome.released_buckets, vec![victim], "{outcome:?}");
 
             reset_live_block_scan_entries();
             let entries = collect_live_block_entries(&shard);
@@ -5586,7 +5876,7 @@ mod model_kind_registry_guards {
     use std::collections::{BTreeMap, BTreeSet};
 
     fn address(routing_bucket: u32) -> BlockAddress {
-        BlockAddress::from_parts(3, 128, 64, Some(11), Some(22), Some(routing_bucket))
+        BlockAddress::from_parts(3, 128, 64, Some(11), Some(22))
     }
 
     /// ONE PAGE IN EVERY MAP THE WALK READS.

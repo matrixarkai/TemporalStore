@@ -1822,3 +1822,347 @@ fn the_routing_range_decision_covers_its_four_cases_in_the_right_order() {
          run before the on-disk-state check"
     );
 }
+
+// =============================================================================================
+// 5. WHAT THE ROUTING BUCKET COST A RECORD, AT BOTH RANGES AND IN BOTH COLUMNS
+// =============================================================================================
+
+/// THE ADDRESSES A RECORD IS RESIDENT IN, COUNTED, AT BOTH RANGES -- AND WHAT EIGHT BYTES OFF EACH
+/// IS WORTH.
+///
+/// `BlockAddress` went 32 bytes to 24: `routing_bucket` stopped being a field (a page's bucket is
+/// `block_routing_bucket(object_key, ..)` over the range the store is stamped with) and `block_id`
+/// narrowed from 32 bits to 16. NEITHER is worth anything alone -- 29 - 4 = 25 and 29 - 2 = 27, both
+/// of which round back to 32 -- and together they shed six and cross to 24.
+/// `block_store::address_size_tests::every_byte_of_a_block_address_is_accounted_for` asserts both
+/// counterfactuals; this measures what the step is worth on a store.
+///
+/// # WHY A COUNT TIMES A WIDTH, AND NOT A BEFORE-AND-AFTER
+///
+/// One binary holds one width. So the per-record saving is reported as the COUNTED number of live
+/// addresses a record is resident in, times the width the struct measurably lost -- and both factors
+/// are measurements. The count comes from walking the shard, the width from `size_of`. The byte
+/// columns below are what anchors it: they are what the allocator actually handed over for the map
+/// those addresses live in, so an arm where the addresses were not resident could not report them.
+///
+/// # ONE INSTRUMENT, BOTH COLUMNS
+///
+/// `alloc_bytes` is what the caller asked for; `chunk_bytes` reads `malloc_usable_size` and charges
+/// what the allocator handed over. A width change moves the request column by construction and the
+/// chunk column only if it crosses a rounding step, so reporting one without the other would let a
+/// saving that the allocator rounds straight back be published as a saving.
+///
+/// # THE CONTROL ON THE MECHANISM
+///
+/// The allocation CALL count per record must NOT move with a width change: narrowing a struct held
+/// inline changes how many bytes a container asks for, never how many times it asks. That is asserted
+/// against the arms of this sweep rather than against a remembered figure -- every arm at one corpus
+/// size must agree on calls per record to within the bucket-count effect the sweep itself is about,
+/// and the two ranges are reported side by side so a reader can see which term moved.
+///
+/// rust-internal: reads the engine's own index, no product behaviour
+#[cfg(feature = "alloc-probe")]
+#[test]
+#[ignore = "seeds four stores up to 40,000 records each; run by name"]
+fn what_the_narrower_address_is_worth_a_record_at_both_ranges_and_in_both_columns() {
+    /// Every live address a record is resident in, counted rather than assumed to be two.
+    fn resident_addresses(engine: &TemporalEngine) -> (usize, usize, usize) {
+        let shards = engine.shards.read().expect("engine lock poisoned");
+        let shard = shards.get(&1).expect("shard 1");
+        let in_model_maps = shard.strings.len()
+            + shard.hashes.values().map(|fields| fields.len()).sum::<usize>()
+            + shard.features.values().map(|series| series.len()).sum::<usize>()
+            + shard.context_nodes.len()
+            + shard.control_state_blocks.len();
+        let in_bucket_index = shard
+            .bucket_index
+            .bucket_map
+            .values()
+            .map(|bucket| bucket.block_index.len())
+            .sum::<usize>();
+        (in_model_maps, in_bucket_index, in_model_maps + in_bucket_index)
+    }
+
+    const OLD_WIDTH: usize = 32;
+    let width = std::mem::size_of::<BlockAddress>();
+    assert_eq!(
+        24, width,
+        "this measurement prices the step from {OLD_WIDTH} to 24; the address is {width} bytes"
+    );
+
+    let mut path_lengths: BTreeSet<usize> = BTreeSet::new();
+    let mut rows: Vec<(usize, u32, usize, usize, u64, u64, u64)> = Vec::new();
+
+    for records in [SMALL, LARGE] {
+        for end_routing_bucket in [1023u32, WIDE_END] {
+            let dir = tempfile::tempdir().expect("tempdir");
+            path_lengths.insert(store_path_length(dir.path()));
+            let engine = engine_on(dir.path());
+            load_on(&engine, end_routing_bucket);
+            let keys = seed_routed(&engine, records);
+            assert_eq!(records, read_back(&engine, &keys), "the arm cannot read itself back");
+
+            let (in_model_maps, in_bucket_index, addresses) = resident_addresses(&engine);
+            assert!(
+                in_model_maps > 0 && in_bucket_index > 0,
+                "0..{end_routing_bucket} at {records} records: {in_model_maps} model-map and \
+                 {in_bucket_index} index addresses. BOTH have to be non-zero -- there are two \
+                 addresses per stored record and a census that saw one of them would halve every \
+                 figure below"
+            );
+
+            let (request_bytes, chunk_bytes, allocs) = {
+                let shards = engine.shards.read().expect("engine lock poisoned");
+                let shard = shards.get(&1).expect("shard 1");
+                let probe = Probe::start();
+                let copy = shard.bucket_index.bucket_map.clone();
+                let counts = probe.stop();
+                std::hint::black_box(&copy);
+                drop(copy);
+                (counts.alloc_bytes, counts.chunk_bytes, counts.allocs)
+            };
+            assert!(
+                request_bytes > 0 && chunk_bytes > 0 && allocs > 0,
+                "0..{end_routing_bucket} at {records} records: the instrument charged \
+                 {request_bytes}/{chunk_bytes} B in {allocs} calls; a zero reads as the shape being \
+                 free"
+            );
+            rows.push((
+                records,
+                end_routing_bucket,
+                addresses,
+                in_bucket_index,
+                request_bytes,
+                chunk_bytes,
+                allocs,
+            ));
+        }
+    }
+
+    // THE STORE PATH LENGTH, HELD AND STATED. Allocations move with it at about six bytes a
+    // character, which has masqueraded as a result in this tree before.
+    assert_eq!(
+        1,
+        path_lengths.len(),
+        "the arms ran at {} different store path lengths ({path_lengths:?})",
+        path_lengths.len()
+    );
+    println!(
+        "  store path length held at {} characters across all {} arms",
+        path_lengths.iter().next().copied().unwrap_or_default(),
+        rows.len()
+    );
+
+    println!("=== what the narrower address is worth a record ===");
+    for (records, end_routing_bucket, addresses, in_index, request_bytes, chunk_bytes, allocs) in
+        &rows
+    {
+        let per_record = *addresses as f64 / *records as f64;
+        let saved = per_record * (OLD_WIDTH - width) as f64;
+        let label = if *end_routing_bucket == WIDE_END {
+            "0..u32::MAX".to_string()
+        } else {
+            format!("0..{end_routing_bucket}")
+        };
+        println!(
+            "  {records:>6} rec {label:<12} addresses {addresses:>7} ({per_record:>4.2}/rec, \
+             {in_index} in the index) | was {:>7.2} B/rec of address, now {:>7.2} | SAVED \
+             {saved:>5.2} B/rec | bucket map REQUEST {:>8.1} B/rec CHUNK {:>8.1} B/rec allocs \
+             {:>7.4}/rec",
+            per_record * OLD_WIDTH as f64,
+            per_record * width as f64,
+            *request_bytes as f64 / *records as f64,
+            *chunk_bytes as f64 / *records as f64,
+            *allocs as f64 / *records as f64,
+        );
+    }
+
+    // TWO ADDRESSES A RECORD, asserted rather than restated: the figure above is a count times a
+    // width, and the count is the half that can silently become one.
+    for (records, end_routing_bucket, addresses, _, _, _, _) in &rows {
+        let per_record = *addresses as f64 / *records as f64;
+        assert!(
+            per_record >= 2.0,
+            "0..{end_routing_bucket} at {records} records: {per_record:.2} addresses a record. \
+             There are two per stored record -- one in the model map a read resolves through, one \
+             in the page-index entry -- so anything under two means a map was not walked"
+        );
+    }
+
+    // THE BYTE COLUMNS HAVE TO BE BIG ENOUGH TO HOLD THE ADDRESSES THEY ARE BEING CREDITED FOR.
+    // Without this the saving is arithmetic over a count that need not be resident anywhere.
+    for (records, end_routing_bucket, _, in_index, request_bytes, chunk_bytes, _) in &rows {
+        let address_bytes = (*in_index * width) as u64;
+        assert!(
+            *chunk_bytes >= address_bytes && *request_bytes >= address_bytes,
+            "0..{end_routing_bucket} at {records} records: the bucket map charged \
+             {request_bytes}/{chunk_bytes} B but holds {in_index} addresses at {width} B each \
+             ({address_bytes} B). The saving is credited to bytes that are not in the measured \
+             total."
+        );
+    }
+
+    // THE CONTROL ON THE MECHANISM: a width change moves BYTES, not CALLS. The allocation count per
+    // record is a function of the container arms -- how many buckets take a `Vec` -- and not of how
+    // wide the inline entry is, so the two byte columns and the call column must not move together.
+    for records in [SMALL, LARGE] {
+        let narrow = rows
+            .iter()
+            .find(|row| row.0 == records && row.1 == 1023)
+            .expect("narrow arm");
+        let wide = rows
+            .iter()
+            .find(|row| row.0 == records && row.1 == WIDE_END)
+            .expect("wide arm");
+        println!(
+            "  {records:>6} rec: allocs/rec narrow {:.4} wide {:.4}; the address width is the same \
+             {width} B in both arms, so any difference here is the container arms and not the \
+             struct",
+            narrow.6 as f64 / records as f64,
+            wide.6 as f64 / records as f64,
+        );
+        assert_eq!(
+            narrow.2, wide.2,
+            "{records} records: the two ranges hold {} and {} resident addresses. The RANGE cannot \
+             change how many addresses a store holds -- it decides only which bucket each page is \
+             filed in -- so a difference means the two arms did not store the same thing and the \
+             per-record figures above are not comparable",
+            narrow.2, wide.2
+        );
+    }
+}
+
+/// THE CONTROL ON THE EXPLANATION: A COMMAND THAT NAMES NO PAGE DERIVES NO BUCKET.
+///
+/// The mechanism this change introduces on the serving path is one FNV-1a pass per page read, to
+/// derive the bucket the read used to find stamped on the address. The claim is that it is paid PER
+/// PAGE NAMED -- so a command that names no page must pay exactly none, and that zero is the control.
+/// `Command::LeaderEstablish` on a store holding NO pages is such a workload: it carries no key,
+/// there is no page for `execute`'s housekeeping to reach either, and the counter over a run of them
+/// has to read 0 -- 0.00% of what the read arm pays. It can fail, and it did: run against the SEEDED
+/// engine the same arm measured 1.00 an op over 11 key bytes, which is this module's own key length,
+/// because `execute` does per-op work over keys the store already holds. The arm now has its own
+/// empty engine, and that number is the reason it does.
+///
+/// AND THE OTHER TWO ARMS STATE WHERE THE COST ACTUALLY LANDS, which is the half a flattering control
+/// would leave out. THIS DOCSTRING USED TO CLAIM THE WRITE ARM WAS THE ZERO, while three lines of the
+/// body below asserted the write arm is NON-zero. The body was right: `append_value` has taken the
+/// routing bucket as an ARGUMENT since it existed, so the write path always derived its own and this
+/// change did not touch it. A guard whose prose contradicts its own assertion is the defect class
+/// this campaign keeps finding -- `a_guard_can_encode_the_same_mistaken_belief_it_guards` -- and the
+/// fix is a zero that can fail, not a sentence saying there is one.
+///
+/// rust-internal: reads the engine's own counters, no product behaviour
+#[test]
+#[ignore = "reads process-wide counters; run by name"]
+fn a_command_that_names_no_page_derives_no_bucket_and_a_read_derives_two() {
+    const RECORDS: usize = 500;
+
+    let dir = tempfile::tempdir().expect("tempdir");
+    let engine = engine_on(dir.path());
+    load_on(&engine, 1023);
+    let keys = seed_routed(&engine, RECORDS);
+
+    // THE ZERO ARM FIRST, because it is the control and a control read after the thing it controls
+    // is easy to fit to.
+    //
+    // ITS OWN ENGINE, WITH NOTHING SEEDED. A keyless command on the SEEDED engine measured 1.00
+    // derivations an op over 11 key bytes -- and 11 characters is the length of this module's seeded
+    // keys, so what it was measuring was `execute`'s per-op housekeeping reaching a key the store
+    // already held, not the command. An empty store has no such key, which is what makes the zero
+    // below a statement about the mechanism.
+    let control_dir = tempfile::tempdir().expect("control tempdir");
+    let control = engine_on(control_dir.path());
+    load_on(&control, 1023);
+    crate::engine::hashing::reset_routing_bucket_derivations();
+    for index in 0..RECORDS {
+        let response = control.execute(ExecuteRequest {
+            shard_id: 1,
+            command: Command::LeaderEstablish,
+        });
+        assert!(response.status.ok, "keyless command {index}: {:?}", response.status);
+    }
+    let (keyless_derivations, keyless_key_bytes) =
+        crate::engine::hashing::routing_bucket_derivations();
+
+    // THE WRITE-ONLY ARM. Counters reset AFTER the seed, so what is counted is what the arm below
+    // does and not what setting it up did.
+    crate::engine::hashing::reset_routing_bucket_derivations();
+    for index in 0..RECORDS {
+        let response = engine.execute(ExecuteRequest {
+            shard_id: 1,
+            command: Command::StringSet {
+                key: keys[index].clone(),
+                value: vec![b'w'; 64],
+            },
+        });
+        assert!(response.status.ok, "write {index}: {:?}", response.status);
+    }
+    let (write_derivations, _) = crate::engine::hashing::routing_bucket_derivations();
+
+    // THE READ ARM, on the same store, so the two differ in nothing but the command.
+    crate::engine::hashing::reset_routing_bucket_derivations();
+    assert_eq!(RECORDS, read_back(&engine, &keys), "the reads must answer");
+    let (read_derivations, read_key_bytes) = crate::engine::hashing::routing_bucket_derivations();
+
+    println!("--- where the bucket derivation is paid ---");
+    println!(
+        "  {RECORDS} keyless commands: {keyless_derivations} derivations ({:.2}/op), \
+         {keyless_key_bytes} key bytes hashed   <- THE CONTROL",
+        keyless_derivations as f64 / RECORDS as f64
+    );
+    println!(
+        "  {RECORDS} writes: {write_derivations} derivations ({:.2}/op)",
+        write_derivations as f64 / RECORDS as f64
+    );
+    println!(
+        "  {RECORDS} reads:  {read_derivations} derivations ({:.2}/op), {read_key_bytes} key bytes \
+         hashed ({:.2}/op)",
+        read_derivations as f64 / RECORDS as f64,
+        read_key_bytes as f64 / RECORDS as f64,
+    );
+
+    // THE READ ARM IS THE DENOMINATOR: a zero here would make the ratio below 0/0.
+    assert!(
+        read_derivations >= RECORDS as u64,
+        "{read_derivations} derivations over {RECORDS} reads. A read derives its page's bucket to \
+         build the cache key, so this cannot be under one a read -- and if it is, the control below \
+         is measuring nothing"
+    );
+
+    // AND THE WRITE PATH STILL DERIVES ITS OWN, which is the half that stops this being a claim that
+    // the write path is free. It always did: `block_routing_bucket(key, start, end)` is what the
+    // command arm hands `append_value`. What this control says is that the READ path's derivations
+    // are the ones this change added, and the report states both rather than only the flattering one.
+    println!(
+        "  the write path's own derivations are {:.2}/op and predate this change -- `append_value` \
+         has taken the bucket as an argument since it existed",
+        write_derivations as f64 / RECORDS as f64
+    );
+    assert!(
+        write_derivations > 0,
+        "the write path derived no bucket at all, which would mean `append_value` is being handed \
+         one from somewhere this test does not know about"
+    );
+
+    // THE CONTROL, ASSERTED. Exactly zero, and stated as a percentage of the read arm so the number
+    // that matters is the one printed rather than one a reader has to compute.
+    println!(
+        "  the keyless arm is {:.2}% of the read arm ({keyless_derivations} against \
+         {read_derivations}) -- the mechanism predicts nothing for a command that names no page",
+        100.0 * keyless_derivations as f64 / read_derivations as f64
+    );
+    assert_eq!(
+        0, keyless_derivations,
+        "{keyless_derivations} bucket derivations over {RECORDS} commands that name no page, on a \
+         store holding none. The mechanism this change introduces is one derivation per page named, \
+         so this arm has to pay none -- a non-zero count means something derives a bucket on a path \
+         with no page to derive one for, and the first version of this arm caught exactly that in \
+         the fixture rather than in the engine"
+    );
+    assert_eq!(
+        0, keyless_key_bytes,
+        "the keyless arm hashed {keyless_key_bytes} key bytes, which cannot happen if it derived no \
+         bucket; the two counters disagree and one of them is not counting what it says"
+    );
+}

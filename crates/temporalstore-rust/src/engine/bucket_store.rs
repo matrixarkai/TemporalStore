@@ -281,6 +281,18 @@ pub(super) fn read_bucket_index_value(
     object_key: &str,
     component: Option<&str>,
 ) -> Option<Vec<u8>> {
-    bucket_index_block_address(shard, model_id, object_key, component)
-        .and_then(|address| read_block_bytes(cache, block_store, shard_id, &address))
+    let (start_routing_bucket, end_routing_bucket) = shard.routing_range();
+    bucket_index_block_address(shard, model_id, object_key, component).and_then(|address| {
+        read_block_bytes(
+            cache,
+            block_store,
+            shard_id,
+            &address,
+            Some(crate::engine::hashing::block_routing_bucket(
+                object_key,
+                start_routing_bucket,
+                end_routing_bucket,
+            )),
+        )
+    })
 }

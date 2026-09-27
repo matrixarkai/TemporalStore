@@ -518,9 +518,21 @@ impl ObjectIndex {
     /// contiguous span rather than a walk through a tree node.
     pub(super) fn contains(&self, id: &u64) -> bool {
         match self {
-            ObjectIndex::Empty => false,
-            ObjectIndex::One(held) => held == id,
-            ObjectIndex::Many(run) => run.binary_search(id).is_ok(),
+            ObjectIndex::Empty => {
+                note_object_index_entries_examined(0);
+                false
+            }
+            ObjectIndex::One(held) => {
+                note_object_index_entries_examined(1);
+                held == id
+            }
+            ObjectIndex::Many(run) => {
+                // A BISECTION, so the entries examined are logarithmic in the list -- which is the
+                // number an ordinal proposal has to be priced against. Charged here rather than at
+                // the callers because this is the one door every membership question goes through.
+                note_object_index_entries_examined(entries_a_bisection_examines(run.len()));
+                run.binary_search(id).is_ok()
+            }
         }
     }
 
@@ -976,6 +988,54 @@ const _: () = assert!(
 /// `cfg(test)` and not a feature: a counter on the read path is exactly what this campaign is
 /// removing, and it must not exist in a shipped binary.
 #[cfg(test)]
+/// HOW MANY ENTRIES A MEMBERSHIP QUESTION IN AN `ObjectIndex` TOUCHES.
+///
+/// The number an ordinal proposal turns on. `stable_block_object_id` computes an object's identity
+/// from its key with a hash; the alternative is to look the object up in the bucket's own short list,
+/// and what that COSTS is this count against the hash's byte count -- the two things
+/// `engine::hashing::ROUTING_BUCKET_KEY_BYTES` and this counter make comparable.
+///
+/// `#[cfg(test)]` for the reason given on the derivation counters: the work being counted is smaller
+/// than the atomic that would count it in production.
+#[cfg(test)]
+pub(super) static OBJECT_INDEX_ENTRIES_EXAMINED: std::sync::atomic::AtomicU64 =
+    std::sync::atomic::AtomicU64::new(0);
+
+/// A bisection of `len` touches `floor(log2(len)) + 1` entries, and zero for an empty list. Written
+/// out rather than measured inside `binary_search`, which does not report.
+#[cfg(test)]
+pub(super) fn entries_a_bisection_examines(len: usize) -> u64 {
+    if len == 0 {
+        0
+    } else {
+        u64::from(usize::BITS - len.leading_zeros())
+    }
+}
+
+#[cfg(not(test))]
+fn entries_a_bisection_examines(_len: usize) -> u64 {
+    0
+}
+
+#[cfg(test)]
+fn note_object_index_entries_examined(count: u64) {
+    OBJECT_INDEX_ENTRIES_EXAMINED.fetch_add(count, std::sync::atomic::Ordering::Relaxed);
+}
+
+#[cfg(not(test))]
+#[inline(always)]
+fn note_object_index_entries_examined(_count: u64) {}
+
+#[cfg(test)]
+pub(super) fn reset_object_index_entries_examined() {
+    OBJECT_INDEX_ENTRIES_EXAMINED.store(0, std::sync::atomic::Ordering::Relaxed);
+}
+
+#[cfg(test)]
+pub(super) fn object_index_entries_examined() -> u64 {
+    OBJECT_INDEX_ENTRIES_EXAMINED.load(std::sync::atomic::Ordering::Relaxed)
+}
+
 pub(super) static PAGE_LOOKUP_ENTRIES_EXAMINED: std::sync::atomic::AtomicU64 =
     std::sync::atomic::AtomicU64::new(0);
 
@@ -2767,16 +2827,23 @@ pub(super) struct BucketNode {
 /// fewer, or that takes a whole word out of the eight-aligned group, moves this structure at
 /// all.
 ///
-/// THE SECOND OF THOSE TWO SHAPES HAS NOW BEEN TAKEN THREE TIMES. `last_dump_sequence` was
+/// THE SECOND OF THOSE TWO SHAPES HAS NOW BEEN TAKEN FOUR TIMES. `last_dump_sequence` was
 /// eight-aligned, so removing it took a whole word out of the packed group and the six-byte
 /// tail did not move at all. The address merge does the same thing one level in: two 8-byte
 /// fields inside the inline page entry become one, so `BlockIndexMap` went 104 -> 96 and the
 /// group went 168 -> 160, with the tail still six rounded to eight. The model spelling is the
-/// third and the largest: a sixteen-byte fat pointer inside that same inline entry becomes one
+/// largest of the four: a sixteen-byte fat pointer inside that same inline entry becomes one
 /// byte, `BlockIndexMap` goes 96 -> 80, and TWO whole words leave the group at once, so the
-/// struct is 144. Bytes that LEAVE the group cross where narrowing a sequence would not have: at
-/// a six-byte tail the first narrowing lands on ten, ten still rounds to sixteen, and the freed
-/// word is handed straight back.
+/// struct was 144. The fourth is that same address again, shedding its `routing_bucket` beside
+/// narrowing its `block_id` to sixteen bits: `BlockIndexMap` goes 80 -> 72, the group 136 -> 128,
+/// and the struct is 136. Bytes that LEAVE the group cross where narrowing a sequence would not
+/// have: at a six-byte tail the first narrowing lands on ten, ten still rounds to sixteen, and
+/// the freed word is handed straight back.
+///
+/// AND THE FOURTH IS THE ONE THAT SHOWS WHY A PER-FIELD VERDICT IS NOT A VERDICT ON THE FIELD.
+/// Six bytes of address payload left in two independent narrowings, NEITHER of which moves this
+/// struct on its own -- 25 bytes of payload rounds to 32 and so does 27. The pair is worth a word
+/// here and a word in every other structure that holds a page entry.
 ///
 /// AND THE LARGEST STEP OF ALL IS A WHOLE FIELD NARROWING BY FIFTY-SIX BYTES AT ONCE.
 /// `block_index` stopped holding a page entry INLINE and started holding it behind a POINTER. That
@@ -3151,24 +3218,33 @@ pub(super) struct BlockIndex {
 }
 
 /// One per stored page. TWO shared names, a one-byte model spelling, an address, and three
-/// flags -- 68 bytes of field in 72.
+/// flags -- 60 bytes of field in 64.
 ///
-/// 72, not 88, since the model spelling stopped being a sixteen-byte fat pointer to a string
-/// drawn from a seventeen-element set and became the one byte that set can be spelled in. That
-/// is the third time a whole eight-byte step has left this structure and the first time two have
-/// left at once: 88, not 96, since the address merged its slab id and its offset into one word;
-/// 96, not 104, since it shed its derived `generation` before that.
+/// 64, not 72, since the address inside it is 24 bytes and not 32: it shed the `routing_bucket`
+/// the read path now derives from the key, and narrowed its `block_id` to the sixteen bits the
+/// record encoder has always refused to exceed. That is the fourth whole eight-byte step out of
+/// this structure: 72, not 88, since the model spelling stopped being a sixteen-byte fat pointer
+/// to a string drawn from a seventeen-element set; 88, not 96, since the address merged its slab
+/// id and its offset into one word; 96, not 104, since it shed its derived `generation` before
+/// that.
+///
+/// THE FOURTH STEP IS TWO NARROWINGS AND NEITHER IS WORTH ANYTHING ALONE. The address carried 29
+/// bytes of payload in 32. Dropping the bucket leaves 25 and narrowing the id leaves 27; both
+/// round back to 32 and this structure would have stayed 72 for either one. Together they leave
+/// 23, the address is 24, and the step lands. `block_store`'s width assert carries both
+/// counterfactuals beside the width, because the arithmetic is the claim and it was the per-field
+/// reading of it that declared this blocked.
 ///
 /// AND THE FLAGS STILL DO NOT PAY. At 99 bytes of field the slack was five, at 91 five, at 83
-/// five, and at 68 it is four -- the one byte of model spelling moved into the slack the flags
-/// were already sitting in, which is why this step is sixteen bytes and not twelve. Packing the
-/// three flags would reclaim nothing and would move the stored index, which spells each one as
-/// its own key.
+/// five, at 68 four and at 60 it is four again -- the address left in a whole word, which is the
+/// only kind of change that moves this number, and it moved the width without touching the
+/// rounding the flags sit in. Packing the three flags would reclaim nothing and would move the
+/// stored index, which spells each one as its own key.
 ///
 /// WHAT DID NOT MOVE IS THE WIRE. The spelling is still written and read as the string it always
 /// was; only the in-memory width changed. `the_stored_spelling_of_a_page_entry_did_not_move` and
 /// `core_index_loads_legacy_bucket_page_field_names` are the guards on that.
-const _: () = assert!(std::mem::size_of::<BlockIndex>() == 72);
+const _: () = assert!(std::mem::size_of::<BlockIndex>() == 64);
 
 impl BlockIndex {
     /// The object this page belongs to.
@@ -3444,8 +3520,12 @@ fn same_block_address(left: &BlockAddress, right: &BlockAddress) -> bool {
         && left.length() == right.length()
         && left.block_id() == right.block_id()
         && left.object_id() == right.object_id()
-        && left.routing_bucket() == right.routing_bucket()
-    // `generation` is not compared, because it no longer CAN differ here: it is derived as
+    // `routing_bucket` is not compared, because an address no longer holds one. It was the same
+    // kind of clause `generation` is: a page's copy of a value the container decides. Two pages
+    // in ONE bucket cannot differ on the bucket, and two pages in different buckets differ on the
+    // map key rather than on anything inside the address.
+    //
+    // `generation` is not compared either, because it no longer CAN differ here: it is derived as
     // `block_id.or(object_id)` and both of those are compared on the two lines above, so the
     // clause that used to sit here was implied by them and could not fail. A comparison that
     // cannot fail reads like extra safety and provides none.
@@ -3515,7 +3595,7 @@ mod component_lookup_tests {
             object_key: Arc::from(object.to_string()),
             model_id: crate::engine::storage_bucket_internals::StoredModelKind::Hash,
             component: component.map(str::to_string).map(Arc::from),
-            address: BlockAddress::from_parts(0, 0, 0, None, Some(0), None),
+            address: BlockAddress::from_parts(0, 0, 0, None, Some(0)),
             dirty: false,
             deleted: false,
             log_backed: false,

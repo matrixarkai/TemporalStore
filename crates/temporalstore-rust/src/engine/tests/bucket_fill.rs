@@ -1732,10 +1732,15 @@ fn a_walk_of_the_flat_list_answers_in_handle_order_not_component_order() {
 /// the question is not rhetorical, and the paths that could break it are driven below rather than
 /// argued about.
 ///
-/// THE POPULATION THE STAMP DOES NOT COVER IS CHECKED TOO. `BlockAddressWire::routing_bucket` is
-/// `Option<u32>` under `#[serde(default)]`, so a block can carry no bucket of its own; this counts
-/// them, because a block that claims nothing cannot disagree and would make a clean verdict here
-/// mean less than it appears to.
+/// THE VERDICT HAS TWO INDEPENDENT SIDES, AND THAT IS ASSERTED RATHER THAN CAVEATED. This walk is over
+/// `bucket_map`, so one side is the key the walk just read -- where the INDEX filed the page -- and the
+/// other is what `block_routing_bucket` computes from the object key. Neither side is the address.
+///
+/// It used to also count blocks "carrying no bucket of their own", as a caveat that a block claiming
+/// nothing cannot disagree. That caveat was about comparing the ADDRESS's claim against the key, which is
+/// a comparison this test does not make, and no address carries a bucket any more -- so the count would be
+/// the whole population and would read as a refutation of a verdict it does not bear on. The two sides are
+/// asserted instead: every page in this walk has a filing, because the filing is the map key.
 ///
 /// rust-internal: reads the engine's own placement function, no product behaviour
 #[test]
@@ -1745,22 +1750,18 @@ fn the_bucket_a_block_is_filed_in_is_the_bucket_its_key_computes_within_one_rang
     struct Verdict {
         blocks: usize,
         filed_elsewhere: Vec<(String, u32, u32)>,
-        unstamped: usize,
     }
 
     fn check(engine: &TemporalEngine, end_routing_bucket: u32) -> Verdict {
         let shards = engine.shards.read().expect("engine lock poisoned");
         let shard = shards.get(&1).expect("shard is loaded");
-        let mut verdict = Verdict { blocks: 0, filed_elsewhere: Vec::new(), unstamped: 0 };
+        let mut verdict = Verdict { blocks: 0, filed_elsewhere: Vec::new() };
         for (routing_bucket, bucket) in &shard.bucket_index.bucket_map {
             for page in bucket.block_index.values() {
                 if page.deleted {
                     continue;
                 }
                 verdict.blocks += 1;
-                if page.address.routing_bucket().is_none() {
-                    verdict.unstamped += 1;
-                }
                 let computed =
                     block_routing_bucket(&page.object_key, 0, end_routing_bucket);
                 if computed != *routing_bucket {
@@ -1777,11 +1778,9 @@ fn the_bucket_a_block_is_filed_in_is_the_bucket_its_key_computes_within_one_rang
 
     fn report(stage: &str, v: &Verdict) {
         println!(
-            "  {stage}: {} live blocks | filed somewhere other than where the key computes: {} \
-             | carrying no bucket of their own: {}",
+            "  {stage}: {} live blocks | filed somewhere other than where the key computes: {}",
             v.blocks,
-            v.filed_elsewhere.len(),
-            v.unstamped
+            v.filed_elsewhere.len()
         );
         for (key, filed, computed) in v.filed_elsewhere.iter().take(4) {
             println!("      {key} is filed in {filed}, its key computes {computed}");
@@ -1874,10 +1873,10 @@ fn the_bucket_a_block_is_filed_in_is_the_bucket_its_key_computes_within_one_rang
             );
         }
         println!(
-            "  VERDICT on 0..{end_routing_bucket}: across {} live blocks and four stages, the \
-             bucket a block is filed in IS the bucket its key computes, and {} blocks carry no \
-             bucket of their own.",
-            after_release.blocks, after_release.unstamped
+            "  VERDICT on 0..{end_routing_bucket}: across {} live blocks and four stages, the bucket \
+             a block is FILED in -- the `bucket_map` key this walk read -- IS the bucket its key \
+             computes. Neither side of that is the address, which carries no bucket at all.",
+            after_release.blocks
         );
     }
 }

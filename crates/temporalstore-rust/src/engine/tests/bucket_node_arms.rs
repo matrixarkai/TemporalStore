@@ -687,15 +687,15 @@ fn a_simple_bucket_holds_no_general_case_to_take_away() {
 
     // THE ONE FACT THAT DECIDES THE SHAPE: what a simple bucket's data actually is.
     assert_eq!(
-        32,
+        24,
         size_of::<crate::block_store::BlockAddress>(),
-        "an address is {} bytes, not 32",
+        "an address is {} bytes, not 24",
         size_of::<crate::block_store::BlockAddress>()
     );
     assert_eq!(
-        72,
+        64,
         size_of::<BlockIndex>(),
-        "a page entry is {} bytes, not 72",
+        "a page entry is {} bytes, not 64",
         size_of::<BlockIndex>()
     );
     assert!(
@@ -719,7 +719,6 @@ fn page_fixture() -> BlockIndex {
             32,
             Some(9),
             Some(11),
-            Some(3),
         ),
         dirty: false,
         deleted: false,
@@ -1040,9 +1039,9 @@ fn the_tagged_node_is_fifty_six_bytes_and_every_arm_reconstructs() {
         size_of::<TaggedNode>()
     );
     assert_eq!(
-        88,
+        80,
         size_of::<SimpleLayout>(),
-        "the simple payload is {} bytes, not 88",
+        "the simple payload is {} bytes, not 80",
         size_of::<SimpleLayout>()
     );
 
@@ -1854,10 +1853,18 @@ fn the_bytes_a_tagged_key_saves_are_not_bytes_a_tagged_key_stops_holding() {
     // --- THE CLAIM, NAMED AND REFUSED. ---
     //
     // The count is DERIVED from the two widths rather than written down, so it moves when the
-    // node does instead of going stale beside it. It was 120 when the node was 184.
+    // node does instead of going stale beside it. It was 120 when the node was 184, and 112 when the
+    // node was 160.
+    //
+    // 40 SINCE mx#1975 TOOK THE NODE TO 88 by moving the single page entry behind a pointer. The
+    // derivation moved and this PIN did not, so the guard has been red under `--features alloc-probe`
+    // since that merge -- red on a surface no default gate compiles, which is the whole reason a
+    // width assertion needs its own sweep: it COMPILES whatever the width is. `TaggedNode` holds no
+    // page entry and no address, so neither term here moves with an address narrowing; this pin is
+    // paid down rather than introduced.
     let claimed_saving = inline - size_of::<TaggedNode>();
     assert_eq!(
-        112, claimed_saving,
+        40, claimed_saving,
         "the node goes {inline} -> {} on this tree, a claimed saving of {claimed_saving} B; if \
          that has changed, the sentence this test refutes has changed with it",
         size_of::<TaggedNode>()

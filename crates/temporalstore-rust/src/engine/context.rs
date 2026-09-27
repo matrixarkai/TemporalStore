@@ -346,14 +346,30 @@ pub(super) fn context_from_bytes<T: ContextWire>(bytes: &[u8]) -> Option<T> {
     T::decode_context_value(bytes)
 }
 
+/// The bucket a page's own key routes to, on the range this shard is stamped with.
+///
+/// THE ONE SPELLING, so that a reader and the write path that produced the page cannot disagree
+/// about which bucket the page cache is keyed by. Every context loader here reaches it through this
+/// rather than composing `routing_range()` and `block_routing_bucket` for itself.
+pub(super) fn shard_page_routing_bucket(shard: &ShardState, object_key: &str) -> Option<u32> {
+    let (start_routing_bucket, end_routing_bucket) = shard.routing_range();
+    Some(crate::engine::hashing::block_routing_bucket(
+        object_key,
+        start_routing_bucket,
+        end_routing_bucket,
+    ))
+}
+
 pub(super) fn read_context_value<T: ContextWire>(
     cache: &MultiLayerCache,
     block_store: &BlockStore,
     shard_id: ShardId,
     timeline_key: u64,
     address: &BlockAddress,
+    routing_bucket: Option<u32>,
 ) -> Option<T> {
-    let point = read_feature_point(cache, block_store, shard_id, timeline_key, address)?;
+    let point =
+        read_feature_point(cache, block_store, shard_id, timeline_key, address, routing_bucket)?;
     context_from_bytes(&point.value)
 }
 
@@ -373,6 +389,7 @@ pub(super) fn read_context_value_cached<T: ContextWire>(
     timeline_key: u64,
     address: &BlockAddress,
     packed_block_cache: &mut HashMap<BlockAddress, Option<Vec<FeaturePoint>>>,
+    routing_bucket: Option<u32>,
 ) -> Option<T> {
     let point = read_feature_point_cached(
         cache,
@@ -381,6 +398,7 @@ pub(super) fn read_context_value_cached<T: ContextWire>(
         timeline_key,
         address,
         packed_block_cache,
+        routing_bucket,
     )?;
     context_from_bytes(&point.value)
 }
@@ -790,6 +808,7 @@ pub(super) fn load_context_children(
     shard: &ShardState,
     object_key: &str,
 ) -> Vec<ContextChildRef> {
+    let routing_bucket = shard_page_routing_bucket(shard, object_key);
     shard
         .context_children
         .get(object_key)
@@ -803,6 +822,7 @@ pub(super) fn load_context_children(
                         shard_id,
                         *timeline_key,
                         address,
+                        routing_bucket,
                     )
                 })
                 .collect()
@@ -841,13 +861,19 @@ pub(super) fn load_context_node_vector(
     node_hash: u64,
 ) -> Option<Vec<f32>> {
     let object_key = context_node_key(tenant_hash, node_hash);
+    let (start_routing_bucket, end_routing_bucket) = shard.routing_range();
+    let routing_bucket = Some(crate::engine::hashing::block_routing_bucket(
+        &object_key,
+        start_routing_bucket,
+        end_routing_bucket,
+    ));
     shard
         .hashes
         .get(&object_key)
         .and_then(|fields| fields.get(CONTEXT_NODE_FIELD))
         .or_else(|| shard.context_nodes.get(&object_key))
         .and_then(|address| {
-            super::read_block_shared(cache, block_store, shard_id, address)
+            super::read_block_shared(cache, block_store, shard_id, address, routing_bucket)
                 .and_then(|bytes| crate::types::decode_context_node_vector(&bytes))
         })
 }
@@ -864,6 +890,12 @@ pub(super) fn load_context_node(
     // under the CONTEXT_NODE_FIELD slot; context_nodes is the pre-hashes location still read for
     // blocks written before that move.
     let object_key = context_node_key(tenant_hash, node_hash);
+    let (start_routing_bucket, end_routing_bucket) = shard.routing_range();
+    let routing_bucket = Some(crate::engine::hashing::block_routing_bucket(
+        &object_key,
+        start_routing_bucket,
+        end_routing_bucket,
+    ));
     shard
         .hashes
         .get(&object_key)
@@ -872,7 +904,7 @@ pub(super) fn load_context_node(
         .and_then(|address| {
             // Shared, not copied: the bytes are parsed here and dropped, so owning them costs a
             // page-sized memcpy and an allocation for nothing.
-            super::read_block_shared(cache, block_store, shard_id, address)
+            super::read_block_shared(cache, block_store, shard_id, address, routing_bucket)
                 .and_then(|bytes| context_from_bytes::<ContextNode>(&bytes))
         })
 }
@@ -886,6 +918,7 @@ pub(super) fn load_context_summaries(
     as_of_ms: u64,
     limit: Option<usize>,
 ) -> Vec<ContextSummary> {
+    let routing_bucket = shard_page_routing_bucket(shard, object_key);
     shard
         .context_summaries
         .get(object_key)
@@ -900,6 +933,7 @@ pub(super) fn load_context_summaries(
                         shard_id,
                         *timeline_key,
                         address,
+                        routing_bucket,
                     )
                 })
                 .filter(|summary| summary.valid_from_ms <= as_of_ms)
@@ -928,6 +962,7 @@ pub(super) fn load_newest_context_summary(
     object_key: &str,
     as_of_ms: u64,
 ) -> Option<ContextSummary> {
+    let routing_bucket = shard_page_routing_bucket(shard, object_key);
     shard
         .context_summaries
         .get(object_key)
@@ -942,6 +977,7 @@ pub(super) fn load_newest_context_summary(
                         shard_id,
                         *timeline_key,
                         address,
+                        routing_bucket,
                     )
                 })
                 .find(|summary| summary.valid_from_ms <= as_of_ms)
@@ -981,6 +1017,7 @@ pub(super) fn load_context_compression_events(
         .filter(|node_hash| *node_hash != 0)
     {
         let object_key = context_compression_key(tenant_hash, node_hash);
+        let routing_bucket = shard_page_routing_bucket(shard, &object_key);
         if let Some(series) = shard.context_compressions.get(&object_key) {
             events.extend(series.iter().filter_map(|(timeline_key, address)| {
                 read_context_value::<ContextCompressionEvent>(
@@ -989,6 +1026,7 @@ pub(super) fn load_context_compression_events(
                     shard_id,
                     *timeline_key,
                     address,
+                    routing_bucket,
                 )
                 .filter(|event| {
                     event.source_end_ms >= start_time_ms && event.source_start_ms <= end_time_ms

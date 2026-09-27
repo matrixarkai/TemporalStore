@@ -499,10 +499,7 @@ impl TemporalEngine {
                 return report;
             };
             for entry in collect_live_block_entries(shard) {
-                let routing_bucket = entry
-                    .address
-                    .routing_bucket()
-                    .unwrap_or_else(|| self.routing_bucket_for_key(shard_id, &entry.object_key));
+                let routing_bucket = self.routing_bucket_for_key(shard_id, &entry.object_key);
                 if !selected_buckets.is_empty() && !selected_buckets.contains(&routing_bucket) {
                     report.skipped_block_refs = report.skipped_block_refs.saturating_add(1);
                     continue;
@@ -513,7 +510,7 @@ impl TemporalEngine {
                     entry.address.block_slab_id(),
                     entry.address.offset(),
                     entry.address.length(),
-                    entry.address.routing_bucket(),
+                    Some(routing_bucket),
                 );
                 plan.push((key, entry.address));
             }

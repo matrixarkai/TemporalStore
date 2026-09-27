@@ -71,6 +71,13 @@ fn load_context_node(
     shard: &ShardState,
     object_key: &str,
 ) -> Option<ContextNode> {
+    // THE BUCKET THE PAGE CACHE IS KEYED BY, derived the way the write path derives it.
+    let (start_routing_bucket, end_routing_bucket) = shard.routing_range();
+    let routing_bucket = Some(block_routing_bucket(
+        object_key,
+        start_routing_bucket,
+        end_routing_bucket,
+    ));
     shard
         .hashes
         .get(object_key)
@@ -81,7 +88,7 @@ fn load_context_node(
             // is as likely to be a miss as a hit -- and on a miss the shared read wraps an owned
             // buffer in a fresh Arc, which copies a second time. The query commands, which are
             // hit-heavy, do share.
-            read_block_bytes(cache, block_store, shard_id, address)
+            read_block_bytes(cache, block_store, shard_id, address, routing_bucket)
                 .and_then(|bytes| context_from_bytes::<ContextNode>(&bytes))
         })
 }
@@ -423,10 +430,19 @@ pub(crate) fn execute_on_shard(
             keep_ttl,
         } => {
             remove_if_expired(shard, &key);
-            let old_value = shard
-                .strings
-                .get(&key)
-                .and_then(|address| read_block_bytes(cache, block_store, shard_id, address));
+            let old_value = shard.strings.get(&key).and_then(|address| {
+                read_block_bytes(
+                    cache,
+                    block_store,
+                    shard_id,
+                    address,
+                    Some(block_routing_bucket(
+                        &key,
+                        start_routing_bucket,
+                        end_routing_bucket,
+                    )),
+                )
+            });
             let exists = old_value.is_some();
             let should_set = match condition {
                 StringSetCondition::Always => true,
@@ -630,7 +646,19 @@ pub(crate) fn execute_on_shard(
                 .map(|field| {
                     hash_fields
                         .and_then(|entries| entries.get(field))
-                        .and_then(|address| read_block_bytes(cache, block_store, shard_id, address))
+                        .and_then(|address| {
+                            read_block_bytes(
+                                cache,
+                                block_store,
+                                shard_id,
+                                address,
+                                Some(block_routing_bucket(
+                                    &key,
+                                    start_routing_bucket,
+                                    end_routing_bucket,
+                                )),
+                            )
+                        })
                 })
                 .collect();
             CommandResponse::Values { values }
@@ -737,7 +765,18 @@ pub(crate) fn execute_on_shard(
             let entries = bucket_index_component_block_addresses(shard, "hash", &key)
                 .into_iter()
                 .filter_map(|(field, address)| {
-                    read_block_bytes(cache, block_store, shard_id, &address).map(|value| {
+                    read_block_bytes(
+                        cache,
+                        block_store,
+                        shard_id,
+                        &address,
+                        Some(block_routing_bucket(
+                            &key,
+                            start_routing_bucket,
+                            end_routing_bucket,
+                        )),
+                    )
+                    .map(|value| {
                         (
                             field.map(|name| name.to_string()).unwrap_or_default(),
                             value,
@@ -1318,7 +1357,17 @@ pub(crate) fn execute_on_shard(
                         shard.lists.remove(&key);
                     }
                     CommandResponse::Bytes {
-                        value: read_block_bytes(cache, block_store, shard_id, &address),
+                        value: read_block_bytes(
+                            cache,
+                            block_store,
+                            shard_id,
+                            &address,
+                            Some(block_routing_bucket(
+                                &key,
+                                start_routing_bucket,
+                                end_routing_bucket,
+                            )),
+                        ),
                     }
                 }
             }
@@ -1366,7 +1415,17 @@ pub(crate) fn execute_on_shard(
                         .skip(from as usize)
                         .take(wanted)
                         .filter_map(|address| {
-                            read_block_bytes(cache, block_store, shard_id, address)
+                            read_block_bytes(
+                                cache,
+                                block_store,
+                                shard_id,
+                                address,
+                                Some(block_routing_bucket(
+                                    &key,
+                                    start_routing_bucket,
+                                    end_routing_bucket,
+                                )),
+                            )
                         })
                         .collect()
                 })
@@ -1401,7 +1460,17 @@ pub(crate) fn execute_on_shard(
                 let members = bucket_index_component_block_addresses(shard, "set", &key)
                     .into_iter()
                     .filter_map(|(_, address)| {
-                        read_block_bytes(cache, block_store, shard_id, &address)
+                        read_block_bytes(
+                            cache,
+                            block_store,
+                            shard_id,
+                            &address,
+                            Some(block_routing_bucket(
+                                &key,
+                                start_routing_bucket,
+                                end_routing_bucket,
+                            )),
+                        )
                     })
                     .collect();
                 CommandResponse::Members { members }
@@ -1608,6 +1677,11 @@ pub(crate) fn execute_on_shard(
                                         *timestamp_ms,
                                         address,
                                         &mut page_cache,
+                                    Some(block_routing_bucket(
+                                        &key,
+                                        start_routing_bucket,
+                                        end_routing_bucket,
+                                    )),
                                     )
                                 })
                                 .collect()
@@ -1652,6 +1726,11 @@ pub(crate) fn execute_on_shard(
                                 *timestamp_ms,
                                 address,
                                 &mut page_cache,
+                                Some(block_routing_bucket(
+                                    &key,
+                                    start_routing_bucket,
+                                    end_routing_bucket,
+                                )),
                             )
                             .and_then(|point| {
                                 let row = SequenceFeatureRow::decode_feature_proto_value(
@@ -1798,6 +1877,11 @@ pub(crate) fn execute_on_shard(
                                         shard_id,
                                         *timestamp_ms,
                                         address,
+                                        Some(block_routing_bucket(
+                                            &key,
+                                            start_routing_bucket,
+                                            end_routing_bucket,
+                                        )),
                                     )
                                     .map(|point| {
                                         (
@@ -1830,6 +1914,11 @@ pub(crate) fn execute_on_shard(
                                     shard_id,
                                     *timestamp_ms,
                                     address,
+                                    Some(block_routing_bucket(
+                                        &key,
+                                        start_routing_bucket,
+                                        end_routing_bucket,
+                                    )),
                                 )
                                 .map(|point| point.value)
                             })
@@ -1914,7 +2003,18 @@ pub(crate) fn execute_on_shard(
                         .range(crate::engine::timestamp_range_bounds(start_ms, end_ms))
                         .take(count)
                         .filter_map(|(timestamp_ms, address)| {
-                            read_sequence_row(cache, block_store, shard_id, *timestamp_ms, address)
+                            read_sequence_row(
+                                cache,
+                                block_store,
+                                shard_id,
+                                *timestamp_ms,
+                                address,
+                                Some(block_routing_bucket(
+                                    &key,
+                                    start_routing_bucket,
+                                    end_routing_bucket,
+                                )),
+                            )
                         })
                         .filter(|row| {
                             filters
@@ -2619,8 +2719,18 @@ pub(crate) fn execute_on_shard(
                         .and_then(|fields| fields.get(CONTEXT_NODE_FIELD))
                         .or_else(|| shard.context_nodes.get(&object_key))
                         .and_then(|address| {
-                            read_block_shared(cache, block_store, shard_id, address)
-                                .and_then(|bytes| context_from_bytes::<ContextNode>(&bytes))
+                            read_block_shared(
+                                cache,
+                                block_store,
+                                shard_id,
+                                address,
+                                Some(block_routing_bucket(
+                                    &object_key,
+                                    start_routing_bucket,
+                                    end_routing_bucket,
+                                )),
+                            )
+                            .and_then(|bytes| context_from_bytes::<ContextNode>(&bytes))
                         })?;
                     if node.vector.is_empty() {
                         return None;
@@ -2701,8 +2811,18 @@ pub(crate) fn execute_on_shard(
                 .and_then(|fields| fields.get(CONTEXT_NODE_FIELD))
                 .or_else(|| shard.context_nodes.get(&object_key))
                 .and_then(|address| {
-                    read_block_shared(cache, block_store, shard_id, address)
-                        .and_then(|bytes| context_from_bytes::<ContextNode>(&bytes))
+                    read_block_shared(
+                        cache,
+                        block_store,
+                        shard_id,
+                        address,
+                        Some(block_routing_bucket(
+                            &object_key,
+                            start_routing_bucket,
+                            end_routing_bucket,
+                        )),
+                    )
+                    .and_then(|bytes| context_from_bytes::<ContextNode>(&bytes))
                 });
             CommandResponse::ContextNode { object_key, node }
         }
@@ -2732,8 +2852,18 @@ pub(crate) fn execute_on_shard(
                         .and_then(|fields| fields.get(CONTEXT_NODE_FIELD))
                         .or_else(|| shard.context_nodes.get(&object_key))
                         .and_then(|address| {
-                            read_block_shared(cache, block_store, shard_id, address)
-                                .and_then(|bytes| context_from_bytes::<ContextNode>(&bytes))
+                            read_block_shared(
+                                cache,
+                                block_store,
+                                shard_id,
+                                address,
+                                Some(block_routing_bucket(
+                                    &object_key,
+                                    start_routing_bucket,
+                                    end_routing_bucket,
+                                )),
+                            )
+                            .and_then(|bytes| context_from_bytes::<ContextNode>(&bytes))
                         })
                 })
                 .collect();
@@ -2989,6 +3119,11 @@ pub(crate) fn execute_on_shard(
                                 timeline_key,
                                 address,
                                 &mut page_cache,
+                                Some(block_routing_bucket(
+                                    &object_key,
+                                    start_routing_bucket,
+                                    end_routing_bucket,
+                                )),
                             )
                         })
                         .filter(|event| {
@@ -3077,6 +3212,11 @@ pub(crate) fn execute_on_shard(
                                 shard_id,
                                 *timeline_key,
                                 address,
+                                Some(block_routing_bucket(
+                                    &object_key,
+                                    start_routing_bucket,
+                                    end_routing_bucket,
+                                )),
                             )
                         })
                         .collect()
@@ -3127,6 +3267,11 @@ pub(crate) fn execute_on_shard(
                             *timeline_key,
                             address,
                             &mut page_cache,
+                            Some(block_routing_bucket(
+                                &object_key,
+                                start_routing_bucket,
+                                end_routing_bucket,
+                            )),
                         ) {
                             scanned_ref_count += 1;
                             let key = context_index_ref_identity(&index_ref);
@@ -3223,6 +3368,11 @@ pub(crate) fn execute_on_shard(
                                 shard_id,
                                 *timeline_key,
                                 address,
+                                Some(block_routing_bucket(
+                                    &object_key,
+                                    start_routing_bucket,
+                                    end_routing_bucket,
+                                )),
                             )
                         })
                         .collect()
@@ -3459,13 +3609,28 @@ pub(crate) fn execute_on_shard(
             let collection_key = context_entity_collection_key(tenant_hash, node_hash);
             let object_key = collection_key.clone();
             mutated |= drop_if_expired(cache, shard_id, shard, &collection_key);
+            // THE PAGE'S OWN KEY IS THE PER-ENTITY KEY, not the collection key this map is keyed
+            // by: `ContextUpsertEntity` files the page under `context_entity_key(..)` and derives
+            // its routing bucket from that, so a read has to name the same string or it looks in
+            // the cache under a key nothing ever wrote. The index groups entities by node; the
+            // PAGE is still per entity, and that split is exactly what this line has to respect.
             let entity = shard
                 .context_entities
                 .get(&collection_key)
                 .and_then(|series| series.get(&entity_hash))
                 .and_then(|address| {
-                    read_block_bytes(cache, block_store, shard_id, address)
-                        .and_then(|bytes| context_from_bytes::<ContextEntity>(&bytes))
+                    read_block_bytes(
+                        cache,
+                        block_store,
+                        shard_id,
+                        address,
+                        Some(block_routing_bucket(
+                            &context_entity_key(tenant_hash, node_hash, entity_hash),
+                            start_routing_bucket,
+                            end_routing_bucket,
+                        )),
+                    )
+                    .and_then(|bytes| context_from_bytes::<ContextEntity>(&bytes))
                 });
             CommandResponse::ContextEntity { object_key, entity }
         }
@@ -3478,9 +3643,23 @@ pub(crate) fn execute_on_shard(
             let object_key = context_entity_collection_key(tenant_hash, node_hash);
             mutated |= drop_if_expired(cache, shard_id, shard, &object_key);
             let series = shard.context_entities.get(&object_key);
-            let read_entity = |address: &BlockAddress| {
-                read_block_bytes(cache, block_store, shard_id, address)
-                    .and_then(|bytes| context_from_bytes::<ContextEntity>(&bytes))
+            // TAKES THE ENTITY HASH, because the page's routing bucket comes from the per-entity
+            // key and this map is keyed by the node's collection key. The "every entity" arm below
+            // therefore iterates `iter()` rather than `values()`: the hash it was discarding is
+            // what names the page.
+            let read_entity = |entity_hash: u64, address: &BlockAddress| {
+                read_block_bytes(
+                    cache,
+                    block_store,
+                    shard_id,
+                    address,
+                    Some(block_routing_bucket(
+                        &context_entity_key(tenant_hash, node_hash, entity_hash),
+                        start_routing_bucket,
+                        end_routing_bucket,
+                    )),
+                )
+                .and_then(|bytes| context_from_bytes::<ContextEntity>(&bytes))
             };
             // An empty entity_hashes now means "every entity of this node" instead of "nothing".
             // Before the fold the caller had to already know each hash, because the entities of
@@ -3490,14 +3669,18 @@ pub(crate) fn execute_on_shard(
             let entities = match (series, entity_hashes.is_empty()) {
                 (None, _) => Vec::new(),
                 (Some(series), true) => series
-                    .values()
+                    .iter()
                     .take(context_limit(limit))
-                    .filter_map(read_entity)
+                    .filter_map(|(entity_hash, address)| read_entity(*entity_hash, address))
                     .collect(),
                 (Some(series), false) => dedupe_nonzero_u64_preserve_order(entity_hashes)
                     .into_iter()
                     .take(context_limit(limit))
-                    .filter_map(|entity_hash| series.get(&entity_hash).and_then(read_entity))
+                    .filter_map(|entity_hash| {
+                        series
+                            .get(&entity_hash)
+                            .and_then(|address| read_entity(entity_hash, address))
+                    })
                     .collect(),
             };
             CommandResponse::ContextEntities {
@@ -3952,8 +4135,18 @@ pub(crate) fn execute_on_shard(
                 .and_then(|fields| fields.get(CONTEXT_NODE_FIELD))
                 .or_else(|| shard.context_nodes.get(&node_key))
                 .and_then(|address| {
-                    read_block_shared(cache, block_store, shard_id, address)
-                        .and_then(|bytes| context_from_bytes::<ContextNode>(&bytes))
+                    read_block_shared(
+                        cache,
+                        block_store,
+                        shard_id,
+                        address,
+                        Some(block_routing_bucket(
+                            &node_key,
+                            start_routing_bucket,
+                            end_routing_bucket,
+                        )),
+                    )
+                    .and_then(|bytes| context_from_bytes::<ContextNode>(&bytes))
                 });
             let level = summary_level.unwrap_or(1).max(1);
             let summary_key = context_summary_key(tenant_hash, node_hash, level);

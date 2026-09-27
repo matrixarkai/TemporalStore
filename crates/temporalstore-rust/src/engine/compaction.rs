@@ -428,7 +428,12 @@ impl CompactionRewriteStats {
     }
 }
 
-pub(super) fn block_memory_resident(cache: &MultiLayerCache, shard_id: ShardId, address: &BlockAddress) -> bool {
+pub(super) fn block_memory_resident(
+    cache: &MultiLayerCache,
+    shard_id: ShardId,
+    address: &BlockAddress,
+    routing_bucket: Option<u32>,
+) -> bool {
     // Compaction asking the serving cache a question is still a read of it, and it is charged the
     // same way the three serving primitives are. Charging it rather than excusing it is what lets
     // `every_production_cache_read_is_charged_to_the_read_class` carry no exemption list at all --
@@ -440,7 +445,7 @@ pub(super) fn block_memory_resident(cache: &MultiLayerCache, shard_id: ShardId, 
                 address.block_slab_id(),
                 address.offset(),
                 address.length(),
-                address.routing_bucket(),
+                routing_bucket,
                 address.generation(),
             ))
             .is_some()
@@ -662,6 +667,7 @@ fn read_block_bytes_for_compaction(
     block_store: &BlockStore,
     shard_id: ShardId,
     address: &BlockAddress,
+    routing_bucket: Option<u32>,
 ) -> Option<Vec<u8>> {
     #[cfg(test)]
     {
@@ -673,23 +679,31 @@ fn read_block_bytes_for_compaction(
             FAIL_BLOCK_READ_AFTER.with(|cell| cell.set(Some(remaining - 1)));
         }
     }
-    read_block_bytes(cache, block_store, shard_id, address)
+    read_block_bytes(cache, block_store, shard_id, address, routing_bucket)
 }
 
+/// THE BUCKET COMES IN BESIDE EACH ADDRESS, because compaction reads and re-writes pages and both
+/// halves are keyed by it.
+///
+/// It used to come off the address. A compaction round walks a model map and every entry in that
+/// map belongs to one object key, so the caller has the bucket already -- what it did not have was
+/// a reason to say so. `Item = (u32, &mut BlockAddress)` makes the caller say it, and the compiler
+/// name any caller that cannot.
 pub(super) fn compact_block_addresses<'a>(
     block_store: &BlockStore,
     cache: &MultiLayerCache,
     shard_id: ShardId,
     model_id: &str,
-    addresses: impl IntoIterator<Item = &'a mut BlockAddress>,
+    addresses: impl IntoIterator<Item = (u32, &'a mut BlockAddress)>,
     rewrite_stats: &mut CompactionRewriteStats,
 ) -> Result<(), Status> {
-    for address in addresses {
+    for (routing_bucket, address) in addresses {
         if !rewrite_stats.should_relocate(address) {
             continue;
         }
-        let cold_block = !block_memory_resident(cache, shard_id, address);
-        let bytes = read_block_bytes_for_compaction(cache, block_store, shard_id, address)
+        let cold_block = !block_memory_resident(cache, shard_id, address, Some(routing_bucket));
+        let bytes =
+            read_block_bytes_for_compaction(cache, block_store, shard_id, address, Some(routing_bucket))
             .ok_or_else(|| {
                 Status::error(
                     "page_compaction_failed",
@@ -704,7 +718,7 @@ pub(super) fn compact_block_addresses<'a>(
             .append_block_of_object(
                 &bytes,
                 address.object_id(),
-                address.routing_bucket(),
+                Some(routing_bucket),
                 address.block_id().unwrap_or_default() as u32,
             )
             .map_err(|err| Status::error("page_compaction_failed", err.to_string()))?;
@@ -715,7 +729,7 @@ pub(super) fn compact_block_addresses<'a>(
                 new_address.block_slab_id(),
                 new_address.offset(),
                 new_address.length(),
-                new_address.routing_bucket(),
+                Some(routing_bucket),
                 new_address.generation(),
             ),
             bytes,
@@ -725,6 +739,7 @@ pub(super) fn compact_block_addresses<'a>(
     Ok(())
 }
 
+#[allow(clippy::too_many_arguments)]
 pub(super) fn compact_feature_block_addresses(
     block_store: &BlockStore,
     cache: &MultiLayerCache,
@@ -732,6 +747,7 @@ pub(super) fn compact_feature_block_addresses(
     model_id: &str,
     series: &mut BTreeMap<u64, BlockAddress>,
     rewrite_stats: &mut CompactionRewriteStats,
+    routing_bucket: u32,
 ) -> Result<(), Status> {
     let unique_addresses = unique_feature_block_addresses(series);
     let mut rewritten = HashMap::<BlockAddress, BlockAddress>::new();
@@ -739,8 +755,14 @@ pub(super) fn compact_feature_block_addresses(
         if !rewrite_stats.should_relocate(&old_address) {
             continue;
         }
-        let cold_block = !block_memory_resident(cache, shard_id, &old_address);
-        let bytes = read_block_bytes_for_compaction(cache, block_store, shard_id, &old_address)
+        let cold_block = !block_memory_resident(cache, shard_id, &old_address, Some(routing_bucket));
+        let bytes = read_block_bytes_for_compaction(
+            cache,
+            block_store,
+            shard_id,
+            &old_address,
+            Some(routing_bucket),
+        )
             .ok_or_else(|| {
                 Status::error(
                     "page_compaction_failed",
@@ -751,7 +773,7 @@ pub(super) fn compact_feature_block_addresses(
             .append_block_of_object(
                 &bytes,
                 old_address.object_id(),
-                old_address.routing_bucket(),
+                Some(routing_bucket),
                 old_address.block_id().unwrap_or_default() as u32,
             )
             .map_err(|err| Status::error("page_compaction_failed", err.to_string()))?;
@@ -761,7 +783,7 @@ pub(super) fn compact_feature_block_addresses(
                 new_address.block_slab_id(),
                 new_address.offset(),
                 new_address.length(),
-                new_address.routing_bucket(),
+                Some(routing_bucket),
                 new_address.generation(),
             ),
             bytes,
@@ -906,7 +928,7 @@ mod compaction_selection_tests {
     use super::*;
 
     fn address_on(block_slab_id: u64, length: u64) -> BlockAddress {
-        BlockAddress::from_parts(block_slab_id, 0, length, Some(0), Some(1), Some(0))
+        BlockAddress::from_parts(block_slab_id, 0, length, Some(0), Some(1))
     }
 
     fn candidate(block_slab_id: u64, live_block_refs: u64) -> StorageReclaimCandidate {

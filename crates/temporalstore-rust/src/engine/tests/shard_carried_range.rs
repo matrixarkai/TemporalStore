@@ -152,10 +152,27 @@ fn as_an_older_build_wrote_it(address: &BlockAddress) -> BlockAddress {
     serde_json::from_value(wire).expect("the engine's decoder accepts an address with no `rs`")
 }
 
-fn strip_routing_buckets(shard: &mut crate::engine::state::ShardState) -> usize {
+/// THE DOOR IS NOW A NO-OP, AND THAT IS THE POINT.
+///
+/// A `BlockAddress` does not hold a routing bucket, so "put every page into the state an older index
+/// decodes into" and "leave every page alone" are the same operation. The helper is kept because the
+/// round trip it performs is the assertion that the `rs` key on the wire is inert: it must come back
+/// EQUAL, and a page that changed would mean an index written before the field left decodes to a
+/// DIFFERENT address -- which is what a migration would be for.
+///
+/// Returns how many pages it round-tripped, so a caller can still assert the fixture was covered.
+fn round_trip_every_page_through_the_wire(
+    shard: &mut crate::engine::state::ShardState,
+) -> usize {
     let keys: Vec<String> = shard.strings.keys().cloned().collect();
     for key in &keys {
-        let older = as_an_older_build_wrote_it(shard.strings.get(key).expect("key present"));
+        let before = shard.strings.get(key).expect("key present").clone();
+        let older = as_an_older_build_wrote_it(&before);
+        assert_eq!(
+            older, before,
+            "page {key} changed when its `rs` key was removed from the wire; the key is inert and \
+             this round trip has to be the identity"
+        );
         shard.strings.insert(key.clone(), older);
     }
     keys.len()
@@ -275,8 +292,12 @@ fn a_loaded_shard_carries_the_routing_range_it_was_loaded_on() {
 /// -- mx#1949's measured only the upsert -- because a fix that reached one of them and not the
 /// other would pass a test written against either alone.
 ///
-/// The DENOMINATOR is asserted first: the address must be UNROUTED, or the fallback never fires
-/// and this passes without exercising the site it names.
+/// The DENOMINATOR is asserted first: the shard must be CARRYING the narrow range, or the two
+/// placements are the same expression and this passes without exercising the site it names.
+///
+/// IT USED TO ASSERT THE ADDRESS WAS UNROUTED as well, because the range was consulted only for an
+/// address carrying no bucket of its own. An address carries none, so that half is structural and the
+/// round trip below is kept only to show the wire key is inert.
 #[test]
 fn the_two_sites_that_file_a_page_now_file_it_under_the_shards_own_range() {
     for (label, sync_path) in [("upsert_bucket_index_block", false), ("sync_bucket_index_object_blocks", true)] {
@@ -298,12 +319,14 @@ fn the_two_sites_that_file_a_page_now_file_it_under_the_shards_own_range() {
             "the shard under test is not carrying 0..{NARROW_END}, so what follows would measure \
              the fallback rather than the fix"
         );
-        let address = as_an_older_build_wrote_it(shard.strings.get(&key).expect("key present"));
-        shard.strings.insert(key.clone(), address.clone());
-        assert!(
-            address.routing_bucket().is_none(),
-            "the fixture needs an UNROUTED address here, or the fallback never fires"
+        let before = shard.strings.get(&key).expect("key present").clone();
+        let address = as_an_older_build_wrote_it(&before);
+        assert_eq!(
+            address, before,
+            "the wire round trip changed the address. `rs` is inert -- the address holds no routing \
+             bucket -- so this has to be the identity."
         );
+        shard.strings.insert(key.clone(), address.clone());
 
         if sync_path {
             crate::engine::storage_bucket_internals::sync_bucket_index_object_blocks(
@@ -360,19 +383,21 @@ fn the_two_sites_that_file_a_page_now_file_it_under_the_shards_own_range() {
 // 3. THE CONTROL: while every page is routed, the writers are value-identical
 // =============================================================================================
 
-/// THE WRITERS FILE IDENTICALLY, BUCKET FOR BUCKET, WHILE EVERY ADDRESS CARRIES ITS OWN BUCKET.
+/// THE WRITERS FILE BY THE STAMP, AND THE TWO STAMPS DISAGREE.
 ///
-/// `address.routing_bucket()` still wins; the shard's range is consulted only where a fallback
-/// would otherwise have fired, and it is `Some` for every page the live write path produces. So on
-/// a store the current build wrote, a shard stamped `0..1023` and a shard stamped with the whole
-/// range must file the same page in the same bucket.
+/// THIS WAS A CONTROL AND IS NOW THE SUBJECT. While an address carried its own routing bucket, that
+/// bucket won and the shard's stamp was consulted only where a fallback would otherwise have fired
+/// -- so a shard stamped `0..1023` and a shard stamped with the whole range filed the same page in
+/// the same bucket, and the control said so.
 ///
-/// Run at BOTH stamps, because "the shard's range IS the whole range" is exactly the condition
-/// under which this change is invisible, and a control that holds at one width says nothing about
-/// the other. The DENOMINATOR -- that every address really is routed -- is asserted first, since a
-/// fixture where nothing was routed would make this pass for the opposite reason.
+/// An address carries no bucket. The stamp decides EVERY placement, so the two stamps must file the
+/// same page DIFFERENTLY, and the assertion is inverted. The control that says the comparison can
+/// express sameness moves to the same stamp twice.
+///
+/// Run at BOTH stamps, because "the shard's range IS the whole range" is exactly the condition under
+/// which this change is invisible.
 #[test]
-fn the_two_writers_are_value_identical_while_every_page_is_routed() {
+fn the_two_writers_file_by_the_stamp_and_the_two_stamps_disagree() {
     let mut filings: Vec<BTreeMap<u32, Vec<String>>> = Vec::new();
     for stamp in [NARROW_END, WIDE_END] {
         let dir = tempfile::tempdir().expect("tempdir");
@@ -386,23 +411,12 @@ fn the_two_writers_are_value_identical_while_every_page_is_routed() {
         // what is varied here is the ONE input this change added.
         shard.set_routing_range(0, stamp);
 
-        let routed = keys
-            .iter()
-            .filter(|key| {
-                shard
-                    .strings
-                    .get(*key)
-                    .is_some_and(|address| address.routing_bucket().is_some())
-            })
-            .count();
+        // DENOMINATOR: the stamp took, which is the one input this change varies.
         assert_eq!(
-            keys.len(),
-            routed,
-            "only {routed} of {} addresses carry a routing bucket; this control means nothing \
-             unless every one of them does",
-            keys.len()
+            (0, stamp),
+            shard.routing_range(),
+            "the shard is not carrying 0..{stamp}, so the arm below files by something else"
         );
-
         for key in &keys {
             let address = shard.strings.get(key).expect("key present").clone();
             crate::engine::storage_bucket_internals::upsert_bucket_index_block(
@@ -418,10 +432,26 @@ fn the_two_writers_are_value_identical_while_every_page_is_routed() {
         assert!(page_total(&contents) >= keys.len(), "the fixture filed nothing");
         filings.push(contents);
     }
-    assert_eq!(
+    // INVERTED. While an address carried its own routing bucket, that bucket won and the stamp was
+    // consulted only where a fallback would otherwise have fired -- so the two stamps had to file
+    // identically and this asserted equality. The stamp decides EVERY placement now, so they must
+    // differ, and the buckets the wide stamp names must be ones the narrow shard does not hold.
+    assert_ne!(
         filings[0], filings[1],
-        "the two writers filed a ROUTED page differently under the two stamps. The shard's range \
-         must only be consulted where the address carries no bucket of its own."
+        "the two writers filed the same pages into the same buckets under a 0..{NARROW_END} stamp \
+         and a 0..{WIDE_END} one. The stamp is the only input to the placement now, so this would \
+         mean the writers are not reading it."
+    );
+    let narrow_outside = buckets_outside(&filings[0], 0, NARROW_END);
+    let wide_outside = buckets_outside(&filings[1], 0, NARROW_END);
+    assert_eq!(
+        0, narrow_outside,
+        "{narrow_outside} buckets of the NARROW stamp's filing sit above {NARROW_END}"
+    );
+    assert!(
+        wide_outside > 0,
+        "the WIDE stamp filed every page inside 0..{NARROW_END} as well, so the two stamps cannot \
+         be told apart by where they put a page and the inequality above is measuring noise"
     );
 }
 
@@ -447,10 +477,10 @@ fn narrowing_the_writers_removes_no_page_that_was_already_filed() {
 
     let mut shards = engine.shards.write().expect("shards lock poisoned");
     let shard = shards.get_mut(&1).expect("shard 1 is loaded");
-    let stripped = strip_routing_buckets(shard);
+    let round_tripped = round_trip_every_page_through_the_wire(shard);
     assert_eq!(
-        RECORDS, stripped,
-        "the fixture stripped {stripped} of {RECORDS} addresses"
+        RECORDS, round_tripped,
+        "the fixture round-tripped {round_tripped} of {RECORDS} addresses"
     );
     crate::engine::storage_bucket_internals::rebuild_bucket_block_ownership(
         1,
@@ -474,7 +504,6 @@ fn narrowing_the_writers_removes_no_page_that_was_already_filed() {
 
     let key = keys[0].clone();
     let address = shard.strings.get(&key).expect("key present").clone();
-    assert!(address.routing_bucket().is_none(), "the fixture's address is routed");
     crate::engine::storage_bucket_internals::upsert_bucket_index_block(
         shard, 1, "string", &key, None, address, true,
     );

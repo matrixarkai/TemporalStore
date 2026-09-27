@@ -671,8 +671,12 @@ pub struct IndexItem {
 /// One per changed page per write, and transient -- it lives for the length of an append.
 /// Pinned because it is the widest thing built per page anywhere in the engine.
 ///
-/// 176, not 184, since the `BlockAddress` it carries shed its derived `generation`.
-const _: () = assert!(std::mem::size_of::<IndexItem>() == 168);
+/// 160, not 168, since the `BlockAddress` it carries shed its `routing_bucket` and narrowed its
+/// `block_id` to sixteen bits. The address is inside an `Option` here and the item is 8-aligned, so
+/// the six bytes of payload that left round to one whole word -- the same step, and the same reason,
+/// as in the page entry. 168, not 176, since that address merged its slab id and its offset into one
+/// word; 176, not 184, since it shed its derived `generation` before that.
+const _: () = assert!(std::mem::size_of::<IndexItem>() == 160);
 
 /// A field whose value is its default says nothing, and every field here carries
 /// `#[serde(default)]` -- so a reader that meets an absent one fills in the same value it would
@@ -820,15 +824,14 @@ impl IndexItem {
 
     fn strip_address_repeats(&mut self) {
         let object_id = self.object_id;
-        let routing_bucket = self.routing_bucket;
         if let Some(address) = self.address.as_mut() {
             if address.object_id() == Some(object_id) {
                 address.set_object_id(None);
             }
-            if address.routing_bucket() == Some(routing_bucket) {
-                address.set_routing_bucket(None);
-            }
         }
+        // THE ROUTING BUCKET IS NO LONGER A REPEAT TO STRIP. An address does not hold one, so the
+        // item's own `routing_bucket` is the only copy on the wire -- which is what this stripping
+        // was arranging for in the first place.
     }
 
     /// Put back what the writer left out, from the fields that carry it.
@@ -838,15 +841,13 @@ impl IndexItem {
     /// absent.
     fn restore_address_repeats(&mut self) {
         let object_id = self.object_id;
-        let routing_bucket = self.routing_bucket;
         if let Some(address) = self.address.as_mut() {
             if address.object_id().is_none() {
                 address.set_object_id(Some(object_id));
             }
-            if address.routing_bucket().is_none() {
-                address.set_routing_bucket(Some(routing_bucket));
-            }
         }
+        // The routing bucket is not restored onto the address because the address has nowhere to
+        // put it. The item's `routing_bucket` field is what every reader of this item uses.
     }
 }
 
@@ -5635,7 +5636,6 @@ mod tests {
                 832,
                 None,
                 None,
-                None,
             );
             let block_ref_key = block_ref_key_from_parts(
                 "feature",
@@ -6773,11 +6773,11 @@ mod tests {
         let cases = [
             ("no address", None),
             ("address repeats both", Some(crate::block_store::BlockAddress::from_parts(
-                42, 1_048_576, 4096, Some(7), Some(object_id), Some(bucket), ))),
+                42, 1_048_576, 4096, Some(7), Some(object_id), ))),
             ("address holds a DIFFERENT object", Some(crate::block_store::BlockAddress::from_parts(
-                42, 0, 0, None, Some(object_id + 1), Some(bucket + 1), ))),
+                42, 0, 0, None, Some(object_id + 1), ))),
             ("address holds neither", Some(crate::block_store::BlockAddress::from_parts(
-                42, 0, 0, None, None, None, ))),
+                42, 0, 0, None, None, ))),
         ];
 
         for (label, address) in cases {
@@ -6790,12 +6790,14 @@ mod tests {
             back.restore_address_repeats();
 
             match label {
-                // An address that never carried them gains the item's, which is the same answer
-                // the WAL gives and is what the index means by a page of this object.
+                // An address that never carried an object id gains the item's, which is the same
+                // answer the WAL gives and is what the index means by a page of this object. The
+                // ROUTING BUCKET is not restored: an address has nowhere to put one, and the item's
+                // own `routing_bucket` field is what every reader of this item uses.
                 "address holds neither" => {
                     let addr = back.address.as_ref().expect("address survives");
                     assert_eq!(addr.object_id(), Some(object_id), "{label}");
-                    assert_eq!(addr.routing_bucket(), Some(bucket), "{label}");
+                    assert_eq!(back.routing_bucket, bucket, "{label}");
                 }
                 _ => assert_eq!(back, original, "{label} did not round-trip"),
             }
@@ -6820,7 +6822,7 @@ mod tests {
     #[test]
     fn a_size_that_disagrees_with_the_address_is_not_stripped() {
         let address = crate::block_store::BlockAddress::from_parts(
-            7, 4096, 832, Some(3), None, None,
+            7, 4096, 832, Some(3), None,
         );
         let item = |size: u64| IndexItem {
             kind: IndexItemKind::Page,
@@ -6955,11 +6957,11 @@ flag exists to say",
 
         // As written today: the address repeats the item's object id and routing bucket.
         let repeats = item(Some(crate::block_store::BlockAddress::from_parts(
-            42, 1_048_576, 4096, Some(7), Some(object_id), Some(bucket),
+            42, 1_048_576, 4096, Some(7), Some(object_id),
         )));
         // The same address with the two the item already states left out.
         let deduped = item(Some(crate::block_store::BlockAddress::from_parts(
-            42, 1_048_576, 4096, Some(7), None, None,
+            42, 1_048_576, 4096, Some(7), None,
         )));
 
         let a = encode_index_payload(&repeats, INDEX_LOG_SHAPE_DELTA).expect("encode").len();
@@ -6994,7 +6996,7 @@ flag exists to say",
             object_id: 12_345_678_901_234_567u64,
             block_id: 7,
             address: Some(crate::block_store::BlockAddress::from_parts(
-                42, 1_048_576, 4096, Some(7), Some(12_345_678_901_234_567), Some(8539),
+                42, 1_048_576, 4096, Some(7), Some(12_345_678_901_234_567),
             )),
             size: 4096,
             in_log: false,

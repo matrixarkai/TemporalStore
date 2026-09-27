@@ -704,10 +704,20 @@ impl TemporalEngine {
             .iter()
             .map(|entry| entry.address.block_slab_id())
             .collect::<BTreeSet<_>>();
+        // THE RESTORED IMAGE'S OWN FILING, NOT THIS SHARD'S RANGE, and the difference is the whole
+        // reason a manifest install is not a reconciliation.
+        //
+        // `manifest.bucket_ids` are the SOURCE shard's buckets, written under the SOURCE's routing
+        // range; the embedded index is that shard's own `bucket_map`, so the bucket a page sits in is
+        // the map key the walk just returned. Deriving the bucket from the key over THIS shard's
+        // range names a bucket the manifest never mentions whenever the two ranges differ -- which
+        // matched nothing, refused every cross-range install with `slot_dump_live_ref_mismatch`, and
+        // is exactly the truncation mx#1945 refused to allow. The fallback is kept for an entry from
+        // the model-map arm of the walk, where there is no filing to read.
         let live_block_entries = all_live_block_entries
             .into_iter()
             .filter(|entry| {
-                let routing_bucket = entry.address.routing_bucket().unwrap_or_else(|| {
+                let routing_bucket = entry.filed_bucket().unwrap_or_else(|| {
                     self.routing_bucket_for_key(manifest.shard_id, &entry.object_key)
                 });
                 manifest_buckets.is_empty() || manifest_buckets.contains(&routing_bucket)
@@ -916,7 +926,8 @@ impl TemporalEngine {
                 let manifest_buckets = manifest.bucket_ids.iter().copied().collect::<BTreeSet<_>>();
                 let mut probed_block_refs = 0usize;
                 for entry in collect_live_block_entries(&restored) {
-                    let routing_bucket = entry.address.routing_bucket().unwrap_or_else(|| {
+                    // The restored image's own filing -- see the note in the install path.
+                    let routing_bucket = entry.filed_bucket().unwrap_or_else(|| {
                         self.routing_bucket_for_key(manifest.shard_id, &entry.object_key)
                     });
                     if manifest_buckets.is_empty() || manifest_buckets.contains(&routing_bucket) {

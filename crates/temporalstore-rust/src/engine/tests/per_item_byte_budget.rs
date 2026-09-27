@@ -100,15 +100,21 @@ fn budget() -> Vec<Budgeted> {
             align: align_of::<BlockAddress>(),
             // address               : u64  (slab id in the high 32 bits, offset in the low 32)
             // object_id             : u64
-            // length, block_id      : u32 x 2
-            // routing_bucket        : u32
+            // length                : u32
+            // block_id              : u16
             // present               : u8
             //
             // `generation` was a fourth u64 here until it became derived from
             // `block_id.or(object_id)`; it is not a field any more, so it is not a row here.
             // `block_slab_id` and `offset` were two more u64s until they became the two halves of
             // `address` -- two rows became one for the same reason, and by the same eight bytes.
-            fields: 2 * size_of::<u64>() + 3 * size_of::<u32>() + size_of::<u8>(),
+            // `routing_bucket` was a third u32 until it stopped being held at all: a page's bucket
+            // is `block_routing_bucket(object_key, ..)` over the range the store is stamped with,
+            // so the container a page is read through answers it. `block_id` narrowed from 32 bits
+            // to 16 in the same change, and NEITHER of those is worth anything on its own -- four
+            // bytes off 29 is 25 and two off 29 is 27, both of which round back to 32. Together
+            // they shed six and the struct crosses to 24.
+            fields: 2 * size_of::<u64>() + size_of::<u32>() + size_of::<u16>() + size_of::<u8>(),
             per_item: true,
         },
         Budgeted {
@@ -316,8 +322,8 @@ fn every_per_item_structure_states_its_width_and_its_padding() {
     }
 
     // --- The pinned widths. ---
-    assert_eq!(32, size_of::<BlockAddress>(), "BlockAddress width moved");
-    assert_eq!(72, size_of::<BlockIndex>(), "BlockIndex width moved");
+    assert_eq!(24, size_of::<BlockAddress>(), "BlockAddress width moved");
+    assert_eq!(64, size_of::<BlockIndex>(), "BlockIndex width moved");
     assert_eq!(24, size_of::<BlockIndexMap>(), "BlockIndexMap width moved");
     assert_eq!(88, size_of::<BucketNode>(), "BucketNode width moved");
     assert_eq!(16, size_of::<BlockLookupRef>(), "BlockLookupRef width moved");
@@ -329,7 +335,7 @@ fn every_per_item_structure_states_its_width_and_its_padding() {
     assert_eq!(8, size_of::<DeletedObjectIndex>(), "DeletedObjectIndex width moved");
     assert_eq!(24, size_of::<DirtyKeySet>(), "DirtyKeySet width moved");
     assert_eq!(16, size_of::<WalResidentBlock>(), "WalResidentBlock width moved");
-    assert_eq!(168, size_of::<IndexItem>(), "IndexItem width moved");
+    assert_eq!(160, size_of::<IndexItem>(), "IndexItem width moved");
     assert_eq!(104, size_of::<SlabCatalogEntry>(), "SlabCatalogEntry width moved");
     assert_eq!(
         168,
@@ -398,7 +404,7 @@ fn every_per_item_structure_states_its_width_and_its_padding() {
 /// a quarter of what the field now holds.
 #[test]
 fn a_length_that_does_not_fit_the_field_saturates_rather_than_wrapping() {
-    let just_under = BlockAddress::from_parts(1, 0, u64::from(u32::MAX) - 1, None, None, None);
+    let just_under = BlockAddress::from_parts(1, 0, u64::from(u32::MAX) - 1, None, None);
     assert_eq!(
         u64::from(u32::MAX) - 1,
         just_under.length(),
@@ -412,7 +418,7 @@ fn a_length_that_does_not_fit_the_field_saturates_rather_than_wrapping() {
         (1u64 << 32) + 7,
         u64::MAX,
     ] {
-        let address = BlockAddress::from_parts(1, 0, over, None, None, None);
+        let address = BlockAddress::from_parts(1, 0, over, None, None);
         assert_eq!(
             u64::from(u32::MAX),
             address.length(),
@@ -448,48 +454,195 @@ fn a_length_that_does_not_fit_the_field_saturates_rather_than_wrapping() {
 /// the write path allows: `encode_block_record` refuses a block id above `u16::MAX`.
 #[test]
 fn a_block_id_that_does_not_fit_the_field_saturates_rather_than_wrapping() {
-    let real = BlockAddress::from_parts(1, 0, 64, Some(u64::from(u16::MAX)), None, None);
+    let real = BlockAddress::from_parts(1, 0, 64, Some(u64::from(u16::MAX)), None);
     assert_eq!(
         Some(u64::from(u16::MAX)),
         real.block_id(),
         "the largest block id the encoder accepts must round-trip exactly"
     );
 
-    for over in [u64::from(u32::MAX) + 1, 1u64 << 33, u64::MAX] {
-        let address = BlockAddress::from_parts(1, 0, 64, Some(over), None, None);
+    // A BLOCK ID ABOVE THE CEILING IS NOW REFUSED, NOT SATURATED, and the difference is the whole
+    // reason the field could narrow to sixteen bits.
+    //
+    // `length` may saturate: `u32::MAX` is four times the largest length `encode_block_record`
+    // accepts, so a saturated length is a value no writer could have produced and reads as broken.
+    // `u16::MAX` IS the largest block id the encoder accepts, so saturating there would produce a
+    // perfectly legal block id -- the LARGEST LEGAL PAGE of the same object -- and
+    // `decode_block_record`'s block-id arm, the one cross-check on a read that can actually fire,
+    // would confirm it against that page's own record. That is the address-word hazard one level
+    // down, so it takes the address word's answer: refuse.
+    for over in [u64::from(u16::MAX) + 1, 1u64 << 33, u64::MAX] {
+        let refused = BlockAddress::try_from_parts(1, 0, 64, Some(over), None)
+            .expect_err("a block id of {over} must be refused, not narrowed");
         assert_eq!(
-            Some(u64::from(u32::MAX)),
-            address.block_id(),
-            "a block id of {over} must saturate, not wrap to {}",
-            over as u32
+            Some(over),
+            refused.block_id,
+            "the refusal must name the block id that did not fit, not the address word"
+        );
+        assert!(
+            refused.to_string().contains("does not fit the block id field"),
+            "the refusal must say which half of the structure refused: {refused}"
         );
     }
 
-    // The setter is the second write path into the same field and has to agree with the first.
-    //
-    // THE VALUE IS CHOSEN SO THE TWO ANSWERS DIFFER. `u64::MAX` cannot test this: its low 32 bits
-    // ARE `u32::MAX`, so truncation and saturation agree on it and a setter written `as u32`
-    // passes. A mutation run scored exactly that -- the setter truncating survived every test
-    // here -- and this is the value that kills it.
+    // AND THE VALUE THE OLD SATURATION COULD NOT DISTINGUISH IS STILL THE PROBE VALUE. `u64::MAX`
+    // cannot test a narrowing: its low bits ARE the ceiling, so truncation and saturation agree on
+    // it and an `as u16` write passes. A mutation run scored exactly that against the old 32-bit
+    // field. `MAX + 1` is the value that kills it, in both directions.
     const OVER: u64 = (1u64 << 33) + 5;
     assert_ne!(
-        u64::from(OVER as u32),
-        u64::from(u32::MAX),
-        "the probe value must distinguish truncation from saturation, or this test cannot fail"
+        u64::from(OVER as u16),
+        u64::from(u16::MAX),
+        "the probe value must distinguish truncation from a refusal, or this test cannot fail"
     );
-    let mut address = BlockAddress::from_parts(1, 0, 64, None, None, None);
-    address.set_block_id(Some(OVER));
+    assert!(
+        BlockAddress::try_from_parts(1, 0, 64, Some(OVER), None).is_err(),
+        "the constructor must refuse a block id of {OVER}, not narrow it to {}",
+        OVER as u16
+    );
+
+    // The setter is the second write path into the same field and has to agree with the first --
+    // by panicking, which is the same doctrine `from_parts` uses for an out-of-range address word.
+    let mut address = BlockAddress::from_parts(1, 0, 64, None, None);
+    address.set_block_id(Some(u64::from(u16::MAX)));
     assert_eq!(
-        Some(u64::from(u32::MAX)),
+        Some(u64::from(u16::MAX)),
         address.block_id(),
-        "the setter must saturate too; it answered with the low 32 bits"
+        "the largest legal block id must still go through the setter"
     );
     address.set_block_id(None);
     assert_eq!(None, address.block_id(), "clearing the field must still clear it");
+}
 
-    // And the constructor, on the same discriminating value.
-    let built = BlockAddress::from_parts(1, 0, 64, Some(OVER), None, None);
-    assert_eq!(Some(u64::from(u32::MAX)), built.block_id(), "the constructor must saturate");
+/// AND THE SETTER REFUSES TOO, which is the half a constructor test cannot reach.
+///
+/// `set_block_id` is the second write path into the same field. It panics rather than returning,
+/// because every caller's value is bounded by construction -- the record decoder's comes off the
+/// wire as a `u16` already -- and the doctrine is `from_parts`'s: a truncated block id names a
+/// different page of the same object, so it is refused rather than narrowed.
+#[test]
+#[should_panic(expected = "does not fit the block id field")]
+fn the_block_id_setter_refuses_a_value_the_encoder_would_refuse() {
+    let mut address = BlockAddress::from_parts(1, 0, 64, None, None);
+    address.set_block_id(Some((1u64 << 33) + 5));
+}
+
+/// THE CONTROL ON THE EXPLANATION: EXACTLY THE STRUCTURES THAT HOLD AN ADDRESS MOVED.
+///
+/// The mechanism claimed for this change is that `BlockAddress` lost eight bytes, and that every
+/// structure holding one inline lost them with it. That predicts movement for THREE of the per-item
+/// structures this module prices and NO movement for the rest -- so the rest are the control, and
+/// "no movement" is 0.00% over a stated denominator rather than an absence of complaint.
+///
+/// WHY A CONTROL IS NEEDED HERE. Three widths moved in one change, and a reader has no way to tell a
+/// change that narrowed an address from one that narrowed something all three happen to share. The
+/// thirteen structures that do NOT hold an address are what separates the two: if any of them had
+/// moved, the explanation would be wrong whatever the three did.
+///
+/// THREE AND NOT FIVE, AND THE ASSERTION IS WHAT SAID SO. `BlockIndexMap` and `BucketNode` held a
+/// page entry -- and therefore an address -- INLINE until #1975 put the single page behind a pointer.
+/// They are now 24 and 88 whatever the entry weighs, so they belong in the control group, and this
+/// test reported the reclassification rather than absorbing it: it failed with `BlockIndexMap holds 1
+/// address(es) inline and moved by 56 bytes, not 8`. That is the row landing in the wrong list, which
+/// is the failure the `addresses` column exists to produce. What the eight bytes are worth in those
+/// two structures is now a HEAP figure, measured in `inline_arm_trade.rs`: eight bytes on every entry
+/// slot in the request column, and -324.44 B a bucket on the chunk column at the shipped routing
+/// range and 40,000 records, where every bucket holds a page LIST.
+///
+/// THE WIDTHS ARE READ, NOT WRITTEN DOWN. Each row states how many addresses the structure holds,
+/// and the assertion is that the structures holding one are exactly the ones whose width is
+/// consistent with the eight bytes -- so a structure that started holding an address would land in
+/// the wrong list rather than quietly widening.
+///
+/// rust-internal: reads the engine's own declarations, no product behaviour
+#[test]
+fn only_the_structures_that_hold_an_address_moved() {
+    // (name, width now, width before this change, addresses held inline)
+    //
+    // The "before" column is history and is written down; every "now" is read off the type. A row
+    // whose two columns differ by anything but 8 x addresses is a row this change did not explain.
+    let rows: Vec<(&str, usize, usize, usize)> = vec![
+        ("BlockAddress", size_of::<BlockAddress>(), 32, 1),
+        ("BlockIndex", size_of::<BlockIndex>(), 72, 1),
+        ("IndexItem", size_of::<crate::index_log::IndexItem>(), 168, 1),
+        // Held an address inline until #1975 boxed the single-page arm; 24 and 88 whatever the
+        // entry weighs now, so they are control rows and not holder rows.
+        ("BlockIndexMap", size_of::<BlockIndexMap>(), 24, 0),
+        ("BucketNode", size_of::<BucketNode>(), 88, 0),
+        ("BlockLookupRef", size_of::<BlockLookupRef>(), 16, 0),
+        ("BlockRefs", size_of::<BlockRefs>(), 24, 0),
+        ("ComponentBlocks", size_of::<ComponentBlocks>(), 40, 0),
+        ("ComponentList", size_of::<ComponentList>(), 40, 0),
+        ("ObjectBlockRefs", size_of::<ObjectBlockRefs>(), 40, 0),
+        ("ObjectIndex", size_of::<ObjectIndex>(), 16, 0),
+        ("DeletedObjectIndex", size_of::<DeletedObjectIndex>(), 8, 0),
+        ("DirtyKeySet", size_of::<DirtyKeySet>(), 24, 0),
+        ("WalResidentBlock", size_of::<WalResidentBlock>(), 16, 0),
+        ("SlabCatalogEntry", size_of::<SlabCatalogEntry>(), 104, 0),
+        (
+            "BlockStoreSlabDescriptor",
+            size_of::<BlockStoreSlabDescriptor>(),
+            168,
+            0,
+        ),
+    ];
+
+    // DENOMINATORS FIRST, both of them.
+    let holders = rows.iter().filter(|row| row.3 > 0).count();
+    let control = rows.iter().filter(|row| row.3 == 0).count();
+    assert_eq!(
+        3, holders,
+        "the mechanism predicts movement for the three structures holding an address inline; this \
+         list names {holders}. `BlockIndexMap` and `BucketNode` were holders until #1975 boxed the \
+         single-page arm -- if either is a holder again, the entry is back inside the node"
+    );
+    assert!(
+        control >= 12,
+        "only {control} structures in the control group. Below twelve the control cannot \
+         distinguish \"nothing else moved\" from \"nothing else was looked at\" -- and it gained two \
+         when #1975 took the page entry out of the node"
+    );
+
+    println!("=== what moved, and what the mechanism says should not have ===");
+    let mut moved = 0usize;
+    for (name, now, before, addresses) in &rows {
+        let delta = *before as i64 - *now as i64;
+        println!(
+            "  {name:<26} {before:>5} -> {now:>5}  ({delta:>+3}) addresses inline {addresses}"
+        );
+        if delta != 0 {
+            moved += 1;
+        }
+        if *addresses == 0 {
+            assert_eq!(
+                *before, *now,
+                "{name} holds no `BlockAddress` inline and moved from {before} to {now}. The \
+                 mechanism this change claims predicts no movement here, so either the claim is \
+                 wrong or this structure has started holding an address"
+            );
+        } else {
+            assert_eq!(
+                8 * *addresses as i64,
+                delta,
+                "{name} holds {addresses} address(es) inline and moved by {delta} bytes, not \
+                 {}. A structure holding one address loses exactly the eight bytes the address \
+                 lost -- more means something else moved with it, less means the address is not \
+                 held inline",
+                8 * *addresses
+            );
+        }
+    }
+    assert_eq!(
+        holders, moved,
+        "{moved} of the {} structures moved and {holders} hold an address; the two sets have to be \
+         the same set",
+        rows.len()
+    );
+    println!(
+        "  {moved} of {} structures moved, and they are exactly the {holders} that hold an address \
+         inline; the other {control} are 0 bytes",
+        rows.len()
+    );
 }
 
 /// `set_length` IS A WRITE PATH, and a setter that quietly drops its write is invisible to every
@@ -500,7 +653,7 @@ fn a_block_id_that_does_not_fit_the_field_saturates_rather_than_wrapping() {
 /// record as zero-length. A mutation run found this uncovered.
 #[test]
 fn setting_a_length_after_the_fact_writes_it_and_saturates_it() {
-    let mut address = BlockAddress::from_parts(1, 0, 0, None, None, None);
+    let mut address = BlockAddress::from_parts(1, 0, 0, None, None);
     assert_eq!(0, address.length(), "it starts at the length it was built with");
 
     address.set_length(4_096);
@@ -552,14 +705,17 @@ fn narrowing_the_resident_fields_did_not_move_the_stored_form() {
         1_048_576,
         Some(7),
         Some(0xDEAD_BEEF_CAFE_F00D),
-        Some(4_294_967_290),
     );
     let word = crate::block_store::make_block_address_word(slab as u32, offset as u32);
     let json = serde_json::to_string(&address).expect("an address serializes");
+    // `rs` IS WRITTEN AND WRITTEN EMPTY, which is a CONTENT change and not a schema change -- the
+    // same trade `h` already makes two fields along. The slot stays because the index log packs this
+    // struct positionally: dropping the field would shift `g` and `h` down one place, and an
+    // already-written record would hand its routing bucket to the generation check.
     assert_eq!(
         format!(
             "{{\"a\":{word},\"l\":1048576,\"pi\":7,\"oi\":16045690984503111693,\
-             \"rs\":4294967290,\"g\":7,\"h\":null}}"
+             \"rs\":null,\"g\":7,\"h\":null}}"
         ),
         json,
         "the stored spelling of an address moved"
@@ -582,15 +738,39 @@ fn narrowing_the_resident_fields_did_not_move_the_stored_form() {
     // NO generation key here, deliberately. Besides the saturation it was written for, this
     // is the shape of an index written before the generation existed: an identity and no
     // generation at all. It must LOAD, and it must not acquire one.
-    let wide = "{\"a\":4294967296,\"l\":4294967296,\"pi\":4294967296}";
-    let read: BlockAddress = serde_json::from_str(wide).expect("a wide stored value still loads");
+    // A STORED LENGTH ABOVE THE RESIDENT FIELD SATURATES; A STORED BLOCK ID IS REFUSED. The two are
+    // not the same case and this is where the difference is driven: `u32::MAX` is four times the
+    // largest length the encoder accepts, so a saturated length is a value no writer could have
+    // produced and reads as broken. `u16::MAX` IS the largest block id it accepts, so a saturated
+    // one is a legal block id for a different page of the same object -- which
+    // `decode_block_record`'s block-id arm would then confirm against that page's own record.
+    //
+    // NO generation key here, deliberately. Besides the saturation it was written for, this is the
+    // shape of an index written before the generation existed: an identity and no generation at all.
+    // It must LOAD, and it must not acquire one.
+    let wide_length = "{\"a\":4294967296,\"l\":4294967296}";
+    let read: BlockAddress =
+        serde_json::from_str(wide_length).expect("a wide stored length still loads");
     assert_eq!(u64::from(u32::MAX), read.length(), "a wide stored length saturates");
-    assert_eq!(Some(u64::from(u32::MAX)), read.block_id(), "a wide stored block id saturates");
     assert_eq!(
         None,
         read.generation(),
         "an index that stored no generation must not acquire one when the field is derived"
     );
+
+    let wide_block_id = "{\"a\":4294967296,\"l\":64,\"pi\":4294967296}";
+    let refusal = serde_json::from_str::<BlockAddress>(wide_block_id)
+        .expect_err("a stored block id above the field's ceiling must be REFUSED, not narrowed");
+    assert!(
+        refusal.to_string().contains("does not fit the block id field"),
+        "the refusal must name the block id rather than the address word: {refusal}"
+    );
+
+    // AND THE LARGEST LEGAL ONE STILL LOADS, or the refusal above is a ceiling set too low.
+    let at_ceiling = "{\"a\":4294967296,\"l\":64,\"pi\":65535}";
+    let read: BlockAddress =
+        serde_json::from_str(at_ceiling).expect("the encoder's own ceiling must load");
+    assert_eq!(Some(u64::from(u16::MAX)), read.block_id());
 }
 
 // -------------------------------------------------------------------------------------------

@@ -1461,15 +1461,15 @@ fn live_block_slab_ids_scan_all_index_backed_data_models() {
     let mut shard = ShardState::default();
     shard.strings.insert(
         "string".to_string(),
-        BlockAddress::from_parts(7, 0, 1, None, None, None),
+        BlockAddress::from_parts(7, 0, 1, None, None),
     );
     shard.hashes.entry("hash".to_string()).or_default().insert(
         "field".to_string(),
-        BlockAddress::from_parts(8, 0, 1, None, None, None),
+        BlockAddress::from_parts(8, 0, 1, None, None),
     );
     shard.sets.entry("set".to_string()).or_default().insert(
         b"member".to_vec(),
-        BlockAddress::from_parts(9, 0, 1, None, None, None),
+        BlockAddress::from_parts(9, 0, 1, None, None),
     );
     shard
         .features
@@ -1477,7 +1477,7 @@ fn live_block_slab_ids_scan_all_index_backed_data_models() {
         .or_default()
         .insert(
             10,
-            BlockAddress::from_parts(10, 0, 1, None, None, None),
+            BlockAddress::from_parts(10, 0, 1, None, None),
         );
     shard
         .features
@@ -1485,7 +1485,7 @@ fn live_block_slab_ids_scan_all_index_backed_data_models() {
         .or_default()
         .insert(
             11,
-            BlockAddress::from_parts(11, 0, 1, None, None, None),
+            BlockAddress::from_parts(11, 0, 1, None, None),
         );
     shard
         .control_state
@@ -1579,17 +1579,37 @@ fn block_compaction_rewrites_live_addresses_and_allows_old_slab_gc() {
             string_address.object_id(),
             Some(stable_block_object_id(1, "string", "k", None))
         );
+        // WHERE THE PAGE IS FILED, not what the address claims -- the address carries no bucket.
+        // The bucket map's key is the container's answer, and it has to be the key's own bucket.
         assert_eq!(
-            string_address.routing_bucket(),
-            Some(block_routing_bucket("k", 0, u32::MAX))
+            shard
+                .bucket_index
+                .bucket_map
+                .iter()
+                .filter(|(_, bucket)| bucket
+                    .block_index
+                    .values()
+                    .any(|page| page.object_key.as_ref() == "k"))
+                .map(|(routing_bucket, _)| *routing_bucket)
+                .collect::<Vec<_>>(),
+            vec![block_routing_bucket("k", 0, u32::MAX)]
         );
         assert_eq!(
             hash_address.object_id(),
             Some(stable_block_object_id(1, "hash", "h", Some("f")))
         );
         assert_eq!(
-            hash_address.routing_bucket(),
-            Some(block_routing_bucket("h", 0, u32::MAX))
+            shard
+                .bucket_index
+                .bucket_map
+                .iter()
+                .filter(|(_, bucket)| bucket
+                    .block_index
+                    .values()
+                    .any(|page| page.object_key.as_ref() == "h"))
+                .map(|(routing_bucket, _)| *routing_bucket)
+                .collect::<Vec<_>>(),
+            vec![block_routing_bucket("h", 0, u32::MAX)]
         );
     }
 
@@ -2511,12 +2531,15 @@ fn cold_index_block_address_reads_from_disk_cache_or_block_store_and_refills_mem
         let shard = shards.get(&1).expect("loaded shard");
         let address = shard.strings.get("cold-key").expect("indexed page address");
         assert_ne!(address.block_slab_id(), HOT_BLOCK_SLAB_ID);
+        // THE SAME DERIVATION THE READ PATH USES: the page cache key's slot is the KEY's bucket
+        // over the range the shard is stamped with, not a field on the address.
+        let (start, end) = shard.routing_range();
         CacheKey::page_with_slot(
             1,
             address.block_slab_id(),
             address.offset(),
             address.length(),
-            address.routing_bucket(),
+            Some(block_routing_bucket("cold-key", start, end)),
         )
     };
 
@@ -2739,9 +2762,19 @@ fn durable_writes_stamp_stable_object_ids_on_block_addresses() {
         string_address.object_id(),
         Some(stable_block_object_id(1, "string", "k", None))
     );
+    // The FILING, on a shard loaded 10..20 -- see the note at the string arm above.
     assert_eq!(
-        string_address.routing_bucket(),
-        Some(block_routing_bucket("k", 10, 20))
+        shard
+            .bucket_index
+            .bucket_map
+            .iter()
+            .filter(|(_, bucket)| bucket
+                .block_index
+                .values()
+                .any(|page| page.object_key.as_ref() == "k"))
+            .map(|(routing_bucket, _)| *routing_bucket)
+            .collect::<Vec<_>>(),
+        vec![block_routing_bucket("k", 10, 20)]
     );
     assert_eq!(
         string_address.slab_id(),
@@ -2752,8 +2785,17 @@ fn durable_writes_stamp_stable_object_ids_on_block_addresses() {
         Some(stable_block_object_id(1, "hash", "h", Some("f")))
     );
     assert_eq!(
-        hash_address.routing_bucket(),
-        Some(block_routing_bucket("h", 10, 20))
+        shard
+            .bucket_index
+            .bucket_map
+            .iter()
+            .filter(|(_, bucket)| bucket
+                .block_index
+                .values()
+                .any(|page| page.object_key.as_ref() == "h"))
+            .map(|(routing_bucket, _)| *routing_bucket)
+            .collect::<Vec<_>>(),
+        vec![block_routing_bucket("h", 10, 20)]
     );
     assert_eq!(hash_address.slab_id(), Some(hash_address.block_slab_id()));
     assert_ne!(string_address.object_id(), hash_address.object_id());
@@ -3596,7 +3638,7 @@ fn served_index_container_round_trips_and_still_reads_plain_json() {
     let mut shard = ShardState::default();
     shard.strings.insert(
         "container-probe".to_string(),
-        BlockAddress::from_parts(7, 11, 13, None, None, None),
+        BlockAddress::from_parts(7, 11, 13, None, None),
     );
 
     // Raw JSON, which is what an older binary wrote. Nothing in production produces this any
@@ -3635,12 +3677,12 @@ fn binary_index_payload_round_trips_and_refuses_a_shape_it_cannot_read() {
     for i in 0..64u64 {
         shard.strings.insert(
             format!("object-{i}"),
-            BlockAddress::from_parts(i, i * 7, i + 1, Some(i), Some(i * 3), Some((i % 8) as u32)),
+            BlockAddress::from_parts(i, i * 7, i + 1, Some(i), Some(i * 3)),
         );
     }
     shard.hashes.entry("hash-object".to_string()).or_default().insert(
         "component".to_string(),
-        BlockAddress::from_parts(9, 1, 2, None, None, None),
+        BlockAddress::from_parts(9, 1, 2, None, None),
     );
     shard.applied_wal_sequence = Some(4242);
 
@@ -3763,7 +3805,7 @@ fn what_reading_one_summary_actually_costs() {
             assert!(response.status.ok, "{:?}", response.status);
         }
 
-        let address = {
+        let (address, routing_bucket) = {
             let shards = engine.shards.read().expect("engine lock poisoned");
             let shard = shards.get(&1).expect("loaded shard");
             let key = super::context::context_summary_key(7201, 60, 2);
@@ -3771,20 +3813,31 @@ fn what_reading_one_summary_actually_costs() {
                 .context_summaries
                 .get(&key)
                 .expect("the summary series must exist, or this measures nothing");
-            series
+            let address = series
                 .iter()
                 .next()
                 .map(|(_, address)| address.clone())
-                .expect("one entry")
+                .expect("one entry");
+            let (start, end) = shard.routing_range();
+            (
+                address,
+                Some(super::hashing::block_routing_bucket(&key, start, end)),
+            )
         };
 
         // Warm, so neither half is charged for filling a cache that a steady-state read finds warm.
-        let _ = super::read_block_bytes(&engine.cache, &engine.block_store, 1, &address);
+        let _ = super::read_block_bytes(&engine.cache, &engine.block_store, 1, &address, routing_bucket);
 
+        // THE BUCKET IS HOISTED OUT OF THE PROBE, and that is not hiding a cost. It is one FNV-1a
+        // pass over a borrowed `&str` returning a `u32`: no allocation, so it cannot move an
+        // allocation count either way. What it would move is the number of ROUNDS the derivation
+        // ran, and this probe counts allocations per read, not instructions --
+        // `engine::tests::address_footprint::what_consulting_the_object_index_costs_against_computing_the_hash`
+        // is where the derivation itself is counted.
         let read_probe = crate::alloc_probe::Probe::start();
         let mut bytes = Vec::new();
         for _ in 0..5 {
-            bytes = super::read_block_bytes(&engine.cache, &engine.block_store, 1, &address)
+            bytes = super::read_block_bytes(&engine.cache, &engine.block_store, 1, &address, routing_bucket)
                 .expect("the page must read, or the split below is measuring a None");
         }
         let read = read_probe.stop();
@@ -3812,9 +3865,14 @@ fn what_reading_one_summary_actually_costs() {
         // Cold walk over every address, which is what a batch read actually does: 120 distinct
         // extents rather than one warm one. Warming a single address measures the best case and
         // would report it as the cost.
-        let addresses: Vec<crate::block_store::BlockAddress> = {
+        // Each page paired with the bucket its own key routes to, derived OUTSIDE the probe for the
+        // reason given at the first probe in this test: the derivation allocates nothing, so it
+        // cannot move an allocation count, and hoisting it keeps the numbers comparable with the
+        // runs taken before the bucket became an argument.
+        let addresses_with_buckets: Vec<(u32, crate::block_store::BlockAddress)> = {
             let shards = engine.shards.read().expect("engine lock poisoned");
             let shard = shards.get(&1).expect("loaded shard");
+            let (start, end) = shard.routing_range();
             (1..=120u64)
                 .filter_map(|node_hash| {
                     let key = super::context::context_summary_key(7201, node_hash, 2);
@@ -3822,10 +3880,19 @@ fn what_reading_one_summary_actually_costs() {
                         .context_summaries
                         .get(&key)
                         .and_then(|series| series.iter().next())
-                        .map(|(_, address)| address.clone())
+                        .map(|(_, address)| {
+                            (
+                                super::hashing::block_routing_bucket(&key, start, end),
+                                address.clone(),
+                            )
+                        })
                 })
                 .collect()
         };
+        let addresses: Vec<crate::block_store::BlockAddress> = addresses_with_buckets
+            .iter()
+            .map(|(_, address)| address.clone())
+            .collect();
         assert_eq!(addresses.len(), 120, "every summary must be addressable");
         let wal_resident = addresses
             .iter()
@@ -3842,9 +3909,14 @@ fn what_reading_one_summary_actually_costs() {
 
         let walk_probe = crate::alloc_probe::Probe::start();
         let mut decoded = 0usize;
-        for address in &addresses {
-            if let Some(page) = super::read_block_bytes(&engine.cache, &engine.block_store, 1, address)
-            {
+        for (routing_bucket, address) in &addresses_with_buckets {
+            if let Some(page) = super::read_block_bytes(
+                &engine.cache,
+                &engine.block_store,
+                1,
+                address,
+                Some(*routing_bucket),
+            ) {
                 if let super::state::PackedFeatureBlockDecode::Packed(points) =
                     super::packed_pages::decode_feature_block_strict(&page)
                 {
@@ -5591,10 +5663,20 @@ fn where_a_block_read_miss_allocates() {
         });
         assert!(response.status.ok, "write {index}: {:?}", response.status);
     }
-    let addresses: Vec<_> = {
+    let addresses: Vec<(Option<u32>, crate::block_store::BlockAddress)> = {
         let shards = engine.shards.read().expect("engine lock poisoned");
         let shard = shards.get(&1).expect("loaded shard");
-        shard.strings.values().cloned().collect()
+        let (start, end) = shard.routing_range();
+        shard
+            .strings
+            .iter()
+            .map(|(key, address)| {
+                (
+                    Some(super::hashing::block_routing_bucket(key, start, end)),
+                    address.clone(),
+                )
+            })
+            .collect()
     };
     assert!(addresses.len() >= 8, "need several pages: {}", addresses.len());
     let block_store = &engine.block_store;
@@ -5606,7 +5688,7 @@ fn where_a_block_read_miss_allocates() {
     let mut store_allocs = 0u64;
     let mut store_bytes = 0u64;
     for round in 0..ROUNDS {
-        let address = &addresses[round as usize % addresses.len()];
+        let (_, address) = &addresses[round as usize % addresses.len()];
         let probe = crate::alloc_probe::Probe::start();
         let got = block_store.read(address);
         let counts = probe.stop();
@@ -5619,9 +5701,9 @@ fn where_a_block_read_miss_allocates() {
     let mut whole_allocs = 0u64;
     let mut whole_bytes = 0u64;
     for round in 0..ROUNDS {
-        let address = &addresses[round as usize % addresses.len()];
+        let (routing_bucket, address) = &addresses[round as usize % addresses.len()];
         let probe = crate::alloc_probe::Probe::start();
-        let got = super::read_block_bytes(&engine.cache, block_store, 1, address);
+        let got = super::read_block_bytes(&engine.cache, block_store, 1, address, *routing_bucket);
         let counts = probe.stop();
         assert!(got.is_some(), "the page must read back");
         whole_allocs += counts.allocs;
@@ -5690,14 +5772,20 @@ fn what_a_block_read_costs_hit_against_miss() {
         assert!(response.status.ok, "write {index}: {:?}", response.status);
     }
 
-    let address = {
+    let (address, routing_bucket) = {
         let shards = engine.shards.read().expect("engine lock poisoned");
         let shard = shards.get(&1).expect("loaded shard");
+        let (start, end) = shard.routing_range();
         shard
             .strings
-            .values()
+            .iter()
             .next()
-            .cloned()
+            .map(|(key, address)| {
+                (
+                    address.clone(),
+                    Some(super::hashing::block_routing_bucket(key, start, end)),
+                )
+            })
             .expect("the writes above put at least one page in the index")
     };
 
@@ -5706,7 +5794,7 @@ fn what_a_block_read_costs_hit_against_miss() {
 
     // Warm once: the first read of anything touches one-off structures that would otherwise be
     // counted against whichever arm ran first.
-    let warm = super::read_block_shared(cache, block_store, 1, &address)
+    let warm = super::read_block_shared(cache, block_store, 1, &address, routing_bucket)
         .expect("the page reads back");
     assert!(!warm.is_empty(), "an empty page would make every number below meaningless");
 
@@ -5716,7 +5804,7 @@ fn what_a_block_read_costs_hit_against_miss() {
     let mut hit_bytes = 0u64;
     for _ in 0..ROUNDS {
         let probe = crate::alloc_probe::Probe::start();
-        let got = super::read_block_shared(cache, block_store, 1, &address);
+        let got = super::read_block_shared(cache, block_store, 1, &address, routing_bucket);
         let counts = probe.stop();
         assert!(got.is_some(), "the page must read back on the hit path");
         hit_allocs += counts.allocs;
@@ -5733,24 +5821,34 @@ fn what_a_block_read_costs_hit_against_miss() {
         dir.path().join("indexes"),
     );
     small.load_shard(1);
-    let addresses: Vec<_> = {
+    let addresses: Vec<(Option<u32>, crate::block_store::BlockAddress)> = {
         let shards = small.shards.read().expect("engine lock poisoned");
         let shard = shards.get(&1).expect("loaded shard");
-        shard.strings.values().cloned().collect()
+        let (start, end) = shard.routing_range();
+        shard
+            .strings
+            .iter()
+            .map(|(key, address)| {
+                (
+                    Some(super::hashing::block_routing_bucket(key, start, end)),
+                    address.clone(),
+                )
+            })
+            .collect()
     };
     assert!(addresses.len() >= 8, "need several pages to cycle through: {}", addresses.len());
     let small_cache = &small.cache;
     let small_blocks = &small.block_store;
-    for address in &addresses {
-        let _ = super::read_block_shared(small_cache, small_blocks, 1, address);
+    for (routing_bucket, address) in &addresses {
+        let _ = super::read_block_shared(small_cache, small_blocks, 1, address, *routing_bucket);
     }
 
     let mut miss_allocs = 0u64;
     let mut miss_bytes = 0u64;
     for round in 0..ROUNDS {
-        let address = &addresses[round as usize % addresses.len()];
+        let (routing_bucket, address) = &addresses[round as usize % addresses.len()];
         let probe = crate::alloc_probe::Probe::start();
-        let got = super::read_block_shared(small_cache, small_blocks, 1, address);
+        let got = super::read_block_shared(small_cache, small_blocks, 1, address, *routing_bucket);
         let counts = probe.stop();
         assert!(got.is_some(), "the page must read back on the miss path");
         miss_allocs += counts.allocs;
@@ -5762,9 +5860,9 @@ fn what_a_block_read_costs_hit_against_miss() {
     let mut owning_allocs = 0u64;
     let mut owning_bytes = 0u64;
     for round in 0..ROUNDS {
-        let address = &addresses[round as usize % addresses.len()];
+        let (routing_bucket, address) = &addresses[round as usize % addresses.len()];
         let probe = crate::alloc_probe::Probe::start();
-        let got = super::read_block_bytes(small_cache, small_blocks, 1, address);
+        let got = super::read_block_bytes(small_cache, small_blocks, 1, address, *routing_bucket);
         let counts = probe.stop();
         assert!(got.is_some(), "the page must read back");
         owning_allocs += counts.allocs;
@@ -5879,17 +5977,21 @@ fn what_the_two_halves_of_a_node_fetch_cost() {
                 .map(|address| (key.clone(), address.clone()))
         })
         .expect("the ingest wrote at least one context node page");
+    let routing_bucket = {
+        let (start, end) = shard.routing_range();
+        Some(super::hashing::block_routing_bucket(&object_key, start, end))
+    };
 
     let cache = &engine.cache;
     let block_store = &engine.block_store;
 
     // Warm: the first read of a page touches one-off structures.
-    let warm = super::read_block_bytes(cache, block_store, 1, &address)
+    let warm = super::read_block_bytes(cache, block_store, 1, &address, routing_bucket)
         .expect("the page reads back");
     assert!(!warm.is_empty(), "an empty page would make every number below meaningless");
 
     let probe = crate::alloc_probe::Probe::start();
-    let bytes = super::read_block_bytes(cache, block_store, 1, &address)
+    let bytes = super::read_block_bytes(cache, block_store, 1, &address, routing_bucket)
         .expect("the page reads back");
     let read_allocs = probe.stop().allocs;
 

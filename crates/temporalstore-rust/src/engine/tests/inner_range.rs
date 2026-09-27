@@ -34,13 +34,17 @@
 //!
 //! # WHY THIS IS VALUE-IDENTICAL EXCEPT ON THE DEFECT
 //!
-//! The new field is consulted only where a fallback already fired -- `address.routing_bucket()`
-//! still wins, unchanged, and it is `Some` for every page the live write path produces, because
-//! `append_value` stamps the bucket and NO production call site passes it `None` (16 of 16 pass
-//! `Some`). So on a store written by the current build these five sites compute exactly what they
-//! computed before. `the_five_readers_are_value_identical_while_every_page_is_routed` asserts that
-//! with its denominator stated, and it is the control that says the measurement below is the
-//! change rather than the fixture.
+//! THE FILING IS NOW THE ONLY ANSWER, which is what makes these five readers load-bearing. The
+//! address used to answer first and `entry.filed_bucket()` was the fallback -- mx#1949 proved that
+//! fallback production-INERT, and a mutant that broke it survived by construction. The address no
+//! longer carries a bucket, so the walk's own filing answers every time.
+//!
+//! `the_five_readers_answer_the_filing_on_a_store_the_current_build_wrote` exercises all five on a
+//! store this build wrote, with its denominator stated: every page reports a filing and attribution
+//! agrees with it, at the operator's range and at the whole keyspace. The control is the same
+//! attribution computed the pre-mx#1949 way, which agrees on NEITHER at the narrow range -- that
+//! disagreement is what says the exercise is reading the filing rather than reading a hash that
+//! happens to match.
 //!
 //! # WHAT mx#1945 LEFT SPLIT, MEASURED
 //!
@@ -155,13 +159,52 @@ fn as_an_older_build_wrote_it(address: &BlockAddress) -> BlockAddress {
     serde_json::from_value(wire).expect("the engine's decoder accepts an address with no `rs`")
 }
 
-fn strip_routing_buckets(shard: &mut crate::engine::state::ShardState) -> usize {
+/// THE DOOR IS NOW A NO-OP, AND THAT IS THE POINT.
+///
+/// A `BlockAddress` does not hold a routing bucket, so "put every page into the state an older index
+/// decodes into" and "leave every page alone" are the same operation. The helper is kept because the
+/// round-trip it performs is the assertion that the `rs` key on the wire is inert: it must come back
+/// EQUAL, and `the_older_index_door_is_the_identity` fails if it does not.
+///
+/// Returns how many pages it round-tripped, so a caller can still assert the fixture was covered.
+fn round_trip_every_page_through_the_wire(
+    shard: &mut crate::engine::state::ShardState,
+) -> usize {
     let keys: Vec<String> = shard.strings.keys().cloned().collect();
     for key in &keys {
-        let older = as_an_older_build_wrote_it(shard.strings.get(key).expect("key present"));
+        let before = shard.strings.get(key).expect("key present").clone();
+        let older = as_an_older_build_wrote_it(&before);
+        assert_eq!(
+            older, before,
+            "page {key} changed when its `rs` key was removed from the wire. The address holds no \
+             routing bucket, so the key is inert and this round trip has to be the identity -- if \
+             it is not, an index written before the field left decodes to a DIFFERENT address and \
+             this change needs a migration."
+        );
         shard.strings.insert(key.clone(), older);
     }
     keys.len()
+}
+
+/// THE DOOR'S OWN CONTROL, because a helper that asserts equality of two things it made equal is
+/// worth nothing unless the thing it removes is really there.
+#[test]
+fn the_older_index_door_is_the_identity() {
+    let address = BlockAddress::from_parts(3, 4096, 128, Some(1), Some(2));
+    assert_eq!(
+        as_an_older_build_wrote_it(&address),
+        address,
+        "removing `rs` from the wire must not change the address"
+    );
+    // And the key really is there to remove -- `as_an_older_build_wrote_it` asserts that too, but
+    // from inside, where a caller cannot see it fail for the right reason.
+    assert!(
+        serde_json::to_value(&address)
+            .expect("serializes")
+            .get("rs")
+            .is_some(),
+        "the wire shape must still carry the `rs` slot, or the door removes nothing"
+    );
 }
 
 /// Every bucket that holds at least one page, with the object keys it holds, sorted.
@@ -206,15 +249,13 @@ fn reader_attribution(
         let Some(actual) = filed.get(&(entry.object_key.to_string(), entry.address.offset())) else {
             continue;
         };
+        // THE FIVE READERS' OWN EXPRESSION, which no longer has an address in it: the walk's
+        // filing, with the whole-range hash as the last resort.
         let now = entry
-            .address
-            .routing_bucket()
-            .or(entry.filed_bucket())
+            .filed_bucket()
             .unwrap_or_else(|| block_routing_bucket(&entry.object_key, 0, WIDE_END));
-        let before = entry
-            .address
-            .routing_bucket()
-            .unwrap_or_else(|| block_routing_bucket(&entry.object_key, 0, WIDE_END));
+        // What they computed before mx#1949: the whole-range hash, every time.
+        let before = block_routing_bucket(&entry.object_key, 0, WIDE_END);
         if now == *actual {
             agrees_with_filing += 1;
         }
@@ -229,18 +270,24 @@ fn reader_attribution(
 // 1. THE CONTROL: while every page is routed, nothing moves
 // =============================================================================================
 
-/// THE FIVE READERS ARE VALUE-IDENTICAL ON A STORE THE CURRENT BUILD WROTE.
+/// THE FIVE READERS ANSWER THE FILING ON A STORE THE CURRENT BUILD WROTE.
 ///
-/// `address.routing_bucket()` still wins; the new field is consulted only where a fallback would
-/// otherwise have fired. So this arm must come out bucket-for-bucket the same under the old
-/// expression and the new one, and the DENOMINATOR is asserted first -- a fixture where nothing
-/// was routed would make this pass for the opposite reason.
+/// THE CONTROL THIS USED TO BE. While a page's address carried its own routing bucket, that bucket
+/// won and `filed_bucket()` was consulted only where a fallback would otherwise have fired -- so the
+/// old expression and the new one had to be value-identical on a freshly written store, and the
+/// denominator was "every page is routed".
 ///
-/// Run at BOTH widths, because "the shard's range is the whole range" is exactly the condition
-/// under which the defect is invisible, and a control that only holds at one width says nothing
-/// about the other.
+/// AN ADDRESS CARRIES NO BUCKET NOW, so there is no old expression to be identical to and no routed
+/// population to assert. What is left is the claim that matters: the walk knows the filing for every
+/// page it returns from the bucket-index arm, and what the readers compute from it IS where the page
+/// is. The denominator moves with it -- every entry must report a filing, because an entry that does
+/// not sends the reader to a whole-range hash.
+///
+/// Run at BOTH widths, because "the shard's range is the whole range" is exactly the condition under
+/// which the defect mx#1949 fixed is invisible, and a control that only holds at one width says
+/// nothing about the other.
 #[test]
-fn the_five_readers_are_value_identical_while_every_page_is_routed() {
+fn the_five_readers_answer_the_filing_on_a_store_the_current_build_wrote() {
     for end_routing_bucket in [NARROW_END, WIDE_END] {
         let dir = tempfile::tempdir().expect("tempdir");
         let engine = engine_on(dir.path());
@@ -251,16 +298,17 @@ fn the_five_readers_are_value_identical_while_every_page_is_routed() {
         let shard = shards.get(&1).expect("shard 1 is loaded");
         let entries = collect_live_block_entries(shard);
 
-        let routed = entries
+        let filed = entries
             .iter()
-            .filter(|entry| entry.address.routing_bucket().is_some())
+            .filter(|entry| entry.filed_bucket().is_some())
             .count();
         assert_eq!(
-            routed,
+            filed,
             keys.len(),
-            "0..{end_routing_bucket}: {routed} of {} pages the LIVE WRITE PATH produced carry an \
-             explicit routing bucket. All of them must, or this control is vacuous: it only says \
-             anything while the fallback cannot fire.",
+            "0..{end_routing_bucket}: {filed} of {} live pages report which bucket they are filed \
+             in. All of them must: the bucket-index arm of the walk has the map key in hand, and an \
+             entry that does not report it sends all five readers to a hash over the WHOLE \
+             keyspace -- which on this shard names a bucket it does not hold.",
             keys.len()
         );
 
@@ -272,20 +320,34 @@ fn the_five_readers_are_value_identical_while_every_page_is_routed() {
             keys.len()
         );
         assert_eq!(
-            now, before,
-            "0..{end_routing_bucket}: the five readers agree with the filing on {now} pages under \
-             the new expression and {before} under the old one. While every address is routed the \
-             two MUST be identical -- `filed_routing_bucket` is consulted only after \
-             `address.routing_bucket()` returns None."
-        );
-        assert_eq!(
             now, total,
-            "0..{end_routing_bucket}: {now} of {total} routed pages are attributed to the bucket \
-             they are filed under"
+            "0..{end_routing_bucket}: {now} of {total} pages are attributed to the bucket they are \
+             filed under. The walk hands every reader the map key it was iterating, so all of them \
+             must be."
         );
+        // AND THE OLD EXPRESSION IS ONLY IDENTICAL AT THE WIDE END. `block_routing_bucket(key, 0,
+        // u32::MAX)` is the same function of the same arguments as the shard's own placement when the
+        // shard IS the whole keyspace, and a different one otherwise -- which is the defect mx#1949
+        // fixed, and the reason this control is run at both widths.
+        if end_routing_bucket == WIDE_END {
+            assert_eq!(
+                before, total,
+                "0..{end_routing_bucket}: on the WIDE shard the whole-range hash and the shard's \
+                 own placement are the same expression, so the old answer has to agree with the \
+                 filing on all {total} pages"
+            );
+        } else {
+            assert_eq!(
+                before, 0,
+                "0..{end_routing_bucket}: the whole-range hash agreed with the filing on {before} \
+                 of {total} pages. It must agree with NONE -- it names a bucket above \
+                 {end_routing_bucket} for every key, and the shard holds none of them -- or this \
+                 control is not reproducing what mx#1949 fixed."
+            );
+        }
         println!(
-            "  0..{end_routing_bucket}: {total} pages, {routed} routed, attribution agrees \
-             {now}/{total} both before and after"
+            "  0..{end_routing_bucket}: {total} pages, {filed} reporting a filing, attribution \
+             agrees {now}/{total} now and {before}/{total} under the pre-mx#1949 expression"
         );
     }
 }
@@ -304,46 +366,34 @@ fn the_five_readers_are_value_identical_while_every_page_is_routed() {
 /// own bucket is attributed by that bucket whichever expression is used, so the control must come
 /// out identical and does. The subject arm must differ on every page, and does.
 #[test]
-fn a_reader_attributes_an_unrouted_page_to_the_bucket_it_is_actually_filed_under() {
+fn a_reader_attributes_a_reconstructed_page_to_the_bucket_it_is_actually_filed_under() {
     let dir = tempfile::tempdir().expect("tempdir");
     let engine = engine_on(dir.path());
     load_on(&engine, NARROW_END);
     let keys = seed(&engine, RECORDS);
 
-    let (stripped, contents) = {
+    let (round_tripped, contents) = {
         let mut shards = engine.shards.write().expect("shards lock poisoned");
         let shard = shards.get_mut(&1).expect("shard 1 is loaded");
-        let stripped = strip_routing_buckets(shard);
+        // The door is the identity now -- see `round_trip_every_page_through_the_wire`. It is kept
+        // in the fixture because it asserts that, per page, and because a page that DID change when
+        // its `rs` key came off would make every number below mean something else.
+        let round_tripped = round_trip_every_page_through_the_wire(shard);
         // The rebuild the load path runs, with the argument mx#1945 gave it.
         rebuild_bucket_first_index(1, shard, 0, NARROW_END);
         refresh_bucket_runtime_flags(shard);
-        (stripped, bucket_contents(shard))
+        (round_tripped, bucket_contents(shard))
     };
     assert_eq!(
-        stripped,
+        round_tripped,
         keys.len(),
-        "the door covered {stripped} of {} keys; a door that covered none would make every \
+        "the door covered {round_tripped} of {} keys; a door that covered none would make every \
          number below zero for the wrong reason",
         keys.len()
     );
 
     let shards = engine.shards.read().expect("shards lock poisoned");
     let shard = shards.get(&1).expect("shard 1 is loaded");
-    let entries = collect_live_block_entries(shard);
-
-    // DENOMINATOR FIRST.
-    let unrouted = entries
-        .iter()
-        .filter(|entry| entry.address.routing_bucket().is_none())
-        .count();
-    assert_eq!(
-        unrouted,
-        keys.len(),
-        "{unrouted} of {} pages came out of the reconstruct unrouted. All of them should have -- \
-         `rebuild_bucket_first_index` stamps only the object id onto an address -- and if this \
-         ever becomes zero the rest of this test measures nothing.",
-        keys.len()
-    );
 
     // Element by element: every page is filed where the SHARD'S range puts it, and none where the
     // whole range does. Both directions asserted, because only one of them loses a page.
@@ -377,7 +427,7 @@ fn a_reader_attributes_an_unrouted_page_to_the_bucket_it_is_actually_filed_under
     );
 
     let (total, now, before) = reader_attribution(shard);
-    println!("  {total} unrouted pages filed on 0..{NARROW_END}");
+    println!("  {total} reconstructed pages filed on 0..{NARROW_END}");
     println!("    readers agree with the filing, NEW expression: {now} of {total}");
     println!("    readers agree with the filing, OLD expression: {before} of {total}");
     assert_eq!(
@@ -408,35 +458,38 @@ fn a_reader_attributes_an_unrouted_page_to_the_bucket_it_is_actually_filed_under
 /// Measured as a BAND, not a bound: a round that dropped everything would pass a floor, and a
 /// round that dropped nothing passes a ceiling. Both ends are named.
 #[test]
-fn an_eviction_round_over_unrouted_pages_drops_the_objects_it_chose() {
+fn an_eviction_round_over_reconstructed_pages_drops_the_objects_it_chose() {
     let dir = tempfile::tempdir().expect("tempdir");
     let engine = engine_on(dir.path());
     load_on(&engine, NARROW_END);
     let keys = seed(&engine, RECORDS);
 
-    let unrouted = {
+    let filed_in_range = {
         let mut shards = engine.shards.write().expect("shards lock poisoned");
         let shard = shards.get_mut(&1).expect("shard 1 is loaded");
-        let stripped = strip_routing_buckets(shard);
+        let round_tripped = round_trip_every_page_through_the_wire(shard);
         rebuild_bucket_first_index(1, shard, 0, NARROW_END);
         refresh_bucket_runtime_flags(shard);
-        let entries = collect_live_block_entries(shard);
         assert_eq!(
-            stripped,
+            round_tripped,
             keys.len(),
-            "the door covered {stripped} of {} keys",
+            "the door covered {round_tripped} of {} keys",
             keys.len()
         );
-        entries
+        // DENOMINATOR: the reconstruct filed every page inside the shard's own range, which is what
+        // makes the victim buckets below reachable at all. It used to be "every page is unrouted",
+        // a statement about addresses; the pages are what the round acts on.
+        bucket_contents(shard)
             .iter()
-            .filter(|entry| entry.address.routing_bucket().is_none())
-            .count()
+            .filter(|(routing_bucket, _)| **routing_bucket <= NARROW_END)
+            .map(|(_, object_keys)| object_keys.len())
+            .sum::<usize>()
     };
     assert_eq!(
-        unrouted,
+        filed_in_range,
         keys.len(),
-        "{unrouted} of {} pages are unrouted; below that this round cannot exercise the fallback \
-         at all and the numbers below say nothing",
+        "{filed_in_range} of {} pages are filed inside 0..{NARROW_END}; below that this round \
+         cannot reach them and the numbers below say nothing",
         keys.len()
     );
 
