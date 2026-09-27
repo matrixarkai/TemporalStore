@@ -121,6 +121,7 @@ mod wal_reclaim_frame_boundary;
 mod pages_per_bucket;
 mod bucket_fill;
 mod routing_range_default;
+mod durable_outranks_derived;
 mod per_item_byte_budget;
 mod flat_page_list;
 mod range_free_bucket_id;

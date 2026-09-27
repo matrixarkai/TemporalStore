@@ -4122,6 +4122,35 @@ fn reconcile_timestamped_series_membership(
     result
 }
 
+/// The derived view, with every element the DURABLE map holds and it does not.
+///
+/// One rule for the three kinds whose element identity is spelled into a component name. The derived
+/// view wins where both have an element -- it reflects the delta fold, which the persisted map does
+/// not, because `apply_key_states` folds `features` and the control-state maps and not these three.
+/// The persisted map keeps anything the derived view could not produce, which is what makes skipping
+/// an unreadable name safe: the element stays, it just does not come back through the name.
+///
+/// Per ELEMENT rather than per KEY. A per-key rule -- which is what the `control_state` arm uses, for
+/// a reason that holds there and not here -- would drop every element the fold added to a key the
+/// persisted map already had.
+fn fill_absent_elements<K, E, V>(
+    mut derived: std::collections::HashMap<K, std::collections::BTreeMap<E, V>>,
+    persisted: std::collections::HashMap<K, std::collections::BTreeMap<E, V>>,
+) -> std::collections::HashMap<K, std::collections::BTreeMap<E, V>>
+where
+    K: std::hash::Hash + Eq,
+    E: Ord,
+{
+    for (key, elements) in persisted {
+        let into = derived.entry(key).or_default();
+        for (element, value) in elements {
+            // `or_insert` and not `insert`: the derived value wins where it exists.
+            into.entry(element).or_insert(value);
+        }
+    }
+    derived
+}
+
 pub(super) fn reconcile_secondary_views_from_bucket_index(
     block_store: &BlockStore,
     shard: &mut ShardState,
@@ -4160,6 +4189,16 @@ pub(super) fn reconcile_secondary_views_from_bucket_index(
     let mut saw_context_summaries = false;
     let mut saw_context_compressions = false;
 
+    // Component names this code could not read, over the three kinds whose element identity is
+    // spelled into one. Counted rather than defaulted: each of these used to become a real value --
+    // the empty member, or sequence zero -- and take a genuine element's address.
+    let mut unreadable_names = 0usize;
+    // Scores the DURABLE map supplied because the name's disagreed, and scores taken from the name
+    // because the durable map did not hold the member. Both are printed, because "the durable map
+    // won" and "there was no durable map to win" are different states with the same outcome.
+    let mut outranked_scores = 0usize;
+    let mut derived_scores = 0usize;
+
     let mut strings = HashMap::new();
     let mut hashes = HashMap::<String, HashMap<String, BlockAddress>>::new();
     let mut sets = HashMap::<String, BTreeMap<Vec<u8>, BlockAddress>>::new();
@@ -4192,43 +4231,83 @@ pub(super) fn reconcile_secondary_views_from_bucket_index(
             }
             "set" => {
                 saw_sets = true;
-                let member = entry
-                    .component
-                    .as_deref()
-                    .and_then(|component| hex::decode(component).ok())
-                    .unwrap_or_default();
-                sets.entry(entry.object_key.to_string())
-                    .or_default()
-                    .insert(member, entry.address);
+                // SKIPPED, NOT DEFAULTED. This was
+                // `.and_then(|c| hex::decode(c).ok()).unwrap_or_default()`, which turns a name this
+                // code cannot read into the EMPTY member -- a real member value, which then collides
+                // with any genuine empty member and takes its address. A name that cannot be read
+                // names nothing; the durable map below still holds the element, so skipping loses
+                // it from the derived view and not from the store.
+                match entry.component.as_deref().and_then(|c| hex::decode(c).ok()) {
+                    Some(member) => {
+                        sets.entry(entry.object_key.to_string())
+                            .or_default()
+                            .insert(member, entry.address);
+                    }
+                    None => unreadable_names += 1,
+                }
             }
             "zset" => {
                 saw_zsets = true;
-                if let Some(component) = entry.component.as_deref() {
-                    if component.len() > 16 {
-                        if let (Ok(biased), Ok(member)) = (
-                            u64::from_str_radix(&component[..16], 16),
-                            hex::decode(&component[16..]),
-                        ) {
-                            zsets
-                                .entry(entry.object_key.to_string())
-                                .or_default()
-                                .insert(member, (biased, entry.address));
-                        }
+                let parsed = entry.component.as_deref().and_then(|component| {
+                    if component.len() <= 16 {
+                        return None;
                     }
+                    match (
+                        u64::from_str_radix(&component[..16], 16),
+                        hex::decode(&component[16..]),
+                    ) {
+                        (Ok(biased), Ok(member)) => Some((biased, member)),
+                        _ => None,
+                    }
+                });
+                match parsed {
+                    Some((named_score, member)) => {
+                        // THE DURABLE MAP OUTRANKS THE NAME FOR THE SCORE.
+                        //
+                        // `zset_index_serde` persists this map as (member bytes, (score, address)),
+                        // so the score is a stored value and the name is a second copy of it
+                        // rendered as text. Where the durable map holds this member its score wins;
+                        // the name's is the fallback for a member the durable map does not have,
+                        // which is how an element folded out of the delta log arrives.
+                        let score = shard
+                            .zsets
+                            .get(entry.object_key.as_ref())
+                            .and_then(|members| members.get(&member))
+                            .map(|(stored, _)| *stored)
+                            .unwrap_or_else(|| {
+                                derived_scores += 1;
+                                named_score
+                            });
+                        if score != named_score {
+                            outranked_scores += 1;
+                        }
+                        zsets
+                            .entry(entry.object_key.to_string())
+                            .or_default()
+                            .insert(member, (score, entry.address));
+                    }
+                    None => unreadable_names += 1,
                 }
             }
             "list" => {
                 saw_lists = true;
-                let seq = entry
+                // SKIPPED, NOT DEFAULTED. This ended `.unwrap_or_default()`, so a name this code
+                // cannot read became SEQUENCE ZERO -- a real position in the list, whose entry it
+                // then overwrote.
+                match entry
                     .component
                     .as_deref()
                     .and_then(|component| u64::from_str_radix(component, 16).ok())
                     .map(|biased| biased.wrapping_add(i64::MIN as u64) as i64)
-                    .unwrap_or_default();
-                lists
-                    .entry(entry.object_key.to_string())
-                    .or_default()
-                    .insert(seq, entry.address);
+                {
+                    Some(seq) => {
+                        lists
+                            .entry(entry.object_key.to_string())
+                            .or_default()
+                            .insert(seq, entry.address);
+                    }
+                    None => unreadable_names += 1,
+                }
             }
             "feature" => {
                 saw_features = true;
@@ -4361,14 +4440,43 @@ pub(super) fn reconcile_secondary_views_from_bucket_index(
     if saw_hashes {
         shard.hashes = hashes;
     }
+    // MERGED, NOT ASSIGNED, for the three kinds whose element identity is spelled into a component
+    // name. These three used to read `shard.zsets = zsets;` and so on, which throws a DURABLE map
+    // away in favour of a view rebuilt by parsing those names: a store written with one score came
+    // back with another when only the name was changed, and the persisted map -- which
+    // `zset_index_serde` writes as (member, (score, address)) -- had no say.
+    //
+    // NOT the per-key rule the `control_state` arm below uses, and the difference matters.
+    // `control_state` keeps the persisted series wholesale for every key it has, because its page is
+    // a copy of the series. These three cannot: `apply_key_states` folds `features` and the
+    // control-state maps out of the delta log and NOT `sets`, `zsets` or `lists`, so the derived view
+    // is the only path by which a folded element reaches them. Taking the durable map wholesale per
+    // key would drop exactly those.
+    //
+    // So the rule is per ELEMENT: the derived view decides which elements exist and which page backs
+    // each, because it reflects the fold; the durable map supplies what the name merely re-spells,
+    // and keeps any element the derived view could not produce.
     if saw_lists {
-        shard.lists = lists;
+        let persisted = std::mem::take(&mut shard.lists);
+        shard.lists = fill_absent_elements(lists, persisted);
     }
     if saw_zsets {
-        shard.zsets = zsets;
+        let persisted = std::mem::take(&mut shard.zsets);
+        shard.zsets = fill_absent_elements(zsets, persisted);
     }
     if saw_sets {
-        shard.sets = sets;
+        let persisted = std::mem::take(&mut shard.sets);
+        shard.sets = fill_absent_elements(sets, persisted);
+    }
+    if unreadable_names > 0 || outranked_scores > 0 {
+        // SAID OUT LOUD. Each of these was silent, and each names a stored value that disagreed with
+        // the name derived from it.
+        eprintln!(
+            "reconcile: {unreadable_names} component name(s) could not be read and were skipped \
+             rather than defaulted; {outranked_scores} score(s) came from the durable map because \
+             the name disagreed; {derived_scores} came from a name because the durable map did not \
+             hold the member"
+        );
     }
     if saw_features {
         let persisted = std::mem::take(&mut shard.features);
