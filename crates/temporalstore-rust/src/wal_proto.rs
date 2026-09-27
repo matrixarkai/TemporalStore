@@ -554,6 +554,9 @@ pub(crate) fn item_to_proto(
         encoded
     });
     v1::EngineWalItem {
+        // The element's bytes travel as bytes. `component` keeps its job of naming a hash field;
+        // it stops being the only copy of a set or zset member.
+        element: item.element.clone(),
         item_kind: 0,
         model: 0,
         object_key: item_object_key_to_write(item, command_key).map(str::to_string),
@@ -595,7 +598,10 @@ pub(crate) fn item_to_proto(
 /// reason `staged_blocks` has a hand-written encoder.
 ///
 /// The presence rules are the fiddly part and are the reason this is checked byte for byte against
-/// `item_to_proto`. Fields 3, 5, 7, 11, 13, 14, 15, 16, 17 and 19 are proto3 `optional`, which means
+/// `item_to_proto`. THAT CHECK IS NOT DECORATION: adding field 20 to the struct is a compile error at
+/// every struct literal and NO error here, so this writer silently stopped writing a field the
+/// struct carried, and the byte-for-byte test is what said so.
+/// Fields 3, 5, 7, 11, 13, 14, 15, 16, 17, 19 and 20 are proto3 `optional`, which means
 /// explicit presence: `Some(0)` and `Some("")` are WRITTEN. Fields 8, 9 and 18 are plain `bool`,
 /// which means a false is omitted. The helpers in `raft::wal_proto` implement the plain rule, so
 /// they are deliberately not used for the optional fields.
@@ -615,7 +621,8 @@ fn wal_item_body_len(item: &WalOutcomeItem, derived: &DerivedItem<'_>) -> usize 
         + optional_varint_len(16, derived.timestamp_ms)
         + optional_varint_len(17, derived.entry_id)
         + plain_bool_len(18, derived.object_deleted)
-        + optional_varint_len(19, derived.kind_code.map(u64::from));
+        + optional_varint_len(19, derived.kind_code.map(u64::from))
+        + optional_bytes_len(20, item.element.as_ref().map(Vec::len));
     len
 }
 
@@ -644,6 +651,7 @@ fn put_wal_item(tag: u32, item: &WalOutcomeItem, derived: &DerivedItem<'_>, out:
     put_optional_varint(17, derived.entry_id, out);
     put_plain_bool(18, derived.object_deleted, out);
     put_optional_varint(19, derived.kind_code.map(u64::from), out);
+    put_optional_bytes(20, item.element.as_deref(), out);
 }
 
 /// What `item_to_proto` derives, computed once instead of three times.
@@ -789,6 +797,7 @@ pub(crate) fn item_from_proto(
         )
     });
     WalOutcomeItem {
+        element: item.element,
         kind,
         object_key,
         component,
@@ -818,6 +827,7 @@ fn metadata_to_proto(metadata: &WriteAheadLogRecordMetadata) -> Result<v1::Engin
         Vec::new()
     } else {
         vec![v1::EngineWalItem {
+            element: None,
             item_kind: 0,
             model: 0,
             object_key: None,
@@ -840,15 +850,12 @@ fn metadata_to_proto(metadata: &WriteAheadLogRecordMetadata) -> Result<v1::Engin
         }]
     };
     Ok(v1::EngineWalMetadata {
-        // Omitted while it is the current version, which is exactly what the record's own serde
-        // form already does: "a record that does not say otherwise is current". The binary form
-        // said it on every record, so one encoding of a record stated something the other left
-        // out. `version` is a plain proto3 field, so a zero is not written at all.
-        version: if metadata.version == crate::wal::WRITE_AHEAD_LOG_FORMAT_VERSION {
-            0
-        } else {
-            metadata.version
-        },
+        // STATED ON EVERY RECORD. This used to omit the version while it was current, mirroring
+        // what the serde form did -- and both were the same defect: a record from an older build
+        // omitted the field for the same reason, so silence and "current" were one reading and the
+        // check could not fail. `version` is a plain proto3 field, so a zero is not written at all
+        // and a zero on the wire therefore means UNSTATED, which is version 1.
+        version: metadata.version,
         timestamp_ms: metadata.timestamp_ms,
         items,
         batch_id: metadata.batch_id,
@@ -870,8 +877,11 @@ fn metadata_from_proto(
     Ok(WriteAheadLogRecordMetadata {
         // Absent means current, the reading half of the rule above. No record has ever been
         // written with a zero here, so nothing legitimate is being read as current.
+        // A zero means the field was not on the wire, which means the record predates records
+        // having to say. That is version 1, NOT the current version -- reading it as current is
+        // what made the field unable to identify anything.
         version: if metadata.version == 0 {
-            crate::wal::WRITE_AHEAD_LOG_FORMAT_VERSION
+            crate::wal::write_ahead_log_format_version_when_unstated()
         } else {
             metadata.version
         },
@@ -1201,6 +1211,7 @@ mod command_key_tests {
 
     fn outcome(key: &str, component: Option<&str>) -> WalOutcomeItem {
         WalOutcomeItem {
+            element: None,
             kind: "string".to_string(),
             object_key: key.to_string(),
             component: component.map(str::to_string),
@@ -1422,6 +1433,7 @@ mod tests {
             value: (0..4096u32).map(|index| (index % 7) as u8).collect(),
         }));
         record.outcomes = vec![crate::wal::WalOutcomeItem {
+            element: None,
             kind: "page".to_string(),
             object_key: "tenant/1/object/9".to_string(),
             component: Some("body".to_string()),
@@ -1573,6 +1585,7 @@ mod tests {
                 kind: "page".to_string(),
                 object_key: "tenant/1/object/9".to_string(),
                 component: Some("body".to_string()),
+                element: None,
                 object_id: 9,
                 routing_bucket: 8539,
                 address: None,
@@ -1661,6 +1674,7 @@ mod tests {
                                     for routing_bucket in [0u32, 8539] {
                                         for address in addresses.iter() {
                                             let item = crate::wal::WalOutcomeItem {
+                                                element: None,
                                                 kind: kind.to_string(),
                                                 object_key: object_key.to_string(),
                                                 component: component.map(str::to_string),
@@ -1910,6 +1924,7 @@ mod tests {
             value: vec![4; 20],
         }));
         with_outcomes.outcomes = vec![crate::wal::WalOutcomeItem {
+            element: None,
             kind: "page".to_string(),
             object_key: "tenant/1/object/9".to_string(),
             component: Some("body".to_string()),
@@ -1936,6 +1951,7 @@ mod tests {
             batch_index: Some(0),
         });
         everything.outcomes = vec![crate::wal::WalOutcomeItem {
+            element: None,
             kind: "page".to_string(),
             object_key: "tenant/1/object/10".to_string(),
             component: None,
@@ -2059,6 +2075,7 @@ mod tests {
     /// both paths and untouched by this change.
     fn outcome_with_object_id(object_id: u64) -> crate::wal::WalOutcomeItem {
         crate::wal::WalOutcomeItem {
+            element: None,
             kind: "page".to_string(),
             object_key: "tenant/1/object/9".to_string(),
             component: None,
@@ -2131,13 +2148,18 @@ mod tests {
         );
     }
 
-    /// A record does not restate the current format version, and absent reads as current.
+    /// A record ALWAYS states its format version, and an absent one reads as version 1.
+    ///
+    /// This test asserted the opposite, and the opposite was the defect: omitting the version while
+    /// it was current, and defaulting an absent one BACK to current, made the field unable to
+    /// identify a legacy record even in principle -- silence and "current" were one reading. A check
+    /// that cannot fail reads as safety and provides none.
     ///
     /// The record's serde form already omits it -- "a record that does not say otherwise is
     /// current" -- while the binary form said it on every record, so one encoding of a record
     /// stated something the other left out.
     #[test]
-    fn a_record_does_not_restate_the_current_format_version() {
+    fn a_record_always_states_its_format_version_and_an_unstated_one_is_version_one() {
         let mut record = record_with(None);
         record.metadata = Some(WriteAheadLogRecordMetadata {
             version: crate::wal::WRITE_AHEAD_LOG_FORMAT_VERSION,
@@ -2152,24 +2174,42 @@ mod tests {
         assert_eq!(
             decode(&encoded).expect("decode"),
             record,
-            "an absent version reads as the current one"
+            "a stated version has to come back as itself"
         );
 
-        // A record written under any other version says so, and is longer for saying it.
+        // A record at any other version says so and comes back as what it was, at the same width:
+        // the version is on the wire either way now, which is the change.
         let mut other = record.clone();
         other.metadata.as_mut().expect("metadata").version =
             crate::wal::WRITE_AHEAD_LOG_FORMAT_VERSION + 1;
-        let longer = encode(&other).expect("encode");
-        assert!(
-            longer.len() > encoded.len(),
-            "a version that is not current has to be written: {} vs {}",
-            longer.len(),
-            encoded.len()
-        );
+        let also = encode(&other).expect("encode");
         assert_eq!(
-            decode(&longer).expect("decode"),
+            decode(&also).expect("decode"),
             other,
-            "and it comes back as what it was"
+            "a version this binary does not replay still has to DECODE, or the door cannot name it \
+             in the refusal"
+        );
+
+        // THE ASSERTION THIS TEST EXISTS FOR. A zero on the wire is what a record written before
+        // records had to state a version looks like -- proto3 does not write a zero at all. It must
+        // read as version 1, NOT as the current version. Reading it as current is what made the
+        // field unable to identify anything, and it is the shape of a check that cannot fail.
+        let mut wire = v1::EngineWalRecord::decode(&encoded[1..]).expect("the proto decodes");
+        wire.metadata.as_mut().expect("metadata").version = 0;
+        let mut reencoded = vec![RAW_PAYLOAD_MARKER];
+        wire.encode(&mut reencoded).expect("the proto encodes");
+        let unstated = decode(&reencoded).expect("an unstated version must still decode");
+        assert_eq!(
+            unstated.metadata.as_ref().expect("metadata").version,
+            1,
+            "an UNSTATED version read as {}, where it has to read as 1 -- the version a record was \
+             written at while omitting the field was correct",
+            unstated.metadata.as_ref().expect("metadata").version
+        );
+        assert_ne!(
+            unstated.metadata.as_ref().expect("metadata").version,
+            crate::wal::WRITE_AHEAD_LOG_FORMAT_VERSION,
+            "an unstated version read as the CURRENT one, which is the defect this test now guards"
         );
     }
 

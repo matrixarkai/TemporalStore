@@ -127,6 +127,7 @@ fn outcomes(batch: usize) -> Vec<WalOutcomeItem> {
         .map(|item| {
             let id = (batch * ITEMS + item) as u64;
             WalOutcomeItem {
+                element: None,
                 kind: "string".to_string(),
                 object_key: format!("batch-{batch:08}-item-{item:03}"),
                 component: None,

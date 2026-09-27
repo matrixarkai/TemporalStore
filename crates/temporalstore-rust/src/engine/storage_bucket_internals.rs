@@ -3279,6 +3279,21 @@ fn upsert_bucket_index_block_inner(
         // shape of mis-attribution that makes an index look like it is growing when a log is.
         crate::alloc_probe::in_class(crate::alloc_probe::AllocClass::StagedOutcome, || {
             super::block_in_wal::stage_outcome(crate::wal::WalOutcomeItem {
+                // THE ELEMENT, AS BYTES, for the two kinds whose element is user data. Taken from
+                // the component here because at STAGING time the name still exists; what matters is
+                // that the RECORD no longer needs it, which is what lets a page entry stop carrying
+                // one. Every other kind states None, and not by omission: eight of the eleven
+                // reconstruct their identity from a NUMBER, and a hash's element IS its field name.
+                element: match kind {
+                    "zset" => component
+                        .as_deref()
+                        .and_then(super::execute_on_shard::parse_zset_component)
+                        .map(|(_score_bits, member)| member),
+                    "set" => component
+                        .as_deref()
+                        .and_then(super::execute_on_shard::parse_set_component),
+                    _ => None,
+                },
                 kind: kind.to_string(),
                 object_key: object_key.to_string(),
                 component: component.clone(),

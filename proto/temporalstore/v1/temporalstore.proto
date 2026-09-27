@@ -612,6 +612,17 @@ message EngineWalItem {
   // Previously implied by `deleted` with no component. A reader had to know the convention to
   // tell the two apart, and a reader that did not silently removed the wrong amount.
   bool object_deleted = 18;
+  // The element this outcome names, as BYTES, for the kinds whose element is user data.
+  //
+  // A set's member and a zset's member are user bytes, and the record's only copy of them used to
+  // be the `component` NAME -- which is why replay rebuilt them by parsing that name, and why a
+  // page entry could not stop carrying one. The other copy is inside the block this item points
+  // at, and replay deliberately does not read blocks.
+  //
+  // Absent for every other kind, and not by omission: eight of the eleven reconstruct their
+  // identity from a NUMBER, which travels in `timestamp_ms` / `entry_id` / the address already,
+  // and a hash's element IS its field name in `component`.
+  optional bytes element = 20;
 }
 
 // A block carried inside the record that produced it, so a read can serve it back out of the log.

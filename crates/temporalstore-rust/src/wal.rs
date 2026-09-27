@@ -82,12 +82,23 @@ impl From<crate::log_framing::FramingError> for WriteAheadLogError {
     }
 }
 
-fn current_write_ahead_log_format_version() -> u32 {
-    WRITE_AHEAD_LOG_FORMAT_VERSION
+/// The version a record that STATES NO VERSION was written at.
+///
+/// NOT the current one. Until this existed the default WAS the current version, which made the
+/// field unable to identify anything: a record written by an older build omitted it because it was
+/// current then, so silence and "current" were the same reading and the check could not fail. A
+/// record that says nothing is a record from before records had to say, and that is version 1.
+pub(crate) fn write_ahead_log_format_version_when_unstated() -> u32 {
+    1
 }
 
-fn is_current_write_ahead_log_format_version(version: &u32) -> bool {
-    *version == WRITE_AHEAD_LOG_FORMAT_VERSION
+/// Whether this binary can replay a record stating `version`.
+///
+/// One version, so this is an equality. There is no dual reader and no migration: a record at any
+/// other version is REFUSED rather than best-effort applied, because a record that half-replays
+/// leaves the store disagreeing with itself, which is worse than one that does not replay at all.
+pub fn write_ahead_log_record_is_replayable(version: u32) -> bool {
+    version == WRITE_AHEAD_LOG_FORMAT_VERSION
 }
 
 /// Decode one raw WAL line (framed or legacy-unframed) into a [`WriteAheadLogRecord`],
@@ -114,6 +125,35 @@ fn read_raw_record<R: std::io::BufRead>(reader: &mut R) -> std::io::Result<Optio
 }
 
 pub fn decode_wal_line(line: &[u8]) -> Result<WriteAheadLogRecord, WriteAheadLogError> {
+    let record = decode_wal_line_whatever_its_version(line)?;
+    // REFUSED, LOUDLY, BEFORE ANYTHING IS APPLIED. A record this binary cannot replay is not
+    // skipped and not partially applied: the caller is told which shape it found and which shape
+    // this binary reads, and stops. A replay that silently drops the records it does not
+    // understand loses the tail of a running store and reports success.
+    let stated = record
+        .metadata
+        .as_ref()
+        .map_or_else(write_ahead_log_format_version_when_unstated, |metadata| {
+            metadata.version
+        });
+    if !write_ahead_log_record_is_replayable(stated) {
+        return Err(WriteAheadLogError::Corruption(format!(
+            "write-ahead log record states shape {stated} and this binary replays only \
+             {WRITE_AHEAD_LOG_FORMAT_VERSION}; refusing to replay it rather than applying part of \
+             it"
+        )));
+    }
+    Ok(record)
+}
+
+/// The decode itself, with no version check.
+///
+/// Separate so that the version check has exactly one home and so a test can build a record at any
+/// version and watch the door refuse it. Nothing outside this module should reach for it: a caller
+/// that skips the check is a caller that half-applies a shape it does not understand.
+fn decode_wal_line_whatever_its_version(
+    line: &[u8],
+) -> Result<WriteAheadLogRecord, WriteAheadLogError> {
     let payload = crate::log_framing::decode_line(line)?;
     // Which encoding a payload is in is a property of the payload, never of configuration: a log
     // written across a flag change still reads end to end.
@@ -455,6 +495,34 @@ pub struct WalOutcomeItem {
         skip_serializing_if = "Option::is_none"
     )]
     pub address: Option<crate::block_store::BlockAddress>,
+    /// THE ELEMENT THIS OUTCOME NAMES, AS BYTES, for the kinds whose element is user data.
+    ///
+    /// A set's member and a zset's member are USER BYTES, and until this existed the record's only
+    /// copy of them was the component NAME -- which is why `apply_outcome_item` rebuilt them by
+    /// parsing that name, and why a page entry could not stop carrying one. The other copy is
+    /// inside the page at `address`, and replay deliberately does not read pages: that is the whole
+    /// reason a record states its outcomes.
+    ///
+    /// SEPARATE FROM `value`, which means something else: `value` is the alternative to `address`,
+    /// for state that no page backs at all. An outcome can carry an address AND an element.
+    ///
+    /// ABSENT FOR EVERY OTHER KIND, and not because it was forgotten. Eight of the eleven kinds
+    /// reconstruct their identity from a NUMBER -- a score, a sequence, a stored timestamp, an event
+    /// id, an entity hash, a bucket -- and a number is not user data; `wal_proto` already carries
+    /// those as numeric fields. Only `set` and `zset` need bytes, and `hash`'s element IS its field
+    /// name, so there is nothing to state separately.
+    ///
+    /// CHEAPER THAN THE NAME IT REPLACES, measured: the spelled member cost 1.334 characters a byte
+    /// and raw bytes cost one, so a record carrying this instead of a member-bearing name gets
+    /// SMALLER. `component_outcome_bytes.rs` reports the net on both allocator columns.
+    #[serde(
+        rename = "e",
+        alias = "element",
+        default,
+        skip_serializing_if = "Option::is_none",
+        with = "outcome_value_serde"
+    )]
+    pub element: Option<Vec<u8>>,
     /// The bytes themselves, for an outcome with no page behind it.
     ///
     /// A coverage probe over twelve accepted writes found four that recorded nothing --
@@ -539,13 +607,23 @@ pub struct StagedBlock {
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct WriteAheadLogRecordMetadata {
-    /// Omitted while it is the current version: a record that does not say otherwise is current,
-    /// and saying so in every record costs more than the statement is worth.
+    /// ALWAYS WRITTEN. Silence is not a claim.
+    ///
+    /// This used to be omitted while it equalled the current version, and to default BACK to the
+    /// current version when absent -- so a record from an older build, which omitted it for the
+    /// same reason, read back as current. The field could not identify a legacy record even in
+    /// principle, and nothing compared it to anything. That is the shape of a check that cannot
+    /// fail.
+    ///
+    /// Now it is written on every record and an absent one reads as version 1, the version that
+    /// shipped while omitting it was correct. `decode_wal_line` refuses anything this binary
+    /// cannot replay. The cost is the three or four bytes a stated `u32` takes per record, against
+    /// a log whose records were measured at 471.7 bytes with their outcome; the alternative was a
+    /// durability format with no way to say what it is.
     #[serde(
         rename = "v",
         alias = "version",
-        default = "current_write_ahead_log_format_version",
-        skip_serializing_if = "is_current_write_ahead_log_format_version"
+        default = "write_ahead_log_format_version_when_unstated"
     )]
     pub version: u32,
     #[serde(rename = "t", alias = "timestamp_ms")]
@@ -888,7 +966,18 @@ pub struct WriteAheadLogInfo {
     pub format_version: u32,
 }
 
-pub const WRITE_AHEAD_LOG_FORMAT_VERSION: u32 = 1;
+/// The record shape this binary writes and the only one it replays.
+///
+/// 1 = the shape written while the version field was omittable. A set or zset outcome at version 1
+///     states its element ONLY as a component NAME, and replay rebuilt the member by parsing that
+///     name.
+/// 2 = the outcome states its element's bytes itself. The name is no longer the record's only copy
+///     of the member, which is what lets a page entry stop carrying one.
+///
+/// EXISTING LOGS DO NOT REPLAY. That is authorised before the first release and it is not a
+/// compatibility story: there is no dual reader and no migration. What matters is that a version-1
+/// log is REFUSED by name rather than half-applied -- see `decode_wal_line`.
+pub const WRITE_AHEAD_LOG_FORMAT_VERSION: u32 = 2;
 
 #[derive(Debug, Clone)]
 pub struct LocalWriteAheadLogStore {
@@ -5284,6 +5373,7 @@ mod tests {
     fn eight_records_against_one_record_holding_eight() {
         fn item(index: usize) -> WalOutcomeItem {
             WalOutcomeItem {
+                element: None,
                 kind: "string".to_string(),
                 object_key: format!("ingest-00042/{index}"),
                 component: None,
@@ -7444,6 +7534,7 @@ mod tests {
                 let path = write_ahead_log_path(dir.path(), 1);
                 let outcomes = (0..items)
                     .map(|index| WalOutcomeItem {
+                        element: None,
                         kind: "string".to_string(),
                         object_key: format!("batch-key-{index:09}"),
                         component: None,
