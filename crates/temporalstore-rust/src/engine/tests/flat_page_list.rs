@@ -472,9 +472,29 @@ fn a_second_insert_of_the_same_page_replaces_it_rather_than_adding_beside_it() {
 
     // --- The One arm, whose entry is now behind a pointer. A rewrite of the same page replaces the
     // --- entry INSIDE the box it already has, so it allocates nothing and does not spill.
+    //
+    // WHAT A "REWRITE" IS HERE, BECAUSE IT IS NARROWER THAN IT SOUNDS. `block_index_handle` hashes
+    // the model kind, the object key, the component AND the address -- slab, offset, length, block id
+    // and generation. So a page that MOVES gets a different handle and is a different entry; the only
+    // thing that reaches the replace branch is re-filing the BYTE-IDENTICAL page, which is what a
+    // repeated append of an unchanged value produces.
+    //
+    // AND THAT IS WHY THE OBSERVABLE IS THE TALLY RATHER THAN THE ENTRY. A mutation run replaced
+    // `mem::replace(&mut **held, page)` with a no-op returning `None` and it SURVIVED: the stored
+    // entry is byte-identical either way, so no amount of reading it back can tell the two apart.
+    // What CAN tell them apart is the accounting. `insert` discharges the displaced address and
+    // charges the new one, which for an identical page nets to zero; a branch that reports no
+    // displaced address charges without discharging and DOUBLE-COUNTS the page. One page filed twice
+    // must leave one live ref, not two, and that is what this asserts.
     let mut index = BlockIndexMap::default();
     let only = page("solo", None, 5, 128);
     let first = index.insert(only.clone(), &mut live);
+    assert_eq!(
+        1,
+        live.tally(5).block_refs,
+        "one page filed once left {} live ref(s) on its slab, not 1",
+        live.tally(5).block_refs
+    );
     let again = index.insert(only.clone(), &mut live);
     assert_eq!(first, again, "the same page took two different handles");
     assert_eq!(1, index.len(), "a rewrite on the One arm filed {} pages", index.len());
@@ -482,9 +502,30 @@ fn a_second_insert_of_the_same_page_replaces_it_rather_than_adding_beside_it() {
         matches!(index, BlockIndexMap::One(..)),
         "a rewrite on the One arm spilled the bucket onto a list"
     );
+    assert_eq!(
+        1,
+        live.tally(5).block_refs,
+        "one page filed TWICE left {} live ref(s) on its slab. The replace branch must report the \
+         address it displaced so the tally can discharge it; a branch that reports none charges \
+         without discharging and the store believes it holds twice the pages it does",
+        live.tally(5).block_refs
+    );
+    assert_eq!(
+        only.address.length(),
+        live.tally(5).bytes,
+        "one page filed twice left {} live bytes on its slab against the page's own {}; the \
+         displaced address was not discharged",
+        live.tally(5).bytes,
+        only.address.length()
+    );
 
     // --- The Many arm, at the shortest list it holds and again at a long one. ---
     for length in [SHORTEST_MANY, 4usize, 24] {
+        // A FRESH TALLY PER LENGTH. The tally below is asserted against `length`, and one shared
+        // across the three iterations accumulates -- a list of four read 6 refs because the previous
+        // iteration's two were still charged to the same slab. That is the denominator error this
+        // campaign keeps finding in a different costume, so the counter is scoped to what it counts.
+        let mut live = BlockSlabLiveIndex::default();
         let mut index = BlockIndexMap::default();
         let pages: Vec<BlockIndex> = (0..length)
             .map(|i| page("bag", Some(&format!("h{i}")), 9, i as u64 * 64))
@@ -520,6 +561,17 @@ fn a_second_insert_of_the_same_page_replaces_it_rather_than_adding_beside_it() {
         assert_eq!(
             target.address, stored.address,
             "the duplicate insert left the displaced address in place"
+        );
+        // AND THE TALLY DID NOT DOUBLE-COUNT IT -- the same blind spot the One arm had. A handle
+        // hashes the address, so a re-filed page is byte-identical and reading the entry back cannot
+        // distinguish a replacement from a no-op. The accounting can: this list's pages each sit on
+        // slab 9, so `length` refs is right and `length + 1` is the overwrite failing to discharge.
+        assert_eq!(
+            length as u64,
+            live.tally(9).block_refs,
+            "a list of {length} with one page re-filed holds {} live ref(s) on its slab, not \
+             {length}; the overwrite charged the new address without discharging the one it displaced",
+            live.tally(9).block_refs
         );
     }
 }

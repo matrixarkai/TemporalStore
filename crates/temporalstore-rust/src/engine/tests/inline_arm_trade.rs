@@ -289,6 +289,23 @@ fn arm_census(engine: &TemporalEngine) -> ArmCensus {
 
 /// One real page entry, cloned out of a seeded store. The shapes below hold REAL entries rather
 /// than synthesised ones, so their widths and their `Arc` sharing are the engine's.
+/// A page entry built from field values rather than cloned out of a store.
+///
+/// Only for the two width/emptiness checks that must not need an engine to run -- every BYTE figure
+/// in this module is taken over entries the engine itself filed, because a synthesised entry could
+/// differ from a real one in `Arc` sharing and that is exactly what a clone-based instrument sees.
+fn one_real_page_free_standing() -> BlockIndex {
+    BlockIndex {
+        object_key: std::sync::Arc::from("free-standing"),
+        model_id: crate::engine::storage_bucket_internals::StoredModelKind::String,
+        component: None,
+        address: crate::block_store::BlockAddress::from_parts(1, 64, 32, Some(7), Some(11), Some(3)),
+        dirty: false,
+        deleted: false,
+        log_backed: false,
+    }
+}
+
 fn one_real_page(engine: &TemporalEngine) -> BlockIndex {
     let shards = engine.shards.read().expect("engine lock poisoned");
     let shard = shards.get(&1).expect("shard is loaded");
@@ -1235,6 +1252,41 @@ fn the_empty_arm_is_an_alias_for_no_pages_and_costs_nothing_to_keep() {
     let empty = BlockIndexMap::default();
     assert!(empty.is_empty(), "a default page index must hold no pages");
     assert_eq!(0, empty.len(), "a default page index must be length zero");
+
+    // AND "NO PAGES" MUST NOT DEPEND ON WHICH SPELLING OF IT YOU ARE HOLDING.
+    //
+    // `Empty` and `Many(vec![])` are both "no pages". `shrink` normalises the second into the first
+    // on every path that can empty a list, so today the two cannot both exist -- which is exactly
+    // why a predicate that read the DISCRIMINANT would pass every test in this tree. A mutation run
+    // confirmed it: replacing `self.len() == 0` with `matches!(self, Empty)` SURVIVED, because
+    // nothing constructed the un-normalised spelling.
+    //
+    // This constructs it directly. The point is not that the engine produces it -- it does not --
+    // but that `is_empty` is the predicate the RELEASE LIFECYCLE branches on, and a future path that
+    // empties a list without calling `shrink` would otherwise make a released bucket read as
+    // resident. Reading the length makes the two indistinguishable by construction rather than by
+    // convention, and this is what says so.
+    let un_normalised = BlockIndexMap::Many(Vec::new());
+    assert!(
+        un_normalised.is_empty(),
+        "a page index holding an EMPTY LIST reported itself non-empty. `Empty` and `Many(vec![])` \
+         are the same state, and `is_empty` must read the length rather than the discriminant or a \
+         path that forgets to normalise turns a released bucket into a resident one"
+    );
+    assert_eq!(
+        0,
+        un_normalised.len(),
+        "a page index holding an empty list reported {} pages",
+        un_normalised.len()
+    );
+    // The negative control on that pair: a list with something in it must NOT read as empty, or the
+    // assertion above is satisfied by a predicate that always answers true.
+    let one_page = BlockIndexMap::Many(vec![(1u64, one_real_page_free_standing())]);
+    assert!(
+        !one_page.is_empty(),
+        "a page index holding one page reported itself empty, so `is_empty` answers a constant"
+    );
+    assert_eq!(1, one_page.len(), "a one-entry list must report one page");
 
     // And the release/reload round trip, which is what the lifecycle actually depends on.
     let dir = tempfile::tempdir().expect("tempdir");
