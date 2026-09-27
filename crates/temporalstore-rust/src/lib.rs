@@ -41,6 +41,7 @@ pub mod bytes_serde;
 pub mod block_store;
 pub mod checksum;
 pub mod client;
+pub(crate) mod component_name;
 pub mod context_workflow;
 pub mod control;
 pub mod data_node;
