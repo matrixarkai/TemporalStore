@@ -1711,3 +1711,419 @@ fn a_walk_of_the_flat_list_answers_in_handle_order_not_component_order() {
          component order agreed, the sort would be free and this cost would not exist"
     );
 }
+
+/// IS THE BUCKET A BLOCK IS FILED IN ALWAYS THE BUCKET ITS KEY COMPUTES, WITHIN ONE RANGE?
+///
+/// `an_objects_bucket_cannot_be_recomputed_from_its_key_once_the_range_has_moved` measures a store
+/// reopened on a range it was not written on. Since #1973 that is a state the engine REFUSES
+/// (`routing_range_mismatch`, read before the decode), so for any store that loads the range is
+/// known and is the one the store was written on. That makes the recomputation question a live one
+/// again, and this is it: given the loaded range, does
+/// `block_routing_bucket(object_key, range)` name the bucket the block is actually filed in --
+/// for every block, after every path that can move one?
+///
+/// IF IT DOES, a read can compute its own bucket and the six levels are derivable on correctness
+/// grounds, leaving only cost. IF IT DOES NOT, recomputation is unsound WITHIN a range, which the
+/// stamp does not prevent and no reader can defend against.
+///
+/// THE ENGINE ITSELF TREATS THIS AS AN INVARIANT IT REPORTS ON RATHER THAN ONE IT GUARANTEES:
+/// `validate_bucket_ownership_index_from_entries` computes `expected_routing_bucket` exactly this
+/// way and counts `missing_owner_block_refs` when the bucket map does not hold the block there. So
+/// the question is not rhetorical, and the paths that could break it are driven below rather than
+/// argued about.
+///
+/// THE POPULATION THE STAMP DOES NOT COVER IS CHECKED TOO. `BlockAddressWire::routing_bucket` is
+/// `Option<u32>` under `#[serde(default)]`, so a block can carry no bucket of its own; this counts
+/// them, because a block that claims nothing cannot disagree and would make a clean verdict here
+/// mean less than it appears to.
+///
+/// rust-internal: reads the engine's own placement function, no product behaviour
+#[test]
+#[ignore = "seeds and compacts two stores; run by name"]
+fn the_bucket_a_block_is_filed_in_is_the_bucket_its_key_computes_within_one_range() {
+    /// Every block, checked against the recomputation, at a known range.
+    struct Verdict {
+        blocks: usize,
+        filed_elsewhere: Vec<(String, u32, u32)>,
+        unstamped: usize,
+    }
+
+    fn check(engine: &TemporalEngine, end_routing_bucket: u32) -> Verdict {
+        let shards = engine.shards.read().expect("engine lock poisoned");
+        let shard = shards.get(&1).expect("shard is loaded");
+        let mut verdict = Verdict { blocks: 0, filed_elsewhere: Vec::new(), unstamped: 0 };
+        for (routing_bucket, bucket) in &shard.bucket_index.bucket_map {
+            for page in bucket.block_index.values() {
+                if page.deleted {
+                    continue;
+                }
+                verdict.blocks += 1;
+                if page.address.routing_bucket().is_none() {
+                    verdict.unstamped += 1;
+                }
+                let computed =
+                    block_routing_bucket(&page.object_key, 0, end_routing_bucket);
+                if computed != *routing_bucket {
+                    verdict.filed_elsewhere.push((
+                        page.object_key.to_string(),
+                        *routing_bucket,
+                        computed,
+                    ));
+                }
+            }
+        }
+        verdict
+    }
+
+    fn report(stage: &str, v: &Verdict) {
+        println!(
+            "  {stage}: {} live blocks | filed somewhere other than where the key computes: {} \
+             | carrying no bucket of their own: {}",
+            v.blocks,
+            v.filed_elsewhere.len(),
+            v.unstamped
+        );
+        for (key, filed, computed) in v.filed_elsewhere.iter().take(4) {
+            println!("      {key} is filed in {filed}, its key computes {computed}");
+        }
+    }
+
+    for end_routing_bucket in [WIDE_END, NARROW_END] {
+        println!("RANGE 0..{end_routing_bucket}");
+        let dir = tempfile::tempdir().expect("tempdir");
+        let engine = engine_on(dir.path());
+        load_on(&engine, end_routing_bucket);
+
+        // Both populations in one store, so one sweep covers a one-block object and a container.
+        let routed = seed_routed(&engine, 400);
+        let containers = seed_container(&engine, 8, 100);
+        let expected = routed.len() + containers.len() * 100;
+
+        let fresh = check(&engine, end_routing_bucket);
+        assert_eq!(
+            fresh.blocks, expected,
+            "the fixture placed {} live blocks against {expected} written; every count below \
+             divides by this denominator",
+            fresh.blocks
+        );
+        report("after the writes", &fresh);
+
+        // PATH ONE: a flush and the load-time rebuild that follows it.
+        engine.flush_shard_index(1);
+        let flushed = check(&engine, end_routing_bucket);
+        assert_eq!(
+            flushed.blocks, expected,
+            "the flush changed the live block count from {expected} to {}, so the stages below are \
+             not comparing the same store",
+            flushed.blocks
+        );
+        report("after flush_shard_index", &flushed);
+
+        // PATH TWO: COMPACTION, which rewrites a block's address -- the path most likely to move
+        // one. A report that relocated nothing would make this stage vacuous, so the count is
+        // printed either way.
+        let compacted = engine.compact_shard_blocks(1);
+        println!(
+            "      compaction: rewritten block refs {:?}",
+            compacted.as_ref().map(|r| r.rewritten_block_refs)
+        );
+        let after_compact = check(&engine, end_routing_bucket);
+        report("after compact_shard_blocks", &after_compact);
+
+        // PATH THREE: RELEASE AND RELOAD. A released bucket's blocks come back from the model maps,
+        // where `rebuild_bucket_first_index` stamps only the object id -- the documented way a
+        // block comes out of a reconstruct still unrouted.
+        let buckets: Vec<u32> = {
+            let shards = engine.shards.read().expect("engine lock poisoned");
+            let shard = shards.get(&1).expect("shard is loaded");
+            shard.bucket_index.bucket_map.keys().copied().take(16).collect()
+        };
+        let released = engine.release_bucket_index_blocks(1, buckets.clone());
+        println!(
+            "      release of {} buckets: (released, refused, blocks) = {released:?}",
+            buckets.len()
+        );
+        let after_release = check(&engine, end_routing_bucket);
+        report("after release_bucket_index_blocks", &after_release);
+
+        // Reads must still work, or a clean verdict above would only mean the store is empty.
+        let readable = read_back(&engine, &routed);
+        assert_eq!(
+            readable,
+            routed.len(),
+            "only {readable} of {} routed keys still read after the lifecycle paths above; a store \
+             that lost its blocks agrees with the recomputation trivially",
+            routed.len()
+        );
+
+        // THE VERDICT, at every stage.
+        for (stage, v) in [
+            ("after the writes", &fresh),
+            ("after flush", &flushed),
+            ("after compaction", &after_compact),
+            ("after release", &after_release),
+        ] {
+            assert!(
+                v.filed_elsewhere.is_empty(),
+                "{stage} on 0..{end_routing_bucket}: {} of {} live blocks are filed in a bucket \
+                 their key does not compute, first {:?}. Recomputation is UNSOUND within a single \
+                 range, and no reader can derive its own bucket.",
+                v.filed_elsewhere.len(),
+                v.blocks,
+                v.filed_elsewhere.first()
+            );
+        }
+        println!(
+            "  VERDICT on 0..{end_routing_bucket}: across {} live blocks and four stages, the \
+             bucket a block is filed in IS the bucket its key computes, and {} blocks carry no \
+             bucket of their own.",
+            after_release.blocks, after_release.unstamped
+        );
+    }
+}
+
+/// THE RANGE IS REACHABLE AT THE READER THAT LOOKED LIKE THE REFUTATION.
+///
+/// `bucket_index_target_buckets_for_object_key(shard, key)` returns a bucket SET, so it cannot be
+/// handed the bucket it exists to compute -- which is why it read as a reader with no bucket. But
+/// the RANGE is a different question, and `ShardState::routing_range()` is on the state the
+/// function already takes. So this is the `BlockAddress` thread's shape after all: the range is
+/// reachable and simply not consulted, not absent.
+///
+/// This holds that as a fact rather than an argument: for every object in a driven store, the
+/// buckets the lookup reports and the bucket recomputed from `shard.routing_range()` are the same
+/// single bucket. It is the positive half of the refutation's correction, and it is why the
+/// refutation now rests on COST rather than on correctness.
+///
+/// rust-internal: reads the engine's own routing range, no product behaviour
+#[test]
+#[ignore = "seeds a store; run by name"]
+fn the_loaded_range_is_reachable_from_the_state_the_bucket_set_reader_already_takes() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let engine = engine_on(dir.path());
+    load_on(&engine, NARROW_END);
+    let routed = seed_routed(&engine, 400);
+    let containers = seed_container(&engine, 8, 100);
+
+    let shards = engine.shards.read().expect("engine lock poisoned");
+    let shard = shards.get(&1).expect("shard is loaded");
+
+    // The shard knows its own range, and it is the one it was loaded on.
+    let (start, end) = shard.routing_range();
+    assert_eq!(
+        (start, end),
+        (0, NARROW_END),
+        "the shard reports the range 0..{end} after being loaded on 0..{NARROW_END}; if a loaded \
+         shard did not carry its own range the recomputation below would have nothing to use"
+    );
+
+    let mut compared = 0usize;
+    let mut agreed = 0usize;
+    for key in routed.iter().chain(containers.iter()) {
+        // What the lookup reports, the way the bucket-set reader reports it.
+        let mut reported: BTreeSet<u32> = BTreeSet::new();
+        for kind in crate::engine::storage_model_kinds() {
+            if let Some(entry) = shard.bucket_index.object_block_refs(kind, key) {
+                reported.extend(entry.all_refs().map(|block_ref| block_ref.routing_bucket));
+            }
+        }
+        if reported.is_empty() {
+            continue;
+        }
+        compared += 1;
+        // An object's blocks share ONE bucket, so the set the lookup reports is one element and
+        // the recomputation can be compared against it directly.
+        let computed = block_routing_bucket(key, start, end);
+        if reported.len() == 1 && reported.contains(&computed) {
+            agreed += 1;
+        }
+    }
+    assert_eq!(
+        compared,
+        routed.len() + containers.len(),
+        "compared {compared} objects against {} written; a lookup holding fewer would make the \
+         agreement below a statement about a subset",
+        routed.len() + containers.len()
+    );
+    println!(
+        "  {agreed} of {compared} objects: the bucket set the lookup reports is the single bucket \
+         recomputed from the range the shard itself carries. The range is reachable at the call \
+         site, so that reader is threadable and NOT the refutation."
+    );
+    assert_eq!(
+        agreed, compared,
+        "only {agreed} of {compared} objects agreed, so the recomputation does not reproduce what \
+         the lookup reports even with the loaded range in hand"
+    );
+}
+
+/// THE ONE LIVE POPULATION WHERE RECOMPUTING A BUCKET IS UNSOUND: A PRE-STAMP STORE BUILT NARROW.
+///
+/// #1973's third case is deliberately not a refusal. A store with on-disk state and NO
+/// `shard-<id>.routing-range.json` predates the stamp, and its range is ADOPTED as the legacy one --
+/// `LEGACY_START_ROUTING_BUCKET..LEGACY_END_ROUTING_BUCKET`, which is `0..u32::MAX` -- because
+/// refusing would stop every existing deployment from starting. The module's reason is that the
+/// whole keyspace "was the ONLY default a store could have been built on".
+///
+/// IT WAS THE ONLY DEFAULT. IT WAS NOT THE ONLY POSSIBILITY. `TS_SHARD_END_ROUTING_BUCKET` is a
+/// documented setting and `docs/runtime_tuning.md` told operators to "Set this before the first
+/// ingest", so a store built narrow BEFORE the stamp existed carries no stamp and is adopted onto
+/// the whole keyspace. Its blocks are in buckets the adopted range never computes.
+///
+/// For that store the index still answers correctly, because `BlockLookupRef::routing_bucket`
+/// records where a block IS. A derived read that recomputed its own bucket would look in a bucket
+/// that holds nothing and MISS. So the adopted-legacy population is the refutation of recomputation
+/// on correctness grounds, and it is the only one: everywhere else
+/// `the_bucket_a_block_is_filed_in_is_the_bucket_its_key_computes_within_one_range` shows the two
+/// agree across writes, flush, compaction and release.
+///
+/// DRIVEN, NOT ARGUED. The pre-stamp store is built by writing on the narrow range and then
+/// DELETING the stamp, which is byte-for-byte the state a pre-#1973 build left behind.
+///
+/// rust-internal: reads the engine's own placement function and stamp file, no product behaviour
+#[test]
+#[ignore = "seeds a store and reloads it; run by name"]
+fn a_pre_stamp_store_built_narrow_is_adopted_onto_a_range_that_cannot_compute_its_buckets() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let pages = dir.path().join("pages");
+    let indexes = dir.path().join("indexes");
+
+    // --- Build a store on the NARROW range, the way an operator who read the tuning doc would. ---
+    let built: Vec<String> = {
+        let engine = TemporalEngine::with_local_dirs(
+            64 * 1024 * 1024,
+            dir.path().join("cache"),
+            &pages,
+            &indexes,
+        );
+        let response = engine.load_shard_with(crate::control::LoadShardRequest {
+            shard_id: 1,
+            table_name: "pre-stamp".to_string(),
+            shard_uri: "local://pre-stamp/1".to_string(),
+            start_routing_bucket: 0,
+            end_routing_bucket: NARROW_END,
+            readonly: false,
+            load_version: 1,
+            local_node_id: Some(1),
+        });
+        assert!(response.status.ok, "the narrow build must load: {:?}", response.status);
+        let keys: Vec<String> = (0..600).map(|i| format!("pre-{i:06}")).collect();
+        for chunk in keys.chunks(1_000) {
+            let commands: Vec<Command> = chunk
+                .iter()
+                .map(|key| Command::StringSet { key: key.clone(), value: vec![b'v'; 32] })
+                .collect();
+            ack(&engine.batch_execute(crate::types::BatchExecuteRequest {
+                shard_id: 1,
+                commands,
+            }));
+        }
+        engine.flush_shard_index(1);
+        keys
+    };
+
+    // --- Make it a PRE-STAMP store: remove the file #1973 added. ---
+    let stamp = indexes.join("shard-1.routing-range.json");
+    assert!(
+        stamp.exists(),
+        "the narrow build wrote no stamp at {stamp:?}, so deleting it cannot produce the pre-stamp \
+         state and this test would be measuring an ordinary load"
+    );
+    std::fs::remove_file(&stamp).expect("the stamp is removable");
+    assert!(
+        !stamp.exists(),
+        "the stamp is still present after removal; the store is not in the pre-stamp state"
+    );
+
+    // --- Reload. #1973 case 3 adopts the LEGACY range rather than refusing. ---
+    let reopened = TemporalEngine::with_local_dirs(
+        64 * 1024 * 1024,
+        dir.path().join("cache-b"),
+        &pages,
+        &indexes,
+    );
+    let response = reopened.load_shard_with(crate::control::LoadShardRequest {
+        shard_id: 1,
+        table_name: "pre-stamp".to_string(),
+        shard_uri: "local://pre-stamp/1".to_string(),
+        start_routing_bucket: 0,
+        end_routing_bucket: NARROW_END,
+        readonly: false,
+        load_version: 1,
+        local_node_id: Some(1),
+    });
+    assert!(
+        response.status.ok,
+        "the pre-stamp store was REFUSED rather than adopted: {:?}. #1973 case 3 is not a refusal, \
+         so if this ever becomes one the population below stops existing and this finding is void",
+        response.status
+    );
+
+    let shards = reopened.shards.read().expect("engine lock poisoned");
+    let shard = shards.get(&1).expect("shard is loaded");
+    let (start, end) = shard.routing_range();
+    println!("  the reopened shard carries the range 0..{end} after being ASKED for 0..{NARROW_END}");
+    assert_eq!(
+        (start, end),
+        (0, u32::MAX),
+        "the pre-stamp store was adopted onto 0..{end} rather than the legacy whole keyspace; the \
+         mechanism this test rests on is not the one that ran"
+    );
+
+    // --- Does a recomputation on the ADOPTED range find the blocks? ---
+    let mut blocks = 0usize;
+    let mut computed_elsewhere = 0usize;
+    for (routing_bucket, bucket) in &shard.bucket_index.bucket_map {
+        for page in bucket.block_index.values() {
+            if page.deleted {
+                continue;
+            }
+            blocks += 1;
+            if block_routing_bucket(&page.object_key, start, end) != *routing_bucket {
+                computed_elsewhere += 1;
+            }
+        }
+    }
+    assert!(
+        blocks > 0,
+        "the reopened store holds no live blocks, so nothing below is measured"
+    );
+
+    // The index still answers, which is what makes the derived answer the thing that would break.
+    let mut lookup_correct = 0usize;
+    for (_model, object, refs) in shard.bucket_index.object_block_lookup.iter() {
+        let sits_in: Option<u32> = shard
+            .bucket_index
+            .bucket_map
+            .iter()
+            .find(|(_, bucket)| {
+                bucket.block_index.values().any(|page| &*page.object_key == object.as_ref())
+            })
+            .map(|(routing_bucket, _)| *routing_bucket);
+        if refs.all_refs().all(|block_ref| Some(block_ref.routing_bucket) == sits_in) {
+            lookup_correct += 1;
+        }
+    }
+
+    println!(
+        "  a pre-stamp store built on 0..{NARROW_END} and adopted onto the whole keyspace: {} live \
+         blocks, and a bucket recomputed from the ADOPTED range misses {} of them ({:.2}%). The \
+         stored lookup answers correctly for {} objects, because it records where a block IS \
+         rather than where a key computes.",
+        blocks,
+        computed_elsewhere,
+        computed_elsewhere as f64 * 100.0 / blocks as f64,
+        lookup_correct
+    );
+    assert_eq!(
+        computed_elsewhere, blocks,
+        "only {computed_elsewhere} of {blocks} blocks are missed by the recomputation. If the \
+         adopted range could compute this store's buckets there would be no population where \
+         deriving a bucket is unsound, and the refutation would rest on cost alone"
+    );
+    assert!(
+        lookup_correct > 0,
+        "the stored lookup answered correctly for no object, so it is not the thing that keeps this \
+         store readable and the contrast above is unfounded"
+    );
+}
