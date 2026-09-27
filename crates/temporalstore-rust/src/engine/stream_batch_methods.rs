@@ -308,6 +308,11 @@ impl TemporalEngine {
         // one non-upsert write downgrades the whole record to snapshot semantics.
         let mut batch_upsert_components: Option<Vec<(&'static str, String, Option<String>)>> =
             Some(Vec::new());
+        // Every container element any command in this batch added or replaced. Unlike the
+        // components above this is never downgraded to `None`: it is a list of elements, not a
+        // claim that the whole record is a pure upsert, so one non-upsert command in the batch
+        // does not make the others' identities uncarryable.
+        let mut batch_touched_container_elements: Vec<TouchedContainerElement> = Vec::new();
         for command in request.commands {
             let write_command = is_write_command(&command);
             if readonly && write_command {
@@ -454,6 +459,10 @@ impl TemporalEngine {
                     (Some(collected), Some(components)) => collected.extend(components),
                     (state, _) => *state = None,
                 }
+                batch_touched_container_elements.extend(command_touched_container_elements(
+                    &command_for_post_write,
+                    shard,
+                ));
                 // The keys this write touched, for the maintenance below. `object_keys` is
                 // consumed by the loop, so they are kept as they go past.
                 let mut object_keys_for_maintenance: Vec<String> = Vec::new();
@@ -688,11 +697,19 @@ impl TemporalEngine {
                 // on a real corpus (3.53 GB against 16 MB for the same 20,001 messages). A write
                 // that only ADDED leaves nothing to resurrect, so it is skipped there, exactly as
                 // the single-command execute path already does.
-                let key_states = if batch_membership_shrank {
+                let mut key_states = if batch_membership_shrank {
                     capture_key_states(shard, &delta_command_keys)
                 } else {
                     Vec::new()
                 };
+                // Carried whether or not the shrink capture ran, for the reason the
+                // single-command path states: the gate above asks about a shrink or a deadline,
+                // and a pure add -- the write whose element the fold could not restore -- is
+                // neither.
+                key_states.extend(capture_container_element_states(
+                    shard,
+                    &batch_touched_container_elements,
+                ));
                 let appended_index_log_sequence = self
                     .index_log_store
                     .append_delta(

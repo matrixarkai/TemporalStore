@@ -934,6 +934,11 @@ impl TemporalEngine {
             // from it has to be taken while it is still owned.
             let removed_component = command_removed_component(&command);
             let upsert_components = command_upsert_components(&command, shard);
+            // Taken here, beside the components, for the same ownership reason and -- for a list
+            // push -- at the same point, because the sequence it files under is only knowable
+            // post-apply.
+            let touched_container_elements =
+                command_touched_container_elements(&command, shard);
             if object_keys.is_empty() {
                 rebuild_bucket_block_ownership(
                     request.shard_id,
@@ -1304,11 +1309,25 @@ impl TemporalEngine {
                 // the 8,838 allocations a message write cost, and the reason filling a node cost
                 // the square of its length.
                 let key_state_changed = delta_key_state_change(shard, &membership_before);
-                let key_states = if key_state_changed {
+                let mut key_states = if key_state_changed {
                     capture_key_states(shard, &delta_command_keys)
                 } else {
                     Vec::new()
                 };
+                // The container elements this write touched, carried whether or not the capture
+                // above ran. NOT gated on `key_state_changed`, and that is the point: that gate
+                // asks whether membership SHRANK or a deadline moved, and a pure ADD -- which is
+                // the write whose element the fold could not restore -- answers no. The gate's own
+                // reasoning is that an add "leaves nothing to resurrect: replay rebuilds the same
+                // membership from the same pages", which is true only because rebuilding decodes
+                // the member out of the component. This is what stops that being load-bearing.
+                //
+                // It costs one blob per touched key holding one entry per touched element, so it
+                // does not reintroduce the whole-collection capture that gate exists to avoid.
+                key_states.extend(capture_container_element_states(
+                    shard,
+                    &touched_container_elements,
+                ));
                 // `durable` fsyncs the delta record before returning. Deferred on the raft
                 // apply path (raft log is the durability source) and, under the single-barrier
                 // default, on the single-node path too: the record is still written (so the
@@ -3239,6 +3258,187 @@ fn delta_key_state_change(
         })
 }
 
+/// One container element a write added or replaced, named by the identity its DURABLE map is keyed
+/// by -- member bytes, list sequence, hash field -- and not by the component its page was filed
+/// under.
+///
+/// PER ELEMENT, AND THAT IS THE WHOLE POINT. `apply_key_states` folds thirteen maps and restores
+/// every one of them per KEY, which is right for a map holding one value (or one series) per key.
+/// The four container maps cannot be folded that way: their state is a COLLECTION of elements, so
+/// a per-key rule would have to carry the whole collection and then assign it over the top. That
+/// is the shape whose cost is already recorded on the key-state capture beside this -- 3.53 GB of
+/// index log against 16 MB for the same 20,001 messages, because appending one entry serialized
+/// every entry the key held. It is also the shape #1989 refused in the reconcile, for a second and
+/// independent reason: taking a container map wholesale per key drops exactly the elements a fold
+/// delivered. A write touches one element, so one element is what the record carries.
+#[derive(Debug, Clone)]
+enum TouchedContainerElement {
+    Set { key: String, member: Vec<u8> },
+    ZSet { key: String, member: Vec<u8> },
+    List { key: String, sequence: i64 },
+    Hash { key: String, field: String },
+}
+
+impl TouchedContainerElement {
+    fn key(&self) -> &str {
+        match self {
+            TouchedContainerElement::Set { key, .. }
+            | TouchedContainerElement::ZSet { key, .. }
+            | TouchedContainerElement::List { key, .. }
+            | TouchedContainerElement::Hash { key, .. } => key,
+        }
+    }
+}
+
+/// The container elements a command added or replaced, read from the command's own fields.
+///
+/// THE IDENTITY COMES FROM THE COMMAND, NOT FROM THE COMPONENT, and that is the difference between
+/// this and `command_upsert_components` beside it. That function answers the same question in the
+/// page index's vocabulary and spells each element as a component -- `hex::encode(member)` for a
+/// set, sixteen hex digits of score followed by the member for a zset. Recovering the member back
+/// out of one of those is what the reconcile does, and it is precisely the dependency this removes:
+/// here the member is the `Vec<u8>` the caller asked to store.
+///
+/// A REMOVAL IS NOT HERE, and it does not need to be. An element is only ever restored if the
+/// finished fold still holds a page at the address it was carried with, so a removal needs to say
+/// nothing: taking the page away is already the whole answer. See
+/// [`fold_carried_container_elements`].
+fn command_touched_container_elements(
+    command: &Command,
+    shard: &ShardState,
+) -> Vec<TouchedContainerElement> {
+    match command {
+        Command::SetAdd { key, member } => vec![TouchedContainerElement::Set {
+            key: key.clone(),
+            member: member.clone(),
+        }],
+        // The score is deliberately NOT taken from the command. It is read back out of the durable
+        // map at capture time, so the record carries the score the map actually holds rather than a
+        // second rendering of the `f64` the caller sent -- which is #1989's rule, applied at the
+        // point the value is written down instead of at the point it is read back.
+        Command::ZSetAdd { key, member, .. } => vec![TouchedContainerElement::ZSet {
+            key: key.clone(),
+            member: member.clone(),
+        }],
+        Command::HashSet { key, field, .. } | Command::HashIncrBy { key, field, .. } => {
+            vec![TouchedContainerElement::Hash {
+                key: key.clone(),
+                field: field.clone(),
+            }]
+        }
+        Command::HashMultiSet { key, entries } => entries
+            .iter()
+            .map(|(field, _)| TouchedContainerElement::Hash {
+                key: key.clone(),
+                field: field.clone(),
+            })
+            .collect(),
+        // A push files its element under a sequence that is only knowable once the write has
+        // landed, so this reads it back exactly as `command_upsert_components` does: post-apply the
+        // pushed element is the list's FIRST entry for a left push and its LAST for a right one.
+        Command::ListPush { key, left, .. } => shard
+            .lists
+            .get(key)
+            .and_then(|list| {
+                if *left {
+                    list.keys().next().copied()
+                } else {
+                    list.keys().next_back().copied()
+                }
+            })
+            .map(|sequence| {
+                vec![TouchedContainerElement::List {
+                    key: key.clone(),
+                    sequence,
+                }]
+            })
+            .unwrap_or_default(),
+        _ => Vec::new(),
+    }
+}
+
+/// The durable-map entries for the elements a write touched, one blob per key, in the shape
+/// `apply_key_states` reads back.
+///
+/// ADDITIVE AND MATCHED BY NAME, which is the whole compatibility story. These are new fields in
+/// the delta record's existing opaque per-key state channel, whose own documentation calls it "the
+/// authoritative post-write value of the maps that are NOT reconstructable from a single
+/// page-index entry" -- which, on the fold path, is exactly what the four container maps are. A
+/// record written before this field existed simply does not carry it, `apply_key_states` finds it
+/// absent and does nothing, and the fold behaves as it always has. So nothing positional moves,
+/// no reader has to be upgraded first, and `SHARD_INDEX_FORMAT_VERSION` does not change.
+///
+/// THE ADDRESS, AND A ZSET'S SCORE, ARE READ BACK OUT OF THE MAP THE WRITE JUST UPDATED, so the
+/// entry carried is the one a reload has to serve. That is the rule `collect_upsert_index_items`
+/// already applies to the page items beside these blobs, and an element the map does not hold is
+/// skipped here for the same reason it is skipped there: its append failed, so it produced no page
+/// to pin and there is nothing to fold.
+/// The blob fields the container-element carry rides in. Named once so the writer, the fold's
+/// collector and any future reader cannot disagree about the spelling of one of them -- a
+/// mis-spelled field is not an error anywhere, it is simply a carry that silently never arrives.
+pub(super) const CARRIED_CONTAINER_FIELDS: [&str; 4] =
+    ["set_elements", "zset_elements", "list_elements", "hash_fields"];
+
+fn capture_container_element_states(
+    shard: &ShardState,
+    touched: &[TouchedContainerElement],
+) -> Vec<serde_json::Value> {
+    if touched.is_empty() {
+        return Vec::new();
+    }
+    let mut by_key: std::collections::BTreeMap<&str, serde_json::Map<String, serde_json::Value>> =
+        std::collections::BTreeMap::new();
+    for element in touched {
+        let carried = match element {
+            TouchedContainerElement::Set { key, member } => shard
+                .sets
+                .get(key)
+                .and_then(|members| members.get(member))
+                .and_then(|address| serde_json::to_value((member, address)).ok())
+                .map(|value| (CARRIED_CONTAINER_FIELDS[0], value)),
+            TouchedContainerElement::ZSet { key, member } => shard
+                .zsets
+                .get(key)
+                .and_then(|members| members.get(member))
+                .and_then(|scored| serde_json::to_value((member, scored)).ok())
+                .map(|value| (CARRIED_CONTAINER_FIELDS[1], value)),
+            TouchedContainerElement::List { key, sequence } => shard
+                .lists
+                .get(key)
+                .and_then(|entries| entries.get(sequence))
+                .and_then(|address| serde_json::to_value((sequence, address)).ok())
+                .map(|value| (CARRIED_CONTAINER_FIELDS[2], value)),
+            TouchedContainerElement::Hash { key, field } => shard
+                .hashes
+                .get(key)
+                .and_then(|fields| fields.get(field))
+                .and_then(|address| serde_json::to_value((field, address)).ok())
+                .map(|value| (CARRIED_CONTAINER_FIELDS[3], value)),
+        };
+        let Some((field, value)) = carried else {
+            continue;
+        };
+        let blob = by_key.entry(element.key()).or_default();
+        if let Some(array) = blob
+            .entry(field)
+            .or_insert_with(|| serde_json::Value::Array(Vec::new()))
+            .as_array_mut()
+        {
+            array.push(value);
+        }
+    }
+    by_key
+        .into_iter()
+        .map(|(key, mut blob)| {
+            blob.insert(
+                "key".to_string(),
+                serde_json::Value::String(key.to_string()),
+            );
+            serde_json::Value::Object(blob)
+        })
+        .collect()
+}
+
 fn capture_key_states(shard: &ShardState, keys: &[String]) -> Vec<serde_json::Value> {
     keys.iter()
         .map(|key| {
@@ -3278,6 +3478,25 @@ fn apply_key_states(shard: &mut ShardState, key_states: &[serde_json::Value]) {
         let Some(key) = blob.get("key").and_then(|value| value.as_str()) else {
             continue;
         };
+        // A CONTAINER-ELEMENT CARRY IS NOT A PER-KEY STATE CAPTURE, AND MUST NOT BE READ AS ONE.
+        //
+        // Every field below goes through `apply_key_state_field`, which treats an ABSENT field as
+        // "this key had none" and REMOVES the entry -- that is the whole point of the capture, and
+        // it is why a capture blob naming only its key is meaningful. A container carry names only
+        // its key and its elements, so reading it as a capture would clear this key's TTL and every
+        // context series it holds: a `SetAdd` against a key with a deadline would drop the deadline
+        // on the next fold, and nothing would report it.
+        //
+        // The two kinds of blob come from two functions and are never merged into one, so carrying
+        // a container field identifies one exactly. `capture_key_states` writes only the thirteen
+        // names below and `capture_container_element_states` only the four in
+        // `CARRIED_CONTAINER_FIELDS`, which is what makes this partition total rather than a guess.
+        if CARRIED_CONTAINER_FIELDS
+            .iter()
+            .any(|field| blob.get(field).is_some())
+        {
+            continue;
+        }
         apply_key_state_field(&mut shard.features, key, blob.get("features"));
         // DIRECT WRITE TO `expires_at_ms` -- the deadline-ordered mirror is invalidated at the
         // end of this function. See the note there.
@@ -3309,6 +3528,10 @@ fn apply_key_states(shard: &mut ShardState, key_states: &[serde_json::Value]) {
             blob.get("context_compressions"),
         );
         apply_key_state_field(&mut shard.context_entities, key, blob.get("context_entities"));
+        // THE FOUR CONTAINER MAPS ARE NOT APPLIED HERE, and the reason is the whole shape of
+        // `fold_carried_container_elements`: an element may only be restored once the fold has
+        // FINISHED, because a later record in the same fold can take its page away again. See
+        // that function.
     }
     if !key_states.is_empty() {
         // THE ONE PLACE `expires_at_ms` IS WRITTEN WITHOUT `set_expiry` / `clear_expiry`.
@@ -3330,6 +3553,197 @@ fn apply_key_states(shard: &mut ShardState, key_states: &[serde_json::Value]) {
         // that folds a delta onto a shard already in service would land exactly on the
         // never-repaired case.
         shard.expiry_by_deadline.clear();
+    }
+}
+
+/// The one thing [`merge_container_elements`] does to a container's element map, so it does not
+/// have to name the map. `sets`, `zsets` and `lists` keep their elements in a `BTreeMap` and
+/// `hashes` in a `HashMap`; the difference is not this function's business.
+trait ElementMap: Default {
+    type Element: serde::de::DeserializeOwned;
+    type Value: serde::de::DeserializeOwned;
+    fn insert_element(&mut self, element: Self::Element, value: Self::Value);
+}
+
+impl<E, V> ElementMap for std::collections::BTreeMap<E, V>
+where
+    E: Ord + serde::de::DeserializeOwned,
+    V: serde::de::DeserializeOwned,
+{
+    type Element = E;
+    type Value = V;
+    fn insert_element(&mut self, element: E, value: V) {
+        self.insert(element, value);
+    }
+}
+
+impl<V> ElementMap for std::collections::HashMap<String, V>
+where
+    V: serde::de::DeserializeOwned,
+{
+    type Element = String;
+    type Value = V;
+    fn insert_element(&mut self, element: String, value: V) {
+        self.insert(element, value);
+    }
+}
+
+/// The page a carried durable-map value points at, so [`fold_carried_container_elements`] can ask
+/// whether that page is still there without knowing which of the four maps it came from.
+trait CarriedValue {
+    fn carried_address(&self) -> &BlockAddress;
+}
+
+impl CarriedValue for BlockAddress {
+    fn carried_address(&self) -> &BlockAddress {
+        self
+    }
+}
+
+/// A zset's value is `(score bits, page)`.
+impl CarriedValue for (u64, BlockAddress) {
+    fn carried_address(&self) -> &BlockAddress {
+        &self.1
+    }
+}
+
+/// The identity of a page as a live-address set holds it. Slab, offset and length together name
+/// exactly one page, and `fold_delta_block_items` restores a page at its ORIGINAL address -- which
+/// is what makes the address a usable answer to "is this element's page still here".
+type LivePageKey = (u64, u64, u64);
+
+fn live_page_key(address: &BlockAddress) -> LivePageKey {
+    (address.block_slab_id(), address.offset(), address.length())
+}
+
+/// Fold one key's carried container elements into the map that holds them, skipping any element
+/// whose page the fold did not leave behind.
+///
+/// INSERTS AND NEVER REMOVES. An absent field is a no-op, not a removal -- both because the record
+/// carries only the elements one write touched (so absence says nothing about the rest) and because
+/// a record written before these fields existed has none of them and must fold exactly as it did
+/// before.
+///
+/// A field that does not deserialize is dropped rather than guessed at. The reconcile's derived
+/// view still produces the element from its page, so the outcome is the behaviour that predates
+/// this carry -- never a defaulted identity, which is the failure #1989 took out of three arms.
+fn merge_container_elements<M>(
+    outer: &mut std::collections::HashMap<String, M>,
+    key: &str,
+    value: Option<&serde_json::Value>,
+    live: &std::collections::HashSet<LivePageKey>,
+    skipped: &mut usize,
+) where
+    M: ElementMap,
+    M::Value: CarriedValue,
+{
+    let Some(value) = value else {
+        return;
+    };
+    let Ok(elements) = serde_json::from_value::<Vec<(M::Element, M::Value)>>(value.clone()) else {
+        return;
+    };
+    if elements.is_empty() {
+        return;
+    }
+    for (element, element_value) in elements {
+        if !live.contains(&live_page_key(element_value.carried_address())) {
+            *skipped += 1;
+            continue;
+        }
+        outer
+            .entry(key.to_string())
+            .or_default()
+            .insert_element(element, element_value);
+    }
+}
+
+/// Restore the container elements a whole fold carried, AFTER the fold has finished, and only where
+/// the page each one names is still in the bucket index.
+///
+/// WHY THIS CANNOT BE DONE RECORD BY RECORD, which is where the first shape of this change was
+/// wrong. A fold replays a SUFFIX of the log, so one fold can both add an element and take it away
+/// again. Applying a record's carried elements as that record is folded puts the element into the
+/// durable map, and then `fill_absent_elements` -- which keeps every durable element the derived
+/// view could not produce, #1989's rule -- hands it back after a later record removed its page. The
+/// element would be served after being deleted. Nothing did that before the carry existed, because
+/// the fold never wrote these maps at all.
+///
+/// AND A TOMBSTONE IS NOT ENOUGH TO CATCH IT. Matching the record's `deleted` items would look like
+/// the symmetric answer and is not one: `mark_bucket_index_block_deleted_with` -- which `SetRemove`,
+/// `ZSetRemove`, `ListPop` and `HashDelete` all reach -- is named for a mark it does not make, and
+/// its body is a `retain` that DROPS the page. So by the time the record is built there is no page
+/// left to describe and no tombstone is emitted; the removal is spelled as the ABSENCE of a page
+/// under a covered key, which the fold's covered-key wipe then performs. (The doc on
+/// `collect_command_index_items_for` still claims a typed removal "marks its page deleted ... so
+/// the item this emits carries `deleted: true`". That claim does not hold, and a removal half built
+/// on it is dead code.)
+///
+/// SO THE QUESTION ASKED IS THE ONLY ONE THAT SETTLES IT: is there still a page at the address this
+/// element was carried with? That is answered once, against the finished bucket index, and it is
+/// correct however the page went away -- a covered-key wipe, a tombstone, or an upsert record
+/// replacing its predecessor at a new address (in which case the stale carry is skipped and the
+/// fresh one applied, with no reliance on record order).
+fn fold_carried_container_elements(shard: &mut ShardState, carried: &[serde_json::Value]) {
+    if carried.is_empty() {
+        return;
+    }
+    let mut live: std::collections::HashSet<LivePageKey> = std::collections::HashSet::new();
+    for bucket in shard.bucket_index.bucket_map.values() {
+        for page in bucket.block_index.values() {
+            if !page.deleted {
+                live.insert(live_page_key(&page.address));
+            }
+        }
+    }
+    let mut skipped = 0usize;
+    let mut applied = 0usize;
+    for blob in carried {
+        let Some(key) = blob.get("key").and_then(|value| value.as_str()) else {
+            continue;
+        };
+        let before = skipped;
+        merge_container_elements(
+            &mut shard.sets,
+            key,
+            blob.get(CARRIED_CONTAINER_FIELDS[0]),
+            &live,
+            &mut skipped,
+        );
+        merge_container_elements(
+            &mut shard.zsets,
+            key,
+            blob.get(CARRIED_CONTAINER_FIELDS[1]),
+            &live,
+            &mut skipped,
+        );
+        merge_container_elements(
+            &mut shard.lists,
+            key,
+            blob.get(CARRIED_CONTAINER_FIELDS[2]),
+            &live,
+            &mut skipped,
+        );
+        merge_container_elements(
+            &mut shard.hashes,
+            key,
+            blob.get(CARRIED_CONTAINER_FIELDS[3]),
+            &live,
+            &mut skipped,
+        );
+        if skipped == before {
+            applied += 1;
+        }
+    }
+    if skipped > 0 {
+        // Said out loud, because a skip here is the fold declining to resurrect something.
+        eprintln!(
+            "fold: {skipped} carried container element(s) named a page the fold did not leave \
+             behind and were not restored; {applied} blob(s) applied whole of {} carried, over \
+             {} live page(s)",
+            carried.len(),
+            live.len()
+        );
     }
 }
 

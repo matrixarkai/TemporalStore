@@ -314,6 +314,9 @@ impl TemporalEngine {
         let base_anchor = shard.applied_wal_sequence.unwrap_or(0);
         let mut max_anchor = base_anchor;
         let mut applied = false;
+        // Every carried container-element blob this fold meets, applied once at the end. Only the
+        // blobs that carry one are kept, so a fold of records that predate the carry holds nothing.
+        let mut carried_container_elements: Vec<serde_json::Value> = Vec::new();
         // STREAM the records rather than collecting them.
         //
         // `read_delta_records` decodes the whole log into a vector and hands it over. This caller
@@ -363,6 +366,20 @@ impl TemporalEngine {
                     record.upsert,
                 );
                 apply_key_states(shard, &record.key_states);
+                // The carried container elements are COLLECTED here and applied once the fold has
+                // finished, not folded in as they arrive. A fold replays a suffix of the log, so one
+                // fold can both add an element and take its page away again; applying per record
+                // would leave the element in the durable map, and `fill_absent_elements` would then
+                // serve it after it was deleted. `fold_carried_container_elements` states the whole
+                // argument, including why matching the record's tombstones does not substitute.
+                for blob in &record.key_states {
+                    if CARRIED_CONTAINER_FIELDS
+                        .iter()
+                        .any(|field| blob.get(field).is_some())
+                    {
+                        carried_container_elements.push(blob.clone());
+                    }
+                }
                 // A MISSING anchor takes no part in this max, and must not be given one. The
                 // reconstructed anchor is where WAL replay starts ABOVE, so a record that says
                 // nothing about the WAL must not move it -- in either direction. (`unwrap_or(0)`
@@ -388,6 +405,9 @@ impl TemporalEngine {
                 update_bucket_layout(bucket);
             }
             shard.bucket_index.rebuild_object_block_lookup();
+            // AFTER the page index has settled, because this asks of every carried element whether
+            // the fold left a page at its address -- a question only the finished index can answer.
+            fold_carried_container_elements(shard, &carried_container_elements);
             shard.applied_wal_sequence = Some(max_anchor);
         }
         Ok(())

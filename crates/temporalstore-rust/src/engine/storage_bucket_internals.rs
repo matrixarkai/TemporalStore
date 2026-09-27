@@ -4311,7 +4311,23 @@ pub(super) fn reconcile_secondary_views_from_bucket_index(
             "zset" => {
                 saw_zsets = true;
                 let parsed = entry.component.as_deref().and_then(|component| {
-                    if component.len() <= 16 {
+                    // SIXTEEN CHARACTERS IS A WHOLE COMPONENT, NOT A TRUNCATED ONE.
+                    //
+                    // `zset_component` is `{biased:016x}` followed by `hex::encode(member)`, so a
+                    // member of zero bytes -- which nothing on the write path rejects -- spells
+                    // EXACTLY sixteen characters. This read `<= 16`, so that component decoded to
+                    // nothing, the element was counted as unreadable and skipped, and on the one
+                    // door where the durable map does not already hold it (the delta fold, whose
+                    // records carry elements written after the base snapshot) the member was
+                    // silently gone on reload.
+                    //
+                    // The engine already spells the boundary the other way where it replays the
+                    // same name: both the insert and the removal arm of `apply_outcome_item` ask
+                    // `component.len() < 16`. Two readers of one encoding disagreeing about its
+                    // shortest legal form is the defect; this is the side that was wrong, because
+                    // sixteen characters is a complete score with an empty member after it and
+                    // `hex::decode("")` is `Ok(vec![])`.
+                    if component.len() < 16 {
                         return None;
                     }
                     match (

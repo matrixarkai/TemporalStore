@@ -2141,29 +2141,69 @@ fn an_ordinal_loses_the_member_the_fold_delivers_without_a_durable_entry() {
         engine_src.len()
     );
 
-    // What the fold restores, at source level. The window is `apply_key_states` alone.
-    let start = engine_src
-        .find("fn apply_key_states(")
-        .expect("apply_key_states is in the tree");
-    let end = engine_src[start..]
-        .find("\n/// Set or clear one key's entry")
-        .map(|offset| start + offset)
-        .expect("apply_key_states has a successor to bound it");
-    let folded = &engine_src[start..end];
+    // The window for one top-level item: from its `fn` line to the next top-level `fn` or `trait`.
+    //
+    // This bounded `apply_key_states` on `"\n/// Set or clear one key's entry"` -- the doc comment
+    // of the item that FOLLOWED it. That is not a property of `apply_key_states`, and when items
+    // were later added between the two the window silently grew to span them, so
+    // `folded.contains("shard.sets")` started answering about a different function. A window that
+    // widens on its own is worse than a red test, so it is bounded on itself now.
+    let window = |needle: &str| -> String {
+        let start = engine_src
+            .find(needle)
+            .unwrap_or_else(|| panic!("{needle} is in the tree"));
+        let rest = &engine_src[start + needle.len()..];
+        let end = ["\nfn ", "\ntrait ", "\npub(super) fn ", "\ntype "]
+            .iter()
+            .filter_map(|marker| rest.find(marker))
+            .min()
+            .expect("the item has a top-level successor to bound it");
+        rest[..end].to_string()
+    };
+
+    // WHAT `apply_key_states` FOLDS: thirteen maps, each PER KEY.
+    let folded = window("fn apply_key_states(");
     let folded_maps = folded.matches("apply_key_state_field(").count();
     assert_eq!(
         folded_maps, 13,
         "apply_key_states folds {folded_maps} maps, not the thirteen this finding rests on; \
          re-enumerate them before trusting the exclusion below"
     );
+    // STILL EXCLUDED FROM THIS FUNCTION, and now for a different reason than when this was
+    // written. The four container maps are restored by `fold_carried_container_elements`, NOT here,
+    // because an element may only be restored once the whole fold has finished: a fold replays a
+    // suffix of the log and can add an element and then take its page away again, and applying per
+    // record would leave it in the durable map for `fill_absent_elements` to serve after a delete.
     for container in ["shard.sets", "shard.zsets", "shard.lists", "shard.hashes"] {
         assert!(
             !folded.contains(container),
-            "apply_key_states now folds {container}. If the fold restores the durable container \
-             maps, the member is no longer lost on that path and this stop condition is LIFTED -- \
-             which is the one change that would make an element ordinal safe."
+            "apply_key_states now writes {container} directly. The carry must be applied AFTER the \
+             fold, against the finished page index, or a removed element comes back -- see \
+             `fold_carried_container_elements`."
         );
     }
+
+    // AND THE STOP CONDITION IS LIFTED, asserted where the carry actually lives. This block read
+    // `assert!(!folded.contains(container))` against `apply_key_states`, and its message said that
+    // the fold restoring the durable container maps "is the one change that would make an element
+    // ordinal safe". That change has landed: the fold now restores all four from the member bytes
+    // the delta record carries, so a folded element's identity no longer arrives by decoding the
+    // component its page was filed under. Inverted rather than deleted, because what has to keep
+    // holding is that the fold DOES carry them.
+    let carried = window("fn fold_carried_container_elements(");
+    for container in ["shard.sets", "shard.zsets", "shard.lists", "shard.hashes"] {
+        assert!(
+            carried.contains(container),
+            "the fold no longer restores {container}. The carry that lifted this stop condition has \
+             been removed, so an element a delta delivers is once again known only by its component \
+             name -- read what changed rather than restoring the old assertion."
+        );
+    }
+    assert!(
+        carried.contains("live.contains(") || carried.contains("&live"),
+        "the carry no longer filters on whether the fold left a page behind, which is the only \
+         thing stopping it from resurrecting a removed element"
+    );
 
     let dir = tempfile::tempdir().expect("tempdir");
     let engine = engine_on(dir.path());
