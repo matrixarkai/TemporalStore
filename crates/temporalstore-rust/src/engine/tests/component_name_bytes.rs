@@ -496,12 +496,12 @@ fn walk(engine: &TemporalEngine) -> Walk {
                 out.without_component += 1;
                 continue;
             };
-            match classify(&page.model_id, component) {
+            match classify(page.model_id.as_str(), component) {
                 None => out.unparseable += 1,
                 Some(split) => {
                     out.total.plus(&split);
                     out.by_kind
-                        .entry(page.model_id.to_string())
+                        .entry(page.model_id.as_str().to_string())
                         .or_default()
                         .plus(&split);
                     out.held_per_name.observe(split.held);
@@ -842,7 +842,7 @@ fn a_component_name_cannot_become_an_ordinal_because_replay_rebuilds_identity_fr
     let mut zset_pages = 0usize;
     for bucket in shard.bucket_index.bucket_map.values() {
         for page in bucket.block_index.values() {
-            if &*page.model_id != "zset" {
+            if page.model_id.as_str() != "zset" {
                 continue;
             }
             zset_pages += 1;
