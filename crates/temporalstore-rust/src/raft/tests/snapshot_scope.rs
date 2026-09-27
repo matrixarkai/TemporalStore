@@ -212,7 +212,11 @@ fn a_scoped_image_still_serves_every_record_the_shard_held() {
             .expect("installing a carried slab must succeed");
     }
     restored
-        .install_index_bytes(1, &image.index_bytes)
+        .install_index_bytes(
+            1,
+            &image.index_bytes,
+            image.routing_range.expect("a built image carries its routing range"),
+        )
         .expect("installing the served index must succeed");
     restored.load_shard(1);
 

@@ -169,12 +169,34 @@ struct ExpiryIndexDelta {
 }
 
 impl TemporalEngine {
+    /// Install a shard index received from elsewhere -- a snapshot, a checkpoint, a restore.
+    ///
+    /// TAKES THE ROUTING RANGE, AND IT IS NOT OPTIONAL. An index names buckets, and which bucket a
+    /// key belongs to is `start + hash(key) % (end - start + 1)` -- so an index without its range is
+    /// a set of bucket numbers with no way to know what produced them. Installing one and letting
+    /// the load pick a range is how a store ends up with every block outside every per-bucket sweep,
+    /// readable and invisible.
+    ///
+    /// The range therefore has to TRAVEL with the bytes, and this signature is what forces every
+    /// sender to carry it: a caller that cannot say which range the index was built on is a caller
+    /// whose payload is missing a field, and the compiler says so here rather than a load failing
+    /// somewhere else later.
+    ///
+    /// Writes the stamp BEFORE the index, so a crash between the two leaves a stamp with no index --
+    /// which reads as "no on-disk state", the harmless order. The reverse leaves an index with no
+    /// stamp, which is refused.
     pub fn install_index_bytes(
         &self,
         shard_id: ShardId,
         bytes: &[u8],
+        routing_range: crate::engine::routing_range_stamp::RoutingRangeStamp,
     ) -> Result<(), std::io::Error> {
         fs::create_dir_all(&self.index_dir)?;
+        crate::engine::routing_range_stamp::write_routing_range_stamp(
+            &self.index_dir,
+            shard_id,
+            routing_range,
+        )?;
         fs::write(self.index_path(shard_id), bytes)
     }
 

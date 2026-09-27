@@ -88,7 +88,9 @@ mod hot_page_spill;
 mod block_in_wal;
 mod state;
 mod hash_field_map;
-mod routing_range_stamp;
+// `pub(crate)`: a replication payload names the range it carries, and those payloads live
+// outside this module.
+pub(crate) mod routing_range_stamp;
 
 // shared-corpus: storage_bucket_first_physical_index storage_object_manager_bucketstore_runtime_authority storage_model_layout_compaction_policies storage_merged_dump_load_lifecycle storage_object_manager_cold_hot_reload storage_page_address_disk_cache_shared_store_fallback
 // shared-corpus: storage_stale_page_density_compaction storage_merged_dump_load_restart_interruption storage_gc_eviction_cold_reads storage_manager_real_pressure_signals storage_manager_wal_reclaim_bucket_generation_retention storage_manager_expire_cursor_scan_limits

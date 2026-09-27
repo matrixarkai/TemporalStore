@@ -466,6 +466,15 @@ message WalStateImage {
   bytes index = 1;
   uint64 next_block_id = 2;
   repeated WalStateImageSlab slabs = 3;
+  // THE ROUTING RANGE THE CARRIED INDEX WAS BUILT ON. An index names buckets and a bucket is
+  // start + hash(key) % (end - start + 1), so an index shipped without its range leaves the
+  // receiver with bucket numbers it cannot account for.
+  //
+  // `optional` so an image encoded before these existed still DECODES, and the install refuses it
+  // by name instead of failing to parse. One shape, current or refused -- there is no reader for
+  // the old one.
+  optional uint32 start_routing_bucket = 4;
+  optional uint32 end_routing_bucket = 5;
 }
 
 // An installed snapshot, split so the image's bytes stay bytes: everything else about the

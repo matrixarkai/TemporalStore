@@ -68,19 +68,22 @@ pub(super) const LEGACY_END_ROUTING_BUCKET: u32 = u32::MAX;
 pub(super) const LEGACY_START_ROUTING_BUCKET: u32 = 0;
 
 /// The range a store was built under.
+/// `pub(crate)`, not `pub(super)`, because a REPLICATION PAYLOAD carries one. A snapshot image and
+/// a shared-store checkpoint both name the range the index they carry was built on, and those live
+/// outside `engine`, so the type they name has to.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-pub(super) struct RoutingRangeStamp {
-    pub(super) start_routing_bucket: u32,
-    pub(super) end_routing_bucket: u32,
+pub(crate) struct RoutingRangeStamp {
+    pub(crate) start_routing_bucket: u32,
+    pub(crate) end_routing_bucket: u32,
 }
 
 /// Where the stamp lives: beside the base index, named for the shard, so a store copied as a
 /// directory carries it.
-pub(super) fn routing_range_stamp_path(index_dir: &std::path::Path, shard_id: ShardId) -> PathBuf {
+pub(crate) fn routing_range_stamp_path(index_dir: &std::path::Path, shard_id: ShardId) -> PathBuf {
     index_dir.join(format!("shard-{shard_id}.routing-range.json"))
 }
 
-pub(super) fn read_routing_range_stamp(
+pub(crate) fn read_routing_range_stamp(
     index_dir: &std::path::Path,
     shard_id: ShardId,
 ) -> Option<RoutingRangeStamp> {
@@ -88,7 +91,7 @@ pub(super) fn read_routing_range_stamp(
     serde_json::from_slice(&bytes).ok()
 }
 
-pub(super) fn write_routing_range_stamp(
+pub(crate) fn write_routing_range_stamp(
     index_dir: &std::path::Path,
     shard_id: ShardId,
     stamp: RoutingRangeStamp,

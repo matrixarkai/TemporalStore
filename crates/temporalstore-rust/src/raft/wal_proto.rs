@@ -559,6 +559,12 @@ pub(super) fn encode_envelope(envelope: &RaftWalEnvelope) -> io::Result<Vec<u8>>
                             slab: slab.bytes,
                         })
                         .collect(),
+                    start_routing_bucket: image
+                        .routing_range
+                        .map(|range| range.start_routing_bucket),
+                    end_routing_bucket: image
+                        .routing_range
+                        .map(|range| range.end_routing_bucket),
                 }),
             })
         }
@@ -652,6 +658,16 @@ pub(super) fn decode_envelope(bytes: &[u8]) -> io::Result<RaftWalEnvelope> {
             let mut decoded: RaftSnapshot =
                 serde_json::from_slice(&snapshot.snapshot_sans_image).map_err(io::Error::other)?;
             decoded.state_image = snapshot.state_image.map(|image| RaftSnapshotStateImage {
+                // Both ends or neither, as on the other decode: half a range is not a range.
+                routing_range: match (image.start_routing_bucket, image.end_routing_bucket) {
+                    (Some(start_routing_bucket), Some(end_routing_bucket)) => {
+                        Some(crate::engine::routing_range_stamp::RoutingRangeStamp {
+                            start_routing_bucket,
+                            end_routing_bucket,
+                        })
+                    }
+                    _ => None,
+                },
                 index_bytes: image.index,
                 next_block_id: image.next_block_id,
                 slabs: image

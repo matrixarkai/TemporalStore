@@ -1613,10 +1613,17 @@ pub(super) fn build_state_image(
             bytes,
         });
     }
+    let (start_routing_bucket, end_routing_bucket) = engine.shard_routing_range(shard_id);
     Some(RaftSnapshotStateImage {
         index_bytes,
         next_block_id: block_store.next_block_id(),
         slabs,
+        // The range this engine serves the shard on, which is the range the index being shipped
+        // was built on: the same function decides where a write is filed.
+        routing_range: Some(crate::engine::routing_range_stamp::RoutingRangeStamp {
+            start_routing_bucket,
+            end_routing_bucket,
+        }),
     })
 }
 
@@ -1644,8 +1651,17 @@ fn build_installed_engine(
                 .install_slab(slab.block_slab_id, &slab.bytes)
                 .map_err(|err| RaftError::SnapshotEncoding(err.to_string()))?;
         }
+        // An image with no range cannot be installed: see `RaftSnapshotStateImage::routing_range`.
+        // Refused by name, so the failure says WHAT arrived rather than that a field was missing.
+        let routing_range = image.routing_range.ok_or_else(|| {
+            RaftError::SnapshotEncoding(format!(
+                "snapshot state image for shard {shard_id} carries no routing range, so the buckets \
+                 its index names cannot be accounted for. It was encoded before the range travelled \
+                 with the image; re-take the snapshot from a leader running this build."
+            ))
+        })?;
         engine
-            .install_index_bytes(shard_id, &image.index_bytes)
+            .install_index_bytes(shard_id, &image.index_bytes, routing_range)
             .map_err(|err| RaftError::SnapshotEncoding(err.to_string()))?;
         engine.load_shard(shard_id);
     } else {

@@ -110,6 +110,12 @@ impl LocalRaftWal {
             let message = crate::sdk::v1::WalStateImage {
                 index: image.index_bytes.clone(),
                 next_block_id: image.next_block_id,
+                start_routing_bucket: image
+                    .routing_range
+                    .map(|range| range.start_routing_bucket),
+                end_routing_bucket: image
+                    .routing_range
+                    .map(|range| range.end_routing_bucket),
                 slabs: image
                     .slabs
                     .iter()
@@ -184,9 +190,21 @@ impl LocalRaftWal {
         let payload = decompress_state_image(payload)?;
         let message = <crate::sdk::v1::WalStateImage as prost::Message>::decode(payload.as_ref())
             .map_err(io::Error::other)?;
+        // BOTH ENDS OR NEITHER. A half-carried range is not a range, and treating one
+        // present bound as a usable answer would put the other back to a default nobody chose.
+        let routing_range = match (message.start_routing_bucket, message.end_routing_bucket) {
+            (Some(start_routing_bucket), Some(end_routing_bucket)) => {
+                Some(crate::engine::routing_range_stamp::RoutingRangeStamp {
+                    start_routing_bucket,
+                    end_routing_bucket,
+                })
+            }
+            _ => None,
+        };
         snapshot.state_image = Some(RaftSnapshotStateImage {
             index_bytes: message.index,
             next_block_id: message.next_block_id,
+            routing_range,
             slabs: message
                 .slabs
                 .into_iter()

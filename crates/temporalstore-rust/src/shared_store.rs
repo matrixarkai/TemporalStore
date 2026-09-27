@@ -34,6 +34,12 @@ pub enum SharedStoreReplicationError {
     Json(#[from] serde_json::Error),
     #[error("protobuf decode error: {0}")]
     ProtobufDecode(#[from] prost::DecodeError),
+    #[error(
+        "the published index for shard {shard_id} carries no routing range ({what}), so the \
+         buckets it names cannot be accounted for. It was published before the range travelled \
+         with the index; re-publish from a node running this build."
+    )]
+    RoutingRangeMissing { shard_id: ShardId, what: String },
     #[error("checksum mismatch for {path}: expected {expected}, got {actual}")]
     ChecksumMismatch {
         path: String,
@@ -198,6 +204,14 @@ pub struct SharedStoreCheckpointManifest {
     /// manifests written before this field existed (backward compatible).
     #[serde(default)]
     pub next_block_id: u64,
+    /// THE ROUTING RANGE THE CHECKPOINTED INDEX WAS BUILT ON.
+    ///
+    /// The index names buckets and a bucket is `start + hash(key) % (end - start + 1)`, so a
+    /// checkpoint without this leaves a restoring node holding bucket numbers it cannot account
+    /// for. `Option` so a manifest written before this field decodes and is REFUSED by name rather
+    /// than failing to parse -- one shape, current or refused, no second reader.
+    #[serde(default)]
+    pub routing_range: Option<crate::engine::routing_range_stamp::RoutingRangeStamp>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -957,6 +971,21 @@ where
         shard_id: ShardId,
         engine: &TemporalEngine,
     ) -> Result<(), SharedStoreReplicationError> {
+        // THE RANGE GOES FIRST. A restore reads the index and refuses without the range, so the
+        // order that can be interrupted safely is range-then-index: a range with no index is
+        // nothing, an index with no range is refused.
+        let (start_routing_bucket, end_routing_bucket) = engine.shard_routing_range(shard_id);
+        self.object_store
+            .put(
+                &self.index_routing_range_key(shard_id),
+                Bytes::from(serde_json::to_vec(
+                    &crate::engine::routing_range_stamp::RoutingRangeStamp {
+                        start_routing_bucket,
+                        end_routing_bucket,
+                    },
+                )?),
+            )
+            .await?;
         self.object_store
             .put(
                 &self.index_key(shard_id),
@@ -1071,12 +1100,19 @@ where
             }
         }
 
+        let (start_routing_bucket, end_routing_bucket) = engine.shard_routing_range(shard_id);
         let manifest = SharedStoreCheckpointManifest {
             cluster_id: self.cluster_id.clone(),
             shard_id,
             checkpoint_id,
             checkpoint_wal_index,
             created_at_ms: now_ms(),
+            // The range this node serves the shard on, which is the range the checkpointed index
+            // was built on: one function decides both where a write is filed and what this says.
+            routing_range: Some(crate::engine::routing_range_stamp::RoutingRangeStamp {
+                start_routing_bucket,
+                end_routing_bucket,
+            }),
             index_key,
             index_byte_size: index.len() as u64,
             index_sha256: sha256_hex(&index),
@@ -1099,7 +1135,23 @@ where
         block_store: &BlockStore,
     ) -> Result<Vec<u64>, SharedStoreReplicationError> {
         let index = self.object_store.get(&self.index_key(shard_id)).await?;
-        engine.install_index_bytes(shard_id, &index)?;
+        // Refused rather than guessed: see `install_index_bytes`.
+        let range_bytes = self
+            .object_store
+            .get(&self.index_routing_range_key(shard_id))
+            .await
+            .map_err(|_| SharedStoreReplicationError::RoutingRangeMissing {
+                shard_id,
+                what: "no routing-range object beside the published index".to_string(),
+            })?;
+        let routing_range: crate::engine::routing_range_stamp::RoutingRangeStamp =
+            serde_json::from_slice(&range_bytes).map_err(|err| {
+                SharedStoreReplicationError::RoutingRangeMissing {
+                    shard_id,
+                    what: format!("the routing-range object did not decode: {err}"),
+                }
+            })?;
+        engine.install_index_bytes(shard_id, &index, routing_range)?;
 
         let prefix = self.block_slab_prefix(shard_id);
         let mut restored = Vec::new();
@@ -1223,7 +1275,13 @@ where
             manifest.index_byte_size,
             &manifest.index_sha256,
         )?;
-        engine.install_index_bytes(manifest.shard_id, &index)?;
+        let routing_range = manifest.routing_range.ok_or_else(|| {
+            SharedStoreReplicationError::RoutingRangeMissing {
+                shard_id: manifest.shard_id,
+                what: format!("checkpoint manifest {} records none", manifest.checkpoint_id),
+            }
+        })?;
+        engine.install_index_bytes(manifest.shard_id, &index, routing_range)?;
 
         for slab in &manifest.block_slabs {
             let bytes = self.object_store.get(&slab.key).await?;
@@ -1674,6 +1732,12 @@ where
         format!("{}/shards/{}/shared/", self.cluster_id, shard_id)
     }
 
+    /// Where the published index's routing range lives: beside the index, under the same shard
+    /// prefix, so a prefix copied wholesale carries it.
+    fn index_routing_range_key(&self, shard_id: ShardId) -> String {
+        format!("{}index/shard.routing-range.json", self.shard_prefix(shard_id))
+    }
+
     fn index_key(&self, shard_id: ShardId) -> String {
         format!("{}index/shard.index.json", self.shard_prefix(shard_id))
     }
@@ -2071,7 +2135,13 @@ where
             manifest.index_byte_size,
             &manifest.index_sha256,
         )?;
-        engine.install_index_bytes(manifest.shard_id, &index)?;
+        let routing_range = manifest.routing_range.ok_or_else(|| {
+            SharedStoreReplicationError::RoutingRangeMissing {
+                shard_id: manifest.shard_id,
+                what: format!("checkpoint manifest {} records none", manifest.checkpoint_id),
+            }
+        })?;
+        engine.install_index_bytes(manifest.shard_id, &index, routing_range)?;
 
         let mut slabs = BTreeMap::new();
         let mut max_slab_id = 0u64;
@@ -6178,5 +6248,271 @@ mod tests {
             source.fetch_slab(9).expect("an unknown slab is absence"),
             None
         );
+    }
+
+    /// A RESTORE CARRIES THE RANGE AND SERVES EVERY MEMBER, CHECKED ONE BY ONE.
+    ///
+    /// The restore door. `restore_index_and_blocks` writes an index and then the caller loads the
+    /// shard -- and a load refuses an index with no routing-range stamp, because an index names
+    /// buckets and a bucket is `start + hash(key) % (end - start + 1)`. So the range has to travel
+    /// with the published index, and this drives it end to end.
+    ///
+    /// ELEMENT BY ELEMENT, NOT BY A COUNT. A restore that served the right NUMBER of wrong values,
+    /// or that served a prefix, passes a count and fails this. Each key carries a value derived from
+    /// its own index so a swap is visible.
+    #[tokio::test]
+    async fn a_restore_carries_the_routing_range_and_serves_every_member() {
+        const MEMBERS: usize = 24;
+        let dir = tempfile::tempdir().expect("tempdir");
+        let primary = test_engine(dir.path(), "primary");
+        // ON THE PRODUCTION RANGE, NOT THE CONVENIENCE LOAD. `load_shard` defaults to the whole
+        // keyspace, which is also what an unstamped state answers -- so a restore that ignored the
+        // published range and fell back to a default would satisfy a stamp assertion made against
+        // it. Loading on 0..1023 here makes the published range the only way to get the right
+        // answer.
+        let response = primary.load_shard_with(crate::control::LoadShardRequest {
+            shard_id: 1,
+            table_name: "restore-door".to_string(),
+            shard_uri: "local://restore-door/1".to_string(),
+            start_routing_bucket: 0,
+            end_routing_bucket: crate::DEFAULT_END_ROUTING_BUCKET,
+            readonly: false,
+            load_version: 1,
+            local_node_id: Some(1),
+        });
+        assert!(
+            response.status.ok,
+            "the publisher must load on 0..{}: {:?}",
+            crate::DEFAULT_END_ROUTING_BUCKET,
+            response.status
+        );
+        assert_ne!(
+            crate::DEFAULT_END_ROUTING_BUCKET,
+            u32::MAX,
+            "the production range and the whole keyspace are the same value, so the stamp check \
+             below cannot distinguish a carried range from a defaulted one"
+        );
+        let expected: Vec<(String, Vec<u8>)> = (0..MEMBERS)
+            .map(|i| (format!("member-{i:04}"), format!("value-{i:04}").into_bytes()))
+            .collect();
+        for (key, value) in &expected {
+            primary.execute(ExecuteRequest {
+                shard_id: 1,
+                command: Command::StringSet {
+                    key: key.clone(),
+                    value: value.clone(),
+                },
+            });
+        }
+
+        let (store, replicator) = test_shared_store(dir.path());
+        replicator.publish_index(1, &primary).await.unwrap();
+        replicator
+            .publish_block_slabs(1, &primary.block_store())
+            .await
+            .unwrap();
+
+        // The range is published BESIDE the index, so a restoring node can be told what the
+        // buckets it is about to install mean.
+        let published: Vec<String> = store.list("").await.unwrap();
+        assert!(
+            published.iter().any(|key| key.ends_with("index/shard.routing-range.json")),
+            "no routing-range object was published beside the index; the restore below would have \
+             nothing to stamp and the load would be refused. Published: {published:?}"
+        );
+
+        let follower = test_engine(dir.path(), "follower");
+        replicator
+            .restore_index_and_blocks(1, &follower, &follower.block_store())
+            .await
+            .unwrap();
+        let response = follower.load_shard_with(crate::control::LoadShardRequest {
+            shard_id: 1,
+            table_name: "restore-door".to_string(),
+            shard_uri: "local://restore-door/1".to_string(),
+            start_routing_bucket: 0,
+            end_routing_bucket: crate::DEFAULT_END_ROUTING_BUCKET,
+            readonly: false,
+            load_version: 1,
+            local_node_id: Some(1),
+        });
+        assert!(
+            response.status.ok,
+            "the restored follower would not load on the range the store was published on: {:?}",
+            response.status
+        );
+
+        // The stamp the restore wrote, and it is the range the SOURCE was on.
+        let stamp = crate::engine::routing_range_stamp::read_routing_range_stamp(
+            &dir.path().join("follower-index"),
+            1,
+        )
+        .expect("the restore recorded the range it received");
+        assert_eq!(
+            (0, crate::DEFAULT_END_ROUTING_BUCKET),
+            (stamp.start_routing_bucket, stamp.end_routing_bucket),
+            "the restore stamped {stamp:?} rather than the range the publisher was serving on"
+        );
+
+        let mut served = 0usize;
+        for (key, value) in &expected {
+            let response = follower
+                .execute(ExecuteRequest {
+                    shard_id: 1,
+                    command: Command::StringGet { key: key.clone() },
+                })
+                .response;
+            assert_eq!(
+                CommandResponse::Bytes {
+                    value: Some(value.clone())
+                },
+                response,
+                "the restored follower served {key} as {response:?}, not the value that key was \
+                 written with. A restore that serves the right COUNT of wrong values passes a \
+                 count check and fails this one"
+            );
+            served += 1;
+        }
+        assert_eq!(
+            MEMBERS, served,
+            "checked {served} of {MEMBERS} members; a loop that exited early would leave this \
+             test asserting less than it claims"
+        );
+    }
+
+    /// A SOURCE ON ONE RANGE AND A TARGET ON ANOTHER IS REFUSED, NOT STAMPED AS AGREEING.
+    ///
+    /// THIS IS THE TEST THAT SAYS THE CARRYING CHANGE WAS WORTH MAKING. The cheap way to make a
+    /// restore load again is to stamp the TARGET's own configured range at install time. Every
+    /// restore test then passes -- and a store published on `0..1023` and restored onto a node
+    /// configured for the whole keyspace is recorded as having been built on the whole keyspace,
+    /// which it was not. Its blocks sit in buckets the stamp says nothing lives in, every record
+    /// still reads, and every block is outside every per-bucket sweep. That is the silent
+    /// mis-ranging the refusal exists to remove, moved from the upgrade path to the replication
+    /// path.
+    ///
+    /// Because the install stamps what it RECEIVED, the disagreement surfaces as the ordinary
+    /// stamp-disagrees refusal on the load: the recorded range is the publisher's and the
+    /// configured range is the target's, and those are compared before anything is decoded.
+    #[tokio::test]
+    async fn a_source_on_one_range_and_a_target_on_another_is_refused_not_reconciled() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let primary = test_engine(dir.path(), "primary");
+        // The publisher serves the shard on the NARROW range.
+        let response = primary.load_shard_with(crate::control::LoadShardRequest {
+            shard_id: 1,
+            table_name: "cross-range".to_string(),
+            shard_uri: "local://cross-range/1".to_string(),
+            start_routing_bucket: 0,
+            end_routing_bucket: crate::DEFAULT_END_ROUTING_BUCKET,
+            readonly: false,
+            load_version: 1,
+            local_node_id: Some(1),
+        });
+        assert!(response.status.ok, "the publisher must load: {:?}", response.status);
+        for i in 0..8 {
+            primary.execute(ExecuteRequest {
+                shard_id: 1,
+                command: Command::StringSet {
+                    key: format!("k{i}"),
+                    value: b"v".to_vec(),
+                },
+            });
+        }
+
+        let (_store, replicator) = test_shared_store(dir.path());
+        replicator.publish_index(1, &primary).await.unwrap();
+        replicator
+            .publish_block_slabs(1, &primary.block_store())
+            .await
+            .unwrap();
+
+        let follower = test_engine(dir.path(), "follower");
+        replicator
+            .restore_index_and_blocks(1, &follower, &follower.block_store())
+            .await
+            .unwrap();
+
+        // The stamp records the PUBLISHER's range, not the range the target is about to ask for.
+        let stamp = crate::engine::routing_range_stamp::read_routing_range_stamp(
+            &dir.path().join("follower-index"),
+            1,
+        )
+        .expect("the restore recorded a range");
+        assert_eq!(
+            (0, crate::DEFAULT_END_ROUTING_BUCKET),
+            (stamp.start_routing_bucket, stamp.end_routing_bucket),
+            "the restore stamped {stamp:?}; if it had stamped the TARGET's range instead, the \
+             refusal below could not happen and a mis-ranged restore would load silently"
+        );
+
+        // The target is configured for the WHOLE KEYSPACE, which is not what the store was built on.
+        let response = follower.load_shard_with(crate::control::LoadShardRequest {
+            shard_id: 1,
+            table_name: "cross-range".to_string(),
+            shard_uri: "local://cross-range/1".to_string(),
+            start_routing_bucket: 0,
+            end_routing_bucket: u32::MAX,
+            readonly: false,
+            load_version: 1,
+            local_node_id: Some(1),
+        });
+        println!(
+            "  published on 0..{}, restored onto a node configured for 0..{}: ok={} code={}",
+            crate::DEFAULT_END_ROUTING_BUCKET,
+            u32::MAX,
+            response.status.ok,
+            response.status.code
+        );
+        assert!(
+            !response.status.ok,
+            "a store published on 0..{} loaded on a node configured for the whole keyspace. Its \
+             blocks are filed where the narrow range put them, so every later write would go to a \
+             bucket they are not in -- readable, and outside every per-bucket sweep",
+            crate::DEFAULT_END_ROUTING_BUCKET
+        );
+        assert_eq!(
+            "routing_range_mismatch", response.status.code,
+            "refused with `{}` rather than `routing_range_mismatch`. The point of carrying the \
+             range is that a cross-range restore becomes the ORDINARY stamp disagreement, caught \
+             before the decode",
+            response.status.code
+        );
+
+        // AND THE CONTROL: the same restored store loads on the range it was published on.
+        let response = follower.load_shard_with(crate::control::LoadShardRequest {
+            shard_id: 1,
+            table_name: "cross-range".to_string(),
+            shard_uri: "local://cross-range/1".to_string(),
+            start_routing_bucket: 0,
+            end_routing_bucket: crate::DEFAULT_END_ROUTING_BUCKET,
+            readonly: false,
+            load_version: 1,
+            local_node_id: Some(1),
+        });
+        assert!(
+            response.status.ok,
+            "the restored store could not be loaded on the range it was PUBLISHED on: {:?}. A \
+             refusal that leaves no way to serve a correctly-restored store is worse than the \
+             silence it replaces",
+            response.status
+        );
+        for i in 0..8 {
+            let got = follower
+                .execute(ExecuteRequest {
+                    shard_id: 1,
+                    command: Command::StringGet {
+                        key: format!("k{i}"),
+                    },
+                })
+                .response;
+            assert_eq!(
+                CommandResponse::Bytes {
+                    value: Some(b"v".to_vec())
+                },
+                got,
+                "k{i} did not come back after a correct restore: {got:?}"
+            );
+        }
     }
 }

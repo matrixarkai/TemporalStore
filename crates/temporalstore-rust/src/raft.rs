@@ -152,6 +152,19 @@ pub struct RaftSnapshotStateImage {
     pub index_bytes: Vec<u8>,
     pub next_block_id: u64,
     pub slabs: Vec<RaftSnapshotStateImageSlab>,
+    /// THE ROUTING RANGE THE CARRIED INDEX WAS BUILT ON.
+    ///
+    /// An index names buckets, and a bucket is `start + hash(key) % (end - start + 1)`. Ship the
+    /// index without the range and the receiver has bucket numbers it cannot account for: it either
+    /// guesses -- which files every later write in buckets the installed blocks are not in, readable
+    /// and outside every per-bucket sweep -- or it refuses. This field is what lets it do neither.
+    ///
+    /// `Option` ON THE WIRE AND REQUIRED IN PRACTICE. An image encoded before this field existed
+    /// decodes with `None`, and the install REFUSES it by name rather than failing to parse, so the
+    /// operator is told which shape arrived instead of reading a decode error. There is no second
+    /// reader and no migration: one shape, current or refused.
+    #[serde(default)]
+    pub routing_range: Option<crate::engine::routing_range_stamp::RoutingRangeStamp>,
 }
 
 impl RaftSnapshotStateImage {
@@ -179,6 +192,9 @@ impl Clone for RaftSnapshotStateImage {
             index_bytes: self.index_bytes.clone(),
             next_block_id: self.next_block_id,
             slabs: self.slabs.clone(),
+            // Field-for-field with the derive, which is what this impl's doc promises and what
+            // `snapshot_cost` checks by comparing a clone against its source.
+            routing_range: self.routing_range,
         }
     }
 }
@@ -6076,8 +6092,28 @@ fn rebuild_snapshot_engine(snapshot: &RaftSnapshot) -> TemporalEngine {
         for slab in &image.slabs {
             let _ = block_store.install_slab(slab.block_slab_id, &slab.bytes);
         }
-        let _ = engine.install_index_bytes(snapshot.shard_id, &image.index_bytes);
-        engine.load_shard(snapshot.shard_id);
+        // NOT `let _ =` FOR THE RANGE. This installer's own note above is about an image
+        // mishandled here leaving a quietly EMPTY engine; an image with no range is exactly that
+        // case, so it is reported and the shard is left unloaded rather than loaded off an index
+        // whose buckets nothing can account for.
+        match image.routing_range {
+            Some(routing_range) => {
+                let _ = engine.install_index_bytes(
+                    snapshot.shard_id,
+                    &image.index_bytes,
+                    routing_range,
+                );
+                engine.load_shard(snapshot.shard_id);
+            }
+            None => {
+                tracing::error!(
+                    shard_id = snapshot.shard_id,
+                    "snapshot state image carries no routing range, so the buckets its index \
+                     names cannot be accounted for; not installing it. Re-take the snapshot from \
+                     a leader running this build."
+                );
+            }
+        }
     } else {
         engine.load_shard(snapshot.shard_id);
         for entry in &snapshot.entries {
