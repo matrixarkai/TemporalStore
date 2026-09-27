@@ -521,17 +521,23 @@ fn the_whole_object_read_path_asks_for_every_component_of_one_key() {
 // 4. THE ENTRY DID NOT MOVE, and the node's duplicated slot id is declined with the arithmetic.
 // =================================================================================================
 
-/// THE ENTRY IS STILL 72 BYTES AND ITS RECONSTRUCTION SAYS SO, and `BucketNode::routing_bucket` is
+/// THE ENTRY IS UNCHANGED BY THIS MODULE AND ITS RECONSTRUCTION SAYS SO, and `BucketNode::routing_bucket` is
 /// declined on the layout rule rather than on a total.
 ///
 /// This module removes no field, so the width is asserted as UNCHANGED -- and asserted as a
 /// reconstruction, because a literal total cannot tell a structure that is full from one that is
 /// half padding, and those two want opposite fixes.
 ///
+/// THE HEADING USED TO NAME 72, which is what the entry weighed when this module landed; #1994 took
+/// it to 64. Nothing below moved, because nothing below is a literal -- which is the whole argument
+/// for a reconstruction, demonstrated here by the prose going stale while the test did not.
+///
 /// AND THE RECONSTRUCTION IS ORDER-INDEPENDENT, which this test had to be corrected to be. It was
 /// first written asserting `object_key` sits at offset 0, on the strength of being declared first.
-/// It sits at 48: rustc orders `repr(Rust)` fields by alignment and size, not by declaration, so the
-/// three pointer-width fields are a contiguous head in SOME order and the one-byte tail follows.
+/// It did not: rustc orders `repr(Rust)` fields by alignment and size, not by declaration, so the
+/// pointer-width fields are a contiguous head in SOME order and the one-byte tail follows. The
+/// offset it sits at has moved since as well -- it was 48 and is 16, because the address narrowed --
+/// which is a second reason nothing here quotes one.
 /// Nothing but `offset_of!` would have said so -- and a hand-written field list with `size_of` of
 /// the WRONG type compiles silently, which is why every width below is taken from the field itself
 /// through `field_width` rather than from a type named at the call site.

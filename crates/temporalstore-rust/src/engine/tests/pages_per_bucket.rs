@@ -2217,8 +2217,22 @@ fn the_inline_and_mapped_arms_write_the_same_bytes_for_the_same_page_set() {
 /// bucket, and `BlockIndex` x PAGE count leads by a factor the bucket row cannot approach.
 ///
 /// So the next dominant term after the node's own width is the PAGE ENTRY, and it is per page
-/// rather than per bucket -- 104 bytes of which 48 are the address, 48 are three shared names held
-/// as fat pointers, and 8 are three flag bytes inside their own rounding.
+/// rather than per bucket.
+///
+/// THE DECOMPOSITION THIS USED TO PRINT WAS FICTION IN FIVE PLACES, and it is worth naming because
+/// a printed projection is what the next change gets priced against. It said the entry was 104
+/// bytes of which 48 were the address and 48 were "three shared names held as fat pointers", and it
+/// then projected an entry of 40 and a NODE of 64. Every one of those five numbers was wrong: the
+/// entry is 64 and the address 24 (#1994), `model_id` stopped being a fat pointer and is a one-byte
+/// spelling, so the names are 33 rather than 48; the projection lands on 48 rather than 40; and the
+/// node does not hold the entry at all since #1975 boxed the single-page arm, so no name byte comes
+/// off it.
+///
+/// AND THE GUARD BESIDE IT COULD NOT CATCH ANY OF THAT. It asserted `names >= size_of::<Address>()`,
+/// which is 48 >= 24 on the wrong figures and 33 >= 24 on the right ones, so it passes either way --
+/// `a-guard-can-encode-the-same-mistaken-belief-it-guards` in one line. The block below reconstructs
+/// the entry from the group widths instead, so a group named with the wrong type fails here rather
+/// than printing a number nobody checks.
 #[test]
 #[ignore = "seeds two stores; run by name"]
 fn the_page_entry_and_not_the_bucket_node_is_the_next_dominant_term() {
@@ -2292,50 +2306,68 @@ fn the_page_entry_and_not_the_bucket_node_is_the_next_dominant_term() {
          named here is wrong"
     );
 
-    // What the next step would have to reach, priced.
-    println!("\n=== inside the 104-byte page entry ===");
+    // What the next step would have to reach, priced -- and RECONSTRUCTED, so a group named with
+    // the wrong type fails here instead of printing a number nobody checks.
+    let object_key = size_of::<Arc<str>>();
+    let model_id = size_of::<crate::engine::storage_bucket_internals::StoredModelKind>();
+    let component = size_of::<Option<Arc<str>>>();
+    let names = object_key + model_id + component;
+    let flags = 3 * size_of::<bool>();
+    let field_sum = names + size_of::<BlockAddress>() + flags;
     println!(
-        "  address                       : {:>4} B",
-        size_of::<BlockAddress>()
+        "\n=== inside the {} B page entry ===",
+        size_of::<BlockIndex>()
     );
+    println!("  address                       : {:>4} B", size_of::<BlockAddress>());
+    println!("  object_key                    : {object_key:>4} B  (a fat pointer; the length rides beside it)");
+    println!("  model_id                      : {model_id:>4} B  (a one-byte spelling since #1994, NOT a pointer)");
+    println!("  component                     : {component:>4} B  (a fat optional pointer)");
+    println!("  dirty + deleted + log_backed  : {flags:>4} B  (inside the alignment rounding)");
     println!(
-        "  object_key + model_id         : {:>4} B  (two fat pointers; the length rides beside \
-         each)",
-        2 * size_of::<Arc<str>>()
+        "  {field_sum} B of field in {} B",
+        size_of::<BlockIndex>()
     );
-    println!(
-        "  component                     : {:>4} B",
-        size_of::<Option<Arc<str>>>()
-    );
-    println!(
-        "  dirty + deleted + log_backed  : {:>4} B  (3 B of flag in an 8 B rounding)",
-        round_up_to(3 * size_of::<bool>(), 8)
-    );
-    println!(
-        "  NEXT STEP, PRICED: the three shared names are {} of the {} bytes. Held as a THIN \
-         pointer -- the length in the allocation's own header rather than beside each copy -- they \
-         would be {} B, taking the entry to {} and the node to {}. That is {} B a page and {} B a \
-         bucket, and it costs a load of the length on every read that needs one plus an unsafe \
-         shared-string type this tree does not have.",
-        2 * size_of::<Arc<str>>() + size_of::<Option<Arc<str>>>(),
+    assert_eq!(
         size_of::<BlockIndex>(),
-        3 * size_of::<usize>(),
-        size_of::<BlockIndex>() - (2 * size_of::<Arc<str>>() + size_of::<Option<Arc<str>>>())
-            + 3 * size_of::<usize>(),
-        size_of::<BucketNode>()
-            - (2 * size_of::<Arc<str>>() + size_of::<Option<Arc<str>>>())
-            + 3 * size_of::<usize>(),
-        (2 * size_of::<Arc<str>>() + size_of::<Option<Arc<str>>>()) - 3 * size_of::<usize>(),
-        (2 * size_of::<Arc<str>>() + size_of::<Option<Arc<str>>>()) - 3 * size_of::<usize>(),
+        round_up_to(field_sum, std::mem::align_of::<BlockIndex>()),
+        "the groups named above sum to {field_sum} B, which rounds to {} B against an entry of {} \
+         B. One of the four is named with the wrong type -- which COMPILES, and is exactly how this \
+         block came to charge `model_id` sixteen bytes for one",
+        round_up_to(field_sum, std::mem::align_of::<BlockIndex>()),
+        size_of::<BlockIndex>()
+    );
+    println!(
+        "  NEXT STEP, PRICED AND DECLINED: the two NAME POINTERS are {} of the {} bytes and each is \
+         a data pointer beside a length. Held one word each the entry is {} B and its list stride \
+         {} B -- measured at -16.00 B a page or better on all eight arms in \
+         `page_entry_name_pointer::what_a_one_word_name_slot_is_worth_on_the_chunk_column`, and \
+         DECLINED there: `Arc<str>` cannot be made thin, the safe `Arc<String>` costs more than the \
+         entry saves, and a hand-rolled one is an allocation this crate would own outright.",
+        object_key + component,
+        size_of::<BlockIndex>(),
+        round_up_to(field_sum - 2 * size_of::<usize>(), std::mem::align_of::<BlockIndex>()),
+        round_up_to(
+            size_of::<u64>()
+                + round_up_to(field_sum - 2 * size_of::<usize>(), std::mem::align_of::<BlockIndex>()),
+            8
+        )
     );
 
-    // The three names are the largest single group inside the entry, which is what makes them the
-    // next thing to price rather than the flags or the address.
-    let names = 2 * size_of::<Arc<str>>() + size_of::<Option<Arc<str>>>();
+    // The two name pointers are the largest single group inside the entry, which is what makes them
+    // the next thing to price rather than the flags or the address. Stated against the CORRECT
+    // group -- the old form counted `model_id` as a third fat pointer, and at 48 against 24 it
+    // passed for the wrong reason.
     assert!(
-        names >= size_of::<BlockAddress>(),
-        "the three shared names are {names} B against the address's {} B; if the address has \
-         become the larger group, the next step named here is the wrong one",
+        object_key + component > size_of::<BlockAddress>(),
+        "the two name pointers are {} B against the address's {} B; if the address has become the \
+         larger group, the next step named here is the wrong one",
+        object_key + component,
         size_of::<BlockAddress>()
+    );
+    assert_eq!(
+        1, model_id,
+        "`model_id` is {model_id} B. This block charged it sixteen for exactly as long as it was a \
+         fat pointer to a string, and the reason the charge survived the change is that naming the \
+         type at the call site compiles whatever the field became"
     );
 }

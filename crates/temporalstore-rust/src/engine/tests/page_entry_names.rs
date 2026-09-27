@@ -5,9 +5,16 @@
 //!
 //! #1959 ranked `BlockIndex` as the next dominant per-item term -- per PAGE rather than per
 //! bucket, and so 52.0x the `BucketNode` total in a container store -- and opened up its 104
-//! bytes: the address is 48, three flag bytes sit inside the alignment rounding, and **the three
-//! names are 48**, the largest group. It called them "the three shared names" and priced holding
+//! bytes: the address was 48, three flag bytes sat inside the alignment rounding, and **the three
+//! names were 48**, the largest group. It called them "the three shared names" and priced holding
 //! them as thin pointers at 80 bytes an entry.
+//!
+//! EVERY ONE OF THOSE FIGURES IS HISTORY NOW, and they are left in the past tense rather than
+//! updated because they are what this module was written against. The entry is 64, the address 24
+//! and the names 33 -- `model_id` stopped being a fat pointer and became a one-byte spelling -- and
+//! a thin pointer would price at 48 rather than 80. `page_entry_name_pointer.rs` carries that
+//! arithmetic, reads every width off the field rather than off a type named at the call site, and
+//! declines the change.
 //!
 //! "SHARED" IS AN ASSUMPTION ABOUT WHERE THE NAMES COME FROM, and this module measures it instead.
 //! The three are `object_key`, `model_id` and `component`. If all three were the same for every
@@ -159,7 +166,7 @@ fn name_spread(engine: &TemporalEngine) -> NameSpread {
     spread
 }
 
-fn probe_engine(dir: &std::path::Path) -> Arc<TemporalEngine> {
+pub(super) fn probe_engine(dir: &std::path::Path) -> Arc<TemporalEngine> {
     Arc::new(TemporalEngine::with_local_dirs(
         64 * 1024 * 1024,
         dir.join("cache"),
@@ -173,7 +180,7 @@ fn probe_engine(dir: &std::path::Path) -> Arc<TemporalEngine> {
 /// `load_shard` hard-codes `0..u32::MAX`; `ingestion.rs` and `metaserver.rs` both spell
 /// `0..=1023` for a shard of a real cluster. Which one a store was built under decides every
 /// number below, so no arm here is allowed to take the default implicitly.
-fn load_shard_over(engine: &TemporalEngine, end_routing_bucket: u32) {
+pub(super) fn load_shard_over(engine: &TemporalEngine, end_routing_bucket: u32) {
     let response = engine.load_shard_with(LoadShardRequest {
         shard_id: 1,
         load_version: 0,
@@ -206,7 +213,7 @@ fn run_batch(engine: &TemporalEngine, commands: Vec<Command>) {
 }
 
 /// Keys that route one to a bucket: plain strings.
-fn seed_routed_keys(engine: &TemporalEngine, strings_n: usize) {
+pub(super) fn seed_routed_keys(engine: &TemporalEngine, strings_n: usize) {
     run_batch(
         engine,
         (0..strings_n)
@@ -220,7 +227,7 @@ fn seed_routed_keys(engine: &TemporalEngine, strings_n: usize) {
 
 /// Container keys: a hash, a set, a sorted set and a list, each of `members` elements. Every
 /// element is its own page and they all route to the container key's one bucket.
-fn seed_container_keys(engine: &TemporalEngine, keys: usize, members: usize) {
+pub(super) fn seed_container_keys(engine: &TemporalEngine, keys: usize, members: usize) {
     let mut commands = Vec::with_capacity(keys * members);
     for k in 0..keys {
         match k % 4 {
@@ -817,7 +824,11 @@ const OLD_STORE_PAGES: &[(&str, &str, Option<&str>, u64, u64, u64, bool, bool, b
 
 /// A page entry in a named shape, built from the declared types so the golden moves when the
 /// declaration does rather than going quietly stale.
-fn page_fixture(component: Option<&str>, length: u64, flags: (bool, bool, bool)) -> BlockIndex {
+pub(super) fn page_fixture(
+    component: Option<&str>,
+    length: u64,
+    flags: (bool, bool, bool),
+) -> BlockIndex {
     BlockIndex {
         object_key: Arc::from("k"),
         model_id: crate::engine::storage_bucket_internals::StoredModelKind::String,
