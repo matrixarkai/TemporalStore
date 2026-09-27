@@ -78,6 +78,7 @@ mod hll;
 mod hot_page_spill;
 mod block_in_wal;
 mod state;
+mod hash_field_map;
 mod routing_range_stamp;
 
 // shared-corpus: storage_bucket_first_physical_index storage_object_manager_bucketstore_runtime_authority storage_model_layout_compaction_policies storage_merged_dump_load_lifecycle storage_object_manager_cold_hot_reload storage_page_address_disk_cache_shared_store_fallback
@@ -3558,7 +3559,8 @@ fn apply_key_states(shard: &mut ShardState, key_states: &[serde_json::Value]) {
 
 /// The one thing [`merge_container_elements`] does to a container's element map, so it does not
 /// have to name the map. `sets`, `zsets` and `lists` keep their elements in a `BTreeMap` and
-/// `hashes` in a `HashMap`; the difference is not this function's business.
+/// `hashes` in a sorted vector behind [`hash_field_map::HashFieldMap`]; the difference is not this
+/// function's business.
 trait ElementMap: Default {
     type Element: serde::de::DeserializeOwned;
     type Value: serde::de::DeserializeOwned;
@@ -5764,7 +5766,7 @@ fn object_manager_stats(
         let object_count = bucket_object_count.max(secondary_object_count);
         let dirty_object_count = bucket_dirty_object_count.max(shard.dirty_objects.len());
         let secondary_block_ref_count = shard.strings.len()
-            + shard.hashes.values().map(HashMap::len).sum::<usize>()
+            + shard.hashes.values().map(|fields| fields.len()).sum::<usize>()
             + shard.sets.values().map(BTreeMap::len).sum::<usize>()
             + shard.lists.values().map(BTreeMap::len).sum::<usize>()
             + shard.zsets.values().map(BTreeMap::len).sum::<usize>()
@@ -5869,7 +5871,7 @@ fn object_manager_stats(
         + shard.context_summaries.len()
         + shard.context_compressions.len();
     let block_ref_count = shard.strings.len()
-        + shard.hashes.values().map(HashMap::len).sum::<usize>()
+        + shard.hashes.values().map(|fields| fields.len()).sum::<usize>()
         + shard.sets.values().map(BTreeMap::len).sum::<usize>()
         + shard.lists.values().map(BTreeMap::len).sum::<usize>()
         + shard.zsets.values().map(BTreeMap::len).sum::<usize>()

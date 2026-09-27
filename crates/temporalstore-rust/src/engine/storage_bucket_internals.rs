@@ -1614,7 +1614,7 @@ pub(super) fn rebuild_unserialized_model_maps_from_bucket_index(shard: &mut Shar
     if shard.bucket_index.bucket_map.is_empty() {
         return;
     }
-    let mut hashes = HashMap::<String, HashMap<String, BlockAddress>>::new();
+    let mut hashes = HashMap::<String, super::hash_field_map::HashFieldMap>::new();
     for entry in collect_bucket_index_live_block_entries(shard) {
         if entry.deleted || entry.kind.as_str() != "hash" {
             continue;
@@ -4276,7 +4276,7 @@ pub(super) fn reconcile_secondary_views_from_bucket_index(
     let mut derived_scores = 0usize;
 
     let mut strings = HashMap::new();
-    let mut hashes = HashMap::<String, HashMap<String, BlockAddress>>::new();
+    let mut hashes = HashMap::<String, super::hash_field_map::HashFieldMap>::new();
     let mut sets = HashMap::<String, BTreeMap<Vec<u8>, BlockAddress>>::new();
     let mut lists = HashMap::<String, BTreeMap<i64, BlockAddress>>::new();
     let mut zsets = HashMap::<String, BTreeMap<Vec<u8>, (u64, BlockAddress)>>::new();

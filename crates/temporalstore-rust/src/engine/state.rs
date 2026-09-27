@@ -12,6 +12,7 @@ use crate::types::{CommandResponse, ControlStateSelectionType, FeaturePoint, Sha
 
 use super::control_rollup::RollupEntry;
 use super::hll::Hll;
+use super::hash_field_map::HashFieldMap;
 
 /// In-memory, coalesced summary-dirty entry.
 ///
@@ -119,8 +120,20 @@ pub(super) struct ShardState {
     pub(super) expiry_by_deadline: BTreeMap<(u64, String), ()>,
     pub(super) strings: HashMap<String, BlockAddress>,
     // Rebuildable from the durable bucket/page index on load; do not duplicate in checkpoints.
+    //
+    // THE INNER CONTAINER IS A SORTED VECTOR, NOT A TABLE AND NOT A B-TREE, and it is the only one
+    // of the eighteen nested model maps that is either. Measured on the counting allocator, a hash
+    // of ONE field -- which is every context node in a store, because `write_context_node` files
+    // its page under the single constant `CONTEXT_NODE_FIELD` -- cost 272 chunk bytes as a table
+    // and 560 as a `BTreeMap`, against 64 as an exact-sized vector. Matching the seventeen ordered
+    // siblings was measured and LOST, by more than 2x at the occupancy that is 100% of the product
+    // write path. See `engine::hash_field_map` for the trade and
+    // `engine::tests::model_map_container_cost` for the numbers.
+    //
+    // The wire shape is unchanged: `HashFieldMap` serializes to and from the same MAP the
+    // `HashMap` did, so an index written before this field became `skip_serializing` still decodes.
     #[serde(default, skip_serializing)]
-    pub(super) hashes: HashMap<String, HashMap<String, BlockAddress>>,
+    pub(super) hashes: HashMap<String, HashFieldMap>,
     #[serde(default, with = "super::set_index_serde")]
     pub(super) sets: HashMap<String, BTreeMap<Vec<u8>, BlockAddress>>,
     /// Windowed seen-sets backing idempotency keys: member -> when it was last seen, plus

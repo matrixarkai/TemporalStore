@@ -1210,9 +1210,20 @@ impl TemporalEngine {
         let mut hashes: Vec<_> = shard.hashes.iter().collect();
         hashes.sort_by(|left, right| left.0.cmp(right.0));
         for (key, fields) in hashes {
-            let mut entries: Vec<_> = fields.iter().collect();
-            entries.sort_by(|left, right| left.0.cmp(right.0));
-            for (field, address) in entries {
+            // NO SORT, and no `Vec` to sort. The field map keeps its entries in field order, so
+            // this is already the order the sort produced: the output is byte-identical.
+            //
+            // The sort was here because the container was a hashed TABLE whose iteration order was
+            // arbitrary, so a deterministic shape had to impose one. The `sets` loop immediately
+            // below has never needed a sort for the same reason in reverse -- its inner container is
+            // ordered -- and this walk now matches it.
+            //
+            // WHAT THIS IS NOT: a production saving. `index_shape_for_test` is a test-only shape
+            // helper, and it is the ONLY reader of `shard.hashes` that sorted the fields on every
+            // call. So "an ordered container removes a per-call sort" is true here and nowhere on a
+            // serving path, which is worth writing down rather than leaving to be inferred from the
+            // fact that a sort was removed.
+            for (field, address) in fields.iter() {
                 out.push_str(&format!(
                     "hash {key}.{field} slab={} off={}\n",
                     address.block_slab_id(), address.offset()
