@@ -612,22 +612,23 @@ fn the_arm_a_bucket_node_lands_in_is_decided_by_the_routing_range_not_by_the_wor
 /// only one that allocates, and this asserts it from the arms themselves rather than from the
 /// declaration's comments:
 ///
-///   * `BlockIndexMap::One` holds its page INLINE -- no map, no node, no allocation;
+///   * `BlockIndexMap::One` holds its page BEHIND A POINTER -- no map and no node, but one
+///     allocation, which is the one member of the three whose simple spelling is not free;
 ///   * `ObjectIndex::One` holds its single id INLINE, and only `Many` takes a box;
 ///   * `DeletedObjectIndex` is one nullable pointer, null in the case it is almost always in.
 ///
 /// So there is no general-case container for a tagged word to take out of a simple node. What it
-/// would move out of line is the simple bucket's OWN page entry, which is the next test's
-/// subject.
+/// would move out of line is the simple bucket's OWN page entry -- and that entry is ALREADY out of
+/// line, which is the next test's subject and the reason the proposal has less left to take.
 ///
 /// rust-internal: reads the engine's own declarations, no product behaviour
 #[test]
 fn a_simple_bucket_holds_no_general_case_to_take_away() {
     // Each member's EMPTY and SINGLE spellings, and the width they occupy in the node.
     assert_eq!(
-        80,
+        24,
         size_of::<BlockIndexMap>(),
-        "the page index is {} bytes in the node, not 80; the accounting below is stale",
+        "the page index is {} bytes in the node, not 24; the accounting below is stale",
         size_of::<BlockIndexMap>()
     );
     assert_eq!(16, size_of::<ObjectIndex>(), "the object index moved");
@@ -637,34 +638,38 @@ fn a_simple_bucket_holds_no_general_case_to_take_away() {
         "the tombstone index moved"
     );
 
-    // The three members sum to 104 of the node's 144 -- the bytes the proposal would replace
-    // with one word. It was 136 of 192, then 128 of 184 when the address inside the inline page
-    // entry shed its derived generation, 128 of 176 when the five flags became five bits (the
-    // node moved and the members did not -- the flags are not in them), 120 of 168 when that
-    // address merged its slab id and its offset into one word, and 104 of 144 when the page
-    // entry's model spelling stopped being a sixteen-byte fat pointer to a string from a closed
-    // set. So of the four steps, THREE took the same bytes off the members AND off the node, and
-    // one took eight off the node alone. What the proposal would replace is unchanged in kind and
-    // smaller in size every time, which is the direction that makes the proposal worse rather
-    // than better -- and the fourth step is the largest of the four.
+    // The three members sum to 48 of the node's 88 -- the bytes the proposal would replace with one
+    // word. It was 136 of 192, then 128 of 184 when the address inside the inline page entry shed
+    // its derived generation, 128 of 176 when the five flags became five bits (the node moved and
+    // the members did not -- the flags are not in them), 120 of 168 when that address merged its
+    // slab id and its offset into one word, 104 of 144 when the page entry's model spelling stopped
+    // being a sixteen-byte fat pointer to a string from a closed set, and 48 of 88 when the page
+    // index stopped holding that entry inline at all. So of the five steps, FOUR took the same bytes
+    // off the members AND off the node, and one took eight off the node alone. What the proposal
+    // would replace is unchanged in kind and smaller in size every time, which is the direction that
+    // makes the proposal worse rather than better -- and the fifth step is the largest of them by
+    // far, because the page index gave up 56 bytes at once.
     let members = size_of::<BlockIndexMap>() + size_of::<ObjectIndex>() + size_of::<DeletedObjectIndex>();
     assert_eq!(
-        104, members,
-        "the three container members are {members} bytes, not 104"
+        48, members,
+        "the three container members are {members} bytes, not 48"
     );
     assert!(
         members < size_of::<BucketNode>(),
         "the members cannot be wider than the node that holds them"
     );
 
-    // AND THE SIMPLE SPELLING OF EACH IS THE ONE THAT DOES NOT ALLOCATE. Asserted by
-    // construction over the arms themselves: a simple bucket's members are the inline arms.
-    let simple_page = BlockIndexMap::One(7, page_fixture());
+    // AND THE SIMPLE SPELLING OF EACH IS THE ONE THAT DOES NOT ALLOCATE -- EXCEPT THE PAGE INDEX,
+    // WHICH NO LONGER HAS ONE. Its inline single-page arm was dropped: the arm's width was paid by
+    // every bucket in the map and at the shipped routing range almost none holds exactly one page.
+    // So a single page costs one allocation here, deliberately, and the object and tombstone
+    // indexes are the two members whose simple spelling is still free.
+    let simple_page = BlockIndexMap::Many(vec![(7, page_fixture())]);
+    assert_eq!(1, simple_page.len(), "a one-entry page list holds exactly one page");
     assert!(
-        matches!(simple_page, BlockIndexMap::One(_, _)),
-        "a single page must land in the inline arm"
+        simple_page.get(&7).is_some(),
+        "a one-entry page list must answer for the handle it holds"
     );
-    assert_eq!(1, simple_page.len(), "the inline arm holds exactly one page");
 
     let mut ids = ObjectIndex::default();
     assert!(matches!(ids, ObjectIndex::Empty), "an empty object index allocates nothing");
@@ -1013,14 +1018,21 @@ fn the_tagged_node_is_fifty_six_bytes_and_every_arm_reconstructs() {
         );
     }
 
-    assert_eq!(144, size_of::<BucketNode>(), "the live node moved");
-    // 48, and it has not moved while the live node has gone 168 -> 160 -> 144: this mirror carries
-    // the node's HEADER only, and the header lost a whole word when `last_dump_sequence` left it.
-    // (56 was itself 64 until the five flags became one byte and a ten-byte tail became six.)
-    // Every change to the page ENTRY takes bytes off the LIVE node and off this mirror's boxed
-    // payload alike, because the payload holds that entry -- the address merge took eight from
-    // each, and the model spelling took sixteen from each. BOTH SIDES LOSE THE SAME BYTES EVERY
-    // TIME, so the verdict below is untouched by any of the four.
+    assert_eq!(88, size_of::<BucketNode>(), "the live node moved");
+    // 48, and it has not moved while the live node has gone 168 -> 160 -> 144 -> 88: this mirror
+    // carries the node's HEADER only, and the header lost a whole word when `last_dump_sequence`
+    // left it. (56 was itself 64 until the five flags became one byte and a ten-byte tail became
+    // six.) Every change to the page ENTRY takes bytes off the LIVE node and off this mirror's boxed
+    // payload alike, because the payload holds that entry -- the address merge took eight from each,
+    // and the model spelling took sixteen from each.
+    //
+    // AND THE LAST STEP IS THE ONE THAT DID NOT TOUCH BOTH SIDES, WHICH IS WHY IT IS CALLED OUT.
+    // Taking the entry out of the node took 56 bytes off the LIVE node and NOTHING off this mirror,
+    // whose payload was already out of line. So the difference the verdict below turns on has
+    // SHRUNK by 56 rather than staying put, and that is a reason to re-read the verdict rather than
+    // to assume it survived: what the tagged word would replace is now a 24-byte list header, not a
+    // whole inline entry.
+
     assert_eq!(
         48,
         size_of::<TaggedNode>(),
@@ -1527,7 +1539,7 @@ fn a_tagged_simple_arm_adds_a_line_to_every_page_read_and_the_general_arm_shows_
     // THE TAGGED NODES LIVE IN A MAP, so both sides are measured in the same kind of home.
     let tagged_map: BTreeMap<u32, TaggedNode> = live_map
         .iter()
-        .filter(|(_, node)| matches!(node.block_index, BlockIndexMap::One(_, _)))
+        .filter(|(_, node)| node.block_index.len() == 1)
         .map(|(routing_bucket, node)| (*routing_bucket, retag(node)))
         .collect();
 
@@ -1538,7 +1550,7 @@ fn a_tagged_simple_arm_adds_a_line_to_every_page_read_and_the_general_arm_shows_
     let mut offsets: std::collections::BTreeSet<usize> = std::collections::BTreeSet::new();
     let mut node_starts: std::collections::BTreeSet<usize> = std::collections::BTreeSet::new();
     for (routing_bucket, node) in live_map.iter() {
-        if !matches!(node.block_index, BlockIndexMap::One(_, _)) {
+        if node.block_index.len() != 1 {
             continue;
         }
         simple_buckets += 1;
@@ -2115,7 +2127,7 @@ fn the_tagged_shape_priced_on_chunks_instead_of_requests() {
         .bucket_index
         .bucket_map
         .values()
-        .find(|node| matches!(node.block_index, BlockIndexMap::One(_, _)))
+        .find(|node| node.block_index.len() == 1)
         .expect("a simple bucket");
     let tagged = retag(node);
     let (handle, _) = node.block_index.iter().next().expect("one page");

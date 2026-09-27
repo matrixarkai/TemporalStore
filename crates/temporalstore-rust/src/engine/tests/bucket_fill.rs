@@ -302,11 +302,14 @@ fn flatten<T: Ord + Clone>(contents: &BTreeMap<u32, BTreeSet<T>>) -> BTreeSet<T>
 
 /// How many buckets sit in each arm of `BlockIndexMap`: (Empty, One, Many).
 ///
-/// THE ARM IS THE FOOTPRINT, and it cannot be derived from the page count: `One` holds its page
-/// INLINE and allocates nothing, while `Many` is a `BTreeMap` whose node is sized for eleven
-/// entries whether or not it fills them. So a change that moves buckets from `One` onto `Many`
-/// buys an allocation and a node per bucket, and the arm distribution is the only thing that says
-/// so before the bytes do.
+/// THE ARM IS STILL THE FOOTPRINT, AND WHAT THE `One` ARM COSTS HAS CHANGED. It used to hold its
+/// page INLINE and allocate nothing, so `One` was free on the heap and expensive in every node --
+/// the width of a whole entry, paid by every bucket in the map whether or not it held one page. The
+/// arm now holds a POINTER: eight bytes in the node plus one allocation sized for the entry.
+///
+/// SO THE COLUMNS STILL SAY WHAT THEY SAID, WITH ONE TERM CHANGED. Filling a bucket still moves it
+/// from `One` to `Many` and still buys list capacity -- but it no longer buys the bucket's FIRST
+/// allocation, because the single page already had one. `inline_arm_trade.rs` is the measurement.
 fn block_index_arms(engine: &TemporalEngine) -> (usize, usize, usize) {
     let shards = engine.shards.read().expect("engine lock poisoned");
     let shard = shards.get(&1).expect("shard is loaded");

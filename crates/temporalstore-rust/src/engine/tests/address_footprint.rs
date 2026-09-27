@@ -1540,11 +1540,19 @@ fn the_feature_workload_has_no_short_series_for_the_one_shape_to_help() {
 /// execute. This one is free and always runs, and it pins the two structural facts the
 /// recommendation rests on:
 ///
-///   1. `BlockIndexMap` carries its single-page case INLINE. That is what makes it cost 73.0
-///      bytes for a one-entry index where a `BTreeMap<u64, BlockAddress>` costs 764.3 -- a
-///      `BTreeMap` leaf is allocated whole and sized for eleven entries whether one is filed in
-///      it or eleven are. If the `One` variant is ever boxed or removed, this enum stops being
-///      wider than the map it replaces and the 90.4% saving is silently gone.
+///   1. `BlockIndexMap` gives a one-entry index a SMALL ALLOCATION instead of a tree node. That is
+///      what makes it cost about 120 bytes for a one-entry index where a
+///      `BTreeMap<u64, BlockAddress>` costs 764.3 -- a `BTreeMap` leaf is allocated whole and sized
+///      for eleven entries whether one is filed in it or eleven are.
+///
+///      THIS USED TO BE PINNED AS "WIDER INLINE THAN THE MAP IT REPLACES", and that clause is no
+///      longer true or needed. The single-page arm held its whole entry inline, so the enum was
+///      wider than a `BTreeMap` and the guard watched that width. The entry is behind a pointer now
+///      and the enum is exactly a container header, so the SAVING no longer comes from the width at
+///      all: it comes from the ALLOCATION SIZE, one entry against a node sized for eleven. The
+///      predicate is therefore restated as the thing that still carries the saving, and the old one
+///      is recorded here rather than deleted, because a guard whose claim quietly changed meaning is
+///      worse than one that was rewritten.
 ///
 ///   2. All six timestamped series maps are still the SAME container. `timestamped_series_mut`
 ///      hands out one type for six kinds, so the shape cannot be adopted for one of them alone --
@@ -1552,60 +1560,61 @@ fn the_feature_workload_has_no_short_series_for_the_one_shape_to_help() {
 ///      below is a compile-time proof of that: if any one of the six is narrowed and the others
 ///      are not, this stops compiling rather than passing on a stale assumption.
 ///
-/// MUTATION. Boxing `BlockIndexMap::One`'s page (`One(u64, Box<BlockIndex>)`) collapses the enum
-/// to a pointer and fires the first assert. Changing any one of the six map types fires the
-/// second as a compile error rather than a failure. The `Many` arm is a flat page list since
-/// #1963 and is 24 bytes either way, so it decides nothing here.
+/// MUTATION. Widening the page index past a container header -- putting an entry back inline --
+/// fires the first assert. Changing any one of the six map types fires the second as a compile error
+/// rather than a failure.
 #[test]
-fn the_bucket_index_holds_one_page_inline_and_the_series_maps_hold_none() {
+fn the_bucket_index_holds_one_page_out_of_line_and_the_series_maps_hold_none() {
     use crate::engine::state::{BlockIndex, BlockIndexMap};
 
-    // (1) The split shape is wider INLINE than the map it replaces, because it carries a whole
-    // page in the `One` variant instead of a pointer to a node.
+    // (1) The split shape is no wider than the CONTAINER HEADER it has to carry anyway, and a
+    // single page costs one allocation of the entry rather than a node sized for eleven.
     let split = std::mem::size_of::<BlockIndexMap>();
     let map = std::mem::size_of::<BTreeMap<u64, BlockAddress>>();
     let page = std::mem::size_of::<BlockIndex>();
+    let list = std::mem::size_of::<Vec<(u64, BlockIndex)>>();
     println!(
-        "BlockIndexMap is {split} B inline, BTreeMap<u64, BlockAddress> is {map} B, \
-         BlockIndex is {page} B"
+        "BlockIndexMap is {split} B, BTreeMap<u64, BlockAddress> is {map} B, a page list header is \
+         {list} B, BlockIndex is {page} B"
+    );
+    assert_eq!(
+        list, split,
+        "BlockIndexMap must be exactly its page-list header -- it is {split} B against {list} B. \
+         Any excess means an arm has stopped riding a pointer niche and the node is paying for a \
+         tag again"
     );
     assert!(
-        split > map,
-        "BlockIndexMap must be WIDER inline than the map it replaces -- it is {split} B against \
-         {map} B. A split shape no wider than a BTreeMap is not holding its page inline, which is \
-         the entire reason it costs 73.0 bytes for a single-entry index where a BTreeMap costs \
-         764.3 (measured in the_container_shapes_priced_against_the_population_each_one_pays_in)"
-    );
-    assert!(
-        split >= page,
-        "BlockIndexMap must be able to hold a whole {page}-byte BlockIndex inline; it is {split} B"
+        split < page,
+        "BlockIndexMap must NOT be able to hold a whole {page}-byte BlockIndex inline any more; it \
+         is {split} B. If it has grown to fit one, the inline arm has come back and every node in \
+         the bucket map is paying for it"
     );
 
-    // POSITIVE CONTROL for the predicate above, so a passing assert is not just a wide enum.
-    // This is exactly what the mutation would produce -- the `One` variant boxed, so the page is
-    // behind a pointer instead of inline -- and it must FAIL the same test the real shape passes.
-    // Without this, `split > map` would keep passing on any enum that happened to be wide for an
-    // unrelated reason, and the guard would stop watching the thing it names.
-    enum BoxedShape {
+    // POSITIVE CONTROL for the predicate above, so a passing assert is not just a narrow enum.
+    // This is exactly what the mutation would produce -- the `One` variant holding its entry INLINE
+    // again -- and it must FAIL the same test the real shape passes. Without this, `split < page`
+    // would keep passing on any enum that happened to be narrow for an unrelated reason, and the
+    // guard would stop watching the thing it names.
+    enum InlineShape {
         #[allow(dead_code)]
         Empty,
         #[allow(dead_code)]
-        One(u64, Box<BlockIndex>),
-        // A FLAT LIST since #1963, mirroring the shipped shape. Same 24-byte header as the tree
-        // it replaced, so the control's own arithmetic is unchanged -- but a control that mirrors
-        // a shape the engine stopped building is a control of nothing.
+        One(u64, BlockIndex),
         #[allow(dead_code)]
         Many(Vec<(u64, BlockIndex)>),
     }
-    let boxed = std::mem::size_of::<BoxedShape>();
-    println!("  positive control: the same shape with One boxed is {boxed} B inline");
+    let inline = std::mem::size_of::<InlineShape>();
+    println!("  positive control: the same shape with One held inline is {inline} B");
     assert!(
-        boxed < page,
-        "the control must NOT hold a page inline: a boxed One is {boxed} B against a {page}-byte          page. If this ever reads as wide, the predicate below it cannot tell an inline page from          a pointer to one and the guard is vacuous"
+        inline >= page,
+        "the control must HOLD a page inline: an inline One is {inline} B against a {page}-byte \
+         page. If this ever reads as narrow, the predicate above cannot tell an inline page from a \
+         pointer to one and the guard is vacuous"
     );
     assert!(
-        !(boxed > map && boxed >= page),
-        "the control must FAIL the predicate the real shape passes ({boxed} B boxed, {map} B map,          {page} B page)"
+        !(inline == list && inline < page),
+        "the control must FAIL the predicate the real shape passes ({inline} B inline, {list} B \
+         list header, {page} B page)"
     );
 
     // (2) All six timestamped series maps are one container. This binding is the guard: it is a

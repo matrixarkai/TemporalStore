@@ -7723,8 +7723,10 @@ fn where_a_record_is_kept_everywhere() {
 /// per-bucket figure several times the truth. Measured 2026-09-11 the rows fit
 /// `fixed + 760 B x buckets` closely, while the smallest row alone reads 2,486 B.
 ///
-/// The single-page and single-object cases are already held inline by `BlockIndexMap::One` and
-/// `ObjectIndex::One`, so what remains is the node itself rather than container allocation.
+/// The single-OBJECT case is held inline by `ObjectIndex::One`. The single-PAGE case is not any
+/// more: the page index's single-page arm was BOXED once the shipped routing range stopped making
+/// single-page buckets the common case, so a bucket holding one page now takes one small allocation
+/// for its page list. What remains in the per-bucket figure is the node itself plus that one list.
 #[test]
 #[ignore]
 #[cfg(feature = "alloc-probe")]

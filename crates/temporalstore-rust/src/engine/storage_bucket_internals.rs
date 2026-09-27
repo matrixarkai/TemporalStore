@@ -4882,7 +4882,8 @@ mod release_refusal_guards {
             routing_bucket,
             flags: BucketFlags::default().with(BucketFlags::DIRTY, false).with(BucketFlags::DELETED, false).with(BucketFlags::META_LOADED, true).with(BucketFlags::LOADING, false).with(BucketFlags::IN_MEMORY, true),
             object_index: ObjectIndex::One(OBJECT_ID),
-            block_index: BlockIndexMap::One(1, held),
+            // The single-page arm, which holds its entry behind a POINTER rather than inline.
+            block_index: BlockIndexMap::One(1, Box::new(held)),
             ..BucketNode::default()
         }
     }

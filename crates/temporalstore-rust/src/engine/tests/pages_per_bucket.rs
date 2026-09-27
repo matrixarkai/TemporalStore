@@ -23,27 +23,39 @@
 //! #1958 ranked its structures on contains no container key at all, and the histogram below is
 //! reported as counts rather than as a mean for exactly that reason.
 //!
-//! WHAT THAT DECIDES. The page index is ALREADY a tagged representation and has been since #654:
-//! `BlockIndexMap` is `Empty | One(u64, BlockIndex) | Many(BTreeMap<u64, BlockIndex>)`, the single
-//! page held inline and the many-page case behind the map's own nodes. The shape that a
-//! single-page-dominated distribution argues for is the shape this engine already has. The
-//! remaining question is the one #1958 answered by arithmetic and this module answers with the
-//! counting allocator: whether the inline `One` arm should ALSO go behind a pointer, taking
-//! `BlockIndexMap` from 112 bytes to 32 and `BucketNode` from 200 to 120.
+//! WHAT THAT DECIDED, AND THE PREMISE IT RESTED ON HAS SINCE BEEN REPLACED. The page index has
+//! been a tagged representation since #654. It held the single page INLINE -- `Empty | One(u64,
+//! BlockIndex) | Many(..)` -- and the question this module answered was whether that inline arm
+//! should go behind a pointer instead. It answered NO, on a measurement, and the measurement was
+//! sound: at the distribution it sampled, a boxed arm pays one allocation for 99.90% of buckets in
+//! the workload where buckets are numerous and buys nothing in the workload where they are not.
 //!
-//! IT SHOULD NOT, AND THE MEASUREMENT IS THE WHOLE OF THE CASE. At the measured distribution the
-//! boxed arm pays one allocation for 99.90% of buckets in the workload where buckets are numerous,
-//! and buys nothing in the workload where they are not -- there are 20 buckets behind 2,000 pages
-//! in a container store, so 80 bytes off each of 20 nodes is 1,600 bytes against a page set
-//! costing 208,000. The clone instrument charges the boxed shape MORE, not less, and the read path
-//! gains a dependent load it did not have.
+//! THE DISTRIBUTION IT SAMPLED WAS A PROPERTY OF A DEFAULT, NOT OF THE WORKLOAD. Every routed
+//! fixture in this module loads its shard on `end_routing_bucket = u32::MAX`, which divides 4.29
+//! billion buckets among a few thousand keys: EVERY KEY LANDS ALONE BY CONSTRUCTION, and no
+//! workload on that range can produce anything but a single-page bucket. #1973 measured the
+//! alternative and made `TS_SHARD_END_ROUTING_BUCKET=1023` the shipped default. At 1,024 buckets
+//! the same routed keys FILL them -- 5.273% single-page at 4,000 records, 0.000% at 40,000, p50 39
+//! and MAX 50 -- so the arm's width became a toll on nearly every bucket and a benefit to almost
+//! none.
 //!
-//! WHICH IS THE OPPOSITE CONCLUSION TO `ObjectIndex`, deliberately, and the contrast is the rule:
-//! `ObjectIndex` boxes its MULTI-ENTRY arm, because there that arm is the wide one (a collection
-//! at 24 bytes) and the single-entry arm is a bare `u64`. `BlockIndexMap`'s wide arm is the
-//! COMMON one -- a whole 104-byte page entry -- and its multi-entry arm is the narrow one. Boxing
-//! the UNCOMMON arm is a win; boxing "the arm that happens to be widest" is a loss whenever that
-//! arm is also the common one. The distribution is what tells the two apart.
+//! SO THE INLINE ENTRY IS GONE AND THE SHAPE THIS MODULE DECLINED IS THE ONE THAT SHIPPED: the
+//! single-page arm survives, holding a POINTER. The third option this module never priced is what
+//! settles it against simply removing the arm -- dropping it recovers the IDENTICAL width, measured,
+//! but makes a single-page bucket hold a one-entry list whose first block is a whole growth step,
+//! which on the whole-keyspace range costs 482.0 B a bucket against boxing's 178.3. Boxing is the
+//! only one of the shapes that wins at BOTH ranges. `inline_arm_trade.rs` re-derives both halves of
+//! that arithmetic at both ranges, in both allocator columns, four shapes wide.
+//!
+//! WHAT SURVIVES HERE, AND IT IS THE PART THAT WAS NEVER ABOUT THE DEFAULT. The two-population
+//! finding stands and is the reason this module exists: a mean of 1.001 was two distributions, and
+//! the histogram is reported as counts. The shape rule stands too, restated -- boxing the UNCOMMON
+//! arm is a win, boxing the COMMON one is a loss, and WHICH ARM IS COMMON is a deployment setting
+//! rather than a property of the type. That is the clause #1958 and this module both read as fixed.
+//!
+//! THE CONTRAST WITH `ObjectIndex` IS UNCHANGED. It boxes its MULTI-ENTRY arm, because there that
+//! arm is the wide one (a collection at 24 bytes) and the single-entry arm is a bare `u64`. The
+//! page index's wide arm was the one whose commonness moved.
 //!
 //! ONE CORRECTION TO THAT CONTRAST, measured since: the object index's multi-entry arm is NOT
 //! rare in every workload. An object id is hashed over `shard:kind:key:component` while the
@@ -493,34 +505,49 @@ fn every_byte_of_the_page_index_is_accounted_for() {
         "the three flags no longer sit inside alignment slack, so the note above is stale"
     );
 
-    // --- BlockIndexMap: the widest arm is the COMMON one, and the tag rides a niche. ---
-    let one_arm = size_of::<u64>() + size_of::<BlockIndex>();
-    // A FLAT LIST since #1963, not a tree. Same 24-byte header either way, so this line does not
-    // move the assertion below -- but it has to name the shipped type or the reconstruction is
-    // describing a shape the engine no longer builds.
+    // --- BlockIndexMap: ONE ARM WITH A PAYLOAD, and the tag rides the list pointer's niche. ---
+    //
+    // THE WIDEST ARM USED TO BE THE COMMON ONE AND THAT WAS THE WHOLE ARGUMENT. A single page was
+    // held INLINE, so the enum was a handle plus a whole entry and every bucket in the map paid
+    // that width. #1958 read the common case as the wide one and concluded that boxing it would be
+    // a loss; the reading was correct and the POPULATION it was taken over was the whole `u32`
+    // routing keyspace, where every key lands in a bucket of its own by construction. #1973 made
+    // 1023 the default and the common case stopped being single-page. `inline_arm_trade.rs` prices
+    // all three shapes at the shipped range.
+    //
+    // WHAT IS LEFT TO RECONSTRUCT is the narrowest statement this type can make: it is exactly its
+    // list, because `Empty` rides in the list pointer's niche and there is no other payload.
+    let declined_inline_arm = size_of::<u64>() + size_of::<BlockIndex>();
     let many_arm = size_of::<Vec<(u64, BlockIndex)>>();
     println!(
-        "BlockIndexMap: One arm {one_arm} B, Many arm {many_arm} B, size_of = {}",
+        "BlockIndexMap: list arm {many_arm} B, size_of = {} (the declined inline arm would have \
+         been {declined_inline_arm} B)",
         size_of::<BlockIndexMap>()
     );
     assert_eq!(
         size_of::<BlockIndexMap>(),
-        one_arm,
-        "the page index is no longer exactly its One arm; the discriminant has stopped riding a \
-         niche, or another arm has become the widest"
+        many_arm,
+        "the page index is no longer exactly its list arm; either `Empty` has stopped riding the \
+         list pointer's niche or a payload has been added beside it"
     );
     assert!(
-        one_arm > many_arm,
-        "the common arm is supposed to be the WIDE one here -- that is what makes boxing it a \
-         loss rather than the win it is on ObjectIndex, where the rare arm is the wide one"
+        declined_inline_arm > many_arm,
+        "holding one entry inline is supposed to be WIDER than holding a list -- that is what the \
+         width recovered by dropping it was, and if the two are equal there was nothing to recover"
     );
-    assert_eq!(80, size_of::<BlockIndexMap>(), "the page index's budgeted width moved");
+    assert_eq!(24, size_of::<BlockIndexMap>(), "the page index's budgeted width moved");
 
-    // --- And it is over half of the node, which is why any further accounting starts here. ---
+    // --- AND IT IS NO LONGER THE DOMINANT TERM OF THE NODE, WHICH IS THE POINT. ---
+    //
+    // This assertion used to read the other way: the inline page index was over HALF the node, and
+    // that was what made it the first thing to account for. Dropping the inline arm took it from
+    // the widest field to a quarter of the structure, so the claim that survives is the inverse --
+    // and stating it as an assertion rather than a comment is what stops the module going on
+    // describing the page index as the place to look.
     assert!(
-        size_of::<BlockIndexMap>() * 2 > size_of::<BucketNode>(),
-        "the inline page index is {} of the node's {} bytes; if it is no longer more than half, \
-         the next dominant term named in this module is the wrong one",
+        size_of::<BlockIndexMap>() * 2 < size_of::<BucketNode>(),
+        "the page index is {} of the node's {} bytes; if it is more than half again, the inline \
+         arm has come back or another payload has joined it",
         size_of::<BlockIndexMap>(),
         size_of::<BucketNode>()
     );
@@ -534,12 +561,29 @@ fn round_up_to(value: usize, multiple: usize) -> usize {
 // --- below are statements about the declaration and not estimates. The control comes first.
 
 /// The page index as it stands. If this is not `size_of::<BlockIndexMap>()` every row is fiction.
+///
+/// TWO ARMS SINCE THE INLINE ONE WAS DROPPED, and a FLAT LIST since #1963 -- every mirror below
+/// names the shipped list type for the same reason. A mirror whose arms have drifted from the
+/// declaration is not a statement about widths, and this one is the control that says so.
 #[allow(dead_code)]
 #[derive(Clone)]
 enum MirrorLivePageIndex {
     Empty,
+    Many(Vec<(u64, BlockIndex)>),
+}
+
+/// THE SHAPE #1958 ARGUED FOR AND #1973's DEFAULT REFUTED: the single page held INLINE.
+///
+/// Kept as a mirror rather than deleted, because the width it costs is the width dropping it
+/// recovered, and a proposal to bring it back should have to argue against a number rather than
+/// against an absence. `inline_arm_trade.rs` prices it, this one, and the boxed arm together at
+/// both routing ranges.
+#[allow(dead_code)]
+#[derive(Clone)]
+enum MirrorInlinePageIndex {
+    Empty,
     One(u64, BlockIndex),
-    Many(BTreeMap<u64, BlockIndex>),
+    Many(Vec<(u64, BlockIndex)>),
 }
 
 /// The single page behind a pointer: the shape whose sign is not visible in its width.
@@ -548,19 +592,19 @@ enum MirrorLivePageIndex {
 enum MirrorBoxedPageIndex {
     Empty,
     One(u64, Box<BlockIndex>),
-    Many(BTreeMap<u64, BlockIndex>),
+    Many(Vec<(u64, BlockIndex)>),
 }
 
 /// No tag at all: one map, always, for every bucket including the empty ones.
 #[allow(dead_code)]
 #[derive(Clone)]
-struct MirrorAlwaysMapped(BTreeMap<u64, BlockIndex>);
+struct MirrorAlwaysMapped(Vec<(u64, BlockIndex)>);
 
 /// One map behind a pointer, absent for an empty bucket. The narrowest shape available, and the
 /// one that allocates for every bucket that holds anything at all.
 #[allow(dead_code)]
 #[derive(Clone)]
-struct MirrorAlwaysIndirect(Option<Box<BTreeMap<u64, BlockIndex>>>);
+struct MirrorAlwaysIndirect(Option<Box<Vec<(u64, BlockIndex)>>>);
 
 /// Two pages inline before the map is earned -- the inline-storage answer, which makes the common
 /// case bigger to avoid an allocation the common case was never going to make.
@@ -570,16 +614,21 @@ enum MirrorInlineTwo {
     Empty,
     One(u64, BlockIndex),
     Two([(u64, BlockIndex); 2]),
-    Many(BTreeMap<u64, BlockIndex>),
+    Many(Vec<(u64, BlockIndex)>),
 }
 
 /// The handle narrowed to a non-zero word, in case the tag could be made to ride it instead.
+///
+/// IDENTICAL TO THE SHIPPED SHAPE EXCEPT FOR THE HANDLE'S TYPE, which is what makes its width a
+/// statement about the handle and nothing else. Its single-page arm is BOXED, like the declaration's
+/// -- a mirror that also changed how the entry is held would be answering two questions at once and
+/// attributing the answer to the wrong one.
 #[allow(dead_code)]
 #[derive(Clone)]
 enum MirrorNonZeroHandle {
     Empty,
-    One(std::num::NonZeroU64, BlockIndex),
-    Many(BTreeMap<u64, BlockIndex>),
+    One(std::num::NonZeroU64, Box<BlockIndex>),
+    Many(Vec<(u64, BlockIndex)>),
 }
 
 /// THE SHAPE WHERE THE COMMON CASE HOLDS NO PAGE STRUCTURE AT ALL: one field in the node that is
@@ -593,7 +642,7 @@ enum MirrorOneWordInline {
     /// The single page's whole entry, held in ONE WORD.
     One(u64),
     /// The rare case, and the only one that allocates.
-    Many(Box<BTreeMap<u64, BlockIndex>>),
+    Many(Box<Vec<(u64, BlockIndex)>>),
 }
 
 /// The same tiering, but holding what THIS engine's single page actually needs: its address.
@@ -602,7 +651,7 @@ enum MirrorOneWordInline {
 enum MirrorInlineAddress {
     Empty,
     One(u64, BlockAddress),
-    Many(Box<BTreeMap<u64, BlockIndex>>),
+    Many(Box<Vec<(u64, BlockIndex)>>),
 }
 
 /// The page entry with `deleted` removed -- encoded instead as a length of zero, which removes a
@@ -763,12 +812,26 @@ fn what_each_shape_of_the_page_index_would_cost() {
         );
     }
 
-    // The boxed shape is the narrowest of the tagged ones and takes the most off the node. That
-    // is the whole of its case, and it is not enough -- the next test is why.
+    // THE BOXED SHAPE IS WHAT SHIPPED, SO IT NO LONGER NARROWS THE NODE -- IT IS THE NODE. This
+    // assertion used to read `<` and priced boxing as a proposal; the proposal was taken, so the
+    // boxed mirror and the live node are now the same width and the row prices nothing against
+    // itself. Asserting the EQUALITY is what keeps the mirror honest: if the two separate, either the
+    // mirror has drifted from the declaration or the live shape has stopped being the boxed one, and
+    // both are things this module must notice rather than print a difference for.
+    assert_eq!(
+        live_node,
+        size_of::<MirrorNode<MirrorBoxedPageIndex>>(),
+        "the boxed mirror is {} B against the live node's {live_node} B. Boxing the single page is \
+         what SHIPPED, so these must be equal; a difference means the mirror no longer describes the \
+         declaration",
+        size_of::<MirrorNode<MirrorBoxedPageIndex>>()
+    );
+    // And the shape that was replaced must still be the wider one, or there was nothing to recover.
     assert!(
-        size_of::<MirrorNode<MirrorBoxedPageIndex>>() < live_node,
-        "boxing the single page is supposed to NARROW the node; if it no longer does, the decline \
-         below is being argued against a shape that is not even a candidate"
+        size_of::<MirrorNode<MirrorInlinePageIndex>>() > live_node,
+        "the node with its page entry held INLINE is {} B against the shipped {live_node} B; if the \
+         two are equal the inline entry was never costing width",
+        size_of::<MirrorNode<MirrorInlinePageIndex>>()
     );
 
     // Inline storage for a second page makes the common case wider to avoid an allocation the
@@ -1455,33 +1518,57 @@ fn boxing_the_single_page_arm_costs_an_allocation_for_every_bucket_that_holds_on
 // THE READ PATH, WHICH A FOOTPRINT MEASUREMENT CANNOT SEE.
 // ---------------------------------------------------------------------------------------------
 
-/// READING A PAGE: INLINE AGAINST BEHIND A POINTER.
+/// READING A PAGE: THE DECLINED INLINE ARM AGAINST THE SHIPPED LIST AND AGAINST A BOX.
 ///
 /// A footprint measurement cannot see this, and a shape that makes the common path slower to make
-/// the structure smaller is not a win however the bytes come out. The inline arm answers a lookup
-/// out of the node's own bytes; the boxed arm has to follow a pointer into a separate allocation
-/// first, and that is a DEPENDENT load -- the address of the page is not known until the node has
-/// been read, so it cannot be issued in parallel with reading the node.
+/// the structure smaller is not a win however the bytes come out. An INLINE entry answers a lookup
+/// out of the node's own bytes; anything held out of line has to follow a pointer into a separate
+/// allocation first, and that is a DEPENDENT load -- the address of the page is not known until the
+/// node has been read, so it cannot be issued in parallel with reading the node.
+///
+/// THE FINDING THIS TEST WAS WRITTEN TO MAKE STILL HOLDS, AND THE SHAPE IT REFUSED IS NOW THE
+/// SHIPPED ONE. It was written to refuse a BOXED single-page arm on the grounds that the inline arm
+/// did not pay that load. The reading was correct; what it could not see is that the inline arm's
+/// WIDTH was paid by every bucket in the map, and at the shipped routing range almost none holds
+/// exactly one page. So the entry is behind a pointer now, and the dependent load is a cost this
+/// change ACCEPTED with its eyes open rather than one it avoided. Saying so is the point of keeping
+/// this test: it is the read-path half of that trade, measured.
+///
+/// AND IT IS WHY THE READ PATH DOES NOT SEPARATE BOXING FROM DROPPING THE ARM. A box and a one-entry
+/// list are the SAME indirection here -- one dependent load each -- and they are the same width too.
+/// The two are separated entirely by what they allocate, which is a byte question and is priced in
+/// `inline_arm_trade.rs`. What the read path DOES say is that both keep the single-page lookup out of
+/// `find_page`... for the box only: a list would send it through a bisection. That asymmetry is
+/// counted in `inline_arm_trade::the_read_path_examines_no_entry_for_a_single_page_bucket_and_one_if_the_arm_were_dropped`.
 ///
 /// MEASURED ABBA, not A then B: this box runs other work, and a drift between the first and second
 /// half of a run lands entirely on whichever arm ran second. ABBA cancels a linear drift; an A/B
-/// does not. The claim carried is the ALLOCATION COUNT and the structural fact of the extra
-/// dependent load, both immune to load; the timing is reported as supporting and its own spread is
-/// printed so a reader can see whether it separated at all.
+/// does not. The claim carried is the structural fact of the extra dependent load and the WIDTHS,
+/// both immune to load; the timing is reported as supporting and its own spread is printed so a
+/// reader can see whether it separated at all.
 #[test]
 #[ignore = "times four million lookups; run by name"]
-fn reading_a_page_behind_a_pointer_costs_a_dependent_load_the_inline_arm_does_not() {
+fn reading_a_page_out_of_line_costs_a_dependent_load_an_inline_entry_did_not() {
     const BUCKETS: usize = 20_000;
     const ROUNDS: usize = 50;
 
     let mut live = BlockSlabLiveIndex::default();
-    let mut inline: Vec<(u64, BlockIndexMap)> = Vec::with_capacity(BUCKETS);
+    // THE SHIPPED SHAPE: the single-page arm holding a BOX, built through the production insert.
+    let mut listed: Vec<(u64, BlockIndexMap)> = Vec::with_capacity(BUCKETS);
     for i in 0..BUCKETS {
         let mut index = BlockIndexMap::default();
         let handle = index.insert(page_for(i as u64), &mut live);
-        inline.push((handle, index));
+        listed.push((handle, index));
     }
-    let boxed: Vec<(u64, MirrorBoxedPageIndex)> = inline
+    // THE DECLINED SHAPE, as a mirror: the entry held in the node's own bytes.
+    let inline: Vec<(u64, MirrorInlinePageIndex)> = listed
+        .iter()
+        .map(|(handle, index)| {
+            let page = index.get(handle).expect("the page is there").clone();
+            (*handle, MirrorInlinePageIndex::One(*handle, page))
+        })
+        .collect();
+    let boxed: Vec<(u64, MirrorBoxedPageIndex)> = listed
         .iter()
         .map(|(handle, index)| {
             let page = index.get(handle).expect("the page is there").clone();
@@ -1489,12 +1576,18 @@ fn reading_a_page_behind_a_pointer_costs_a_dependent_load_the_inline_arm_does_no
         })
         .collect();
 
-    // --- Proof both arms are in the shape they are named for. ---
+    // --- Proof every arm is in the shape it is named for. ---
+    assert!(
+        listed
+            .iter()
+            .all(|(_, index)| matches!(index, BlockIndexMap::One(..))),
+        "the shipped arm is not holding its pages behind pointers, so the treatment did not run"
+    );
     assert!(
         inline
             .iter()
-            .all(|(_, index)| matches!(index, BlockIndexMap::One(..))),
-        "the inline arm is not holding its pages inline, so the treatment did not run"
+            .all(|(_, index)| matches!(index, MirrorInlinePageIndex::One(..))),
+        "the inline mirror is not holding its pages inline, so the treatment did not run"
     );
     assert!(
         boxed
@@ -1506,10 +1599,19 @@ fn reading_a_page_behind_a_pointer_costs_a_dependent_load_the_inline_arm_does_no
     let read_inline = || {
         let mut sum = 0u64;
         for (handle, index) in &inline {
-            if let BlockIndexMap::One(held, page) = index {
+            if let MirrorInlinePageIndex::One(held, page) = index {
                 if held == handle {
                     sum = sum.wrapping_add(page.address.block_slab_id());
                 }
+            }
+        }
+        sum
+    };
+    let read_listed = || {
+        let mut sum = 0u64;
+        for (handle, index) in &listed {
+            if let Some(page) = index.get(handle) {
+                sum = sum.wrapping_add(page.address.block_slab_id());
             }
         }
         sum
@@ -1526,10 +1628,12 @@ fn reading_a_page_behind_a_pointer_costs_a_dependent_load_the_inline_arm_does_no
         sum
     };
 
-    // --- ABBA. ---
+    // --- ABBA, over all three arms: inline, listed, boxed, then the reverse. ---
     let mut inline_ns = 0u128;
+    let mut listed_ns = 0u128;
     let mut boxed_ns = 0u128;
     let mut checksum_inline = 0u64;
+    let mut checksum_listed = 0u64;
     let mut checksum_boxed = 0u64;
     for _ in 0..ROUNDS {
         let start = std::time::Instant::now();
@@ -1537,51 +1641,93 @@ fn reading_a_page_behind_a_pointer_costs_a_dependent_load_the_inline_arm_does_no
         inline_ns += start.elapsed().as_nanos();
 
         let start = std::time::Instant::now();
-        checksum_boxed = std::hint::black_box(read_boxed());
-        boxed_ns += start.elapsed().as_nanos();
+        checksum_listed = std::hint::black_box(read_listed());
+        listed_ns += start.elapsed().as_nanos();
 
         let start = std::time::Instant::now();
         checksum_boxed = std::hint::black_box(read_boxed());
         boxed_ns += start.elapsed().as_nanos();
+
+        // ...and back, which is what makes this ABBA rather than three A/Bs in a row.
+        let start = std::time::Instant::now();
+        checksum_boxed = std::hint::black_box(read_boxed());
+        boxed_ns += start.elapsed().as_nanos();
+
+        let start = std::time::Instant::now();
+        checksum_listed = std::hint::black_box(read_listed());
+        listed_ns += start.elapsed().as_nanos();
 
         let start = std::time::Instant::now();
         checksum_inline = std::hint::black_box(read_inline());
         inline_ns += start.elapsed().as_nanos();
     }
 
-    // --- The two arms must have read the same pages, or they are not comparable. ---
+    // --- Every arm must have read the same pages, or they are not comparable. ---
     assert_eq!(
         checksum_inline, checksum_boxed,
-        "the two arms summed different pages, so they are not reading the same page set"
+        "the inline and boxed arms summed different pages, so they are not reading one page set"
+    );
+    assert_eq!(
+        checksum_inline, checksum_listed,
+        "the inline and shipped arms summed different pages, so they are not reading one page set"
     );
     assert_ne!(
         0, checksum_inline,
-        "both arms summed zero; the reads were optimised away and the timing below is empty"
+        "every arm summed zero; the reads were optimised away and the timing below is empty"
     );
 
     let reads = (BUCKETS * ROUNDS * 2) as f64;
     println!("\n=== reading one page out of a single-page bucket, ABBA over {ROUNDS} rounds ===");
     println!(
-        "  inline : {:>10.2} ns a read  ({inline_ns} ns over {reads} reads)",
+        "  inline (declined) : {:>10.2} ns a read  ({inline_ns} ns over {reads} reads)",
         inline_ns as f64 / reads
     );
     println!(
-        "  boxed  : {:>10.2} ns a read  ({boxed_ns} ns over {reads} reads)",
+        "  listed (SHIPPED)  : {:>10.2} ns a read  ({listed_ns} ns over {reads} reads)",
+        listed_ns as f64 / reads
+    );
+    println!(
+        "  boxed             : {:>10.2} ns a read  ({boxed_ns} ns over {reads} reads)",
         boxed_ns as f64 / reads
     );
     println!(
-        "  boxed / inline = {:.3}x -- one extra DEPENDENT load a read, which no footprint \
-         measurement can see",
+        "  listed / inline = {:.3}x, boxed / inline = {:.3}x -- one extra DEPENDENT load a read \
+         for BOTH out-of-line shapes, which no footprint measurement can see",
+        listed_ns as f64 / inline_ns as f64,
         boxed_ns as f64 / inline_ns as f64
     );
 
-    // The structural claim, which does not depend on the clock: the boxed shape holds its page in
-    // a separate allocation, so reading it is a second load that cannot issue until the first has
-    // returned. The timing is reported; this is what is asserted.
+    // THE STRUCTURAL CLAIMS, which do not depend on the clock.
+    //
+    // Both out-of-line shapes hold the page in a separate allocation, so reading either is a second
+    // load that cannot issue until the first has returned. The dependent load is therefore a cost
+    // the drop ACCEPTED, not one it avoided -- and it is the same cost boxing would have paid, which
+    // is why the two are separated by their heap allocation rather than by their read path.
+    //
+    // AND THE BOX IS EXACTLY AS WIDE AS THE SHIPPED LIST. Measured: the third arm's tag rides the
+    // same niche, so boxing recovers the identical width. The choice between them is a heap
+    // question, and `inline_arm_trade.rs` is where it is priced.
     assert!(
-        size_of::<MirrorBoxedPageIndex>() < size_of::<BlockIndexMap>(),
-        "the boxed shape is not narrower, so it is not holding the page out of line and this \
-         comparison is measuring nothing"
+        size_of::<MirrorInlinePageIndex>() > size_of::<BlockIndexMap>(),
+        "the inline mirror is {} B against the shipped {} B; if holding the entry inline were not \
+         wider there would have been nothing to recover",
+        size_of::<MirrorInlinePageIndex>(),
+        size_of::<BlockIndexMap>()
+    );
+    assert_eq!(
+        size_of::<BlockIndexMap>(),
+        size_of::<MirrorBoxedPageIndex>(),
+        "the boxed shape is {} B against the shipped {} B. Measured, the two lay out identically; \
+         if they have separated, boxing has started to cost or save width on its own and the \
+         comparison above is no longer only about the heap",
+        size_of::<MirrorBoxedPageIndex>(),
+        size_of::<BlockIndexMap>()
+    );
+    println!(
+        "  widths: inline {} B, boxed {} B, shipped {} B",
+        size_of::<MirrorInlinePageIndex>(),
+        size_of::<MirrorBoxedPageIndex>(),
+        size_of::<BlockIndexMap>()
     );
 }
 
@@ -1728,17 +1874,18 @@ fn a_bucket_that_grows_past_one_page_and_shrinks_back_holds_the_same_page_set() 
         "a fresh page index is not in the Empty shape"
     );
 
-    // --- One page, held inline. ---
+    // --- One page, held in the single-page arm, whose entry is behind a pointer. ---
     let first = page_for(1);
     let first_handle = index.insert(first.clone(), &mut live);
     assert!(
         matches!(index, BlockIndexMap::One(..)),
-        "one page is not being held inline, which is the shape the whole measurement rests on"
+        "one page is not being held in the single-page arm, which is the shape the measurement \
+         rests on"
     );
-    let inline_control = index.clone();
+    let single_control = index.clone();
     assert_eq!(1, index.len(), "one page, one entry");
 
-    // --- Grow to four: the inline arm has to promote into a map. ---
+    // --- Grow to four: the list has to take the pages in order. ---
     let mut handles = vec![first_handle];
     for seed in 2..=4u64 {
         handles.push(index.insert(page_for(seed), &mut live));
@@ -1768,7 +1915,12 @@ fn a_bucket_that_grows_past_one_page_and_shrinks_back_holds_the_same_page_set() 
     // --- A clone of a four-page index is the same four pages. ---
     assert_same_page_set("cloning a four-page index", &grown_control, &index);
 
-    // --- Shrink back to one: the map has to demote into the inline arm. ---
+    // --- Shrink back to one: the list keeps its arm, and keeps the right page. ---
+    //
+    // IT STILL DEMOTES, INTO A BOX RATHER THAN INTO THE NODE, so the claim that survives is
+    // the one about CONTENTS -- the page set after the round trip equals the page set before it --
+    // plus the arm being the list arm rather than `Empty`. The collapse that does still happen is
+    // at zero, asserted a few lines below and pinned as a ladder in `index_bytes_per_key.rs`.
     for handle in handles.iter().skip(1) {
         let removed = index
             .remove(handle, &mut live)
@@ -1778,31 +1930,30 @@ fn a_bucket_that_grows_past_one_page_and_shrinks_back_holds_the_same_page_set() 
     assert_eq!(1, index.len(), "one page should remain");
     assert!(
         matches!(index, BlockIndexMap::One(..)),
-        "the index did not shrink back to the inline shape; a bucket that briefly held four pages \
-         would keep a map node for the rest of its life"
+        "an index drained back to one page did not return to the single-page arm"
     );
 
     // --- THE STRONG FORM. The surviving page set is EQUAL to what it was before the round trip. ---
     assert_same_page_set(
         "after growing to four pages and shrinking back to one",
-        &inline_control,
+        &single_control,
         &index,
     );
 
-    // --- A lookup is by HANDLE, not "whatever is inline". ---
+    // --- A lookup is by HANDLE, not "whatever the single entry happens to be". ---
     //
-    // The inline arm has exactly one entry and answering it for any key would pass every length
-    // and emptiness assertion in this file.
+    // A single-page arm answering for ANY key would pass every length and emptiness assertion in
+    // this file, which is why the negative probe is here.
     assert!(
         index.get(&first_handle.wrapping_add(1)).is_none(),
-        "the inline arm answered a lookup for a handle it does not hold"
+        "a one-entry page index answered a lookup for a handle it does not hold"
     );
     assert!(
         index.get(&first_handle).is_some(),
-        "the inline arm did not answer a lookup for the handle it does hold"
+        "a one-entry page index did not answer a lookup for the handle it does hold"
     );
 
-    // --- Iterating the inline arm yields the one page, not nothing. ---
+    // --- Iterating a one-entry index yields the one page, not nothing. ---
     assert_eq!(
         1,
         index.iter().count(),
@@ -1836,14 +1987,14 @@ fn a_bucket_that_grows_past_one_page_and_shrinks_back_holds_the_same_page_set() 
     assert_eq!(1, retained.len(), "retain should have left exactly one page");
     assert!(
         matches!(retained, BlockIndexMap::One(..)),
-        "a map that `retain` drops to one page must give up its node, the same as `remove` does"
+        "a list that `retain` drops to one page must give up its buffer for the single-page arm"
     );
     let survivor = retained
         .get(&keep)
         .expect("the page retain was told to keep is gone");
     assert_same_page("the page retain kept", keep, &page_for(12), survivor);
 
-    // --- And retain the last page away, which goes through the INLINE arm. ---
+    // --- And retain the last page away, which is the collapse that DOES still happen. ---
     retained.retain(&mut live, |_handle, _page| false);
     assert_eq!(0, retained.len(), "retain should have left nothing");
     assert!(
@@ -1946,7 +2097,7 @@ fn the_inline_and_mapped_arms_write_the_same_bytes_for_the_same_page_set() {
     let handle = untouched.block_index.insert(page_for(1), &mut live);
     assert!(
         matches!(untouched.block_index, BlockIndexMap::One(..)),
-        "the untouched node is not in the inline shape"
+        "the untouched node is not holding its one page in the single-page arm"
     );
 
     // A node that grew to four pages and shrank back to the same single page.
@@ -1969,7 +2120,7 @@ fn the_inline_and_mapped_arms_write_the_same_bytes_for_the_same_page_set() {
     }
     assert!(
         matches!(round_tripped.block_index, BlockIndexMap::One(..)),
-        "the round-tripped node did not shrink back to the inline shape"
+        "the round-tripped node did not drain back to the single-page arm"
     );
 
     let untouched_bytes = serde_json::to_string(&untouched).expect("a node serializes");

@@ -310,8 +310,8 @@ fn every_per_item_structure_states_its_width_and_its_padding() {
     // --- The pinned widths. ---
     assert_eq!(32, size_of::<BlockAddress>(), "BlockAddress width moved");
     assert_eq!(72, size_of::<BlockIndex>(), "BlockIndex width moved");
-    assert_eq!(80, size_of::<BlockIndexMap>(), "BlockIndexMap width moved");
-    assert_eq!(144, size_of::<BucketNode>(), "BucketNode width moved");
+    assert_eq!(24, size_of::<BlockIndexMap>(), "BlockIndexMap width moved");
+    assert_eq!(88, size_of::<BucketNode>(), "BucketNode width moved");
     assert_eq!(16, size_of::<BlockLookupRef>(), "BlockLookupRef width moved");
     assert_eq!(24, size_of::<BlockRefs>(), "BlockRefs width moved");
     assert_eq!(40, size_of::<ComponentBlocks>(), "ComponentBlocks width moved");
@@ -961,23 +961,23 @@ fn every_byte_of_the_bucket_node_is_accounted_for() {
         size - eight_aligned
     );
 
-    assert_eq!(142, sum, "the fields of BucketNode add up to {sum}, not 142");
-    assert_eq!(144, size, "BucketNode is {size} bytes wide, not 144");
+    assert_eq!(86, sum, "the fields of BucketNode add up to {sum}, not 86");
+    assert_eq!(88, size, "BucketNode is {size} bytes wide, not 88");
     assert_eq!(2, slack, "BucketNode carries {slack} bytes of alignment slack, not 2");
 
     // The layout rule itself, asserted rather than described: the eight-aligned group packs
     // solid and the rest is one rounding.
     let align = align_of::<BucketNode>();
     assert_eq!(8, align, "BucketNode's alignment moved, and the arithmetic below assumes 8");
-    // 136, not 152, 160, 168 or 176. FOUR eight-byte changes have now come out of THIS group
-    // and none out of the tail: the address inside the inline page entry shed a derived
-    // `generation`, `last_dump_sequence` left the node, that same address merged its slab id and
-    // its offset into ONE WORD, and the page entry's model spelling stopped being a sixteen-byte
-    // fat pointer to a string from a closed set of seventeen. The fourth is the first to take TWO
-    // words at once, which is what a sixteen-byte field leaving looks like from here. The tail is
-    // still six because the five flags became five bits, which is the other half of the structure
-    // entirely and no change to the page entry can reach it.
-    assert_eq!(136, eight_aligned, "the eight-aligned group is {eight_aligned} B, not 136");
+    // 80, AND EVERY BYTE THAT HAS EVER LEFT THIS STRUCTURE LEFT THIS GROUP -- none has come out of
+    // the tail. In order: the address inside the inline page entry shed a derived `generation`;
+    // `last_dump_sequence` left the node; that same address merged its slab id and its offset into
+    // ONE WORD; the page entry's model spelling stopped being a sixteen-byte fat pointer to a string
+    // from a closed set of seventeen, which was the first step to take TWO words at once (168 -> 152
+    // -> 136); and then the page index stopped holding that entry INLINE at all, which took SEVEN
+    // words in one step, 136 -> 80. The tail is still six because the five flags became five bits,
+    // which is the other half of the structure entirely and no change to the page entry can reach it.
+    assert_eq!(80, eight_aligned, "the eight-aligned group is {eight_aligned} B, not 80");
     assert_eq!(6, tail, "the tail group is {tail} B, not 6");
     assert_eq!(
         eight_aligned + tail.div_ceil(align) * align,
@@ -1022,16 +1022,41 @@ fn every_byte_of_the_bucket_node_is_accounted_for() {
          tail field changes nothing is only true while it does not"
     );
 
-    // --- The biggest single field, because an accounting that does not say so misleads. ---
+    // --- THE BIGGEST SINGLE FIELD, AND IT IS NO LONGER THE PAGE INDEX. ---
+    //
+    // This assertion used to read the other way: `block_index` held a whole page entry INLINE and
+    // was over HALF the structure, which is what made it the field an accounting had to lead with.
+    // The entry is behind a pointer now, so the page index is a quarter of the node and the widest
+    // field is whichever the table says -- asserted to be found rather than named, so a future
+    // narrowing moves it instead of leaving this comment describing the wrong one.
     let page = fields
         .iter()
         .find(|field| field.name == "block_index")
         .expect("block_index is a field of BucketNode");
     assert!(
-        page.size * 2 > size,
-        "the inline page entry is {} of {size} bytes; if it is no longer more than half the \
-         structure, the accounting above leads with the wrong field",
+        page.size * 2 < size,
+        "the page index is {} of {size} bytes. It is supposed to be well under half the structure \
+         now that its single-page arm holds a pointer rather than a whole entry; if it is over half \
+         again, the inline entry has come back or another payload has joined it",
         page.size
+    );
+    let widest = fields
+        .iter()
+        .max_by_key(|field| field.size)
+        .expect("BucketNode has fields");
+    println!(
+        "  widest field: {} at {} B of {size} ({:.1}% of the structure) -- the page index is {} B",
+        widest.name,
+        widest.size,
+        100.0 * widest.size as f64 / size as f64,
+        page.size
+    );
+    assert!(
+        widest.size * 2 < size,
+        "the widest single field is {} at {} B of {size}. No single field is supposed to dominate \
+         this structure any more, and one that does is the next thing to account for",
+        widest.name,
+        widest.size
     );
 }
 
@@ -1148,11 +1173,44 @@ struct MirrorHoistedClaims {
 }
 
 /// The inline page entry held behind a pointer instead.
+///
+/// ITS `Many` ARM IS THE SHIPPED LIST, which is what makes the only difference between this mirror
+/// and the declaration the arm under discussion. It used to spell that arm as a `BTreeMap`, which
+/// stopped being true at #1963 and went unnoticed because a tree header and a list header are both
+/// 24 bytes -- a mirror can be stale in TYPE while agreeing in WIDTH, and this one was.
 #[allow(dead_code)]
 enum MirrorBoxedBlockIndexMap {
     Empty,
     One(u64, Box<BlockIndex>),
-    Many(std::collections::BTreeMap<u64, BlockIndex>),
+    Many(Vec<(u64, BlockIndex)>),
+}
+
+/// The page index WITH the inline single-page arm -- the shape that was dropped.
+///
+/// Kept beside the boxed one because the three shapes are what a proposal to bring the arm back
+/// would have to argue between, and a shape that exists only as an absence cannot be priced.
+/// `inline_arm_trade.rs` prices all three at both routing ranges.
+#[allow(dead_code)]
+enum MirrorInlineBlockIndexMap {
+    Empty,
+    One(u64, BlockIndex),
+    Many(Vec<(u64, BlockIndex)>),
+}
+
+/// The node as it was before the single-page entry was boxed: every field the same, and the page index
+/// still holding a whole entry inline.
+#[allow(dead_code)]
+struct MirrorInlinePage {
+    routing_bucket: u32,
+    layout: BucketLayoutState,
+    flags: BucketFlags,
+    ttl_ms: BucketTtl,
+    dirty_generation: u64,
+    first_dirty_wal_sequence: u64,
+    first_dirty_index_log_sequence: u64,
+    object_index: ObjectIndex,
+    deleted_object_index: DeletedObjectIndex,
+    block_index: MirrorInlineBlockIndexMap,
 }
 
 #[allow(dead_code)]
@@ -1222,6 +1280,7 @@ fn what_each_declined_shape_of_the_bucket_node_would_cost() {
     let packed = size_of::<MirrorPackedFlags>();
     let hoisted = size_of::<MirrorHoistedClaims>();
     let boxed = size_of::<MirrorBoxedPage>();
+    let inline_page = size_of::<MirrorInlinePage>();
 
     println!("\n=== what each shape makes the node ===");
     println!("  {:<44} {:>5} {:>9}", "shape", "bytes", "vs live");
@@ -1232,7 +1291,8 @@ fn what_each_declined_shape_of_the_bucket_node_would_cost() {
         ("with the countdown back at two words as well", wide_ttl),
         ("the packed-flag mirror, which must equal the live shape", packed),
         ("with the two transient log claims hoisted out", hoisted),
-        ("with the inline page entry behind a pointer", boxed),
+        ("with the page entry held INLINE again (before)", inline_page),
+        ("with a single-page arm re-added, behind a pointer", boxed),
     ] {
         println!(
             "  {:<44} {:>5} {:>+9}",
@@ -1251,34 +1311,39 @@ fn what_each_declined_shape_of_the_bucket_node_would_cost() {
     // eight-aligned group whole, and the address inside the inline page entry merged its two slab
     // coordinates into one word out of that same group, which is the same reason the two earlier
     // eight-byte changes came out of it whole.
+    // AND EVERY ABSOLUTE FIGURE IS NOW SEVENTY-TWO BYTES LOWER AGAIN, FOR THE SAME REASON AND ON
+    // THE LARGEST STEP YET: the page index stopped holding its single entry inline. Every mirror here
+    // carries `BlockIndexMap` (or a variant of it that differs only in the arm under discussion),
+    // so all of them lost the same 72 bytes and not one DIFFERENCE below moved.
     assert_eq!(
-        168, wide_ttl,
+        112, wide_ttl,
         "the shape before #1958 was 208 bytes, 200 once the address inside the inline page entry \
          shed its derived generation, 192 once the node stopped carrying a per-bucket \
-         last_dump_sequence, 184 once that address merged its two slab coordinates, and 168 once \
-         the page entry's model spelling became one byte; it reads as {wide_ttl}, so the mirrors \
-         have drifted from the history they claim to price"
+         last_dump_sequence, 184 once that address merged its two slab coordinates, 168 once the \
+         page entry's model spelling became one byte, and 112 once the page index stopped holding \
+         that entry inline; it reads as {wide_ttl}, so the mirrors have drifted from the history \
+         they claim to price"
     );
     assert_eq!(
-        160, wide_tombstone,
+        104, wide_tombstone,
         "the shape before #1961 was 200 bytes, 192 once the address shed its derived generation, \
-         184 once the node stopped carrying a per-bucket last_dump_sequence, 176 once that \
-         address merged its two slab coordinates, and 160 once the page entry's model spelling \
-         became one byte; it reads as {wide_tombstone}, so the eight bytes that change claims are \
-         not the eight bytes it took"
+         184 once the node stopped carrying a per-bucket last_dump_sequence, 176 once that address \
+         merged its two slab coordinates, 160 once the page entry's model spelling became one byte, \
+         and 104 once the page index stopped holding that entry inline; it reads as \
+         {wide_tombstone}, so the eight bytes that change claims are not the eight bytes it took"
     );
-    assert_eq!(144, live, "the node is {live} bytes, not 144");
+    assert_eq!(88, live, "the node is {live} bytes, not 88");
     assert_eq!(
-        152, loose,
-        "the shape before the flags were packed was 184 bytes, 176 once the node stopped \
-         carrying a per-bucket last_dump_sequence, 168 once the address inside the inline page \
-         entry merged its two slab coordinates, and 152 once that entry's model spelling became \
-         one byte -- this mirror holds the page entry too, so it moves with the live shape every \
-         time and the EIGHT BYTES BETWEEN THEM is still what packing the flags is worth. Which is \
-         the point of pricing by the DISTANCE between mirrors rather than by either width: four \
-         changes to the page entry have moved both, and not one of them has moved this price. It \
-         reads as {loose}, so the row that prices this change is not describing the shape it \
-         replaced"
+        96, loose,
+        "the shape before the flags were packed was 184 bytes, 176 once the node stopped carrying a \
+         per-bucket last_dump_sequence, 168 once the address inside the inline page entry merged \
+         its two slab coordinates, 152 once that entry's model spelling became one byte, and 96 \
+         once the page index stopped holding the entry inline -- this mirror holds the same page \
+         index, so it moves with the live shape every time and the EIGHT BYTES BETWEEN THEM is \
+         still what packing the flags is worth. Which is the point of pricing by the DISTANCE \
+         between mirrors rather than by either width: FIVE changes to the page entry and its index \
+         have moved both, and not one of them has moved this price. It reads as {loose}, so the row \
+         that prices this change is not describing the shape it replaced"
     );
     assert_eq!(
         8,
@@ -1312,46 +1377,84 @@ fn what_each_declined_shape_of_the_bucket_node_would_cost() {
         live - hoisted
     );
 
-    // --- The loss, and why the struct width alone would have read as a win. ---
+    // --- WHAT THE INLINE ENTRY COST, AND WHY BOXING IT TURNED OUT TO BE THE ANSWER. ---
     //
-    // The pointer takes the inline entry off the struct and then buys an allocation for the
-    // entry it moved out -- and it buys one for very nearly every bucket, because the page
-    // entries and the buckets are within a tenth of a percent of each other in count. That
-    // request is served from a chunk once the allocator has taken its header and rounded to a
-    // class, so the pair is WIDER than the inline form it replaced, before counting the
-    // allocation itself or the pointer chase on every page read.
+    // THIS ROW USED TO PRICE A PROPOSAL AND NOW PRICES A CHANGE THAT HAPPENED. The page index held
+    // its single page INLINE, and the row asked whether that entry should go behind a POINTER. The
+    // answer was no, on a measurement, and the measurement was taken over a population where every
+    // bucket held exactly one page -- which was a property of `load_shard` defaulting the routing
+    // range to the whole `u32` keyspace, not of any workload. #1973 made 1023 the default, the
+    // population inverted, and the entry went behind the pointer after all.
     //
-    // DERIVED, NOT WRITTEN DOWN. This was the literal 112 that a 104-byte entry needed, and the
-    // entry has been 88 and is now 72 -- so the literal had been describing a shape this engine
-    // did not have for two changes, and would have kept under-pricing the decline by a whole
-    // class each time the entry shrank. glibc serves a request from a chunk of
-    // `max(32, round_up(request + 8, 16))`, and #1969 corrected that to a FLOOR rather than an
-    // equality: a 104-byte request read 128 against the documented 112, because the allocator
-    // serves from a chunk that is merely big enough and the reading depends on the process's
-    // allocation history. A floor is what this row needs -- it under-prices the decline if it is
-    // too small, and the assertion below is what says it is not.
+    // AND THE INTERESTING READING IS THAT BOXING COSTS THE SAME WIDTH AS DROPPING THE ARM. Measured,
+    // a boxed single-page arm lays out in the SAME bytes as a two-arm shape with no single-page case
+    // at all -- the compiler finds room for the third tag without growing the enum -- so boxing
+    // recovers exactly the width dropping would. The two are separated by the HEAP, not by the
+    // struct: a boxed entry is one allocation of the entry's own size, and a one-entry list is one
+    // allocation of the growth policy's first block. `inline_arm_trade.rs` measures both at both
+    // routing ranges in both allocator columns rather than ranking them here.
+    //
+    // THE CHUNK FIGURE STAYS DERIVED, WHICH IS #1974's CORRECTION AND IT SURVIVES THIS CHANGE. It
+    // was the literal 112 that a 104-byte entry needed, and the entry has been 88 and is now 72 --
+    // so the literal had been describing a shape this engine did not have for two changes. glibc
+    // serves a request from a chunk of `max(32, round_up(request + 8, 16))`, and #1969 corrected
+    // that to a FLOOR rather than an equality: a 104-byte request read 128 against the documented
+    // 112. It is a FLOOR that is wanted here, and it is printed rather than added to a struct width,
+    // because the pair arithmetic that used to consume it was pricing a proposal that has since been
+    // taken.
     const ALLOCATOR_CHUNK_FOR_A_PAGE_ENTRY: usize =
         if size_of::<BlockIndex>() + 8 < 32 { 32 } else { (size_of::<BlockIndex>() + 8 + 15) / 16 * 16 };
     assert!(
-        boxed < live,
-        "the boxed shape must make the STRUCT smaller, or the point of the row is lost"
+        ALLOCATOR_CHUNK_FOR_A_PAGE_ENTRY >= size_of::<BlockIndex>(),
+        "the derived chunk floor is {ALLOCATOR_CHUNK_FOR_A_PAGE_ENTRY} B for a {} B entry, which is \
+         below the entry itself and would under-price every boxed arm",
+        size_of::<BlockIndex>()
     );
-    let boxed_pair = boxed + ALLOCATOR_CHUNK_FOR_A_PAGE_ENTRY;
+    assert_eq!(
+        inline_page - live,
+        size_of::<MirrorInlineBlockIndexMap>() - size_of::<BlockIndexMap>(),
+        "the node's saving must be exactly the page index's: it is {} B against the index's {} B, \
+         so something other than the arm moved between these two mirrors",
+        inline_page - live,
+        size_of::<MirrorInlineBlockIndexMap>() - size_of::<BlockIndexMap>()
+    );
+    assert!(
+        inline_page > live,
+        "the node with the entry held inline is {inline_page} B against the shipped {live} B; if \
+         the two are equal the inline entry was never costing width and the change that boxed it \
+         bought nothing"
+    );
     println!(
-        "\n  the boxed shape: {boxed} B of struct + {ALLOCATOR_CHUNK_FOR_A_PAGE_ENTRY} B of \
-         allocation = {boxed_pair} B for the bucket that holds one page, against {live} B inline \
-         -- {:+} B, one allocation and one indirection",
-        boxed_pair as i64 - live as i64
+        "\n  boxing the inline entry took the node {inline_page} -> {live} B ({:+} B a bucket), \
+         which is exactly the page index's own {} -> {} B",
+        live as i64 - inline_page as i64,
+        size_of::<MirrorInlineBlockIndexMap>(),
+        size_of::<BlockIndexMap>()
+    );
+    assert_eq!(
+        live, boxed,
+        "re-adding a boxed single-page arm reads as {boxed} B against the shipped {live} B. \
+         Measured, the two lay out identically -- the third arm's tag rides the same niche -- and if \
+         they have separated then boxing has started to cost or save width on its own and this row \
+         is no longer describing why the two were decided on the heap instead"
     );
     assert!(
-        boxed_pair > live,
-        "the boxed shape costs {boxed_pair} B against {live} B inline; if that has become a win \
-         the decline recorded here is stale and should be revisited"
+        boxed < inline_page,
+        "a boxed arm is {boxed} B against {inline_page} B held inline; boxing is supposed to \
+         recover the width, which is what made it a candidate at all"
     );
-    assert!(
-        size_of::<BlockIndex>() <= ALLOCATOR_CHUNK_FOR_A_PAGE_ENTRY,
-        "the chunk size assumed for a page entry is smaller than the entry ({} B), which would \
-         under-price the decline",
+    println!(
+        "  re-adding that arm BOXED would cost {boxed} B -- the SAME width as the shipped shape, \
+         so the two differ only on the heap: a boxed entry is one allocation of {} B, a one-entry \
+         list is one allocation of the growth policy's first block",
+        size_of::<BlockIndex>()
+    );
+    println!(
+        "  the page entry is {} B and its derived chunk FLOOR is \
+         {ALLOCATOR_CHUNK_FOR_A_PAGE_ENTRY} B; what a chunk holding one actually costs is READ from \
+         the allocator in `inline_arm_trade.rs`, over the real bucket population, rather than \
+         assumed here -- a carried chunk figure is how a published byte table in this campaign got \
+         its sign wrong",
         size_of::<BlockIndex>()
     );
 }
@@ -2569,14 +2672,16 @@ fn what_the_object_side_of_the_bucket_node_costs() {
              recorded here is stale"
         );
 
-        // --- THE NEXT DOMINANT TERM ON THIS STRUCTURE, PRICED RATHER THAN NAMED. ---
+        // --- THE PAGE INDEX, PRICED RATHER THAN NAMED -- AND IT IS NO LONGER THE DOMINANT TERM. ---
         //
-        // With the object side at 24 bytes of field, the page index is 104 of the node's 176 --
-        // 56.5% -- and it is the same question one level along: an inline arm for the bucket
-        // that holds one page, and a MAP for the bucket that holds several. The object side's
-        // answer was that the multi-entry arm is not rare and a tree charges a node sized for
-        // eleven slots to hold two. The arm census and the allocator reading below are what the
-        // next change should start from, and they are measured here rather than assumed.
+        // This note used to read "the page index is 104 of the node's 176 -- 56.5%" and name it as
+        // the next thing to change. It WAS changed: the single page is behind a pointer now, the page
+        // index is a 24-byte list header, and it is now a quarter of the node rather than over
+        // half. What the note got right is the question it posed -- whether an inline arm earns its
+        // width -- and what it could not see is that the answer depends on the ROUTING RANGE, which
+        // decides how many buckets hold exactly one page. `inline_arm_trade.rs` is that
+        // measurement. The census and the allocator reading below are still the right place for the
+        // NEXT change to start, and they are measured here rather than assumed.
         let page_charge = clone_alloc_bytes(&page_indexes);
         let page_spine = spine(size_of::<BlockIndexMap>());
         let page_heap = page_charge.saturating_sub(page_spine);

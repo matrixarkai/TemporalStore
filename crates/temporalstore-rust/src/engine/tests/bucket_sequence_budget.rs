@@ -601,9 +601,17 @@ fn what_narrowing_or_removing_each_sequence_would_make_the_node() {
     // why the address merge crosses too and leaves the conclusion above untouched.
     // 136, not 152: the page entry inside the inline `BlockIndexMap` gave up a sixteen-byte fat
     // pointer for a one-byte model spelling, and those two words leave the eight-aligned group
-    // exactly as the address merge's one word did. The rows below are DIFFERENCES from these two
-    // constants, so the conclusion is untouched -- which is the point of pricing by difference.
-    const EIGHT_ALIGNED: usize = 136;
+    // exactly as the address merge's one word did.
+    //
+    // AND THEN 80, NOT 136, SINCE THE PAGE INDEX STOPPED HOLDING THAT ENTRY INLINE AT ALL. Same
+    // SHAPE of change as every step before it -- whole words leaving this group, none of them
+    // touching the tail -- taken SEVEN times over in one field, because the arm that held a handle
+    // plus a whole `BlockIndex` now holds a handle and a pointer.
+    //
+    // The rows below are DIFFERENCES from these two constants, so every one of them recomputes and
+    // not one conclusion moves -- which is the point of pricing by difference. The tail is still
+    // six, a narrowing still hands its word straight back, and a removal still crosses.
+    const EIGHT_ALIGNED: usize = 80;
     const TAIL: usize = 6;
     let live = size_of::<BucketNode>();
     assert_eq!(

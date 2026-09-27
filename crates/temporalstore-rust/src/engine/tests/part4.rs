@@ -6938,15 +6938,23 @@ fn what_a_key_costs_the_index_in_live_heap() {
     );
 }
 
-/// A bucket holding one page holds it inline, and goes back to inline when it can.
+/// A bucket holding one page holds no NODE and no list buffer, and goes back to that when it can.
 ///
-/// Keys route one to a bucket, so most buckets hold a single page. A `BTreeMap` holding one entry
-/// costs 1,496 live bytes to carry a 120-byte page, because its node is sized for eleven -- which
-/// made the containers about 70% of the index's live heap.
+/// THE COST THIS TEST WAS WRITTEN AGAINST IS STILL AVOIDED, BY A DIFFERENT MEANS. It was written
+/// when the multi-page arm was a `BTreeMap`, which cost 1,496 live bytes to carry a 120-byte page
+/// because its node is sized for eleven -- making the containers about 70% of the index's live heap.
+/// #1963 replaced that tree with a flat list, and the single-page arm then held its entry INLINE, so
+/// a single-page bucket allocated nothing at all.
 ///
-/// The demotion matters as much as the promotion: a bucket that briefly held two pages would
-/// otherwise keep its node for the rest of its life, which is exactly the cost being avoided and
-/// would not show up as a failure anywhere else.
+/// WHAT CHANGED IS WHERE THE SINGLE PAGE LIVES, NOT WHETHER IT HAS AN ARM. The inline entry made
+/// every bucket in the map pay the width of a whole entry, which at the shipped routing range almost
+/// none could use, so the arm now holds a POINTER: one small allocation for the entry instead of 72
+/// bytes in every node. `inline_arm_trade.rs` measures the trade at both ranges.
+///
+/// SO WHAT THIS DRIVES is both collapses -- to the single-page arm at one page and to nothing at
+/// zero. They matter as much as the growth does, for the same reason: a bucket that briefly held
+/// several pages would otherwise keep their buffer for the rest of its life, and it would not show
+/// up as a failure anywhere else. The per-key ceiling above is what fails if either stops happening.
 #[test]
 fn a_bucket_holding_one_block_holds_no_node() {
     use crate::engine::state::BlockIndexMap;
@@ -6977,9 +6985,14 @@ fn a_bucket_holding_one_block_holds_no_node() {
             .values()
             .find(|bucket| bucket.block_index.len() == 1)
             .expect("the write must produce a bucket holding one page");
+        // THE SINGLE-PAGE ARM, WHICH NOW HOLDS ITS ENTRY BEHIND A POINTER. The arm survives; what
+        // it costs the node does not. It used to hold the whole entry inline, so every bucket in
+        // the map paid the width of an entry whether or not it held exactly one page -- and at the
+        // shipped routing range almost none does.
         assert!(
             matches!(bucket.block_index, BlockIndexMap::One(..)),
-            "a bucket holding one page must hold it inline"
+            "a bucket holding one page must take the single-page arm; it holds {} page(s)",
+            bucket.block_index.len()
         );
     }
 
@@ -7034,9 +7047,12 @@ fn a_bucket_holding_one_block_holds_no_node() {
             })
             .expect("the remaining field must still be filed");
         assert_eq!(bucket.block_index.len(), 1, "two of three fields were removed");
+        // THE DEMOTION STILL MATTERS, AND IT IS NOW A LIST BUFFER TRADED FOR A BOX. A list that
+        // dropped back to one page would otherwise keep a buffer sized for a whole growth step for
+        // the rest of the bucket's life; the collapse trades it for one sized for the entry.
         assert!(
             matches!(bucket.block_index, BlockIndexMap::One(..)),
-            "a map that drops back to one page must give up its node"
+            "a page index drained to one page must give up its list buffer for the single-page arm"
         );
     }
 }

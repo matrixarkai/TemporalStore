@@ -857,28 +857,53 @@ impl<'de> Deserialize<'de> for DeletedObjectIndex {
 #[derive(Debug, Default, Clone, Deserialize)]
 #[serde(from = "BTreeMap<String, BlockIndex>")]
 pub(super) enum BlockIndexMap {
-    /// A bucket holding nothing: no map, no node, no allocation.
+    /// A bucket holding nothing: no list, no node, no allocation.
+    ///
+    /// KEPT FOR THE NAME, NOT FOR THE BYTE. An empty `Vec` allocates nothing, so this arm saves no
+    /// allocation over `Many(vec![])` -- and it costs no width either, because it rides in the
+    /// vector pointer's niche and the enum is exactly as wide as the list it holds. What it buys is
+    /// that "this bucket holds nothing" has a name at every site that tests for it, including the
+    /// one the release lifecycle assigns. `the_empty_arm_is_an_alias_for_no_pages_and_costs_nothing_to_keep`
+    /// asserts both halves of "free" and the release/reload round trip that depends on it.
+    ///
+    /// AN ALIAS, NOT A RELEASE MARKER. A released bucket has an empty page index, but what makes it
+    /// RELEASED rather than legitimately empty is `released_buckets` plus its retained
+    /// `object_index` -- `release_bucket_blocks` says so where it keeps that index. Nothing reads
+    /// this discriminant as a lifecycle state.
     #[default]
     Empty,
-    /// One page, held inline.
+    /// One page, held behind a POINTER rather than inline.
     ///
-    /// THE ORDINARY BUCKET AT THE DEFAULT ROUTING RANGE, AND NOT OTHERWISE. A page's bucket is
-    /// `block_routing_bucket(object_key, start, end)`, whose modulus is the RANGE WIDTH, so on
-    /// `load_shard`'s default of `0..u32::MAX` every key lands alone by construction and this
-    /// arm holds essentially every bucket. On the range `docs/runtime_tuning.md` tells an
-    /// operator to set -- `TS_SHARD_END_ROUTING_BUCKET=1023` -- it does not: measured over
-    /// routed string keys, 5.27% of buckets hold one page at 4,000 records and NONE do at
-    /// 40,000, where the mean is 39.06. `bucket_fill.rs` reports both as histograms.
+    /// THE ARM SURVIVES; WHAT IT COSTS THE NODE DOES NOT. It used to hold the whole entry inline, so
+    /// this enum was `8 + size_of::<BlockIndex>()` and every `BucketNode` in the `BucketMap` paid
+    /// that width whether or not its bucket held exactly one page. Now the arm is a handle and a
+    /// box, the enum is exactly as wide as the list it also holds -- the tag rides in a pointer
+    /// niche -- and the single-page case still has a representation of its own.
     ///
-    /// So this arm is worth its inline page because of the DEFAULT RANGE, not because of the
-    /// workload, and a `BTreeMap` holding one entry costs 1,496 live bytes to carry a 120-byte
-    /// page, because its node is sized for eleven. Measured over a store of 2,000 keys, the
-    /// containers were about 70% of the index's live heap. That same node sizing is why
-    /// filling a bucket is a LOSS below about eleven pages: it trades one node per page for a
-    /// map node per bucket, measured at +25.4% bytes a page at a fill of 3.91.
+    /// WHY THE WIDTH WAS PAYABLE ONLY NOW. #1964 kept the inline entry on an explicit measurement,
+    /// and the measurement was sound on the population it sampled: `load_shard` defaulted
+    /// `end_routing_bucket` to the whole `u32` keyspace, which gives EVERY KEY A BUCKET OF ITS OWN
+    /// BY CONSTRUCTION, so 100% of buckets were single-page and the arm was free of charge there.
+    /// #1973 made 1023 the shipped default. At 1,024 buckets the same routed keys FILL them --
+    /// measured 4.510% single-page at 4,000 records and 0.000% at 40,000, p50 39 and MAX 52 -- so
+    /// the inline width became a toll on 95.5% to 100% of buckets that could never use it.
     ///
-    /// The shape `BlockRefs` already uses, for the same reason.
-    One(u64, BlockIndex),
+    /// AND WHY BOXING RATHER THAN DROPPING THE ARM ALTOGETHER, which recovers the identical 24-byte
+    /// width. Dropping it makes a single-page bucket hold a one-entry LIST, and the list's first
+    /// block is a whole growth step -- four entries to carry one. Measured over the real bucket
+    /// population in both allocator columns: at the shipped range the two are within 13.7 B a bucket
+    /// at 4,000 records and identical at 40,000, but on the WHOLE-KEYSPACE range dropping the arm
+    /// costs 482.0 B a bucket against boxing's 178.3 and the inline arm's 284.2 -- a REGRESSION of
+    /// 197.9 B a bucket against doing nothing. A store records its routing range beside its index
+    /// and a load honours that file, so stores built before #1973 still run the wide range. Boxing
+    /// is the only one of the three that wins at both. `inline_arm_trade.rs` is that measurement,
+    /// four shapes wide.
+    ///
+    /// WHAT THE ARM STILL COSTS, AND IT IS REAL. One allocation per single-page bucket that the
+    /// inline entry did not take, and one DEPENDENT load on every read of such a page -- the entry's
+    /// address is not known until the node has been read. Both are measured; dropping the arm would
+    /// have paid both too.
+    One(u64, Box<BlockIndex>),
     /// Several pages -- an object with components, or several keys routed to one bucket -- held
     /// as a FLAT LIST SORTED BY HANDLE rather than as a tree.
     ///
@@ -910,19 +935,34 @@ pub(super) enum BlockIndexMap {
     Many(Vec<(u64, BlockIndex)>),
 }
 
-/// The `One` arm carries a whole page inline -- a handle plus a `BlockIndex` -- which is the
-/// point of the shape and what makes this the widest field of `BucketNode`. The `Many` arm is a
-/// 24-byte vector header and rides inside it.
+/// AS WIDE AS THE PAGE LIST IT HOLDS, AND NO WIDER -- three arms in the space of one vector header.
+/// `Empty` and the boxed single-page arm both ride in pointer niches, so there is no discriminant
+/// word and no inline payload to be the widest field of `BucketNode` any more.
 ///
-/// 80, not 96, since the inline page entry stopped spending a sixteen-byte fat pointer on a model
-/// spelling drawn from a seventeen-element set and now spends one byte on it. The sixteen cross
-/// straight through, as the eight the address merge shed before them did and the eight
-/// `generation` shed before that: the handle is a `u64`, the page entry is 8-aligned, and the
-/// discriminant still rides an `Arc` niche -- `object_key` is one, and `component` another -- so
-/// this arm is exactly `8 + size_of::<BlockIndex>()` and the relation below carries the claim.
-const _: () = assert!(std::mem::size_of::<BlockIndexMap>() == 80);
-const _: () =
-    assert!(std::mem::size_of::<BlockIndexMap>() == 8 + std::mem::size_of::<BlockIndex>());
+/// 24, not 80, since the single-page case stopped being held INLINE and started being held behind a
+/// pointer. That arm was `8 + size_of::<BlockIndex>()` -- a handle plus a whole entry -- and every
+/// `BucketNode` in the `BucketMap` paid its width whether or not its bucket held exactly one page.
+/// The 56 bytes leave the structure rather than moving into its tail, which is why they take
+/// `BucketNode` with them.
+///
+/// 56 AND NOT 72, BECAUSE #1974 GOT THERE FIRST AND THE TWO CHANGES HARVEST THE SAME FIELD. It took
+/// the entry from 88 to 72 by spending one byte on a model spelling drawn from a seventeen-element
+/// set instead of a sixteen-byte fat pointer, which took this arm 96 -> 80 and the node 160 -> 144.
+/// Whichever of the two landed second found the other's node saving already banked; the node is 88
+/// either way. What #1974 keeps after this change is on the HEAP rather than in the node -- a
+/// narrower entry makes every boxed arm and every list element smaller.
+///
+/// AND BOXING THE ARM RECOVERS EXACTLY WHAT REMOVING IT WOULD. Measured: both shapes are 24 bytes,
+/// because the tags fit in the pointer niches either way. So the width is not what decides between
+/// them -- the heap is, and the measurement is in `inline_arm_trade.rs`.
+///
+/// ASSERTED AGAINST THE LIST RATHER THAN A LITERAL ALONE. The literal says which number this is;
+/// the derivation says WHY, and it is the derivation that fails if the niches ever stop being
+/// available -- which is the failure a literal alone would report as "the width moved".
+const _: () = assert!(std::mem::size_of::<BlockIndexMap>() == 24);
+const _: () = assert!(
+    std::mem::size_of::<BlockIndexMap>() == std::mem::size_of::<Vec<(u64, BlockIndex)>>()
+);
 
 /// Entries this process has examined looking a page up, counted under `cfg(test)` only.
 ///
@@ -1237,7 +1277,10 @@ impl BlockIndexMap {
     pub(super) fn get(&self, key: &u64) -> Option<&BlockIndex> {
         match self {
             BlockIndexMap::Empty => None,
-            BlockIndexMap::One(handle, page) => (handle == key).then_some(page),
+            // ONE COMPARISON AND ONE POINTER LOAD, not a bisection. The arm does not enter
+            // `find_page`, which is why `PAGE_LOOKUP_ENTRIES_EXAMINED` counts nothing at all for a
+            // single-page bucket.
+            BlockIndexMap::One(handle, page) => (handle == key).then_some(&**page),
             BlockIndexMap::Many(pages) => find_page(pages, key).ok().map(|at| &pages[at].1),
         }
     }
@@ -1245,7 +1288,7 @@ impl BlockIndexMap {
     pub(super) fn get_mut(&mut self, key: &u64) -> Option<&mut BlockIndex> {
         match self {
             BlockIndexMap::Empty => None,
-            BlockIndexMap::One(handle, page) => (&*handle == key).then_some(page),
+            BlockIndexMap::One(handle, page) => (&*handle == key).then_some(&mut **page),
             BlockIndexMap::Many(pages) => {
                 find_page(pages, key).ok().map(|at| &mut pages[at].1)
             }
@@ -1273,7 +1316,9 @@ impl BlockIndexMap {
                     return None;
                 }
                 match std::mem::replace(self, BlockIndexMap::Empty) {
-                    BlockIndexMap::One(_, page) => Some(page),
+                    // The box is UNWRAPPED rather than cloned out of: the caller is handed the entry
+                    // it already owned, and the allocation goes back to the allocator with it.
+                    BlockIndexMap::One(_, page) => Some(*page),
                     _ => unreachable!("just matched One"),
                 }
             }
@@ -1318,17 +1363,24 @@ impl BlockIndexMap {
         let handle = block_index_handle(&page);
         let displaced = match self {
             BlockIndexMap::Empty => {
-                *self = BlockIndexMap::One(handle, page);
+                // THE ONE ALLOCATION THE INLINE ENTRY DID NOT TAKE, and it is taken here. ONE ENTRY
+                // and not a growth step: this is a box, so it is sized for exactly the page it holds.
+                // That is the whole of boxing's advantage over dropping the arm, which would put the
+                // same page in a list whose first block is four entries -- measured at 482.0 B a
+                // bucket against 178.3 on the whole-keyspace range.
+                *self = BlockIndexMap::One(handle, Box::new(page));
                 None
             }
             BlockIndexMap::One(existing, held) => {
                 if *existing == handle {
-                    Some(std::mem::replace(held, page).address)
+                    // A rewrite of the same page: the entry is replaced INSIDE the box it already
+                    // has, so a rewrite of a single-page bucket allocates nothing at all.
+                    Some(std::mem::replace(&mut **held, page).address)
                 } else {
                     // A second page: this bucket has earned a list. Built SORTED, because every
                     // walk of this index reads it in handle order.
                     let (first_handle, first) = match std::mem::replace(self, BlockIndexMap::Empty) {
-                        BlockIndexMap::One(first_handle, first) => (first_handle, first),
+                        BlockIndexMap::One(first_handle, first) => (first_handle, *first),
                         _ => unreachable!("just matched One"),
                     };
                     // ONE STEP, not two. A spill takes the same first block `reserve_one_more`
@@ -1365,10 +1417,14 @@ impl BlockIndexMap {
         (handle, displaced)
     }
 
-    /// Return to an inline shape once a map no longer needs to be one.
+    /// Give the list back once a bucket no longer needs one.
     ///
-    /// Without this, a bucket that briefly held two pages keeps a node for the rest of its life --
-    /// which is the cost this type exists to avoid.
+    /// TWO COLLAPSES, AND BOTH GIVE AN ALLOCATION BACK. At one entry the list becomes a box, which
+    /// trades a buffer sized for a whole growth step for one sized for the entry; at zero it becomes
+    /// `Empty`, which gives the buffer back outright. Without the second, a bucket emptied by an
+    /// expiry sweep would go on holding a list sized for the fifty pages it used to have; without
+    /// the first, a bucket that briefly held two pages would keep a four-entry buffer for the rest
+    /// of its life -- which is the cost this type exists to avoid.
     fn shrink(&mut self) {
         let len = match self {
             BlockIndexMap::Many(pages) => pages.len(),
@@ -1382,7 +1438,7 @@ impl BlockIndexMap {
                     _ => unreachable!("just matched Many"),
                 };
                 let (handle, page) = pages.into_iter().next().expect("length is one");
-                *self = BlockIndexMap::One(handle, page);
+                *self = BlockIndexMap::One(handle, Box::new(page));
             }
             _ => {}
         }
@@ -1396,14 +1452,23 @@ impl BlockIndexMap {
         }
     }
 
+    /// Whether this bucket holds no pages.
+    ///
+    /// READS THE LENGTH, NOT THE DISCRIMINANT. `Empty` and `Many(vec![])` are both "no pages", and
+    /// `shrink` normalises the second into the first -- but a predicate that trusted the
+    /// normalisation would answer `false` for an empty list if any path ever missed it, and the
+    /// release lifecycle branches on this. Reading the length makes the two indistinguishable by
+    /// construction instead of by convention.
     pub(super) fn is_empty(&self) -> bool {
-        matches!(self, BlockIndexMap::Empty)
+        self.len() == 0
     }
 
     pub(super) fn iter(&self) -> BlockIndexIter<'_> {
         match self {
             BlockIndexMap::Empty => BlockIndexIter::Empty,
-            BlockIndexMap::One(handle, page) => BlockIndexIter::One(std::iter::once((handle, page))),
+            BlockIndexMap::One(handle, page) => {
+                BlockIndexIter::One(std::iter::once((handle, &**page)))
+            }
             BlockIndexMap::Many(pages) => BlockIndexIter::Many(pages.iter()),
         }
     }
@@ -1430,7 +1495,7 @@ impl BlockIndexMap {
     pub(super) fn blocks_mut_unaccounted(&mut self) -> BlockIndexValuesMut<'_> {
         match self {
             BlockIndexMap::Empty => BlockIndexValuesMut::Empty,
-            BlockIndexMap::One(_, page) => BlockIndexValuesMut::One(std::iter::once(page)),
+            BlockIndexMap::One(_, page) => BlockIndexValuesMut::One(std::iter::once(&mut **page)),
             BlockIndexMap::Many(pages) => BlockIndexValuesMut::Many(pages.iter_mut()),
         }
     }
@@ -2666,9 +2731,12 @@ pub(super) struct BucketNode {
 
 /// The widest per-item structure in the engine, and the one whose count is the bucket count.
 ///
-/// Most of it is the `BlockIndexMap` it carries inline: 96 of these 160 bytes are one page
-/// entry held inline plus its handle, and any accounting of this structure has to start there
-/// rather than with the flags.
+/// MOST OF IT USED TO BE THE PAGE INDEX, AND IS NOT ANY MORE. `block_index` held a page entry
+/// INLINE -- 96 of a 160-byte node was one entry plus its handle -- so an accounting of this
+/// structure had to start there. The entry moved behind a POINTER and the page index is 24 bytes,
+/// so the two 24-byte collections and the three `u64` claims are now the terms that matter, and the
+/// widest single field is no longer obvious from the declaration. `every_byte_of_the_bucket_node_is_accounted_for`
+/// is what says which it is rather than this comment.
 ///
 /// 202 bytes of field became 194 when `ttl_ms` stopped spending a word on a discriminant, and
 /// 186 when the tombstone index stopped spending sixteen on a case it is in 2.32% of the time;
@@ -2710,10 +2778,33 @@ pub(super) struct BucketNode {
 /// a six-byte tail the first narrowing lands on ten, ten still rounds to sixteen, and the freed
 /// word is handed straight back.
 ///
+/// AND THE LARGEST STEP OF ALL IS A WHOLE FIELD NARROWING BY FIFTY-SIX BYTES AT ONCE.
+/// `block_index` stopped holding a page entry INLINE and started holding it behind a POINTER. That
+/// arm was a handle plus a whole `BlockIndex`, so `BlockIndexMap` was `8 + size_of::<BlockIndex>()`
+/// and every node in the `BucketMap` carried it whether or not its bucket held exactly one page;
+/// the page index is now 24 bytes, the width of the list it also holds, because the tags ride in
+/// pointer niches. The eight-aligned group goes 136 -> 80 and the struct 144 -> 88, with the tail
+/// still six rounded to eight. This is the same SHAPE of change as the steps above -- whole words
+/// leaving the eight-aligned group -- taken seven times over in one field.
+///
+/// FIFTY-SIX AND NOT SEVENTY-TWO, BECAUSE THE STEP ABOVE HARVESTED THE SAME FIELD FIRST. Narrowing
+/// the model spelling took the inline entry 88 -> 72 and so this arm 96 -> 80; taking the entry out
+/// of the node then recovers what is left. The two changes are not additive in the NODE and the node
+/// is 88 whichever order they land in -- what the narrower entry still buys, after this change, is on
+/// the heap: every boxed arm and every list element is sixteen bytes smaller.
+///
+/// WHY IT WAS AVAILABLE ONLY NOW. The inline entry was kept by #1964 on a measurement over a
+/// population where every bucket held exactly one page, which was a property of `load_shard`
+/// defaulting the routing range to the whole `u32` keyspace rather than of any workload. #1973 made
+/// 1023 the default and the population inverted. `inline_arm_trade.rs` re-derives both halves of
+/// that arithmetic at both ranges, and prices dropping the arm altogether beside boxing it: the two
+/// recover the identical 24 bytes, and boxing is the one that does not REGRESS a store still on the
+/// old range.
+///
 /// `every_byte_of_the_bucket_node_is_accounted_for` states the whole of it field by field, and
 /// asserts the reconstruction -- eight-aligned group plus one rounding of the tail -- rather than
 /// a literal.
-const _: () = assert!(std::mem::size_of::<BucketNode>() == 144);
+const _: () = assert!(std::mem::size_of::<BucketNode>() == 88);
 
 impl BucketNode {
     /// The five lifecycle flags, each read through its own mask and nothing else.

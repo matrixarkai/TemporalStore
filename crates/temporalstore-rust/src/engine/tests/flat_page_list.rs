@@ -196,6 +196,10 @@ fn many_arm_lengths(engine: &TemporalEngine) -> Lengths {
 }
 
 /// (Empty, One, Many) bucket counts.
+///
+/// The single-page arm holds a POINTER rather than an inline entry now, so `One` costs eight bytes
+/// in the node plus one allocation instead of the width of a whole entry. The three-way split is
+/// unchanged, and it is still what the container decision turns on.
 fn arms(engine: &TemporalEngine) -> (usize, usize, usize) {
     let shards = engine.shards.read().expect("engine lock poisoned");
     let shard = shards.get(&1).expect("shard is loaded");
@@ -466,7 +470,8 @@ fn the_walk_stays_ascending_across_removals_and_middle_inserts() {
 fn a_second_insert_of_the_same_page_replaces_it_rather_than_adding_beside_it() {
     let mut live = BlockSlabLiveIndex::default();
 
-    // --- The One arm. ---
+    // --- The One arm, whose entry is now behind a pointer. A rewrite of the same page replaces the
+    // --- entry INSIDE the box it already has, so it allocates nothing and does not spill.
     let mut index = BlockIndexMap::default();
     let only = page("solo", None, 5, 128);
     let first = index.insert(only.clone(), &mut live);
@@ -846,6 +851,21 @@ fn span_counts(body: impl FnOnce()) -> (u64, u64) {
     (counts.alloc_bytes, counts.allocs)
 }
 
+/// The same span with BOTH byte columns: what was asked for, what was served, and the call count.
+///
+/// `ALLOC_BYTES` charges `layout.size()`; `ALLOC_CHUNK_BYTES` reads `malloc_usable_size`, which is
+/// where a NEW allocation's true cost appears -- an out-of-line 112-byte payload is served a
+/// 128-byte chunk. Any comparison that trades an inline payload for a fresh allocation has to read
+/// the served column or it under-charges the side that allocates, systematically and in the
+/// direction that flatters it.
+#[cfg(feature = "alloc-probe")]
+fn span_counts_both(body: impl FnOnce()) -> (u64, u64, u64) {
+    let probe = Probe::start();
+    body();
+    let counts = probe.stop();
+    (counts.alloc_bytes, counts.chunk_bytes, counts.allocs)
+}
+
 /// WHAT THE PAGE INDEX OF A REAL STORE COSTS AS A LIST AGAINST WHAT IT COST AS A TREE.
 ///
 /// BYTES AND ALLOCATIONS PER RECORD, AT TWO CORPUS SIZES, ON ONE INSTRUMENT. Both sides are built
@@ -1091,139 +1111,222 @@ fn the_page_list_growth_step_is_what_keeps_the_slack_off_the_measurement() {
     }
 }
 
-/// DOES THE `One` ARM STILL EARN ITS PLACE once `Many` is a list?
+/// The single-page arm holding its entry INLINE, as a MIRROR of the shape that was replaced.
 ///
-/// NOT RHETORICAL, AND THE ANSWER IS NOT THE ONE THE ARM WAS WRITTEN FOR. `One` exists because a
-/// `BTreeMap` holding a single entry cost 1,496 live bytes to carry a 120-byte page. A LIST
-/// holding a single entry costs 112. So the comparison the arm won is gone, and what is left is:
+/// Built from the same field types the declaration used, so the width below is a statement about
+/// that shape rather than an estimate of it. Its other two arms are the shipped ones, which is what
+/// makes the only difference between it and `BlockIndexMap` the one under discussion: whether the
+/// single page sits in the node or behind a pointer.
+#[allow(dead_code)]
+enum MirrorInlineArm {
+    Empty,
+    One(u64, BlockIndex),
+    Many(Vec<(u64, BlockIndex)>),
+}
+
+/// DID THE INLINE ENTRY STILL EARN ITS WIDTH? IT DID NOT, AND THIS IS THE OCCUPANCY WHERE IT WOULD.
 ///
-///   SAVED, per bucket, everywhere: dropping the arm takes `BlockIndexMap` from its `One` width
-///   to the 24 bytes of a vector header, and `BucketNode` with it. `BucketMap` is a
-///   `BTreeMap<u32, BucketNode>`, whose leaf carries eleven value slots filled or not, so that
-///   saving is multiplied by the bucket map before it is banked.
+/// THE TWO SIDES OF THE TRADE, AND #1964's OWN ARITHMETIC RE-DERIVED ON THIS TREE. #1964 kept the
+/// entry inline and recorded two numbers for it: "save 160.9 B on every bucket through `BucketMap`
+/// and pay 112.0 B on every single-page one, so it loses at every occupancy including the default
+/// range's 100%". Neither number is reused here -- every term in them has moved, the page entry
+/// twice -- and the second column it never read is added:
 ///
-///   PAID, per SINGLE-PAGE bucket only: one heap allocation holding one entry.
+///   SAVED, per bucket, everywhere: the inline arm's width is `8 + size_of::<BlockIndex>()` and the
+///   boxed arm's is 24, and the difference is paid by every `BucketNode` in the `BucketMap`.
+///   `BucketMap` is a `BTreeMap<u32, BucketNode>` whose leaf carries eleven value slots filled or
+///   not, so the saving is multiplied by that map before it is banked. Priced with STAND-IN values
+///   of the two widths, both DERIVED from `size_of` rather than written as literals -- a
+///   `BTreeMap`'s node cost depends on nothing else about the value, and a literal would go stale
+///   the next time the entry narrows.
 ///
-/// So the answer is a crossover in the fraction of buckets holding exactly one page, and both
-/// sides are measured here on one instrument. THE BUCKET-MAP SIDE IS PRICED WITH A STAND-IN VALUE
-/// OF THE RIGHT WIDTH -- a `BTreeMap`'s node cost depends on nothing else about the value -- and
-/// the stand-in's width is asserted against `size_of::<BucketNode>()` so a node that moves under
-/// this test breaks it rather than quietly re-pricing it.
+///   PAID, per SINGLE-PAGE bucket only: one heap allocation holding one entry, in BOTH byte
+///   columns. The served column is the one that decides; it is where a fresh allocation's rounding
+///   appears, and an inline payload has no rounding to pay.
+///
+/// SO THE ANSWER IS A CROSSOVER IN THE FRACTION OF BUCKETS HOLDING EXACTLY ONE PAGE, and what
+/// changed between #1964 and now is not the crossover but the FRACTION. #1964 measured on
+/// `load_shard`'s default of the whole `u32` routing keyspace, where every key lands in a bucket of
+/// its own by construction and the fraction is 100% for any workload. #1973 made 1023 the shipped
+/// default, where the same routed keys give 4.510% at 4,000 records and 0.000% at 40,000.
+///
+/// WHAT #1964 SAID KEPT THE ARM, AND IT IS THE HALF THAT DOES NOT INVERT: "one allocation per
+/// single-page bucket on the write path." That is still exactly one allocation. What inverted is how
+/// many buckets pay it -- a twentieth of them at the small corpus and none at the large one -- so
+/// the COST is a twentieth of what it was, and the saving is unchanged on every bucket.
+///
+/// AND THE ARM ITSELF SURVIVES. Boxing recovers the identical width dropping it would, measured, so
+/// the single-page case keeps a representation of its own; `inline_arm_trade.rs` is where dropping
+/// and boxing are separated, and it is separated on the heap rather than on the width.
 ///
 /// rust-internal: measures container footprint, no product behaviour
 #[cfg(feature = "alloc-probe")]
 #[test]
 #[ignore = "the counting allocator is process-wide; run by name"]
-fn the_one_arm_still_earns_its_place_and_this_is_the_fraction_where_it_would_not() {
-    // --- What the arm costs a bucket that holds one page: nothing on the heap. ---
+fn the_inline_entry_no_longer_earns_its_width_and_this_is_the_occupancy_where_it_would() {
+    // --- What the inline entry SAVED a bucket that holds one page: the whole heap cost of it. ---
     let pages = sorted_list(1);
     let single = pages[0].1.clone();
-    let mut inline = BlockIndexMap::default();
-    inline.insert_released(single.clone());
+    let mut listed = BlockIndexMap::default();
+    listed.insert_released(single.clone());
     assert!(
-        matches!(inline, BlockIndexMap::One(..)),
-        "one page did not take the inline arm, so this comparison is not about that arm"
+        matches!(listed, BlockIndexMap::One(..)),
+        "one page did not take the single-page arm, so this comparison is not about the arm that \
+         shipped"
     );
-    let (inline_bytes, inline_allocs) = span_counts(|| {
+    let (inline_bytes, inline_chunk, inline_allocs) = span_counts_both(|| {
+        let held = MirrorInlineArm::One(block_index_handle(&single), single.clone());
+        std::hint::black_box(&held);
+    });
+    let (listed_bytes, listed_chunk, listed_allocs) = span_counts_both(|| {
         let mut held = BlockIndexMap::default();
         held.insert_released(single.clone());
         std::hint::black_box(&held);
     });
-    let (spilled_bytes, spilled_allocs) = span_counts(|| {
-        let held: Vec<(u64, BlockIndex)> = vec![(block_index_handle(&single), single.clone())];
-        std::hint::black_box(&held);
-    });
     println!(
-        "  one page inline: {inline_bytes} B in {inline_allocs} alloc(s); the same page in a \
-         one-element list: {spilled_bytes} B in {spilled_allocs} alloc(s)"
+        "\n=== the two sides of #1964's trade, re-derived ==="
+    );
+    println!(
+        "  one page held INLINE (mirror): {inline_bytes} B asked / {inline_chunk} B served in \
+         {inline_allocs} alloc(s)"
+    );
+    println!(
+        "  the same page in the SHIPPED boxed arm: {listed_bytes} B asked / {listed_chunk} B served \
+         in {listed_allocs} alloc(s)"
+    );
+    assert_eq!(
+        0, inline_allocs,
+        "the inline mirror charged {inline_allocs} allocations; the inline entry's whole case was \
+         that it charges none, and if this is not zero the comparison has no baseline"
+    );
+    assert_eq!(
+        1, listed_allocs,
+        "the boxed arm charged {listed_allocs} allocations, not the one the inline entry avoided"
+    );
+    assert_eq!(
+        size_of::<BlockIndex>() as u64,
+        listed_bytes,
+        "the boxed arm asked for {listed_bytes} B to hold a {} B entry. A box is sized for exactly \
+         its payload, and that is the whole of its advantage over a one-entry LIST, whose first \
+         block is a growth step",
+        size_of::<BlockIndex>()
     );
     assert!(
-        spilled_allocs > inline_allocs,
-        "a one-element list charged {spilled_allocs} allocations against the inline arm's \
-         {inline_allocs}; if the list is not the one that allocates, the inline arm has no reason \
-         to exist"
+        listed_chunk > listed_bytes,
+        "the box asked for {listed_bytes} B and was served {listed_chunk} B; the served column is \
+         a FLOOR strictly above the request, and an equality means it is reporting the request back"
     );
 
-    // --- What the arm costs EVERY bucket: the width it adds to the node, through the bucket map.
+    // --- What the inline entry cost EVERY bucket: the width it added, through the bucket map. ---
+    //
+    // BOTH STAND-INS DERIVED, NOT WRITTEN. `WIDE_WORDS` and `NARROW_WORDS` are computed from
+    // `size_of`, so the next change to the page entry moves them instead of silently leaving this
+    // test pricing a node width the engine no longer has.
     const BUCKETS: u32 = 4_096;
-    type WideSlot = (u64, [u64; 23]);
-    type NarrowSlot = (u64, [u64; 12]);
-    let node_width_now = size_of::<BucketNode>();
-    let node_width_without = node_width_now - (size_of::<BlockIndexMap>() - size_of::<Vec<(u64, BlockIndex)>>());
+    const LIST_WIDTH: usize = size_of::<BlockIndexMap>();
+    const INLINE_ARM_WIDTH: usize = size_of::<u64>() + size_of::<BlockIndex>();
+    const NODE_NOW: usize = size_of::<BucketNode>();
+    const NODE_WITH_INLINE: usize = NODE_NOW + (INLINE_ARM_WIDTH - LIST_WIDTH);
+    const WIDE_WORDS: usize = (NODE_WITH_INLINE - 8) / 8;
+    const NARROW_WORDS: usize = (NODE_NOW - 8) / 8;
+    type WideSlot = (u64, [u64; WIDE_WORDS]);
+    type NarrowSlot = (u64, [u64; NARROW_WORDS]);
     assert_eq!(
-        node_width_now,
+        NODE_WITH_INLINE,
         size_of::<WideSlot>(),
-        "the stand-in for a bucket node is {} B against the node's {node_width_now} B; it is \
-         pricing the wrong width",
+        "the stand-in for a node with the entry held INLINE is {} B against the {NODE_WITH_INLINE} \
+         B such a node would be; the derivation above does not reconstruct and every figure below \
+         is over the wrong width",
         size_of::<WideSlot>()
     );
     assert_eq!(
-        node_width_without,
+        NODE_NOW,
         size_of::<NarrowSlot>(),
-        "the stand-in for a node without the inline arm is {} B against the {node_width_without} \
-         B such a node would be",
+        "the stand-in for the shipped node is {} B against the node's {NODE_NOW} B",
         size_of::<NarrowSlot>()
+    );
+    assert!(
+        NODE_WITH_INLINE > NODE_NOW,
+        "a node with the entry held inline would be {NODE_WITH_INLINE} B against the shipped \
+         {NODE_NOW} B; if the two are equal there was no width to recover"
     );
 
     let mut wide: BTreeMap<u32, WideSlot> = BTreeMap::new();
-    let (wide_bytes, _) = span_counts(|| {
+    let (wide_bytes, wide_chunk, _) = span_counts_both(|| {
         for i in 0..BUCKETS {
-            wide.insert(i, (i as u64, [0u64; 23]));
+            wide.insert(i, (i as u64, [0u64; WIDE_WORDS]));
         }
     });
     let mut narrow: BTreeMap<u32, NarrowSlot> = BTreeMap::new();
-    let (narrow_bytes, _) = span_counts(|| {
+    let (narrow_bytes, narrow_chunk, _) = span_counts_both(|| {
         for i in 0..BUCKETS {
-            narrow.insert(i, (i as u64, [0u64; 12]));
+            narrow.insert(i, (i as u64, [0u64; NARROW_WORDS]));
         }
     });
     std::hint::black_box((&wide, &narrow));
     assert!(
-        wide_bytes > narrow_bytes,
-        "a bucket map of {node_width_now}-byte nodes charged {wide_bytes} B and one of \
-         {node_width_without}-byte nodes charged {narrow_bytes} B; the narrower node is supposed \
-         to be the cheaper one and this instrument cannot see the difference"
+        wide_chunk > narrow_chunk,
+        "a bucket map of {NODE_WITH_INLINE}-byte nodes was served {wide_chunk} B and one of \
+         {NODE_NOW}-byte nodes {narrow_chunk} B; the narrower node is supposed to be the cheaper \
+         one and this instrument cannot see the difference"
     );
     let saved_per_bucket = (wide_bytes - narrow_bytes) as f64 / BUCKETS as f64;
-    let paid_per_single = (spilled_bytes.saturating_sub(inline_bytes)) as f64;
+    let saved_per_bucket_chunk = (wide_chunk - narrow_chunk) as f64 / BUCKETS as f64;
+    let paid_per_single = (listed_bytes.saturating_sub(inline_bytes)) as f64;
+    let paid_per_single_chunk = (listed_chunk.saturating_sub(inline_chunk)) as f64;
     println!(
-        "  through the bucket map, a node of {node_width_now} B costs {:.1} B a bucket and one of \
-         {node_width_without} B costs {:.1}: dropping the inline arm would save {saved_per_bucket:.1} B \
-         on EVERY bucket and pay {paid_per_single:.1} B on every SINGLE-PAGE one",
+        "  through the bucket map, a node of {NODE_WITH_INLINE} B costs {:.1} B asked / {:.1} B \
+         served a bucket and one of {NODE_NOW} B costs {:.1} / {:.1}",
         wide_bytes as f64 / BUCKETS as f64,
-        narrow_bytes as f64 / BUCKETS as f64
+        wide_chunk as f64 / BUCKETS as f64,
+        narrow_bytes as f64 / BUCKETS as f64,
+        narrow_chunk as f64 / BUCKETS as f64
     );
+    println!(
+        "  RE-DERIVED: boxing the inline entry SAVES {saved_per_bucket:.1} B asked / \
+         {saved_per_bucket_chunk:.1} B served on EVERY bucket and PAYS {paid_per_single:.1} B \
+         asked / {paid_per_single_chunk:.1} B served on every SINGLE-PAGE one"
+    );
+    println!("  #1964 recorded 160.9 B saved and 112.0 B paid, on the request column only");
     assert!(
-        paid_per_single > 0.0,
-        "a one-element list charged no more than the inline arm; the crossover below would be a \
+        paid_per_single_chunk > 0.0,
+        "the boxed arm was served no more than the inline entry; the crossover below would be a \
          division by a measurement that did not happen"
     );
-    let crossover = saved_per_bucket / paid_per_single;
+    let crossover = saved_per_bucket_chunk / paid_per_single_chunk;
     println!(
-        "  SO: dropping the `One` arm pays in BYTES wherever fewer than {:.1}% of buckets hold \
-         exactly one page",
+        "  SO: boxing the entry pays in BYTES wherever fewer than {:.1}% of buckets hold exactly \
+         one page (served column)",
         100.0 * crossover
     );
     println!(
-        "  MEASURED single-page fractions: 100.0% on the default whole keyspace at both corpus \
-         sizes; 2.54% at 4,000 records and 0.00% at 40,000 on 0..{NARROW_END} -- see \
-         the_page_list_length_distribution_is_reported_as_a_histogram"
+        "  MEASURED single-page fractions: 100.000% on the whole keyspace at both corpus sizes; \
+         4.510% at 4,000 records and 0.000% at 40,000 on 0..{NARROW_END} -- and 1023 is the SHIPPED \
+         default since #1973. See `inline_arm_trade.rs` for the histogram and for dropping the arm \
+         altogether priced beside these two."
     );
 
-    // THE ANSWER, AS A GUARD RATHER THAN AS PROSE. A fraction above 100% means there is NO
-    // occupancy at which the inline arm pays for itself in bytes -- not even the default range's
-    // 100% single-page store, which is the case the arm was written for. What keeps it is the
-    // allocation column: dropping it buys one heap allocation per single-page bucket, which on
-    // the default range is one per record on the write path. That is the whole of the argument
-    // for keeping it, and it is an allocation-count argument, not a byte one.
+    // THE GUARD, AND IT IS THE CROSSOVER RATHER THAN THE VERDICT.
     //
-    // If this ever reads BELOW 100%, the arm has started paying for itself again -- a node that
-    // narrowed, or a page entry that widened -- and the note above is stale rather than wrong.
+    // A crossover above 100% would mean there is NO occupancy at which the inline entry pays for
+    // itself in bytes. #1964 measured exactly that and its case therefore rested entirely on the
+    // allocation column. Below 100% there IS such an occupancy, and the question becomes whether the
+    // shipped routing range is above or below it -- which is what the default decides and what is
+    // asserted here.
+    //
+    // 0.04510 is the measured single-page fraction at 4,000 records on the shipped range, and it is
+    // the WORST of the two corpus sizes for this change: at 40,000 the fraction is zero. If the
+    // crossover ever falls below it, the inline entry has started paying for itself at the shipped
+    // default -- a node that narrowed further, or a page entry that widened -- and this change
+    // should be reconsidered rather than the assertion relaxed.
+    const WORST_SHIPPED_SINGLE_PAGE_FRACTION: f64 = 0.04510;
     assert!(
-        crossover > 1.0,
-        "the inline arm now pays for itself in bytes below {:.1}% single-page occupancy, which \
-         the default range exceeds; the reasoning recorded here is stale",
-        100.0 * crossover
+        crossover > WORST_SHIPPED_SINGLE_PAGE_FRACTION,
+        "the inline entry pays for itself in bytes below {:.3}% single-page occupancy, and the \
+         shipped routing range measures {:.3}% at its worst corpus size. On this reading boxing \
+         the entry is a LOSS at the default the operator runs, and the change should be reconsidered",
+        100.0 * crossover,
+        100.0 * WORST_SHIPPED_SINGLE_PAGE_FRACTION
     );
 }
 

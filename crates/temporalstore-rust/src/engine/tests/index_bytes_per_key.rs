@@ -64,6 +64,10 @@ fn object_index_arm(index: &ObjectIndex) -> &'static str {
     }
 }
 
+/// THREE ARMS STILL, AND THE MIDDLE ONE IS NOW A POINTER RATHER THAN AN INLINE ENTRY. A bucket
+/// holding one page still has a representation of its own, so the ladder this is checked against is
+/// the shared [`expected_arm`]; what changed is that the single-page arm costs eight bytes in the
+/// node instead of the width of a whole entry.
 fn block_index_map_arm(map: &BlockIndexMap) -> &'static str {
     match map {
         BlockIndexMap::Empty => "Empty",
@@ -193,6 +197,8 @@ fn every_inline_shape_collapses_back_on_a_fill_and_drain() {
 
     // --- BlockIndexMap: the retain() path, which is the OTHER way pages leave a bucket. ---
     // One page at a time, so the one-entry tail is visited exactly as the removal drain visits it.
+    // BOTH of the page index's collapses matter and both are on this ladder: at one entry the list
+    // becomes a box, and at zero the box goes too.
     {
         let mut live = crate::engine::state::BlockSlabLiveIndex::default();
         let mut map = BlockIndexMap::default();

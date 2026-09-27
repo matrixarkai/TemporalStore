@@ -289,6 +289,10 @@ fn pages_per_bucket(engine: &TemporalEngine) -> PagesPerBucket {
 }
 
 /// How many buckets sit in each arm of `BlockIndexMap`: (Empty, One, Many).
+///
+/// The `One` arm holds its page behind a POINTER rather than inline, so it costs eight bytes in the
+/// node plus one allocation instead of the width of a whole entry. `inline_arm_trade.rs` is the
+/// measurement that moved it, and this range is the reason it moved.
 fn block_index_arms(engine: &TemporalEngine) -> (usize, usize, usize) {
     let shards = engine.shards.read().expect("engine lock poisoned");
     let shard = shards.get(&1).expect("shard is loaded");
