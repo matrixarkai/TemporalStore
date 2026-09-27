@@ -133,8 +133,16 @@ fn budget() -> Vec<Budgeted> {
             name: "BlockIndexMap",
             size: size_of::<BlockIndexMap>(),
             align: align_of::<BlockIndexMap>(),
-            // Widest arm: One(u64, BlockIndex). The discriminant rides a niche in the page.
-            fields: size_of::<u64>() + size_of::<BlockIndex>(),
+            // WIDEST ARM: `Many(Vec<(u64, BlockIndex)>)` -- the page list's header, and nothing
+            // wider. The single-page arm holds a handle and a BOX, which is sixteen bytes, and both
+            // it and `Empty` ride pointer niches so neither adds a discriminant word.
+            //
+            // IT USED TO BE `u64 + BlockIndex`, the whole entry held inline, and that is what made
+            // this the widest field of `BucketNode`. Leaving that spelling here after the arm was
+            // boxed did not fail as a width -- it failed as an IMPOSSIBILITY: the row's fields added
+            // up to 80 inside a 24-byte struct, which is the check three lines of arithmetic below
+            // and the reason it exists rather than a plain width pin.
+            fields: size_of::<Vec<(u64, BlockIndex)>>(),
             per_item: true,
         },
         Budgeted {

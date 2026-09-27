@@ -1204,15 +1204,45 @@ fn the_entry_is_seventy_two_bytes_and_every_one_is_accounted_for() {
     );
     assert!(slack < 8, "a slack of {slack} means a whole word is unaccounted for");
 
-    // And the map arm and the node, which carry the entry inline.
-    assert_eq!(
+    // AND THE MAP ARM, WHICH NO LONGER CARRIES THE ENTRY INLINE.
+    //
+    // This used to assert `BlockIndexMap == 8 + size_of::<BlockIndex>()` -- a handle plus an inline
+    // entry -- and that was the relation that made narrowing the entry worth a word off every
+    // `BucketNode` in the `BucketMap`. The single-page arm now holds a POINTER, so the page index is
+    // a bare container header and its width is INDEPENDENT of the entry's.
+    //
+    // WHICH MEANS THE NARROWING MEASURED ABOVE IS STILL WORTH SOMETHING, BUT SOMEWHERE ELSE: on the
+    // HEAP rather than in the node. Every boxed single-page arm and every element of every page list
+    // is sixteen bytes smaller for it. The node banked its share once, and once only, whichever of
+    // the two changes landed second.
+    //
+    // The relation is asserted in the NEGATIVE so this cannot silently become true again: an entry
+    // back inside the page index would put the width of the whole structure back on every bucket.
+    let arm = size_of::<crate::engine::state::BlockIndexMap>();
+    assert_ne!(
         8 + size_of::<BlockIndex>(),
-        size_of::<crate::engine::state::BlockIndexMap>(),
-        "the `One` arm is a handle plus an inline entry"
+        arm,
+        "the page index is {arm} B, which is a handle plus a whole entry again -- the inline arm has \
+         come back and every bucket in the map is paying the entry's width whether it holds one page \
+         or fifty"
+    );
+    assert_eq!(
+        size_of::<Vec<(u64, BlockIndex)>>(),
+        arm,
+        "the page index is {arm} B against its own page list's {} B; it is supposed to be exactly \
+         that header, with both other arms riding pointer niches",
+        size_of::<Vec<(u64, BlockIndex)>>()
+    );
+    assert!(
+        arm < size_of::<BlockIndex>(),
+        "the page index is {arm} B and a single entry is {} B; the index must be too narrow to hold \
+         one inline, or the entry is back in the node",
+        size_of::<BlockIndex>()
     );
     println!(
-        "  BlockIndexMap {} B, BucketNode {} B",
-        size_of::<crate::engine::state::BlockIndexMap>(),
+        "  BlockIndexMap {arm} B (a bare page-list header -- INDEPENDENT of the entry's width now), \
+         BucketNode {} B. The sixteen bytes measured above are banked on the HEAP: in every boxed \
+         arm and every list element, not in the node.",
         size_of::<crate::engine::state::BucketNode>()
     );
 }
