@@ -27,6 +27,15 @@
 //! would leave it at 24. Packing the optional half is therefore not a question about two fields any
 //! more: it is a question about whether an object identity fits in eight bits.
 //!
+//! AND IT DOES NOT HAVE TO, because the identity does not have to be STORED to be available.
+//! Nothing bounds the objects in a routing bucket at 256, so an eight-bit identity is not on offer
+//! -- but `the_object_id_on_a_live_page_entry_is_the_hash_of_fields_beside_it` measures the other
+//! shape the arithmetic allows, the field GONE, and finds the stored id is
+//! `stable_block_object_id(shard, kind, key, component)` on 2,524 of 2,524 live page entries and on
+//! 20,632 of 20,632, differing on none. So the question the width turns on is not how narrow an
+//! identity can be. It is what a read site that cannot recompute one would do, and `block_store`'s
+//! note on `BlockAddress` carries that answer: read MISSING for an acked write, silently.
+//!
 //! `the_optional_payload_is_paid_for_on_every_live_address` measures that number. It is the whole
 //! task, and it is measured before anything else here.
 //!
@@ -2589,4 +2598,230 @@ fn two_buckets_holding_one_object_id_are_reported_as_one_object() {
          would read 1 for one object with two pages in ONE bucket too, which is why it is not a \
          detector for the same id in two buckets."
     );
+}
+
+// =================================================================================================
+// IS THE OBJECT ID A CACHE OF A PURE FUNCTION OF FIELDS THE ENTRY ALREADY HOLDS?
+//
+// The header above says the only two shapes that reach 16 bytes are `object_id` at ONE byte or
+// `object_id` GONE, because the payload without it is 15. An eight-bit object identity is not
+// available -- nothing bounds the objects in a routing bucket at 256 -- so the question is whether
+// the field can LEAVE, which is the question of whether anything reads a value it could not
+// recompute.
+//
+// `BlockIndex` holds `object_key`, `model_id` and `component`, and `ShardState` holds the shard, so
+// `stable_block_object_id(shard, kind, key, component)` is computable at every page entry. #1974
+// established that derivation at about thirty sites, `index_log` already STRIPS a derivable id from
+// the row it writes (`a_row_does_not_write_the_object_id_it_can_derive`), and the entry's own
+// `object_id()` doc says the write path puts the computed id into the address. So the claim is that
+// the in-memory field is the last copy of a value three other layers already derive.
+//
+// This census is the measurement of that claim over live page entries, at two corpus sizes. It is
+// the same shape as the census that retired `generation`: the field is a copy on every live
+// address, or it is not.
+// =================================================================================================
+
+/// What a walk of the bucket index found about the stored id against the derived one.
+#[derive(Default, Debug)]
+struct DerivationCensus {
+    /// Live page entries walked. The denominator of every row below.
+    entries: usize,
+    /// The stored id is present and equals `stable_block_object_id(shard, kind, key, component)`.
+    agree: usize,
+    /// The stored id is present and DIFFERS from the derivation. Every one of these is a page the
+    /// field could not be removed from.
+    differ: usize,
+    /// No stored id at all. These are already answered by the fallback the read sites carry.
+    absent: usize,
+    /// Entries carrying a component, so a reader can see the fixture exercised the folded input
+    /// rather than only the two-field form.
+    with_component: usize,
+    /// Distinct derived ids, so a fixture that gave every page the same identity cannot report
+    /// agreement as a property of the derivation.
+    distinct_derived: std::collections::HashSet<u64>,
+}
+
+impl DerivationCensus {
+    fn report(&self, label: &str) {
+        let pct = |n: usize| {
+            if self.entries == 0 {
+                0.0
+            } else {
+                100.0 * n as f64 / self.entries as f64
+            }
+        };
+        println!(
+            "[{label}] entries={} agree={} ({:.2}%) differ={} ({:.2}%) absent={} ({:.2}%) \
+             with_component={} distinct_derived_ids={}",
+            self.entries,
+            self.agree,
+            pct(self.agree),
+            self.differ,
+            pct(self.differ),
+            self.absent,
+            pct(self.absent),
+            self.with_component,
+            self.distinct_derived.len(),
+        );
+    }
+}
+
+/// Walk every page entry in the bucket index and compare the stored id to the derived one.
+fn derivation_census(engine: &TemporalEngine, shard_id: ShardId) -> DerivationCensus {
+    let shards = engine.shards.read().expect("engine lock poisoned");
+    let shard = shards.get(&shard_id).expect("shard is loaded");
+    let mut c = DerivationCensus::default();
+    for bucket in shard.bucket_index.bucket_map.values() {
+        for (_, page) in bucket.block_index.iter() {
+            c.entries += 1;
+            if page.component.is_some() {
+                c.with_component += 1;
+            }
+            let derived = crate::engine::hashing::stable_block_object_id(
+                shard_id,
+                page.model_id.as_str(),
+                &page.object_key,
+                page.component.as_deref(),
+            );
+            c.distinct_derived.insert(derived);
+            match page.address.object_id() {
+                Some(stored) if stored == derived => c.agree += 1,
+                Some(_) => c.differ += 1,
+                None => c.absent += 1,
+            }
+        }
+    }
+    c
+}
+
+/// Hash keys and fields the census seeds, so the component-bearing denominator is derived from the
+/// fixture rather than restated as a literal beside the assertion that reads it.
+const HASH_KEYS: usize = 64;
+const HASH_FIELDS: usize = 8;
+
+/// THE MEASUREMENT THE FLOOR TURNS ON, at two corpus sizes.
+///
+/// If the stored id equals the derivation on every live page entry, the field is a cache and the
+/// address can shed it -- payload 15, tail 7, and the struct is 16. If it differs on any entry,
+/// that entry is a page whose identity is not recoverable from what sits beside it, and the floor
+/// is 24 for the reason the file states.
+#[test]
+#[ignore]
+fn the_object_id_on_a_live_page_entry_is_the_hash_of_fields_beside_it() {
+    for (label, strings_n, series_keys, series_points) in [
+        ("8k", 2_000, 12, 500),
+        ("80k", 20_000, 120, 500),
+    ] {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let engine = new_engine(dir.path());
+        let (strings, points) = seed(&engine, strings_n, series_keys, series_points);
+        // Containers too, so the population includes the COMPONENT-folded shape rather than only
+        // the two-field one. Without these `with_component` is zero and the row that matters most
+        // is vacuous.
+        let mut commands = Vec::new();
+        for k in 0..HASH_KEYS {
+            for f in 0..HASH_FIELDS {
+                commands.push(Command::HashSet {
+                    key: format!("h{k}"),
+                    field: format!("f{f}"),
+                    value: vec![b'h'; 24],
+                });
+            }
+        }
+        let response = engine.batch_execute(crate::types::BatchExecuteRequest {
+            shard_id: 1,
+            commands,
+        });
+        assert!(response.status.ok, "hash seed must ack: {:?}", response.status);
+
+        let c = derivation_census(&engine, 1);
+        c.report(label);
+
+        // NON-VACUITY, asserted before any verdict is read off the counts.
+        //
+        // THE DENOMINATOR IS NOT THE RECORD COUNT, and the first version of this assertion said it
+        // was. A feature series holds ONE page per key, not one per point -- the points are packed
+        // into it -- so `points` seeded records produce `series_keys` page entries. The first run
+        // reported 2,524 entries against 8,000 seeded records and the assertion fired, which is the
+        // only reason this is written down rather than assumed: the population is one page per
+        // string, one per hash FIELD (the component is folded into the id, so a field is its own
+        // object), and one per series.
+        let expected_pages = strings_n + HASH_KEYS * HASH_FIELDS + series_keys;
+        assert_eq!(
+            expected_pages, c.entries,
+            "[{label}] the census must walk exactly one page per string ({strings_n}), one per \
+             hash field ({} = {HASH_KEYS} keys x {HASH_FIELDS} fields) and one per feature series \
+             ({series_keys}) -- {expected_pages} in total, got {}. {points} points were seeded and \
+             they are PACKED into the series pages rather than held one page each, so the record \
+             count is not this denominator.",
+            HASH_KEYS * HASH_FIELDS,
+            c.entries
+        );
+        assert!(
+            strings > 0 && points > 0,
+            "[{label}] the seed must have written both strings ({strings}) and points ({points})"
+        );
+        assert_eq!(
+            HASH_KEYS * HASH_FIELDS,
+            c.with_component,
+            "[{label}] the fixture must produce exactly {} component-bearing entries, got {} -- a \
+             census with no component never exercises the folded input, which is the input the \
+             whole derivation turns on",
+            HASH_KEYS * HASH_FIELDS,
+            c.with_component
+        );
+        assert!(
+            c.distinct_derived.len() > c.entries / 2,
+            "[{label}] {} distinct derived ids over {} entries: a fixture that collapses \
+             identities would report agreement without testing the derivation",
+            c.distinct_derived.len(),
+            c.entries
+        );
+
+        // THE VERDICT. A control at 0.00%: no live page entry stores an id the fields beside it do
+        // not reproduce.
+        assert_eq!(
+            0, c.differ,
+            "[{label}] {} of {} live page entries store an object id that is NOT \
+             stable_block_object_id(shard, kind, key, component). Each one is a page the field \
+             cannot be removed from.",
+            c.differ, c.entries
+        );
+        assert_eq!(
+            c.entries,
+            c.agree + c.absent,
+            "[{label}] every entry must either agree or carry no id at all"
+        );
+    }
+}
+
+/// THE DETECTOR CAN FIRE, so the 0.00% above is a measurement and not a tautology.
+///
+/// Perturbing one character of the key changes the derivation, and the census must then report the
+/// entry as DIFFERING. Without this arm a `derivation_census` that compared a value against itself
+/// -- or read the same field twice -- would report agreement on everything and look like a result.
+#[test]
+fn the_derivation_census_reports_a_differing_id_when_one_exists() {
+    let shard_id: ShardId = 1;
+    let key = "tenant/1/probe";
+    let component = Some("f3");
+    let real = crate::engine::hashing::stable_block_object_id(shard_id, "hash", key, component);
+    let perturbed_key = crate::engine::hashing::stable_block_object_id(shard_id, "hash", "tenant/1/probf", component);
+    let perturbed_kind = crate::engine::hashing::stable_block_object_id(shard_id, "string", key, component);
+    let perturbed_component = crate::engine::hashing::stable_block_object_id(shard_id, "hash", key, Some("f4"));
+    let dropped_component = crate::engine::hashing::stable_block_object_id(shard_id, "hash", key, None);
+    let perturbed_shard = crate::engine::hashing::stable_block_object_id(2, "hash", key, component);
+    for (what, other) in [
+        ("key", perturbed_key),
+        ("kind", perturbed_kind),
+        ("component", perturbed_component),
+        ("component dropped", dropped_component),
+        ("shard", perturbed_shard),
+    ] {
+        assert_ne!(
+            real, other,
+            "the derivation must depend on the {what}, or the census cannot tell a matching id \
+             from a coincidence"
+        );
+    }
 }

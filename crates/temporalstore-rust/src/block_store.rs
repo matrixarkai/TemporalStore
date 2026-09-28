@@ -398,13 +398,48 @@ pub struct BlockAddress {
 /// exactly zero" is worth the WHOLE STEP once the bucket is gone; what was wrong was not the
 /// arithmetic but treating a per-field verdict as a verdict on the field.
 ///
-/// THE FLOOR IS 24 WHILE `object_id` IS A HASH. Reaching 16 needs a payload of 16, and the address
-/// word (8) plus a 64-bit `object_id` (8) is already all of it -- before the length, the block id
-/// or the presence byte. So `object_id` is the only field between this structure and 16 bytes, and
-/// the reader that pins it at 64 bits is `engine::block_in_wal::read_block`, which resolves a
-/// durably-acked page out of the WAL through a registry keyed `(store, shard, object_id)` with no
-/// bucket in it. A per-bucket ordinal cannot address that registry. See
-/// `engine::tests::address_footprint` for the measurement.
+/// THE FLOOR IS 24 WHILE `object_id` IS HELD, and the payload arithmetic says the field has to
+/// LEAVE rather than narrow. Reaching 16 needs a tail of 8 over an eight-aligned group of 8, and
+/// the tail is `object_id` plus the length (4), the block id (2) and the presence byte (1). So
+/// `object_id` at four bytes leaves a tail of 11 and the struct at 24, at two bytes a tail of 9 and
+/// the struct at 24, and only at ONE byte or GONE does the tail fit. That is this file's own rule
+/// read forwards: a narrowing of one field is worth nothing, and here even the narrowing is worth
+/// nothing unless it goes all the way.
+///
+/// AND THE FIELD IS A CACHE OF A PURE FUNCTION OF FIELDS THE ENTRY ALREADY HOLDS, which is what
+/// decides it. `BlockIndex` carries `object_key`, `model_id` and `component` beside this address
+/// and `ShardState` carries the shard, so `stable_block_object_id(shard, kind, key, component)` is
+/// computable wherever a page entry is. Measured by
+/// `engine::tests::address_footprint::the_object_id_on_a_live_page_entry_is_the_hash_of_fields_beside_it`
+/// over every live page entry at two corpus sizes: the stored id equalled that derivation on 2,524
+/// of 2,524 entries and on 20,632 of 20,632, and differed on NONE. #1974 established the derivation
+/// at about thirty sites, `index_log` already STRIPS a derivable id from the row it writes
+/// (`a_row_does_not_write_the_object_id_it_can_derive`), and the read sites already carry
+/// `unwrap_or_else(|| stable_block_object_id(..))`. The in-memory field is the last copy.
+///
+/// WHAT ACTUALLY PINS IT, and it is NOT the registry's key. The claim here used to be that
+/// `engine::block_in_wal::read_block` resolves a durably-acked page through a registry keyed
+/// `(store, shard, object_id)` "with no bucket in it", and that a per-bucket ordinal cannot address
+/// that registry. The second half is true and the first half is not the constraint: that registry is
+/// live-path state that is NEVER PERSISTED -- a reload replays the WAL and `register_at` refills it
+/// from the index -- so re-keying it costs nothing durable, and `read_block_bytes` already takes the
+/// routing bucket as an argument and uses it two lines above the call to build its cache key. The
+/// bucket is in hand. The field does not need an ordinal; it needs to be RECOMPUTED.
+///
+/// THE REAL CONSTRAINT IS THAT AN OMISSION AT A READ SITE IS SILENT. `read_block` is what serves a
+/// page whose only durable copy is its WAL record, so a reader that cannot supply the identity does
+/// not read a stale page -- it reads MISSING for a durably acknowledged write, which is the exact
+/// hole `block_in_wal` exists to close. The routing bucket could be threaded as an `Option` because
+/// an absent bucket only weakens a cache key; an absent identity loses data on read. So the field
+/// can leave only behind an identity the COMPILER demands at every one of those sites -- the
+/// doctrine `compaction::compact_block_addresses` already states, where `Item = (u32, &mut
+/// BlockAddress)` "makes the caller say it, and the compiler name any caller that cannot". An
+/// `Option<u64>` threaded to the same sites would compile with `None` and lose a page quietly.
+///
+/// AND IT MOVES EVERY REF ON DISK, because `generation` is `block_id.or(object_id)` and
+/// `state::block_index_handle` hashes the generation while `state::block_index_written_key` renders
+/// it into the stored ref key. For a WAL-resident page the block id is absent, so the generation IS
+/// the object id and both the handle and the written key move with it.
 const _: () = assert!(std::mem::size_of::<BlockAddress>() == 24);
 
 /// The width is a RECONSTRUCTION, not a total: the eight-aligned group plus the rounded tail.
