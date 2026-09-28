@@ -101,6 +101,10 @@ const KEYS_PER_KIND: usize = 4;
 /// The element payload width, held equal across kinds so a byte figure is comparable between them.
 const VALUE_WIDTH: usize = 32;
 
+/// The batch width the control projects at: the widest the read-side row prices, so the control is
+/// checked against the most favourable projection this module reports rather than a gentle one.
+const CONTROL_BATCH_WIDTH: usize = 128;
+
 fn engine_on(dir: &std::path::Path) -> TemporalEngine {
     TemporalEngine::with_local_dirs(
         64 * 1024 * 1024,
@@ -263,6 +267,52 @@ fn entries_and_pages(engine: &TemporalEngine, kind: &str, object_key: &str) -> (
         }
     }
     (entries, pages.len())
+}
+
+/// THE BATCHING ARITHMETIC THE WHOLE MODULE IS ABOUT, IN ONE FUNCTION.
+///
+/// If a page held `elements_per_page` elements and each page were filed as one entry -- the shape
+/// the timestamped kinds already run, described in this module's header -- an object of
+/// `elements_per_object` elements would file this many entries. It is the projection the prize rows
+/// above talk about, written once so the control below checks the SAME arithmetic the module
+/// claims rather than a restatement of it.
+fn projected_entries_per_object(elements_per_object: usize, elements_per_page: usize) -> usize {
+    assert!(
+        elements_per_page > 0,
+        "a page holding no elements is not a batching scheme, and the division below would be \
+         undefined"
+    );
+    elements_per_object.div_ceil(elements_per_page)
+}
+
+/// THE CONTROL'S ASSERTION, AND IT HAS TO BE ABLE TO FAIL.
+///
+/// Both numbers reach this function from the run: `measured` is entries per object counted off the
+/// engine's own page index, `projected` is `projected_entries_per_object` applied to the elements
+/// the fixture actually wrote. Neither is a literal, so a kind whose filing moved, or a projection
+/// that stopped predicting it, changes the percentage and fails here.
+///
+/// `the_control_assertion_goes_red_when_the_projection_moves_the_row` drives it red, because a
+/// control that has never been shown to fail is indistinguishable from a comment.
+fn assert_batching_projects_no_change(kind: &str, measured: f64, projected: f64) -> f64 {
+    assert!(
+        measured > 0.0,
+        "the {kind} control measured {measured} entries an object. A zero denominator makes the \
+         percentage below undefined, and a fixture that wrote nothing reaches exactly this"
+    );
+    let change = 100.0 * (projected / measured - 1.0);
+    println!(
+        "  {kind:<7} measured {measured:>6.2} entries/object, projected {projected:>6.2}, \
+         change {change:+.2}%"
+    );
+    assert!(
+        change.abs() < f64::EPSILON,
+        "the {kind} control moved by {change:+.2}% -- {measured} entries an object measured \
+         against {projected} projected. A control is a row batching cannot move; this one moved, \
+         so either the kind no longer files one entry an element or the projection no longer \
+         describes it"
+    );
+    change
 }
 
 /// A histogram of one integer, reported with its denominator and never as a mean.
@@ -795,10 +845,26 @@ fn what_one_element_read_fetches_today_and_what_a_batched_page_would_fetch() {
     );
 }
 
-/// THE STRING CONTROL, AT 0.00%.
+/// THE STRING CONTROL, AT 0.00%, WITH BOTH SIDES DERIVED FROM THE RUN.
 ///
-/// A string key owns one page and one index entry already, so batching predicts no change for it.
-/// A measurement that moved this row would be measuring the fixture and not the representation.
+/// A string key owns one page and one index entry already, so batching predicts no change for it,
+/// and a measurement that moved this row would be measuring the fixture and not the
+/// representation.
+///
+/// BOTH SIDES COME OFF THE RUN, WHICH IS THE POINT. The measured side is entries per object
+/// counted off the engine's page index by `entries_and_pages`; the projected side is
+/// `projected_entries_per_object` applied to the elements this fixture actually wrote, at the
+/// widest batch width the module prices. Two literals divided by each other would print the same
+/// `+0.00%` on a run where the string kind had started filing ten entries an object, because
+/// neither literal reads anything -- and this row is cited as evidence elsewhere in the module, so
+/// it has to be able to go red.
+///
+/// THE PER-KEY ASSERTION PINS THE PAGE, NOT THE ENTRY, and that is deliberate. It used to assert
+/// the pair `(entries, pages) == (1, 1)`. Leaving the entries half there would settle the measured
+/// side before the control ever looked at it, and an assertion whose subject an earlier stage has
+/// already fixed passes under any mutation of the thing it claims to watch. So the entries half is
+/// carried BY the control, where a drift shows up as a percentage rather than as a tuple mismatch,
+/// and the page half stays where it was.
 #[test]
 fn the_string_control_has_nothing_for_batching_to_win() {
     let dir = tempfile::tempdir().expect("tempdir");
@@ -815,30 +881,94 @@ fn the_string_control_has_nothing_for_batching_to_win() {
     );
 
     let mut rows = 0usize;
+    let mut total_entries = 0usize;
     for k in 0..KEYS_PER_KIND {
         let key = format!("s{k}");
         let (entries, pages) = entries_and_pages(&engine, "string", &key);
         assert_eq!(
-            (entries, pages),
-            (1, 1),
-            "a string key must hold one entry over one page; {key} holds {entries} over {pages}"
+            pages, 1,
+            "a string key must hold its value over one page; {key} holds {pages}"
         );
+        total_entries += entries;
         rows += 1;
     }
     assert_eq!(
         rows, KEYS_PER_KIND,
         "denominator: the control walked {rows} keys and not {KEYS_PER_KIND}"
     );
-
-    // Batching this kind cannot reduce anything: the projected count equals the measured one.
-    let measured = 1.0f64;
-    let projected = 1.0f64;
-    let change = 100.0 * (projected / measured - 1.0);
-    println!("string control: 1 entry/object measured, 1 projected, change {change:+.2}%");
     assert!(
-        change.abs() < f64::EPSILON,
-        "the control moved by {change:+.2}%, so it is not a control"
+        total_entries > 0,
+        "denominator: the control walked {rows} string keys and found no index entry at all, so \
+         the percentage below would be measuring an empty store"
     );
+
+    // ONE element per string key, counted off the fixture rather than assumed: the write loop
+    // above issues exactly one `StringSet` for each of `KEYS_PER_KIND` keys, and a later value for
+    // the same key replaces rather than adds.
+    let elements_written = KEYS_PER_KIND;
+    let elements_per_object = elements_written / rows;
+
+    // MEASURED: entries an object, off the engine's page index.
+    let measured = total_entries as f64 / rows as f64;
+    // PROJECTED: the same batching arithmetic the prize rows use, applied to the element
+    // population this fixture wrote.
+    let projected =
+        projected_entries_per_object(elements_per_object, CONTROL_BATCH_WIDTH) as f64;
+
+    println!(
+        "string control: {total_entries} entries over {rows} keys, {elements_per_object} \
+         element(s) an object, batch width {CONTROL_BATCH_WIDTH}"
+    );
+    assert_batching_projects_no_change("string", measured, projected);
+}
+
+/// THE CONTROL ASSERTION GOES RED WHEN THE PROJECTION MOVES THE ROW.
+///
+/// The control above passes because a string object holds ONE element, so packing elements into a
+/// page has nothing to pack -- not because the two numbers were written down equal. This drives
+/// the same two functions against a kind that genuinely batches: a hash object of `SMALL_ELEMENTS`
+/// fields files one entry per field today, and the projection packs all of them into a single page
+/// at `CONTROL_BATCH_WIDTH`. The percentage is large and negative and the assertion must fire.
+///
+/// It is the SAME `assert_batching_projects_no_change` the control calls, reached through the same
+/// `projected_entries_per_object`, on a real engine -- so what is proved is that the control's
+/// checker fails when the thing it watches moves, and that the string row's `+0.00%` is a property
+/// of the string kind rather than of the arithmetic.
+///
+/// rust-internal: drives HashSet and the module's own control arithmetic, no external surface
+#[test]
+#[should_panic(expected = "A control is a row batching cannot move")]
+fn the_control_assertion_goes_red_when_the_projection_moves_the_row() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let engine = engine_on(dir.path());
+    load_on(&engine, NARROW_END);
+    run_batch(
+        &engine,
+        (0..SMALL_ELEMENTS)
+            .map(|f| Command::HashSet {
+                key: "control-perturbed".to_string(),
+                field: format!("f{f}"),
+                value: vec![b'v'; VALUE_WIDTH],
+            })
+            .collect(),
+    );
+
+    let (entries, _pages) = entries_and_pages(&engine, "hash", "control-perturbed");
+    assert_eq!(
+        entries, SMALL_ELEMENTS,
+        "the perturbation fixture filed {entries} entries for {SMALL_ELEMENTS} fields, so it is \
+         not the batching kind this proof needs and a panic below would prove nothing"
+    );
+
+    let measured = entries as f64;
+    let projected =
+        projected_entries_per_object(SMALL_ELEMENTS, CONTROL_BATCH_WIDTH) as f64;
+    assert!(
+        projected < measured,
+        "the projection did not move the row ({projected} against {measured}), so this test would \
+         pass the control and prove nothing about its ability to fail"
+    );
+    assert_batching_projects_no_change("hash", measured, projected);
 }
 
 // =================================================================================================
