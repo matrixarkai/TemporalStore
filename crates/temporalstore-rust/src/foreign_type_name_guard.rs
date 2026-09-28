@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 MatrixArkAI
 //! NO FOREIGN TYPE NAMES IN RUST SOURCE.
 //!
 //! The vocabulary scrub every change here runs covers vendor IDENTITY -- product and company
