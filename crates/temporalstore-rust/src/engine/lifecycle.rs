@@ -1316,6 +1316,10 @@ impl TemporalEngine {
                         shard_id,
                         &page.bytes,
                         Some(item.object_id),
+                        // Taken off the carried page rather than re-derived: this arm is
+                        // installing the page the record carried, so the element it is
+                        // installing is the one the record says it is.
+                        page.component.as_deref(),
                         Some(item.routing_bucket),
                         false,
                     ) {
@@ -1876,9 +1880,14 @@ impl TemporalEngine {
         if ordered.len() <= keep {
             return 0;
         }
+        // The element term is dropped here on purpose, and it costs nothing today: the only pages
+        // this stage can materialise are `shard.strings`, whose component is `None`, so a page key
+        // and its object id are the same number for every page that reaches
+        // `materialize_resident_blocks_where` below. A container element still has no path out of
+        // the log through this stage -- that was true before this change and is unchanged by it.
         let retiring: std::collections::HashSet<u64> = ordered[..ordered.len() - keep]
             .iter()
-            .map(|(_, object_id)| *object_id)
+            .map(|(_, (object_id, _))| *object_id)
             .collect();
         self.materialize_resident_blocks_where(shard_id, |object_id| retiring.contains(&object_id))
     }
@@ -1936,6 +1945,8 @@ impl TemporalEngine {
                 &self.block_store,
                 shard_id,
                 &address,
+                // This loop walks `shard.strings`, whose pages ARE their whole object.
+                None,
                 Some(routing_bucket),
             ) else {
                 continue;
@@ -1946,6 +1957,7 @@ impl TemporalEngine {
                 shard_id,
                 &bytes,
                 Some(object_id),
+                None,
                 Some(routing_bucket),
                 false,
             ) else {
@@ -1966,12 +1978,20 @@ impl TemporalEngine {
                     );
                     // The index no longer names a synthetic slab for this object, so nothing can
                     // resolve through its record any more.
-                    shard.wal_resident_blocks.remove(&object_id);
+                    //
+                    // `None` is the kind, not a default: this loop walks `shard.strings` and
+                    // re-files under `"string"` with `None` four lines up, so the page it is
+                    // retiring is a whole-object page and its folded key is the object id itself.
+                    shard
+                        .wal_resident_blocks
+                        .remove(&super::block_in_wal::wal_resident_key(object_id, None));
                 }
             }
             // Retire the registration too. It is what pins the WAL retention floor, and a floor
             // held by a page that is now in the block store stops reclaim for no reason.
-            super::block_in_wal::deregister(&self.block_store, shard_id, object_id);
+            // `None` for the same reason the removal above passes it: this loop retires string
+            // pages, which ARE their whole object.
+            super::block_in_wal::deregister(&self.block_store, shard_id, object_id, None);
             moved += 1;
         }
         moved
@@ -2037,20 +2057,50 @@ impl TemporalEngine {
     /// The append path learns a page's log id by writing the record; a reload learns it by
     /// reading the index. Both end up in the same table, which is why no read path had to
     /// change for this to work.
+    /// The component comes from the INDEX ENTRY, not from the map.
+    ///
+    /// A registration names a page, and a page is an object plus an element. The persisted map
+    /// carries only the folded key (see `block_in_wal::wal_resident_key`), so the element has to
+    /// be read back from the place that has always held it: `BlockIndex::component`, sitting on
+    /// the same page entry as the address whose object id this is. Walking the index rather than
+    /// re-reading each record keeps this a pure in-memory pass over state the load has already
+    /// built -- no extra log I/O on the load path.
+    ///
+    /// Registering with the wrong element would be worse than registering nothing: the entry would
+    /// resolve a record and then fail to find its page inside it, which is a miss with the cost of
+    /// a record read. So a page whose folded key is not in the map is skipped, and only an exact
+    /// match registers.
     pub(super) fn rehydrate_wal_resident_blocks(&self, shard_id: ShardId) {
         let shards = self.shards.read().expect("engine lock poisoned");
         let Some(shard) = shards.get(&shard_id) else {
             return;
         };
-        for (object_id, placement) in &shard.wal_resident_blocks {
-            super::block_in_wal::register_at(
-                &self.block_store,
-                shard_id,
-                *object_id,
-                placement.log_id,
-                placement.sequence,
-                &self.wal_store,
-            );
+        if shard.wal_resident_blocks.is_empty() {
+            return;
+        }
+        for bucket in shard.bucket_index.bucket_map.values() {
+            for page in bucket.block_index.values() {
+                if page.deleted {
+                    continue;
+                }
+                let Some(object_id) = page.address.object_id() else {
+                    continue;
+                };
+                let component = page.component.as_deref();
+                let folded = super::block_in_wal::wal_resident_key(object_id, component);
+                let Some(placement) = shard.wal_resident_blocks.get(&folded) else {
+                    continue;
+                };
+                super::block_in_wal::register_at(
+                    &self.block_store,
+                    shard_id,
+                    object_id,
+                    component,
+                    placement.log_id,
+                    placement.sequence,
+                    &self.wal_store,
+                );
+            }
         }
     }
 
@@ -2282,7 +2332,14 @@ impl TemporalEngine {
                         // rehydrates it instead of rediscovering that it cannot.
                         wal_resident_updates.extend(record.staged_blocks.iter().map(|page| {
                             (
-                                page.object_id,
+                                // The record says which element each page is, so replay files one
+                                // entry PER PAGE. Keyed on the object alone, a record carrying
+                                // several elements of one key would file one entry and the pages
+                                // that lost would be unreachable after the next reload.
+                                super::block_in_wal::wal_resident_key(
+                                    page.object_id,
+                                    page.component.as_deref(),
+                                ),
                                 crate::engine::state::WalResidentBlock {
                                     log_id,
                                     sequence: record.sequence,

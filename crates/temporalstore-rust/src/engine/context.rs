@@ -873,7 +873,16 @@ pub(super) fn load_context_node_vector(
         .and_then(|fields| fields.get(CONTEXT_NODE_FIELD))
         .or_else(|| shard.context_nodes.get(&object_key))
         .and_then(|address| {
-            super::read_block_shared(cache, block_store, shard_id, address, routing_bucket)
+            super::read_block_shared(
+                cache,
+                block_store,
+                shard_id,
+                address,
+                // Both readers here resolve `hashes[key][CONTEXT_NODE_FIELD]`, so both name
+                // that field. A context node is a hash FIELD, not a whole object.
+                Some(super::constants::CONTEXT_NODE_FIELD),
+                routing_bucket,
+            )
                 .and_then(|bytes| crate::types::decode_context_node_vector(&bytes))
         })
 }
@@ -904,7 +913,16 @@ pub(super) fn load_context_node(
         .and_then(|address| {
             // Shared, not copied: the bytes are parsed here and dropped, so owning them costs a
             // page-sized memcpy and an allocation for nothing.
-            super::read_block_shared(cache, block_store, shard_id, address, routing_bucket)
+            super::read_block_shared(
+                cache,
+                block_store,
+                shard_id,
+                address,
+                // Both readers here resolve `hashes[key][CONTEXT_NODE_FIELD]`, so both name
+                // that field. A context node is a hash FIELD, not a whole object.
+                Some(super::constants::CONTEXT_NODE_FIELD),
+                routing_bucket,
+            )
                 .and_then(|bytes| context_from_bytes::<ContextNode>(&bytes))
         })
 }

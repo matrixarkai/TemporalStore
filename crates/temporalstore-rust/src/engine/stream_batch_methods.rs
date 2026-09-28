@@ -832,6 +832,16 @@ impl TemporalEngine {
                     PublishTarget::Hash { key, .. } => key,
                 }
             }
+
+            /// The ELEMENT of that object, which the comment above already calls the page's
+            /// component. It was named there and then thrown away; a read that resolves
+            /// through a log record needs it to pick the right page out of the record.
+            fn component(&self) -> Option<&str> {
+                match self {
+                    PublishTarget::String { .. } => None,
+                    PublishTarget::Hash { field, .. } => Some(field),
+                }
+            }
         }
 
         let selected_keys = selected_keys
@@ -917,6 +927,7 @@ impl TemporalEngine {
                 &self.block_store,
                 shard_id,
                 &address,
+                target.component(),
                 Some(routing_bucket),
             ) {
                 publish_records.push((

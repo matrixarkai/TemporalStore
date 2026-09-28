@@ -68,14 +68,20 @@ pub(super) fn begin_write() {
 /// leaves no note behind gets cited later as though it still decided something. It was, in the
 /// durability analysis at the top of `tests/wal_single_barrier_recovery.rs`, which is the file
 /// somebody reads to decide what an ack promises.
-pub(super) fn stage(object_id: u64, bytes: &[u8]) {
+pub(super) fn stage(object_id: u64, component: Option<&str>, bytes: &[u8]) {
     // Charged here rather than at the two call sites inside `append_value`: this copy is what
     // carrying a page in its record COSTS, and a third caller staging a page would otherwise add
     // that cost to the store while adding nothing to the count.
+    //
+    // The component's copy is charged to the same class for the same reason. It is a second,
+    // smaller cost of carrying the page -- a hash field name is two or three bytes, a zset member
+    // is `16 + 2n` characters -- and it belongs beside the page copy it travels with rather than
+    // against whichever caller happened to render the name.
     crate::alloc_probe::in_class(crate::alloc_probe::AllocClass::CarriedPage, || {
         STAGED.with(|staged| {
             staged.borrow_mut().push(StagedBlock {
                 object_id,
+                component: component.map(std::sync::Arc::from),
                 bytes: bytes.to_vec(),
             })
         });
@@ -145,14 +151,62 @@ pub(super) fn take_staged() -> Vec<StagedBlock> {
 /// sequence (see [`min_registered_sequence`]).
 type Registration = (LocalWriteAheadLogStore, u64, u64);
 
-/// Keyed by the STORE as well as the shard and object.
+/// Which page this table is about: the object, and which element of it.
+///
+/// The second term is the whole point of this type existing rather than a bare `u64`. An object id
+/// resolves a RECORD, and one record carries many pages; without the element beside it the last
+/// page of a key to be written owns that key's entry and every earlier one becomes unreachable.
+pub(super) type PageKey = (u64, Option<std::sync::Arc<str>>);
+
+/// Build a key without owning the component until the map needs it.
+fn page_key(object_id: u64, component: Option<&str>) -> PageKey {
+    (object_id, component.map(std::sync::Arc::from))
+}
+
+/// The same page identity, folded into ONE `u64`, for the persisted map that survives a reload.
+///
+/// `ShardState::wal_resident_blocks` is part of the SERVED INDEX, so widening its key would be a
+/// change to a stored shape and would need `SHARD_INDEX_FORMAT_VERSION` to move -- and there is one
+/// such bump available in this campaign, held elsewhere. Folding instead keeps the stored type
+/// exactly as it is.
+///
+/// A WHOLE-OBJECT PAGE KEEPS ITS OLD KEY EXACTLY. That is the property that makes this safe without
+/// a version bump rather than merely cheap: `None` returns the object id unchanged, so every entry
+/// an older build wrote for a string or a control state still matches. An older build's entry for a
+/// container ELEMENT was written under the element's own object id and will not match the folded
+/// key, so it is simply not found -- and not-found is the direction this field's own documentation
+/// calls safe ("a stale entry costs a miss, never wrong bytes"), because the read falls through to
+/// the block store and, failing that, to a WAL replay that re-derives the page.
+///
+/// FNV-1a over the id's bytes and then the component's, which is the mixing `stable_block_object_id`
+/// uses one level up, so a component that distinguishes two pages there distinguishes them here.
+pub(super) fn wal_resident_key(object_id: u64, component: Option<&str>) -> u64 {
+    let Some(component) = component else {
+        return object_id;
+    };
+    const FNV_OFFSET: u64 = 0xcbf2_9ce4_8422_2325;
+    const FNV_PRIME: u64 = 0x0000_0100_0000_01b3;
+    let mut hash = FNV_OFFSET;
+    for byte in object_id.to_le_bytes().iter().chain(b":").chain(component.as_bytes()) {
+        hash ^= u64::from(*byte);
+        hash = hash.wrapping_mul(FNV_PRIME);
+    }
+    hash
+}
+
+/// Keyed by the STORE as well as the shard, the object AND THE ELEMENT.
 ///
 /// An object id is derived from kind + key, not from who wrote it, and every embedded engine in
 /// a process serves shard 1. Keyed on (shard, object) alone, the last engine to write a key owned
 /// that key for the whole process and handed its own log to whoever asked next -- so one engine
 /// served another engine's bytes for any key they happened to share.
-fn registry() -> &'static Mutex<HashMap<(usize, ShardId, u64), Registration>> {
-    static REGISTRY: OnceLock<Mutex<HashMap<(usize, ShardId, u64), Registration>>> =
+///
+/// The element term is here for the same shape of reason one level down: two pages of one object
+/// are two entries, not one, and which of them a read wants is a question the object id cannot be
+/// asked. It is not sufficient on its own -- the map resolves a record and the page is then chosen
+/// INSIDE that record -- which is why [`StagedBlock::component`] exists as well.
+fn registry() -> &'static Mutex<HashMap<(usize, ShardId, PageKey), Registration>> {
+    static REGISTRY: OnceLock<Mutex<HashMap<(usize, ShardId, PageKey), Registration>>> =
         OnceLock::new();
     REGISTRY.get_or_init(|| Mutex::new(HashMap::new()))
 }
@@ -176,7 +230,11 @@ pub(super) fn register_record(
     if let Ok(mut map) = registry().lock() {
         for page in staged_blocks {
             map.insert(
-                (block_store.store_id(), shard_id, page.object_id),
+                (
+                    block_store.store_id(),
+                    shard_id,
+                    (page.object_id, page.component.clone()),
+                ),
                 (store.clone(), log_id, sequence),
             );
         }
@@ -192,13 +250,14 @@ pub(super) fn register_at(
     block_store: &crate::block_store::BlockStore,
     shard_id: ShardId,
     object_id: u64,
+    component: Option<&str>,
     log_id: u64,
     sequence: u64,
     store: &LocalWriteAheadLogStore,
 ) {
     if let Ok(mut map) = registry().lock() {
         map.insert(
-            (block_store.store_id(), shard_id, object_id),
+            (block_store.store_id(), shard_id, page_key(object_id, component)),
             (store.clone(), log_id, sequence),
         );
     }
@@ -237,18 +296,21 @@ pub(super) fn min_registered_sequence(
 /// registered sequence is the one pinning the log's retention floor, so retiring it is what lets
 /// reclaim move at all. Newest are kept because a page written a moment ago is the one a read is
 /// most likely to want, and it is already in the record the writer just wrote.
+/// Answers with the PAGE, not the object: two elements of one object are two entries here and
+/// retiring one of them does not retire the other, so a caller handed only the object id would
+/// deregister a page it never looked at.
 pub(super) fn oldest_registered_objects(
     block_store: &crate::block_store::BlockStore,
     shard_id: ShardId,
-) -> Vec<(u64, u64)> {
+) -> Vec<(u64, PageKey)> {
     let Ok(map) = registry().lock() else {
         return Vec::new();
     };
     let owner = block_store.store_id();
-    let mut entries: Vec<(u64, u64)> = map
+    let mut entries: Vec<(u64, PageKey)> = map
         .iter()
         .filter(|((store_id, shard, _), _)| *store_id == owner && *shard == shard_id)
-        .map(|((_, _, object_id), (_, _, sequence))| (*sequence, *object_id))
+        .map(|((_, _, page), (_, _, sequence))| (*sequence, page.clone()))
         .collect();
     entries.sort_unstable();
     entries
@@ -277,9 +339,14 @@ pub(super) fn deregister(
     block_store: &crate::block_store::BlockStore,
     shard_id: ShardId,
     object_id: u64,
+    component: Option<&str>,
 ) {
     if let Ok(mut map) = registry().lock() {
-        map.remove(&(block_store.store_id(), shard_id, object_id));
+        map.remove(&(
+            block_store.store_id(),
+            shard_id,
+            page_key(object_id, component),
+        ));
     }
 }
 
@@ -302,11 +369,16 @@ pub(super) fn read_block(
     block_store: &crate::block_store::BlockStore,
     shard_id: ShardId,
     object_id: u64,
+    component: Option<&str>,
 ) -> Option<Vec<u8>> {
     let (store, log_id, _) = registry()
         .lock()
         .ok()?
-        .get(&(block_store.store_id(), shard_id, object_id))?
+        .get(&(
+            block_store.store_id(),
+            shard_id,
+            page_key(object_id, component),
+        ))?
         .clone();
     // One batch record carries many pages, and an ingest reads several of the fields its own
     // batch just wrote -- so the same record used to be pread and re-parsed once per page. WAL
@@ -319,7 +391,7 @@ pub(super) fn read_block(
             .iter()
             .find(|(s, shard, l, _)| *shard == shard_id && *l == log_id && s.same_log(&store))
         {
-            if let Some(page) = pages.iter().find(|page| page.object_id == object_id) {
+            if let Some(page) = pages.iter().find(|page| names_page(page, object_id, component)) {
                 return Some(page.bytes.clone());
             }
         }
@@ -356,8 +428,22 @@ pub(super) fn read_block(
     }
     pages
         .into_iter()
-        .find(|page| page.object_id == object_id)
+        .find(|page| names_page(&page, object_id, component))
         .map(|page| page.bytes)
+}
+
+/// Whether this carried page is the one the read asked for.
+///
+/// BOTH TERMS, and that is the change this module exists for. `find` returns the first match and
+/// cannot see an ambiguity, so a predicate that tests less than the page's full identity does not
+/// answer "not found" when two pages match -- it answers with whichever one it reached first. On
+/// this path that is not a miss the caller falls through on; it is a plausible page of the right
+/// object served for an element nobody asked about, which the caller then caches and serves.
+///
+/// Written once and used at both sites deliberately. The two were separate copies of a one-line
+/// predicate, which is how one of them would come to test one term while the other tested two.
+fn names_page(page: &StagedBlock, object_id: u64, component: Option<&str>) -> bool {
+    page.object_id == object_id && page.component.as_deref() == component
 }
 
 /// Decoded staged pages of recently read records, keyed by (log identity, shard, log id).

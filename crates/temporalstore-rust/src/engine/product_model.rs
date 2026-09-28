@@ -29,7 +29,9 @@ pub(super) fn read_sequence_row(
     address: &BlockAddress,
     routing_bucket: Option<u32>,
 ) -> Option<SequenceFeatureRow> {
-    let bytes = read_block_bytes(cache, block_store, shard_id, address, routing_bucket)?;
+    // A packed series page is not an ELEMENT of anything: `append_timestamped_kv_blocks_inner`
+    // derives its object id with `stable_block_object_id(shard_id, kind, key, None)`.
+    let bytes = read_block_bytes(cache, block_store, shard_id, address, None, routing_bucket)?;
     match decode_feature_block_strict(&bytes) {
         PackedFeatureBlockDecode::Packed(points) => points
             .into_iter()

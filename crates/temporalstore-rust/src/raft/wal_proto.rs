@@ -223,6 +223,20 @@ pub(crate) fn put_staged_block(
         put_fixed64_field(1, object_id, out);
     }
     put_len_delimited(2, &page.bytes, out);
+    // Ascending field order, the order prost would have written them, which is the property
+    // `the_borrowing_encoder_writes_the_same_bytes` checks. Written unconditionally when present
+    // rather than elided against an implied value the way the object id is: there is no second
+    // copy of the component anywhere in the record to imply it from.
+    if let Some(component) = page.component.as_deref() {
+        // NOT `put_len_delimited`, which skips an empty payload. This field is `optional` in the
+        // schema, so prost writes it for `Some("")` and omits it only for `None` -- and the
+        // difference is load-bearing rather than cosmetic: a component that decoded back as `None`
+        // would make an element page indistinguishable from the whole-object page of the same key,
+        // which is the exact confusion this field exists to remove.
+        prost::encoding::encode_key(4, prost::encoding::WireType::LengthDelimited, out);
+        prost::encoding::encode_varint(component.len() as u64, out);
+        out.extend_from_slice(component.as_bytes());
+    }
 }
 
 /// The object id a staged block has to write, if any.
@@ -249,11 +263,21 @@ pub(crate) fn staged_block_body_len(
         Some(_) => fixed64_field_len(1),
         None => 0,
     };
+    // This length RESERVES the buffer `put_staged_block` then fills, so the two must agree field
+    // for field or the record is written into the wrong number of bytes -- which is exactly how
+    // they disagreed once before, when this measured a varint after the writer had moved to a
+    // fixed field. Every arm here mirrors a line there.
     id_len
         + if page.bytes.is_empty() {
             0
         } else {
             len_delimited_len(2, page.bytes.len())
+        }
+        + match page.component.as_deref() {
+            // Counted for `Some("")` as well, because the writer above emits it: an `optional`
+            // field is present or absent, not empty or absent.
+            Some(component) => len_delimited_len(4, component.len()),
+            None => 0,
         }
 }
 

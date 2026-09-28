@@ -528,6 +528,36 @@ mod outcome_value_serde {
 pub struct StagedBlock {
     /// The object the page belongs to, which is what a read has when it comes looking.
     pub object_id: u64,
+    /// WHICH ELEMENT OF THAT OBJECT THIS PAGE IS.
+    ///
+    /// The object id alone cannot answer that. One record carries many pages -- a batch writing
+    /// twenty-five fields of one hash writes one record with twenty-five pages -- and the reader
+    /// picks one out of it with a `find` over the id. So the id is not merely the registry's key,
+    /// it is the record's only discriminator BETWEEN ITS OWN PAGES, and it has had to stay
+    /// per-element for that reason alone. Measured on the product's own read: two pages of one key
+    /// sharing an id serve 1 of 2 correctly, and the page that loses is handed the FIRST page's
+    /// BYTES rather than answering missing.
+    ///
+    /// The component and not the page's ordinal, on four grounds that are measured elsewhere and
+    /// cited rather than re-derived here. `container_page_ordinal` derives the ordinal FROM this
+    /// component, so it is a lossy projection of the thing it would replace; #2008 measured that a
+    /// delete frees an ordinal for the next insert to reuse ("correct for a position and would be
+    /// silent corruption for an identity"); the ordinal is left at 0 past an object's 65,535th
+    /// element; and #1996 found the component is the ONLY copy of a member for an element the delta
+    /// fold delivers without a durable-map entry. The one fact this file adds: the hot write's
+    /// address is built with `block_id: None`, so on the very path this page exists to serve there
+    /// is no ordinal on the address to read back.
+    ///
+    /// `None` means the page IS its whole object -- a string, a control state -- which is what
+    /// `None` has always meant for `BlockIndex::component`. Skipped when absent, so a record for a
+    /// whole-object page is byte-identical to one written before this field existed.
+    #[serde(
+        rename = "k",
+        alias = "component",
+        default,
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub component: Option<std::sync::Arc<str>>,
     /// The page contents.
     ///
     /// Carried beside the document when that is smaller, and encoded into it otherwise -- the same
@@ -9406,6 +9436,7 @@ mod tests {
             metadata: None,
             staged_blocks: vec![StagedBlock {
                 object_id: 7,
+                component: None,
                 bytes: page.clone(),
             }],
             outcomes: Vec::new(),

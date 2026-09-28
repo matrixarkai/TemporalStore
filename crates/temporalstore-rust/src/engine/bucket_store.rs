@@ -288,6 +288,10 @@ pub(super) fn read_bucket_index_value(
             block_store,
             shard_id,
             &address,
+            // The component this address was looked up BY, two lines up. Anything else here
+            // would resolve a record and then look inside it for a page that is not the one
+            // `bucket_index_block_address` just named.
+            component,
             Some(crate::engine::hashing::block_routing_bucket(
                 object_key,
                 start_routing_bucket,

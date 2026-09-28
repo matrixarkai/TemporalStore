@@ -382,6 +382,18 @@ struct SharedStoreStagedBlockProto {
     object_id: u64,
     #[prost(bytes = "vec", tag = "2")]
     bytes: Vec<u8>,
+    /// Which element of the object this page holds.
+    ///
+    /// The same field `WalStagedBlock` carries in the local log, and for the same reason: a
+    /// frame carries many pages and a reader picks one out by identity. A follower that
+    /// received the pages without their elements would resolve the frame and then serve the
+    /// FIRST page of the object for every element of it -- which is the failure this exists
+    /// to remove, moved to the reader that has no other copy of the bytes.
+    ///
+    /// `optional`, so a frame written for a whole-object page omits it and stays
+    /// byte-identical to one written before this field existed.
+    #[prost(string, optional, tag = "3")]
+    component: Option<String>,
 }
 
 #[derive(Clone, PartialEq, Message)]
@@ -2575,6 +2587,7 @@ fn encode_wal_proto_frame(
             .map(|page| SharedStoreStagedBlockProto {
                 object_id: page.object_id,
                 bytes: page.bytes.clone(),
+                component: page.component.as_deref().map(str::to_string),
             })
             .collect(),
         items: entry
@@ -2695,6 +2708,9 @@ fn decode_wal_proto_frame_exact(
             .into_iter()
             .map(|page| crate::wal::StagedBlock {
                 object_id: page.object_id,
+                // Never defaulted: an absent element MEANS a whole-object page, and
+                // inventing one would make a string page claim to be an element.
+                component: page.component.map(std::sync::Arc::from),
                 bytes: page.bytes,
             })
             .collect(),
@@ -3437,6 +3453,12 @@ mod tests {
                         if let Ok(bytes) = primary.block_store().read(&address) {
                             carried.push(crate::wal::StagedBlock {
                                 object_id: item.object_id,
+                                // The outcome has named its element all along; the PAGE is
+                                // what could not say so, and a read picks the page.
+                                component: item
+                                    .component
+                                    .as_deref()
+                                    .map(std::sync::Arc::from),
                                 bytes,
                             });
                         }
@@ -3564,6 +3586,10 @@ mod tests {
                     if let Ok(bytes) = primary.block_store().read(&address) {
                         carried.push(crate::wal::StagedBlock {
                             object_id: item.object_id,
+                            component: item
+                                .component
+                                .as_deref()
+                                .map(std::sync::Arc::from),
                             bytes,
                         });
                     }
@@ -4581,6 +4607,7 @@ mod tests {
             }),
             staged_blocks: vec![crate::wal::StagedBlock {
                 object_id: 77,
+                component: None,
                 bytes: b"derived-page-bytes".to_vec(),
             }],
                     outcomes: Vec::new(),

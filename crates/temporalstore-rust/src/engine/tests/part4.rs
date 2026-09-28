@@ -8594,6 +8594,7 @@ fn a_carried_block_is_what_reaches_the_log_record() {
 
     let carried = vec![crate::wal::StagedBlock {
         object_id: 4242,
+        component: None,
         bytes: b"pages-from-somewhere-else".to_vec(),
     }];
     let write = engine.execute_with_carried_blocks(

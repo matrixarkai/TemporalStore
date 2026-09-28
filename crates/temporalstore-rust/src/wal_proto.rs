@@ -1161,6 +1161,11 @@ pub(crate) fn decode(payload: &[u8]) -> Result<WriteAheadLogRecord, String> {
             .into_iter()
             .map(|block| StagedBlock {
                 object_id: block.object_id.or(implied).unwrap_or_default(),
+                // Never defaulted the way the object id is. An absent component MEANS the page is
+                // its whole object, and inventing one would make a string page claim to be an
+                // element; an absent one on a record written before this field existed means the
+                // same thing that record has always meant.
+                component: block.component.map(std::sync::Arc::from),
                 bytes: block.block,
             })
             .collect(),
@@ -1380,6 +1385,7 @@ mod tests {
                     ),
                     block: page.bytes.clone(),
                     routing_bucket: None,
+                    component: page.component.as_deref().map(str::to_string),
                 })
                 .collect(),
         };
@@ -1879,6 +1885,7 @@ mod tests {
         }));
         with_blocks.staged_blocks = vec![StagedBlock {
             object_id: 900,
+            component: None,
             bytes: vec![7; 4096],
         }];
         let mut with_outcomes = record_with(Some(Command::StringSet {
@@ -1926,10 +1933,12 @@ mod tests {
         everything.staged_blocks = vec![
             StagedBlock {
                 object_id: 10,
+                component: None,
                 bytes: vec![1; 4096],
             },
             StagedBlock {
                 object_id: 11,
+                component: None,
                 bytes: Vec::new(),
             },
         ];
@@ -2073,6 +2082,7 @@ mod tests {
         }];
         record.staged_blocks = vec![crate::wal::StagedBlock {
             object_id: 0x1234_5678_9ABC_DEF0,
+            component: None,
             bytes,
         }];
 
@@ -2167,6 +2177,7 @@ mod tests {
         record.outcomes = vec![outcome_with_object_id(derivable)];
         record.staged_blocks = vec![crate::wal::StagedBlock {
             object_id: derivable,
+            component: None,
             bytes: vec![3; 64],
         }];
 
@@ -2213,6 +2224,7 @@ mod tests {
         record.outcomes = vec![outcome_with_object_id(0x1234_5678_9ABC_DEF0)];
         record.staged_blocks = vec![crate::wal::StagedBlock {
             object_id: 0x1234_5678_9ABC_DEF0,
+            component: None,
             bytes: vec![3; 64],
         }];
 
@@ -2247,10 +2259,12 @@ mod tests {
         record.staged_blocks = vec![
             crate::wal::StagedBlock {
                 object_id: 11,
+                component: None,
                 bytes: vec![1; 8],
             },
             crate::wal::StagedBlock {
                 object_id: 22,
+                component: None,
                 bytes: vec![2; 8],
             },
         ];

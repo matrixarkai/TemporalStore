@@ -88,8 +88,15 @@ fn load_context_node(
             // is as likely to be a miss as a hit -- and on a miss the shared read wraps an owned
             // buffer in a fresh Arc, which copies a second time. The query commands, which are
             // hit-heavy, do share.
-            read_block_bytes(cache, block_store, shard_id, address, routing_bucket)
-                .and_then(|bytes| context_from_bytes::<ContextNode>(&bytes))
+            read_block_bytes(
+                cache,
+                block_store,
+                shard_id,
+                address,
+                Some(CONTEXT_NODE_FIELD),
+                routing_bucket,
+            )
+            .and_then(|bytes| context_from_bytes::<ContextNode>(&bytes))
         })
 }
 
@@ -122,6 +129,9 @@ fn write_context_node(
         shard_id,
         &context_bytes(node),
         Some(object_id),
+        // The field this node is filed under -- the same argument the object id above was
+        // derived with. A context node is a hash FIELD, not a whole object.
+        Some(CONTEXT_NODE_FIELD),
         Some(routing_bucket),
         async_storage,
     ) {
@@ -358,6 +368,8 @@ pub(crate) fn execute_on_shard(
                 shard_id,
                 &value,
                 Some(object_id),
+                // A string page IS its whole object: the `None` the object id above carries.
+                None,
                 Some(routing_bucket),
                 async_storage,
             ) {
@@ -387,6 +399,8 @@ pub(crate) fn execute_on_shard(
                 shard_id,
                 &value,
                 Some(object_id),
+                // A string page IS its whole object.
+                None,
                 Some(routing_bucket),
                 async_storage,
             ) {
@@ -436,6 +450,8 @@ pub(crate) fn execute_on_shard(
                     block_store,
                     shard_id,
                     address,
+                    // `shard.strings`: a whole-object page.
+                    None,
                     Some(block_routing_bucket(
                         &key,
                         start_routing_bucket,
@@ -459,6 +475,8 @@ pub(crate) fn execute_on_shard(
                     shard_id,
                     &value,
                     Some(object_id),
+                    // A string page IS its whole object.
+                    None,
                     Some(routing_bucket),
                     async_storage,
                 ) {
@@ -595,6 +613,9 @@ pub(crate) fn execute_on_shard(
                 shard_id,
                 &value,
                 Some(object_id),
+                // The element this page holds -- the SAME expression that derived the ordinal
+                // above and the object id beside it. All three name one page.
+                Some(field.as_str()),
                 Some(routing_bucket),
                 async_storage,
                 block_ordinal,
@@ -664,6 +685,8 @@ pub(crate) fn execute_on_shard(
                                 block_store,
                                 shard_id,
                                 address,
+                                // The field being read.
+                                Some(field.as_str()),
                                 Some(block_routing_bucket(
                                     &key,
                                     start_routing_bucket,
@@ -699,6 +722,9 @@ pub(crate) fn execute_on_shard(
                     shard_id,
                     &value,
                     Some(object_id),
+                    // The element this page holds -- the SAME expression that derived the ordinal
+                    // above and the object id beside it. All three name one page.
+                    Some(field.as_str()),
                     Some(routing_bucket),
                     async_storage,
                     block_ordinal,
@@ -762,6 +788,9 @@ pub(crate) fn execute_on_shard(
                 shard_id,
                 value.to_string().as_bytes(),
                 Some(stable_block_object_id(shard_id, "hash", &key, Some(&field))),
+                // The element this page holds -- the SAME expression that derived the ordinal
+                // above and the object id beside it. All three name one page.
+                Some(field.as_str()),
                 Some(routing_bucket),
                 async_storage,
                 block_ordinal,
@@ -804,6 +833,8 @@ pub(crate) fn execute_on_shard(
                         block_store,
                         shard_id,
                         &address,
+                        // The component the whole-object door handed back beside this address.
+                        field.as_deref(),
                         Some(block_routing_bucket(
                             &key,
                             start_routing_bucket,
@@ -872,6 +903,9 @@ pub(crate) fn execute_on_shard(
                 shard_id,
                 &member,
                 Some(object_id),
+                // The element this page holds -- the SAME expression that derived the ordinal
+                // above and the object id beside it. All three name one page.
+                Some(member_component.as_str()),
                 Some(routing_bucket),
                 async_storage,
                 block_ordinal,
@@ -935,6 +969,9 @@ pub(crate) fn execute_on_shard(
                 shard_id,
                 &member,
                 Some(object_id),
+                // The element this page holds -- the SAME expression that derived the ordinal
+                // above and the object id beside it. All three name one page.
+                Some(component.as_str()),
                 Some(routing_bucket),
                 async_storage,
                 block_ordinal,
@@ -1264,6 +1301,9 @@ pub(crate) fn execute_on_shard(
                 shard_id,
                 &member,
                 Some(object_id),
+                // The element this page holds -- the SAME expression that derived the ordinal
+                // above and the object id beside it. All three name one page.
+                Some(component.as_str()),
                 Some(routing_bucket),
                 async_storage,
                 block_ordinal,
@@ -1389,6 +1429,9 @@ pub(crate) fn execute_on_shard(
                 shard_id,
                 &member,
                 Some(object_id),
+                // The element this page holds -- the SAME expression that derived the ordinal
+                // above and the object id beside it. All three name one page.
+                Some(component.as_str()),
                 Some(routing_bucket),
                 async_storage,
                 block_ordinal,
@@ -1443,6 +1486,8 @@ pub(crate) fn execute_on_shard(
                             block_store,
                             shard_id,
                             &address,
+                            // The element rendered two lines up, which is the one the index removal names.
+                            Some(component.as_str()),
                             Some(block_routing_bucket(
                                 &key,
                                 start_routing_bucket,
@@ -1492,15 +1537,22 @@ pub(crate) fn execute_on_shard(
                 // than left for a flat byte measurement to imply otherwise.
                 let wanted = (to - from + 1) as usize;
                 list.map(|list| {
-                    list.values()
+                    list.iter()
                         .skip(from as usize)
                         .take(wanted)
-                        .filter_map(|address| {
+                        .filter_map(|(seq, address)| {
+                            // The same rendering ListPop uses, which is what the index rows
+                            // for this list were filed under.
+                            let component =
+                                format!("{:016x}", (*seq as u64).wrapping_sub(i64::MIN as u64));
                             read_block_bytes(
                                 cache,
                                 block_store,
                                 shard_id,
                                 address,
+                                // Re-derived from the sequence the same way ListPop renders it. `.values()` used to
+                                // drop that sequence, which is why the iteration above is now `.iter()`.
+                                Some(component.as_str()),
                                 Some(block_routing_bucket(
                                     &key,
                                     start_routing_bucket,
@@ -1540,12 +1592,14 @@ pub(crate) fn execute_on_shard(
             cached_response(cache, CacheKey::set_members(shard_id, &key), || {
                 let members = bucket_index_component_block_addresses(shard, "set", &key)
                     .into_iter()
-                    .filter_map(|(_, address)| {
+                    .filter_map(|(member, address)| {
                         read_block_bytes(
                             cache,
                             block_store,
                             shard_id,
                             &address,
+                            // The member the whole-object door handed back; `filter_map` used to discard it.
+                            member.as_deref(),
                             Some(block_routing_bucket(
                                 &key,
                                 start_routing_bucket,
@@ -2805,6 +2859,8 @@ pub(crate) fn execute_on_shard(
                                 block_store,
                                 shard_id,
                                 address,
+                                // A context node is a hash field.
+                                Some(CONTEXT_NODE_FIELD),
                                 Some(block_routing_bucket(
                                     &object_key,
                                     start_routing_bucket,
@@ -2897,6 +2953,8 @@ pub(crate) fn execute_on_shard(
                         block_store,
                         shard_id,
                         address,
+                        // A context node is a hash field.
+                        Some(CONTEXT_NODE_FIELD),
                         Some(block_routing_bucket(
                             &object_key,
                             start_routing_bucket,
@@ -2938,6 +2996,8 @@ pub(crate) fn execute_on_shard(
                                 block_store,
                                 shard_id,
                                 address,
+                                // A context node is a hash field.
+                                Some(CONTEXT_NODE_FIELD),
                                 Some(block_routing_bucket(
                                     &object_key,
                                     start_routing_bucket,
@@ -3654,6 +3714,9 @@ pub(crate) fn execute_on_shard(
                 shard_id,
                 &bytes,
                 Some(object_id),
+                // `None`, matching the object id derived from ("context_entity", &object_key, None):
+                // the entity's own key IS the object key, so its page is a whole object.
+                None,
                 Some(routing_bucket),
                 async_storage,
             ) {
@@ -3705,6 +3768,8 @@ pub(crate) fn execute_on_shard(
                         block_store,
                         shard_id,
                         address,
+                        // Filed with `None` by ContextUpsertEntity.
+                        None,
                         Some(block_routing_bucket(
                             &context_entity_key(tenant_hash, node_hash, entity_hash),
                             start_routing_bucket,
@@ -3734,6 +3799,8 @@ pub(crate) fn execute_on_shard(
                     block_store,
                     shard_id,
                     address,
+                    // Filed with `None` by ContextUpsertEntity.
+                    None,
                     Some(block_routing_bucket(
                         &context_entity_key(tenant_hash, node_hash, entity_hash),
                         start_routing_bucket,
@@ -4221,6 +4288,8 @@ pub(crate) fn execute_on_shard(
                         block_store,
                         shard_id,
                         address,
+                        // A context node is a hash field.
+                        Some(CONTEXT_NODE_FIELD),
                         Some(block_routing_bucket(
                             &node_key,
                             start_routing_bucket,

@@ -3826,7 +3826,7 @@ fn what_reading_one_summary_actually_costs() {
         };
 
         // Warm, so neither half is charged for filling a cache that a steady-state read finds warm.
-        let _ = super::read_block_bytes(&engine.cache, &engine.block_store, 1, &address, routing_bucket);
+        let _ = super::read_block_bytes(&engine.cache, &engine.block_store, 1, &address, None, routing_bucket);
 
         // THE BUCKET IS HOISTED OUT OF THE PROBE, and that is not hiding a cost. It is one FNV-1a
         // pass over a borrowed `&str` returning a `u32`: no allocation, so it cannot move an
@@ -3837,7 +3837,7 @@ fn what_reading_one_summary_actually_costs() {
         let read_probe = crate::alloc_probe::Probe::start();
         let mut bytes = Vec::new();
         for _ in 0..5 {
-            bytes = super::read_block_bytes(&engine.cache, &engine.block_store, 1, &address, routing_bucket)
+            bytes = super::read_block_bytes(&engine.cache, &engine.block_store, 1, &address, None, routing_bucket)
                 .expect("the page must read, or the split below is measuring a None");
         }
         let read = read_probe.stop();
@@ -3915,6 +3915,7 @@ fn what_reading_one_summary_actually_costs() {
                 &engine.block_store,
                 1,
                 address,
+                None,
                 Some(*routing_bucket),
             ) {
                 if let super::state::PackedFeatureBlockDecode::Packed(points) =
@@ -4622,6 +4623,7 @@ fn which_write_primitive_grows_with_the_store() {
             1,
             &payload,
             Some(9_900_000 + rung as u64),
+            None,
             Some(0),
             false,
         );
@@ -4632,6 +4634,7 @@ fn which_write_primitive_grows_with_the_store() {
             1,
             &payload,
             Some(9_950_000 + rung as u64),
+            None,
             Some(0),
             false,
         );
@@ -5703,7 +5706,7 @@ fn where_a_block_read_miss_allocates() {
     for round in 0..ROUNDS {
         let (routing_bucket, address) = &addresses[round as usize % addresses.len()];
         let probe = crate::alloc_probe::Probe::start();
-        let got = super::read_block_bytes(&engine.cache, block_store, 1, address, *routing_bucket);
+        let got = super::read_block_bytes(&engine.cache, block_store, 1, address, None, *routing_bucket);
         let counts = probe.stop();
         assert!(got.is_some(), "the page must read back");
         whole_allocs += counts.allocs;
@@ -5794,7 +5797,7 @@ fn what_a_block_read_costs_hit_against_miss() {
 
     // Warm once: the first read of anything touches one-off structures that would otherwise be
     // counted against whichever arm ran first.
-    let warm = super::read_block_shared(cache, block_store, 1, &address, routing_bucket)
+    let warm = super::read_block_shared(cache, block_store, 1, &address, None, routing_bucket)
         .expect("the page reads back");
     assert!(!warm.is_empty(), "an empty page would make every number below meaningless");
 
@@ -5804,7 +5807,7 @@ fn what_a_block_read_costs_hit_against_miss() {
     let mut hit_bytes = 0u64;
     for _ in 0..ROUNDS {
         let probe = crate::alloc_probe::Probe::start();
-        let got = super::read_block_shared(cache, block_store, 1, &address, routing_bucket);
+        let got = super::read_block_shared(cache, block_store, 1, &address, None, routing_bucket);
         let counts = probe.stop();
         assert!(got.is_some(), "the page must read back on the hit path");
         hit_allocs += counts.allocs;
@@ -5840,7 +5843,7 @@ fn what_a_block_read_costs_hit_against_miss() {
     let small_cache = &small.cache;
     let small_blocks = &small.block_store;
     for (routing_bucket, address) in &addresses {
-        let _ = super::read_block_shared(small_cache, small_blocks, 1, address, *routing_bucket);
+        let _ = super::read_block_shared(small_cache, small_blocks, 1, address, None, *routing_bucket);
     }
 
     let mut miss_allocs = 0u64;
@@ -5848,7 +5851,7 @@ fn what_a_block_read_costs_hit_against_miss() {
     for round in 0..ROUNDS {
         let (routing_bucket, address) = &addresses[round as usize % addresses.len()];
         let probe = crate::alloc_probe::Probe::start();
-        let got = super::read_block_shared(small_cache, small_blocks, 1, address, *routing_bucket);
+        let got = super::read_block_shared(small_cache, small_blocks, 1, address, None, *routing_bucket);
         let counts = probe.stop();
         assert!(got.is_some(), "the page must read back on the miss path");
         miss_allocs += counts.allocs;
@@ -5862,7 +5865,7 @@ fn what_a_block_read_costs_hit_against_miss() {
     for round in 0..ROUNDS {
         let (routing_bucket, address) = &addresses[round as usize % addresses.len()];
         let probe = crate::alloc_probe::Probe::start();
-        let got = super::read_block_bytes(small_cache, small_blocks, 1, address, *routing_bucket);
+        let got = super::read_block_bytes(small_cache, small_blocks, 1, address, None, *routing_bucket);
         let counts = probe.stop();
         assert!(got.is_some(), "the page must read back");
         owning_allocs += counts.allocs;
@@ -5986,12 +5989,12 @@ fn what_the_two_halves_of_a_node_fetch_cost() {
     let block_store = &engine.block_store;
 
     // Warm: the first read of a page touches one-off structures.
-    let warm = super::read_block_bytes(cache, block_store, 1, &address, routing_bucket)
+    let warm = super::read_block_bytes(cache, block_store, 1, &address, Some(super::constants::CONTEXT_NODE_FIELD), routing_bucket)
         .expect("the page reads back");
     assert!(!warm.is_empty(), "an empty page would make every number below meaningless");
 
     let probe = crate::alloc_probe::Probe::start();
-    let bytes = super::read_block_bytes(cache, block_store, 1, &address, routing_bucket)
+    let bytes = super::read_block_bytes(cache, block_store, 1, &address, Some(super::constants::CONTEXT_NODE_FIELD), routing_bucket)
         .expect("the page reads back");
     let read_allocs = probe.stop().allocs;
 

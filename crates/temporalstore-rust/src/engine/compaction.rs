@@ -679,7 +679,24 @@ fn read_block_bytes_for_compaction(
             FAIL_BLOCK_READ_AFTER.with(|cell| cell.set(Some(remaining - 1)));
         }
     }
-    read_block_bytes(cache, block_store, shard_id, address, routing_bucket)
+    // `None`, AND THIS IS THE ONE PLACE IN THIS CHANGE THAT PASSES IT WITHOUT THE PAGE BEING
+    // A WHOLE OBJECT. Compaction walks the model maps, and for the container kinds those maps
+    // are keyed by the element's VALUE (a set's member bytes, a zset's member, a list's
+    // sequence) rather than by the component the index filed the page under -- which is a
+    // rendering of it: `hex::encode(member)` for a set, `{score:016x}` before that hex for a
+    // zset, `{:016x}` of the biased sequence for a list. There is no shared renderer to call;
+    // each write site spells it out inline. Re-spelling them here would be a second copy of
+    // four rules, free to drift from the four originals, and a component that drifted would
+    // be indistinguishable from this `None` in its effect.
+    //
+    // WHAT IT COSTS, stated rather than implied: the in-log fallback inside `read_block_bytes`
+    // will not resolve a container ELEMENT page whose only durable copy is still a WAL record,
+    // so compaction leaves that page where it is instead of relocating it. That is the same
+    // outcome this function already produces for any page it cannot read -- the caller skips
+    // it and the address is left alone -- so it is a missed relocation and never wrong bytes.
+    // Whole-object pages, which is every `string` and `control_state`, are unaffected: `None`
+    // is their actual component.
+    read_block_bytes(cache, block_store, shard_id, address, None, routing_bucket)
 }
 
 /// THE BUCKET COMES IN BESIDE EACH ADDRESS, because compaction reads and re-writes pages and both

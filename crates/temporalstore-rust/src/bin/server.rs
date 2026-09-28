@@ -1332,6 +1332,7 @@ fn gather_result_blocks(
         if let Ok(bytes) = engine.block_store().read(&address) {
             pages.push(temporalstore_rust::wal::StagedBlock {
                 object_id: item.object_id,
+                component: item.component.as_deref().map(std::sync::Arc::from),
                 bytes,
             });
         }

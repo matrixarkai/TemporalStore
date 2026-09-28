@@ -1166,7 +1166,13 @@ impl TemporalEngine {
                             // Same fact, written down where it survives this process.
                             wal_resident_updates.extend(record.staged_blocks.iter().map(|page| {
                                 (
-                                    page.object_id,
+                                    // One entry per PAGE, not per object: the record says which
+                                    // element each page is, and a record carrying several
+                                    // elements of one key files several entries here.
+                                    block_in_wal::wal_resident_key(
+                                        page.object_id,
+                                        page.component.as_deref(),
+                                    ),
                                     crate::engine::state::WalResidentBlock {
                                         log_id,
                                         sequence: record.sequence,
@@ -1541,6 +1547,8 @@ impl TemporalEngine {
                                 &self.block_store,
                                 request.shard_id,
                                 address,
+                                // A string page IS its whole object.
+                                None,
                                 Some(routing_bucket),
                             )
                         }),
@@ -1559,6 +1567,7 @@ impl TemporalEngine {
                             &self.block_store,
                             request.shard_id,
                             address,
+                            Some(field.as_str()),
                             Some(routing_bucket),
                         )
                         .map(|value| (field.clone(), value))
@@ -4970,12 +4979,14 @@ fn collect_live_block_slab_ids(shard: &ShardState) -> BTreeSet<u64> {
     ids
 }
 
+#[allow(clippy::too_many_arguments)]
 fn append_value(
     cache: &MultiLayerCache,
     block_store: &BlockStore,
     shard_id: ShardId,
     bytes: &[u8],
     object_id: Option<u64>,
+    component: Option<&str>,
     routing_bucket: Option<u32>,
     async_storage: bool,
 ) -> Result<BlockAddress, BlockStoreError> {
@@ -4985,6 +4996,7 @@ fn append_value(
         shard_id,
         bytes,
         object_id,
+        component,
         routing_bucket,
         async_storage,
         0,
@@ -5009,6 +5021,7 @@ fn append_value_of_object(
     shard_id: ShardId,
     bytes: &[u8],
     object_id: Option<u64>,
+    component: Option<&str>,
     routing_bucket: Option<u32>,
     async_storage: bool,
     block_ordinal: u32,
@@ -5023,6 +5036,7 @@ fn append_value_of_object(
             shard_id,
             bytes,
             object_id,
+            component,
             routing_bucket,
             async_storage,
             block_ordinal,
@@ -5037,6 +5051,7 @@ fn append_value_inner(
     shard_id: ShardId,
     bytes: &[u8],
     object_id: Option<u64>,
+    component: Option<&str>,
     routing_bucket: Option<u32>,
     async_storage: bool,
     block_ordinal: u32,
@@ -5056,7 +5071,7 @@ fn append_value_inner(
         // storage manager's reclaim stage moves carried pages into the block store and drops the
         // registration that pins the log floor.
         if let Some(object_id) = object_id {
-            block_in_wal::stage(object_id, bytes);
+            block_in_wal::stage(object_id, component, bytes);
         }
         return block_store.append_block_of_object(
             bytes,
@@ -5078,7 +5093,7 @@ fn append_value_inner(
     // Put the page aside for this write's record. It is often derived state rather than the
     // command's own bytes, so the record has to carry it for a read to serve it back.
     if let Some(object_id) = object_id {
-        block_in_wal::stage(object_id, bytes);
+        block_in_wal::stage(object_id, component, bytes);
     }
     crate::alloc_probe::in_class(crate::alloc_probe::AllocClass::PageBytes, || {
         let bytes = bytes.to_vec();
@@ -5127,6 +5142,9 @@ fn persist_control_state_block(
         shard_id,
         &bytes,
         Some(object_id),
+        // The same `None` the object id was derived with, one line up: a control state IS
+        // its whole object.
+        None,
         Some(routing_bucket),
         async_storage,
     ) {
@@ -5578,11 +5596,19 @@ fn invalidate_records_all_batched<K: AsRef<str>>(
 /// `None` is accepted and means "no bucket to key by", which is what a caller with no object key in
 /// hand passes -- a slab walk, a report over raw addresses. It was reachable before this change too,
 /// for an address that carried no bucket.
+/// `component` says WHICH ELEMENT of the object this address names, and it is not optional
+/// information dressed as an `Option`: `None` means the page IS its whole object -- a string,
+/// a control state -- and `Some` names the element, exactly as `BlockIndex::component` beside
+/// this address already does. The in-log fallback below needs it because a record carries many
+/// pages and picks one out of itself by identity; handed only the object id it answers with the
+/// FIRST page of that object, which is another element's bytes rather than a miss.
+#[allow(clippy::too_many_arguments)]
 fn read_block_bytes(
     cache: &MultiLayerCache,
     block_store: &BlockStore,
     shard_id: ShardId,
     address: &BlockAddress,
+    component: Option<&str>,
     routing_bucket: Option<u32>,
 ) -> Option<Vec<u8>> {
     let cache_key = CacheKey::page_with_slot(
@@ -5619,7 +5645,7 @@ fn read_block_bytes(
         // parses a log record.
         if let Some(bytes) = address
             .object_id()
-            .and_then(|object_id| block_in_wal::read_block(block_store, shard_id, object_id))
+            .and_then(|object_id| block_in_wal::read_block(block_store, shard_id, object_id, component))
         {
             let _ = cache.put(cache_key, bytes.clone());
             return Some(bytes);
@@ -5646,7 +5672,7 @@ fn read_block_bytes(
     // a direct read, while this one resolves a log id and parses a record.
     if let Some(bytes) = address
         .object_id()
-        .and_then(|object_id| block_in_wal::read_block(block_store, shard_id, object_id))
+        .and_then(|object_id| block_in_wal::read_block(block_store, shard_id, object_id, component))
     {
         let _ = cache.put(cache_key, bytes.clone());
         return Some(bytes);
@@ -5663,11 +5689,19 @@ fn read_block_bytes(
 /// Identical to `read_block_bytes` in every other way: same key, same lookup, same spill and log
 /// fallbacks, same promotion. It differs only in not owning the result. Callers that keep or mutate
 /// the bytes should keep using `read_block_bytes`.
+/// `component` says WHICH ELEMENT of the object this address names, and it is not optional
+/// information dressed as an `Option`: `None` means the page IS its whole object -- a string,
+/// a control state -- and `Some` names the element, exactly as `BlockIndex::component` beside
+/// this address already does. The in-log fallback below needs it because a record carries many
+/// pages and picks one out of itself by identity; handed only the object id it answers with the
+/// FIRST page of that object, which is another element's bytes rather than a miss.
+#[allow(clippy::too_many_arguments)]
 fn read_block_shared(
     cache: &MultiLayerCache,
     block_store: &BlockStore,
     shard_id: ShardId,
     address: &BlockAddress,
+    component: Option<&str>,
     routing_bucket: Option<u32>,
 ) -> Option<std::sync::Arc<[u8]>> {
     let cache_key = CacheKey::page_with_slot(
@@ -5685,7 +5719,7 @@ fn read_block_shared(
     // Every path below writes to the cache and hands back what it wrote, so going through
     // `read_block_bytes` keeps the spill redirect, the in-log read and the block-store read in one
     // place rather than duplicating three fallbacks that must not drift apart.
-    read_block_bytes(cache, block_store, shard_id, address, routing_bucket)
+    read_block_bytes(cache, block_store, shard_id, address, component, routing_bucket)
         .map(std::sync::Arc::from)
 }
 

@@ -2026,11 +2026,54 @@ fn the_component_ordering_property_is_consumed_by_no_reader() {
          bucket index, component order IS load-bearing"
     );
 
-    // AND THE ONE CALLER THAT COULD HAVE CARED DISCARDS THE COMPONENT.
+    // AND THE ONE CALLER THAT COULD HAVE CARED DOES NOT ORDER BY THE COMPONENT.
+    //
+    // RETARGETED, and the reason matters more than the new pattern. This arm used to assert the
+    // literal `filter_map(|(_, address)| {` -- that SetMembers THREW THE COMPONENT AWAY -- as a
+    // proxy for the property it means, which is that set member order is not component order.
+    // The proxy stopped holding when a carried page started needing to say which element it is:
+    // `read_block_bytes` now takes the component, so this arm binds it and passes it on. The
+    // PROPERTY did not move. Member order is still the order
+    // `bucket_index_component_block_addresses` walked in, exactly as before.
+    //
+    // So the assertion is now on what would actually break it: the component must reach
+    // `read_block_bytes` and NOTHING ELSE. If this arm ever sorts, compares or keys by it, member
+    // order becomes component order and an ordinal would change it -- which is the thing this
+    // whole module is about.
+    let set_arm_start = execute
+        .find("bucket_index_component_block_addresses(shard, \"set\", &key)")
+        .expect("the SetMembers arm is still built from the whole-object door");
+    let set_arm = &execute[set_arm_start..];
+    let set_arm = &set_arm[..set_arm
+        .find("CommandResponse::Members")
+        .expect("the SetMembers arm still answers with Members")];
     assert!(
-        execute.contains("bucket_index_component_block_addresses(shard, \"set\", &key)\n                    .into_iter()\n                    .filter_map(|(_, address)| {"),
-        "SetMembers no longer discards the component; if it has started using it, set member order \
-         is component order and an ordinal would change it"
+        set_arm.len() > 200,
+        "DENOMINATOR: the SetMembers arm read back as {} bytes; a short slice scores every claim \
+         below as a pass",
+        set_arm.len()
+    );
+    assert!(
+        set_arm.contains(".into_iter()"),
+        "the SetMembers arm no longer consumes the whole-object door's walk directly; if something \
+         has been interposed, this arm can no longer say what member order is"
+    );
+    for ordering in ["sort", ".cmp(", "BTreeSet", "BTreeMap", "min_by", "max_by", "rev()"] {
+        assert!(
+            !set_arm.contains(ordering),
+            "the SetMembers arm now contains {ordering:?}. If it orders by the component, set \
+             member order IS component order and an ordinal would change it -- which is what this \
+             module exists to refuse"
+        );
+    }
+    // And the component is used for exactly one thing: naming the page to read. Asserted by
+    // POSITION rather than by presence -- it has to be the argument immediately before the
+    // routing bucket, which is the slot `read_block_bytes` reads it from.
+    assert!(
+        set_arm.contains("member.as_deref(),\n                            Some(block_routing_bucket("),
+        "the component no longer reaches `read_block_bytes` as the page's element. Either it has \
+         gone back to being discarded -- in which case a carried set page is served the first page \
+         of its key -- or it is being used for something else, which this arm cannot see"
     );
 
     // And driven: a reload puts a list back IN ORDER even though the reconcile re-keys rather than

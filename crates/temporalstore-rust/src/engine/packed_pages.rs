@@ -306,7 +306,7 @@ fn append_timestamped_kv_blocks_inner(
         // the outcomes named a block that was never written, and the read had nothing to fall back
         // to. The whole series came back empty.
         for packed in &encoded_blocks {
-            super::block_in_wal::stage(object_id, packed.as_slice());
+            super::block_in_wal::stage(object_id, None, packed.as_slice());
         }
         let addresses = block_store.append_batch_with_block_metadata(writes)?;
         if addresses.len() != chunk_points.len() {
@@ -347,6 +347,9 @@ fn append_timestamped_kv_blocks_inner(
             shard_id,
             &packed,
             Some(object_id),
+            // `None`, matching `stable_block_object_id(shard_id, kind, key, None)` at the
+            // top of this function: a packed series page is not an ELEMENT of anything.
+            None,
             Some(routing_bucket),
             async_storage,
         )?;
@@ -498,7 +501,9 @@ pub(super) fn read_feature_point(
     address: &BlockAddress,
     routing_bucket: Option<u32>,
 ) -> Option<FeaturePoint> {
-    let bytes = read_block_bytes(cache, block_store, shard_id, address, routing_bucket)?;
+    // `None` for the reason the append uses `None`: a packed series page holds many points
+    // and is not an element of its object.
+    let bytes = read_block_bytes(cache, block_store, shard_id, address, None, routing_bucket)?;
     match decode_feature_block_strict(&bytes) {
         PackedFeatureBlockDecode::Packed(points) => points
             .into_iter()
@@ -549,7 +554,9 @@ pub(super) fn read_feature_point_cached(
             .cloned();
     }
 
-    let bytes = read_block_bytes(cache, block_store, shard_id, address, routing_bucket)?;
+    // `None` for the reason the append uses `None`: a packed series page holds many points
+    // and is not an element of its object.
+    let bytes = read_block_bytes(cache, block_store, shard_id, address, None, routing_bucket)?;
     match decode_feature_block_strict(&bytes) {
         PackedFeatureBlockDecode::Packed(points) => {
             let selected = points
