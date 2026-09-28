@@ -1858,12 +1858,11 @@ fn a_store_at_the_old_spelling_still_serves_every_value_after_the_rebuild() {
 ///
 /// THE OTHER TWO ARE NOT, and this states why in a form that fails if either changes.
 ///
-/// * THE WRITE-AHEAD LOG. `WriteAheadLogRecordMetadata::version` is skipped while it equals the
-///   current version and DEFAULTS TO THE CURRENT VERSION when absent. So a record written by an
-///   older build -- which omitted the field because it was current then -- reads back as current.
-///   The field cannot identify a legacy record even in principle, and nothing in the crate compares
-///   it to anything. Closing this door means always writing the field and defaulting it to a
-///   sentinel, which changes the bytes of every record.
+/// * THE WRITE-AHEAD LOG can now, and could not when this guard was written. Its version was
+///   skipped while it equalled the current one and DEFAULTED BACK to the current one when absent, so
+///   a record from an older build read as current and nothing compared it to anything. It is stated
+///   on every record now, an unstated one reads as version 1, and `decode_wal_line` refuses anything
+///   this binary cannot replay. This guard FIRED when that landed, which is what it was for.
 /// * THE INDEX LOG. Its container byte carries a codec and a record SHAPE -- whole, delta, anchor --
 ///   and no version. The decoder reads the codec and discards the shape.
 ///
@@ -1890,26 +1889,37 @@ fn the_three_durable_carriers_of_a_component_name_and_which_can_refuse_a_stale_o
         crate::engine::SHARD_INDEX_FORMAT_VERSION
     );
 
-    // 2. THE WRITE-AHEAD LOG: open, and open in a way a bump cannot fix on its own. A record whose
-    //    metadata omits the version reads back AS THE CURRENT VERSION, which is what an older
-    //    build's record looks like.
+    // 2. THE WRITE-AHEAD LOG: SHUT, and it was not. This guard was written when the version
+    //    defaulted BACK to the current one, so a record from an older build read as current and the
+    //    field could not identify anything. It fired when that changed, which is what it was for.
+    //    An unstated version now reads as 1, and `decode_wal_line` refuses anything this binary
+    //    cannot replay.
     let without_version = serde_json::json!({
         "t": 1_787_270_070_000u64,
     });
     let metadata: crate::wal::WriteAheadLogRecordMetadata =
         serde_json::from_value(without_version).expect("metadata with no version must decode");
     assert_eq!(
+        metadata.version, 1,
+        "a write-ahead log record that states no version read back as {}, where it has to read as \
+         1 -- the version records were written at while omitting the field was correct. Reading it \
+         as the current version is the defect this guard was built to notice.",
+        metadata.version
+    );
+    assert_ne!(
         metadata.version,
         crate::wal::WRITE_AHEAD_LOG_FORMAT_VERSION,
-        "a write-ahead log record that states no version read back as {}, not as the current {}. \
-         If that has changed, the write-ahead log can now identify a legacy record and the door \
-         this guard describes has been closed -- update the description rather than this assertion.",
-        metadata.version,
-        crate::wal::WRITE_AHEAD_LOG_FORMAT_VERSION
+        "an unstated version reads as the CURRENT one again, so the check cannot fail"
+    );
+    assert!(
+        !crate::wal::write_ahead_log_record_is_replayable(metadata.version),
+        "a record at version {} is replayable, so an old-shape log would be applied rather than \
+         refused",
+        metadata.version
     );
     println!(
-        "[carriers] write-ahead log: a record stating NO version reads as {}, the current one, so a \
-         legacy record is indistinguishable from a current one -- OPEN",
+        "[carriers] write-ahead log: a record stating NO version reads as {}, which this binary \
+         refuses -- SHUT (see a_log_record_at_the_old_shape_is_refused_by_name_and_not_half_applied)",
         metadata.version
     );
 
@@ -1939,7 +1949,8 @@ fn the_three_durable_carriers_of_a_component_name_and_which_can_refuse_a_stale_o
         shapes.iter().map(|(name, _)| *name).collect::<Vec<_>>()
     );
     println!(
-        "[carriers] 1 of 3 durable carriers of a component name can refuse a stale spelling"
+        "[carriers] 2 of 3 durable carriers of a component name can refuse a stale spelling; the \
+         index log's nibble is still a record SHAPE and not a version"
     );
 }
 

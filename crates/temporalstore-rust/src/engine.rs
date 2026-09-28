@@ -4302,6 +4302,17 @@ fn mark_bucket_index_block_deleted_with(
     // is gone" needs no such hope. Recorded here because every typed removal comes through.
     if stage {
         block_in_wal::stage_outcome(crate::wal::WalOutcomeItem {
+            // A REMOVAL STATES ITS ELEMENT TOO. Without this the removal arm would still rebuild a
+            // member by parsing the name, so the name would stay load-bearing for replay -- just on
+            // a different arm than the upsert. The two paths have to stop needing it together or the
+            // entry cannot drop it at all.
+            element: match model_id {
+                "zset" => component
+                    .and_then(execute_on_shard::parse_zset_component)
+                    .map(|(_score_bits, member)| member),
+                "set" => component.and_then(execute_on_shard::parse_set_component),
+                _ => None,
+            },
             kind: model_id.to_string(),
             object_key: key.to_string(),
             component: component.map(str::to_string),

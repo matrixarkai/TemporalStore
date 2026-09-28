@@ -124,6 +124,7 @@ fn stage_timestamped_outcomes(
     for (timestamp_ms, address) in refs {
         let component = timestamped_component(*timestamp_ms, identity);
         super::block_in_wal::stage_outcome(crate::wal::WalOutcomeItem {
+            element: None,
             kind: kind.to_string(),
             object_key: key.to_string(),
             component: Some(component.clone()),
@@ -151,6 +152,7 @@ fn stage_timestamped_removal(
 ) {
     let component = timestamp_ms.to_string();
     super::block_in_wal::stage_outcome(crate::wal::WalOutcomeItem {
+        element: None,
         kind: kind.to_string(),
         object_key: key.to_string(),
         component: Some(component.clone()),

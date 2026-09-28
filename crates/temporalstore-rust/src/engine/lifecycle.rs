@@ -1328,6 +1328,19 @@ impl TemporalEngine {
         true
     }
 
+    /// `apply_outcome_item` for the test that measures what it does with an OLD-SHAPE outcome.
+    ///
+    /// A named door rather than a widened one: the arm stays `pub(super)`, and the measurement that
+    /// has to call it says so at the call site.
+    #[cfg(test)]
+    pub(super) fn apply_outcome_item_for_test(
+        &self,
+        shard_id: ShardId,
+        item: &crate::wal::WalOutcomeItem,
+    ) -> bool {
+        self.apply_outcome_item(shard_id, item)
+    }
+
     pub(super) fn apply_outcome_item(
         &self,
         shard_id: ShardId,
@@ -1365,9 +1378,8 @@ impl TemporalEngine {
                             fields.remove(field);
                         }
                     }
-                    ("set", Some(encoded)) => {
-                        let Some(member) = super::execute_on_shard::parse_set_component(encoded)
-                        else {
+                    ("set", Some(_encoded)) => {
+                        let Some(member) = item.element.clone() else {
                             return false;
                         };
                         if let Some(members) = shard.sets.get_mut(&item.object_key) {
@@ -1383,10 +1395,8 @@ impl TemporalEngine {
                             elements.remove(&sequence);
                         }
                     }
-                    ("zset", Some(encoded)) => {
-                        let Some((_biased, member)) =
-                            super::execute_on_shard::parse_zset_component(encoded)
-                        else {
+                    ("zset", Some(_encoded)) => {
+                        let Some(member) = item.element.clone() else {
                             return false;
                         };
                         if let Some(members) = shard.zsets.get_mut(&item.object_key) {
@@ -1499,15 +1509,18 @@ impl TemporalEngine {
                     .insert(field, address);
                 true
             }
-            // set: the component is the member, spelled.
+            // set: the record STATES its member, so the component name is not consulted for it.
+            //
+            // The name is still written and still files the page; what changed is that replay no
+            // longer reconstructs identity out of it. An outcome that names no element is refused
+            // rather than guessed at -- there is one record shape and `decode_wal_line` has already
+            // refused any other, so a set outcome without an element is malformed, not old.
             "set" => {
-                let (Some(address), Some(component)) =
-                    (item.resolved_address(), item.component.clone())
-                else {
-                    return false;
-                };
-                let Some(member) = super::execute_on_shard::parse_set_component(&component)
-                else {
+                let (Some(address), Some(component), Some(member)) = (
+                    item.resolved_address(),
+                    item.component.clone(),
+                    item.element.clone(),
+                ) else {
                     return false;
                 };
                 super::upsert_bucket_index_block(
@@ -1553,14 +1566,20 @@ impl TemporalEngine {
                     .insert(sequence, address);
                 true
             }
-            // zset: the biased score, then the member -- both spelled.
+            // zset: the record states its member as BYTES; the score is a NUMBER and still rides
+            // in the name, which is where the order lives.
+            //
+            // The split is the finding: a member is user data and had no other copy in the record,
+            // a score is arithmetic. Only the first needed stating.
             "zset" => {
-                let (Some(address), Some(component)) =
-                    (item.resolved_address(), item.component.clone())
-                else {
+                let (Some(address), Some(component), Some(member)) = (
+                    item.resolved_address(),
+                    item.component.clone(),
+                    item.element.clone(),
+                ) else {
                     return false;
                 };
-                let Some((biased, member)) =
+                let Some((biased, _named_member)) =
                     super::execute_on_shard::parse_zset_component(&component)
                 else {
                     return false;

@@ -26,6 +26,7 @@ fn stage_component_outcome(
     value: Option<Vec<u8>>,
 ) {
     super::block_in_wal::stage_outcome(crate::wal::WalOutcomeItem {
+        element: None,
         kind: kind.to_string(),
         object_key: object_key.to_string(),
         component: component.clone(),
@@ -50,6 +51,7 @@ fn stage_meta_outcome(
     deleted: bool,
 ) {
     super::block_in_wal::stage_outcome(crate::wal::WalOutcomeItem {
+        element: None,
         kind: kind.to_string(),
         object_key: object_key.to_string(),
         component: None,
