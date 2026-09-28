@@ -8681,3 +8681,137 @@ const RETIRED_NAMES: &[&str] = &[
         manifest_arrangement_arm(80_000);
     }
 }
+
+/// WHAT A SHORTER STRUCT DOES TO AN ALREADY-WRITTEN ROW, driven rather than reasoned about.
+///
+/// `BlockAddressWire` keeps three slots -- `rs`, `g` and `h` -- that the in-memory address no
+/// longer holds, and the stated reason is that the index log packs this struct POSITIONALLY, so
+/// deleting a field shortens the array and shifts every field after it. That is exactly right for
+/// deleting ONE of them. It is not the shape of deleting all three, because `rs`, `g` and `h` are
+/// the LAST three fields in declaration order: removing them removes a SUFFIX, and nothing that
+/// remains moves.
+///
+/// So the question the removal actually turns on is what a reader does with a row that is LONGER
+/// than the struct it is decoding into -- and whether it is loud. These arms drive it on both
+/// encodings this tree uses: the index log's plain positional serializer
+/// (`index_log::encode_index_payload_into`) and the served index's `.with_struct_map()`
+/// (`engine::encode_index_bytes`).
+#[cfg(test)]
+mod shorter_struct_against_an_existing_row {
+    use serde::{Deserialize, Serialize};
+
+    /// The seven-field shape as it stands today, in declaration order.
+    #[derive(Serialize, Deserialize, Debug, PartialEq)]
+    struct SevenSlots {
+        a: Option<u64>,
+        l: u64,
+        pi: Option<u64>,
+        oi: Option<u64>,
+        rs: Option<u32>,
+        g: Option<u64>,
+        h: Option<u64>,
+    }
+
+    /// The same shape with the trailing three removed.
+    #[derive(Serialize, Deserialize, Debug, PartialEq)]
+    struct FourSlots {
+        a: Option<u64>,
+        l: u64,
+        pi: Option<u64>,
+        oi: Option<u64>,
+    }
+
+    fn seven() -> SevenSlots {
+        SevenSlots {
+            a: Some(0x0000_0007_0000_002A),
+            l: 4096,
+            pi: Some(11),
+            oi: Some(0xFEED_FACE_CAFE_BEEF),
+            rs: Some(513),
+            g: Some(11),
+            h: None,
+        }
+    }
+
+    fn pack_positional<T: Serialize>(value: &T) -> Vec<u8> {
+        let mut out = Vec::new();
+        let mut ser = rmp_serde::Serializer::new(&mut out);
+        value.serialize(&mut ser).expect("positional encode");
+        out
+    }
+
+    fn pack_named<T: Serialize>(value: &T) -> Vec<u8> {
+        let mut out = Vec::new();
+        let mut ser = rmp_serde::Serializer::new(&mut out).with_struct_map();
+        value.serialize(&mut ser).expect("named encode");
+        out
+    }
+
+    /// THE POSITIONAL PATH -- the index log. A seven-element row read as four fields.
+    ///
+    /// This is the arm that decides whether removing the suffix is safe: if it decodes SILENTLY,
+    /// the removal is a trap and the three slots have to stay. If it REFUSES, the removal is a
+    /// break that announces itself, which is what the release authorisation permits.
+    #[test]
+    fn a_longer_positional_row_read_as_the_shorter_struct_is_refused_not_misread() {
+        let packed = pack_positional(&seven());
+        let round: SevenSlots = rmp_serde::from_slice(&packed).expect("its own shape round-trips");
+        assert_eq!(round, seven(), "the control: seven fields still read as seven");
+
+        let shorter: Result<FourSlots, _> = rmp_serde::from_slice(&packed);
+        match shorter {
+            Ok(value) => panic!(
+                "a seven-element positional row decoded SILENTLY into the four-field struct as \
+                 {value:?}. The suffix removal would be a silent reinterpretation, not a break, \
+                 and the three slots must stay."
+            ),
+            Err(error) => {
+                println!("  positional, 7 -> 4: REFUSED with {error}");
+            }
+        }
+    }
+
+    /// AND THE REVERSE, because a new binary writing four fields is what an older reader would
+    /// then meet. Recorded rather than relied on: this tree is pre-first-release and does not
+    /// promise it, but a silent answer here would be worth knowing about.
+    #[test]
+    fn a_shorter_positional_row_read_as_the_longer_struct_is_refused_not_misread() {
+        let packed = pack_positional(&FourSlots {
+            a: Some(1),
+            l: 2,
+            pi: Some(3),
+            oi: Some(4),
+        });
+        let longer: Result<SevenSlots, _> = rmp_serde::from_slice(&packed);
+        match longer {
+            Ok(value) => println!("  positional, 4 -> 7: decoded as {value:?} (NOT refused)"),
+            Err(error) => println!("  positional, 4 -> 7: REFUSED with {error}"),
+        }
+    }
+
+    /// THE NAMED PATH -- the served index. Extra KEYS are a different question from extra
+    /// POSITIONS, and the answer decides what the format-version stamp is actually protecting.
+    ///
+    /// If a named row simply drops the keys the struct no longer declares, then the served index
+    /// tolerates the removal by itself -- and the version stamp is not what makes the removal
+    /// safe there. What it would then be protecting is the MEANING carried by `g`: its presence
+    /// is what `BlockAddress` records as `ADDRESS_HAS_GENERATION`, so an old index whose `g` is
+    /// dropped on the floor loads with no generation on any address, which moves every page
+    /// handle it resolves through. That is silent, and it is the reason a bump is needed.
+    #[test]
+    fn a_named_row_with_retired_keys_drops_them_silently_which_is_why_the_meaning_needs_a_stamp() {
+        let packed = pack_named(&seven());
+        let shorter: Result<FourSlots, _> = rmp_serde::from_slice(&packed);
+        match shorter {
+            Ok(value) => {
+                println!("  named, 7 keys -> 4 fields: decoded SILENTLY as {value:?}");
+                assert_eq!(value.a, seven().a, "the fields that remain keep their values");
+                assert_eq!(value.oi, seven().oi, "including the object id");
+            }
+            Err(error) => panic!(
+                "a named row did NOT tolerate retired keys: {error}. Then the served index needs \
+                 the same treatment as the positional one and this note is wrong."
+            ),
+        }
+    }
+}
