@@ -12,7 +12,6 @@ modeled, and how to keep online reads fast.
 This blog expands the older MatrixArk feature notes and keeps the public design
 aligned with the first open-source surface:
 
-- [TemporalStore sequence feature benchmark](feature_sequence_benchmark.md)
 - [Control State technical blog](blog_control_state_frequency_caps.md)
 - [Context Management technical blog](blog_context_management_temporalstore.md)
 
