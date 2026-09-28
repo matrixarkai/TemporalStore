@@ -90,6 +90,11 @@ mod wal_proto;
 pub mod record_framing;
 pub mod index_log_record;
 pub mod wal_record;
+/// NO FOREIGN TYPE NAMES IN RUST SOURCE -- a repo-wide scan, tests only. The vendor-vocabulary
+/// scrub covers product and company names; this covers another implementation's IDENTIFIERS,
+/// which is a different failure and had no gate at all until this module.
+#[cfg(test)]
+mod foreign_type_name_guard;
 
 pub use block_store::{
     BlockAddress, BlockStoreSlabDescriptor, BlockStoreSlabState, BlockStoreSlabSummary,

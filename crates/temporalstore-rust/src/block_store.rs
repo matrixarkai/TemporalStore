@@ -101,8 +101,10 @@ pub enum BlockStoreError {
 /// absent" would silently erase real values. A byte of presence bits costs almost nothing and
 /// cannot make that mistake.
 ///
-/// This is the shape the design being followed uses: one byte carrying `dirty`, `page_in_log` and
-/// its reserved bits, rather than an optional wrapped around each.
+/// So this byte is a PRESENCE byte and nothing else: one bit per optional part -- block id, object
+/// id, generation -- rather than an `Option` wrapped around each value. It is in-memory only and
+/// never a wire field, which is what lets the bit numbering keep the hole the retired
+/// routing-bucket bit left instead of paying a renumbering to close it.
 const ADDRESS_HAS_BLOCK_ID: u8 = 1 << 0;
 const ADDRESS_HAS_OBJECT_ID: u8 = 1 << 1;
 /// Whether this address HAS a generation. Its VALUE is derived from the two identities above and

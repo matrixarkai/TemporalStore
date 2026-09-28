@@ -593,6 +593,12 @@ pub struct ContextModelDescriptor {
     pub model_id: u8,
     pub name: String,
     pub key_family: String,
+    /// The storage primitive this model's blocks are laid out as, spelled as
+    /// `engine::storage_bucket_internals::model_kind_registry!` spells it -- that macro is the
+    /// authority for every kind name this engine uses, so a value here is checkable against it
+    /// rather than being prose. `string` is a single block per key; `feature` is a timestamped
+    /// keyed series. Descriptive only: this field is written into the context-workflow state
+    /// report and nothing reads, matches or dispatches on it.
     pub block_primitive: String,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub aliases: Vec<String>,
@@ -630,49 +636,49 @@ pub fn context_model_descriptors() -> Vec<ContextModelDescriptor> {
             CONTEXT_NODE_MODEL_ID,
             "ContextNodeModel",
             "ctx:node",
-            "HashOrSet<std::string,std::string>",
+            "string",
             &["ContextNode", "ctxnode"],
         ),
         context_model_descriptor_entry(
             CONTEXT_EVENT_MODEL_ID,
             "ContextEventModel",
             "ctx:event",
-            "FeatureOrSet",
+            "feature",
             &["ContextEvent", "ContextSegment", "ctxevent", "ctxsegment"],
         ),
         context_model_descriptor_entry(
             CONTEXT_INDEX_MODEL_ID,
             "ContextIndexModel",
             "ctxidx",
-            "FeatureOrSet",
+            "feature",
             &["ContextIndex", "ContextIndexRef", "ctx:index"],
         ),
         context_model_descriptor_entry(
             CONTEXT_AUDIT_MODEL_ID,
             "ContextAuditModel",
             "ctx:audit",
-            "FeatureOrSet",
+            "feature",
             &["ContextAudit", "ContextPackAudit"],
         ),
         context_model_descriptor_entry(
             CONTEXT_CHILD_MODEL_ID,
             "ContextChildModel",
             "ctx:child",
-            "FeatureOrSet",
+            "feature",
             &["ContextChild", "ContextChildRef"],
         ),
         context_model_descriptor_entry(
             CONTEXT_SUMMARY_MODEL_ID,
             "ContextSummaryModel",
             "ctx:summary",
-            "FeatureOrSet",
+            "feature",
             &["ContextSummary"],
         ),
         context_model_descriptor_entry(
             CONTEXT_COMPRESSION_MODEL_ID,
             "ContextCompressionModel",
             "ctx:compress",
-            "FeatureOrSet",
+            "feature",
             &[
                 "ContextCompression",
                 "ContextCompressionEvent",
@@ -683,7 +689,7 @@ pub fn context_model_descriptors() -> Vec<ContextModelDescriptor> {
             CONTEXT_ENTITY_MODEL_ID,
             "ContextEntityModel",
             "ctx:entity",
-            "HashOrSet<std::string,std::string>",
+            "string",
             &["ContextEntity"],
         ),
     ]
