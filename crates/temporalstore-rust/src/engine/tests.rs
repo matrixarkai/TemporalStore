@@ -181,3 +181,5 @@ mod entry_object_identity;
 mod bucket_tombstone_budget;
 mod entry_count_versus_page_count;
 mod page_entry_name_pointer;
+mod bucket_mark_in_place_budget;
+mod bucket_dirty_share_under_dumps;
