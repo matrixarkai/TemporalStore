@@ -300,9 +300,10 @@ pub(super) struct LiveBlockEntry {
     /// THE BUCKET THIS PAGE IS ACTUALLY FILED UNDER, when the walk that produced the entry knew
     /// it -- which is whenever the entry came out of the bucket index.
     ///
-    /// An address may carry no routing bucket of its own: `BlockAddressWire::routing_bucket` is
-    /// `Option<u32>` under `#[serde(default)]`, so an index written before that field existed
-    /// decodes into pages that carry none, and `rebuild_bucket_first_index` stamps only the
+    /// An address carries no routing bucket of its own: the wire slot `rs` is retired from
+    /// `BlockAddressWire` entirely, so every index decodes into pages that carry none -- one
+    /// written before the field existed, one written while it did, and one written now all alike
+    /// -- and `rebuild_bucket_first_index` stamps only the
     /// object id onto an address, so a page comes out of a reconstruct still unrouted. Five
     /// readers then had to answer "which bucket is this page in?" for themselves, and each
     /// answered it with `block_routing_bucket(key, 0, u32::MAX)` -- a hash over the WHOLE range,

@@ -125,12 +125,40 @@ const ADDRESS_HAS_GENERATION: u8 = 1 << 3;
 /// measured at 65.3% field names -- these were the largest remaining group of them, and
 /// `page_segment_id` alone cost more than the offset it labels. Every short name carries every
 /// spelling this field has ever had as an alias, so anything already written still loads:
-/// `block_slab_id` and its `page_segment_id` rename, `routing_bucket` and its `routing_slot`
-/// rename, `stored_slab_id` with its older `extent_id`/`zone_id`, and `sha256` with its `checksum`.
+/// `block_slab_id` and its `page_segment_id` rename, `stored_slab_id` with its older
+/// `extent_id`/`zone_id`.
 ///
 /// This does change the shape a NEW record is written in, so a binary older than this cannot
 /// read one -- the same trade the WAL and the index item made before it. Old to new is safe;
 /// new to old is not.
+///
+/// # TWO ENCODERS READ THIS STRUCT AND THEY DO NOT AGREE
+///
+/// Everything about retiring a field here follows from that, so it is stated once, in the place
+/// the fields are declared, rather than re-derived at each of them:
+///
+///   * THE INDEX LOG IS POSITIONAL. `index_log::encode_index_payload_into` builds a plain
+///     `rmp_serde::Serializer`, so a field is a POSITION and not a name, and a row is an array.
+///     A row whose length does not match the struct decoding it is REFUSED -- measured, "array
+///     had incorrect length, expected 4" -- and `index_log`'s replay propagates that with `?`
+///     rather than skipping the row, deliberately: "a sweep that quietly skips what it cannot
+///     read is how committed corruption becomes silent data loss". So this path fails HARD and
+///     it fails LOUDLY, and that asymmetry is a decision rather than an oversight.
+///
+///   * THE SERVED INDEX IS NAMED. `engine::encode_index_bytes` builds its serializer
+///     `.with_struct_map()`, so a row is a map and a reader simply DROPS the keys its struct no
+///     longer declares -- measured, silently, with every remaining value intact.
+///
+/// AND THE VERSION STAMP GUARDS THE TOLERANT ONE. `engine::SHARD_INDEX_FORMAT_VERSION` is checked
+/// before the SERVED index decodes, and a mismatch is treated as an absent index so the caller
+/// replays -- slower and correct. The positional index log carries no struct version at all: its
+/// container byte holds a codec and a record SHAPE (whole / delta / anchor), not a version.
+///
+/// SO THE COST OF RETIRING A SLOT IS NOT "THE STORED SHAPE MOVES". It is whether the slot carried
+/// a MEANING that the named path would drop in silence. `rs` and `h` carried none -- both were
+/// read and ignored -- and they are gone. `g` carries one, because its PRESENCE is
+/// `ADDRESS_HAS_GENERATION`, so retiring it needs the stamp to refuse the old shape first.
+/// `shorter_struct_against_an_existing_row` at the end of this file drives all four cases.
 #[derive(Debug, Default, Clone, Serialize, Deserialize)]
 struct BlockAddressWire {
     /// THE MERGED ADDRESS WORD, AND DELIBERATELY NOT AN ALIAS OF THE OLD SPELLING.
@@ -152,6 +180,13 @@ struct BlockAddressWire {
     /// on every stored address is a worse trade than a less specific message, and the refusal is
     /// loud either way: in a NAMED encoding the old keys are unknown and this field is absent, in
     /// the POSITIONAL one the old record is an array shorter than this struct has fields.
+    ///
+    /// AND THE LAST SENTENCE OF THAT IS NOW MEASURED RATHER THAN ASSERTED, which is what let two
+    /// slots leave. A positional row LONGER than the struct decoding it is refused -- "array had
+    /// incorrect length" -- and a named row simply drops the keys the struct stopped declaring.
+    /// So the cost of retiring a slot is not "the stored shape moves and something reads it
+    /// wrong"; it is exactly whether the slot carried a MEANING the named path would drop in
+    /// silence. See `shorter_struct_against_an_existing_row` at the end of this file.
     #[serde(rename = "a", alias = "address_word", default)]
     address: Option<u64>,
     #[serde(rename = "l", alias = "length")]
@@ -168,49 +203,26 @@ struct BlockAddressWire {
         default
     )]
     object_id: Option<u64>,
-    /// READ AND IGNORED, AND WRITTEN AS NIL -- THE SLOT IS KEPT SO THE STORED SHAPE DOES NOT MOVE.
+    /// THE ONLY OPTIONAL SLOT LEFT, AND IT IS NOT DEAD WEIGHT -- ITS PRESENCE IS A MEANING.
     ///
-    /// `BlockAddress` no longer holds a routing bucket: the bucket a page is filed under is
-    /// `start + FNV-1a-64(object_key) % width` over the range the store is STAMPED with, and
-    /// [`crate::engine`]'s readers derive it from the container they are already walking. See the
-    /// note on [`BlockAddress`] for why that derivation is exact rather than a guess.
+    /// `rs` (the routing bucket) and `h` (the digest) used to sit around this one, read and
+    /// ignored and written as nil, because removing them looked like a format break for no gain.
+    /// They are gone; `g` stays, and the difference between them is the whole of
+    /// `a_named_row_keeps_g_by_name_which_is_why_this_change_needs_no_stamp` below.
     ///
-    /// THIS FIELD STAYS BECAUSE REMOVING IT WOULD BE A FORMAT BREAK FOR NO GAIN. The index log
-    /// packs this struct POSITIONALLY -- `encode_index_payload_into` uses a plain
-    /// `rmp_serde::Serializer`, so a field is a POSITION -- so deleting the field shortens the
-    /// array and shifts `g` and `h` down one. An already-written record would then hand its
-    /// routing bucket to the generation check and its generation to the digest parser: it fails,
-    /// but it fails describing the wrong thing. Keeping the slot and writing nil into it is the
-    /// same trade `sha256` below already makes, and it is a CONTENT change rather than a schema
-    /// change -- an index written before this still loads, and one written now simply says nothing
-    /// here.
-    ///
-    /// NOTHING CROSS-CHECKS IT, and that is not a check being dropped. The conversion into
-    /// `BlockAddress` holds no object key and no routing range, so it cannot derive the value this
-    /// field would be compared against; the container that CAN derive it is the one that now
-    /// answers the question. See `block_store::record::decode_block_record` for the cross-check
-    /// that was supposed to exist on the read path and never did.
-    #[serde(
-        rename = "rs",
-        alias = "routing_slot",
-        alias = "routing_bucket",
-        default
-    )]
-    routing_bucket: Option<u32>,
+    /// `rs` and `h` were dead in both directions: nothing read them and nothing wrote them. `g`
+    /// is read. Its VALUE is cross-checked against `block_id.or(object_id)` just below, and its
+    /// PRESENCE becomes `ADDRESS_HAS_GENERATION` -- so a reader that stopped declaring this field
+    /// would not lose a nil, it would load every address with no generation at all and move every
+    /// page handle it resolves through. On the named encoding that happens SILENTLY. Retiring
+    /// this slot therefore needs the served-index version stamp to refuse the old shape first,
+    /// which is a separate change; retiring the other two did not.
     #[serde(
         rename = "g",
         alias = "generation",
         default
     )]
     generation: Option<u64>,
-    #[serde(
-        rename = "h",
-        alias = "sha256",
-        alias = "checksum",
-        default,
-        with = "hex_digest"
-    )]
-    sha256: Option<[u8; 32]>,
 }
 
 /// A STORED `g` THAT DISAGREES IS REFUSED, LOUDLY AND BEFORE THE DECODE COMPLETES.
@@ -278,8 +290,8 @@ impl TryFrom<BlockAddressWire> for BlockAddress {
                 ));
             }
         }
-        // `wire.routing_bucket` is deliberately not passed: the address does not hold one any
-        // more. It is read off the wire so the positional layout is unchanged and discarded here.
+        // There is no routing bucket to not pass any more: the slot that used to be read off the
+        // wire and discarded here is gone from the struct entirely.
         BlockAddress::try_from_wire_parts(
             block_slab_id,
             offset,
@@ -299,16 +311,10 @@ impl From<BlockAddress> for BlockAddressWire {
             length: address.length(),
             block_id: address.block_id(),
             object_id: address.object_id(),
-            // The address no longer holds a routing bucket, so it cannot write one. The SLOT is
-            // kept -- see the field's own note -- because the index log packs this struct
-            // positionally and removing the slot would shift every field after it.
-            routing_bucket: None,
+            // `routing_bucket` and `sha256` used to be written here as nil, because the slots
+            // were kept. Both slots are gone, so there is nothing to write: the bucket is the
+            // container's answer and the page envelope carries the digest that verifies the bytes.
             generation: address.generation(),
-            // The index no longer holds a digest, so it cannot write one. An index written
-            // before this still LOADS -- the field is accepted and ignored -- but one written
-            // now omits it. That is a content change, not a schema change: the field was always
-            // optional, and the page envelope carries the digest that verifies the bytes.
-            sha256: None,
         }
     }
 }
@@ -833,38 +839,10 @@ impl BlockAddress {
     }
 }
 
-/// A digest is 32 bytes in memory and hex on the wire.
-///
-/// Keeping the wire form makes this change invisible to anything that reads a persisted index, in
-/// both directions: the same hex string is written, and a hex string is what is read.
-mod hex_digest {
-    use serde::{Deserialize, Deserializer, Serializer};
-
-    pub fn serialize<S: Serializer>(
-        value: &Option<[u8; 32]>,
-        serializer: S,
-    ) -> Result<S::Ok, S::Error> {
-        match value {
-            Some(bytes) => serializer.serialize_str(&hex::encode(bytes)),
-            None => serializer.serialize_none(),
-        }
-    }
-
-    pub fn deserialize<'de, D: Deserializer<'de>>(
-        deserializer: D,
-    ) -> Result<Option<[u8; 32]>, D::Error> {
-        // A digest that is not 32 bytes of hex is not a digest. Reading it as absent rather than
-        // failing keeps a malformed one from making a whole index unloadable -- the read path
-        // treats a missing digest as "unverified", which is what a corrupt one deserves too.
-        let raw = Option::<String>::deserialize(deserializer)?;
-        Ok(raw.and_then(|text| {
-            let mut bytes = [0u8; 32];
-            hex::decode_to_slice(text.as_bytes(), &mut bytes)
-                .ok()
-                .map(|_| bytes)
-        }))
-    }
-}
+// `mod hex_digest` stood here. It spelled the `h` slot as 32 bytes in memory and hex on the wire,
+// and the `sha256` field was its only caller -- so it left with the field rather than staying as a
+// codec for a slot nothing writes. `record::sha256_hex` still exists and is still used; what is
+// gone is only the serde adapter that put a digest ON THIS STRUCT.
 
 impl BlockAddress {
     pub fn compact_slab_id(&self) -> Option<u32> {
@@ -3421,10 +3399,19 @@ mod address_size_tests {
             "the split slab id and offset must not be written any more"
         );
         assert_eq!(json["l"], 128, "the length");
-        // THE SLOT IS WRITTEN AND WRITTEN EMPTY. The address holds no routing bucket, and the slot
-        // stays on the wire because the index log packs this struct POSITIONALLY -- a shorter array
-        // would shift `g` and `h` down one place. `null` rather than absent for the same reason.
-        assert_eq!(json["rs"], serde_json::Value::Null, "the routing bucket slot");
+        // THE SLOT IS GONE, NOT WRITTEN EMPTY -- and this is asserted through `get` rather than
+        // through indexing, because `json["rs"]` answers `Value::Null` for a key that is ABSENT
+        // just as loudly as for one written null. The old form of this assertion was
+        // `assert_eq!(json["rs"], Value::Null)`, which keeps passing after the slot is retired and
+        // passes for the opposite reason. `get` can tell the two apart; indexing cannot.
+        assert!(
+            json.get("rs").is_none(),
+            "the routing-bucket slot is retired: it must be absent, not written null"
+        );
+        assert!(
+            json.get("h").is_none(),
+            "the digest slot is retired: it must be absent, not written null"
+        );
         assert!(
             json.get("b").is_none(),
             "the slab id is derived rather than written"
@@ -3448,6 +3435,10 @@ mod address_size_tests {
             "length": 128_u64,
             "page_id": 1_u64,
             "object_id": 2_u64,
+            // `routing_slot` names a field that no longer exists, and it is kept in this fixture
+            // deliberately: an index already on disk carries it, and this line is the assertion
+            // that a key no field claims is TOLERATED rather than refused. It stopped being a
+            // read alias when the slot was retired; it did not stop being present on disk.
             "routing_slot": 3_u32,
             // The generation an index on disk carries: `page_id.or(object_id)`, which is what
             // every write path in this engine has always stored here. It was spelled `4` in this
@@ -4123,20 +4114,27 @@ const RETIRED_NAMES: &[&str] = &[
         // never enough to keep that promise.
         assert_eq!(address.block_id(), Some(9));
         assert_eq!(address.object_id(), Some(122110326161599232));
-        // `routing_slot` IS STILL READ AND IS NOW IGNORED, which is a content change rather than a
-        // schema change: the slot is kept on the wire (see `BlockAddressWire::routing_bucket`) so
-        // the positional index-log layout does not shift, and the address has nowhere to put it.
-        // That the record still LOADS with the key present is the assertion; there is no accessor
-        // left to compare it through, and the bucket a reader wants is
-        // `block_routing_bucket(object_key, ..)` over the range the store is stamped with.
+        // `routing_slot` IS STILL READ AND STILL IGNORED, and the SLOT IS NOW GONE from the
+        // struct rather than written empty. Both halves matter and they are asserted separately.
+        //
+        // That the legacy record still LOADS with the key present is the first: the assertions
+        // above all passed on a record carrying `routing_slot`, which is the compatibility this
+        // change rests on -- a key no field claims is tolerated by a named decoder rather than
+        // refused. There is no accessor left to compare its value through, and the bucket a
+        // reader wants is `block_routing_bucket(object_key, ..)` over the store's stamped range.
+        //
+        // That a CURRENT address no longer writes the key is the second. It used to be written
+        // empty so the index log's positional layout would not shift; the slot is retired now, and
+        // `shorter_struct_against_an_existing_row` measures why that is safe -- a positional row
+        // longer than the struct is refused by LENGTH, so the shift this nil was avoiding cannot
+        // be reached silently.
         assert_eq!(
             serde_json::to_value(&address)
                 .expect("an address serializes")
                 .get("rs")
                 .cloned(),
-            Some(serde_json::Value::Null),
-            "the slot is written, and written empty: a shorter array would shift `g` and `h` \
-             down one position in the index log"
+            None,
+            "the slot is retired: a current address must not write `rs` at all, not even as nil"
         );
         // The generation this record stored, which is now the block id it is derived from. The
         // fixture spelled an independent `2` here until the field became derived; a record that
@@ -4172,21 +4170,33 @@ const RETIRED_NAMES: &[&str] = &[
         let encoded = serde_json::to_string(&address).unwrap();
         // Not vacuous: the values must still be there before the size claim means anything.
         assert!(encoded.contains("122110326161599232"));
-        // The routing bucket used to be checked here, as `545210715`. There is no value to look for:
-        // the slot is written empty, which `wire_form_survives_the_packing` pins.
-        assert!(encoded.contains("\"rs\":null"));
-        for gone in ["page_segment_id", "routing_slot", "object_id", "generation"] {
+        // The routing bucket used to be checked here as `545210715`, then as `"rs":null` once the
+        // address stopped holding one and the slot was written empty. The slot is retired now, so
+        // neither it nor the digest appears at all.
+        for gone in ["\"rs\"", "\"h\"", "page_segment_id", "routing_slot", "object_id", "generation"] {
             assert!(!encoded.contains(gone), "{gone} should not be written any more");
         }
-        // Ninety-one bytes, where the long-name form was more than twice that. It was 90 until
-        // an absent field stopped vanishing: a row is read by position, so a field that
-        // disappears when it is empty moves every field behind it -- which shifted `generation`
-        // into `object_id` until a round-trip test caught it. The cost of that safety, here, is
-        // one `"h":null`; in the packed form an absent field is a single byte.
-        assert!(
-            encoded.len() < 100,
-            "expected a compact address, got {} bytes: {encoded}",
-            encoded.len()
+        // SIXTY-TWO BYTES, measured, and the number is stated because it MOVED with this change.
+        //
+        // AND THE FIGURE IT REPLACES WAS ALREADY STALE, which is worth recording rather than
+        // quietly overwriting. The comment here read "ninety-one bytes". The two retired slots
+        // spell `,"rs":null` (ten bytes) and `,"h":null` (nine), so an encoding that measures 62
+        // without them measured 81 with them -- not 91. The 91 had stopped describing this
+        // fixture at some earlier change and nothing failed, because the assertion beside it was
+        // `encoded.len() < 100`: a bound that loose cannot notice its own prose going wrong. It is
+        // an equality now for that reason.
+        //
+        // The nils were there because a row is read by POSITION in the index log, so a field that
+        // vanishes when empty moves every field behind it -- which once shifted `generation` into
+        // `object_id` until a round-trip test caught it. That reasoning is intact and it is why
+        // `g` is still written; what changed is that a retired slot is not a vanishing one, and
+        // `shorter_struct_against_an_existing_row` measures the difference: a positional row
+        // longer than the struct decoding it is refused by LENGTH rather than reinterpreted.
+        assert_eq!(
+            62,
+            encoded.len(),
+            "the compact address width moved with the two retired slots; if this is not 62, say \
+             what it is and why rather than widening the bound: {encoded}"
         );
         // And it round-trips through its own new form.
         let back: BlockAddress = serde_json::from_str(&encoded).unwrap();
@@ -7936,8 +7946,17 @@ const RETIRED_NAMES: &[&str] = &[
     ///
     /// The index log packs an address as an ARRAY: a field is a position, not a name, so there
     /// are no unknown keys to notice and the JSON refusal above says nothing about it. What
-    /// protects it is the array LENGTH -- an address written before the merge is one element
-    /// longer than this struct has fields, because two u64 fields became one.
+    /// protects it is the array LENGTH -- an address written before the merge is THREE elements
+    /// longer than this struct has fields, and the three have separate causes:
+    ///
+    ///   * ONE because the slab id and the offset became a single word.
+    ///   * TWO because `rs` and `h` were retired from the wire struct. That is why this number
+    ///     moved: it was ONE while those slots were still written as nil.
+    ///
+    /// The distinction matters because only the first was a REINTERPRETATION risk -- an old `ps`
+    /// read as the new `a` is a well-formed address for a different block. The other two are a
+    /// shorter array meeting a longer one, which `shorter_struct_against_an_existing_row` shows is
+    /// refused by length rather than reinterpreted.
     ///
     /// This builds the old array by hand and requires the decode to fail. Without it the merge
     /// would rest on an assumption about `rmp_serde`'s tolerance for a length mismatch, and a
@@ -7954,8 +7973,8 @@ const RETIRED_NAMES: &[&str] = &[
             rmp_serde::from_slice(&merged).expect("and unpacks again");
         assert_eq!(round_tripped, address);
 
-        // The old shape: the same values with the slab id and the offset as two elements, which
-        // is one element more than this struct has fields.
+        // The old shape: the same values with the slab id and the offset as two elements, AND the
+        // two retired slots still present -- eight elements against this struct's five.
         let mut split = Vec::new();
         (
             3u64,
@@ -7974,11 +7993,27 @@ const RETIRED_NAMES: &[&str] = &[
         // lengths would not have shown it (the halves carry the same numbers either way).
         assert_eq!(merged[0] & 0xF0, 0x90, "the merged form is a fixarray");
         assert_eq!(split[0] & 0xF0, 0x90, "and so is the split one");
+        // BOTH COUNTS ARE STATED, not just their difference: a relationship that holds can hold
+        // at the wrong pair of numbers, and these two moved for different reasons.
+        assert_eq!(
+            5,
+            (merged[0] & 0x0F) as usize,
+            "the merged address packs FIVE elements -- `a`, `l`, `pi`, `oi`, `g`. It was seven \
+             until `rs` and `h` were retired; if this is not five, the struct changed and the \
+             split fixture below no longer describes what it is being compared against"
+        );
+        assert_eq!(
+            8,
+            (split[0] & 0x0F) as usize,
+            "the pre-merge shape packs EIGHT elements: slab, offset, length, page_id, object_id, \
+             routing_slot, generation, sha256"
+        );
         assert_eq!(
             (split[0] & 0x0F) as usize,
-            (merged[0] & 0x0F) as usize + 1,
-            "the old shape must be exactly one element longer than the new one, because two \
-             u64 fields became one; if the counts matched, the length is not what separates them"
+            (merged[0] & 0x0F) as usize + 3,
+            "the old shape must be exactly three elements longer than the new one -- one because \
+             two u64 fields became one word, two because `rs` and `h` left the struct; if the \
+             counts matched, the length is not what separates them"
         );
         assert!(
             rmp_serde::from_slice::<BlockAddress>(&split).is_err(),
@@ -8682,25 +8717,31 @@ const RETIRED_NAMES: &[&str] = &[
     }
 }
 
-/// WHAT A SHORTER STRUCT DOES TO AN ALREADY-WRITTEN ROW, driven rather than reasoned about.
+/// WHAT A SHORTER WIRE STRUCT DOES TO AN ALREADY-WRITTEN ROW, driven rather than reasoned about.
 ///
-/// `BlockAddressWire` keeps three slots -- `rs`, `g` and `h` -- that the in-memory address no
-/// longer holds, and the stated reason is that the index log packs this struct POSITIONALLY, so
-/// deleting a field shortens the array and shifts every field after it. That is exactly right for
-/// deleting ONE of them. It is not the shape of deleting all three, because `rs`, `g` and `h` are
-/// the LAST three fields in declaration order: removing them removes a SUFFIX, and nothing that
-/// remains moves.
+/// `BlockAddressWire` used to carry three slots the in-memory address does not hold -- `rs` (the
+/// routing bucket), `g` (the generation) and `h` (the digest) -- and the stated reason for keeping
+/// them was that the index log packs this struct POSITIONALLY, so deleting a field shortens the
+/// array and shifts every field after it.
 ///
-/// So the question the removal actually turns on is what a reader does with a row that is LONGER
-/// than the struct it is decoding into -- and whether it is loud. These arms drive it on both
-/// encodings this tree uses: the index log's plain positional serializer
-/// (`index_log::encode_index_payload_into`) and the served index's `.with_struct_map()`
-/// (`engine::encode_index_bytes`).
+/// THAT COMMENT WAS RIGHT ABOUT THE CASE IT DESCRIBED, and it is quoted here rather than
+/// contradicted, because the obvious reading of its departure is that it was wrong and the nil
+/// slot should come back. Deleting `rs` ALONE does shift `g` and `h` down one, and an
+/// already-written row would then hand its bucket to the generation check and its generation to
+/// the digest parser -- failing while describing the wrong thing. What it did not say is what a
+/// reader does when the row is simply LONGER than the struct, which is the case that actually
+/// arises, and which is measured below.
+///
+/// The four arms are the two encodings this tree uses crossed with the two removals:
+///
+///   * SEVEN -> FIVE is what this change did: `rs` and `h` retired, `g` kept.
+///   * SEVEN -> FOUR is what retiring `g` as well would do, and is measured here so the follow-up
+///     that needs the version stamp can point at the reason rather than restate it.
 #[cfg(test)]
 mod shorter_struct_against_an_existing_row {
     use serde::{Deserialize, Serialize};
 
-    /// The seven-field shape as it stands today, in declaration order.
+    /// The seven-field shape as it stood, in declaration order.
     #[derive(Serialize, Deserialize, Debug, PartialEq)]
     struct SevenSlots {
         a: Option<u64>,
@@ -8712,7 +8753,20 @@ mod shorter_struct_against_an_existing_row {
         h: Option<u64>,
     }
 
-    /// The same shape with the trailing three removed.
+    /// THIS CHANGE: `rs` and `h` gone, `g` kept. Note this is NOT a suffix removal -- `g` moves
+    /// from position five to position four -- so the positional path is safe here because of the
+    /// LENGTH check, not because nothing moved.
+    #[derive(Serialize, Deserialize, Debug, PartialEq)]
+    struct FiveSlots {
+        a: Option<u64>,
+        l: u64,
+        pi: Option<u64>,
+        oi: Option<u64>,
+        g: Option<u64>,
+    }
+
+    /// THE FOLLOW-UP: all three gone. This one IS a suffix removal, because `rs`, `g` and `h` are
+    /// the last three in declaration order.
     #[derive(Serialize, Deserialize, Debug, PartialEq)]
     struct FourSlots {
         a: Option<u64>,
@@ -8721,14 +8775,16 @@ mod shorter_struct_against_an_existing_row {
         oi: Option<u64>,
     }
 
+    const GENERATION: u64 = 11;
+
     fn seven() -> SevenSlots {
         SevenSlots {
             a: Some(0x0000_0007_0000_002A),
             l: 4096,
-            pi: Some(11),
+            pi: Some(GENERATION),
             oi: Some(0xFEED_FACE_CAFE_BEEF),
             rs: Some(513),
-            g: Some(11),
+            g: Some(GENERATION),
             h: None,
         }
     }
@@ -8747,71 +8803,77 @@ mod shorter_struct_against_an_existing_row {
         out
     }
 
-    /// THE POSITIONAL PATH -- the index log. A seven-element row read as four fields.
-    ///
-    /// This is the arm that decides whether removing the suffix is safe: if it decodes SILENTLY,
-    /// the removal is a trap and the three slots have to stay. If it REFUSES, the removal is a
-    /// break that announces itself, which is what the release authorisation permits.
+    /// THE POSITIONAL PATH -- the index log -- refuses a row longer than the struct, for BOTH
+    /// removals. This is what makes retiring a slot a break that announces itself rather than a
+    /// silent reinterpretation, and it is the arm that would have blocked the change had it
+    /// failed.
     #[test]
-    fn a_longer_positional_row_read_as_the_shorter_struct_is_refused_not_misread() {
+    fn a_longer_positional_row_is_refused_by_length_for_either_removal() {
         let packed = pack_positional(&seven());
-        let round: SevenSlots = rmp_serde::from_slice(&packed).expect("its own shape round-trips");
-        assert_eq!(round, seven(), "the control: seven fields still read as seven");
+        let control: SevenSlots =
+            rmp_serde::from_slice(&packed).expect("its own shape round-trips");
+        assert_eq!(control, seven(), "the control: seven fields still read as seven");
 
-        let shorter: Result<FourSlots, _> = rmp_serde::from_slice(&packed);
-        match shorter {
+        let five: Result<FiveSlots, _> = rmp_serde::from_slice(&packed);
+        match five {
+            Ok(value) => panic!(
+                "a seven-element positional row decoded SILENTLY into the five-field struct as \
+                 {value:?}, so retiring `rs` and `h` would be a reinterpretation rather than a \
+                 break and the slots must come back"
+            ),
+            Err(error) => println!("  positional, 7 -> 5 (this change): REFUSED with {error}"),
+        }
+
+        let four: Result<FourSlots, _> = rmp_serde::from_slice(&packed);
+        match four {
             Ok(value) => panic!(
                 "a seven-element positional row decoded SILENTLY into the four-field struct as \
-                 {value:?}. The suffix removal would be a silent reinterpretation, not a break, \
-                 and the three slots must stay."
+                 {value:?}"
             ),
-            Err(error) => {
-                println!("  positional, 7 -> 4: REFUSED with {error}");
-            }
+            Err(error) => println!("  positional, 7 -> 4 (follow-up): REFUSED with {error}"),
         }
     }
 
-    /// AND THE REVERSE, because a new binary writing four fields is what an older reader would
-    /// then meet. Recorded rather than relied on: this tree is pre-first-release and does not
-    /// promise it, but a silent answer here would be worth knowing about.
-    #[test]
-    fn a_shorter_positional_row_read_as_the_longer_struct_is_refused_not_misread() {
-        let packed = pack_positional(&FourSlots {
-            a: Some(1),
-            l: 2,
-            pi: Some(3),
-            oi: Some(4),
-        });
-        let longer: Result<SevenSlots, _> = rmp_serde::from_slice(&packed);
-        match longer {
-            Ok(value) => println!("  positional, 4 -> 7: decoded as {value:?} (NOT refused)"),
-            Err(error) => println!("  positional, 4 -> 7: REFUSED with {error}"),
-        }
-    }
-
-    /// THE NAMED PATH -- the served index. Extra KEYS are a different question from extra
-    /// POSITIONS, and the answer decides what the format-version stamp is actually protecting.
+    /// THE NAMED PATH KEEPS `g` BY NAME, WHICH IS WHY THIS CHANGE NEEDS NO VERSION STAMP.
     ///
-    /// If a named row simply drops the keys the struct no longer declares, then the served index
-    /// tolerates the removal by itself -- and the version stamp is not what makes the removal
-    /// safe there. What it would then be protecting is the MEANING carried by `g`: its presence
-    /// is what `BlockAddress` records as `ADDRESS_HAS_GENERATION`, so an old index whose `g` is
-    /// dropped on the floor loads with no generation on any address, which moves every page
-    /// handle it resolves through. That is silent, and it is the reason a bump is needed.
+    /// The served index is a map, so retiring `rs` and `h` drops two keys nothing read. `g` is
+    /// found by its own name wherever it sits, so an already-written index still loads with its
+    /// generation PRESENT -- and presence is the whole meaning, since it becomes
+    /// `ADDRESS_HAS_GENERATION`. Nothing moves, so nothing needs refusing.
     #[test]
-    fn a_named_row_with_retired_keys_drops_them_silently_which_is_why_the_meaning_needs_a_stamp() {
+    fn a_named_row_keeps_g_by_name_which_is_why_this_change_needs_no_stamp() {
         let packed = pack_named(&seven());
-        let shorter: Result<FourSlots, _> = rmp_serde::from_slice(&packed);
-        match shorter {
-            Ok(value) => {
-                println!("  named, 7 keys -> 4 fields: decoded SILENTLY as {value:?}");
-                assert_eq!(value.a, seven().a, "the fields that remain keep their values");
-                assert_eq!(value.oi, seven().oi, "including the object id");
-            }
-            Err(error) => panic!(
-                "a named row did NOT tolerate retired keys: {error}. Then the served index needs \
-                 the same treatment as the positional one and this note is wrong."
-            ),
-        }
+        let five: FiveSlots = rmp_serde::from_slice(&packed)
+            .expect("a named row tolerates keys the struct stopped declaring");
+        println!("  named, 7 keys -> 5 fields (this change): {five:?}");
+        assert_eq!(
+            five.g,
+            Some(GENERATION),
+            "`g` must survive by NAME -- if it did not, every address from an existing index \
+             would load with no generation and every page handle would move"
+        );
+        assert_eq!(five.a, seven().a, "and the fields that remain keep their values");
+        assert_eq!(five.oi, seven().oi, "including the object id");
+    }
+
+    /// AND WHY RETIRING `g` TOO IS A DIFFERENT CHANGE: the named path drops it in SILENCE.
+    ///
+    /// This is the measurement the follow-up rests on. An index written before that removal would
+    /// load with no generation on any address -- not an error, not a nil to notice, simply absent
+    /// -- and `BlockAddress::generation` would answer `None` for every page, moving every handle
+    /// it resolves through. `engine::SHARD_INDEX_FORMAT_VERSION` is what converts that silent
+    /// misread into a refusal the caller answers by replaying the WAL.
+    #[test]
+    fn a_named_row_drops_g_in_silence_which_is_why_retiring_it_needs_the_stamp() {
+        let packed = pack_named(&seven());
+        let four: FourSlots = rmp_serde::from_slice(&packed)
+            .expect("a named row tolerates keys the struct stopped declaring");
+        println!("  named, 7 keys -> 4 fields (follow-up): {four:?} -- `g` is simply gone");
+        assert_eq!(
+            four.oi,
+            seven().oi,
+            "the remaining values are intact, which is exactly what makes the loss quiet: \
+             nothing about this row looks wrong"
+        );
     }
 }

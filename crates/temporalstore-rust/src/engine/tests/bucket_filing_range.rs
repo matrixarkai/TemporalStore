@@ -125,25 +125,35 @@ fn read_back(engine: &TemporalEngine, keys: &[String]) -> usize {
 /// than by a setter -- mx#1942's door, kept because what it now demonstrates is worth more than what
 /// it used to build.
 ///
-/// IT USED TO PRODUCE AN UNROUTED ADDRESS. There is no such thing now: the slot is still written
-/// (empty) so the index log's positional layout does not shift, and the address has nowhere to put a
-/// bucket whether the key is there or not. So this is the IDENTITY, and
+/// IT USED TO PRODUCE AN UNROUTED ADDRESS. There is no such thing now: the address has nowhere to
+/// put a bucket whether the key is there or not. So this is the IDENTITY, and
 /// `an_older_index_decodes_to_exactly_the_same_address` asserts that it is -- which is the statement
 /// that an index carrying a real `rs` loads to the same address as one carrying none, and therefore
 /// that no migration is needed for the field's departure.
+///
+/// AND THE SLOT ITSELF IS GONE NOW, not written empty, which is what inverted this helper. While
+/// `BlockAddressWire` still declared `rs`, an older index was the shape WITHOUT the key and this
+/// removed it. The field is retired, so a current address has no `rs` and an older index is the
+/// shape WITH it -- the key is added here instead, and the identity it demonstrates is the same one.
 fn as_an_older_build_wrote_it(address: &BlockAddress) -> BlockAddress {
     let mut wire = serde_json::to_value(address).expect("an address serializes to its wire shape");
     let object = wire
         .as_object_mut()
         .expect("the address wire shape is a JSON object");
+    // THE DIRECTION INVERTED WHEN THE SLOT LEFT THE STRUCT. This helper used to REMOVE `rs` from
+    // what a current build writes, because a current build still wrote one. `BlockAddressWire` has
+    // retired the field, so a current address carries no `rs` at all and removing it would be the
+    // no-op the old assertion was written to catch. What an older build wrote is now the shape with
+    // the key ADDED, and what this proves is that the retired key is still inert on the way in.
     assert!(
-        object.remove("rs").is_some(),
-        "the address wire shape carried no `rs` key to remove. The slot is kept deliberately -- the \
-         index log packs the wire struct POSITIONALLY, so removing the field would shift `g` and `h` \
-         down one -- and this helper exists to prove the key is inert, which it cannot do if the key \
-         is absent."
+        object.remove("rs").is_none(),
+        "a current address still carries an `rs` key, so the slot was not retired after all and \
+         this helper is adding a key that is already there -- every count taken through it would \
+         then be measuring the current shape, not an older one."
     );
-    serde_json::from_value(wire).expect("the engine's decoder accepts an address with no `rs`")
+    object.insert("rs".to_string(), serde_json::json!(513u32));
+    serde_json::from_value(wire)
+        .expect("the engine's decoder still accepts an index that carries the retired `rs` key")
 }
 
 /// Round-trip every string page through the wire with `rs` removed, asserting the identity per page.
@@ -185,7 +195,7 @@ fn an_older_index_decodes_to_exactly_the_same_address() {
     assert_eq!(
         as_an_older_build_wrote_it(&address),
         address,
-        "removing `rs` from the wire changed the address it decodes to"
+        "an index carrying the retired `rs` key decoded to a different address than one without it"
     );
 
     // (2) A REAL BUCKET IN THE KEY -- what every index written before this change holds. The value
@@ -202,15 +212,25 @@ fn an_older_index_decodes_to_exactly_the_same_address() {
          stored value would be carrying a second opinion about it"
     );
 
-    // (3) AND THE SLOT IS STILL WRITTEN, which is what keeps the positional layout put.
+    // (3) AND THE SLOT IS NO LONGER WRITTEN AT ALL -- not as nil, not at all.
+    //
+    // This arm inverted. It used to require `Some(Null)`, because the slot was held open so the
+    // index log's positional array would not shorten. The slot is retired now, and what makes
+    // that safe is not that the array stayed the same length but that a shortened one is REFUSED
+    // by length rather than reinterpreted -- `block_store`'s
+    // `shorter_struct_against_an_existing_row` measures it, and
+    // `a_positionally_packed_split_address_does_not_decode_as_a_merged_one` pins both counts.
+    //
+    // Asserted through `get` and not through indexing: `wire["rs"]` answers `Value::Null` for an
+    // absent key exactly as it does for one written null, so the indexing form of this assertion
+    // would keep passing after the slot left, for the opposite reason.
     assert_eq!(
         serde_json::to_value(&address)
             .expect("serializes")
             .get("rs")
             .cloned(),
-        Some(serde_json::Value::Null),
-        "the `rs` slot must still be written -- as nil -- or the index log's array shortens and \
-         every field after it shifts position"
+        None,
+        "the `rs` slot is retired: a current address must not write it, not even as nil"
     );
 }
 

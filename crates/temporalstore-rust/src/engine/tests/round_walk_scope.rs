@@ -303,10 +303,14 @@ fn routing_range(engine: &TemporalEngine) -> (u32, u32) {
 
 /// An address as an index written before the routing-bucket field carried it holds one.
 ///
-/// Built by the engine's OWN serde impl: serialize the address to its wire shape, drop the `rs`
-/// key, and hand it back to the decoder. `#[serde(default)]` on `BlockAddressWire::routing_bucket`
-/// is what answers, and it is the same code path that reads a served index off disk --
-/// `decode_index_bytes` takes plain JSON explicitly, "the served index as an older build wrote it".
+/// Built by the engine's OWN serde impl: serialize the address to its wire shape, ADD the `rs` key
+/// an older index carried, and hand it back to the decoder. It is the same code path that reads a
+/// served index off disk -- `decode_index_bytes` takes plain JSON explicitly, "the served index as
+/// an older build wrote it".
+///
+/// IT USED TO DROP THE KEY INSTEAD, and the swap is the whole point of the slot's retirement:
+/// `BlockAddressWire` no longer declares `rs`, so what answers is not `#[serde(default)]` on a
+/// field but serde's tolerance of a key no field claims.
 ///
 /// Deliberately NOT `set_routing_bucket(None)`: a test that reaches for the setter proves only
 /// that the setter works. This proves the DECODER produces the state.
@@ -315,13 +319,20 @@ fn as_an_older_build_wrote_it(address: &BlockAddress) -> BlockAddress {
     let object = wire
         .as_object_mut()
         .expect("the address wire shape is a JSON object");
-    let removed = object.remove("rs");
+    // INVERTED WITH THE SLOT'S DEPARTURE. This used to REMOVE `rs`, because a current build still
+    // wrote one and an older index was the shape without it. `BlockAddressWire` has retired the
+    // field, so the shapes have swapped places: a current address carries no `rs`, and an older
+    // index is the one that carries it. The guard inverts with the helper and keeps doing the same
+    // job -- failing if this stops producing a shape DIFFERENT from what the engine writes today.
+    let already_there = object.remove("rs");
     assert!(
-        removed.is_some(),
-        "the address wire shape carried no `rs` key to remove, so this helper is a no-op and \
-         every count taken through it is zero for the wrong reason: {object:?}"
+        already_there.is_none(),
+        "a current address still carries an `rs` key, so the slot was not retired and this helper \
+         is adding a key that is already present: {object:?}"
     );
-    serde_json::from_value(wire).expect("the engine's decoder accepts an address with no `rs`")
+    object.insert("rs".to_string(), serde_json::json!(513u32));
+    serde_json::from_value(wire)
+        .expect("the engine's decoder still accepts an address carrying the retired `rs`")
 }
 
 /// WHERE A RANGE WOULD PLACE A PAGE, which is not the same thing as where the summary walk credits

@@ -708,15 +708,18 @@ fn narrowing_the_resident_fields_did_not_move_the_stored_form() {
     );
     let word = crate::block_store::make_block_address_word(slab as u32, offset as u32);
     let json = serde_json::to_string(&address).expect("an address serializes");
-    // `rs` IS WRITTEN AND WRITTEN EMPTY, which is a CONTENT change and not a schema change -- the
-    // same trade `h` already makes two fields along. The slot stays because the index log packs this
-    // struct positionally: dropping the field would shift `g` and `h` down one place, and an
-    // already-written record would hand its routing bucket to the generation check.
+    // `rs` AND `h` ARE GONE, and `g` is the only optional slot left. They used to be written as
+    // nil because the index log packs this struct positionally and a field that vanishes when
+    // empty moves every field behind it. Neither was ever read, and a slot carrying no meaning
+    // does not need holding open: `block_store::shorter_struct_against_an_existing_row` measures
+    // that a positional row LONGER than the struct decoding it is refused by length rather than
+    // reinterpreted, so a retired dead slot cannot shift anything silently.
+    //
+    // `g` stays because its PRESENCE is the meaning -- it becomes `ADDRESS_HAS_GENERATION` -- and
+    // the named served-index path would drop it in silence, which needs the format-version stamp
+    // rather than this reasoning.
     assert_eq!(
-        format!(
-            "{{\"a\":{word},\"l\":1048576,\"pi\":7,\"oi\":16045690984503111693,\
-             \"rs\":null,\"g\":7,\"h\":null}}"
-        ),
+        format!("{{\"a\":{word},\"l\":1048576,\"pi\":7,\"oi\":16045690984503111693,\"g\":7}}"),
         json,
         "the stored spelling of an address moved"
     );

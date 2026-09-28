@@ -97,7 +97,8 @@
 //! move and none would go stale.
 //!
 //! The bucket comes back from disk in exactly three places -- the index snapshot (as the
-//! `BucketMap` key and as `BlockAddressWire`'s `rs`), the index log's `IndexItem`, and the WAL's
+//! `BucketMap` key; `BlockAddressWire`'s `rs` was a fourth until the slot was retired, and an
+//! address carries no bucket at all now), the index log's `IndexItem`, and the WAL's
 //! `WalOutcomeItem` -- and all three carry `object_key` as a string beside it. A re-file is
 //! therefore a walk of the index recomputing one `u32` per page.
 //!

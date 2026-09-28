@@ -139,17 +139,27 @@ fn read_back(engine: &TemporalEngine, keys: &[String]) -> usize {
 /// An address as an index written before the routing-bucket field carried it holds one, produced
 /// by the ENGINE'S OWN DECODER rather than by the setter -- mx#1942's door, spelled the same way
 /// in all four files that need it.
+///
+/// THE SLOT IS RETIRED FROM `BlockAddressWire`, so the two shapes have swapped: an older index is
+/// the one CARRYING `rs`, and a current address is the one without it. The key is added here rather
+/// than removed, and the address it decodes to is the same either way.
 fn as_an_older_build_wrote_it(address: &BlockAddress) -> BlockAddress {
     let mut wire = serde_json::to_value(address).expect("an address serializes to its wire shape");
     let object = wire
         .as_object_mut()
         .expect("the address wire shape is a JSON object");
+    // INVERTED WITH THE SLOT'S DEPARTURE: a current address carries no `rs`, so the older shape is
+    // the one with the key ADDED rather than removed. The assertion inverts with it, and it is
+    // still the same guard -- it fails if this helper has stopped producing a different shape from
+    // the one the engine writes today.
     assert!(
-        object.remove("rs").is_some(),
-        "the address wire shape carried no `rs` key to remove, so this helper is a no-op and \
-         every count taken through it is zero for the wrong reason"
+        object.remove("rs").is_none(),
+        "a current address still carries an `rs` key, so this helper is not producing an older \
+         shape and every count taken through it is the current shape for the wrong reason"
     );
-    serde_json::from_value(wire).expect("the engine's decoder accepts an address with no `rs`")
+    object.insert("rs".to_string(), serde_json::json!(513u32));
+    serde_json::from_value(wire)
+        .expect("the engine's decoder still accepts an address carrying the retired `rs`")
 }
 
 /// THE DOOR IS NOW A NO-OP, AND THAT IS THE POINT.

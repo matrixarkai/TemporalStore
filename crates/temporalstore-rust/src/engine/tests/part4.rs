@@ -6606,10 +6606,18 @@ fn the_index_wire_keys_are_what_they_were() {
             "deleted_object_index",
             "dirty",
             "dirty_generation",
+            // "g" is the LAST optional slot on an address. It is written on every one of them,
+            // because a row is read by position in the index log and a field that vanishes when
+            // empty moves every field behind it -- and because its PRESENCE is the meaning:
+            // `ADDRESS_HAS_GENERATION` comes from whether this key is there.
             "g",
-        // Written on every address since an absent field stopped being skipped: a row is
-        // read by position, so a field that vanishes when empty moves every field behind it.
-        "h",
+            // "h", the digest, is GONE, and so is "rs" further down. Both were written as nil for
+            // the positional reason above, and neither was ever read. A key that carries no
+            // meaning does not need the slot held open for it: `shorter_struct_against_an_existing_row`
+            // measures that a positional row longer than the struct is refused by LENGTH rather
+            // than reinterpreted, so retiring a dead slot cannot shift anything silently.
+            // An index already carrying "h" or "rs" still loads: the wire struct does not deny
+            // unknown fields.
             "in_memory",
             "l",
             // "last_dump_sequence" is gone on purpose: see this test's own note above.
@@ -6624,8 +6632,9 @@ fn the_index_wire_keys_are_what_they_were() {
             "oi",
             "page_index",
             "pi",
+            // "routing_slot" here is the BUCKET NODE's own key, not the address's retired "rs" --
+            // two different things that read alike. The node still records which bucket it is.
             "routing_slot",
-            "rs",
             "ttl_ms",
         ],
         "the index writes different keys than it did; a rename or a serde attribute reached the format"

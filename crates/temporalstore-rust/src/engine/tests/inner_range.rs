@@ -50,7 +50,8 @@
 //!
 //! mx#1945 moved six REBUILD call sites to the shard's own range. The five readers here kept
 //! guessing the whole range. On a store whose pages arrived unrouted -- mx#1942's door, an index
-//! written before `BlockAddressWire::routing_bucket` existed -- that split is total:
+//! written before the wire ever carried a routing bucket, which is now every index, the slot
+//! having been retired from `BlockAddressWire` -- that split is total:
 //!
 //! ```text
 //!   after the load path's own rebuild on 0..1023:
@@ -146,17 +147,27 @@ fn read_back(engine: &TemporalEngine, keys: &[String]) -> usize {
 /// An address as an index written before the routing-bucket field carried it holds one, produced
 /// by the ENGINE'S OWN DECODER rather than by the setter -- mx#1942's door, reused so all three
 /// files construct the same state the same way.
+///
+/// THE SLOT IS RETIRED FROM `BlockAddressWire`, so the two shapes have swapped: an older index is
+/// the one CARRYING `rs`, and a current address is the one without it. The key is added here rather
+/// than removed, and the address it decodes to is the same either way.
 fn as_an_older_build_wrote_it(address: &BlockAddress) -> BlockAddress {
     let mut wire = serde_json::to_value(address).expect("an address serializes to its wire shape");
     let object = wire
         .as_object_mut()
         .expect("the address wire shape is a JSON object");
+    // INVERTED WITH THE SLOT'S DEPARTURE: a current address carries no `rs`, so the older shape is
+    // the one with the key ADDED rather than removed. The assertion inverts with it, and it is
+    // still the same guard -- it fails if this helper has stopped producing a different shape from
+    // the one the engine writes today.
     assert!(
-        object.remove("rs").is_some(),
-        "the address wire shape carried no `rs` key to remove, so this helper is a no-op and \
-         every count taken through it is zero for the wrong reason"
+        object.remove("rs").is_none(),
+        "a current address still carries an `rs` key, so this helper is not producing an older \
+         shape and every count taken through it is the current shape for the wrong reason"
     );
-    serde_json::from_value(wire).expect("the engine's decoder accepts an address with no `rs`")
+    object.insert("rs".to_string(), serde_json::json!(513u32));
+    serde_json::from_value(wire)
+        .expect("the engine's decoder still accepts an address carrying the retired `rs`")
 }
 
 /// THE DOOR IS NOW A NO-OP, AND THAT IS THE POINT.
@@ -187,23 +198,29 @@ fn round_trip_every_page_through_the_wire(
 }
 
 /// THE DOOR'S OWN CONTROL, because a helper that asserts equality of two things it made equal is
-/// worth nothing unless the thing it removes is really there.
+/// worth nothing unless the shape it produces is really different from the one it started with.
+///
+/// THE CONTROL INVERTED WITH THE DOOR. It used to require the `rs` key to be PRESENT, so that
+/// removing it was not a no-op. The slot is retired from `BlockAddressWire`, so the door adds the
+/// key instead, and what has to be true for it to be doing anything is that a current address does
+/// not already carry one.
 #[test]
 fn the_older_index_door_is_the_identity() {
     let address = BlockAddress::from_parts(3, 4096, 128, Some(1), Some(2));
     assert_eq!(
         as_an_older_build_wrote_it(&address),
         address,
-        "removing `rs` from the wire must not change the address"
+        "an index carrying the retired `rs` key must decode to the same address as one without it"
     );
-    // And the key really is there to remove -- `as_an_older_build_wrote_it` asserts that too, but
-    // from inside, where a caller cannot see it fail for the right reason.
+    // And the key really is absent to begin with -- `as_an_older_build_wrote_it` asserts that too,
+    // but from inside, where a caller cannot see it fail for the right reason.
     assert!(
         serde_json::to_value(&address)
             .expect("serializes")
             .get("rs")
-            .is_some(),
-        "the wire shape must still carry the `rs` slot, or the door removes nothing"
+            .is_none(),
+        "a current address still carries an `rs` slot, so the door adds nothing and the identity \
+         above is two copies of the same shape"
     );
 }
 
