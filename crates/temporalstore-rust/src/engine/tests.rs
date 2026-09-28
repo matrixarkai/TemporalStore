@@ -177,6 +177,7 @@ mod bucket_sequence_budget;
 mod bucket_node_arms;
 mod bucket_flag_masks;
 mod inline_arm_trade;
+mod layout_arm_selection;
 mod entry_object_identity;
 mod bucket_tombstone_budget;
 mod entry_count_versus_page_count;
