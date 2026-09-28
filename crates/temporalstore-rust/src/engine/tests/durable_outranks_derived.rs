@@ -168,7 +168,7 @@ fn swap_in_index(bytes: &[u8], from: &str, to: &str) -> Option<(Vec<u8>, usize)>
 }
 
 /// Swap a name across every index file, and answer how many occurrences moved.
-fn swap_across_index_files(indexes: &std::path::Path, from: &str, to: &str) -> usize {
+pub(super) fn swap_across_index_files(indexes: &std::path::Path, from: &str, to: &str) -> usize {
     let mut total = 0usize;
     for entry in std::fs::read_dir(indexes).expect("the index directory exists") {
         let path = entry.expect("a directory entry").path();
