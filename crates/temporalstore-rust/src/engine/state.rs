@@ -3389,6 +3389,33 @@ pub(super) fn object_component_lookup_key(model_id: &str, object_key: &str) -> S
 ///
 /// Read from the blocks the object already has rather than from a counter, so it survives a
 /// restart without anything having to be persisted for it.
+///
+/// # REUSE IS NOT ACTUALLY PREVENTED, AND THE NOTE ABOVE OVERSTATES IT
+///
+/// MEASURED, and it came out the other way.
+/// `ordinal_reuse_is_not_prevented_and_a_delete_then_write_takes_the_same_number` writes a feature
+/// point, deletes the series, and writes again: the second write takes ordinal 0, the same one. A
+/// delete REMOVES the object's pages from the bucket index rather than tombstoning them, so the `max`
+/// below drops back and the number is handed out twice.
+///
+/// It was natural to read the absence of a `!deleted` filter here as the thing preventing that. It is
+/// not -- there is nothing left to filter. What makes the reuse harmless TODAY is narrower and worth
+/// stating exactly: the blocks that shared the number went away with the object, so no live
+/// predecessor is still answering for it. That holds only while a block id names a POSITION inside an
+/// object. The moment it names an ELEMENT -- which is what an ordinal-instead-of-a-name would do --
+/// the same reuse gives two elements one identity, and a reload serves whichever it reaches first.
+///
+/// So: this is not a guarded invariant, it is an unguarded coincidence, and it is the second reason
+/// the ordinal work stops here rather than proceeding.
+///
+/// # AND IT REFUSES AT THE CEILING RATHER THAN REISSUING
+///
+/// This used to end `u32::try_from(highest).unwrap_or(u32::MAX).saturating_add(1)`, which at the
+/// ceiling neither wraps nor fails: it answers `u32::MAX` for every subsequent block, so they share
+/// an ordinal. Saturating is the arithmetic that looks safest and is worst here -- the requirement
+/// this function exists to uphold is uniqueness, and saturation is precisely its violation. A panic
+/// is loud, and reaching it needs 4,294,967,296 live blocks in ONE object against a measured maximum
+/// of 2,000.
 pub(super) fn next_block_index_for_object(
     bucket_index: &CoreIndex,
     routing_bucket: u32,
@@ -3402,6 +3429,7 @@ pub(super) fn next_block_index_for_object(
             bucket
                 .block_index
                 .values()
+                // NOT filtered on `deleted`: see the note above. A tombstone reserves its ordinal.
                 .filter(|block| {
                     block.model_id.as_str() == model_id && block.object_key.as_ref() == object_key
                 })
@@ -3409,7 +3437,20 @@ pub(super) fn next_block_index_for_object(
                 .max()
         })
         .map_or(0, |highest| {
-            u32::try_from(highest).unwrap_or(u32::MAX).saturating_add(1)
+            let highest = u32::try_from(highest).unwrap_or_else(|_| {
+                panic!(
+                    "object {model_id}/{object_key} holds a block numbered {highest}, above \
+                     the u32 a block ordinal is; refusing to answer rather than clamping to \
+                     u32::MAX, which the next block would then share"
+                )
+            });
+            highest.checked_add(1).unwrap_or_else(|| {
+                panic!(
+                    "object {model_id}/{object_key} has used every block ordinal a u32 holds; \
+                     refusing to hand out another rather than reissuing {highest}, which two live \
+                     blocks would then claim"
+                )
+            })
         })
 }
 
