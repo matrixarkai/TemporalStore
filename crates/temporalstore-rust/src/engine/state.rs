@@ -3502,6 +3502,73 @@ pub(super) fn next_block_index_for_object(
         })
 }
 
+/// THE ORDINAL A CONTAINER PAGE IS FILED UNDER: STABLE ACROSS AN OVERWRITE, UNASSIGNED PAST THE
+/// CEILING.
+///
+/// `next_block_index_for_object` above is the same derivation, and it is already the ordinal every
+/// TIMESTAMPED kind gets -- thirteen call sites covering `feature` and the six `context_*` kinds. No
+/// container kind ever called it, so a container page reached `append_block_of_object` through
+/// `append_with_block_metadata`, which passes a hardcoded `0`. That is the whole reason every
+/// container page carries page id 0: not a format limit, not a missing field, an argument nobody
+/// supplied.
+///
+/// This is that same derivation for the container kinds, and it differs from the series one in
+/// exactly two ways, both forced:
+///
+///   * AN OVERWRITE KEEPS THE ORDINAL IT ALREADY HAS. A container element is addressed by its
+///     component, and `HashSet` or `SetAdd` on an existing member REPLACES that member's page.
+///     Handing the replacement `max + 1` would make the ordinal climb once per WRITE rather than
+///     once per ELEMENT, so a single member rewritten 65,536 times would reach the ceiling on a set
+///     of one. Reading the component's own page first bounds the ordinal by the object's live
+///     element high-water mark instead, which is what a position means.
+///   * PAST THE CEILING IT LEAVES THE ORDINAL AT `0` RATHER THAN PANICKING OR SATURATING.
+///     `narrow_block_id` refuses a value above `MAX_ADDRESSABLE_BLOCK_ID`, and refusing is right
+///     for a value a caller chose -- but an object's 65,536th element is not a caller's mistake, it
+///     is a container this store serves today with no ordinal at all. Saturating is worse still:
+///     this tree's own doctrine is that a saturated page id is a legal page id for a DIFFERENT page
+///     of the same object. So past the ceiling nothing is assigned and the page keeps the `0` it
+///     would have had on `main`, which makes this change a strict no-op for such an object. A
+///     container past the ceiling loses the ordinal, never the element.
+///
+/// IT NAMES A POSITION, NOT AN ELEMENT, and that is a property of the tree rather than a choice
+/// here. Every delete path REMOVES the page -- `mark_bucket_index_block_deleted_with` is named for
+/// a mark it does not make and its body is a `retain` returning false -- so `max` falls after a
+/// delete and the next insert is handed the ordinal that was just freed. That is correct for a
+/// position and would be silent corruption for an identity, which is why the element's identity
+/// stays in the component: nothing here reads the ordinal to find a row, and deletion still matches
+/// by component exactly as before.
+pub(super) fn container_page_ordinal(
+    bucket_index: &CoreIndex,
+    routing_bucket: u32,
+    model_id: &str,
+    object_key: &str,
+    component: &str,
+) -> u32 {
+    let mut highest: Option<u64> = None;
+    if let Some(bucket) = bucket_index.bucket_map.get(&routing_bucket) {
+        for page in bucket.block_index.values() {
+            if page.model_id.as_str() != model_id || page.object_key.as_ref() != object_key {
+                continue;
+            }
+            let Some(held) = page.address.block_id() else {
+                continue;
+            };
+            if page.component.as_deref() == Some(component) {
+                // This member already holds a page, and the ordinal on it IS its position. An
+                // overwrite is the same element in the same place.
+                return u32::try_from(held).unwrap_or(0);
+            }
+            highest = Some(highest.map_or(held, |current: u64| current.max(held)));
+        }
+    }
+    // The first element of an object is 0, which is also what an object past the ceiling keeps.
+    let next = highest.map_or(0, |held| held.saturating_add(1));
+    if next > crate::block_store::MAX_ADDRESSABLE_BLOCK_ID {
+        return 0;
+    }
+    u32::try_from(next).unwrap_or(0)
+}
+
 pub(super) fn object_block_lookup_key(
     model_id: &str,
     object_key: &str,

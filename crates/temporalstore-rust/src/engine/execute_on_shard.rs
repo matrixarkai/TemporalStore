@@ -578,7 +578,18 @@ pub(crate) fn execute_on_shard(
             let object_id = stable_block_object_id(shard_id, "hash", &key, Some(&field));
             let routing_bucket =
                 block_routing_bucket(&key, start_routing_bucket, end_routing_bucket);
-            if let Ok(address) = append_value(
+            // WHICH page of this object this element is. Computed BEFORE the append, because
+            // the append stamps the ordinal into the record header AND onto the address it
+            // returns from the same value -- assigning it afterwards would leave the two
+            // disagreeing, which `decode_block_record` refuses as a page id mismatch.
+            let block_ordinal = crate::engine::state::container_page_ordinal(
+                &shard.bucket_index,
+                routing_bucket,
+                "hash",
+                &key,
+                &field,
+            );
+            if let Ok(address) = append_value_of_object(
                 cache,
                 block_store,
                 shard_id,
@@ -586,6 +597,7 @@ pub(crate) fn execute_on_shard(
                 Some(object_id),
                 Some(routing_bucket),
                 async_storage,
+                block_ordinal,
             ) {
                 upsert_bucket_index_block(
                     shard,
@@ -670,7 +682,18 @@ pub(crate) fn execute_on_shard(
             let mut applied = Vec::with_capacity(entries.len());
             for (field, value) in entries {
                 let object_id = stable_block_object_id(shard_id, "hash", &key, Some(&field));
-                if let Ok(address) = append_value(
+                // WHICH page of this object this element is. Computed BEFORE the append, because
+                // the append stamps the ordinal into the record header AND onto the address it
+                // returns from the same value -- assigning it afterwards would leave the two
+                // disagreeing, which `decode_block_record` refuses as a page id mismatch.
+                let block_ordinal = crate::engine::state::container_page_ordinal(
+                    &shard.bucket_index,
+                    routing_bucket,
+                    "hash",
+                    &key,
+                    &field,
+                );
+                if let Ok(address) = append_value_of_object(
                     cache,
                     block_store,
                     shard_id,
@@ -678,6 +701,7 @@ pub(crate) fn execute_on_shard(
                     Some(object_id),
                     Some(routing_bucket),
                     async_storage,
+                    block_ordinal,
                 ) {
                     upsert_bucket_index_block(
                         shard,
@@ -719,18 +743,28 @@ pub(crate) fn execute_on_shard(
             .and_then(|bytes| parse_i64(&bytes))
             .unwrap_or_default();
             let value = current.saturating_add(increment);
-            if let Ok(address) = append_value(
+            let routing_bucket =
+                block_routing_bucket(&key, start_routing_bucket, end_routing_bucket);
+            // WHICH page of this object this element is. Computed BEFORE the append, because
+            // the append stamps the ordinal into the record header AND onto the address it
+            // returns from the same value -- assigning it afterwards would leave the two
+            // disagreeing, which `decode_block_record` refuses as a page id mismatch.
+            let block_ordinal = crate::engine::state::container_page_ordinal(
+                &shard.bucket_index,
+                routing_bucket,
+                "hash",
+                &key,
+                &field,
+            );
+            if let Ok(address) = append_value_of_object(
                 cache,
                 block_store,
                 shard_id,
                 value.to_string().as_bytes(),
                 Some(stable_block_object_id(shard_id, "hash", &key, Some(&field))),
-                Some(block_routing_bucket(
-                    &key,
-                    start_routing_bucket,
-                    end_routing_bucket,
-                )),
+                Some(routing_bucket),
                 async_storage,
+                block_ordinal,
             ) {
                 upsert_bucket_index_block(
                     shard,
@@ -822,7 +856,17 @@ pub(crate) fn execute_on_shard(
             let object_id = stable_block_object_id(shard_id, "set", &key, Some(&member_component));
             let routing_bucket =
                 block_routing_bucket(&key, start_routing_bucket, end_routing_bucket);
-            if let Ok(address) = append_value(
+            // WHICH page of this object this element is. Computed BEFORE the append because the
+            // append stamps it into the record header, and read off the page index -- which is
+            // where the element's own previous page, if it has one, already states its position.
+            let block_ordinal = crate::engine::state::container_page_ordinal(
+                &shard.bucket_index,
+                routing_bucket,
+                "set",
+                &key,
+                &member_component,
+            );
+            if let Ok(address) = append_value_of_object(
                 cache,
                 block_store,
                 shard_id,
@@ -830,6 +874,7 @@ pub(crate) fn execute_on_shard(
                 Some(object_id),
                 Some(routing_bucket),
                 async_storage,
+                block_ordinal,
             ) {
                 upsert_bucket_index_block(
                     shard,
@@ -873,7 +918,18 @@ pub(crate) fn execute_on_shard(
             let object_id = stable_block_object_id(shard_id, "zset", &key, Some(&component));
             let routing_bucket =
                 block_routing_bucket(&key, start_routing_bucket, end_routing_bucket);
-            if let Ok(address) = append_value(
+            // WHICH page of this object this element is. Computed BEFORE the append, because
+            // the append stamps the ordinal into the record header AND onto the address it
+            // returns from the same value -- assigning it afterwards would leave the two
+            // disagreeing, which `decode_block_record` refuses as a page id mismatch.
+            let block_ordinal = crate::engine::state::container_page_ordinal(
+                &shard.bucket_index,
+                routing_bucket,
+                "zset",
+                &key,
+                &component,
+            );
+            if let Ok(address) = append_value_of_object(
                 cache,
                 block_store,
                 shard_id,
@@ -881,6 +937,7 @@ pub(crate) fn execute_on_shard(
                 Some(object_id),
                 Some(routing_bucket),
                 async_storage,
+                block_ordinal,
             ) {
                 upsert_bucket_index_block(
                     shard,
@@ -1190,7 +1247,18 @@ pub(crate) fn execute_on_shard(
             let object_id = stable_block_object_id(shard_id, "zset", &key, Some(&component));
             let routing_bucket =
                 block_routing_bucket(&key, start_routing_bucket, end_routing_bucket);
-            if let Ok(address) = append_value(
+            // WHICH page of this object this element is. Computed BEFORE the append, because
+            // the append stamps the ordinal into the record header AND onto the address it
+            // returns from the same value -- assigning it afterwards would leave the two
+            // disagreeing, which `decode_block_record` refuses as a page id mismatch.
+            let block_ordinal = crate::engine::state::container_page_ordinal(
+                &shard.bucket_index,
+                routing_bucket,
+                "zset",
+                &key,
+                &component,
+            );
+            if let Ok(address) = append_value_of_object(
                 cache,
                 block_store,
                 shard_id,
@@ -1198,6 +1266,7 @@ pub(crate) fn execute_on_shard(
                 Some(object_id),
                 Some(routing_bucket),
                 async_storage,
+                block_ordinal,
             ) {
                 shard
                     .zsets
@@ -1303,7 +1372,18 @@ pub(crate) fn execute_on_shard(
             let object_id = stable_block_object_id(shard_id, "list", &key, Some(&component));
             let routing_bucket =
                 block_routing_bucket(&key, start_routing_bucket, end_routing_bucket);
-            if let Ok(address) = append_value(
+            // WHICH page of this object this element is. Computed BEFORE the append, because
+            // the append stamps the ordinal into the record header AND onto the address it
+            // returns from the same value -- assigning it afterwards would leave the two
+            // disagreeing, which `decode_block_record` refuses as a page id mismatch.
+            let block_ordinal = crate::engine::state::container_page_ordinal(
+                &shard.bucket_index,
+                routing_bucket,
+                "list",
+                &key,
+                &component,
+            );
+            if let Ok(address) = append_value_of_object(
                 cache,
                 block_store,
                 shard_id,
@@ -1311,6 +1391,7 @@ pub(crate) fn execute_on_shard(
                 Some(object_id),
                 Some(routing_bucket),
                 async_storage,
+                block_ordinal,
             ) {
                 upsert_bucket_index_block(
                     shard,

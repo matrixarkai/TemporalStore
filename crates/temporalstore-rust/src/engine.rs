@@ -4979,6 +4979,40 @@ fn append_value(
     routing_bucket: Option<u32>,
     async_storage: bool,
 ) -> Result<BlockAddress, BlockStoreError> {
+    append_value_of_object(
+        cache,
+        block_store,
+        shard_id,
+        bytes,
+        object_id,
+        routing_bucket,
+        async_storage,
+        0,
+    )
+}
+
+/// The same append, saying WHICH page of its object this is.
+///
+/// The ordinal is threaded all the way to `append_block_of_object`, and that matters rather than
+/// being tidier: that function stamps the record header and the returned address from the SAME
+/// value. Assigning the ordinal on the index's copy afterwards would leave the header saying 0 and
+/// the address saying N, and `decode_block_record` compares exactly those two and refuses the page
+/// with "page id mismatch" -- the one cross-check on a read that can actually fire. So the ordinal
+/// has to be an argument to the append, not a field set after it.
+///
+/// `append_value` above is this with an ordinal of 0, which is what
+/// `append_with_block_metadata` has always passed and therefore what every caller already got.
+#[allow(clippy::too_many_arguments)]
+fn append_value_of_object(
+    cache: &MultiLayerCache,
+    block_store: &BlockStore,
+    shard_id: ShardId,
+    bytes: &[u8],
+    object_id: Option<u64>,
+    routing_bucket: Option<u32>,
+    async_storage: bool,
+    block_ordinal: u32,
+) -> Result<BlockAddress, BlockStoreError> {
     // Both arms, and every command that stores a value, reach a slab through here. The payload's
     // own copies re-tag themselves inside -- the encode as `PageBytes`, the carried copy as
     // `CarriedPage` -- so what is left under this class is the append machinery and not the bytes.
@@ -4991,6 +5025,7 @@ fn append_value(
             object_id,
             routing_bucket,
             async_storage,
+            block_ordinal,
         )
     })
 }
@@ -5004,6 +5039,7 @@ fn append_value_inner(
     object_id: Option<u64>,
     routing_bucket: Option<u32>,
     async_storage: bool,
+    block_ordinal: u32,
 ) -> Result<BlockAddress, BlockStoreError> {
     if !async_storage {
         // Carry the page in this write's record, the same as the asynchronous arm below.
@@ -5022,7 +5058,12 @@ fn append_value_inner(
         if let Some(object_id) = object_id {
             block_in_wal::stage(object_id, bytes);
         }
-        return block_store.append_with_block_metadata(bytes, object_id, routing_bucket);
+        return block_store.append_block_of_object(
+            bytes,
+            object_id,
+            routing_bucket,
+            block_ordinal,
+        );
     }
     // THE COUNTER IS NOW BOUNDED, AND IT IS REFUSED RATHER THAN WRAPPED.
     //
