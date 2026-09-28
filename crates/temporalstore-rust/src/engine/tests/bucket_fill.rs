@@ -70,20 +70,20 @@ use crate::alloc_probe::Probe;
 
 /// The end bucket a production shard is loaded with: `TS_SHARD_END_ROUTING_BUCKET=1023`, the
 /// setting `docs/runtime_tuning.md` tells an operator to set before the first ingest.
-const NARROW_END: u32 = 1023;
+pub(super) const NARROW_END: u32 = 1023;
 
 /// The end bucket `TemporalEngine::load_shard` uses, and `startup_load_shard_request`'s default.
 /// #1959's fixture is on this one.
-const WIDE_END: u32 = u32::MAX;
+pub(super) const WIDE_END: u32 = u32::MAX;
 
 /// How many buckets the narrow range has. Not a literal anywhere below: derived from the range so
 /// a change to `NARROW_END` moves it.
 const NARROW_BUCKETS: usize = (NARROW_END as usize) + 1;
 
-const SMALL: usize = 4_000;
-const LARGE: usize = 40_000;
+pub(super) const SMALL: usize = 4_000;
+pub(super) const LARGE: usize = 40_000;
 
-fn engine_on(dir: &std::path::Path) -> TemporalEngine {
+pub(super) fn engine_on(dir: &std::path::Path) -> TemporalEngine {
     TemporalEngine::with_local_dirs(
         64 * 1024 * 1024,
         dir.join("cache"),
@@ -92,7 +92,7 @@ fn engine_on(dir: &std::path::Path) -> TemporalEngine {
     )
 }
 
-fn load_on(engine: &TemporalEngine, end_routing_bucket: u32) {
+pub(super) fn load_on(engine: &TemporalEngine, end_routing_bucket: u32) {
     let response = engine.load_shard_with(crate::control::LoadShardRequest {
         shard_id: 1,
         table_name: "bucket-fill".to_string(),
@@ -124,7 +124,7 @@ fn run_batch(engine: &TemporalEngine, commands: Vec<Command>) {
 }
 
 /// ROUTED KEYS: plain strings, one page each. The shape #1958 and #1959 both measured.
-fn seed_routed(engine: &TemporalEngine, count: usize) -> Vec<String> {
+pub(super) fn seed_routed(engine: &TemporalEngine, count: usize) -> Vec<String> {
     let keys: Vec<String> = (0..count).map(|i| format!("fill-{i:06}")).collect();
     run_batch(
         engine,
@@ -139,7 +139,7 @@ fn seed_routed(engine: &TemporalEngine, count: usize) -> Vec<String> {
 }
 
 /// CONTAINER KEYS: `keys` hashes of `members` fields each. Every field is its own page.
-fn seed_container(engine: &TemporalEngine, keys: usize, members: usize) -> Vec<String> {
+pub(super) fn seed_container(engine: &TemporalEngine, keys: usize, members: usize) -> Vec<String> {
     let container_keys: Vec<String> = (0..keys).map(|k| format!("bag-{k:06}")).collect();
     let mut commands = Vec::with_capacity(keys * members);
     for key in &container_keys {

@@ -1525,6 +1525,78 @@ impl BlockIndexMap {
         }
     }
 
+    /// What this page index owns on the heap, in REQUEST bytes.
+    ///
+    /// HERE, AND NOT AT THE CALL SITE, BECAUSE A CALL SITE CAN ONLY NAME A TYPE. The published
+    /// index figure used to spell its own arithmetic as `pages * size_of::<BlockIndex>()`, which is
+    /// a reading of the ENTRY where two of the three arms hold something else -- and naming a type
+    /// at a call site compiles whatever the field became, so it went on answering a plausible
+    /// number after the container underneath it changed shape twice. `pages_per_bucket` charged
+    /// `2 * size_of::<Arc<str>>()` for a group that had stopped being a pointer at all for exactly
+    /// that reason. Written beside the arms, each term is the `size_of` of the type that arm
+    /// actually holds, so a field that changes width moves the figure with it.
+    ///
+    /// ONE TERM PER ARM, AND THE ARMS GENUINELY DIFFER:
+    ///
+    ///   * `Empty` owns nothing -- `the_empty_arm_is_an_alias_for_no_pages_and_costs_nothing_to_keep`
+    ///     is the standing assertion that this is still true.
+    ///   * `One` owns a `Box<BlockIndex>`. The handle rides in the enum, so this allocation is one
+    ///     ENTRY wide and the old per-page charge was exactly right for it -- measured 1.0000
+    ///     against the allocator at both corpus sizes on the whole-keyspace range, where every
+    ///     bucket is single-page. A blanket move to the pair stride would have OVER-charged that
+    ///     whole deployment by 12.5%.
+    ///   * `Many` owns `Vec<(u64, BlockIndex)>`. Its element is the PAIR, eight bytes wider than
+    ///     the entry, and the buffer is owned at CAPACITY -- `reserve_one_more` steps it by
+    ///     `PAGE_LIST_GROWTH_STEP` with `reserve_exact`, so a list of five owns a buffer of eight.
+    ///
+    /// WHAT THIS DELIBERATELY DOES NOT CHARGE, ON A MEASUREMENT AND NOT AN OVERSIGHT. `BlockIndex`
+    /// holds `object_key: Arc<str>` and `component: Option<Arc<str>>`, whose bytes live off the
+    /// entry. They are not added here because this index does not OWN them: over four fixtures --
+    /// routed keys and hash fields, at two corpus sizes, at both routing ranges -- every distinct
+    /// name allocation had a strong count higher than the number of index entries holding it, and
+    /// dropping every page index in the shard returned the page buffers and not one byte of name.
+    /// The model maps own them and a read resolves through those, not through here. Charging them
+    /// would double-count, and charging them once per ENTRY rather than once per allocation would
+    /// over-count a container store's key names by 100x.
+    /// `the_resident_index_report_is_measured_against_the_allocator` is that measurement and fails
+    /// if the ownership ever moves.
+    ///
+    /// AND IT IS A FLOOR, NOT AN EQUALITY -- BY A MEASURED AMOUNT, WHICH IS THE POINT. These are
+    /// REQUEST bytes: what the container asked the allocator for. `ALLOC_CHUNK_BYTES` reads
+    /// `malloc_usable_size`, which is a floor above the request and not an equality (#1969: a
+    /// 104-byte request read 128). Modelling a rounding rule into a shipped figure would make it a
+    /// claim about the platform's allocator, so this charges the request and the size of what it
+    /// misses is MEASURED rather than left unknown. Replaying this index's own allocation size
+    /// distribution through the counting allocator:
+    ///
+    /// ```text
+    ///   population                      allocations   chunk/request   this figure / chunk
+    ///   routed, whole keyspace, 4,000         4,000         1.2634x                0.7915
+    ///   routed, whole keyspace, 40,000       40,000         1.2543x                0.7972
+    ///   routed, 0..1023, 4,000                1,024         1.0449x                0.9571
+    ///   routed, 0..1023, 40,000               1,024         1.0055x                0.9945
+    ///   hash fields, either range, 4,000         40         1.0022x                0.9978
+    ///   hash fields, either range, 40,000   350-400    1.0020-1.0022x         0.9978-0.9980
+    /// ```
+    ///
+    /// SO THE ERROR IS SIGNED AND ITS SIZE IS KNOWN: this reads 0.2% to 4.3% below what the
+    /// allocator holds wherever the index is list-shaped, and about 20% below on the whole-keyspace
+    /// range, where every bucket is one boxed 64-byte entry and glibc's 16-byte rounding is paid
+    /// once per page instead of once per list. It is never HIGH. An eviction gate reading this can
+    /// treat it as a lower bound on the index's real footprint, which is the direction that makes
+    /// it safe to act on.
+    pub(super) fn resident_heap_bytes(&self) -> u64 {
+        match self {
+            BlockIndexMap::Empty => 0,
+            // `Box<BlockIndex>`: one entry, and the handle is inline in the enum.
+            BlockIndexMap::One(_handle, _page) => std::mem::size_of::<BlockIndex>() as u64,
+            // `Vec<(u64, BlockIndex)>`: the element is the pair, and the buffer is owned at the
+            // capacity it was reserved to rather than the length that is filled.
+            BlockIndexMap::Many(pages) => (pages.capacity() as u64)
+                .saturating_mul(std::mem::size_of::<(u64, BlockIndex)>() as u64),
+        }
+    }
+
     /// Whether this bucket holds no pages.
     ///
     /// READS THE LENGTH, NOT THE DISCRIMINANT. `Empty` and `Many(vec![])` are both "no pages", and

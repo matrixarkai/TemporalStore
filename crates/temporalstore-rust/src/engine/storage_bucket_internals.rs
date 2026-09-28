@@ -2280,29 +2280,80 @@ pub(super) fn reload_all_released_buckets(shard: &mut ShardState, shard_id: Shar
     reloaded
 }
 
-/// What the resident bucket index costs: one node per bucket plus one entry per page it holds.
+/// The node-only floor: one `BucketNode` width per resident bucket.
+///
+/// ONE AUTHORITY, BECAUSE THERE ARE TWO READERS AND THEY MUST NOT DRIFT. `persistence` publishes
+/// this as `bucket_index_resident_bytes_floor` and [`bucket_index_resident_bytes`] uses it as its
+/// own first term; both used to spell `bucket_map.len() * size_of::<BucketNode>()` out for
+/// themselves. Two copies of one product agree until one of them is edited, and the failure that
+/// produces is the published floor ceasing to be a floor of the published total -- which nothing
+/// would have failed on, because each site would still be internally consistent.
+/// `the_published_floor_is_the_node_term_of_the_published_total` is the standing assertion that
+/// the two are one quantity.
+pub(super) fn bucket_index_node_bytes(shard: &ShardState) -> u64 {
+    (shard.bucket_index.bucket_map.len() as u64)
+        .saturating_mul(std::mem::size_of::<BucketNode>() as u64)
+}
+
+/// What the resident bucket index costs: one node per bucket plus what that bucket's page index
+/// owns on the heap.
 ///
 /// The published `bucket_index_resident_bytes_floor` counts NODES only, so it cannot move when a
 /// bucket is released -- the node stays. The per-page entries are the part that grows with the
 /// corpus and the part a release actually frees, so the eviction gate needs this number and not
 /// that one.
+///
+/// THE PAGE TERM IS ASKED OF THE CONTAINER, NOT COMPUTED FROM A PAGE COUNT. It was
+/// `pages * size_of::<BlockIndex>()`, and measured against the counting allocator that is right on
+/// one of the three arms and wrong on the one the shipped routing range puts every bucket into:
+/// 0.6817 of what the allocator held at 4,000 records on `0..1023` and 0.8542 at 40,000, because
+/// a `Many` arm's element is the eight-byte-wider PAIR and its buffer is owned at CAPACITY. The
+/// arithmetic now lives on `BlockIndexMap::resident_heap_bytes`, beside the arms, where each term
+/// is the width of the type that arm holds. `the_resident_index_report_is_measured_against_the_allocator`
+/// measures this against the allocator at two corpus sizes, both routing ranges and both page
+/// populations, and `the_resident_index_report_reconstructs_from_the_widths_the_containers_declare`
+/// fails if a field changes width without this moving.
+///
+/// WHY IT MATTERS MORE THAN A DASHBOARD ROW. This is a term in the eviction pressure score
+/// `storage_manager_cycle` reads. A figure that reads low is an engine holding an index it should
+/// have released.
+///
+/// WHAT IT STILL CANNOT SEE, STATED RATHER THAN IMPLIED. Four things, and all four push the same
+/// way -- this remains a FLOOR:
+///
+///   1. REQUEST BYTES, NOT CHUNK BYTES. Every term here is what the container asked for.
+///      `ALLOC_CHUNK_BYTES` reads `malloc_usable_size`, which is a floor above the request and not
+///      an equality (#1969: a 104-byte request read 128). Asking the allocator is not something a
+///      serving binary can do per figure, and modelling a rounding rule here would make this a
+///      claim about the platform's allocator rather than about this engine's containers.
+///   2. THE BUCKET MAP'S OWN SPINE. `nodes * size_of::<BucketNode>()` charges the node's WIDTH.
+///      The `BTreeMap` that holds it allocates in whole nodes sized for eleven entries whether or
+///      not they fill, and that overhead is not here.
+///   3. THE OTHER TWO INDEXES ON EVERY NODE. `object_index` and `deleted_object_index` are inside
+///      `size_of::<BucketNode>()` as containers, so whatever THEY hold out of line is not counted.
+///   4. THE SHARED NAMES, AND THIS ONE IS DELIBERATE. `resident_heap_bytes` says why: measured,
+///      this index never owns them, so charging them here would double-count the model maps that
+///      do.
 pub(super) fn bucket_index_resident_bytes(shard: &ShardState) -> u64 {
     let nodes = shard.bucket_index.bucket_map.len() as u64;
-    let pages: u64 = shard
-        .bucket_index
-        .bucket_map
-        .values()
-        .map(|bucket| bucket.block_index.len() as u64)
-        .sum();
+    let mut pages = 0u64;
+    let mut page_heap = 0u64;
+    for bucket in shard.bucket_index.bucket_map.values() {
+        pages = pages.saturating_add(bucket.block_index.len() as u64);
+        page_heap = page_heap.saturating_add(bucket.block_index.resident_heap_bytes());
+    }
     // One entry per node plus one per resident page, which is what the walk above touched.
     // Charged here rather than at the call sites: the eviction round reaches this twice per
     // round and the lifecycle plan reaches it again, and a charge at any one of those would
     // describe a fraction of the walking that actually happens.
+    //
+    // UNCHANGED BY THE PAGE-TERM FIX, ON PURPOSE. Both the old arithmetic and this one visit one
+    // node per bucket and read a length that is O(1) on every arm; neither has ever walked the
+    // pages one by one. The charge names the entries the index HOLDS, which this change does not
+    // move, so the eviction round's pinned visit counts stay comparable across it.
     BUCKET_INDEX_RESIDENT_BYTES_VISITS
         .fetch_add(nodes.saturating_add(pages), std::sync::atomic::Ordering::Relaxed);
-    nodes
-        .saturating_mul(std::mem::size_of::<BucketNode>() as u64)
-        .saturating_add(pages.saturating_mul(std::mem::size_of::<BlockIndex>() as u64))
+    bucket_index_node_bytes(shard).saturating_add(page_heap)
 }
 
 /// Cheap O(1)-per-map check for whether the shard holds ANY live model-map entry that

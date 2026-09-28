@@ -951,8 +951,11 @@ impl TemporalEngine {
                 // `bucket_entries` above is the routing RANGE (the hash modulus), which is
                 // u32::MAX on a default shard and says nothing about how many buckets exist.
                 // The resident count is the map's length.
-                bucket_index_resident_bytes_floor: (state.bucket_index.bucket_map.len() as u64)
-                    .saturating_mul(std::mem::size_of::<super::state::BucketNode>() as u64),
+                // Taken from the same function `bucket_index_resident_bytes` uses for its own
+                // node term, so the published floor cannot drift away from being a floor of the
+                // published total.
+                bucket_index_resident_bytes_floor:
+                    crate::engine::storage_bucket_internals::bucket_index_node_bytes(state),
                 // The MOVING companion to the floor above: nodes plus per-page entries, the same
                 // quantity the eviction gate reads. Computed here, under the shard lock the stats
                 // path already holds, so the heartbeat does not take it a second time per shard.
