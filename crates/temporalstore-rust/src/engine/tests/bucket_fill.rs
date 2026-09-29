@@ -1899,12 +1899,10 @@ fn the_bucket_a_block_is_filed_in_is_the_bucket_its_key_computes_within_one_rang
             after_release.blocks
         );
         println!(
-            "      the reconstruct: {} blocks came back through `reload_released_bucket` ({} -> {}), \
-             {} of them carrying no bucket of their own",
+            "      the reconstruct: {} blocks came back through `reload_released_bucket` ({} -> {})",
             after_reload.blocks - after_release.blocks,
             after_release.blocks,
-            after_reload.blocks,
-            after_reload.unstamped
+            after_reload.blocks
         );
 
         // THE VERDICT, at every stage.
@@ -1928,10 +1926,9 @@ fn the_bucket_a_block_is_filed_in_is_the_bucket_its_key_computes_within_one_rang
         println!(
             "  VERDICT on 0..{end_routing_bucket}: across {} live blocks and FIVE stages -- the \
              writes, a flush, a compaction, a release and an explicit reconstruct -- the \
-             bucket a block is filed in IS the bucket its key computes, and {} blocks carry no \
-             bucket of their own. Neither side of that is the address, which carries no bucket \
-             at all.",
-            after_reload.blocks, after_reload.unstamped
+             bucket a block is filed in IS the bucket its key computes. Neither side of that is \
+             the address, which carries no bucket at all.",
+            after_reload.blocks
         );
     }
 }
