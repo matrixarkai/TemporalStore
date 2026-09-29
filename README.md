@@ -200,6 +200,30 @@ for the fully containerized OSS-model benchmark.
 
 ---
 
+## Before the first milestone: formats can change
+
+TemporalStore is pre-first-milestone, and two things are **not** yet stable between commits: the
+on-disk index format and the replication wire format. If you are running it, this is what that
+means in practice.
+
+**Upgrading across a format change does not lose data, but it is not free.** The engine checks a
+stored index's version *before* decoding it, because the payload is addressed by field order and
+decoding it against a different shape would not error — it would produce a plausible and wrong
+result. So a store it does not recognise is refused rather than misread. Depending on which
+artefact is stale, the engine either treats the index as absent and rebuilds it by replaying the
+write-ahead log — slower, and correct — or refuses to open the store and says so. Either way the
+data is still there; the failure is loud by design.
+
+**Mixed-version clusters are not supported.** Replication frames carry the same shapes, so a
+follower running an older build can misread a newer leader's frames. Upgrade every node together.
+
+**If you are storing anything you care about**, keep an independent copy or be prepared to
+re-ingest until the first milestone is tagged. That is the honest state of a pre-1.0 storage
+engine, not a caveat we expect to keep.
+
+None of this applies to the client or the wire API you write against — those are what we intend to
+keep stable. It applies to the bytes on disk and between nodes.
+
 ## Configuration (common env vars)
 
 Every knob is environment-overridable; defaults are tuned for large-window serving.
