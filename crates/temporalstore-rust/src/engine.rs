@@ -16,6 +16,7 @@ pub mod reports;
 
 mod admin_report;
 mod constants;
+mod container_pages;
 mod execute_on_shard;
 mod context;
 mod lifecycle;
@@ -5651,8 +5652,12 @@ fn invalidate_records_all_batched<K: AsRef<str>>(
 /// this address already does. The in-log fallback below needs it because a record carries many
 /// pages and picks one out of itself by identity; handed only the object id it answers with the
 /// FIRST page of that object, which is another element's bytes rather than a miss.
+///
+/// THIS FUNCTION ANSWERS WITH THE PAGE'S WHOLE PAYLOAD, which since `container_pages` is not
+/// necessarily one element's value. `read_block_bytes` wraps it and does the selection; everything
+/// that wants the frame itself -- a rewrite, a walk, a report -- comes here.
 #[allow(clippy::too_many_arguments)]
-fn read_block_bytes(
+fn read_block_frame_bytes(
     cache: &MultiLayerCache,
     block_store: &BlockStore,
     shard_id: ShardId,
@@ -5729,6 +5734,76 @@ fn read_block_bytes(
     None
 }
 
+/// One element's value out of the page an address names.
+///
+/// # WHY `None` FOR THE COMPONENT HANDS BACK THE FRAME
+///
+/// `None` has one meaning at every call site of this function and it is not "no element in
+/// particular": it means THE PAGE IS ITS WHOLE OBJECT -- a string, a control state, a packed
+/// timestamped series. Such a page is never framed, so returning its payload unchanged is not a
+/// fallback, it is the only correct answer. The callers that pass `None` over a page that COULD be
+/// framed are the ones that want the frame: `compaction` rewrites the bytes it was handed, and a
+/// slab walk has no object key to name an element with. Both are served by the frame and would be
+/// corrupted by a value.
+///
+/// # AND A FRAMED PAGE THAT DOES NOT HOLD THE ELEMENT ANSWERS `None`
+///
+/// Which is the same answer a missing page gives, deliberately. The index named this page for this
+/// element; if the page does not hold it then the element is not there, and that is a miss rather
+/// than an error. A CORRUPT frame answers `None` too and is counted, because the alternative --
+/// handing the framing bytes back as a value -- is the failure mode this whole module exists to make
+/// impossible, and it is exactly #2016's shape: an unreadable name becoming a real one.
+fn read_block_bytes(
+    cache: &MultiLayerCache,
+    block_store: &BlockStore,
+    shard_id: ShardId,
+    address: &BlockAddress,
+    component: Option<&str>,
+    routing_bucket: Option<u32>,
+) -> Option<Vec<u8>> {
+    let bytes = read_block_frame_bytes(
+        cache,
+        block_store,
+        shard_id,
+        address,
+        component,
+        routing_bucket,
+    )?;
+    let Some(component) = component else {
+        return Some(bytes);
+    };
+    match container_pages::select_container_element(&bytes, component) {
+        container_pages::ContainerElementRead::NotFramed => Some(bytes),
+        container_pages::ContainerElementRead::Found(value) => Some(value),
+        container_pages::ContainerElementRead::Absent => None,
+        container_pages::ContainerElementRead::Corrupt(_) => {
+            note_corrupt_container_page();
+            None
+        }
+    }
+}
+
+/// Container pages this process could not walk.
+///
+/// A counter and not a log line: the one thing a test needs to tell apart is "the element is not in
+/// the page" from "the page could not be read", and #1989 is the recorded case of those two being
+/// the same answer. Counting the second is what lets a guard assert the first happened zero times.
+static CORRUPT_CONTAINER_PAGES: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+fn note_corrupt_container_page() {
+    CORRUPT_CONTAINER_PAGES.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+}
+
+/// How many container pages this process has failed to walk.
+pub fn corrupt_container_page_count() -> u64 {
+    CORRUPT_CONTAINER_PAGES.load(std::sync::atomic::Ordering::Relaxed)
+}
+
+/// Forget the count, so a test can measure one exercise rather than the suite before it.
+pub fn reset_corrupt_container_page_count() {
+    CORRUPT_CONTAINER_PAGES.store(0, std::sync::atomic::Ordering::Relaxed);
+}
+
 /// The page's bytes, shared rather than copied.
 ///
 /// `read_block_bytes` hands back a `Vec<u8>` the cache built by copying the `Arc<[u8]>` it already
@@ -5763,7 +5838,24 @@ fn read_block_shared(
         cache.get_shared(&cache_key)
     });
     if let Ok(Some(bytes)) = cached {
-        return Some(bytes);
+        // THE CACHE HOLDS THE FRAME, NOT THE ELEMENT. It is keyed by address, and since
+        // `container_pages` one address can name a page holding several elements -- so the shared
+        // path has to select out of a cache HIT exactly as `read_block_bytes` selects out of a
+        // store read. Returning the hit unselected is the one way the two doors can disagree, and
+        // it would disagree only when the page is warm: a cold read would answer correctly and a
+        // second read of the same element would answer with framing bytes.
+        let Some(component) = component else {
+            return Some(bytes);
+        };
+        return match container_pages::select_container_element(&bytes, component) {
+            container_pages::ContainerElementRead::NotFramed => Some(bytes),
+            container_pages::ContainerElementRead::Found(value) => Some(std::sync::Arc::from(value)),
+            container_pages::ContainerElementRead::Absent => None,
+            container_pages::ContainerElementRead::Corrupt(_) => {
+                note_corrupt_container_page();
+                None
+            }
+        };
     }
     // Every path below writes to the cache and hands back what it wrote, so going through
     // `read_block_bytes` keeps the spill redirect, the in-log read and the block-store read in one

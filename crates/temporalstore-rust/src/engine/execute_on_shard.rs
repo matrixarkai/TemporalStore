@@ -123,11 +123,22 @@ fn write_context_node(
     let object_id = stable_block_object_id(shard_id, "hash", object_key);
     let routing_bucket = block_routing_bucket(object_key, start_routing_bucket, end_routing_bucket);
     let mut wrote = false;
+    // FRAMED AS A HASH PAGE, because that is what it is. The outcome below records it under
+    // `context_node` for a reason of its own -- it is never filed in the page index -- but the page
+    // itself lands in `shard.hashes` under `CONTEXT_NODE_FIELD` and is read back through the hash
+    // door with that field as its component. Leaving this one site unframed would leave the node
+    // the single hash element a later load could not recover from its page, which is the element
+    // #2016 already recorded as the one whose absence reads as the node not existing at all.
+    let page = crate::engine::container_pages::single_element_page(
+        "hash",
+        CONTEXT_NODE_FIELD,
+        &context_bytes(node),
+    );
     if let Ok(address) = append_value(
         cache,
         block_store,
         shard_id,
-        &context_bytes(node),
+        &page,
         Some(object_id),
         // The field this node is filed under -- the same argument the object id above was
         // derived with. A context node is a hash FIELD, not a whole object.
@@ -607,14 +618,18 @@ pub(crate) fn execute_on_shard(
                 &key,
                 &field,
             );
+            // The page STATES which field it is, rather than leaving that to the entry that names
+            // it. Same value, one frame around it -- see `container_pages`.
+            let page = crate::engine::container_pages::single_element_page("hash", &field, &value);
             if let Ok(address) = append_value_of_object(
                 cache,
                 block_store,
                 shard_id,
-                &value,
+                &page,
                 Some(object_id),
                 // The element this page holds -- the SAME expression that derived the ordinal
-                // above and the object id beside it. All three name one page.
+                // above and the object id beside it. All three name one page, and since the frame
+                // above it is also the key INSIDE the page.
                 Some(field.as_str()),
                 Some(routing_bucket),
                 async_storage,
@@ -716,11 +731,15 @@ pub(crate) fn execute_on_shard(
                     &key,
                     &field,
                 );
+                // The page STATES which field it is -- see `container_pages`. Built per entry
+                // because the frame carries the field, so one frame cannot stand for two.
+                let page =
+                    crate::engine::container_pages::single_element_page("hash", &field, &value);
                 if let Ok(address) = append_value_of_object(
                     cache,
                     block_store,
                     shard_id,
-                    &value,
+                    &page,
                     Some(object_id),
                     // The element this page holds -- the SAME expression that derived the ordinal
                     // above and the object id beside it. All three name one page.
@@ -782,14 +801,22 @@ pub(crate) fn execute_on_shard(
                 &key,
                 &field,
             );
+            // The page STATES which field it is -- see `container_pages`.
+            let page = crate::engine::container_pages::single_element_page(
+                "hash",
+                &field,
+                value.to_string().as_bytes(),
+            );
             if let Ok(address) = append_value_of_object(
                 cache,
                 block_store,
                 shard_id,
-                value.to_string().as_bytes(),
+                &page,
                 Some(stable_block_object_id(shard_id, "hash", &key)),
-                // The element this page holds -- the SAME expression that derived the ordinal
-                // above and the object id beside it. All three name one page.
+                // The element this page holds -- the same expression that derived the ordinal
+                // above, and now also the key INSIDE the page. The object id beside it no longer
+                // names the element: #2019 made it the object's, so the ordinal, the component and
+                // the frame are the three things that say which element this is.
                 Some(field.as_str()),
                 Some(routing_bucket),
                 async_storage,
@@ -897,11 +924,19 @@ pub(crate) fn execute_on_shard(
                 &key,
                 &member_component,
             );
+            // The page STATES which member it is -- see `container_pages`. For a set the element
+            // key IS the member and so is the value, which the frame stores once: #2017 measured
+            // that redundancy and this is the stage that stops paying it twice.
+            let page = crate::engine::container_pages::single_element_page(
+                "set",
+                &member_component,
+                &member,
+            );
             if let Ok(address) = append_value_of_object(
                 cache,
                 block_store,
                 shard_id,
-                &member,
+                &page,
                 Some(object_id),
                 // The element this page holds -- the SAME expression that derived the ordinal
                 // above and the object id beside it. All three name one page.
@@ -963,11 +998,16 @@ pub(crate) fn execute_on_shard(
                 &key,
                 &component,
             );
+            // The page STATES which element it is -- see `container_pages`. A zset's element key is
+            // its biased score followed by its member, and the value IS that member, so the frame
+            // stores the member once and says where inside the key it starts.
+            let page =
+                crate::engine::container_pages::single_element_page("zset", &component, &member);
             if let Ok(address) = append_value_of_object(
                 cache,
                 block_store,
                 shard_id,
-                &member,
+                &page,
                 Some(object_id),
                 // The element this page holds -- the SAME expression that derived the ordinal
                 // above and the object id beside it. All three name one page.
@@ -1295,11 +1335,14 @@ pub(crate) fn execute_on_shard(
                 &key,
                 &component,
             );
+            // The page STATES which element it is -- see `container_pages`.
+            let page =
+                crate::engine::container_pages::single_element_page("zset", &component, &member);
             if let Ok(address) = append_value_of_object(
                 cache,
                 block_store,
                 shard_id,
-                &member,
+                &page,
                 Some(object_id),
                 // The element this page holds -- the SAME expression that derived the ordinal
                 // above and the object id beside it. All three name one page.
@@ -1423,11 +1466,16 @@ pub(crate) fn execute_on_shard(
                 &key,
                 &component,
             );
+            // The page STATES which element it is -- see `container_pages`. A list's element key is
+            // its biased sequence word, which is eight bytes and is NOT the value beside it, so
+            // this is the one container kind whose frame carries both in full.
+            let page =
+                crate::engine::container_pages::single_element_page("list", &component, &member);
             if let Ok(address) = append_value_of_object(
                 cache,
                 block_store,
                 shard_id,
-                &member,
+                &page,
                 Some(object_id),
                 // The element this page holds -- the SAME expression that derived the ordinal
                 // above and the object id beside it. All three name one page.
