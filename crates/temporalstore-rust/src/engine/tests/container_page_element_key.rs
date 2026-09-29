@@ -391,10 +391,16 @@ fn a_value_that_is_the_keys_tail_is_stored_once() {
     println!("  value is the key      : {} bytes", shared.len());
     println!("  value is its own      : {} bytes", separate.len());
     println!("  saved                 : {} bytes", separate.len() - shared.len());
-    assert!(
-        separate.len() >= shared.len() + 32,
-        "eliding a 32-byte value that equals its key saved only {} bytes",
-        separate.len() - shared.len()
+    // THE SAVING IS THE VALUE MINUS THE OFFSET VARINT, and it is stated from those two numbers
+    // rather than as a round figure: the elided form spends one varint saying where in the key the
+    // value starts, so eliding thirty-two bytes saves thirty-one and not thirty-two. A test that
+    // asserted the round figure would be off by exactly the byte the format costs, which is the
+    // byte most worth being able to see move.
+    let expected_saving = 32 - varint_len(0);
+    assert_eq!(
+        expected_saving,
+        separate.len() - shared.len(),
+        "eliding a 32-byte value that equals its key should save the value less the offset varint"
     );
     // And the elided form still decodes to the value, so the saving is not a loss.
     assert_eq!(
@@ -888,13 +894,24 @@ fn every_container_kind_reads_back_the_value_it_wrote_through_a_framed_page() {
         crate::types::CommandResponse::Members { members } => members,
         other => panic!("expected Members, got {other:?}"),
     };
+    // A ZSET LISTING ANSWERS INTERLEAVED MEMBER AND SCORE, so four members are eight entries. And
+    // it reads NO PAGE AT ALL -- it is served out of `shard.zsets`, which #2017 measured and used
+    // as its control. So this arm proves the zset WRITE path did not break the resident map; the
+    // zset PAGE is exercised by the reload test below, which is the only door that reads it.
     assert_eq!(
-        members.len(),
+        members.len() * 2,
         zset_members.len(),
-        "the zset listing answered {} members for {}",
+        "the zset listing answered {} entries for {} members, and it answers member and score",
         zset_members.len(),
         members.len()
     );
+    for member in &members {
+        assert!(
+            zset_members.contains(member),
+            "the zset listing lost a member of {} bytes",
+            member.len()
+        );
+    }
 
     let elements: Vec<Vec<u8>> = (0..4).map(|index| bytes_of(40, index + 20)).collect();
     for element in &elements {
@@ -934,11 +951,220 @@ fn every_container_kind_reads_back_the_value_it_wrote_through_a_framed_page() {
         "a read met a container page it could not walk"
     );
     println!(
-        "  hash {} fields, set {} members, zset {} members, list {} elements -- all read back",
+        "  hash {} fields, set {} members, zset {} members ({} listing entries), list {} elements -- all read back",
         fields.len(),
+        members.len(),
         members.len(),
         zset_members.len(),
         elements.len()
+    );
+}
+
+/// A FRAMED PAGE SURVIVES A RELOAD, WHICH IS THE ONLY DOOR THAT READS SOME OF THEM AT ALL.
+///
+/// The end-to-end test above cannot exercise a zset page, because a zset listing is served out of
+/// `shard.zsets` and reads nothing -- #2017's own control. A reload is what reads the pages: it
+/// rebuilds the resident maps out of the page index and then every subsequent read resolves an
+/// address and goes to storage.
+///
+/// SO THIS IS ALSO THE ARM THAT MATTERS MOST TO WHAT COMES NEXT. The stage after this one makes the
+/// load path rebuild those maps out of the PAGES rather than out of the index, and the page read
+/// here is the read it will build on. If the frame did not survive a reload there would be nothing
+/// to build on.
+///
+/// THE DENOMINATOR: the reloaded engine is asserted to hold the elements before anything is read
+/// through it, so a reload that came up empty would fail here rather than quietly passing every
+/// "the value is missing and so is the expectation" comparison.
+///
+/// rust-internal: drives the engine's own command surface
+#[test]
+fn a_framed_page_reads_back_after_a_reload() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let pages = dir.path().join("pages");
+    let indexes = dir.path().join("indexes");
+    println!(
+        "\n=== framed pages across a reload ===\n  store path {} characters",
+        dir.path().as_os_str().len()
+    );
+
+    let fields: Vec<(String, Vec<u8>)> = (0..6)
+        .map(|index| (format!("field-{index:04}"), bytes_of(64, index)))
+        .collect();
+    let members: Vec<Vec<u8>> = (0..6).map(|index| bytes_of(24, index + 100)).collect();
+    let elements: Vec<Vec<u8>> = (0..6).map(|index| bytes_of(36, index + 200)).collect();
+
+    {
+        let engine =
+            TemporalEngine::with_local_dirs(64 * 1024 * 1024, dir.path().join("cache"), &pages, &indexes);
+        load_on(&engine);
+        crate::engine::container_pages::reset_unframed_container_write_count();
+        for (field, value) in &fields {
+            write(
+                &engine,
+                Command::HashSet {
+                    key: "reloaded".to_string(),
+                    field: field.clone(),
+                    value: value.clone(),
+                },
+            );
+        }
+        for member in &members {
+            write(
+                &engine,
+                Command::SetAdd {
+                    key: "reloaded".to_string(),
+                    member: member.clone(),
+                },
+            );
+        }
+        for (index, member) in members.iter().enumerate() {
+            write(
+                &engine,
+                Command::ZSetAdd {
+                    key: "reloaded".to_string(),
+                    member: member.clone(),
+                    score: index as f64,
+                },
+            );
+        }
+        for element in &elements {
+            write(
+                &engine,
+                Command::ListPush {
+                    key: "reloaded".to_string(),
+                    member: element.clone(),
+                    left: false,
+                },
+            );
+        }
+        assert_eq!(
+            0,
+            crate::engine::container_pages::unframed_container_write_count(),
+            "a container write stored a bare value instead of a frame"
+        );
+        engine.flush_shard_index(1);
+    }
+
+    // A SECOND ENGINE ON THE SAME FILES, with its own cache directory so nothing is answered out
+    // of a warm page the first engine left behind. Without that the reload would be measured
+    // against the cache rather than against storage.
+    let reloaded = TemporalEngine::with_local_dirs(
+        64 * 1024 * 1024,
+        dir.path().join("cache-reloaded"),
+        &pages,
+        &indexes,
+    );
+    crate::engine::reset_corrupt_container_page_count();
+    load_on(&reloaded);
+
+    // The denominator, before a single value is compared.
+    let hash_len = match read(
+        &reloaded,
+        Command::HashLen {
+            key: "reloaded".to_string(),
+        },
+    ) {
+        crate::types::CommandResponse::Integer { value } => value,
+        other => panic!("expected Integer, got {other:?}"),
+    };
+    assert_eq!(
+        fields.len() as i64,
+        hash_len,
+        "the reloaded shard holds {hash_len} fields where {} were written, so a per-field \
+         comparison below would be over the wrong population",
+        fields.len()
+    );
+
+    for (field, value) in &fields {
+        let got = match read(
+            &reloaded,
+            Command::HashGet {
+                key: "reloaded".to_string(),
+                field: field.clone(),
+            },
+        ) {
+            crate::types::CommandResponse::Bytes { value } => value,
+            other => panic!("expected Bytes, got {other:?}"),
+        };
+        assert_eq!(
+            Some(value.clone()),
+            got,
+            "hash field {field} did not survive the reload"
+        );
+    }
+
+    let listed = match read(
+        &reloaded,
+        Command::SetMembers {
+            key: "reloaded".to_string(),
+        },
+    ) {
+        crate::types::CommandResponse::Members { members } => members,
+        other => panic!("expected Members, got {other:?}"),
+    };
+    assert_eq!(
+        members.len(),
+        listed.len(),
+        "the reloaded set listing answered {} members for {}",
+        listed.len(),
+        members.len()
+    );
+    for member in &members {
+        assert!(
+            listed.contains(member),
+            "the reloaded set lost a member of {} bytes -- and a set listing reads ONE PAGE PER \
+             MEMBER, so this is the arm that reads a framed page off storage",
+            member.len()
+        );
+    }
+
+    let ranged = match read(
+        &reloaded,
+        Command::ListRange {
+            key: "reloaded".to_string(),
+            start: 0,
+            stop: -1,
+        },
+    ) {
+        crate::types::CommandResponse::Members { members } => members,
+        other => panic!("expected Members, got {other:?}"),
+    };
+    assert_eq!(
+        elements, ranged,
+        "the reloaded list did not read back its elements in order"
+    );
+
+    let zset_entries = match read(
+        &reloaded,
+        Command::ZSetRange {
+            key: "reloaded".to_string(),
+            start: 0,
+            stop: -1,
+            rev: false,
+        },
+    ) {
+        crate::types::CommandResponse::Members { members } => members,
+        other => panic!("expected Members, got {other:?}"),
+    };
+    for member in &members {
+        assert!(
+            zset_entries.contains(member),
+            "the reloaded zset lost a member of {} bytes",
+            member.len()
+        );
+    }
+
+    assert_eq!(
+        0,
+        crate::engine::corrupt_container_page_count(),
+        "the reload met a container page it could not walk"
+    );
+    println!(
+        "  reloaded: {} hash fields, {} set members, {} list elements, {} zset members -- all read back off storage",
+        fields.len(),
+        listed.len(),
+        ranged.len(),
+        members.len()
     );
 }
 

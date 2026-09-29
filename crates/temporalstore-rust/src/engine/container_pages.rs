@@ -335,11 +335,22 @@ pub(super) fn decode_container_page(bytes: &[u8]) -> ContainerPageDecode {
 }
 
 /// The frame's spelling byte, or `None` when these bytes are not a frame at all.
+///
+/// A PAYLOAD THAT IS EXACTLY THE MAGIC IS A TRUNCATED FRAME, NOT AN UNFRAMED PAGE. This returned
+/// `None` for it -- `bytes.get(..)?` propagating out of the whole function -- so seven bytes that
+/// claim to be a frame were handed back to the caller as a value. It is the same one-character
+/// shape as every other defect this module cites: an answer that cannot be produced being turned
+/// into one that can. Caught by `a_frame_that_cannot_be_walked_is_not_mistaken_for_a_value`, whose
+/// truncation ladder cuts at exactly this boundary.
 fn frame_spelling(bytes: &[u8]) -> Option<Result<ElementKeySpelling, String>> {
     if !bytes.starts_with(CONTAINER_PAGE_MAGIC) {
         return None;
     }
-    let byte = *bytes.get(CONTAINER_PAGE_MAGIC.len())?;
+    let Some(byte) = bytes.get(CONTAINER_PAGE_MAGIC.len()).copied() else {
+        return Some(Err(String::from(
+            "container page is the magic and nothing else, so it names no key spelling",
+        )));
+    };
     Some(
         ElementKeySpelling::from_byte(byte)
             .ok_or_else(|| format!("container page names key spelling {byte}, which is not one")),
