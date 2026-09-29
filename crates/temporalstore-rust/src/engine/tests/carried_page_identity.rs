@@ -244,20 +244,30 @@ fn two_carried_pages_of_one_key_each_serve_their_own_bytes_under_a_component_fre
     println!("\n=== read_block over one record carrying two pages of one key ===");
     println!("  identity                          pages  correct  wrong bytes  missing");
 
-    let free = stable_block_object_id(1, "hash", "hk", None);
+    // THE PRODUCT'S OWN IDENTITY, since the component left `stable_block_object_id`. It was
+    // reachable only as a simulation when this module was written; it is now simply the id.
+    let free = stable_block_object_id(1, "hash", "hk");
+    // THE CONTROL'S TWO IDS. The folded identity used to produce a distinct id per element, and
+    // there is no longer a call that does. What the control is FOR is unchanged -- two pages
+    // bearing DIFFERENT ids must both come back, or nothing below attributes anything to the
+    // change -- so the two distinct numbers come from two distinct keys instead.
+    let distinct_a = stable_block_object_id(1, "hash", "hk:f0");
+    let distinct_b = stable_block_object_id(1, "hash", "hk:f1");
+    assert_ne!(
+        distinct_a, distinct_b,
+        "the control needs two DIFFERENT ids and got one number twice"
+    );
+    assert!(
+        free != distinct_a && free != distinct_b,
+        "the control's ids collide with the object's own id, so its arm would not be a control"
+    );
     let mut results: Vec<(&str, usize, usize, usize)> = Vec::new();
 
     for (label, first, second) in [
         (
-            "today (id per element)",
-            (
-                stable_block_object_id(1, "hash", "hk", Some("f0")),
-                Some("f0"),
-            ),
-            (
-                stable_block_object_id(1, "hash", "hk", Some("f1")),
-                Some("f1"),
-            ),
+            "CONTROL: two distinct ids",
+            (distinct_a, Some("f0")),
+            (distinct_b, Some("f1")),
         ),
         (
             "component-free id + element",
@@ -323,7 +333,7 @@ fn two_carried_pages_of_one_key_each_serve_their_own_bytes_under_a_component_fre
     assert_eq!(
         (results[0].1, results[0].2, results[0].3),
         (2, 0, 0),
-        "CONTROL FAILED: today's identity served {} of 2 pages correctly ({} wrong bytes, {} \
+        "CONTROL FAILED: two distinct ids served {} of 2 pages correctly ({} wrong bytes, {} \
          missing). Until this arm is 2/0/0 the arms below attribute nothing to the change",
         results[0].1,
         results[0].2,
@@ -399,7 +409,7 @@ fn the_element_beside_the_id_makes_every_page_of_a_batch_reachable() {
         for grouping in ["id alone", "id + element"] {
             let mut groups: BTreeMap<(u64, Option<String>), usize> = BTreeMap::new();
             for (object_key, component) in &pages {
-                let id = stable_block_object_id(1, kind, object_key, None);
+                let id = stable_block_object_id(1, kind, object_key);
                 let term = if grouping == "id alone" {
                     None
                 } else {
@@ -606,7 +616,7 @@ fn what_an_element_named_page_adds_to_the_record() {
 
     fn page_of(i: usize, component: Option<&str>, payload: usize) -> StagedBlock {
         StagedBlock {
-            object_id: stable_block_object_id(1, "hash", "hk", component),
+            object_id: stable_block_object_id(1, "hash", "hk"),
             component: component.map(std::sync::Arc::from),
             bytes: vec![b'v'; payload]
                 .into_iter()
@@ -921,7 +931,7 @@ fn every_carried_page_keeps_its_bytes_and_gains_an_element_through_both_encoders
     ]
     .into_iter()
     .map(|(component, bytes)| StagedBlock {
-        object_id: stable_block_object_id(1, "hash", "hk", component),
+        object_id: stable_block_object_id(1, "hash", "hk"),
         component: component.map(std::sync::Arc::from),
         bytes,
     })
@@ -1064,7 +1074,7 @@ fn a_hash_pages_field_name_is_held_beside_the_id_and_survives_a_component_free_i
         // The identity the change would hand every page of this key: no component, so one number.
         let free_ids: BTreeSet<u64> = pairs
             .iter()
-            .map(|_| stable_block_object_id(1, "hash", &key, None))
+            .map(|_| stable_block_object_id(1, "hash", &key))
             .collect();
         println!(
             "  {key:<10} {:>5}  {:>15}  {:>27}",

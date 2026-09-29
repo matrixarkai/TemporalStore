@@ -517,16 +517,21 @@ fn the_arm_a_bucket_node_lands_in_is_decided_by_the_routing_range_not_by_the_wor
 
     // --- THE CONTAINER WORKLOAD REACHES THE GENERAL ARM ON THE WIDE RANGE TOO. ---
     //
-    // AND IT REACHES `multi_object`, NOT `multi_page_object`, WHICH THIS TEST GOT WRONG FIRST
-    // TIME. A hash's hundred fields look like one object with a hundred pages and are not: the
-    // page handle is `stable_block_object_id(shard, kind, key, component)` and it TAKES THE
-    // COMPONENT, so a hundred fields are a hundred distinct object ids filed under one routing
-    // key. `object_index` therefore holds a hundred ids and the classifier answers
-    // `multi_object`. `multi_page_object` -- ONE object id holding several pages -- is not
-    // reached by any workload seeded here, which is reported below rather than asserted away.
+    // AND IT NOW REACHES `multi_page_object` RATHER THAN `multi_object`, WHICH IS THE IDENTITY
+    // CHANGE SHOWING UP IN THE CLASSIFIER.
+    //
+    // This test asserted `multi_object` and said why: a hash's hundred fields looked like one
+    // object with a hundred pages and were not, because the object id took the COMPONENT, so a
+    // hundred fields were a hundred distinct ids filed under one routing key and `object_index`
+    // held a hundred rows.
+    //
+    // Since the component left `stable_block_object_id`, `object_index` holds ONE row for that
+    // key and `classify_bucket_layout(1, many)` answers `MultiBlockObject`. So the arm the
+    // container workload lands in has moved, and `multi_page_object` -- which this module used to
+    // report as reached by nothing -- is now exactly what a container reaches.
     for (pages, hist) in &container {
         assert_every_claimed_arm_has_samples(
-            &["multi_object"],
+            &["multi_page_object"],
             hist,
             &format!("{pages} container pages on the whole keyspace"),
         );
@@ -547,8 +552,9 @@ fn the_arm_a_bucket_node_lands_in_is_decided_by_the_routing_range_not_by_the_wor
     //   * `single_object_no_page` is a RELEASED bucket -- `release_bucket_blocks` empties the
     //     page index and keeps `object_index` -- which holds no page in either representation
     //     and so cannot decide between them;
-    //   * `multi_page_object` needs one object id holding several pages, which the handle
-    //     function above makes unreachable for a container.
+    //   * `multi_object` is what a container used to reach and no longer does, because its
+    //     pages now share one object id -- the routed corpora reach it on the narrow range,
+    //     so it is named here only for the wide-range container stores.
     let mut never_reached: Vec<&str> = Vec::new();
     for arm in EVERY_ARM {
         let reached: usize = routed

@@ -2636,7 +2636,7 @@ fn what_each_shape_of_the_object_index_would_cost_in_width() {
     let mut high_bit_set = 0usize;
     let mut sampled = 0usize;
     for i in 0..4_096u64 {
-        let id = crate::engine::hashing::stable_block_object_id(1, "string", &format!("s{i}"), None);
+        let id = crate::engine::hashing::stable_block_object_id(1, "string", &format!("s{i}"));
         sampled += 1;
         if id & 1 == 1 {
             low_bit_set += 1;

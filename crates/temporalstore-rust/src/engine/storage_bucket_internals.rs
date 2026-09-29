@@ -1380,7 +1380,6 @@ pub(super) fn rebuild_bucket_block_ownership(
                 shard_id,
                 entry.kind.as_str(),
                 &entry.object_key,
-                entry.component.as_deref(),
             )
         });
         let bucket = shard
@@ -2243,7 +2242,6 @@ pub(super) fn reload_released_bucket(
                 shard_id,
                 entry.kind.as_str(),
                 &entry.object_key,
-                entry.component.as_deref(),
             )
         });
         let mut address = entry.address;
@@ -3417,7 +3415,7 @@ fn upsert_bucket_index_block_inner(
     reload_released_bucket(shard, shard_id, routing_bucket);
     let object_id = address
         .object_id()
-        .unwrap_or_else(|| stable_block_object_id(shard_id, kind, object_key, component.as_deref()));
+        .unwrap_or_else(|| stable_block_object_id(shard_id, kind, object_key));
     // This IS the outcome: an object, its identity, and where its page ended up. Put it aside
     // for the record, so replay has the option of installing it instead of re-running the
     // command that produced it.
@@ -3730,7 +3728,7 @@ pub(super) fn sync_bucket_index_object_blocks_with_mode(
             block_routing_bucket(object_key, start_routing_bucket, end_routing_bucket);
         let object_id = address
             .object_id()
-            .unwrap_or_else(|| stable_block_object_id(shard_id, kind, object_key, None));
+            .unwrap_or_else(|| stable_block_object_id(shard_id, kind, object_key));
         let entry = LiveBlockEntry {
             object_key: Arc::clone(&object_key_arc),
             kind: entry_kind,
@@ -4172,7 +4170,6 @@ pub(super) fn rebuild_bucket_first_index(
                 shard_id,
                 entry.kind.as_str(),
                 &entry.object_key,
-                entry.component.as_deref(),
             )
         });
         let bucket = bucket_index
@@ -4936,7 +4933,6 @@ pub(super) fn expected_live_block_object_id(shard_id: ShardId, entry: &LiveBlock
         shard_id,
         entry.kind.as_str(),
         &entry.object_key,
-        entry.component.as_deref(),
     )
 }
 

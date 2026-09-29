@@ -2378,10 +2378,29 @@ pub(crate) fn eager_cache_warm_on_load() -> bool {
 ///
 /// 1 = pre-rekey: context_events keyed by timeline_key.
 /// 2 = context_events keyed by event_id_hash, with context_event_timeline carrying time order.
+/// 3 = the object id is `(shard, kind, key)`: an object, not one of its pages.
 ///
 /// Bump this whenever a field's MEANING changes, not only when its type does -- a same-typed
 /// reinterpretation is the case that decodes cleanly and serves wrong data.
-pub(super) const SHARD_INDEX_FORMAT_VERSION: u32 = 2;
+///
+/// 3 IS THAT CASE, EXACTLY AS THE SENTENCE ABOVE DESCRIBES IT, and this is why the bump is not
+/// optional. `oi` is a `u64` before and a `u64` after, so an index written by the previous binary
+/// decodes without complaint and every value in it is intact. What moved is what the number
+/// MEANS: it used to name a page (shard, kind, key, component) and now names an object
+/// (shard, kind, key).
+///
+/// Nothing in the decode can see that. `BlockAddress::try_from` compares the stored `g` against
+/// `block_id.or(object_id)`, and BOTH sides of that comparison come off the wire -- an old row
+/// agrees with itself and is admitted. The disagreement appears later and elsewhere:
+/// `bucket.object_index` is filled from `address.object_id()`, the STORED value, so it would hold
+/// component-folded ids, while `validate_bucket_ownership_index_from_entries` recomputes
+/// `stable_block_object_id(shard, kind, key)` under the new rule and asks
+/// `object_index.contains(..)`. Every container page in such a store answers no. That runs on a
+/// recovery path (`recovery_sweep_compact`, four call sites), not in a test.
+///
+/// A stale stamp is treated as an ABSENT index and the caller replays the log, which rebuilds
+/// every id under one rule. Slower and correct, which is the trade this stamp exists to make.
+pub(super) const SHARD_INDEX_FORMAT_VERSION: u32 = 3;
 
 /// Serialize a shard index, stamping the current format version.
 ///
@@ -3069,7 +3088,7 @@ fn collect_upsert_index_items(
         let routing_bucket =
             block_routing_bucket(object_key, start_routing_bucket, end_routing_bucket);
         let object_id = address.object_id().unwrap_or_else(|| {
-            stable_block_object_id(shard_id, kind, object_key, component.as_deref())
+            stable_block_object_id(shard_id, kind, object_key)
         });
         let block_ref_key = format!(
             "{}:{}:{}:{}:{}:{}:{}:{}",
@@ -4747,7 +4766,7 @@ fn mark_bucket_index_block_deleted_with(
             kind: model_id.to_string(),
             object_key: key.to_string(),
             component: component.map(str::to_string),
-            object_id: stable_block_object_id(shard_id, model_id, key, component),
+            object_id: stable_block_object_id(shard_id, model_id, key),
             routing_bucket: block_routing_bucket(key, 0, u32::MAX),
             address: None,
             value: None,
@@ -4797,6 +4816,36 @@ fn mark_bucket_index_block_deleted_with(
         });
         if bucket_removed {
             bucket.object_index.extend(deleted_object_ids.iter().copied());
+            // A DELETED ELEMENT IS NOT A DELETED OBJECT, AND THE ID NO LONGER SAYS WHICH IS WHICH.
+            //
+            // This function removes ONE element -- the `retain` above matches on
+            // `(model_id, object_key, component)` -- and then tombstones the ids of what it
+            // removed. That was exactly right while the object id named a page: every page
+            // sharing the removed page's id had the same component and was removed with it, so
+            // no surviving page could carry it and the tombstone could not be premature.
+            //
+            // Now one id covers every element of the key. Dropping field `f0` of a
+            // twenty-five-field hash would file the hash's id here while twenty-four fields are
+            // still live, and `object_manager::runtime_report` asks
+            // `deleted_object_index.contains(page.object_id())` per page -- so all twenty-four
+            // survivors would be counted `deleted_block_ref_count` instead of hot or cold.
+            //
+            // So the tombstone is now written only at a key's LAST element, which is the same
+            // condition `remove_block_entry_from_buckets` already applies to `object_index`:
+            // `!any(|page| page.object_id() == id)` over what survived. `object_index` keeps its
+            // unconditional `extend` above deliberately -- the resident delete path keeps the id
+            // and records the deletion beside it, which is the doctrine
+            // `settle_released_bucket_object_delete` contrasts itself against.
+            //
+            // ON THE PREVIOUS IDENTITY THIS FILTER REMOVES NOTHING, and that is what makes it
+            // attributable: a surviving page could only carry a removed page's id by sharing its
+            // component, and `retain` took every such page.
+            deleted_object_ids.retain(|object_id| {
+                !bucket
+                    .block_index
+                    .values()
+                    .any(|page| page.object_id() == *object_id)
+            });
             bucket.deleted_object_index.extend(deleted_object_ids);
             bucket.set_dirty(true);
             bucket.set_deleted(bucket.block_index.is_empty());
@@ -5134,7 +5183,7 @@ fn persist_control_state_block(
     let Ok(bytes) = serde_json::to_vec(series) else {
         return false;
     };
-    let object_id = stable_block_object_id(shard_id, "control_state", key, None);
+    let object_id = stable_block_object_id(shard_id, "control_state", key);
     let routing_bucket = block_routing_bucket(key, start_routing_bucket, end_routing_bucket);
     if let Ok(address) = append_value(
         cache,

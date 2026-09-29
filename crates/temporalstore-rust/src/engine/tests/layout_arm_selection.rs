@@ -8,19 +8,32 @@
 //! keeping a page inline, another keying its pages on a per-bucket object list so the entry can
 //! carry a one-byte ordinal instead of a name -- would be worth the two representations.
 //!
-//! IT WOULD NOT, AND THE REASON IS ONE NUMBER: PAGES PER OBJECT IS 1.
+//! IT WOULD NOT, AND THE REASON WAS ONE NUMBER: PAGES PER OBJECT WAS 1. THAT NUMBER HAS MOVED.
 //!
 //! An object list amortises. It costs a row per object and pays for itself by letting every page
 //! of that object carry an ordinal instead of a name. The saving is therefore
 //! `(name - ordinal) * pages_per_object - row_cost`, and everything depends on
-//! `pages_per_object` being greater than one. In this engine it is not, and not by accident: a
-//! page's object identity is `stable_block_object_id(shard_id, kind, object_key, component)` --
-//! THE COMPONENT IS IN THE HASH -- so a hash field, a set member, a list element and a sorted-set
-//! member are each an object of their own holding exactly one page.
+//! `pages_per_object` being greater than one.
 //!
-//! That is why `MultiBlockObject` -- the one arm the proposal is for, `(1 object, many pages)` --
-//! is not merely rare. It is UNREACHABLE for every component-bearing kind, because a bucket
-//! holding many pages of one key holds many OBJECTS of one key, which classifies `MultiObject`.
+//! IT WAS NOT, AND THAT WAS NOT AN ACCIDENT: a page's object identity was
+//! `stable_block_object_id(shard_id, kind, object_key, component)` -- THE COMPONENT WAS IN THE
+//! HASH -- so a hash field, a set member, a list element and a sorted-set member were each an
+//! object of their own holding exactly one page. `MultiBlockObject`, the one arm the proposal is
+//! for, was therefore UNREACHABLE for every component-bearing kind: a bucket holding many pages
+//! of one key held many OBJECTS of one key, which classifies `MultiObject`.
+//!
+//! THE COMPONENT HAS SINCE LEFT THE HASH. One key is one object, a container key is `(1 object,
+//! many pages)`, and this module's two findings invert with it -- both are inverted below rather
+//! than deleted, keeping their denominators and their controls:
+//!
+//!   * the arm IS reached now, small by bucket share and large by page share, and both numbers
+//!     are asserted because either one alone misstates the size;
+//!   * the stored `object_index` IS the list the proposal wanted -- one row per `(kind, key)` --
+//!     so the proposal's real cost, a SECOND durable structure beside it, is no longer a cost.
+//!
+//! What has NOT moved is the shipped range: at 40,000 records on `0..1023` the arm is still
+//! exactly absent and exactly one arm is live, which is still what makes a five-way dispatch
+//! select nothing there.
 //!
 //! THE POSITIVE CONTROL IS WHAT MAKES THAT A MEASUREMENT RATHER THAN AN EMPTY FIXTURE. A
 //! component-free kind CAN hold several pages under one object id, and the series kind does: a
@@ -337,10 +350,11 @@ fn name_pointer_width(engine: &TemporalEngine) -> usize {
 /// its share of pages, and both sets of rows are asserted to sum to the store's own totals.
 #[test]
 #[ignore = "seeds four mixed stores up to 40,000 records each; run by name"]
-fn the_layout_arm_an_object_list_would_pay_for_is_under_one_percent_and_absent_at_the_shipped_range()
+fn the_layout_arm_an_object_list_would_pay_for_is_now_the_container_arm_and_still_absent_at_the_shipped_range()
 {
     let mut path_lengths: Vec<usize> = Vec::new();
     let mut widest_bucket_share_of_multi_page_object = 0.0f64;
+    let mut widest_page_share_of_multi_page_object = 0.0f64;
     let mut widest_object_by_id = 0usize;
     let mut widest_object_by_kind_key = 0usize;
     let mut series_max_seen = 0usize;
@@ -400,6 +414,8 @@ fn the_layout_arm_an_object_list_would_pay_for_is_under_one_percent_and_absent_a
                 if arm == "multi_page_object" {
                     widest_bucket_share_of_multi_page_object =
                         widest_bucket_share_of_multi_page_object.max(bucket_share);
+                    widest_page_share_of_multi_page_object =
+                        widest_page_share_of_multi_page_object.max(page_share);
                     if records == LARGE && end == NARROW_END {
                         shipped_range_at_scale_multi_page_object = Some(buckets);
                     }
@@ -504,9 +520,30 @@ fn the_layout_arm_an_object_list_would_pay_for_is_under_one_percent_and_absent_a
     );
 
     // --- THE FINDING, ON THE ARM THE PROPOSAL IS FOR. ---
+    // THE FINDING, INVERTED BY THE IDENTITY CHANGE, AND THE TWO SHARES SPLIT APART.
+    //
+    // This used to assert `multi_page_object` stayed under one percent of buckets everywhere,
+    // because `(1 object, many pages)` was unreachable for any component-bearing kind. Since the
+    // component left the object id a container IS that shape, so the arm is now reached -- and
+    // the assertion is not LOOSENED, it is replaced by the pair of numbers the mechanism
+    // predicts, which point in opposite directions and together are the honest size:
+    //
+    //   * by BUCKET share it stays small, because a container is few buckets;
+    //   * by PAGE share it is large, because those few buckets hold most of the pages.
+    //
+    // Either share quoted alone would read as a much bigger or much smaller result than this is.
     assert!(
-        widest_bucket_share_of_multi_page_object < 1.0,
-        "`multi_page_object` reached {widest_bucket_share_of_multi_page_object:.3}% of buckets in some store. The finding is stated on it staying under one percent everywhere; re-price rather than loosening this"
+        widest_bucket_share_of_multi_page_object > 0.0,
+        "`multi_page_object` reached no bucket in any store. Since the component left the object \
+         id a container key is ONE object holding many pages, which is exactly this arm -- an \
+         unreached arm here means the identity did not collapse"
+    );
+    assert!(
+        widest_page_share_of_multi_page_object > widest_bucket_share_of_multi_page_object,
+        "`multi_page_object` peaks at {widest_bucket_share_of_multi_page_object:.3}% of buckets \
+         and {widest_page_share_of_multi_page_object:.3}% of pages. The whole shape of this arm \
+         is a FEW buckets holding MANY pages; if the page share is not the larger of the two, \
+         the population being read is not the container one"
     );
     let shipped = shipped_range_at_scale_multi_page_object
         .expect("the shipped range at scale must have been measured");
@@ -520,7 +557,7 @@ fn the_layout_arm_an_object_list_would_pay_for_is_under_one_percent_and_absent_a
         "at 40,000 records on the shipped range {live} layout arms are populated. The finding is stated on exactly ONE being live, which is what makes a five-way dispatch select nothing there"
     );
     println!(
-        "\n  THE ARM: `multi_page_object` peaks at {widest_bucket_share_of_multi_page_object:.3}% of buckets and is EXACTLY ABSENT at 40,000 records on the shipped range, where {live} of {} arms is populated at all.",
+        "\n  THE ARM: `multi_page_object` peaks at {widest_bucket_share_of_multi_page_object:.3}% of BUCKETS and {widest_page_share_of_multi_page_object:.3}% of PAGES, and is still EXACTLY ABSENT at 40,000 records on the shipped range, where {live} of {} arms is populated at all.",
         EVERY_ARM.len()
     );
     println!(
@@ -722,30 +759,25 @@ fn a_per_bucket_dispatch_cannot_separate_the_keys_the_object_list_wins_on_from_t
     );
 }
 
-/// THE BUCKET ALREADY HOLDS AN OBJECT LIST. IT IS KEYED PER PAGE, WHICH IS WHY AN ORDINAL INTO IT
-/// BUYS NOTHING.
+/// THE OBJECT LIST THIS BUCKET ALREADY STORES IS NOW ONE ROW PER KEY -- THE LIST THE PROPOSAL WANTED.
 ///
-/// `BucketNode::object_index` is exactly the per-bucket object list the proposal asks for, and it
-/// is already durable. What it is not is keyed the way the proposal needs: a page's object identity
-/// is `stable_block_object_id(shard_id, kind, object_key, component)` -- THE COMPONENT IS IN THE
-/// HASH -- so a hash field, a set member, a list element and a sorted-set member are each an object
-/// of their own. The list therefore holds very nearly one row PER PAGE, and a one-byte ordinal into
-/// a list with one row per page cannot replace the page's name: the row it points at would have to
-/// carry that name itself.
+/// This test held the OPPOSITE, and it was the load-bearing half of #2007's refutation: the saving
+/// an object list offers is available only to a list keyed on `(kind, key)`; the stored
+/// `object_index` was keyed on an identity that folded the component in; so the two were DIFFERENT
+/// structures and the proposal meant a SECOND durable map rather than a re-use of one.
 ///
-/// The saving priced in the test above is only available to a list keyed on `(kind, key)` -- which
-/// is a DIFFERENT identity from the one the engine stores, so it is a SECOND durable structure
-/// beside `object_index` rather than a re-use of it. That, and not the byte count, is what the
-/// proposal actually costs.
+/// Removing the component from `stable_block_object_id` collapses them into one. The stored list
+/// is keyed exactly on `(kind, key)` now, so its row count and the distinct-key count are the same
+/// number, and the second structure is not needed because the first one IS it.
 ///
-/// MEASURED, not argued: this asserts the stored list's row count against the store's distinct
-/// `(kind, key)` count, and refuses a run where they agree -- because if they agreed, the stored
-/// list WOULD be the list the proposal wants and the finding here would be wrong.
+/// MEASURED, not argued, and guarded in the direction it could pass for nothing: the rows must
+/// EQUAL the distinct keys, and the page count must EXCEED them -- a store whose keys each held
+/// one page would satisfy the first trivially and say nothing at all.
 ///
 /// rust-internal: reads the engine's own bucket index; no product behaviour
 #[test]
 #[ignore = "seeds two mixed stores; run by name"]
-fn the_object_list_this_bucket_already_stores_holds_one_row_per_page_and_not_one_per_key() {
+fn the_object_list_this_bucket_stores_is_now_one_row_per_key_which_is_the_list_the_proposal_wanted() {
     for (records, end) in [(SMALL, NARROW_END), (LARGE, NARROW_END)] {
         let dir = tempfile::tempdir().expect("tempdir");
         let engine = engine_on(dir.path());
@@ -775,28 +807,46 @@ fn the_object_list_this_bucket_already_stores_holds_one_row_per_page_and_not_one
             stored_rows as f64 / pop.total_pages as f64
         );
         println!(
-            "    distinct object ids among the pages        {distinct_object_ids:>8}  (component IN the identity)"
+            "    distinct object ids among the pages        {distinct_object_ids:>8}  (the identity IS (kind, key) now)"
         );
         println!(
-            "    distinct (kind, key) among the pages       {distinct_keys:>8}  (what the proposal would key on)"
+            "    distinct (kind, key) among the pages       {distinct_keys:>8}  (what the proposal would key on -- the same thing)"
         );
         println!(
-            "    so the list the proposal wants is {:.2}x SHORTER than the one already stored",
-            stored_rows as f64 / distinct_keys as f64
+            "    so the list the proposal wants and the one already stored are the SAME list: \
+             {stored_rows} rows, {distinct_keys} keys"
         );
 
-        // The stored list tracks the component-bearing identity, so it is very nearly one row a
-        // page -- NOT one row a key.
+        // NON-VACUITY FIRST. If every key held one page then rows, keys and pages would all be
+        // the same number and the equality below would be arithmetic rather than a measurement.
         assert!(
-            stored_rows > distinct_keys,
-            "the stored object_index holds {stored_rows} rows against {distinct_keys} distinct (kind, key). If these agreed, the stored list would already be the list the proposal wants and this module's finding would be wrong"
+            pop.total_pages > distinct_keys,
+            "DENOMINATOR: {} pages over {distinct_keys} distinct (kind, key). A store whose keys \
+             each held one page satisfies every assertion below while measuring nothing",
+            pop.total_pages
         );
-        // And it is much closer to the page count than to the key count, which is the mechanism.
+
+        // THE FINDING, INVERTED. The stored list is keyed on (kind, key) now.
+        assert_eq!(
+            stored_rows, distinct_keys,
+            "the stored object_index holds {stored_rows} rows against {distinct_keys} distinct \
+             (kind, key). Since the component left the identity these are the same list, and a \
+             disagreement means the id is still carrying something the key does not"
+        );
+        assert_eq!(
+            distinct_object_ids, distinct_keys,
+            "{distinct_object_ids} distinct object ids over {distinct_keys} distinct (kind, key): \
+             the identity IS the pair now, so these cannot differ"
+        );
+        // And it is now far closer to the KEY count than to the page count -- the mechanism,
+        // stated the same way round as before so the two runs stay comparable.
         let to_pages = (stored_rows as f64 - pop.total_pages as f64).abs();
         let to_keys = (stored_rows as f64 - distinct_keys as f64).abs();
         assert!(
-            to_pages < to_keys,
-            "the stored object_index row count {stored_rows} is closer to the distinct-key count {distinct_keys} than to the page count {}; the claim that it is keyed per page does not hold here",
+            to_keys < to_pages,
+            "the stored object_index row count {stored_rows} is closer to the page count {} than \
+             to the distinct-key count {distinct_keys}; the claim that it is keyed per key does \
+             not hold here",
             pop.total_pages
         );
     }

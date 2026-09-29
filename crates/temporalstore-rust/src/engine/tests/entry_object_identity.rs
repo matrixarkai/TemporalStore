@@ -5,7 +5,7 @@
 //!
 //! `BlockIndex` holds `object_key: Arc<str>` and `address: BlockAddress`, and the address holds an
 //! `object_id: u64` computed from the key. That reads like the identity stated twice, and #1974
-//! established the derivation -- `stable_block_object_id(shard, kind, key, component)`, computed at
+//! established the derivation -- `stable_block_object_id(shard, kind, key)`, computed at
 //! about thirty sites. This module is the refutation of removing the key, and it exists because the
 //! refutation is NOT the one the shape suggests.
 //!
@@ -182,7 +182,7 @@ fn ids_by_object_key(engine: &TemporalEngine) -> BTreeMap<String, Vec<u64>> {
 /// for it. Taken from `stable_block_object_id` rather than invented, so a comparison between two of
 /// these is about the field that differs and the id that follows from it.
 fn entry_named(object_key: &str, component: Option<&str>) -> BlockIndex {
-    let object_id = stable_block_object_id(1, FIXTURE_KIND.as_str(), object_key, component);
+    let object_id = stable_block_object_id(1, FIXTURE_KIND.as_str(), object_key);
     BlockIndex {
         object_key: Arc::from(object_key),
         model_id: FIXTURE_KIND,
@@ -198,30 +198,40 @@ fn entry_named(object_key: &str, component: Option<&str>) -> BlockIndex {
 // 1. THE ID NAMES A TRIPLE, NOT AN OBJECT.
 // =================================================================================================
 
-/// THE ID IS PER (SHARD, KIND, KEY, COMPONENT), SO ONE OBJECT KEY HOLDS AS MANY IDS AS IT HAS PAGES.
+/// THE ID IS PER (SHARD, KIND, KEY), SO ONE OBJECT KEY HOLDS EXACTLY ONE ID HOWEVER MANY PAGES IT HAS.
 ///
-/// Asserted three ways, and the third is a control on the first two.
+/// #1986 recorded the opposite, and this test asserted it: "the object id names a page's triple,
+/// not an object". That was a DESCRIPTION OF A DEFECT rather than a property to preserve, and
+/// taking the component out of `stable_block_object_id` is what closes it. The three arms are
+/// INVERTED rather than deleted, so each still names the denominator it reads.
 ///
-///   1. FROM THE AUTHORITY. `stable_block_object_id` is called directly over one key and a derived
-///      number of components, and the distinct ids counted. The expected count comes from the loop
-///      bound rather than from a literal, so this cannot pass by agreeing with a stale number.
+///   1. FROM THE AUTHORITY. `stable_block_object_id` is asked once per component over one key --
+///      the same loop as before -- and the distinct answers counted. It is now ONE. The component
+///      count is printed beside it and asserted greater than one, so an arm that stopped
+///      generating components could not report 1 for the wrong reason.
 ///   2. OVER A REAL STORE. A hash container's pages are grouped by object key and the ids counted
-///      per key: one key, `MEMBERS_PER_KEY` pages, `MEMBERS_PER_KEY` ids.
-///   3. THE CONTROL. Routed string keys hold ONE page each, so the mechanism predicts NO key with
-///      more than one id. That arm asserts ZERO and requires nothing non-zero of itself, which is
-///      what a control is for: if it ever reported a non-zero share, the grouping above would be
-///      counting pages of different objects together.
+///      per key: one key, `MEMBERS_PER_KEY` pages, ONE id.
+///   3. THE CONTROL. A routed string key holds ONE page and its component was already `None`, so
+///      this change is the IDENTITY on it: one page, one id, before and after. That arm asserts
+///      the number it always asserted, which is what makes it a control -- if it moved, the
+///      collapse above would be something other than the component leaving the hash.
 ///
 /// rust-internal: reads declarations and a seeded store, no product behaviour
 #[test]
-fn the_page_id_names_a_triple_so_one_object_key_holds_as_many_ids_as_pages() {
+fn the_page_id_names_an_object_so_one_object_key_holds_exactly_one_id() {
     // --- 1. FROM THE AUTHORITY, WITH THE EXPECTATION DERIVED. ---
     let components: Vec<String> = (0..MEMBERS_PER_KEY).map(|f| format!("f{f}")).collect();
+    assert!(
+        components.len() > 1,
+        "DENOMINATOR: {} component(s) generated. One id out of one component is arithmetic \
+         rather than a collapse, and every row below would be vacuous",
+        components.len()
+    );
+    // The id no longer TAKES a component, so the component is varied by asking once per
+    // component and counting how many DISTINCT answers come back.
     let folded: BTreeSet<u64> = components
         .iter()
-        .map(|component| {
-            stable_block_object_id(1, FIXTURE_KIND.as_str(), "h0", Some(component))
-        })
+        .map(|_| stable_block_object_id(1, FIXTURE_KIND.as_str(), "h0"))
         .collect();
     println!(
         "\n=== stable_block_object_id over ONE key and {} components ===",
@@ -233,21 +243,25 @@ fn the_page_id_names_a_triple_so_one_object_key_holds_as_many_ids_as_pages() {
         components.len()
     );
     assert_eq!(
-        components.len(),
+        1,
         folded.len(),
-        "one key and {} distinct components produced {} distinct ids. If the component were NOT \
-         folded into the id this would be 1, and every component-blind reader could be served by \
-         the id instead of by the key",
+        "one key and {} distinct components produced {} distinct ids, not 1. The component has \
+         left the identity, so every element of this key is the SAME object and a \
+         component-blind reader can be served by the id rather than only by the key",
         components.len(),
         folded.len()
     );
-    let component_less = stable_block_object_id(1, FIXTURE_KIND.as_str(), "h0", None);
+    // AND THE TERMS THAT REMAIN STILL SEPARATE, or the assertion above would also pass for a
+    // derivation that had stopped reading its inputs and returned a constant.
+    let only = *folded.iter().next().expect("exactly one id");
+    let other_key = stable_block_object_id(1, FIXTURE_KIND.as_str(), "h1");
+    let other_kind = stable_block_object_id(1, "string", "h0");
     assert!(
-        !folded.contains(&component_less),
-        "the id for (shard, kind, key, None) collides with one of the {} component ids, so the \
-         component is not reaching the hash and this whole module is measuring nothing",
-        folded.len()
+        only != other_key && only != other_kind,
+        "the id collapsed across the KEY or the KIND as well ({only} vs {other_key} vs \
+         {other_kind}), which is a broken derivation rather than a component-free one"
     );
+
 
     // --- 2. OVER A REAL STORE. ---
     let dir = tempfile::tempdir().expect("tempdir");
@@ -272,7 +286,14 @@ fn the_page_id_names_a_triple_so_one_object_key_holds_as_many_ids_as_pages() {
          store that did not reach the population cannot refute anything about it",
         by_key.len()
     );
+    // THE PRIZE, READ OFF THE SAME POPULATION: rows in `bucket.object_index` per key.
+    //
+    // `object_index` holds one entry per DISTINCT object id in the bucket, and #2007 measured it
+    // at 0.9983 rows per page. The count below is what it becomes: one row per key, whatever the
+    // key's element count.
     let mut keys_holding_many_ids = 0usize;
+    let mut pages_total = 0usize;
+    let mut ids_total = 0usize;
     for (object_key, ids) in &by_key {
         let distinct: BTreeSet<u64> = ids.iter().copied().collect();
         println!(
@@ -288,25 +309,44 @@ fn the_page_id_names_a_triple_so_one_object_key_holds_as_many_ids_as_pages() {
             ids.len()
         );
         assert_eq!(
-            ids.len(),
+            1,
             distinct.len(),
-            "{object_key}'s {} pages share {} ids. Every page of one object is supposed to carry \
-             its OWN id, because the component is folded in; if they shared one, the id would name \
-             the object and the key beside it would be redundant",
+            "{object_key}'s {} pages carry {} distinct ids, not 1. Every page of one object is an \
+             ELEMENT of it and they are supposed to share the object's id; if they do not, the \
+             component is still reaching the hash",
             ids.len(),
             distinct.len()
         );
+        pages_total += ids.len();
+        ids_total += distinct.len();
         if distinct.len() > 1 {
             keys_holding_many_ids += 1;
         }
     }
     assert_eq!(
-        by_key.len(),
-        keys_holding_many_ids,
-        "{keys_holding_many_ids} of {} container keys hold more than one id; all of them are \
+        0, keys_holding_many_ids,
+        "{keys_holding_many_ids} of {} container keys hold more than one id; none of them are \
          supposed to",
         by_key.len()
     );
+    println!(
+        "  TOTAL pages={pages_total} object-index rows={ids_total} ({:.4} rows per page, was \
+         1.0000 when the id named the page)",
+        ids_total as f64 / pages_total as f64
+    );
+    assert_eq!(
+        ids_total,
+        by_key.len(),
+        "{ids_total} object-index rows over {} keys: the saving this change exists for is exactly \
+         one row per key, so these two must be equal",
+        by_key.len()
+    );
+    assert!(
+        pages_total > ids_total,
+        "DENOMINATOR: {pages_total} pages and {ids_total} rows. A fixture whose keys held one page \
+         each would satisfy every assertion above while measuring nothing"
+    );
+
 
     // --- 3. THE CONTROL: a population where the mechanism predicts nothing. ---
     let control_dir = tempfile::tempdir().expect("tempdir");
@@ -339,9 +379,10 @@ fn the_page_id_names_a_triple_so_one_object_key_holds_as_many_ids_as_pages() {
     );
     assert_eq!(
         0, control_many,
-        "{control_many} routed keys hold more than one id. A routed key is one page, so the \
-         component folding has nothing to act on here and this count is supposed to be exactly \
-         zero -- if it is not, the grouping above is counting pages of different objects together"
+        "{control_many} routed keys hold more than one id. A routed key is one page and its \
+         component was already `None`, so removing the component from the id is the IDENTITY on \
+         this population -- this count was zero before the change and must still be zero, or \
+         the collapse measured above is not the component leaving the hash"
     );
 }
 
@@ -475,16 +516,12 @@ fn the_whole_object_read_path_asks_for_every_component_of_one_key() {
             .iter()
             .map(|(component, _)| component.as_ref().map(|name| name.to_string()))
             .collect();
+        // THE IDS THESE PAIRS RESOLVE TO. One per KEY now, not one per page -- which is why
+        // the loop below counts them rather than the components: the component set is what the
+        // reader actually answers with, and the id set is what an id-keyed reader would have.
         let ids: BTreeSet<u64> = pairs
             .iter()
-            .map(|(component, _)| {
-                stable_block_object_id(
-                    1,
-                    FIXTURE_KIND.as_str(),
-                    &object_key,
-                    component.as_deref(),
-                )
-            })
+            .map(|_| stable_block_object_id(1, FIXTURE_KIND.as_str(), &object_key))
             .collect();
         println!(
             "  {object_key:<6} pairs={:<4} distinct components={:<4} distinct ids={:<4}",
@@ -499,13 +536,34 @@ fn the_whole_object_read_path_asks_for_every_component_of_one_key() {
              wrote. An empty or short answer here reads exactly like a reader that resolved",
             pairs.len()
         );
+        // AND THE REASON THIS READER CANNOT BE HANDED AN ID, RESTATED THE OTHER WAY UP.
+        //
+        // It used to be that the id set was as LARGE as the answer and computable only from it.
+        // Since the component left the identity the id set has collapsed to ONE, and the point
+        // stands more strongly: a single number cannot name which of {MEMBERS_PER_KEY} elements
+        // is wanted, so the reader still has to be given the key and answer with components.
         assert_eq!(
-            pairs.len(),
+            1,
             ids.len(),
-            "{object_key}'s {} pages resolve to {} distinct ids. They are supposed to be one id per \
-             page -- the whole reason this reader cannot be handed an id instead of the key is that \
-             the id set is as large as the answer and is computable only FROM the answer",
+            "{object_key}'s {} pages resolve to {} distinct ids, not 1. Every page of one key is \
+             an element of one object now",
             pairs.len(),
+            ids.len()
+        );
+        assert_eq!(
+            MEMBERS_PER_KEY,
+            components.len(),
+            "{object_key} answered {} distinct components for {} pages. The COMPONENT is what \
+             separates the elements -- if these collapsed too, the reader would have no way to \
+             tell one element of the answer from another",
+            components.len(),
+            pairs.len()
+        );
+        assert!(
+            components.len() > ids.len(),
+            "{object_key}: {} components against {} ids. The whole reason this reader takes the \
+             KEY and not an id is that the id is coarser than the answer",
+            components.len(),
             ids.len()
         );
         answered += 1;

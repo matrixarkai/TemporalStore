@@ -496,21 +496,19 @@ fn item_object_key_to_write<'a>(
 }
 
 fn item_object_id_to_write(item: &WalOutcomeItem, shard_id: crate::types::ShardId) -> Option<u64> {
-    let numeric = numeric_component(&item.kind, item.component.as_deref());
-    // Both as the reader will see them: a coded kind comes back through the code table, and a
-    // numeric component comes back through the numbers.
+    // AS THE READER WILL SEE IT: a coded kind comes back through the code table, so the id is
+    // derived from the round-tripped spelling rather than from this item's own.
+    //
+    // THE COMPONENT USED TO BE RECONSTRUCTED HERE TOO, and it no longer is, because the id no
+    // longer takes one. That reconstruction existed only to feed this hash: a numeric component
+    // travels as a number and returns as text, so the writer had to rebuild the exact string the
+    // reader would rebuild or the two would derive different ids for the same page and this
+    // omission would stop being safe. With the component out of the identity the whole round-trip
+    // concern is gone -- the kind is the only term left that changes spelling on the wire.
     let kind = kind_code(&item.kind)
         .and_then(kind_from_code)
         .unwrap_or(item.kind.as_str());
-    let component =
-        numeric_component_text(numeric.map(|(key, _)| key), numeric.and_then(|(_, id)| id))
-            .or_else(|| item.component.clone());
-    let derived = crate::engine::hashing::stable_block_object_id(
-        shard_id,
-        kind,
-        &item.object_key,
-        component.as_deref(),
-    );
+    let derived = crate::engine::hashing::stable_block_object_id(shard_id, kind, &item.object_key);
     (item.object_id != derived).then_some(item.object_id)
 }
 
@@ -761,7 +759,6 @@ pub(crate) fn item_from_proto(
             shard_id,
             &kind,
             &object_key,
-            component.as_deref(),
         )
     });
     WalOutcomeItem {
@@ -1189,7 +1186,6 @@ mod command_key_tests {
                 7,
                 "string",
                 key,
-                component,
             ),
             routing_bucket: 11,
             address: None,
@@ -2172,7 +2168,6 @@ mod tests {
             record.shard_id,
             "page",
             "tenant/1/object/9",
-            None,
         );
         record.outcomes = vec![outcome_with_object_id(derivable)];
         record.staged_blocks = vec![crate::wal::StagedBlock {

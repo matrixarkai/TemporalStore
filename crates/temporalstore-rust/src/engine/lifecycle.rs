@@ -1929,7 +1929,7 @@ impl TemporalEngine {
         };
         let mut moved = 0usize;
         for (key, address) in addresses {
-            let object_id = super::stable_block_object_id(shard_id, "string", &key, None);
+            let object_id = super::stable_block_object_id(shard_id, "string", &key);
             if !wanted(object_id) {
                 continue;
             }

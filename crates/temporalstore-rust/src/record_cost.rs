@@ -1643,8 +1643,8 @@ fn a_narrower_record_field_would_save_nothing_because_the_encoding_is_value_leng
     // uses the whole range by construction. Narrowing it to `u32` is not a tighter field, it is
     // a hash collision between two different objects -- and the index entry for one of them then
     // replays onto the other.
-    let a = crate::engine::hashing::stable_block_object_id(7, "string", "tenant/1/a", None);
-    let b = crate::engine::hashing::stable_block_object_id(7, "string", "tenant/1/b", None);
+    let a = crate::engine::hashing::stable_block_object_id(7, "string", "tenant/1/a");
+    let b = crate::engine::hashing::stable_block_object_id(7, "string", "tenant/1/b");
     assert_ne!(a, b, "two keys hashed to the same object id");
     assert!(
         a > u64::from(u32::MAX) || b > u64::from(u32::MAX),

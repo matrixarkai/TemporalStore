@@ -115,7 +115,7 @@ fn stage_timestamped_outcomes(
             kind: kind.to_string(),
             object_key: key.to_string(),
             component: Some(component.clone()),
-            object_id: stable_block_object_id(shard_id, kind, key, Some(&component)),
+            object_id: stable_block_object_id(shard_id, kind, key),
             routing_bucket,
             address: Some(address.clone()),
             value: None,
@@ -142,7 +142,7 @@ fn stage_timestamped_removal(
         kind: kind.to_string(),
         object_key: key.to_string(),
         component: Some(component.clone()),
-        object_id: stable_block_object_id(shard_id, kind, key, Some(&component)),
+        object_id: stable_block_object_id(shard_id, kind, key),
         routing_bucket,
         address: None,
         value: None,
@@ -273,7 +273,7 @@ fn append_timestamped_kv_blocks_inner(
     identity: Option<u64>,
     first_block_ordinal: u32,
 ) -> Result<Vec<(u64, BlockAddress)>, BlockStoreError> {
-    let object_id = stable_block_object_id(shard_id, kind, key, None);
+    let object_id = stable_block_object_id(shard_id, kind, key);
     let mut refs = Vec::new();
     let chunks = chunk_timestamped_kv_points(points);
     if !async_storage {
@@ -347,7 +347,7 @@ fn append_timestamped_kv_blocks_inner(
             shard_id,
             &packed,
             Some(object_id),
-            // `None`, matching `stable_block_object_id(shard_id, kind, key, None)` at the
+            // `None`, matching `stable_block_object_id(shard_id, kind, key)` at the
             // top of this function: a packed series page is not an ELEMENT of anything.
             None,
             Some(routing_bucket),

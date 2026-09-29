@@ -29,7 +29,7 @@
 //!
 //! AND THE CONTAINER STORE IS NOT A DIFFERENT ROUTING CALL, A DIFFERENT RANGE OR A DIFFERENT KEY
 //! SHAPE. It is the same call on the same range. Routing takes the OBJECT KEY and never sees the
-//! component; the page HANDLE is `stable_block_object_id(shard, kind, key, component)` and does.
+//! component; the page HANDLE is `state::block_index_handle`, which hashes the component, and does.
 //! So a hash's hundred fields are a hundred distinct handles under one object key, and one object
 //! key is one bucket at any range.
 //! `routing_never_sees_the_component_which_is_why_a_containers_pages_share_one_bucket` asserts
@@ -479,12 +479,16 @@ fn the_pages_a_bucket_holds_are_decided_by_the_routing_range() {
 /// things:
 ///
 ///   * `block_routing_bucket(object_key, start, end)` takes the OBJECT KEY and nothing else;
-///   * `stable_block_object_id(shard, kind, key, component)` -- the page's handle, and the key of
-///     `BlockIndexMap` -- takes the COMPONENT as well.
+///   * `state::block_index_handle(page)` -- the page's handle, and the key of `BlockIndexMap` --
+///     hashes `page.component` as a term of its own, which is what keeps a container's fields
+///     from overwriting each other in one entry.
 ///
-/// So a hash's hundred fields are a hundred distinct handles under one object key, and one object
-/// key is one bucket at ANY range. Narrowing the range cannot split a container; widening it
-/// cannot spread one.
+/// `stable_block_object_id(shard, kind, key)` is a THIRD thing and takes neither: since the
+/// component left it, a hash's hundred fields are ONE object id, a hundred distinct page handles,
+/// and one bucket at ANY range. Narrowing the range cannot split a container; widening it cannot
+/// spread one. The seeded arm below holds the handle count -- `total(&handles)` over
+/// `bucket_handle_sets` is asserted at `CONTAINERS * MEMBERS` -- so the collapse asserted in the
+/// synthetic arm is a collapse of the IDENTITY and provably not of the pages.
 ///
 /// Asserted three ways: against the functions directly, against a seeded container store, and
 /// with the routed store as the partner that says the SAME call gives the other answer.
@@ -497,23 +501,24 @@ fn routing_never_sees_the_component_which_is_why_a_containers_pages_share_one_bu
     for end_routing_bucket in [WIDE_END, NARROW_END] {
         let key = "bag-000000";
         let home = block_routing_bucket(key, 0, end_routing_bucket);
-        let mut handles: BTreeSet<u64> = BTreeSet::new();
-        for f in 0..100 {
-            // The routing call takes the key. There is no component argument to give it.
+        let mut ids: BTreeSet<u64> = BTreeSet::new();
+        for _f in 0..100 {
+            // The routing call takes the key. There is no component argument to give it,
+            // and since this change there is none to give the identity call either.
             assert_eq!(
                 block_routing_bucket(key, 0, end_routing_bucket),
                 home,
                 "the routing call moved between two invocations on the same key and range"
             );
-            handles.insert(stable_block_object_id(1, "hash", key, Some(&format!("f{f}"))));
+            ids.insert(stable_block_object_id(1, "hash", key));
         }
         assert_eq!(
-            handles.len(),
-            100,
-            "a hundred components gave {} distinct handles on 0..{end_routing_bucket}; if the \
-             handle did not take the component, a container's fields would overwrite each other \
-             in one `BlockIndexMap` entry and this whole population would not exist",
-            handles.len()
+            ids.len(),
+            1,
+            "a hundred components gave {} distinct object ids on 0..{end_routing_bucket}, not 1. \
+             The id names the OBJECT now, so every field of one hash is the same object and this \
+             set is supposed to hold exactly one number",
+            ids.len()
         );
         // The partner: the same call on a DIFFERENT key gives a different bucket, so `home` above
         // is not a constant the function returns regardless of input.
@@ -708,9 +713,9 @@ fn the_narrow_range_holds_the_same_pages_the_wide_one_does_bucket_for_bucket() {
         key_sets.insert(end_routing_bucket, contents);
     }
 
-    // 3. THE SAME PAGES, REGROUPED. The handle is `stable_block_object_id(shard, kind, key,
-    // component)` and carries no bucket, so an identical handle set is what says the narrow store
-    // holds the same pages and not merely the same number of them.
+    // 3. THE SAME PAGES, REGROUPED. The handle is `state::block_index_handle(page)`, which
+    // hashes the page's own fields and carries no bucket, so an identical handle set is what
+    // says the narrow store holds the same pages and not merely the same number of them.
     let wide = handle_sets.get(&WIDE_END).expect("wide handles");
     let narrow = handle_sets.get(&NARROW_END).expect("narrow handles");
     assert_eq!(

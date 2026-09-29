@@ -19033,7 +19033,7 @@ fn a_write_into_a_released_bucket_loads_it_back_first() {
 /// Derived the same way `Command::StringSet` derived it, so the set membership this asks about is
 /// the one the index actually holds rather than one the test invented.
 fn released_object_id(index: usize) -> u64 {
-    stable_block_object_id(1, "string", &format!("released-{index:06}"), None)
+    stable_block_object_id(1, "string", &format!("released-{index:06}"))
 }
 
 /// Every object id any bucket node still claims, across the whole shard.

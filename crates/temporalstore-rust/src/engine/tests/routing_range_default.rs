@@ -1172,7 +1172,7 @@ fn the_dump_drain_and_the_release_unit_coarsen_by_the_pages_a_bucket_holds() {
 /// it maps more object keys onto one bucket. That explanation makes a falsifiable prediction in
 /// the other direction -- a store whose pages all share ONE OBJECT KEY cannot be regrouped by any
 /// range, because `block_routing_bucket` takes the object key and never the component while the
-/// page handle `stable_block_object_id(shard, kind, key, component)` takes both. One key is one
+/// page handle `stable_block_object_id(shard, kind, key)` takes both. One key is one
 /// bucket at every range.
 ///
 /// So this seeds a single container key with many component pages and sweeps the same five ranges

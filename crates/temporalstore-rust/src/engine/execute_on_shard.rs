@@ -29,7 +29,7 @@ fn stage_component_outcome(
         kind: kind.to_string(),
         object_key: object_key.to_string(),
         component: component.clone(),
-        object_id: stable_block_object_id(shard_id, kind, object_key, component.as_deref()),
+        object_id: stable_block_object_id(shard_id, kind, object_key),
         routing_bucket,
         address,
         value,
@@ -53,7 +53,7 @@ fn stage_meta_outcome(
         kind: kind.to_string(),
         object_key: object_key.to_string(),
         component: None,
-        object_id: stable_block_object_id(shard_id, kind, object_key, None),
+        object_id: stable_block_object_id(shard_id, kind, object_key),
         routing_bucket: block_routing_bucket(object_key, start_routing_bucket, end_routing_bucket),
         address: None,
         value,
@@ -120,7 +120,7 @@ fn write_context_node(
     end_routing_bucket: u32,
     async_storage: bool,
 ) -> bool {
-    let object_id = stable_block_object_id(shard_id, "hash", object_key, Some(CONTEXT_NODE_FIELD));
+    let object_id = stable_block_object_id(shard_id, "hash", object_key);
     let routing_bucket = block_routing_bucket(object_key, start_routing_bucket, end_routing_bucket);
     let mut wrote = false;
     if let Ok(address) = append_value(
@@ -359,7 +359,7 @@ pub(crate) fn execute_on_shard(
         }
         Command::StringSet { key, value } => {
             remove_if_expired(shard, &key);
-            let object_id = stable_block_object_id(shard_id, "string", &key, None);
+            let object_id = stable_block_object_id(shard_id, "string", &key);
             let routing_bucket =
                 block_routing_bucket(&key, start_routing_bucket, end_routing_bucket);
             if let Ok(address) = append_value(
@@ -390,7 +390,7 @@ pub(crate) fn execute_on_shard(
         }
         Command::StringSetEx { key, value, ttl_ms } => {
             remove_if_expired(shard, &key);
-            let object_id = stable_block_object_id(shard_id, "string", &key, None);
+            let object_id = stable_block_object_id(shard_id, "string", &key);
             let routing_bucket =
                 block_routing_bucket(&key, start_routing_bucket, end_routing_bucket);
             if let Ok(address) = append_value(
@@ -466,7 +466,7 @@ pub(crate) fn execute_on_shard(
                 StringSetCondition::IfNotExists => !exists,
             };
             if should_set {
-                let object_id = stable_block_object_id(shard_id, "string", &key, None);
+                let object_id = stable_block_object_id(shard_id, "string", &key);
                 let routing_bucket =
                     block_routing_bucket(&key, start_routing_bucket, end_routing_bucket);
                 if let Ok(address) = append_value(
@@ -593,7 +593,7 @@ pub(crate) fn execute_on_shard(
         }
         Command::HashSet { key, field, value } => {
             remove_if_expired(shard, &key);
-            let object_id = stable_block_object_id(shard_id, "hash", &key, Some(&field));
+            let object_id = stable_block_object_id(shard_id, "hash", &key);
             let routing_bucket =
                 block_routing_bucket(&key, start_routing_bucket, end_routing_bucket);
             // WHICH page of this object this element is. Computed BEFORE the append, because
@@ -704,7 +704,7 @@ pub(crate) fn execute_on_shard(
                 block_routing_bucket(&key, start_routing_bucket, end_routing_bucket);
             let mut applied = Vec::with_capacity(entries.len());
             for (field, value) in entries {
-                let object_id = stable_block_object_id(shard_id, "hash", &key, Some(&field));
+                let object_id = stable_block_object_id(shard_id, "hash", &key);
                 // WHICH page of this object this element is. Computed BEFORE the append, because
                 // the append stamps the ordinal into the record header AND onto the address it
                 // returns from the same value -- assigning it afterwards would leave the two
@@ -787,7 +787,7 @@ pub(crate) fn execute_on_shard(
                 block_store,
                 shard_id,
                 value.to_string().as_bytes(),
-                Some(stable_block_object_id(shard_id, "hash", &key, Some(&field))),
+                Some(stable_block_object_id(shard_id, "hash", &key)),
                 // The element this page holds -- the SAME expression that derived the ordinal
                 // above and the object id beside it. All three name one page.
                 Some(field.as_str()),
@@ -884,7 +884,7 @@ pub(crate) fn execute_on_shard(
         Command::SetAdd { key, member } => {
             remove_if_expired(shard, &key);
             let member_component = hex::encode(&member);
-            let object_id = stable_block_object_id(shard_id, "set", &key, Some(&member_component));
+            let object_id = stable_block_object_id(shard_id, "set", &key);
             let routing_bucket =
                 block_routing_bucket(&key, start_routing_bucket, end_routing_bucket);
             // WHICH page of this object this element is. Computed BEFORE the append because the
@@ -949,7 +949,7 @@ pub(crate) fn execute_on_shard(
                 mark_bucket_index_block_deleted(shard, shard_id, "zset", &key, Some(&old_component));
             }
             let component = zset_component(biased, &member);
-            let object_id = stable_block_object_id(shard_id, "zset", &key, Some(&component));
+            let object_id = stable_block_object_id(shard_id, "zset", &key);
             let routing_bucket =
                 block_routing_bucket(&key, start_routing_bucket, end_routing_bucket);
             // WHICH page of this object this element is. Computed BEFORE the append, because
@@ -1281,7 +1281,7 @@ pub(crate) fn execute_on_shard(
                 mark_bucket_index_block_deleted(shard, shard_id, "zset", &key, Some(&old_component));
             }
             let component = zset_component(biased, &member);
-            let object_id = stable_block_object_id(shard_id, "zset", &key, Some(&component));
+            let object_id = stable_block_object_id(shard_id, "zset", &key);
             let routing_bucket =
                 block_routing_bucket(&key, start_routing_bucket, end_routing_bucket);
             // WHICH page of this object this element is. Computed BEFORE the append, because
@@ -1409,7 +1409,7 @@ pub(crate) fn execute_on_shard(
             // Two's-complement bias makes the hex component sort lexically in list order,
             // which is what lets recovery and range reads walk the bucket index directly.
             let component = format!("{:016x}", (seq as u64).wrapping_sub(i64::MIN as u64));
-            let object_id = stable_block_object_id(shard_id, "list", &key, Some(&component));
+            let object_id = stable_block_object_id(shard_id, "list", &key);
             let routing_bucket =
                 block_routing_bucket(&key, start_routing_bucket, end_routing_bucket);
             // WHICH page of this object this element is. Computed BEFORE the append, because
@@ -3704,7 +3704,7 @@ pub(crate) fn execute_on_shard(
             mutated |= drop_if_expired(cache, shard_id, shard, &object_key);
             mutated |= drop_if_expired(cache, shard_id, shard, &collection_key);
             let collection_key_for_response = collection_key.clone();
-            let object_id = stable_block_object_id(shard_id, "context_entity", &object_key, None);
+            let object_id = stable_block_object_id(shard_id, "context_entity", &object_key);
             let routing_bucket =
                 block_routing_bucket(&object_key, start_routing_bucket, end_routing_bucket);
             let bytes = context_bytes(&entity);

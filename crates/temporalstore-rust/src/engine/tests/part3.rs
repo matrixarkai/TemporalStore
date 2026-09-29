@@ -2069,7 +2069,13 @@ fn bucket_block_ownership_is_first_class_and_survives_reload() {
     assert_eq!(physical_before_reload.missing_routing_bucket_count, 0);
     assert!(physical_before_reload.bucket_nodes.iter().any(|bucket| {
         bucket.block_ref_count == 2
-            && bucket.object_count == 2
+            // ONE OBJECT, TWO PAGES. This pinned `object_count == 2` -- two hash fields of one
+            // key were two OBJECTS, because the id folded the component in. They are two
+            // ELEMENTS of one object now, so `object_index` holds one row and the pair
+            // (2 pages, 1 object) is what `classify_bucket_layout` calls `MultiBlockObject`.
+            // The page count beside it is left at 2 deliberately: it is what says the
+            // collapse is of the IDENTITY and not of the pages.
+            && bucket.object_count == 1
             && bucket.dirty_generation >= 2
             && bucket.block_indexes.iter().all(|page| {
                 page.model_id == "hash" && page.dirty && !page.deleted && !page.log_backed
@@ -2081,7 +2087,10 @@ fn bucket_block_ownership_is_first_class_and_survives_reload() {
             .iter()
             .map(|summary| summary.object_count)
             .sum::<u64>(),
-        2
+        // ONE, not two: `object_count` is `bucket.object_index.len()` and the two hash
+        // fields of this key are two ELEMENTS of one object since the component left
+        // the identity.
+        1
     );
     let ownership = engine.bucket_object_block_ownership_report(1);
     assert!(ownership.first_class_index_present);
@@ -2110,9 +2119,10 @@ fn bucket_block_ownership_is_first_class_and_survives_reload() {
     assert_eq!(physical_after_reload.block_index_count, 2);
     assert_eq!(physical_after_reload.dirty_bucket_count, 0);
     assert!(physical_after_reload
+    // AND THE COLLAPSED IDENTITY SURVIVES THE RELOAD: still two pages, still one object.
         .bucket_nodes
         .iter()
-        .any(|bucket| bucket.block_ref_count == 2 && bucket.object_count == 2));
+        .any(|bucket| bucket.block_ref_count == 2 && bucket.object_count == 1));
     let reloaded_ownership = engine.bucket_object_block_ownership_report(1);
     assert!(reloaded_ownership.first_class_index_present);
     assert!(!reloaded_ownership.derived_from_model_maps);

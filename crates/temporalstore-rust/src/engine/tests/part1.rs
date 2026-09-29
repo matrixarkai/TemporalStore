@@ -1577,7 +1577,7 @@ fn block_compaction_rewrites_live_addresses_and_allows_old_slab_gc() {
             .expect("hash address");
         assert_eq!(
             string_address.object_id(),
-            Some(stable_block_object_id(1, "string", "k", None))
+            Some(stable_block_object_id(1, "string", "k"))
         );
         // WHERE THE PAGE IS FILED, not what the address claims -- the address carries no bucket.
         // The bucket map's key is the container's answer, and it has to be the key's own bucket.
@@ -1596,7 +1596,7 @@ fn block_compaction_rewrites_live_addresses_and_allows_old_slab_gc() {
         );
         assert_eq!(
             hash_address.object_id(),
-            Some(stable_block_object_id(1, "hash", "h", Some("f")))
+            Some(stable_block_object_id(1, "hash", "h"))
         );
         assert_eq!(
             shard
@@ -2215,7 +2215,7 @@ fn recovery_reports_owner_mismatch_and_compaction_refuses_it() {
     assert_eq!(recovery.object_lifecycle.owner_mismatch_block_refs, 1);
     assert_eq!(
         recovery.owner_mismatch_block_refs[0].expected_object_id,
-        stable_block_object_id(1, "string", "owned", None)
+        stable_block_object_id(1, "string", "owned")
     );
     assert_eq!(recovery.boundary.owner_mismatch_block_refs.len(), 1);
     assert_eq!(
@@ -2760,7 +2760,7 @@ fn durable_writes_stamp_stable_object_ids_on_block_addresses() {
 
     assert_eq!(
         string_address.object_id(),
-        Some(stable_block_object_id(1, "string", "k", None))
+        Some(stable_block_object_id(1, "string", "k"))
     );
     // The FILING, on a shard loaded 10..20 -- see the note at the string arm above.
     assert_eq!(
@@ -2782,7 +2782,7 @@ fn durable_writes_stamp_stable_object_ids_on_block_addresses() {
     );
     assert_eq!(
         hash_address.object_id(),
-        Some(stable_block_object_id(1, "hash", "h", Some("f")))
+        Some(stable_block_object_id(1, "hash", "h"))
     );
     assert_eq!(
         shard

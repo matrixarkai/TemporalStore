@@ -3822,7 +3822,7 @@ fn feature_append_packs_many_timestamp_values_into_one_block() {
     assert_eq!(first_address, second_address);
     assert_eq!(
         first_address.object_id(),
-        Some(stable_block_object_id(1, "feature", "packed-feature", None))
+        Some(stable_block_object_id(1, "feature", "packed-feature"))
     );
     let packed_bytes = engine.block_store().read(&first_address).unwrap();
     let packed_points = decode_feature_block(&packed_bytes).expect("packed feature page");
@@ -4046,7 +4046,7 @@ fn feature_append_chunks_and_persists_timestamped_kv_blocks() {
     for address in &addresses {
         assert_eq!(
             address.object_id(),
-            Some(stable_block_object_id(1, "feature", "chunked-feature", None))
+            Some(stable_block_object_id(1, "feature", "chunked-feature"))
         );
         let bytes = engine.block_store().read(address).unwrap();
         let chunk = decode_feature_block(&bytes).expect("persisted packed page chunk");
@@ -4282,7 +4282,7 @@ fn feature_recovery_reports_duplicate_timestamps_inside_packed_block() {
         .block_store()
         .append_with_block_metadata(
             &duplicate_block,
-            Some(stable_block_object_id(1, "feature", "layout-feature", None)),
+            Some(stable_block_object_id(1, "feature", "layout-feature")),
             Some(block_routing_bucket("layout-feature", 0, u32::MAX)),
         )
         .expect("duplicate packed page append");
@@ -4333,7 +4333,7 @@ fn feature_recovery_reports_corrupt_packed_timestamped_block() {
         .block_store()
         .append_with_block_metadata(
             &corrupt_block,
-            Some(stable_block_object_id(1, "feature", "corrupt-feature", None)),
+            Some(stable_block_object_id(1, "feature", "corrupt-feature")),
             Some(block_routing_bucket("corrupt-feature", 0, u32::MAX)),
         )
         .expect("corrupt packed page append");
@@ -4396,7 +4396,6 @@ fn feature_recovery_reports_unsupported_packed_timestamped_block_version() {
                 1,
                 "feature",
                 "versioned-feature",
-                None,
             )),
             Some(block_routing_bucket("versioned-feature", 0, u32::MAX)),
         )

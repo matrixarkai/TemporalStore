@@ -30,7 +30,7 @@ pub(super) fn read_sequence_row(
     routing_bucket: Option<u32>,
 ) -> Option<SequenceFeatureRow> {
     // A packed series page is not an ELEMENT of anything: `append_timestamped_kv_blocks_inner`
-    // derives its object id with `stable_block_object_id(shard_id, kind, key, None)`.
+    // derives its object id with `stable_block_object_id(shard_id, kind, key)`.
     let bytes = read_block_bytes(cache, block_store, shard_id, address, None, routing_bucket)?;
     match decode_feature_block_strict(&bytes) {
         PackedFeatureBlockDecode::Packed(points) => points

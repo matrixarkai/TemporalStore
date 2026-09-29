@@ -107,17 +107,28 @@ pub(super) fn stable_object_hash_update_u64_decimal(hash: &mut u64, mut value: u
     stable_object_hash_update(hash, &buf[pos..]);
 }
 
-pub(crate) fn stable_block_object_id(shard_id: ShardId, kind: &str, key: &str, component: Option<&str>) -> u64 {
+/// THE IDENTITY OF AN OBJECT, WHICH IS ITS KIND AND ITS KEY AND NOTHING ELSE.
+///
+/// The component USED to be folded in here, and the consequence was that an object held exactly
+/// one page: a hash of twenty-five fields was twenty-five objects that happened to share a key.
+/// #1986 recorded the result as "the object id names a page's triple, not an object" -- a
+/// description of this defect, not a property to preserve.
+///
+/// THE PARAMETER IS REMOVED RATHER THAN IGNORED. Keeping `component: Option<&str>` and dropping
+/// its value on the floor would leave all twenty-six call sites compiling while the meaning
+/// changed underneath them, and the fifteen that pass a real component are exactly the sites
+/// whose identity MOVES. Removing it makes the compiler name every one.
+///
+/// The element has not gone anywhere: `BlockIndex::component` is its own serialized field, the
+/// registry key is `(u64, Option<Arc<str>>)` since #2013, and `StagedBlock` carries it. What
+/// changes is only what the ID means -- the object, not the page.
+pub(crate) fn stable_block_object_id(shard_id: ShardId, kind: &str, key: &str) -> u64 {
     let mut hash = FNV1A64_OFFSET_BASIS;
     stable_object_hash_update_u64_decimal(&mut hash, shard_id as u64);
     stable_object_hash_update(&mut hash, b":");
     stable_object_hash_update(&mut hash, kind.as_bytes());
     stable_object_hash_update(&mut hash, b":");
     stable_object_hash_update(&mut hash, key.as_bytes());
-    if let Some(component) = component {
-        stable_object_hash_update(&mut hash, b":");
-        stable_object_hash_update(&mut hash, component.as_bytes());
-    }
     hash
 }
 

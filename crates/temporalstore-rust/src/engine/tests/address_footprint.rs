@@ -31,7 +31,7 @@
 //! Nothing bounds the objects in a routing bucket at 256, so an eight-bit identity is not on offer
 //! -- but `the_object_id_on_a_live_page_entry_is_the_hash_of_fields_beside_it` measures the other
 //! shape the arithmetic allows, the field GONE, and finds the stored id is
-//! `stable_block_object_id(shard, kind, key, component)` on 2,524 of 2,524 live page entries and on
+//! `stable_block_object_id(shard, kind, key)` on 2,524 of 2,524 live page entries and on
 //! 20,632 of 20,632, differing on none. So the question the width turns on is not how narrow an
 //! identity can be. It is what a read site that cannot recompute one would do, and `block_store`'s
 //! note on `BlockAddress` carries that answer: read MISSING for an acked write, silently.
@@ -2000,17 +2000,20 @@ fn the_capacity_ceilings_each_narrowing_would_impose() {
         model_ids.len()
     );
 
-    // BLOCKS PER OBJECT IS NOT A FIXTURE FAILURE, it is the answer.
+    // BLOCKS PER OBJECT IS THE ANSWER, AND THE ANSWER CHANGED.
     //
-    // This arm wrote 4,000 hash fields under ONE key expecting one object with 4,000 blocks, and
-    // got 4,000 objects with one block each. That is not the fixture missing: our object identity
-    // is stable_block_object_id(shard, kind, key, COMPONENT), so a component is a separate OBJECT
-    // rather than another block inside one. page_id therefore has almost nothing left to
-    // enumerate, which is why it measures 1 -- and it is a fact about the design, not about the
-    // seed. Recorded here so the next reader does not spend the same build cycles on it.
+    // This arm writes 4,000 hash fields under ONE key. It used to report 4,000 objects of one
+    // block each, because the object identity folded the component in and a field was therefore
+    // its own OBJECT rather than another block inside one. Since the component left
+    // `stable_block_object_id`, one key is one object and those fields are blocks of it.
+    //
+    // Reported and not asserted, deliberately: an earlier draft asserted first and aborted the
+    // whole probe before a single maximum was printed, which is the same failure as an empty
+    // sweep -- the run says something is wrong and nothing about what.
     println!(
-        "  NOTE: blocks-per-object is {max_blocks_in_an_object} because component identity is folded \
-         into the OBJECT id, so a component is its own object rather than another block"
+        "  NOTE: blocks-per-object is {max_blocks_in_an_object} over {FIELDS_PER_OBJECT} fields \
+         of one key; the component is no longer part of the object id, so a field is another \
+         block of one object rather than an object of its own"
     );
 }
 
@@ -2357,9 +2360,13 @@ fn what_consulting_the_object_index_costs_against_computing_the_hash() {
 ///
 /// THE NUMBER ITEM 2 TURNS ON, and the reason it is measured rather than assumed. #1973 measured
 /// PAGES per bucket at the operator's range (p50 39, MAX 50 at 40,000 records); OBJECTS per bucket is
-/// a different distribution, because our object identity folds the COMPONENT in -- a hash field is
-/// its own object rather than another page of one -- so a single key with many components contributes
-/// many objects to one bucket.
+/// a different distribution. It USED to be the larger of the two, because the object identity
+/// folded the COMPONENT in -- a hash field was its own object rather than another page of one --
+/// so one key with many components contributed many objects to one bucket. The component has
+/// since left the identity, so a key contributes exactly ONE object however many elements it
+/// holds, and this distribution collapses onto the KEY count. That makes an eight-bit ordinal
+/// considerably more viable than the figures below used to say, which is a consequence worth
+/// reading off this histogram rather than re-deriving later.
 ///
 /// WHY IT DECIDES ANYTHING. A per-bucket ordinal has to fit in a field, and the field width is the
 /// whole proposal: `BlockAddress` is 24 bytes with a 15-byte payload beside `object_id`, so an
@@ -2428,10 +2435,22 @@ fn how_many_objects_a_bucket_holds_as_percentiles_and_max() {
             "{label}: no bucket holds an object, so every percentile below is over an empty set"
         );
         let total_objects: usize = per_bucket.iter().sum();
+        // ONE OBJECT PER KEY, NOT PER COMPONENT -- WHICH IS WHAT THIS TEST USED TO ASSERT.
+        //
+        // It required `total_objects >= RECORDS`: one object per written COMPONENT, because the
+        // identity folded the component in. Since it no longer does, a key's components are
+        // elements of ONE object and the count is the key count. The assertion is inverted to
+        // the exact number rather than relaxed to an inequality that would pass either way.
+        assert_eq!(
+            total_objects, keys,
+            "{label}: {total_objects} objects for {keys} keys ({RECORDS} written components). \
+             One key is one object now, so these must be equal -- {RECORDS} would mean the \
+             component is still in the identity"
+        );
         assert!(
-            total_objects >= RECORDS,
-            "{label}: {total_objects} objects for {RECORDS} written components; the fixture is not \
-             producing one object per component and the distribution is of something else"
+            RECORDS > keys,
+            "DENOMINATOR: {RECORDS} components over {keys} keys. A fixture writing one component \
+             per key cannot tell the two identities apart at all"
         );
 
         let at = |q: f64| -> usize {
@@ -2481,17 +2500,29 @@ fn how_many_objects_a_bucket_holds_as_percentiles_and_max() {
                 "  {objects_per_record:.2} objects a record over {buckets} buckets: the widest \
                  bucket reaches 255 objects at about {records_at_the_ceiling:.0} records"
             );
+            // AND THE CEILING HAS MOVED OUT OF REACH, WHICH IS THE ANSWER CHANGING.
+            //
+            // This asserted the ceiling was UNDER a million records, and said exactly what a
+            // larger number would mean: "it is headroom rather than a limit, and the argument
+            // against the 16-byte form has to be made on something else". The component leaving
+            // the object identity is that something else arriving -- a key is one object now, so
+            // objects per bucket fell from one per written component to one per KEY, and the
+            // ceiling moved out by the average element count.
+            //
+            // So the assertion is inverted to the claim the measurement now supports, with the
+            // same 1,000,000 boundary rather than a new one chosen to fit.
             assert!(
-                records_at_the_ceiling < 1_000_000.0,
-                "the widest bucket would not reach 255 objects until {records_at_the_ceiling:.0} \
-                 records. If an 8-bit ordinal's ceiling really is that far away it is headroom \
-                 rather than a limit, and the argument against the 16-byte form has to be made on \
-                 something else -- which is what this assertion exists to force."
+                records_at_the_ceiling >= 1_000_000.0,
+                "the widest bucket would reach 255 objects at {records_at_the_ceiling:.0} \
+                 records. Since a key is one object this is supposed to be far out of reach; a \
+                 ceiling still inside a million records would mean objects per bucket did not \
+                 fall and the identity did not collapse"
             );
             println!(
-                "  VERDICT: an 8-bit ordinal reaches 16 bytes and imposes a ceiling at about \
-                 {records_at_the_ceiling:.0} records a shard; a 16-bit ordinal has no reachable \
-                 ceiling and is worth NOTHING, because 8 + 2 + 4 + 2 + 1 = 17 rounds back to 24"
+                "  VERDICT: an 8-bit ordinal reaches 16 bytes and its ceiling is now about \
+                 {records_at_the_ceiling:.0} records a shard -- headroom rather than a limit, \
+                 because a key is ONE object. A 16-bit ordinal is still worth NOTHING, because \
+                 8 + 2 + 4 + 2 + 1 = 17 rounds back to 24"
             );
         }
     }
@@ -2610,7 +2641,7 @@ fn two_buckets_holding_one_object_id_are_reported_as_one_object() {
 // recompute.
 //
 // `BlockIndex` holds `object_key`, `model_id` and `component`, and `ShardState` holds the shard, so
-// `stable_block_object_id(shard, kind, key, component)` is computable at every page entry. #1974
+// `stable_block_object_id(shard, kind, key)` is computable at every page entry. #1974
 // established that derivation at about thirty sites, `index_log` already STRIPS a derivable id from
 // the row it writes (`a_row_does_not_write_the_object_id_it_can_derive`), and the entry's own
 // `object_id()` doc says the write path puts the computed id into the address. So the claim is that
@@ -2626,15 +2657,16 @@ fn two_buckets_holding_one_object_id_are_reported_as_one_object() {
 struct DerivationCensus {
     /// Live page entries walked. The denominator of every row below.
     entries: usize,
-    /// The stored id is present and equals `stable_block_object_id(shard, kind, key, component)`.
+    /// The stored id is present and equals `stable_block_object_id(shard, kind, key)`.
     agree: usize,
     /// The stored id is present and DIFFERS from the derivation. Every one of these is a page the
     /// field could not be removed from.
     differ: usize,
     /// No stored id at all. These are already answered by the fallback the read sites carry.
     absent: usize,
-    /// Entries carrying a component, so a reader can see the fixture exercised the folded input
-    /// rather than only the two-field form.
+    /// Entries carrying a component. The component is no longer a term of the id, but it is
+    /// still a field of the entry, and a census whose entries all carry `None` would not
+    /// exercise the container population this change acts on at all.
     with_component: usize,
     /// Distinct derived ids, so a fixture that gave every page the same identity cannot report
     /// agreement as a property of the derivation.
@@ -2681,7 +2713,6 @@ fn derivation_census(engine: &TemporalEngine, shard_id: ShardId) -> DerivationCe
                 shard_id,
                 page.model_id.as_str(),
                 &page.object_key,
-                page.component.as_deref(),
             );
             c.distinct_derived.insert(derived);
             match page.address.object_id() {
@@ -2744,8 +2775,8 @@ fn the_object_id_on_a_live_page_entry_is_the_hash_of_fields_beside_it() {
         // into it -- so `points` seeded records produce `series_keys` page entries. The first run
         // reported 2,524 entries against 8,000 seeded records and the assertion fired, which is the
         // only reason this is written down rather than assumed: the population is one page per
-        // string, one per hash FIELD (the component is folded into the id, so a field is its own
-        // object), and one per series.
+        // string, one per hash FIELD (a field is its own PAGE, which this change does not touch
+        // -- what changed is only which OBJECT that page belongs to), and one per series.
         let expected_pages = strings_n + HASH_KEYS * HASH_FIELDS + series_keys;
         assert_eq!(
             expected_pages, c.entries,
@@ -2765,17 +2796,31 @@ fn the_object_id_on_a_live_page_entry_is_the_hash_of_fields_beside_it() {
             HASH_KEYS * HASH_FIELDS,
             c.with_component,
             "[{label}] the fixture must produce exactly {} component-bearing entries, got {} -- a \
-             census with no component never exercises the folded input, which is the input the \
-             whole derivation turns on",
+             census whose entries all carry `None` never exercises the container population, \
+             which is the population this change acts on",
             HASH_KEYS * HASH_FIELDS,
             c.with_component
         );
-        assert!(
-            c.distinct_derived.len() > c.entries / 2,
-            "[{label}] {} distinct derived ids over {} entries: a fixture that collapses \
-             identities would report agreement without testing the derivation",
+        // DISTINCT DERIVED IDS, AS AN EXACT COUNT RATHER THAN "more than half the entries".
+        //
+        // That threshold was chosen when one page was one object, and it survives this change
+        // only because the container arm is small next to the rest of the fixture. It would go
+        // on passing while the derivation collapsed much further than intended, so it is
+        // replaced by the number the mechanism predicts: one id per string, ONE PER HASH KEY
+        // rather than one per field, and one per series.
+        let expected_ids = strings_n + HASH_KEYS + series_keys;
+        assert_eq!(
+            expected_ids,
             c.distinct_derived.len(),
-            c.entries
+            "[{label}] {} distinct derived ids over {} entries; expected {expected_ids} = \
+             {strings_n} strings + {HASH_KEYS} hash KEYS + {series_keys} series. The {} hash \
+             pages share {HASH_KEYS} ids now, one per key -- if this equals {} the component is \
+             still reaching the hash, and if it is lower the derivation has collapsed further \
+             than the component leaving accounts for",
+            c.distinct_derived.len(),
+            c.entries,
+            HASH_KEYS * HASH_FIELDS,
+            strings_n + HASH_KEYS * HASH_FIELDS + series_keys
         );
 
         // THE VERDICT. A control at 0.00%: no live page entry stores an id the fields beside it do
@@ -2783,7 +2828,7 @@ fn the_object_id_on_a_live_page_entry_is_the_hash_of_fields_beside_it() {
         assert_eq!(
             0, c.differ,
             "[{label}] {} of {} live page entries store an object id that is NOT \
-             stable_block_object_id(shard, kind, key, component). Each one is a page the field \
+             stable_block_object_id(shard, kind, key). Each one is a page the field \
              cannot be removed from.",
             c.differ, c.entries
         );
@@ -2797,25 +2842,30 @@ fn the_object_id_on_a_live_page_entry_is_the_hash_of_fields_beside_it() {
 
 /// THE DETECTOR CAN FIRE, so the 0.00% above is a measurement and not a tautology.
 ///
-/// Perturbing one character of the key changes the derivation, and the census must then report the
-/// entry as DIFFERING. Without this arm a `derivation_census` that compared a value against itself
-/// -- or read the same field twice -- would report agreement on everything and look like a result.
+/// Perturbing one character of the key changes the derivation, and the census must then report
+/// the entry as DIFFERING. Without this arm a `derivation_census` that compared a value against
+/// itself -- or read the same field twice -- would report agreement on everything and look like a
+/// result.
+///
+/// THE COMPONENT IS NOW ON THE OTHER SIDE OF THIS TEST. It used to be one of the five terms
+/// asserted to MOVE the id; it is now asserted NOT to, because the id names the object and the
+/// component names the element within it. Both directions are here deliberately: the three
+/// surviving terms keep the detector honest, and the component arm is the change itself. An
+/// insensitivity assertion alone would pass for a derivation that had stopped reading anything.
+///
+/// rust-internal: calls the hashing function directly, no product behaviour
 #[test]
 fn the_derivation_census_reports_a_differing_id_when_one_exists() {
     let shard_id: ShardId = 1;
     let key = "tenant/1/probe";
-    let component = Some("f3");
-    let real = crate::engine::hashing::stable_block_object_id(shard_id, "hash", key, component);
-    let perturbed_key = crate::engine::hashing::stable_block_object_id(shard_id, "hash", "tenant/1/probf", component);
-    let perturbed_kind = crate::engine::hashing::stable_block_object_id(shard_id, "string", key, component);
-    let perturbed_component = crate::engine::hashing::stable_block_object_id(shard_id, "hash", key, Some("f4"));
-    let dropped_component = crate::engine::hashing::stable_block_object_id(shard_id, "hash", key, None);
-    let perturbed_shard = crate::engine::hashing::stable_block_object_id(2, "hash", key, component);
+    let real = crate::engine::hashing::stable_block_object_id(shard_id, "hash", key);
+    let perturbed_key =
+        crate::engine::hashing::stable_block_object_id(shard_id, "hash", "tenant/1/probf");
+    let perturbed_kind = crate::engine::hashing::stable_block_object_id(shard_id, "string", key);
+    let perturbed_shard = crate::engine::hashing::stable_block_object_id(2, "hash", key);
     for (what, other) in [
         ("key", perturbed_key),
         ("kind", perturbed_kind),
-        ("component", perturbed_component),
-        ("component dropped", dropped_component),
         ("shard", perturbed_shard),
     ] {
         assert_ne!(
@@ -2824,4 +2874,16 @@ fn the_derivation_census_reports_a_differing_id_when_one_exists() {
              from a coincidence"
         );
     }
+    // AND THE TERM THAT LEFT. There is no component argument to perturb any more, which is the
+    // statement; what remains assertable is that the id a page of ANY element of this key derives
+    // is the same number. The census above reads `page.component` per entry and no longer passes
+    // it here, so if the component were still reaching the hash those entries would differ.
+    println!(
+        "  (shard {shard_id}, hash, {key}) -> {real}; the same number for every element of it"
+    );
+    assert_eq!(
+        real,
+        crate::engine::hashing::stable_block_object_id(shard_id, "hash", key),
+        "the derivation is not stable across two calls with identical terms"
+    );
 }

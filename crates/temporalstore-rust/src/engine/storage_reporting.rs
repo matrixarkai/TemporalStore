@@ -180,7 +180,6 @@ pub(super) fn bucket_dump_entries_by_key(
                     shard_id,
                     entry.kind.as_str(),
                     &entry.object_key,
-                    (!component.is_empty()).then_some(component.as_ref()),
                 )
             });
             (
@@ -780,7 +779,6 @@ pub(super) fn bucket_object_block_ownership_report_from_entries(
             shard_id,
             entry.kind.as_str(),
             &entry.object_key,
-            entry.component.as_deref(),
         );
         let Some(bucket) = shard.bucket_index.bucket_map.get(&routing_bucket) else {
             report.missing_owner_block_ref_count =

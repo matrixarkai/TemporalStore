@@ -66,7 +66,7 @@
 //! ## 2. THE ONE TOMBSTONE THIS STORE DOES KEEP, AND WHY IT IS STILL NOT A RESERVATION
 //!
 //! `BucketNode::deleted_object_index` is a real, persisted tombstone -- "THE TOMBSTONE SIDE OF A
-//! BUCKET". It holds `stable_block_object_id(shard, kind, key, component)`, so under an ordinal it
+//! BUCKET". It holds `stable_block_object_id(shard, kind, key)`, so under an ordinal it
 //! would be keyed BY THE ORDINAL, which looks exactly like the reservation wanted.
 //!
 //! **THE FIRST DRAFT OF THIS MODULE REFUTED IT ON THE WRONG GROUND AND THE TEST WENT RED.** The claim
@@ -655,8 +655,8 @@ fn the_element_ordinal_a_delete_frees_is_handed_straight_back_to_the_next_elemen
 ///
 /// # SO THE TOMBSTONE IS NOT REFUTED BY BEING CLEARED. IT IS REFUTED THREE OTHER WAYS
 ///
-///   1. **IT IS A MEMBERSHIP SET, NOT A MARK.** It holds `stable_block_object_id(shard, kind, key,
-///      component)` -- a HASH. It can answer "has ordinal N been used?" and it cannot answer "what is
+///   1. **IT IS A MEMBERSHIP SET, NOT A MARK.** It holds `stable_block_object_id(shard, kind,
+///      key)` -- a HASH. It can answer "has ordinal N been used?" and it cannot answer "what is
 ///      the highest ordinal used?", so an assignment built on it probes 0, 1, 2, ... one hash at a
 ///      time and cannot report a ceiling without 65,535 probes.
 ///   2. **BOTH WRITE PATHS CLEAR IT, AND THE WHOLE-OBJECT ONE CLEARS EVERY ELEMENT'S.** A restate
@@ -699,7 +699,6 @@ fn the_element_rewrite_clears_the_tombstone_so_a_live_page_reads_as_hot() {
         1,
         "zset",
         "eo-tombstone",
-        Some(component.as_str()),
     );
 
     write(

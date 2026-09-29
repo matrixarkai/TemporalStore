@@ -794,9 +794,13 @@ impl IndexItem {
 
     /// Drop the object id when it is the hash of what this row already says.
     ///
-    /// An object id is `stable_block_object_id` of the shard, the kind, the key and the
-    /// component -- and a row carries the last three, with the record carrying the shard. So the
-    /// nine bytes it takes are nine bytes restating a hash of fields sitting beside it.
+    /// An object id is `stable_block_object_id` of the shard, the kind and the key -- and a row
+    /// carries the last two, with the record carrying the shard. So the nine bytes it takes are
+    /// nine bytes restating a hash of fields sitting beside it.
+    ///
+    /// The component used to be a term of that hash and is not one now. It does not matter here:
+    /// the row still carries it as its own field, and what this strips is a REPEAT of the
+    /// derivation, which is recomputed from the same terms on the way back in.
     ///
     /// Stripped only when the derivation AGREES with what is stored. A row whose id came from
     /// somewhere else keeps it, so a disagreement costs bytes rather than correctness.
@@ -818,7 +822,6 @@ impl IndexItem {
             shard_id,
             &self.model_id,
             &self.object_key,
-            self.component.as_deref(),
         )
     }
 
@@ -4251,7 +4254,6 @@ mod tests {
             shard_id,
             &derivable.model_id,
             &derivable.object_key,
-            derivable.component.as_deref(),
         );
 
         let mut stripped = derivable.clone();

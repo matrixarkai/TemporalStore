@@ -416,7 +416,7 @@ pub struct BlockAddress {
 ///
 /// AND THE FIELD IS A CACHE OF A PURE FUNCTION OF FIELDS THE ENTRY ALREADY HOLDS, which is what
 /// decides it. `BlockIndex` carries `object_key`, `model_id` and `component` beside this address
-/// and `ShardState` carries the shard, so `stable_block_object_id(shard, kind, key, component)` is
+/// and `ShardState` carries the shard, so `stable_block_object_id(shard, kind, key)` is
 /// computable wherever a page entry is. Measured by
 /// `engine::tests::address_footprint::the_object_id_on_a_live_page_entry_is_the_hash_of_fields_beside_it`
 /// over every live page entry at two corpus sizes: the stored id equalled that derivation on 2,524

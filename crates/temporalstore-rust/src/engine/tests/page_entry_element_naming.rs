@@ -674,7 +674,7 @@ fn a_hash_page_naming_no_field_is_skipped_while_a_genuine_empty_field_name_is_ke
         model_id: "hash".to_string(),
         // THE WHOLE POINT: this item names no field.
         component: None,
-        object_id: stable_block_object_id(1, "hash", nameless_key, None),
+        object_id: stable_block_object_id(1, "hash", nameless_key),
         block_id: 0,
         address: Some(nameless_address.clone()),
         size: nameless_address.length(),
