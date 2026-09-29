@@ -4275,7 +4275,8 @@ fn reconcile_timestamped_series_membership(
     result
 }
 
-/// The derived view, with every element the DURABLE map holds and it does not.
+/// The derived view, with every element the DURABLE map holds and it does not AND WHOSE PAGE IS
+/// STILL THERE.
 ///
 /// One rule for the three kinds whose element identity is spelled into a component name. The derived
 /// view wins where both have an element -- it reflects the delta fold, which the persisted map does
@@ -4286,19 +4287,66 @@ fn reconcile_timestamped_series_membership(
 /// Per ELEMENT rather than per KEY. A per-key rule -- which is what the `control_state` arm uses, for
 /// a reason that holds there and not here -- would drop every element the fold added to a key the
 /// persisted map already had.
+///
+/// # AND THE PERSISTED MAP IS ONLY AS NEW AS THE SNAPSHOT IT CAME OUT OF
+///
+/// `set_index_serde` and its siblings persist these maps as part of the BASE INDEX, written at
+/// compaction or unload. The bucket index this function's derived view is built from is newer than
+/// that: `fold_index_log_deltas` has already replayed the delta suffix over it by the time the
+/// reconcile runs (`load_index_inner` folds at one statement and reconciles at the next), and
+/// `fold_delta_block_items` makes the delta authoritative for every key it covers -- "every existing
+/// live page entry for a covered key is removed first ... then the delta's live items are inserted".
+///
+/// So a member removed after the last base-index write is GONE from the page index and PRESENT in
+/// the persisted map, and this function used to hand it back. #2017 drove exactly that: resident map
+/// 2 members, live page index 1. It is the reason a set listing could not be served from
+/// `shard.sets`.
+///
+/// THE QUESTION ASKED IS #2005's, AND IT IS ASKED OF THE OTHER INPUT NOW. #2005 fixed a resurrection
+/// on this same function from the CARRY side -- `fold_carried_container_elements` applies the delta
+/// records' carried elements once, after the page index settles, keeping only those whose page is
+/// still at the carried address. That fix was complete for the carry and never looked at the
+/// persisted map, which is a different input reaching the same merge: one is built during the load,
+/// the other is read off disk and is simply older. Both answer `live_page_key` against the finished
+/// index now.
+///
+/// WHY THIS KEEPS #1989's ELEMENT AND DROPS #2017's, which is what makes it the right question
+/// rather than a narrowing of the function's job. #1989's case is a page whose component cannot be
+/// decoded: the derived view cannot NAME the element while its page sits in the index, so the page is
+/// live at the persisted address and the element is kept -- the merge still does the job it was added
+/// for. #2017's case is a page that is not in the index at all, so nothing is live at that address
+/// and the element is dropped. The rule holds for a key the delta covered and one it did not: an
+/// untouched key's pages are still exactly where the base index put them.
+///
+/// A PERSISTED KEY WITH NO SURVIVING ELEMENT NOW GETS NO ENTRY AT ALL. This used to run
+/// `derived.entry(key).or_default()` before looking at a single element, so a persisted key whose
+/// every page had gone -- and a persisted key holding an empty map -- installed an EMPTY inner map
+/// under a live key. `record_exists_exact` reads `contains_key` on these maps, so that was a key
+/// EXISTS answered 1 for and every listing answered empty for, arriving by reload rather than by
+/// `SetRemove`. The entry is created only where an element survives.
 fn fill_absent_elements<K, E, V>(
     mut derived: std::collections::HashMap<K, std::collections::BTreeMap<E, V>>,
     persisted: std::collections::HashMap<K, std::collections::BTreeMap<E, V>>,
+    live: &std::collections::HashSet<super::LivePageKey>,
+    resurrections_refused: &mut usize,
 ) -> std::collections::HashMap<K, std::collections::BTreeMap<E, V>>
 where
-    K: std::hash::Hash + Eq,
+    K: std::hash::Hash + Eq + Clone,
     E: Ord,
+    V: super::CarriedValue,
 {
     for (key, elements) in persisted {
-        let into = derived.entry(key).or_default();
         for (element, value) in elements {
+            if !live.contains(&super::live_page_key(value.carried_address())) {
+                *resurrections_refused += 1;
+                continue;
+            }
             // `or_insert` and not `insert`: the derived value wins where it exists.
-            into.entry(element).or_insert(value);
+            derived
+                .entry(key.clone())
+                .or_default()
+                .entry(element)
+                .or_insert(value);
         }
     }
     derived
@@ -4317,6 +4365,25 @@ pub(super) fn reconcile_secondary_views_from_bucket_index(
         .into_iter()
         .filter(|entry| !entry.deleted)
         .collect::<Vec<_>>();
+
+    // THE PAGES THE FINISHED INDEX STILL HOLDS, by address, for the three merges below. This is the
+    // question `fold_carried_container_elements` asks of the fold's carried elements, asked of the
+    // merge's other input -- the persisted map, which is the older of the two.
+    //
+    // BUILT FROM `entries`, AND THAT IS THE WHOLE CARE IN IT, not a convenience. The obvious source
+    // is a walk of `shard.bucket_index.bucket_map`, and it is WRONG: a RELEASED bucket's pages are
+    // absent from `bucket_map` ON PURPOSE while the elements are still live, and
+    // `collect_bucket_index_live_block_entries` supplements exactly those back in from the model
+    // maps -- "what this returns is what the bucket index WOULD say if nothing were released".
+    // Filtering against the raw `bucket_map` would therefore DROP every container element in a
+    // released bucket, on any of the five reconcile sites a release can be followed by. Taking the
+    // set from the same `entries` the derived view is built from means the filter and its subject
+    // read one population, so the filter can only ever remove what the derived view also lacks.
+    let live_pages_by_address: std::collections::HashSet<super::LivePageKey> = entries
+        .iter()
+        .map(|entry| super::live_page_key(&entry.address))
+        .collect();
+
     if entries.is_empty() {
         return;
     }
@@ -4335,9 +4402,9 @@ pub(super) fn reconcile_secondary_views_from_bucket_index(
 
     let mut saw_strings = false;
     let mut saw_hashes = false;
-    let mut saw_sets = false;
-    let mut saw_lists = false;
-    let mut saw_zsets = false;
+    // No `saw_sets` / `saw_lists` / `saw_zsets`: those three merges are unconditional now. See the
+    // note at the merges for why the flags were not a protection for these arms -- each was set
+    // before its own decode, so it only ever said "the index mentions this kind".
     let mut saw_features = false;
     let mut saw_control_state = false;
     let mut saw_context_events = false;
@@ -4405,10 +4472,16 @@ pub(super) fn reconcile_secondary_views_from_bucket_index(
                 // `saw_hashes` MOVED IN HERE WITH IT, and that is part of the fix rather than tidying.
                 // The flag gates `shard.hashes = hashes`, a wholesale assignment; set outside the
                 // match, an index whose hash entries ALL named nothing would derive an empty map and
-                // assign it over a live one. The other three arms are safe from that without the
-                // flag because their merge returns the persisted map when the derived one is empty;
-                // this arm has no merge, so the flag has to do that work. "Saw a hash" now means the
-                // index said something about a hash this code could use.
+                // assign it over a live one. The other three arms are safe from that without the flag
+                // because their merge KEEPS a persisted element the derived view could not produce,
+                // and an unreadable name is exactly that case: the page is still in the index, so the
+                // element is still live at its persisted address and the merge keeps it. (That used to
+                // read "returns the persisted map when the derived one is empty", which stopped being
+                // true when the merge began filtering the persisted map on whether each element's page
+                // is still there -- a whole-map passthrough is not what it does, and the reason those
+                // arms are safe is the per-element one above.) This arm has no merge at all, so the
+                // flag has to do that work. "Saw a hash" now means the index said something about a
+                // hash this code could use.
                 match entry.component {
                     Some(field) => {
                         saw_hashes = true;
@@ -4421,7 +4494,6 @@ pub(super) fn reconcile_secondary_views_from_bucket_index(
                 }
             }
             "set" => {
-                saw_sets = true;
                 // SKIPPED, NOT DEFAULTED. This was
                 // `.and_then(|c| hex::decode(c).ok()).unwrap_or_default()`, which turns a name this
                 // code cannot read into the EMPTY member -- a real member value, which then collides
@@ -4438,7 +4510,6 @@ pub(super) fn reconcile_secondary_views_from_bucket_index(
                 }
             }
             "zset" => {
-                saw_zsets = true;
                 let parsed = entry.component.as_deref().and_then(|component| {
                     // SIXTEEN CHARACTERS IS A WHOLE COMPONENT, NOT A TRUNCATED ONE.
                     //
@@ -4497,7 +4568,6 @@ pub(super) fn reconcile_secondary_views_from_bucket_index(
                 }
             }
             "list" => {
-                saw_lists = true;
                 // SKIPPED, NOT DEFAULTED. This ended `.unwrap_or_default()`, so a name this code
                 // cannot read became SEQUENCE ZERO -- a real position in the list, whose entry it
                 // then overwrote.
@@ -4707,17 +4777,58 @@ pub(super) fn reconcile_secondary_views_from_bucket_index(
     // So the rule is per ELEMENT: the derived view decides which elements exist and which page backs
     // each, because it reflects the fold; the durable map supplies what the name merely re-spells,
     // and keeps any element the derived view could not produce.
-    if saw_lists {
+    let mut resurrections_refused = 0usize;
+    // UNCONDITIONAL, WHERE THESE THREE USED TO BE GATED ON `saw_lists` / `saw_zsets` / `saw_sets`,
+    // and that is part of the change rather than tidying.
+    //
+    // Each flag is set at the TOP of its arm, BEFORE the component decode -- unlike `saw_hashes`,
+    // which #2016 moved INSIDE its match for a reason that applies to an arm with no durable map
+    // behind it. So `saw_sets == false` does not mean "no set entry decoded"; it means the settled
+    // page index holds NO SET PAGE AT ALL. Skipping the merge there left the deserialized persisted
+    // map standing WHOLE, unfiltered: a store whose every set page was removed after its last base
+    // index write reloaded with a full resident map and an empty page index, which is the
+    // over-complete state again by the one route the merge never saw.
+    //
+    // Running the merge with an empty derived view is safe here for the reason the filter is safe at
+    // all: it drops only a persisted element whose address matches no live page in the finished
+    // index. That trusts the index exactly as far as this function already trusts it two arms up,
+    // where `shard.strings = strings` and `shard.hashes = hashes` assign the derived view WHOLESALE.
+    {
         let persisted = std::mem::take(&mut shard.lists);
-        shard.lists = fill_absent_elements(lists, persisted);
+        shard.lists = fill_absent_elements(
+            lists,
+            persisted,
+            &live_pages_by_address,
+            &mut resurrections_refused,
+        );
     }
-    if saw_zsets {
+    {
         let persisted = std::mem::take(&mut shard.zsets);
-        shard.zsets = fill_absent_elements(zsets, persisted);
+        shard.zsets = fill_absent_elements(
+            zsets,
+            persisted,
+            &live_pages_by_address,
+            &mut resurrections_refused,
+        );
     }
-    if saw_sets {
+    {
         let persisted = std::mem::take(&mut shard.sets);
-        shard.sets = fill_absent_elements(sets, persisted);
+        shard.sets = fill_absent_elements(
+            sets,
+            persisted,
+            &live_pages_by_address,
+            &mut resurrections_refused,
+        );
+    }
+    if resurrections_refused > 0 {
+        // Said out loud, because a refusal here is the merge declining to serve something the
+        // durable map still lists. The same sentence `fold_carried_container_elements` prints for
+        // the other input to this merge.
+        eprintln!(
+            "reconcile: {resurrections_refused} persisted container element(s) named a page the \
+             finished index does not hold and were not restored, over {} live page(s)",
+            live_pages_by_address.len()
+        );
     }
     if unreadable_names > 0 || outranked_scores > 0 {
         // SAID OUT LOUD. Each of these was silent, and each names a stored value that disagreed with

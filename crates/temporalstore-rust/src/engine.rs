@@ -3695,10 +3695,18 @@ fn merge_container_elements<M>(
 /// WHY THIS CANNOT BE DONE RECORD BY RECORD, which is where the first shape of this change was
 /// wrong. A fold replays a SUFFIX of the log, so one fold can both add an element and take it away
 /// again. Applying a record's carried elements as that record is folded puts the element into the
-/// durable map, and then `fill_absent_elements` -- which keeps every durable element the derived
-/// view could not produce, #1989's rule -- hands it back after a later record removed its page. The
+/// durable map, and `fill_absent_elements` -- which keeps every durable element the derived view
+/// could not produce, #1989's rule -- then handed it back after a later record removed its page. The
 /// element would be served after being deleted. Nothing did that before the carry existed, because
 /// the fold never wrote these maps at all.
+///
+/// THAT MERGE NOW ASKS THE SAME QUESTION THIS FUNCTION DOES, so a per-record carry would no longer
+/// be handed back: the carry lands in `shard.sets`, which the reconcile then takes as its PERSISTED
+/// input and filters on whether each element's page is still there. So this is no longer the only
+/// guard against that particular resurrection. It is still the right shape and is not relaxed: the
+/// ordering argument above is about which answer this function computes, not about who catches it
+/// afterwards, and a fold that left a known-dead element in the map for a later stage to strip would
+/// be depending on that stage rather than being correct.
 ///
 /// AND A TOMBSTONE IS NOT ENOUGH TO CATCH IT. Matching the record's `deleted` items would look like
 /// the symmetric answer and is not one: `mark_bucket_index_block_deleted_with` -- which `SetRemove`,

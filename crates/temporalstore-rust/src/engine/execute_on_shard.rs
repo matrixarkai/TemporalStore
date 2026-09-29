@@ -899,8 +899,13 @@ pub(crate) fn execute_on_shard(
                 mutated |= fields.remove(&field).is_some();
                 // Mirror hash2::Del: deleting the last field removes the whole key
                 // (DeleteObject on empty). Leaving an empty field map behind makes the key
-                // still report as existing (EXISTS=1, TYPE=hash) -- a phantom hash. (Sets do
-                // NOT do this on either side, so only Hash needs the cleanup.)
+                // still report as existing (EXISTS=1, TYPE=hash) -- a phantom hash.
+                //
+                // THE PARENTHESIS THAT USED TO END THIS NOTE SAID SETS DID NOT NEED THE CLEANUP,
+                // and it was wrong about this engine: `record_exists_exact` reads
+                // `shard.sets.contains_key(key)` on the line after the one it reads
+                // `shard.hashes.contains_key(key)` on, so a set left holding an empty member map is
+                // the same phantom by the same reader. `SetRemove` does the cleanup now too.
                 if fields.is_empty() {
                     shard.hashes.remove(&key);
                 }
@@ -1671,6 +1676,19 @@ pub(crate) fn execute_on_shard(
             );
             if let Some(set) = shard.sets.get_mut(&key) {
                 mutated |= set.remove(&member).is_some();
+            }
+            // REMOVING THE LAST MEMBER REMOVES THE KEY, as it does for the other three container
+            // kinds. `record_exists_exact` ORs `shard.sets.contains_key(key)` in beside its
+            // bucket-index answer, so an empty member map left under a live key is a key that
+            // EXISTS answers 1 for while every listing answers empty for -- and `CommonExpire`
+            // gates on the same function, so it accepted a deadline for it and `ttl_ms` then
+            // reported that deadline instead of the -2 of a missing key.
+            //
+            // `HashDelete` has done this since it was written, `ZSetRemove` and `ListPop` do it in
+            // exactly this shape, and the note at `HashDelete` said in a parenthesis that sets did
+            // not need it. They do, for the reader in the very next line of the same expression.
+            if shard.sets.get(&key).is_some_and(BTreeMap::is_empty) {
+                shard.sets.remove(&key);
             }
             let _ = cache.invalidate(&CacheKey::set_members(shard_id, &key));
             CommandResponse::Empty

@@ -1171,6 +1171,18 @@ mod tests {
             ),
             RespValue::Integer(1)
         );
+        // `redis:core:set-dest` IS NOT HERE, AND THAT IS THE FIX RATHER THAN A LOSS. Above, `SMOVE`
+        // put its only member in and `SPOP` took that member out again, so it is an EMPTY set --
+        // and `SPOP` reaches `Command::SetRemove` once per popped member, which now removes the key
+        // when its last member goes, exactly as `HashDelete`, `ZSetRemove` and `ListPop` already
+        // did for their kinds.
+        //
+        // This expectation used to list it, which made it an assertion that an emptied set stays
+        // enumerable: `record_exists_exact` ORs `shard.sets.contains_key(key)` in, `SetRemove` left
+        // the key behind holding an empty member map, and `KEYS`, `SCAN`, `DBSIZE`, `EXISTS`, `TYPE`
+        // and `EXPIRE` all answered for a set with nothing in it. A set that holds no member does
+        // not exist, and the three `*_match_native` tests beside this one are the standard this
+        // surface is held to.
         assert_eq!(
             run(&mut state, vec!["KEYS", "redis:core:*"]),
             RespValue::Array(vec![
@@ -1178,7 +1190,6 @@ mod tests {
                 RespValue::Bulk(Some(b"redis:core:hash".to_vec())),
                 RespValue::Bulk(Some(b"redis:core:other-set".to_vec())),
                 RespValue::Bulk(Some(b"redis:core:set".to_vec())),
-                RespValue::Bulk(Some(b"redis:core:set-dest".to_vec())),
                 RespValue::Bulk(Some(b"redis:core:string".to_vec())),
                 RespValue::Bulk(Some(b"redis:core:string-copy".to_vec())),
             ])
@@ -1200,7 +1211,10 @@ mod tests {
             run(&mut state, vec!["TYPE", "redis:core:missing"]),
             RespValue::SimpleString("none".to_string())
         );
-        assert_eq!(run(&mut state, vec!["DBSIZE"]), RespValue::Integer(7));
+        // SIX, NOT SEVEN, and the one that went is the emptied `redis:core:set-dest` above. `DBSIZE`
+        // counts the same keys `KEYS` lists, so the two move together -- which is the point: they
+        // agreed on the phantom before and they agree without it now.
+        assert_eq!(run(&mut state, vec!["DBSIZE"]), RespValue::Integer(6));
         assert_eq!(
             run(&mut state, vec!["DEL", "redis:core:string"]),
             RespValue::Integer(1)
@@ -1209,7 +1223,8 @@ mod tests {
             run(&mut state, vec!["UNLINK", "redis:core:other-set"]),
             RespValue::Integer(1)
         );
-        assert_eq!(run(&mut state, vec!["DBSIZE"]), RespValue::Integer(5));
+        // Four: six less the two removed on the two lines above.
+        assert_eq!(run(&mut state, vec!["DBSIZE"]), RespValue::Integer(4));
         assert_eq!(
             run(&mut state, vec!["FLUSHDB"]),
             RespValue::SimpleString("OK".to_string())

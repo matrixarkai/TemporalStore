@@ -1246,6 +1246,13 @@ fn the_fold_restores_a_container_element_from_carried_identity_and_not_from_a_co
 /// fold never wrote these four maps at all, so this would have been a regression introduced by the
 /// fix.
 ///
+/// THE MERGE ASKS THAT QUESTION OF ITS PERSISTED INPUT TOO NOW, which is a later change and not a
+/// reason to relax this one. `resident_map_readers` carries the argument: the carry and the persisted
+/// map are two inputs to one merge, the carry was applied in the wrong ORDER and the persisted map is
+/// simply OLDER than the page index, and both now answer `live_page_key` against the finished index.
+/// So this test's subject would be stripped downstream if it survived here. It must not survive
+/// here: correctness at this stage is not the same as being cleaned up at the next one.
+///
 /// AND MATCHING THE RECORD'S TOMBSTONES DOES NOT SUBSTITUTE, which is why the obvious symmetric
 /// half was removed rather than kept. `mark_bucket_index_block_deleted_with` -- which `SetRemove`,
 /// `ZSetRemove`, `ListPop` and `HashDelete` all reach -- is named for a mark it does not make: its
@@ -1353,7 +1360,9 @@ fn a_carried_element_whose_page_the_fold_did_not_keep_is_not_restored() {
         "an element naming a page the fold did not leave behind was restored anyway. That is how a \
          removed element comes back: `fill_absent_elements` keeps every durable element the derived \
          view could not produce, and the derived view cannot produce this one because its page is \
-         gone. It would then be served after being deleted."
+         gone. It would then be served after being deleted. (That merge now asks this same \
+         live-page question of its persisted input, so it would strip this element afterwards -- \
+         but the fold must not hand it a known-dead one to strip.)"
     );
     println!(
         "[resurrect] so the carry is applied against the FINISHED page index, and a removal needs \

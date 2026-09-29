@@ -61,16 +61,23 @@
 //! ## Serving from `shard.sets`
 //!
 //! The members ARE the keys of that map, resident and ordered, and walking them would read no page.
-//! `the_resident_set_map_and_the_live_page_index_are_not_the_same_population` drives it. The map is
-//! NOT a safe source for a listing, and the reason is written into the load path:
-//! `reconcile_secondary_views_from_bucket_index` installs
+//! `the_resident_set_map_and_the_live_page_index_are_not_the_same_population` drove why that was
+//! refused: `reconcile_secondary_views_from_bucket_index` installs
 //! `shard.sets = fill_absent_elements(derived, persisted)`, whose documented job is to KEEP EVERY
-//! DURABLE ELEMENT THE DERIVED VIEW COULD NOT PRODUCE. The derived view is the live page index. So
-//! the map is permitted to hold members the page index does not, by design and for #1989's reason,
-//! and a listing served from it would return them. `durable_outranks_derived`'s
+//! DURABLE ELEMENT THE DERIVED VIEW COULD NOT PRODUCE, and it kept them without asking whether the
+//! page each named was still there. The map held members the page index did not, and a listing served
+//! from it would have returned them. `durable_outranks_derived`'s
 //! `a_carried_element_whose_page_the_fold_did_not_keep_is_not_restored` records the same hazard from
 //! the fold side and states the consequence in as many words: "It would then be served after being
 //! deleted."
+//!
+//! THAT OBJECTION IS ANSWERED and this module's conclusion survives it on other grounds. The merge
+//! asks the live-page question of the persisted map now, so the map cannot over-report. What still
+//! stops a listing is the opposite direction: a live page whose component cannot be decoded is in the
+//! index and in no map, so a map-served listing would MISS a member -- #1989's case, latent because
+//! nothing writes a non-hex set component. `resident_map_readers` carries that argument and the
+//! per-reader sweep. The 1.00 reads per member measured below are therefore UNBLOCKED rather than
+//! recovered, and are a serving-path change with its own gate.
 //!
 //! # SO NO PRODUCTION CHANGE SHIPS FROM THIS MODULE
 //!
@@ -524,23 +531,27 @@ fn every_member_a_set_listing_returns_is_already_spelled_by_its_component() {
 // 3. WHY THE RESIDENT MAP IS NOT THE CHEAPER SOURCE
 // =================================================================================================
 
-/// THE RESIDENT MAP AND THE LIVE PAGE INDEX ARE NOT GUARANTEED TO BE THE SAME POPULATION.
+/// THE RESIDENT MAP AND THE LIVE PAGE INDEX HOLD ONE POPULATION, AND THEY DID NOT WHEN THIS MODULE
+/// WAS WRITTEN.
 ///
 /// `shard.sets` holds the members as its keys, resident and ordered, and a listing walking it would
-/// read no page. This is why it cannot be that listing's source.
-///
-/// The load path installs `shard.sets = fill_absent_elements(derived, persisted)`
+/// read no page. When this test was added it drove the reason that listing was refused: the load path
+/// installs `shard.sets = fill_absent_elements(derived, persisted)`
 /// (`storage_bucket_internals.rs`), where `derived` is rebuilt from the LIVE PAGE INDEX and
-/// `persisted` is the durable map `set_index_serde` wrote. `fill_absent_elements` keeps every
-/// durable element the derived view could not produce -- that is its stated job, and #1989's rule.
-/// So the map is permitted by design to hold a member the live page index does not, and a listing
-/// served from it would return a member whose page is gone.
+/// `persisted` is the durable map `set_index_serde` wrote -- and the merge kept every durable element
+/// the derived view could not produce, with no question asked about whether the element's page was
+/// still there. It measured resident map 2 members, live page index 1.
 ///
-/// THIS TEST DRIVES THE MERGE DIRECTLY rather than arguing from the source. A member is added and
-/// removed -- which DROPS its page, because `mark_bucket_index_block_deleted_with` is a `retain`
+/// THAT IS FIXED, and the assertion at the foot of this test is inverted rather than removed. The
+/// merge now asks of every persisted element the question #2005 asks of every CARRIED one: is there
+/// still a page at this address? `resident_map_readers` carries the whole argument, including why
+/// that keeps #1989's element and refuses this one, and what it does and does not make safe.
+///
+/// THIS TEST STILL DRIVES THE MERGE DIRECTLY rather than arguing from the source. A member is added
+/// and removed -- which DROPS its page, because `mark_bucket_index_block_deleted_with` is a `retain`
 /// that removes rather than a mark -- and the durable map is then put back into the state a
 /// snapshot written before the removal would deserialize into. The reconcile runs, and the removed
-/// member is in `shard.sets` while the page index does not list it.
+/// member is now in neither population.
 ///
 /// THE CONTROL is the member that was never removed: it must be present on BOTH sides, or the
 /// fixture is one where the page index is simply empty and the finding is an artefact.
@@ -677,21 +688,29 @@ fn the_resident_set_map_and_the_live_page_index_are_not_the_same_population() {
         "the removed member still has a live page entry, so the removal did not drop its page and \
          this test is not measuring what it claims"
     );
+    // INVERTED, NOT DELETED. This asserted `in_map.contains(&removed)` and said in as many words
+    // that if it ever became true, `fill_absent_elements` had stopped keeping durable elements the
+    // derived view could not produce and "the reason a listing must not be served from `shard.sets`
+    // has changed". It has. `fill_absent_elements` now asks of every persisted element the question
+    // #2005 asks of every CARRIED one -- is there still a page at this address? -- so it keeps
+    // #1989's element, whose page is in the index under a name that cannot be decoded, and refuses
+    // this one, whose page is not in the index at all. The assertion is turned over rather than
+    // dropped, so the divergence cannot come back unobserved.
     assert!(
-        in_map.contains(&removed),
-        "the resident map did not keep the removed member. If this ever becomes true, \
-         `fill_absent_elements` has stopped keeping durable elements the derived view could not \
-         produce -- which is the behaviour #1989's rule asks for -- and the reason a listing must \
-         not be served from `shard.sets` has changed"
+        !in_map.contains(&removed),
+        "the resident map kept a member whose page the live page index does not hold. \
+         `fill_absent_elements` is merging a persisted map older than the page index without asking \
+         whether each element's page is still there, which is the state #2017 measured at map 2 / \
+         index 1"
     );
 
-    assert_ne!(
+    assert_eq!(
         in_map, in_page_index,
-        "the resident map and the live page index hold the same population here, so the merge \
-         cannot be shown to diverge on this fixture"
+        "the resident map and the live page index hold different populations, so the merge is \
+         resurrecting or dropping elements this fixture did not ask it to"
     );
     println!(
-        "  the resident map holds a member the live page index does not: a listing served from \
-         `shard.sets` would return it after it was deleted"
+        "  the resident map and the live page index hold one population: the merge refused to \
+         resurrect the removed member"
     );
 }
