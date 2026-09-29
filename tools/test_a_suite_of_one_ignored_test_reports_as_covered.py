@@ -59,8 +59,10 @@ CRATES = os.path.join(REPO, "crates")
 #: `#[test]`, `#[tokio::test]`, `#[tokio::test(flavor = "multi_thread")]`, `#[async_std::test]`.
 #: CONTAINS, not IS: matching the bare literal missed an all-ignored file in this very tree.
 _TEST_ATTR = re.compile(r"^#\[(?:[a-z_][a-z0-9_]*::)*test\b")
-#: `#[ignore]` is bare; `#[ignore = "why"]` declares itself. The `=` is the whole distinction.
-_IGNORE_ATTR = re.compile(r"^#\[ignore\s*(=)?")
+#: `#[ignore]` is bare; `#[ignore = "why"]` declares itself. The `=` is the whole
+#: distinction, and it is optional-behind-a-boundary rather than optional alone: without
+#: the \b, any attribute merely STARTING with that word would read as an ignore.
+_IGNORE_ATTR = re.compile(r"^#\[ignore\b\s*(=)?")
 _FN = re.compile(r"^\s*(?:pub(?:\([a-z]+\))?\s+)?(?:async\s+)?fn\s+([a-z_][A-Za-z0-9_]*)")
 
 #: Floors. Every assertion below passes on an empty scan, so the size of the scan is asserted
@@ -277,6 +279,20 @@ class ASuiteOfOneIgnoredTestTest(unittest.TestCase):
         ]))
         report = scan(self.fixture.root)
         self.assertEqual(["a_control_that_actually_runs"], report["mixed.rs"]["ran"])
+        self.assertEqual([], offenders(report))
+
+    def test_a_reason_written_without_spaces_is_still_a_reason(self):
+        """`#[ignore="why"]` is the same declaration as `#[ignore = "why"]`. Reading the tight
+        spelling as bare would fail a module whose author did declare themselves."""
+        self.fixture.write("tight.rs", "\n".join([
+            "#[test]",
+            '#[ignore="a control that declares itself without spaces"]',
+            "fn a_control_with_a_tight_reason() {}",
+            "",
+        ]))
+        report = scan(self.fixture.root)
+        self.assertEqual([], report["tight.rs"]["ran"])
+        self.assertEqual([], report["tight.rs"]["bare"], "the tight spelling carries a reason")
         self.assertEqual([], offenders(report))
 
     def test_the_matcher_sees_a_namespaced_test_attribute(self):
