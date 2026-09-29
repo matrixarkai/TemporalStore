@@ -1616,14 +1616,48 @@ pub(super) fn rebuild_unserialized_model_maps_from_bucket_index(shard: &mut Shar
         return;
     }
     let mut hashes = HashMap::<String, super::hash_field_map::HashFieldMap>::new();
+    // Page entries that named no field, over the one kind this function derives. See the arm below
+    // for why this is a skip and not a default; counted so it is not silent, the way
+    // `reconcile_secondary_views_from_bucket_index` counts the same thing for the other three.
+    let mut unreadable_names = 0usize;
     for entry in collect_bucket_index_live_block_entries(shard) {
         if entry.deleted || entry.kind.as_str() != "hash" {
             continue;
         }
-        hashes
-            .entry(entry.object_key.to_string())
-            .or_default()
-            .insert(entry.component.unwrap_or_default().to_string(), entry.address);
+        // SKIPPED, NOT DEFAULTED. This was `entry.component.unwrap_or_default()`, which turns a page
+        // that names NO field into a field named `""` -- a real, addressable field name, which then
+        // collides with a genuine empty-named field and takes its address. An absent name names
+        // nothing.
+        //
+        // AND THIS ARM HAS NO DURABLE MAP BEHIND IT, which is what makes the default worse here than
+        // at the three arms where it was already corrected. Those say "the durable map below still
+        // holds the element, so skipping loses it from the derived view and not from the store";
+        // `hashes` is `skip_serializing` (`state.rs`), so nothing is written and there is no map to
+        // outrank a wrong answer. A phantom field here is the only answer the shard has.
+        //
+        // The name is not recoverable from anywhere else, so inventing one is the only alternative
+        // to skipping. For a hash the component IS the field name, decoded by nothing (#2009), and
+        // #2013's per-element `StagedBlock` does not supply it either: that registry is keyed BY the
+        // component and is live-path state that is never persisted, so it cannot be asked which
+        // field an unnamed entry was -- the object id alone is not a discriminator between an
+        // object's own pages, which is the finding #2013 landed.
+        match entry.component {
+            Some(field) => {
+                hashes
+                    .entry(entry.object_key.to_string())
+                    .or_default()
+                    .insert(field.to_string(), entry.address);
+            }
+            None => unreadable_names += 1,
+        }
+    }
+    if unreadable_names > 0 {
+        // SAID OUT LOUD, in the same words the reconcile uses, so an operator sees a derived view
+        // that is short of a field rather than silently getting a field nobody wrote.
+        eprintln!(
+            "rebuild_unserialized_model_maps: {unreadable_names} hash page(s) named no field and \
+             were skipped rather than defaulted to the empty field name"
+        );
     }
     if !hashes.is_empty() {
         shard.hashes = hashes;
@@ -4317,9 +4351,13 @@ pub(super) fn reconcile_secondary_views_from_bucket_index(
     let mut saw_context_summaries = false;
     let mut saw_context_compressions = false;
 
-    // Component names this code could not read, over the three kinds whose element identity is
+    // Component names this code could not read, over the FOUR kinds whose element identity is
     // spelled into one. Counted rather than defaulted: each of these used to become a real value --
-    // the empty member, or sequence zero -- and take a genuine element's address.
+    // the empty member, sequence zero, or the empty field name -- and take a genuine element's
+    // address.
+    //
+    // Four and not three: the `hash` arm was the last one still defaulting, and it is the one arm
+    // with no durable map behind it to outrank the phantom it produced.
     let mut unreadable_names = 0usize;
     // Scores the DURABLE map supplied because the name's disagreed, and scores taken from the name
     // because the durable map did not hold the member. Both are printed, because "the durable map
@@ -4351,11 +4389,39 @@ pub(super) fn reconcile_secondary_views_from_bucket_index(
                 strings.insert(entry.object_key.to_string(), entry.address);
             }
             "hash" => {
-                saw_hashes = true;
-                hashes
-                    .entry(entry.object_key.to_string())
-                    .or_default()
-                    .insert(entry.component.unwrap_or_default().to_string(), entry.address);
+                // SKIPPED, NOT DEFAULTED, and the fourth arm to need it. This was
+                // `entry.component.unwrap_or_default()`, which turns a page that names NO field into
+                // a field named `""` -- a real, addressable field name, which then collides with a
+                // genuine empty-named field and takes its address. An empty hash FIELD NAME is
+                // legal, which is exactly why the absent one must not spell it.
+                //
+                // THE CONSOLATION THE OTHER THREE ARMS RELY ON DOES NOT EXIST HERE. Each of those
+                // says "the durable map below still holds the element", and each is MERGED through
+                // `fill_absent_elements` for that reason. `hashes` is `skip_serializing`
+                // (`state.rs`), so nothing is written, this arm ASSIGNS rather than merges, and
+                // there is no durable map to outrank a wrong answer. A phantom field here is the
+                // only answer the shard has -- and for a context node, whose page is filed under the
+                // single constant `CONTEXT_NODE_FIELD`, a phantom `""` is not merely a wrong name:
+                // the seven readers that spell `"meta"` back find nothing and the node reads as
+                // ABSENT.
+                //
+                // `saw_hashes` MOVED IN HERE WITH IT, and that is part of the fix rather than tidying.
+                // The flag gates `shard.hashes = hashes`, a wholesale assignment; set outside the
+                // match, an index whose hash entries ALL named nothing would derive an empty map and
+                // assign it over a live one. The other three arms are safe from that without the
+                // flag because their merge returns the persisted map when the derived one is empty;
+                // this arm has no merge, so the flag has to do that work. "Saw a hash" now means the
+                // index said something about a hash this code could use.
+                match entry.component {
+                    Some(field) => {
+                        saw_hashes = true;
+                        hashes
+                            .entry(entry.object_key.to_string())
+                            .or_default()
+                            .insert(field.to_string(), entry.address);
+                    }
+                    None => unreadable_names += 1,
+                }
             }
             "set" => {
                 saw_sets = true;
