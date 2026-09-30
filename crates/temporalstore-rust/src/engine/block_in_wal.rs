@@ -156,10 +156,10 @@ type Registration = (LocalWriteAheadLogStore, u64, u64);
 /// The second term is the whole point of this type existing rather than a bare `u64`. An object id
 /// resolves a RECORD, and one record carries many pages; without the element beside it the last
 /// page of a key to be written owns that key's entry and every earlier one becomes unreachable.
-pub(super) type PageKey = (u64, Option<std::sync::Arc<str>>);
+pub(super) type BlockKey = (u64, Option<std::sync::Arc<str>>);
 
 /// Build a key without owning the component until the map needs it.
-fn page_key(object_id: u64, component: Option<&str>) -> PageKey {
+fn page_key(object_id: u64, component: Option<&str>) -> BlockKey {
     (object_id, component.map(std::sync::Arc::from))
 }
 
@@ -205,8 +205,8 @@ pub(super) fn wal_resident_key(object_id: u64, component: Option<&str>) -> u64 {
 /// are two entries, not one, and which of them a read wants is a question the object id cannot be
 /// asked. It is not sufficient on its own -- the map resolves a record and the page is then chosen
 /// INSIDE that record -- which is why [`StagedBlock::component`] exists as well.
-fn registry() -> &'static Mutex<HashMap<(usize, ShardId, PageKey), Registration>> {
-    static REGISTRY: OnceLock<Mutex<HashMap<(usize, ShardId, PageKey), Registration>>> =
+fn registry() -> &'static Mutex<HashMap<(usize, ShardId, BlockKey), Registration>> {
+    static REGISTRY: OnceLock<Mutex<HashMap<(usize, ShardId, BlockKey), Registration>>> =
         OnceLock::new();
     REGISTRY.get_or_init(|| Mutex::new(HashMap::new()))
 }
@@ -302,12 +302,12 @@ pub(super) fn min_registered_sequence(
 pub(super) fn oldest_registered_objects(
     block_store: &crate::block_store::BlockStore,
     shard_id: ShardId,
-) -> Vec<(u64, PageKey)> {
+) -> Vec<(u64, BlockKey)> {
     let Ok(map) = registry().lock() else {
         return Vec::new();
     };
     let owner = block_store.store_id();
-    let mut entries: Vec<(u64, PageKey)> = map
+    let mut entries: Vec<(u64, BlockKey)> = map
         .iter()
         .filter(|((store_id, shard, _), _)| *store_id == owner && *shard == shard_id)
         .map(|((_, _, page), (_, _, sequence))| (*sequence, page.clone()))

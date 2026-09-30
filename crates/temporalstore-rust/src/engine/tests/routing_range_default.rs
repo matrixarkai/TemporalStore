@@ -171,11 +171,11 @@ fn read_back(engine: &TemporalEngine, keys: &[String]) -> usize {
 /// `p50` is the pages held by the median occupied bucket -- and the denominator is printed with
 /// every row so that a percentile over four buckets cannot read as one over four thousand.
 #[derive(Debug, Default, Clone)]
-struct PagesPerBucket {
+struct BlocksPerBucket {
     counts: BTreeMap<usize, usize>,
 }
 
-impl PagesPerBucket {
+impl BlocksPerBucket {
     fn buckets(&self) -> usize {
         self.counts.values().copied().sum()
     }
@@ -275,10 +275,10 @@ impl PagesPerBucket {
     }
 }
 
-fn pages_per_bucket(engine: &TemporalEngine) -> PagesPerBucket {
+fn pages_per_bucket(engine: &TemporalEngine) -> BlocksPerBucket {
     let shards = engine.shards.read().expect("engine lock poisoned");
     let shard = shards.get(&1).expect("shard is loaded");
-    let mut hist = PagesPerBucket::default();
+    let mut hist = BlocksPerBucket::default();
     for bucket in shard.bucket_index.bucket_map.values() {
         if bucket.block_index.is_empty() {
             continue;
@@ -337,7 +337,7 @@ fn store_path_length(dir: &std::path::Path) -> usize {
 #[test]
 #[ignore = "seeds ten stores up to 40,000 records each; run by name"]
 fn the_pages_a_bucket_holds_at_every_candidate_range_as_percentiles_and_max() {
-    let mut observed: BTreeMap<(usize, u32), PagesPerBucket> = BTreeMap::new();
+    let mut observed: BTreeMap<(usize, u32), BlocksPerBucket> = BTreeMap::new();
     let mut path_lengths: BTreeSet<usize> = BTreeSet::new();
 
     for records in [SMALL, LARGE] {

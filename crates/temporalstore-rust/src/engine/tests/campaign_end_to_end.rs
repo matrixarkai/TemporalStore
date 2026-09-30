@@ -175,11 +175,11 @@ fn range_label(end_routing_bucket: u32) -> String {
 // =============================================================================================
 
 #[derive(Debug, Default, Clone)]
-struct PagesPerBucket {
+struct BlocksPerBucket {
     counts: BTreeMap<usize, usize>,
 }
 
-impl PagesPerBucket {
+impl BlocksPerBucket {
     fn buckets(&self) -> usize {
         self.counts.values().copied().sum()
     }
@@ -279,10 +279,10 @@ impl PagesPerBucket {
     }
 }
 
-fn pages_per_bucket(engine: &TemporalEngine) -> PagesPerBucket {
+fn pages_per_bucket(engine: &TemporalEngine) -> BlocksPerBucket {
     let shards = engine.shards.read().expect("engine lock poisoned");
     let shard = shards.get(&1).expect("shard is loaded");
-    let mut hist = PagesPerBucket::default();
+    let mut hist = BlocksPerBucket::default();
     for bucket in shard.bucket_index.bucket_map.values() {
         if bucket.block_index.is_empty() {
             continue;
@@ -485,7 +485,7 @@ impl Cell {
 }
 
 #[cfg(feature = "alloc-probe")]
-fn measure_cell(arm: usize, records: usize, end_routing_bucket: u32) -> (Cell, PagesPerBucket) {
+fn measure_cell(arm: usize, records: usize, end_routing_bucket: u32) -> (Cell, BlocksPerBucket) {
     let dir = arm_dir(arm);
     let engine = engine_on(&dir);
     load_on(&engine, end_routing_bucket);
@@ -584,7 +584,7 @@ fn the_four_cells_of_the_campaign_on_one_instrument_at_two_corpus_sizes() {
     );
 
     let mut arm = 10usize;
-    let mut cells: Vec<(Cell, PagesPerBucket)> = Vec::new();
+    let mut cells: Vec<(Cell, BlocksPerBucket)> = Vec::new();
     for records in [SMALL, LARGE] {
         for end_routing_bucket in [WIDE_END, NARROW_END] {
             arm += 1;

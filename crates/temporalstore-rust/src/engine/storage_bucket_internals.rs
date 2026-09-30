@@ -4312,7 +4312,7 @@ fn reconcile_timestamped_series_membership(
 fn fill_absent_elements<K, E, V>(
     mut derived: std::collections::HashMap<K, std::collections::BTreeMap<E, V>>,
     persisted: std::collections::HashMap<K, std::collections::BTreeMap<E, V>>,
-    live: &std::collections::HashSet<super::LivePageKey>,
+    live: &std::collections::HashSet<super::LiveBlockKey>,
     resurrections_refused: &mut usize,
 ) -> std::collections::HashMap<K, std::collections::BTreeMap<E, V>>
 where
@@ -4364,7 +4364,7 @@ pub(super) fn reconcile_secondary_views_from_bucket_index(
     // released bucket, on any of the five reconcile sites a release can be followed by. Taking the
     // set from the same `entries` the derived view is built from means the filter and its subject
     // read one population, so the filter can only ever remove what the derived view also lacks.
-    let live_pages_by_address: std::collections::HashSet<super::LivePageKey> = entries
+    let live_pages_by_address: std::collections::HashSet<super::LiveBlockKey> = entries
         .iter()
         .map(|entry| super::live_page_key(&entry.address))
         .collect();

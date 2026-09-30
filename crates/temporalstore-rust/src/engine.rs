@@ -3655,9 +3655,9 @@ impl CarriedValue for (u64, BlockAddress) {
 /// The identity of a page as a live-address set holds it. Slab, offset and length together name
 /// exactly one page, and `fold_delta_block_items` restores a page at its ORIGINAL address -- which
 /// is what makes the address a usable answer to "is this element's page still here".
-type LivePageKey = (u64, u64, u64);
+type LiveBlockKey = (u64, u64, u64);
 
-fn live_page_key(address: &BlockAddress) -> LivePageKey {
+fn live_page_key(address: &BlockAddress) -> LiveBlockKey {
     (address.block_slab_id(), address.offset(), address.length())
 }
 
@@ -3676,7 +3676,7 @@ fn merge_container_elements<M>(
     outer: &mut std::collections::HashMap<String, M>,
     key: &str,
     value: Option<&serde_json::Value>,
-    live: &std::collections::HashSet<LivePageKey>,
+    live: &std::collections::HashSet<LiveBlockKey>,
     skipped: &mut usize,
 ) where
     M: ElementMap,
@@ -3741,7 +3741,7 @@ fn fold_carried_container_elements(shard: &mut ShardState, carried: &[serde_json
     if carried.is_empty() {
         return;
     }
-    let mut live: std::collections::HashSet<LivePageKey> = std::collections::HashSet::new();
+    let mut live: std::collections::HashSet<LiveBlockKey> = std::collections::HashSet::new();
     for bucket in shard.bucket_index.bucket_map.values() {
         for page in bucket.block_index.values() {
             if !page.deleted {

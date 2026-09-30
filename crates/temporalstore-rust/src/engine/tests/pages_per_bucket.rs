@@ -99,11 +99,11 @@ use crate::alloc_probe::Probe;
 /// a store that is 99.9% single-page and it describes a store with a handful of enormous buckets,
 /// and the two want opposite representations.
 #[derive(Debug, Default, Clone)]
-struct PagesPerBucket {
+struct BlocksPerBucket {
     counts: BTreeMap<usize, usize>,
 }
 
-impl PagesPerBucket {
+impl BlocksPerBucket {
     fn buckets(&self) -> usize {
         self.counts.values().copied().sum()
     }
@@ -168,10 +168,10 @@ impl PagesPerBucket {
     }
 }
 
-fn pages_per_bucket(engine: &TemporalEngine) -> PagesPerBucket {
+fn pages_per_bucket(engine: &TemporalEngine) -> BlocksPerBucket {
     let shards = engine.shards.read().expect("engine lock poisoned");
     let shard = shards.get(&1).expect("shard is loaded");
-    let mut hist = PagesPerBucket::default();
+    let mut hist = BlocksPerBucket::default();
     for bucket in shard.bucket_index.bucket_map.values() {
         *hist.counts.entry(bucket.block_index.len()).or_default() += 1;
     }
@@ -312,9 +312,9 @@ fn seed_container_keys(engine: &TemporalEngine, keys: usize, members: usize) {
 #[ignore = "seeds six stores up to 40,000 records each; run by name"]
 fn the_pages_a_bucket_holds_are_two_populations_and_not_one_mean() {
     let mut path_lengths: Vec<usize> = Vec::new();
-    let mut routed: Vec<PagesPerBucket> = Vec::new();
-    let mut container: Vec<PagesPerBucket> = Vec::new();
-    let mut mixed: Vec<PagesPerBucket> = Vec::new();
+    let mut routed: Vec<BlocksPerBucket> = Vec::new();
+    let mut container: Vec<BlocksPerBucket> = Vec::new();
+    let mut mixed: Vec<BlocksPerBucket> = Vec::new();
 
     for (label, records) in [("4,000 records", 4_000usize), ("40,000 records", 40_000usize)] {
         // --- Keys that route one to a bucket. #1958's fixture shape, exactly. ---

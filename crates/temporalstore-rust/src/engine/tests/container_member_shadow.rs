@@ -167,7 +167,7 @@ fn seed_zsets(engine: &TemporalEngine) -> Vec<String> {
 
 /// One zset page in the seeded shard: which object key, which component, and the address.
 #[derive(Debug, Clone)]
-struct ZsetPage {
+struct ZsetBlock {
     routing_bucket: u32,
     object_key: String,
     component: String,
@@ -178,7 +178,7 @@ struct ZsetPage {
 }
 
 /// Every `zset` page the bucket index holds, read off the engine's own index.
-fn zset_pages(engine: &TemporalEngine) -> Vec<ZsetPage> {
+fn zset_pages(engine: &TemporalEngine) -> Vec<ZsetBlock> {
     let shards = engine.shards.read().expect("engine lock poisoned");
     let shard = shards.get(&1).expect("shard is loaded");
     let mut pages = Vec::new();
@@ -187,7 +187,7 @@ fn zset_pages(engine: &TemporalEngine) -> Vec<ZsetPage> {
             if page.model_id.as_str() != "zset" {
                 continue;
             }
-            pages.push(ZsetPage {
+            pages.push(ZsetBlock {
                 routing_bucket: *routing_bucket,
                 object_key: page.object_key.to_string(),
                 component: page
@@ -283,7 +283,7 @@ impl Histogram {
     }
 }
 
-fn zset_pages_per_bucket(pages: &[ZsetPage]) -> Histogram {
+fn zset_pages_per_bucket(pages: &[ZsetBlock]) -> Histogram {
     let mut per_bucket: BTreeMap<u32, usize> = BTreeMap::new();
     for page in pages {
         *per_bucket.entry(page.routing_bucket).or_default() += 1;
@@ -961,7 +961,7 @@ fn what_one_more_member_rewrites_against_what_one_packed_buffer_would() {
         before_pages + 1,
         "a single-member write did not file exactly one new page"
     );
-    let added: Vec<&ZsetPage> = after
+    let added: Vec<&ZsetBlock> = after
         .iter()
         .filter(|page| {
             page.object_key == key

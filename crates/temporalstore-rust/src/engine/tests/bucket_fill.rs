@@ -181,11 +181,11 @@ fn read_back(engine: &TemporalEngine, keys: &[String]) -> usize {
 ///
 /// A histogram and not a mean: #1959's mean of 1.98 contained not one bucket holding two.
 #[derive(Debug, Default, Clone)]
-struct PagesPerBucket {
+struct BlocksPerBucket {
     counts: BTreeMap<usize, usize>,
 }
 
-impl PagesPerBucket {
+impl BlocksPerBucket {
     fn buckets(&self) -> usize {
         self.counts.values().copied().sum()
     }
@@ -246,10 +246,10 @@ impl PagesPerBucket {
     }
 }
 
-fn pages_per_bucket(engine: &TemporalEngine) -> PagesPerBucket {
+fn pages_per_bucket(engine: &TemporalEngine) -> BlocksPerBucket {
     let shards = engine.shards.read().expect("engine lock poisoned");
     let shard = shards.get(&1).expect("shard is loaded");
-    let mut hist = PagesPerBucket::default();
+    let mut hist = BlocksPerBucket::default();
     for bucket in shard.bucket_index.bucket_map.values() {
         if bucket.block_index.is_empty() {
             continue;
@@ -352,7 +352,7 @@ fn total<T>(contents: &BTreeMap<u32, BTreeSet<T>>) -> usize {
 #[ignore = "seeds four stores up to 40,000 records each; run by name"]
 fn the_pages_a_bucket_holds_are_decided_by_the_routing_range() {
     let mut path_lengths: Vec<usize> = Vec::new();
-    let mut observed: BTreeMap<(usize, u32), PagesPerBucket> = BTreeMap::new();
+    let mut observed: BTreeMap<(usize, u32), BlocksPerBucket> = BTreeMap::new();
 
     for records in [SMALL, LARGE] {
         for end_routing_bucket in [WIDE_END, NARROW_END] {
