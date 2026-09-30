@@ -4830,6 +4830,17 @@ pub(super) fn reconcile_secondary_views_from_bucket_index(
             live_pages_by_address.len()
         );
     }
+    let (page_read_failures, page_decode_failures) = view_rebuild_page_failure_counts();
+    if page_read_failures > 0 || page_decode_failures > 0 {
+        // SAID OUT LOUD, like the line below it. These were the quietest of the lot: an
+        // `.unwrap_or_default()` inside a helper, with no counter and no message, on the only copy
+        // two kinds have.
+        eprintln!(
+            "reconcile: {page_read_failures} page(s) could not be read and {page_decode_failures} \
+             could not be decoded while rebuilding the timestamped views; neither contributed an \
+             empty series"
+        );
+    }
     if unreadable_names > 0 || outranked_scores > 0 {
         // SAID OUT LOUD. Each of these was silent, and each names a stored value that disagreed with
         // the name derived from it.
@@ -4919,6 +4930,51 @@ pub(super) fn reconcile_secondary_views_from_bucket_index(
     }
 }
 
+/// Pages a load-path view rebuild could not READ, and pages it read and could not DECODE.
+///
+/// TWO COUNTERS AND NOT ONE, because the `.unwrap_or_default()` these replace made THREE different
+/// outcomes into the same empty series: a read that failed, a payload in the pre-packed format, and a
+/// payload that is packed and corrupt. The middle one is a legitimate thing to find in an old store;
+/// the other two are faults. A single counter over all three cannot be floored at zero on a corpus
+/// that contains the middle one, so it would have to be floored at "whatever it was", which is not a
+/// claim about anything.
+pub static VIEW_REBUILD_PAGE_READ_FAILURES: std::sync::atomic::AtomicU64 =
+    std::sync::atomic::AtomicU64::new(0);
+pub static VIEW_REBUILD_PAGE_DECODE_FAILURES: std::sync::atomic::AtomicU64 =
+    std::sync::atomic::AtomicU64::new(0);
+
+/// How many pages a view rebuild could not read, and how many it could not decode, in this process.
+pub fn view_rebuild_page_failure_counts() -> (u64, u64) {
+    (
+        VIEW_REBUILD_PAGE_READ_FAILURES.load(std::sync::atomic::Ordering::Relaxed),
+        VIEW_REBUILD_PAGE_DECODE_FAILURES.load(std::sync::atomic::Ordering::Relaxed),
+    )
+}
+
+/// Forget both counts, so a test measures its own load.
+pub fn reset_view_rebuild_page_failure_counts() {
+    VIEW_REBUILD_PAGE_READ_FAILURES.store(0, std::sync::atomic::Ordering::Relaxed);
+    VIEW_REBUILD_PAGE_DECODE_FAILURES.store(0, std::sync::atomic::Ordering::Relaxed);
+}
+
+/// `block_store.read`, with the failure COUNTED instead of flattened into an empty series.
+///
+/// NO TEST SEAM, DELIBERATELY, and the reason is a mutation result rather than a matter of style. A seam
+/// was written here first, modelled on `fail_compaction_block_read_after_for_test`. A mutant that
+/// deleted the counter from the REAL `Err(_)` arm then SURVIVED, because every fixture failed its
+/// reads through the seam and nothing exercised the arm that runs in production. A torn page is
+/// producible on demand -- truncate the slab files the store was written into -- so the seam was
+/// buying a `cfg(test)` hook to cover a path it is not on. The guards tear the files instead.
+fn read_page_for_view_rebuild(block_store: &BlockStore, address: &BlockAddress) -> Option<Vec<u8>> {
+    match block_store.read(address) {
+        Ok(bytes) => Some(bytes),
+        Err(_) => {
+            VIEW_REBUILD_PAGE_READ_FAILURES.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            None
+        }
+    }
+}
+
 #[allow(clippy::too_many_arguments)]
 pub(super) fn insert_timestamped_secondary_view(
     block_store: &BlockStore,
@@ -4929,7 +4985,21 @@ pub(super) fn insert_timestamped_secondary_view(
     address: BlockAddress,
     routing_bucket: Option<u32>,
 ) {
-    let bytes = block_store.read(&address).ok();
+    // THROUGH THE SEAM, AND A FAILURE IS COUNTED RATHER THAN DEFAULTED TO AN EMPTY SERIES.
+    //
+    // This was `block_store.read(&address).ok()` feeding an `.unwrap_or_default()` thirty lines
+    // below, so a page that could not be read contributed NO timestamps and the key still got an
+    // entry -- an empty series under a live key, which is #2017's over-complete shape arriving by
+    // reload instead of by removal.
+    //
+    // WHY IT IS LOSS HERE AND DEGRADATION ELSEWHERE, which is the reason this arm is the one that
+    // had to change. `reconcile_timestamped_series_membership` keeps a persisted series the derived
+    // view could not produce, and says so: "a transient read failure never drops a durable series".
+    // That consolation is real for `features`, whose map IS serialized. It does not exist for
+    // `context_events` or `context_indexes`: both are `skip_serializing` on `ShardState`
+    // (`state.rs`), so the persisted map is EMPTY by construction and this derived view is the only
+    // copy. A swallowed read there does not degrade an answer, it removes the events.
+    let bytes = read_page_for_view_rebuild(block_store, &address);
     // Fold the disk->memory promotion into the load read we already perform here.
     // page_store.read is mutex-serialized, so a separate post-load warm pass would
     // re-read every page under the same lock; collect the bytes we just read for a
@@ -4946,17 +5016,33 @@ pub(super) fn insert_timestamped_secondary_view(
         );
         warm_batch.push((key, bytes.clone()));
     }
-    let timestamps = bytes
-        .and_then(|bytes| match decode_feature_block_strict(&bytes) {
-            PackedFeatureBlockDecode::Packed(points) => Some(
-                points
-                    .into_iter()
-                    .map(|point| point.timestamp_ms)
-                    .collect::<Vec<_>>(),
-            ),
-            PackedFeatureBlockDecode::Legacy | PackedFeatureBlockDecode::Corrupt(_) => None,
-        })
-        .unwrap_or_default();
+    // THREE OUTCOMES, THREE ANSWERS, where there used to be one empty vector for all of them.
+    let Some(bytes) = bytes else {
+        // Counted inside the read. No entry is created: a key whose page could not be read is left
+        // for the merge to supply from the durable map, which is exactly what the merge is for, and
+        // an empty entry would tell `record_exists_exact` the key is here with nothing in it.
+        return;
+    };
+    let timestamps = match decode_feature_block_strict(&bytes) {
+        PackedFeatureBlockDecode::Packed(points) => points
+            .into_iter()
+            .map(|point| point.timestamp_ms)
+            .collect::<Vec<_>>(),
+        // A page from before the packed format. Not a fault and not counted as one -- it simply
+        // names no timestamps, so it contributes none.
+        PackedFeatureBlockDecode::Legacy => Vec::new(),
+        PackedFeatureBlockDecode::Corrupt(_) => {
+            VIEW_REBUILD_PAGE_DECODE_FAILURES.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            return;
+        }
+    };
+    if timestamps.is_empty() {
+        // THE ENTRY IS CREATED ONLY WHERE A POINT SURVIVES, which is `fill_absent_elements`'s rule
+        // after #2016 and holds here for the same reason: `target.entry(..).or_default()` ran before
+        // a single point was looked at, so a page naming nothing installed an empty inner map under
+        // a live key.
+        return;
+    }
     let series = target.entry(object_key).or_default();
     for timestamp_ms in timestamps {
         // A timestamp can physically live in MORE THAN ONE page: overwriting a timestamped point
@@ -5002,7 +5088,10 @@ pub(super) fn insert_context_event_views(
     address: BlockAddress,
     routing_bucket: Option<u32>,
 ) {
-    let bytes = block_store.read(&address).ok();
+    // Through the same seam, counted the same way, and for the sharper reason: `context_events`
+    // and `context_event_timeline` are rebuilt here and the primary map is `skip_serializing`, so
+    // there is no durable copy behind this derived one.
+    let bytes = read_page_for_view_rebuild(block_store, &address);
     if let (Some(shard_id), Some(bytes)) = (warm_shard, bytes.as_ref()) {
         let key = CacheKey::page_with_slot(
             shard_id,
@@ -5013,12 +5102,20 @@ pub(super) fn insert_context_event_views(
         );
         warm_batch.push((key, bytes.clone()));
     }
-    let points = bytes
-        .and_then(|bytes| match decode_feature_block_strict(&bytes) {
-            PackedFeatureBlockDecode::Packed(points) => Some(points),
-            PackedFeatureBlockDecode::Legacy | PackedFeatureBlockDecode::Corrupt(_) => None,
-        })
-        .unwrap_or_default();
+    let Some(bytes) = bytes else {
+        return;
+    };
+    let points = match decode_feature_block_strict(&bytes) {
+        PackedFeatureBlockDecode::Packed(points) => points,
+        PackedFeatureBlockDecode::Legacy => Vec::new(),
+        PackedFeatureBlockDecode::Corrupt(_) => {
+            VIEW_REBUILD_PAGE_DECODE_FAILURES.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            return;
+        }
+    };
+    if points.is_empty() {
+        return;
+    }
     let series = events.entry(object_key.clone()).or_default();
     let index = timeline.entry(object_key).or_default();
     for point in points {

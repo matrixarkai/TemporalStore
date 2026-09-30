@@ -196,3 +196,4 @@ mod container_page_element_key;
 mod the_entry_cannot_point_at_the_object_list;
 mod resident_map_readers;
 mod container_pages_are_batched;
+mod view_rebuild_page_read_failures;
