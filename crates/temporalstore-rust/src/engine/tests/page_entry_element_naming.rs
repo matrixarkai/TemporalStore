@@ -1,8 +1,28 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright 2026 MatrixArkAI
 
-//! REFUTATION. THE PAGE ENTRY CANNOT STOP NAMING ITS ELEMENT, BECAUSE FOR ONE KIND THE NAME IS
-//! THE ELEMENT AND THE SERVING PATH READS IT.
+//! REFUTATION, AND THE ONE THING THAT LIFTS IT. THE PAGE ENTRY COULD NOT STOP NAMING ITS ELEMENT
+//! WHILE THE ENTRY WAS THE ONLY PLACE THE NAME WAS WRITTEN.
+//!
+//! # WHAT CHANGED, STATED FIRST BECAUSE THIS MODULE'S HEADLINE MOVED
+//!
+//! This module was opened as a refutation and its stop condition was one sentence: for a hash the
+//! component is not a second copy of the field name, it is the ONLY one. `container_pages` makes the
+//! page carry its own element key, so there is now a second copy, and the refutation below is
+//! recorded as HAVING HELD rather than as holding.
+//!
+//! The first test is the one that moved, and it moved in the direction its own failure message named:
+//! "If this fails the hash field name has a second copy somewhere and the refutation is stale." It
+//! failed, for that reason, which is the strongest evidence this module can offer that the frame does
+//! what it was added to do. What a swapped component now produces is written into
+//! `a_swapped_hash_component_no_longer_renames_the_field_because_the_page_contradicts_it`.
+//!
+//! WHAT IS STILL BLOCKED, AND WHY THIS MODULE IS NOT DELETED. A second copy of the name is a
+//! PRECONDITION for the entry dropping it, not the whole of it. The entry's component is still what
+//! `bucket_index_component_block_addresses` walks, still what `HashGetAll` returns as the field name,
+//! and still what the load path derives `shard.hashes` from. Removing it needs the load path to
+//! rebuild those maps out of the pages instead, which is a later stage and is not started here. The
+//! pricing below is the prize for that stage and is kept for it.
 //!
 //! `BlockIndex.component: Option<Arc<str>>` is sixteen bytes on every page entry plus a heap string
 //! per element, and #1996 priced that string exactly: `16 + 2n` request bytes for a set member and
@@ -19,11 +39,16 @@
 //! #2005 names what it unblocks: "a 2-byte element ordinal replacing `component: Option<Arc<str>>`".
 //! THAT STEP DOES NOT FOLLOW, and this module is the driven reason.
 //!
-//! # THE STOP CONDITION, IN ONE LINE
+//! # THE STOP CONDITION, IN ONE LINE, AS IT STOOD
 //!
 //! For a HASH the component is the caller's field name, `shard.hashes` is `skip_serializing`, and
-//! `Command::HashGetAll` RETURNS THE COMPONENT AS THE FIELD NAME. So the component is not a second
-//! copy of a hash field name. It is the only one, on the live read path and across a reload alike.
+//! `Command::HashGetAll` RETURNS THE COMPONENT AS THE FIELD NAME. So the component was not a second
+//! copy of a hash field name. It was the only one, on the live read path and across a reload alike.
+//!
+//! THAT LAST SENTENCE IS WHAT `container_pages` CHANGED, and only that sentence. Everything else in
+//! the table below still holds: the entry still carries the component, the three spelled kinds still
+//! have a durable map and the hash still has none, and `HashGetAll` still names its fields from the
+//! entry rather than from the page.
 //!
 //! ```text
 //!     set     set_index_serde    (member bytes, address)            component is a 2nd copy
@@ -160,22 +185,54 @@ fn swap_across_index_files(indexes: &std::path::Path, from: &str, to: &str) -> u
 }
 
 // =================================================================================================
-// 1. THE REFUTATION. A HASH FIELD NAME FOLLOWS ITS COMPONENT; A ZSET MEMBER DOES NOT.
+// 1. THE REFUTATION, AND WHAT LIFTED IT. A SWAPPED HASH COMPONENT NO LONGER RENAMES THE FIELD.
 // =================================================================================================
 
-/// SWAP A HASH FIELD'S COMPONENT ON DISK AND THE FIELD COMES BACK RENAMED.
+/// SWAP A HASH FIELD'S COMPONENT ON DISK AND THE FIELD COMES BACK NEITHER RENAMED NOR SERVED.
 ///
-/// Nothing outranks it, because there is nothing else that holds it. The CONTROL is in the same
-/// store, under the same instrument, with the same kind of mutation: a zset member's component is
-/// swapped too, and that member comes back UNCHANGED because `zset_index_serde` persisted it beside
-/// the page and `fill_absent_elements` keeps what the derived view could not produce.
+/// # WHAT THIS TEST USED TO SAY, AND WHY IT SAYS SOMETHING ELSE NOW
 ///
-/// An arm that moved and an arm that did not, from one swap pass, is what makes this a measurement
-/// rather than a demonstration that editing an index breaks things.
+/// It used to assert that the field came back RENAMED: the swapped component became the field name,
+/// because nothing else held it. That was the refutation, and it was correct at the time.
+///
+/// `container_pages` puts the element key inside the page. So the index now says `hfield-Z` and the
+/// page still says `hfield-b`, and they disagree. The read funnel resolves the address the index
+/// names and then asks that page for `hfield-Z`, which it does not hold -- so the element answers
+/// MISSING, and `HashGetAll`'s `filter_map` drops it.
+///
+/// ## THE THREE OUTCOMES, AND WHY THIS IS THE ONE TO WANT
+///
+/// ```text
+///     before   the element is served under the name the INDEX spells      renamed, silently
+///     after    the element is not served at all                          absent, and countable
+///     rejected the element is served under the name the PAGE spells      the index stops mattering
+/// ```
+///
+/// The third would make the page authoritative for the name, which is a later stage's decision and
+/// not one to take in passing. Between the first two, the second is the answer this store has
+/// repeatedly chosen: #2013 measured a reader handed "the FIRST page's BYTES rather than answering
+/// missing" and called it the defect; #2016 refused to let an absent name become a real one. Serving
+/// bytes under a name their own page contradicts is that same shape. A miss is worse to read and
+/// better to trust.
+///
+/// ## AND IT HAS A COST, WHICH IS ASSERTED HERE RATHER THAN LEFT TO BE FOUND
+///
+/// `HashLen` counts page-index ENTRIES and `HashGetAll` returns entries whose page will read, so on
+/// a store whose index and pages disagree the two now answer differently. That pair is what #2014
+/// guards, and it still agrees on every store this engine writes -- the divergence needs a component
+/// that was edited underneath it, which is exactly what this test does and nothing else does. Both
+/// numbers are asserted below so the cost is recorded rather than discovered later.
+///
+/// # THE CONTROL, UNCHANGED
+///
+/// A zset member's component is swapped in the same pass, and that member still answers because
+/// `zset_index_serde` persisted it beside the page and `fill_absent_elements` keeps what the derived
+/// view could not produce. An arm that moved and an arm that did not, from one swap pass, is what
+/// makes this a measurement rather than a demonstration that editing an index breaks things.
 ///
 /// rust-internal: mutates the engine's own served index, no external surface
 #[test]
-fn a_hash_field_name_follows_a_swapped_component_because_nothing_outranks_it() {
+fn a_swapped_hash_component_no_longer_renames_the_field_because_the_page_contradicts_it() {
     let dir = tempfile::tempdir().unwrap();
     let hash_key = "en-hash";
     let zset_key = "en-zset";
@@ -250,25 +307,79 @@ fn a_hash_field_name_follows_a_swapped_component_because_nothing_outranks_it() {
         .map(|(field, _)| field.clone())
         .collect::<std::collections::BTreeSet<_>>();
 
-    // The DENOMINATOR, so a store that came back empty cannot pass the two assertions below.
+    // THE DENOMINATOR, so a store that came back empty cannot pass the assertions below. It is the
+    // two UNSWAPPED fields: the swapped one is the subject and its absence is the finding, so
+    // counting it here would settle the finding before the finding is asserted.
     assert_eq!(
-        hash_fields.len(),
+        hash_fields.len() - 1,
         names.len(),
-        "the hash came back with {} field(s) rather than {}: {names:?}",
+        "the hash came back with {} field(s) rather than the {} that were left unswapped: \
+         {names:?}",
         names.len(),
-        hash_fields.len()
+        hash_fields.len() - 1
     );
+    for survivor in ["hfield-a", "hfield-c"] {
+        assert!(
+            names.contains(survivor),
+            "a field whose component was NOT swapped went missing, so this store is broken in some \
+             way the swap did not cause: {names:?}"
+        );
+    }
 
-    // THE FINDING: the field is named by whatever the component now spells.
+    // THE FINDING: the swapped component names an element its page does not hold, so it is served
+    // under NEITHER name.
     assert!(
-        names.contains("hfield-Z"),
-        "the swapped component did not become the field name; HashGetAll answered {names:?}. If \
-         this fails the hash field name has a second copy somewhere and the refutation is stale"
+        !names.contains("hfield-Z"),
+        "the swapped component became the field name, which is what this test asserted BEFORE the \
+         page carried its own element key -- so the page is no longer contradicting the index and \
+         something has stopped selecting by element: {names:?}"
     );
     assert!(
         !names.contains("hfield-b"),
-        "the original field name survived a component swap, so something outranks the component \
-         for a hash and this module's stop condition no longer holds: {names:?}"
+        "the original field name was served under a component that no longer spells it, so the \
+         index's name is being ignored rather than checked against the page: {names:?}"
+    );
+
+    // AND THE POINT LOOKUP AGREES WITH THE LISTING, both ways round. Asserted because a listing and
+    // a point read resolve through different code and #2014 exists because they agreed by accident.
+    for absent in ["hfield-b", "hfield-Z"] {
+        let answer = read(
+            &engine,
+            Command::HashGet {
+                key: hash_key.to_string(),
+                field: absent.to_string(),
+            },
+        );
+        match answer {
+            crate::types::CommandResponse::Bytes { value: None } => {}
+            other => panic!("HashGet for {absent} answered {other:?} where the listing has neither"),
+        }
+    }
+
+    // THE COST, RECORDED. `HashLen` counts entries and the listing counts entries whose page reads,
+    // so on a store edited underneath the engine the two diverge by exactly the edited element.
+    let length = match read(
+        &engine,
+        Command::HashLen {
+            key: hash_key.to_string(),
+        },
+    ) {
+        crate::types::CommandResponse::Integer { value } => value,
+        other => panic!("HashLen answered {other:?}"),
+    };
+    assert_eq!(
+        hash_fields.len() as i64,
+        length,
+        "HashLen counts page-index entries, and the swap did not remove one, so it must still \
+         answer {}",
+        hash_fields.len()
+    );
+    assert_eq!(
+        1,
+        length - names.len() as i64,
+        "the length answer and the listing must diverge by exactly the one element whose component \
+         was edited; they diverge by {}",
+        length - names.len() as i64
     );
 
     // THE CONTROL: the zset member did NOT follow its swapped component.
@@ -293,8 +404,10 @@ fn a_hash_field_name_follows_a_swapped_component_because_nothing_outranks_it() {
     );
 
     println!(
-        "hash component swaps={hash_swaps} -> field RENAMED; \
-         zset component swaps={zset_swaps} -> member UNCHANGED at {score}"
+        "hash component swaps={hash_swaps} -> field NEITHER renamed NOR served (listing {} of {}, \
+         HashLen {length}); zset component swaps={zset_swaps} -> member UNCHANGED at {score}",
+        names.len(),
+        hash_fields.len()
     );
 }
 

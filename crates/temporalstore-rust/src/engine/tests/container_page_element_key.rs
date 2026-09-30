@@ -950,6 +950,68 @@ fn every_container_kind_reads_back_the_value_it_wrote_through_a_framed_page() {
         crate::engine::corrupt_container_page_count(),
         "a read met a container page it could not walk"
     );
+
+    // AND THE STORED PAGES REALLY ARE FRAMED, which nothing above this line establishes.
+    //
+    // Every value comparison in this test would pass just as well if the write path had stopped
+    // framing altogether, because an unframed page reads back exactly -- that is the compatibility
+    // design, and it is what makes the rest of this test vacuous in this one direction. So the raw
+    // page is fetched for one element of each kind and asserted to decode as a frame naming that
+    // element. Four kinds and not one: a per-kind spelling chosen wrongly at a single write site is
+    // exactly the defect the shared helper exists to prevent, and it would show only here.
+    let stored: [(&str, &str, String); 4] = [
+        ("hash", "hash-key", fields[0].0.clone()),
+        ("set", "set-key", hex::encode(&members[0])),
+        (
+            "zset",
+            "zset-key",
+            // Spelled by the engine's OWN two functions rather than by hand: a hand-written zset
+            // component is a second implementation of the encoding under test, and it would agree
+            // with a write path that had stopped holding the same spelling.
+            crate::engine::execute_on_shard::zset_component(
+                crate::engine::execute_on_shard::zset_score_bits(0.0),
+                &members[0],
+            ),
+        ),
+        ("list", "list-key", format!("{:016x}", 1_u64 << 63)),
+    ];
+    let mut framed_kinds = 0usize;
+    println!("  stored page shapes:");
+    for (kind, key, component) in &stored {
+        let frame = engine
+            .container_page_frame_for_test(1, kind, key, Some(component.as_str()))
+            .unwrap_or_else(|| panic!("no stored page for {kind} {key} component {component}"));
+        match crate::engine::container_pages::decode_container_page(&frame) {
+            crate::engine::container_pages::ContainerPageDecode::Framed { spelling, items } => {
+                assert_eq!(
+                    1,
+                    items.len(),
+                    "{kind} wrote {} items in one page, and nothing batches yet",
+                    items.len()
+                );
+                let named = crate::engine::container_pages::component_from_element_key(
+                    spelling,
+                    &items[0].key,
+                )
+                .unwrap_or_else(|| panic!("{kind}'s page key spells no component"));
+                assert_eq!(
+                    component, &named,
+                    "{kind}'s page names element {named} where its index entry names {component}"
+                );
+                println!(
+                    "    {kind:>5}  {} bytes, spelling {spelling:?}, names {named}",
+                    frame.len()
+                );
+                framed_kinds += 1;
+            }
+            other => panic!("{kind} did not store a framed page: {other:?}"),
+        }
+    }
+    assert_eq!(
+        4, framed_kinds,
+        "only {framed_kinds} kinds stored a framed page"
+    );
+
     println!(
         "  hash {} fields, set {} members, zset {} members ({} listing entries), list {} elements -- all read back",
         fields.len(),

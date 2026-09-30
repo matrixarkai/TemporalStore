@@ -480,6 +480,49 @@ impl TemporalEngine {
             .store(false, std::sync::atomic::Ordering::Relaxed);
     }
 
+    /// The RAW PAGE an element's index entry names, before any element is selected out of it.
+    ///
+    /// The one hook a guard needs to assert that a write actually FRAMED its page. Without it the
+    /// end-to-end test is vacuous in the one direction that matters: an unframed page reads back
+    /// correctly -- that is the whole compatibility design -- so a write path that quietly stopped
+    /// framing would pass every value comparison in the suite and be found only by a later stage
+    /// that could no longer rebuild an element from its page.
+    ///
+    /// Goes through `read_block_frame_bytes` and not `read_block_bytes`, deliberately: the latter
+    /// is the door that selects, and asking it would hand back the element's value with the frame
+    /// already gone.
+    #[cfg(test)]
+    pub(crate) fn container_page_frame_for_test(
+        &self,
+        shard_id: ShardId,
+        model_id: &str,
+        object_key: &str,
+        component: Option<&str>,
+    ) -> Option<Vec<u8>> {
+        let shards = self.shards.read().expect("engine lock poisoned");
+        let shard = shards.get(&shard_id)?;
+        let (start_routing_bucket, end_routing_bucket) = shard.routing_range();
+        let address = super::bucket_store::bucket_index_block_address(
+            shard,
+            model_id,
+            object_key,
+            component,
+        )?;
+        let routing_bucket = super::hashing::block_routing_bucket(
+            object_key,
+            start_routing_bucket,
+            end_routing_bucket,
+        );
+        super::read_block_frame_bytes(
+            &self.cache,
+            &self.block_store,
+            shard_id,
+            &address,
+            component,
+            Some(routing_bucket),
+        )
+    }
+
     /// Install a hash field whose page carries NO element frame, the way every page written before
     /// `container_pages` existed does.
     ///

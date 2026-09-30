@@ -736,6 +736,20 @@ fn the_maps_the_delta_fold_restores_do_not_include_the_container_maps() {
 /// The "batched" column is built with the engine's OWN encoder at each batch width and its length
 /// read off the bytes, so both columns are measurements and the ratio between them is not
 /// arithmetic over an assumed page header.
+///
+/// # THE FIELD NAMES ARE FIXED WIDTH, AND THAT IS LOAD-BEARING RATHER THAN TIDY
+///
+/// A container page now STATES WHICH ELEMENT IT HOLDS (`container_pages`), so a hash page's stored
+/// length includes its field name. `f0` to `f99` is two names of two characters and ninety of three,
+/// which made the pages three widths and took the assertion below -- "the field pages are not all one
+/// width, so a single 'today' column cannot stand for them" -- from a guard against a broken fixture
+/// to a statement this revision cannot satisfy.
+///
+/// It is fixed by padding rather than by weakening the assertion, because the assertion is right: a
+/// single "today" number CANNOT stand for pages of several widths, and a column that quietly took
+/// the first of them would be a mean wearing a measurement's clothes. Padding makes the fixture's
+/// names one width so the column is one number again, and this paragraph is why the padding may not
+/// be removed.
 #[test]
 fn what_one_element_read_fetches_today_and_what_a_batched_page_would_fetch() {
     let dir = tempfile::tempdir().expect("tempdir");
@@ -746,7 +760,7 @@ fn what_one_element_read_fetches_today_and_what_a_batched_page_would_fetch() {
         (0..LARGE_ELEMENTS)
             .map(|f| Command::HashSet {
                 key: "read-h".to_string(),
-                field: format!("f{f}"),
+                field: format!("f{f:03}"),
                 value: vec![b'v'; VALUE_WIDTH],
             })
             .collect(),
@@ -774,7 +788,9 @@ fn what_one_element_read_fetches_today_and_what_a_batched_page_would_fetch() {
         assert!(
             lengths.iter().all(|length| *length == lengths[0]),
             "the field pages are not all one width, so a single 'today' column cannot stand for \
-             them: {lengths:?}"
+             them: {lengths:?} -- the fixture's field names are padded to one width for exactly \
+             this reason, because a page states its own element and so its length includes that \
+             element's name"
         );
         lengths[0]
     };
@@ -789,10 +805,22 @@ fn what_one_element_read_fetches_today_and_what_a_batched_page_would_fetch() {
         shard_id: 1,
         command: Command::HashGet {
             key: "read-h".to_string(),
-            field: "f0".to_string(),
+            // The padded spelling the fixture wrote, not `f0`: an unpadded name is a field this
+            // hash does not hold, and the read would ack with nothing while still asserting `ok`.
+            field: "f000".to_string(),
         },
     });
     assert!(response.status.ok, "the control read must ack");
+    // AND IT MUST ACK WITH THE VALUE. `status.ok` is true for a hash field that is absent, so the
+    // line above alone would pass over a fixture whose names had drifted from the read's.
+    match &response.response {
+        crate::types::CommandResponse::Bytes { value } => assert_eq!(
+            Some(vec![b'v'; VALUE_WIDTH]),
+            *value,
+            "the control read answered without the value the fixture wrote"
+        ),
+        other => panic!("expected Bytes from a hash field read, got {other:?}"),
+    }
 
     println!("one field page today: {today_page_bytes} B for a {VALUE_WIDTH} B value");
     println!("  batch   page bytes   bytes fetched per single-element read   amplification");

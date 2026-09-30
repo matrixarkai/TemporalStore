@@ -45,11 +45,18 @@
 //!
 //! Byte-identical today -- that is the finding of
 //! `every_member_a_set_listing_returns_is_already_spelled_by_its_component`. What it would cost is
-//! not reads but the only validation a component has. The component and the payload are equal BY
-//! CONSTRUCTION AT WRITE TIME and nothing re-checks them; today a page that disagrees with its name
-//! is served as the page, and decoding would serve the name instead. Neither is checked against the
-//! other, so this trades a verified-by-storage answer for an unverified one and saves reads. It is
-//! measured here and not taken.
+//! not reads but the only validation a component has.
+//!
+//! THE SECOND HALF OF THAT SENTENCE USED TO READ "and nothing re-checks them; today a page that
+//! disagrees with its name is served as the page", and `container_pages` made it false. A container
+//! page now states which element it holds, and the read funnel asks the page for the element the
+//! index named -- so a page that disagrees with its name is NOT served, it answers missing. The
+//! component and the payload are still written together by one call site, and the check is now on the
+//! element KEY rather than on the value, but a check exists where none did.
+//!
+//! What does not change is the verdict: decoding the component instead of reading the page would
+//! trade an answer storage vouches for against one nothing does, and it would give up the element
+//! check as well as the byte one. It is measured here and not taken.
 //!
 //! ## Serving from `shard.sets`
 //!
