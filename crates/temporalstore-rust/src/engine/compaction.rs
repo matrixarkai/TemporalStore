@@ -695,9 +695,16 @@ fn read_block_bytes_for_compaction(
     //
     // WHAT IT COSTS, stated rather than implied: the in-log fallback inside `read_block_bytes`
     // will not resolve a container ELEMENT page whose only durable copy is still a WAL record,
-    // so compaction leaves that page where it is instead of relocating it. That is the same
-    // outcome this function already produces for any page it cannot read -- the caller skips
-    // it and the address is left alone -- so it is a missed relocation and never wrong bytes.
+    // so compaction cannot relocate that page -- and the round FAILS rather than skipping it.
+    // Both callers turn this `None` into `Status::error("page_compaction_failed", ...)` with `?`,
+    // which is what CP4 requires: a round that stops partway must propagate, so the consistent
+    // partial index is durably committed, or reclaim purges a slab the durable index still names.
+    // The fault seam above says the same from the other side -- returning `None` here is THE way
+    // a round fails partway in production. Do NOT read this paragraph as permission to make the
+    // caller skip the entry and leave the address alone; the guard is
+    // `part4::partial_compaction_failure_durably_persists_the_consistent_partial_index`, and that
+    // misreading has already turned it red once. The bytes are never wrong either way -- what is
+    // at stake is whether the failure stays loud.
     // Whole-object pages, which is every `string` and `control_state`, are unaffected: `None`
     // is their actual component.
     read_block_bytes(cache, block_store, shard_id, address, identity, routing_bucket)
