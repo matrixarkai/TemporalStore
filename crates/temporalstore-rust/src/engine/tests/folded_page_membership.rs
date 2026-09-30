@@ -1,58 +1,55 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright 2026 MatrixArkAI
 
-//! A FOLDED PAGE IS NOT AUTHORITATIVE FOR MEMBERSHIP, AND THAT BOUNDS WHAT THE NEXT STAGE CAN DO.
+//! A FOLDED PAGE IS NOW AUTHORITATIVE FOR MEMBERSHIP, AND THIS IS THE CHECK THAT SAID IT WAS NOT.
 //!
-//! # WHY THIS EXISTS
+//! # WHAT THIS MODULE USED TO ASSERT, AND WHY IT IS INVERTED RATHER THAN DELETED
 //!
-//! #2027 folds a container's element pages into one at compaction. The stage after it was to rebuild
-//! the resident container maps FROM those pages -- one page read instead of one index entry per
-//! element -- because that is the step that would let the page index stop carrying an entry per
-//! element at all. `insert_timestamped_secondary_view` already works that way for the timestamped
-//! kinds, so the shape was there to copy.
+//! #2027 folds a container's element pages into one at compaction. #2028 then drove the refutation of
+//! the stage that was to follow: twelve set members folded to one page, one member removed, the live
+//! index naming eleven and the page holding twelve. A removal reached the resident map and the page
+//! INDEX and did not reach the PAGE, because a folded page stays live for its other elements and
+//! nothing rewrites it. So the page set was a SUPERSET of the membership, and deriving membership
+//! from it resurrected the removed member -- exactly the over-complete state #2025 enumerated five
+//! readers for, four of them live, arriving from the other side.
 //!
-//! IT IS NOT SOUND FOR THE CONTAINER KINDS, and this module is the driven reason, not an argument.
-//! A removal reaches the resident map and the page INDEX; it does not reach the PAGE. A folded page
-//! stays live because its other elements are live, so the removed element's bytes are still inside it.
-//! Rebuilding membership from that page puts the element back.
+//! The assertion that carried that constraint said, in its own failure message, that a red here would
+//! mean the constraint had been LIFTED and was a result rather than a break. It has been. The
+//! assertion is inverted in place rather than moved to a new module so that the diff is the record:
+//! the row counts either side of it are the same measurement, and the verdict flipped.
 //!
-//! That is exactly #2017's over-complete state -- resident map holding an element the live index says
-//! is gone -- which #2025 enumerated five readers for and fixed. Deriving membership from pages would
-//! reintroduce it from the other side, and #2025's own conclusion is what says how much it costs:
-//! four of those five readers are LIVE.
+//! # WHAT LIFTED IT
 //!
-//! # WHAT THE NEXT STAGE HAS TO DO FIRST, stated so it does not have to be re-derived
+//! `container_pages`' second shape carries a per-item removal flag, and the removal path appends a
+//! page that states the removal instead of only dropping the index entry. So the page set is no longer
+//! a superset of the membership; it is a LOG of it, folded by `container_membership::derive_membership`
+//! in append order.
 //!
-//! One of these, and none of them is free:
+//! # WHAT THIS ASSERTS NOW
 //!
-//!   * a removal REWRITES the page it was in. That is a read-modify-write on the removal path, which
-//!     is the cost #2027 exists to avoid paying -- it folds only pages a round was already rewriting.
-//!   * the frame carries a TOMBSTONE item, so the page records the removal without being rewritten
-//!     whole. That is a page-format change, and therefore a stored-format change.
-//!   * the page supplies only VALUES and the index stays the membership authority. That is sound and
-//!     buys nothing: it still needs one index entry per element, which is the thing the stage was
-//!     for.
+//! Three things, and the third is the one that would have been easy to leave out:
 //!
-//! # WHAT THIS ASSERTS, AND WHAT A RED HERE MEANS
-//!
-//! It asserts the CURRENT truth: after a fold and one removal, the index names one fewer element than
-//! the page holds. If this goes red because the page no longer holds the removed element, the
-//! constraint has been LIFTED -- a removal now reaches the page -- and the rebuild above becomes
-//! sound. That is a result and not a regression, and the assertion message says so, because a
-//! recorded constraint whose mechanism was fixed is otherwise read as a break.
+//!   1. the PAGES name the removed member as REMOVED -- not merely absent from a page, which is a
+//!      different and much weaker fact;
+//!   2. the membership DERIVED from the pages equals what the live index names, element for element;
+//!   3. and the derivation is COMPLETE -- no page failed to read, none failed to walk, none was
+//!      unframed. An incomplete derivation that happened to agree would agree by luck, and #2028's
+//!      own fix to `insert_timestamped_secondary_view` is the recorded case of a read failure
+//!      producing a silently short derived view that nothing else held a copy of.
 //!
 //! # DENOMINATORS
 //!
-//! Both sides are counted and both are asserted non-zero before they are compared: a fixture that
-//! folded nothing, or that read no page, would make the two sides agree for the wrong reason. The
-//! fold's own counters are asserted first, because "one page per container" is also what an object
-//! with one element looks like.
+//! Every side is counted and asserted non-zero before it is compared. A fixture that folded nothing,
+//! or that read no page, would make two sides agree for the wrong reason. The fold's own counters are
+//! asserted first, because "one page per container" is also what an object with one element looks
+//! like -- and the tombstone's own page is asserted to exist, because a removal that wrote no page
+//! would leave the derivation agreeing with the index only because the member was in neither.
 #![allow(clippy::all)]
 use super::*;
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 
 /// Members written. More than one page's worth would obscure the point; twelve fold into one page,
-/// which is the state the next stage would be reading.
+/// which is the state the refutation was about.
 const MEMBERS: usize = 12;
 
 fn engine_on(dir: &std::path::Path) -> TemporalEngine {
@@ -88,7 +85,7 @@ fn write(engine: &TemporalEngine, command: Command) {
 
 /// rust-internal: drives the engine's own command surface
 #[test]
-fn a_folded_page_still_holds_a_member_the_live_index_no_longer_names() {
+fn a_folded_pages_membership_now_states_the_member_the_live_index_no_longer_names() {
     let dir = tempfile::tempdir().expect("tempdir");
     let engine = engine_on(dir.path());
     load_on(&engine);
@@ -119,7 +116,13 @@ fn a_folded_page_still_holds_a_member_the_live_index_no_longer_names() {
          claims to be asking about"
     );
 
+    // Both removal counters are floored over the removal below, so a removal that recorded NOTHING
+    // in the pages cannot pass as one that did.
+    crate::engine::container_pages::reset_unframed_container_removal_count();
+    crate::engine::execute_on_shard::reset_tombstone_append_failure_count();
+
     let victim = members[3].clone();
+    let victim_component = hex::encode(&victim);
     write(
         &engine,
         Command::SetRemove {
@@ -128,66 +131,93 @@ fn a_folded_page_still_holds_a_member_the_live_index_no_longer_names() {
         },
     );
 
+    assert_eq!(
+        0,
+        crate::engine::container_pages::unframed_container_removal_count(),
+        "the removal could not frame a tombstone page, so the pages say nothing about it"
+    );
+    assert_eq!(
+        0,
+        crate::engine::execute_on_shard::tombstone_append_failure_count(),
+        "the removal could not append its tombstone page"
+    );
+
     let shards = engine.shards.read().expect("engine lock poisoned");
     let shard = shards.get(&1).expect("shard is loaded");
 
-    // SIDE 1: what the live page INDEX names for this object.
+    // SIDE 1: what the live page INDEX names for this object. Unchanged from the refutation: this is
+    // the reader every serving path uses, and the point of the whole change is that it does not move.
     let named: BTreeSet<Vec<u8>> =
         crate::engine::bucket_store::bucket_index_component_block_addresses(shard, "set", "folded")
             .iter()
             .filter_map(|(component, _)| component.as_deref().and_then(|c| hex::decode(c).ok()))
             .collect();
 
-    // SIDE 2: what the PAGES this object resolves to actually contain. Deduplicated by address,
-    // because after a fold many entries name one page and reading it twice would double the count.
-    let mut in_pages: BTreeSet<Vec<u8>> = BTreeSet::new();
-    let mut pages_read = 0usize;
-    let mut framed_pages = 0usize;
-    let mut seen_addresses = BTreeSet::new();
+    // SIDE 2: every page this object resolves to, TOMBSTONE ENTRIES INCLUDED.
+    //
+    // NO `page.deleted` SKIP, and that is the one line that differs from the refutation's walk. A
+    // tombstone entry is precisely a deleted entry, so a walk that filtered them would read the page
+    // set as it was before this change and would resurrect the member -- which is what makes the
+    // absence of that filter the subject here rather than an incidental difference.
+    let mut addresses: Vec<crate::block_store::BlockAddress> = Vec::new();
+    let mut live_entries = 0usize;
+    let mut tombstone_entries = 0usize;
     for bucket in shard.bucket_index.bucket_map.values() {
         for page in bucket.block_index.values() {
-            if page.deleted || page.model_id.as_str() != "set" || &*page.object_key != "folded" {
+            if page.model_id.as_str() != "set" || &*page.object_key != "folded" {
                 continue;
             }
-            let identity = (
-                page.address.block_slab_id(),
-                page.address.offset(),
-                page.address.length(),
-            );
-            if !seen_addresses.insert(identity) {
-                continue;
+            if page.deleted {
+                tombstone_entries += 1;
+            } else {
+                live_entries += 1;
             }
-            let Ok(bytes) = engine.block_store.read(&page.address) else {
-                continue;
-            };
-            pages_read += 1;
-            if let crate::engine::container_pages::ContainerPageDecode::Framed { items, .. } =
-                crate::engine::container_pages::decode_container_page(&bytes)
-            {
-                framed_pages += 1;
-                for item in items {
-                    in_pages.insert(item.key);
-                }
-            }
+            addresses.push(page.address.clone());
         }
     }
 
-    println!("=== after a fold and one removal ===");
-    println!(
-        "  {pages_read} distinct page(s) read, {framed_pages} framed; the live index names {} \
-         member(s), the pages hold {}",
-        named.len(),
-        in_pages.len()
+    assert!(
+        tombstone_entries > 0,
+        "DENOMINATOR: the removal left no tombstone entry, so there is no page for the derivation to \
+         read the removal out of and any agreement below would be an agreement about nothing"
     );
-    println!(
-        "  the removed member: named by the index = {}, present in the pages = {}",
-        named.contains(&victim),
-        in_pages.contains(&victim)
+    assert!(live_entries > 0, "DENOMINATOR: no live entries for this object");
+
+    let derived = crate::engine::container_membership::derive_membership(
+        "set",
+        addresses,
+        |address| engine.block_store.read(address).ok(),
     );
 
-    // DENOMINATORS FIRST. A zero on either side makes the comparison below empty.
-    assert!(pages_read > 0, "DENOMINATOR: no pages read for this object");
-    assert!(framed_pages > 0, "DENOMINATOR: no framed pages, so the page names no elements at all");
+    println!("=== after a fold and one removal ===");
+    println!(
+        "  entries: {live_entries} live, {tombstone_entries} tombstone; \
+         {} distinct page(s) read, {} of the first shape",
+        derived.pages_read, derived.live_only_pages
+    );
+    println!(
+        "  the live index names {} member(s); the pages derive {} live and {} removed",
+        named.len(),
+        derived.live.len(),
+        derived.removed.len()
+    );
+    println!(
+        "  the removed member: named by the index = {}, derived live from the pages = {}, \
+         NAMED REMOVED by the pages = {}",
+        named.contains(&victim),
+        derived.live.contains_key(&victim_component),
+        derived.removed.contains(&victim_component)
+    );
+    println!(
+        "  derivation failures: {} read, {} undecodable, {} unframed, {} unrenderable",
+        derived.read_failures, derived.undecodable, derived.unframed, derived.unrenderable_items
+    );
+
+    // DENOMINATORS FIRST. A zero on either side makes every comparison below empty.
+    assert!(
+        derived.pages_read > 0,
+        "DENOMINATOR: no pages read for this object"
+    );
     assert_eq!(
         MEMBERS - 1,
         named.len(),
@@ -200,18 +230,61 @@ fn a_folded_page_still_holds_a_member_the_live_index_no_longer_names() {
         "the live index still names the removed member"
     );
 
-    // THE CONSTRAINT.
+    // COMPLETE, AND THEREFORE WORTH COMPARING. Asserted before the agreement rather than after: an
+    // incomplete derivation that agreed would be agreeing by luck, and the failure counts say which
+    // of four ways it fell short rather than only that it did.
     assert!(
-        in_pages.contains(&victim),
-        "THE CONSTRAINT IS LIFTED, WHICH IS A RESULT AND NOT A BREAK: the folded page no longer \
-         holds the removed member, so a removal now reaches the page and rebuilding the resident \
-         container maps FROM the pages has become sound. Update this module's header and the stage \
-         it blocks."
+        derived.is_complete(),
+        "the derivation is incomplete ({} failure(s)), so its agreement with the index below would \
+         be luck: {} read, {} undecodable, {} unframed, {} unrenderable",
+        derived.failures(),
+        derived.read_failures,
+        derived.undecodable,
+        derived.unframed,
+        derived.unrenderable_items
     );
+
+    // THE INVERTED CONSTRAINT. This is the assertion whose flip is the result.
+    assert!(
+        derived.removed.contains(&victim_component),
+        "THE PAGES DO NOT STATE THE REMOVAL. This is the refutation #2028 recorded, back: a folded \
+         page stays live for its other elements and nothing rewrote it, so the removed member is \
+         still in it and a page-derived membership resurrects it. Either the removal did not append \
+         a tombstone page, or the entry that kept that page reachable was dropped, or the derivation \
+         did not reach it."
+    );
+    assert!(
+        !derived.live.contains_key(&victim_component),
+        "the pages derive the removed member as LIVE as well as removed, so the tombstone did not \
+         outrank the page it supersedes -- which is an ORDERING failure, not a missing tombstone"
+    );
+
+    // AND THE TWO SIDES AGREE, ELEMENT FOR ELEMENT. Not by count: #2014 is the recorded case of a
+    // length answer and its listing agreeing by coincidence, and a count comparison here would pass
+    // if the derivation held a different eleven members.
+    let derived_members: BTreeSet<Vec<u8>> = derived
+        .live
+        .keys()
+        .filter_map(|component| hex::decode(component).ok())
+        .collect();
     assert_eq!(
-        MEMBERS,
-        in_pages.len(),
-        "the pages hold {} members where {MEMBERS} were written and one was removed",
-        in_pages.len()
+        named, derived_members,
+        "the membership derived from the pages is not the membership the live index names"
+    );
+
+    // AND THE DERIVED VALUES ARE THE MEMBERS THEMSELVES, which for a set is what #2017 measured the
+    // page already spells. A derivation that recovered the right KEYS and the wrong values would
+    // satisfy every assertion above.
+    let mismatched: BTreeMap<String, usize> = derived
+        .live
+        .iter()
+        .filter(|(component, value)| hex::decode(component).as_deref() != Ok(value.as_slice()))
+        .map(|(component, value)| (component.clone(), value.len()))
+        .collect();
+    assert!(
+        mismatched.is_empty(),
+        "{} derived element(s) carry a value that is not the member their component spells: {:?}",
+        mismatched.len(),
+        mismatched
     );
 }

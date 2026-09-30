@@ -220,6 +220,104 @@ fn drop_if_expired(
     }
 }
 
+/// Remove one element of a container, RECORDING THE REMOVAL IN THE PAGES as well as the index.
+///
+/// # WHY THERE IS A FUNCTION HERE AT ALL
+///
+/// Seven call sites removed a container element by calling `mark_bucket_index_block_deleted`, which
+/// drops the index entry and stages the outcome. That left the PAGES saying nothing: #2028 drove
+/// what it costs -- a folded page holding twelve members the index named eleven of -- and the reason
+/// is that the page is never rewritten by a removal. So a removal now APPENDS a page that states it,
+/// and the seven sites differ in their kind and their component and in nothing else. Spelling the
+/// append at each of them is how the fourth site gets the ordinal wrong.
+///
+/// Two of the seven are not obviously removals and are the ones this must not miss: a `ZSetAdd` or
+/// `ZSetIncrement` that changes a member's score REMOVES the old `(score, member)` element key and
+/// writes a new one. Leave the old key untombstoned and a page-derived membership holds the member
+/// TWICE, at both scores. `a_score_change_tombstones_the_element_key_it_left` drives that.
+///
+/// # WHAT IT DOES WHEN IT CANNOT WRITE THE PAGE
+///
+/// It removes the element anyway and leaves the pages silent, with the miss counted by
+/// `container_pages::unframed_container_removal_count` or by [`TOMBSTONE_APPEND_FAILURES`]. That is
+/// the only honest choice: refusing the removal would keep serving an element the caller deleted,
+/// which is worse than a page set that a derivation will decline to install. Both counters are
+/// floored at zero by the guards, so neither is a tolerance -- they are how a hole announces itself
+/// instead of appearing later as a resurrected member.
+#[allow(clippy::too_many_arguments)]
+fn remove_container_element(
+    cache: &MultiLayerCache,
+    block_store: &BlockStore,
+    shard: &mut ShardState,
+    shard_id: ShardId,
+    model_id: &str,
+    key: &str,
+    component: &str,
+    start_routing_bucket: u32,
+    end_routing_bucket: u32,
+    async_storage: bool,
+) -> bool {
+    let routing_bucket = block_routing_bucket(key, start_routing_bucket, end_routing_bucket);
+    let tombstone = crate::engine::container_pages::tombstone_page(model_id, component).and_then(
+        |page| {
+            // THE ORDINAL IS THE ELEMENT'S OWN, exactly as it is on the write path: the element
+            // already has a position in this object and the tombstone is another page AT that
+            // position, not a new one. Computed before the append because the append stamps it into
+            // the record header and onto the address from one value -- `decode_block_record` refuses
+            // a page whose two copies disagree, which is what #2008 threaded this for.
+            let block_ordinal = crate::engine::state::container_page_ordinal(
+                &shard.bucket_index,
+                routing_bucket,
+                model_id,
+                key,
+                component,
+            );
+            append_value_of_object(
+                cache,
+                block_store,
+                shard_id,
+                &page,
+                Some(stable_block_object_id(shard_id, model_id, key)),
+                Some(component),
+                Some(routing_bucket),
+                async_storage,
+                block_ordinal,
+            )
+            .ok()
+        },
+    );
+    if tombstone.is_none() {
+        TOMBSTONE_APPEND_FAILURES.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    }
+    crate::engine::mark_bucket_index_block_deleted_recording(
+        shard,
+        shard_id,
+        model_id,
+        key,
+        Some(component),
+        true,
+        tombstone,
+    )
+}
+
+/// Removals whose tombstone page could not be APPENDED, as distinct from could not be FRAMED.
+///
+/// Two counters and not one, because the two say different things about the store: an unframable
+/// removal is a bug in this code's spelling of a kind, and a failed append is the block store
+/// refusing a write. A guard that floored their sum would pass while one of them was firing.
+static TOMBSTONE_APPEND_FAILURES: std::sync::atomic::AtomicU64 =
+    std::sync::atomic::AtomicU64::new(0);
+
+/// How many removals could not append the page that would have recorded them.
+pub fn tombstone_append_failure_count() -> u64 {
+    TOMBSTONE_APPEND_FAILURES.load(std::sync::atomic::Ordering::Relaxed)
+}
+
+/// Forget the count, so a test measures its own exercise.
+pub fn reset_tombstone_append_failure_count() {
+    TOMBSTONE_APPEND_FAILURES.store(0, std::sync::atomic::Ordering::Relaxed);
+}
+
 pub(crate) fn execute_on_shard(
     cache: &MultiLayerCache,
     block_store: &BlockStore,
@@ -912,7 +1010,18 @@ pub(crate) fn execute_on_shard(
         Command::HashDelete { key, field } => {
             mutated |= drop_if_expired(cache, shard_id, shard, &key);
             mutated |=
-                mark_bucket_index_block_deleted(shard, shard_id, "hash", &key, Some(field.as_str()));
+                remove_container_element(
+                    cache,
+                    block_store,
+                    shard,
+                    shard_id,
+                    "hash",
+                    &key,
+                    field.as_str(),
+                    start_routing_bucket,
+                    end_routing_bucket,
+                    async_storage,
+                );
             if let Some(fields) = shard.hashes.get_mut(&key) {
                 mutated |= fields.remove(&field).is_some();
                 // Mirror hash2::Del: deleting the last field removes the whole key
@@ -1004,7 +1113,18 @@ pub(crate) fn execute_on_shard(
             }
             if let Some(old_biased) = existed {
                 let old_component = zset_component(old_biased, &member);
-                mark_bucket_index_block_deleted(shard, shard_id, "zset", &key, Some(&old_component));
+                remove_container_element(
+                    cache,
+                    block_store,
+                    shard,
+                    shard_id,
+                    "zset",
+                    &key,
+                    &old_component,
+                    start_routing_bucket,
+                    end_routing_bucket,
+                    async_storage,
+                );
             }
             let component = zset_component(biased, &member);
             let object_id = stable_block_object_id(shard_id, "zset", &key);
@@ -1086,7 +1206,18 @@ pub(crate) fn execute_on_shard(
                 Some((biased, _)) => {
                     mutated = true;
                     let component = zset_component(biased, &member);
-                    mark_bucket_index_block_deleted(shard, shard_id, "zset", &key, Some(&component));
+                    remove_container_element(
+                        cache,
+                        block_store,
+                        shard,
+                        shard_id,
+                        "zset",
+                        &key,
+                        &component,
+                        start_routing_bucket,
+                        end_routing_bucket,
+                        async_storage,
+                    );
                     if shard.zsets.get(&key).is_some_and(BTreeMap::is_empty) {
                         shard.zsets.remove(&key);
                     }
@@ -1341,7 +1472,18 @@ pub(crate) fn execute_on_shard(
             let biased = zset_score_bits(score);
             if let Some(old_biased) = old {
                 let old_component = zset_component(old_biased, &member);
-                mark_bucket_index_block_deleted(shard, shard_id, "zset", &key, Some(&old_component));
+                remove_container_element(
+                    cache,
+                    block_store,
+                    shard,
+                    shard_id,
+                    "zset",
+                    &key,
+                    &old_component,
+                    start_routing_bucket,
+                    end_routing_bucket,
+                    async_storage,
+                );
             }
             let component = zset_component(biased, &member);
             let object_id = stable_block_object_id(shard_id, "zset", &key);
@@ -1412,7 +1554,18 @@ pub(crate) fn execute_on_shard(
             let mut members = Vec::new();
             for (member, biased) in ordered {
                 let component = zset_component(biased, &member);
-                mark_bucket_index_block_deleted(shard, shard_id, "zset", &key, Some(&component));
+                remove_container_element(
+                    cache,
+                    block_store,
+                    shard,
+                    shard_id,
+                    "zset",
+                    &key,
+                    &component,
+                    start_routing_bucket,
+                    end_routing_bucket,
+                    async_storage,
+                );
                 if let Some(entries) = shard.zsets.get_mut(&key) {
                     entries.remove(&member);
                 }
@@ -1547,7 +1700,18 @@ pub(crate) fn execute_on_shard(
                 Some((seq, address)) => {
                     let component = format!("{:016x}", (seq as u64).wrapping_sub(i64::MIN as u64));
                     mutated = true;
-                    mark_bucket_index_block_deleted(shard, shard_id, "list", &key, Some(&component));
+                    remove_container_element(
+                        cache,
+                        block_store,
+                        shard,
+                        shard_id,
+                        "list",
+                        &key,
+                        &component,
+                        start_routing_bucket,
+                        end_routing_bucket,
+                        async_storage,
+                    );
                     if shard.lists.get(&key).is_some_and(BTreeMap::is_empty) {
                         shard.lists.remove(&key);
                     }
@@ -1685,12 +1849,17 @@ pub(crate) fn execute_on_shard(
         Command::SetRemove { key, member } => {
             mutated |= drop_if_expired(cache, shard_id, shard, &key);
             let member_component = hex::encode(&member);
-            mutated |= mark_bucket_index_block_deleted(
+            mutated |= remove_container_element(
+                cache,
+                block_store,
                 shard,
                 shard_id,
                 "set",
                 &key,
-                Some(&member_component),
+                &member_component,
+                start_routing_bucket,
+                end_routing_bucket,
+                async_storage,
             );
             if let Some(set) = shard.sets.get_mut(&key) {
                 mutated |= set.remove(&member).is_some();

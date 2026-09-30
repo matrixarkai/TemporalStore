@@ -4,6 +4,76 @@
 //! Index/manifest persistence + load/flush helper methods for TemporalEngine, split from engine.rs.
 use super::*;
 
+/// WHICH WAY A LOAD OF THE PERSISTED INDEX WENT.
+///
+/// # WHY THIS IS NOT TEST SCAFFOLDING
+///
+/// A reload that silently rebuilds from the WAL and one that read the index correctly END IN THE SAME
+/// STATE: both leave `index_format_version` at the current constant, both serve the right answers, and
+/// nothing afterwards distinguishes them. So "the reload worked" has never been a statement about
+/// which code ran, and a change that moves the index's MEANING cannot otherwise say whether the path
+/// it cares about was exercised at all.
+///
+/// This change bumps `SHARD_INDEX_FORMAT_VERSION` from 3 to 5, so EVERY EXISTING STORE'S INDEX IS
+/// REFUSED ON ITS FIRST LOAD and rebuilt from the log. That is correct -- it is the whole purpose of
+/// the stamp -- and it is the largest operational consequence of this change, costing whatever a full
+/// replay costs on a large store. Before this counter nothing reported it: the refusal is a
+/// `return Ok(None)` that the caller cannot tell from an absent index.
+///
+/// `a_reload_after_the_stamp_bump_replays_rather_than_reading_the_index` turns the counter into a
+/// proof, and asserts the membership is right on BOTH paths -- a counter saying "replayed" beside a
+/// wrong answer would be worse than no counter.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum IndexLoadPath {
+    /// The file was there, decoded, and its stamp was current. The index was USED.
+    Accepted,
+    /// The file was there and decoded and its stamp was OLD, so it was refused and the caller
+    /// replays. This is the arm the stamp exists for and the one nothing could see before.
+    RefusedStaleStamp,
+    /// There is no index file. A crash before the first compaction looks like this.
+    Absent,
+    /// The file was there and could not be decoded at all.
+    Undecodable,
+}
+
+static INDEX_LOADS_ACCEPTED: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+static INDEX_LOADS_REFUSED_STALE: std::sync::atomic::AtomicU64 =
+    std::sync::atomic::AtomicU64::new(0);
+static INDEX_LOADS_ABSENT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+static INDEX_LOADS_UNDECODABLE: std::sync::atomic::AtomicU64 =
+    std::sync::atomic::AtomicU64::new(0);
+
+fn note_index_load(path: IndexLoadPath) {
+    let counter = match path {
+        IndexLoadPath::Accepted => &INDEX_LOADS_ACCEPTED,
+        IndexLoadPath::RefusedStaleStamp => &INDEX_LOADS_REFUSED_STALE,
+        IndexLoadPath::Absent => &INDEX_LOADS_ABSENT,
+        IndexLoadPath::Undecodable => &INDEX_LOADS_UNDECODABLE,
+    };
+    counter.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+}
+
+/// (accepted, refused-stale, absent, undecodable) since the last reset.
+///
+/// A TUPLE AND NOT A SUM. A guard that only had the total could not tell a store that read its index
+/// from one that replayed, which is the entire distinction this exists to draw.
+pub fn index_load_path_counts() -> (u64, u64, u64, u64) {
+    (
+        INDEX_LOADS_ACCEPTED.load(std::sync::atomic::Ordering::Relaxed),
+        INDEX_LOADS_REFUSED_STALE.load(std::sync::atomic::Ordering::Relaxed),
+        INDEX_LOADS_ABSENT.load(std::sync::atomic::Ordering::Relaxed),
+        INDEX_LOADS_UNDECODABLE.load(std::sync::atomic::Ordering::Relaxed),
+    )
+}
+
+/// Forget the counts, so a test measures its own loads rather than the suite before it.
+pub fn reset_index_load_path_counts() {
+    INDEX_LOADS_ACCEPTED.store(0, std::sync::atomic::Ordering::Relaxed);
+    INDEX_LOADS_REFUSED_STALE.store(0, std::sync::atomic::Ordering::Relaxed);
+    INDEX_LOADS_ABSENT.store(0, std::sync::atomic::Ordering::Relaxed);
+    INDEX_LOADS_UNDECODABLE.store(0, std::sync::atomic::Ordering::Relaxed);
+}
+
 impl TemporalEngine {
     pub(super) fn index_path(&self, shard_id: ShardId) -> PathBuf {
         self.index_dir.join(format!("shard-{shard_id}.index.json"))
@@ -231,13 +301,21 @@ impl TemporalEngine {
                     // falls back to WAL replay, which rebuilds both maps correctly through
                     // insert_context_event_views. Slower, and correct.
                     if shard.index_format_version < super::SHARD_INDEX_FORMAT_VERSION {
+                        note_index_load(IndexLoadPath::RefusedStaleStamp);
                         return Ok(None);
                     }
+                    note_index_load(IndexLoadPath::Accepted);
                     shard
                 }
-                Err(_) => return Ok(None),
+                Err(_) => {
+                    note_index_load(IndexLoadPath::Undecodable);
+                    return Ok(None);
+                }
             },
-            Err(_) => ShardState::default(),
+            Err(_) => {
+                note_index_load(IndexLoadPath::Absent);
+                ShardState::default()
+            }
         };
         // Thin-layer Sequence fold: a pre-fold on-disk index stored Sequence rows in a
         // separate `sequences` map. Sequence now lives in `features` (same timestamped-KV

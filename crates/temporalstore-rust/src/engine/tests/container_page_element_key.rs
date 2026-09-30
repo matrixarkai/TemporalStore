@@ -342,18 +342,28 @@ fn a_frame_decodes_to_the_items_it_was_built_from() {
         match decode_container_page(&page) {
             ContainerPageDecode::Framed {
                 spelling: seen,
+                shape,
                 items,
             } => {
                 assert_eq!(spelling, seen, "the frame reports the spelling it was written with");
                 assert_eq!(
+                    crate::engine::container_pages::ContainerPageShape::WithRemovals,
+                    shape,
+                    "a page written today takes the shape that CAN say an element was removed, \
+                     whether or not this one does -- see CONTAINER_PAGE_MAGIC_V2 on why there is \
+                     one writer and not a branch on the contents"
+                );
+                assert_eq!(
                     vec![
                         ContainerPageItem {
                             key: first_key.clone(),
-                            value: first_value.clone()
+                            value: first_value.clone(),
+                            deleted: false
                         },
                         ContainerPageItem {
                             key: second_key.clone(),
-                            value: second_value.clone()
+                            value: second_value.clone(),
+                            deleted: false
                         },
                     ],
                     items,
@@ -982,12 +992,16 @@ fn every_container_kind_reads_back_the_value_it_wrote_through_a_framed_page() {
             .container_page_frame_for_test(1, kind, key, Some(component.as_str()))
             .unwrap_or_else(|| panic!("no stored page for {kind} {key} component {component}"));
         match crate::engine::container_pages::decode_container_page(&frame) {
-            crate::engine::container_pages::ContainerPageDecode::Framed { spelling, items } => {
+            crate::engine::container_pages::ContainerPageDecode::Framed { spelling, items, .. } => {
                 assert_eq!(
                     1,
                     items.len(),
                     "{kind} wrote {} items in one page, and nothing batches yet",
                     items.len()
+                );
+                assert!(
+                    !items[0].deleted,
+                    "{kind} wrote a live element and the page says it was removed"
                 );
                 let named = crate::engine::container_pages::component_from_element_key(
                     spelling,

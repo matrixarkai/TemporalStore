@@ -6961,6 +6961,14 @@ fn what_a_key_costs_the_index_in_live_heap() {
 /// zero. They matter as much as the growth does, for the same reason: a bucket that briefly held
 /// several pages would otherwise keep their buffer for the rest of its life, and it would not show
 /// up as a failure anywhere else. The per-key ceiling above is what fails if either stops happening.
+///
+/// AND A PER-ELEMENT REMOVAL NOW DEFERS THE FIRST COLLAPSE, which is why the middle of this test
+/// reads differently than it used to. A removal keeps an entry pointing at the page that records it,
+/// so deleting two of three fields leaves one live entry and two tombstones -- three entries, and the
+/// arm correctly follows the count. The collapse is still driven, twice: once by writing the fields
+/// back, which clears their tombstones through the upsert's own `retain` and is what bounds the cost
+/// of the change at one entry per DISTINCT element removed; and once by the whole-object delete, which
+/// keeps no tombstone because an object with no membership left has nothing for a page to keep true.
 #[test]
 fn a_bucket_holding_one_block_holds_no_node() {
     use crate::engine::state::BlockIndexMap;
@@ -7052,13 +7060,119 @@ fn a_bucket_holding_one_block_holds_no_node() {
                     .any(|page| &*page.object_key == "wide")
             })
             .expect("the remaining field must still be filed");
-        assert_eq!(bucket.block_index.len(), 1, "two of three fields were removed");
-        // THE DEMOTION STILL MATTERS, AND IT IS NOW A LIST BUFFER TRADED FOR A BOX. A list that
-        // dropped back to one page would otherwise keep a buffer sized for a whole growth step for
-        // the rest of the bucket's life; the collapse trades it for one sized for the entry.
+        // THE DEMOTION IS NOW DEFERRED, NOT DEAD, AND THIS IS WHAT DEFERS IT.
+        //
+        // WHAT THIS ASSERTED BEFORE: `len() == 1` and the single-page arm, because deleting two of
+        // three fields left one entry. `mark_bucket_index_block_deleted_with` was a `retain`
+        // returning false, so a delete removed the entry and the map drained.
+        //
+        // A per-element removal now KEEPS an entry -- pointing at the page that records the removal,
+        // so a membership derived from the pages does not resurrect the element. So the map holds
+        // ONE LIVE entry and TWO TOMBSTONES, three entries, and the arm follows the entry count,
+        // which is correct: the bucket really is carrying three entries.
+        //
+        // THE COST IS REAL AND IS NOT A COUNT CHANGE. The collapse this test exists for trades a list
+        // buffer sized for a whole growth step for one sized for a single entry, and a bucket with
+        // tombstones does not get it until something collects them. Nothing collects them yet --
+        // `compact_container_pages_batched` reads the resident maps, which hold no removed elements --
+        // so for such a bucket the buffer is held until a re-add clears the tombstones or a later
+        // stage collects them. That is stated here rather than left to be rediscovered from the
+        // per-key ceiling above, which is the assertion that would eventually fail for it.
+        let live = bucket.block_index.values().filter(|page| !page.deleted).count();
+        let tombstoned = bucket.block_index.values().filter(|page| page.deleted).count();
+        assert_eq!(
+            1, live,
+            "two of three fields were removed and {live} live entries remain"
+        );
+        assert_eq!(
+            2, tombstoned,
+            "two fields were removed and {tombstoned} tombstone entries remain; one per removal is \
+             what keeps the removals readable from the pages, and zero would mean a page-derived \
+             membership resurrects both fields"
+        );
+        assert_eq!(
+            3,
+            bucket.block_index.len(),
+            "the map holds {} entries where one live and two tombstones is three",
+            bucket.block_index.len()
+        );
+        // AND THE ARM FOLLOWS THE ENTRY COUNT, which is the invariant this test is really about: the
+        // arm must never disagree with `len()`, whatever the entries are.
         assert!(
-            matches!(bucket.block_index, BlockIndexMap::One(..)),
-            "a page index drained to one page must give up its list buffer for the single-page arm"
+            matches!(bucket.block_index, BlockIndexMap::Many(_)),
+            "a page index holding three entries must be in the multi-entry arm"
+        );
+    }
+
+    // AND THE COLLAPSE ITSELF STILL WORKS, driven where nothing defers it: writing the two fields
+    // BACK clears their tombstones through the upsert's retain, and then removing them from a kind
+    // that keeps no tombstone drains the map as it always did.
+    //
+    // WITHOUT THIS THE INVERSION ABOVE WOULD HAVE DELETED THE TEST'S SUBJECT. The demotion is the
+    // thing the module cares about; asserting only that it is deferred would leave nothing driving
+    // that it happens at all.
+    for field in ["a", "b"] {
+        engine.execute(ExecuteRequest {
+            shard_id: 1,
+            command: Command::HashSet {
+                key: "wide".to_string(),
+                field: field.to_string(),
+                value: vec![b'v'; 32],
+            },
+        });
+    }
+    {
+        let shards = engine.shards.read().expect("shards lock poisoned");
+        let shard = shards.get(&1).expect("shard 1 loaded");
+        let bucket = shard
+            .bucket_index
+            .bucket_map
+            .values()
+            .find(|bucket| {
+                bucket
+                    .block_index
+                    .values()
+                    .any(|page| &*page.object_key == "wide")
+            })
+            .expect("the object must still be filed");
+        let live = bucket.block_index.values().filter(|page| !page.deleted).count();
+        let tombstoned = bucket.block_index.values().filter(|page| page.deleted).count();
+        assert_eq!(3, live, "writing the two fields back left {live} live entries");
+        assert_eq!(
+            0, tombstoned,
+            "writing a field back did not clear its tombstone: {tombstoned} remain. The upsert's \
+             `retain` matches on the component, so a re-add takes the tombstone with it -- which is \
+             what bounds the cost of this change at one entry per DISTINCT element removed rather \
+             than one per removal."
+        );
+    }
+    // Now the whole object, through the path that keeps no tombstone, and the map must DRAIN.
+    engine.execute(ExecuteRequest {
+        shard_id: 1,
+        command: Command::CommonDelete {
+            key: "wide".to_string(),
+        },
+    });
+    {
+        let shards = engine.shards.read().expect("shards lock poisoned");
+        let shard = shards.get(&1).expect("shard 1 loaded");
+        let held: usize = shard
+            .bucket_index
+            .bucket_map
+            .values()
+            .map(|bucket| {
+                bucket
+                    .block_index
+                    .values()
+                    .filter(|page| &*page.object_key == "wide")
+                    .count()
+            })
+            .sum();
+        assert_eq!(
+            0, held,
+            "a whole-object delete left {held} entries for the object, tombstones included -- there \
+             is no membership left to keep true once the object is gone, so an entry retained here \
+             is leaked for the life of the store"
         );
     }
 }

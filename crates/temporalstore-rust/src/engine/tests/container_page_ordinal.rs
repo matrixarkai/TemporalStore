@@ -23,12 +23,24 @@
 //!
 //! # IT NAMES A POSITION, NOT AN ELEMENT
 //!
-//! That is forced by the tree rather than chosen. `mark_bucket_index_block_deleted_with` is named
-//! for a mark it does not make -- its body is a `retain` returning false -- and `ZSetRemove`,
-//! `SetRemove`, `ListPop` and `HashDelete` all go through it. So `max` FALLS after a delete and the
-//! next insert is handed the ordinal just freed. `the_ordinal_names_a_position_and_a_delete_frees_it`
-//! drives exactly that and asserts the reuse, because a reader that treated the ordinal as naming a
-//! particular element would be silently corrupt the moment it happened.
+//! That is forced by the tree rather than chosen: `max` FALLS after a delete and the next insert is
+//! handed the ordinal just freed. `the_ordinal_names_a_position_and_a_delete_frees_it` drives exactly
+//! that and asserts the reuse, because a reader that treated the ordinal as naming a particular
+//! element would be silently corrupt the moment it happened.
+//!
+//! **THE REASON `max` FALLS HAS MOVED, AND THE CONCLUSION HAS NOT.** It used to fall because the entry
+//! was GONE -- `mark_bucket_index_block_deleted_with` was named for a mark it did not make, its body a
+//! `retain` returning false, and `ZSetRemove`, `SetRemove`, `ListPop` and `HashDelete` all went through
+//! it. A per-element removal now KEEPS an entry, pointing at the page that records the removal and
+//! carrying `deleted`, because a container's pages became the statement of its membership and a page
+//! nothing points at is a page no derivation can read. `max` falls because `container_page_ordinal`
+//! FILTERS `deleted`, which it did not have to do while no entry ever carried it.
+//!
+//! So the freed ordinal is briefly held by two entries -- the tombstone that kept it and the element
+//! handed it back -- and exactly one of them is live. That is asserted, not left implicit, because two
+//! entries at one ordinal is also what corruption would look like and the whole difference is which is
+//! live. The safety argument is unchanged and is the one this section opens with: identity lives in the
+//! component, so a position may be refilled.
 //!
 //! # TWO DEPARTURES FROM THE SERIES DERIVATION, BOTH FORCED
 //!
@@ -112,13 +124,48 @@ fn read(engine: &TemporalEngine, command: Command) -> crate::types::CommandRespo
 ///
 /// The SAME walk the assignment itself reads -- every page of the object in the bucket, with no
 /// filter on `deleted` -- so a count taken here is the population the assignment saw.
+/// THE OBJECT'S LIVE PAGES, and the `deleted` filter here is new.
+///
+/// WHAT IT USED TO RETURN. Every entry, unfiltered -- which was the same set, because nothing in this
+/// engine set `BlockIndex::deleted` to true. A container removal now keeps a tombstone entry so the
+/// page recording the removal stays reachable, so "every entry" and "the live entries" have come
+/// apart. Every assertion in this module that counts pages or reads ordinals means the LIVE set: it
+/// asks what the object holds and what position the next element takes. The filter restores each claim
+/// to the quantity it was always about. [`tombstone_pages_of`] is the other half and the arms assert
+/// both, so nothing about tombstones is merely unmentioned.
 fn pages_of(engine: &TemporalEngine, kind: &str, key: &str) -> Vec<(Option<String>, Option<u64>)> {
     let shards = engine.shards.read().expect("engine lock poisoned");
     let shard = shards.get(&1).expect("shard 1 is loaded");
     let mut held = Vec::new();
     for bucket in shard.bucket_index.bucket_map.values() {
         for page in bucket.block_index.values() {
+            if page.deleted {
+                continue;
+            }
             if page.model_id.as_str() == kind && &*page.object_key == key {
+                held.push((
+                    page.component.as_deref().map(str::to_string),
+                    page.address.block_id(),
+                ));
+            }
+        }
+    }
+    held.sort();
+    held
+}
+
+/// The object's TOMBSTONE entries: the component each names and the ordinal it kept.
+fn tombstone_pages_of(
+    engine: &TemporalEngine,
+    kind: &str,
+    key: &str,
+) -> Vec<(Option<String>, Option<u64>)> {
+    let shards = engine.shards.read().expect("engine lock poisoned");
+    let shard = shards.get(&1).expect("shard 1 is loaded");
+    let mut held = Vec::new();
+    for bucket in shard.bucket_index.bucket_map.values() {
+        for page in bucket.block_index.values() {
+            if page.deleted && page.model_id.as_str() == kind && &*page.object_key == key {
                 held.push((
                     page.component.as_deref().map(str::to_string),
                     page.address.block_id(),
@@ -404,8 +451,15 @@ fn an_overwrite_keeps_the_members_ordinal_rather_than_climbing() {
 /// THE ORDINAL NAMES A POSITION. A DELETE FREES IT AND THE NEXT INSERT IS HANDED IT BACK.
 ///
 /// This is asserted rather than avoided, because it is what the tree does and the PR has to say
-/// which of the two it is. `mark_bucket_index_block_deleted_with`'s body is a `retain` returning
-/// false, so the page is REMOVED and `max` falls with it.
+/// which of the two it is.
+///
+/// WHAT THE MECHANISM USED TO BE AND WHAT IT IS NOW. This said the page was REMOVED -- the body of
+/// `mark_bucket_index_block_deleted_with` was a `retain` returning false -- and that was why `max`
+/// fell. A removal now KEEPS an entry, pointing at the page that records it and carrying `deleted`,
+/// so that a membership derived from the pages does not resurrect the element. The `max` still falls
+/// for a different reason: `container_page_ordinal` filters `deleted`. So the CLAIM of this test is
+/// unchanged and its MECHANISM moved, which is exactly the case worth spelling out -- a reader who
+/// assumed the old mechanism would expect this test to be red.
 ///
 /// AND THE SAFETY CONDITION IS ASSERTED IN THE SAME TEST: the page that inherits ordinal 2 carries
 /// the NEW member's component, not the deleted one's. Identity stayed in the component, so the
@@ -450,8 +504,24 @@ fn the_ordinal_names_a_position_and_a_delete_frees_it() {
     assert_eq!(
         after_delete,
         vec![Some(0), Some(1)],
-        "the delete did not remove the page: {after_delete:?}. Every delete path is a `retain` \
-         returning false, so the page and its ordinal both go"
+        "the delete left the LIVE ordinals at {after_delete:?}. The entry is retained as a tombstone \
+         now, so what must fall is the live set -- and it falls because `container_page_ordinal` \
+         filters `deleted`, not because the entry is gone"
+    );
+    // AND THE TOMBSTONE KEPT THE NUMBER, which is the fact the old mechanism had no way to express.
+    let tombstoned_after_delete = tombstone_pages_of(&engine, "zset", key);
+    assert_eq!(
+        1,
+        tombstoned_after_delete.len(),
+        "DENOMINATOR: {} tombstone entries after one removal, so the reuse below is not being \
+         measured against one removed element",
+        tombstoned_after_delete.len()
+    );
+    assert_eq!(
+        Some(2),
+        tombstoned_after_delete[0].1,
+        "the tombstone holds ordinal {:?} and the element it replaced held 2",
+        tombstoned_after_delete[0].1
     );
 
     // A DIFFERENT member now.
@@ -493,8 +563,46 @@ fn the_ordinal_names_a_position_and_a_delete_frees_it() {
         .count();
     assert_eq!(
         stale, 0,
-        "a page for the DELETED member m2 is still present ({stale} of them), so the reuse above \
-         would be two elements sharing one ordinal rather than one position being refilled"
+        "a LIVE page for the DELETED member m2 is still present ({stale} of them), so the reuse \
+         above would be two live elements sharing one ordinal rather than one position being refilled"
+    );
+
+    // THE ORDINAL IS NOW HELD TWICE AND EXACTLY ONE HOLDER IS LIVE, which is what makes the reuse
+    // above safe rather than a collision. Asserted, because "two entries at ordinal 2" is also what
+    // corruption looks like and the difference is entirely in which of them is live.
+    let tombstoned = tombstone_pages_of(&engine, "zset", key);
+    let at_two_live = pages_of(&engine, "zset", key)
+        .into_iter()
+        .filter(|(_, ordinal)| *ordinal == Some(2))
+        .count();
+    let at_two_tombstoned = tombstoned
+        .iter()
+        .filter(|(_, ordinal)| *ordinal == Some(2))
+        .count();
+    println!(
+        "  ordinal 2 is held by {at_two_live} live entry(ies) and {at_two_tombstoned} tombstone(s); \
+         tombstones: {tombstoned:?}"
+    );
+    assert_eq!(
+        1, at_two_live,
+        "{at_two_live} LIVE entries hold ordinal 2, and exactly one element can occupy a position"
+    );
+    assert_eq!(
+        1, at_two_tombstoned,
+        "{at_two_tombstoned} tombstones hold ordinal 2; the removed member's tombstone should be the \
+         one, and it is what keeps the removal readable from the pages"
+    );
+    // The two differ in COMPONENT, which is where identity lives. If they agreed, the tombstone would
+    // be saying the new member is gone.
+    let tombstoned_component = tombstoned
+        .iter()
+        .find(|(_, ordinal)| *ordinal == Some(2))
+        .and_then(|(component, _)| component.clone())
+        .expect("the tombstone at ordinal 2 names a component");
+    assert_ne!(
+        m9_component, tombstoned_component,
+        "the tombstone at ordinal 2 names the SAME component as the live arrival, so the pages say \
+         the arrival was removed"
     );
 }
 
@@ -561,12 +669,35 @@ fn deletion_still_finds_its_row_by_component() {
     assert_eq!(
         after.len(),
         3,
-        "the delete left {} pages, not 3 -- it matched the wrong number of rows",
+        "the delete left {} LIVE pages, not 3 -- it matched the wrong number of rows. This counts the \
+         live set: a removal now retains a tombstone entry, so counting every entry would report 4 \
+         here and that would be the retention rather than a mismatched delete",
         after.len()
     );
     assert!(
         ordinal_for_component(&engine, "set", key, &doomed_component).is_none(),
-        "the deleted member's page is still filed; deletion no longer finds its row by component"
+        "the deleted member's LIVE page is still filed; deletion no longer finds its row by component"
+    );
+    // AND EXACTLY ONE TOMBSTONE, NAMING EXACTLY THAT COMPONENT.
+    //
+    // The new half of "deletion still finds its row": it has to find the right row to REMOVE and the
+    // right row to RECORD, and a delete that matched the wrong component would now be wrong twice --
+    // once in the live set and once in the pages. Asserting only the live count would miss the second.
+    let tombstoned = tombstone_pages_of(&engine, "set", key);
+    println!("  tombstone entries after the delete: {tombstoned:?}");
+    assert_eq!(
+        1,
+        tombstoned.len(),
+        "the delete left {} tombstone entries, not one, so the pages do not state exactly this one \
+         removal",
+        tombstoned.len()
+    );
+    assert_eq!(
+        Some(doomed_component.clone()),
+        tombstoned[0].0,
+        "the tombstone names component {:?} and the member deleted was {doomed_component:?}, so the \
+         removal is recorded against the wrong element",
+        tombstoned[0].0
     );
     for (i, member) in members.iter().enumerate() {
         if i == 2 {

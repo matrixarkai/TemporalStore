@@ -1517,13 +1517,29 @@ impl TemporalEngine {
                     _ => return false,
                 }
                 if item.kind != "string" {
-                    super::mark_bucket_index_block_deleted_with(
+                    // THE OUTCOME'S ADDRESS IS THE TOMBSTONE PAGE, AND REPLAY HAS TO RE-FILE IT.
+                    //
+                    // A container removal appends a page stating the removal and keeps an entry
+                    // pointing at it, so a membership derived from the pages does not resurrect the
+                    // element. The page survives a crash like any other page. The ENTRY does not: it
+                    // lives in the index, and a replay is what runs when the index was not usable.
+                    //
+                    // So the address travels in the outcome -- `mark_bucket_index_block_deleted_recording`
+                    // puts it there at the original removal -- and is handed back here. Drop it and the
+                    // replay re-drops the entry, the tombstone page is named by nothing, and a
+                    // derivation after the recovery puts the element back: the original defect,
+                    // reappearing only on the path where it is hardest to see.
+                    //
+                    // `None` for an outcome written before this change, which is correct: there was no
+                    // tombstone page, so there is no entry to file.
+                    super::mark_bucket_index_block_deleted_recording(
                         shard,
                         shard_id,
                         &item.kind,
                         &item.object_key,
                         component.as_deref(),
                         false,
+                        item.address.clone(),
                     );
                 }
                 true

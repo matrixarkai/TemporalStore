@@ -1349,6 +1349,36 @@ pub(super) fn rebuild_bucket_block_ownership(
         .iter()
         .map(|(routing_bucket, bucket)| (*routing_bucket, bucket.dirty_generation))
         .collect();
+    // AND THE TOMBSTONE ENTRIES, WHICH THE MODEL MAPS CANNOT RE-DERIVE.
+    //
+    // This function rebuilds every bucket from `collect_model_live_block_entries`, and those maps hold
+    // only LIVE elements -- a removed one is gone from `shard.sets` by construction. So a rebuild
+    // produces one entry per live element and NONE for a removal, and the entry that keeps a removal's
+    // tombstone page reachable is erased by any round that rebuilds. `compact_shard_blocks` calls this
+    // directly, twice, and `promote_model_maps_to_bucket_index_authority` calls it as well; so before
+    // this, a removal stopped being recorded in the pages at the next compaction round and a
+    // page-derived membership would have resurrected the element.
+    //
+    // THE ENTRIES ARE CARRIED OVER RATHER THAN RE-DERIVED, because they cannot be re-derived: nothing
+    // outside the index knows a removal happened except the WAL, and a rebuild is not a replay. They
+    // are filed back after the live rebuild, by the same function the removal path uses, so the
+    // bucket accounting and the lookup skip are the ones that own those rules.
+    //
+    // Serialization is what makes this enough on the reload path: `block_index` carries `deleted` on
+    // the wire, so a tombstone entry read back from a stored index survives, and a REPLAY re-files it
+    // from the outcome's address instead. Between them the two paths cover every way an index arrives.
+    let preserved_tombstones: Vec<(u32, BlockIndex)> = shard
+        .bucket_index
+        .bucket_map
+        .iter()
+        .flat_map(|(routing_bucket, bucket)| {
+            bucket
+                .block_index
+                .values()
+                .filter(|page| page.deleted)
+                .map(move |page| (*routing_bucket, page.clone()))
+        })
+        .collect();
     shard.bucket_index.bucket_map.clear();
     // The tally counts the map that was just emptied. Emptied with it, and re-earned by the
     // charges the inserts below make -- not by a walk afterwards, which is the walk this whole
@@ -1420,6 +1450,61 @@ pub(super) fn rebuild_bucket_block_ownership(
             &mut shard.bucket_index.block_slab_live,
         );
     }
+    // FILE THE TOMBSTONE ENTRIES BACK, after the live rebuild and before the flag pass below, so the
+    // `every_page_deleted` computation sees the finished bucket rather than a half-built one.
+    //
+    // Into the bucket each was FILED IN, not one recomputed from the key: the removal recorded that
+    // bucket deliberately, because `block_routing_bucket(key, 0, u32::MAX)` -- the form the WAL outcome
+    // uses -- is a different number from the shard's own range, and filing a tombstone under it put the
+    // entry in a bucket holding nothing else for its object. That made the bucket all-tombstone (so a
+    // twelve-member set reported as a deleted object) and made ownership validation refuse a whole
+    // compaction round. Carrying the recorded bucket cannot reintroduce either.
+    //
+    // A tombstone whose element is LIVE AGAIN is dropped rather than filed. A re-add clears the
+    // tombstone through `upsert_bucket_index_block_inner`'s retain, and a rebuild has to reach the same
+    // state or it would resurrect a removal the store has already undone -- the mirror image of the
+    // defect this whole change is about, and the one direction nothing else here would catch.
+    let mut tombstones_refiled = 0usize;
+    for (routing_bucket, tombstone) in preserved_tombstones {
+        let live_again = shard
+            .bucket_index
+            .bucket_map
+            .get(&routing_bucket)
+            .is_some_and(|bucket| {
+                bucket.block_index.values().any(|page| {
+                    !page.deleted
+                        && page.model_id == tombstone.model_id
+                        && page.object_key == tombstone.object_key
+                        && page.component.as_deref() == tombstone.component.as_deref()
+                })
+            });
+        if live_again {
+            continue;
+        }
+        let bucket = shard
+            .bucket_index
+            .bucket_map
+            .entry(routing_bucket)
+            .or_insert_with(|| {
+                let dirty_generation = preserved_dirty_generations
+                    .get(&routing_bucket)
+                    .copied()
+                    .unwrap_or_default();
+                BucketNode {
+                    routing_bucket,
+                    flags: BucketFlags::default()
+                        .with(BucketFlags::META_LOADED, true)
+                        .with(BucketFlags::IN_MEMORY, true),
+                    dirty_generation,
+                    ..BucketNode::default()
+                }
+            });
+        bucket
+            .block_index
+            .insert(tombstone, &mut shard.bucket_index.block_slab_live);
+        tombstones_refiled += 1;
+    }
+    note_tombstones_refiled(tombstones_refiled);
     shard.bucket_index.rebuild_object_block_lookup();
     for bucket in shard.bucket_index.bucket_map.values_mut() {
         bucket.set_meta_loaded(true);
@@ -1434,6 +1519,28 @@ pub(super) fn rebuild_bucket_block_ownership(
     // describes exactly what `bucket_map` holds. Declaring that is the last step; confirming it
     // with a walk would cost a compaction round two whole-shard scans it does not need.
     shard.bucket_index.block_slab_live.mark_ready();
+}
+
+/// Tombstone entries carried across an index rebuild.
+///
+/// A COUNTER AND NOT A DERIVED FIGURE, for the reason every counter in this area exists: "the tombstone
+/// count did not change" is also what a rebuild that never ran reports, and a guard needs to tell the
+/// two apart. A rebuild that carried none over a store that had removals is the defect; a rebuild that
+/// carried none because a re-add had cleared them is correct.
+static TOMBSTONES_REFILED: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+fn note_tombstones_refiled(count: usize) {
+    TOMBSTONES_REFILED.fetch_add(count as u64, std::sync::atomic::Ordering::Relaxed);
+}
+
+/// Tombstone entries an index rebuild has carried over since the last reset.
+pub fn tombstones_refiled_count() -> u64 {
+    TOMBSTONES_REFILED.load(std::sync::atomic::Ordering::Relaxed)
+}
+
+/// Forget the count, so a test measures its own rebuilds.
+pub fn reset_tombstones_refiled_count() {
+    TOMBSTONES_REFILED.store(0, std::sync::atomic::Ordering::Relaxed);
 }
 
 /// What the promotion check decided, since the last reset.
@@ -3343,6 +3450,93 @@ pub(super) fn upsert_bucket_index_block(
     upsert_bucket_index_block_with(shard, shard_id, kind, object_key, component, address, dirty, true)
 }
 
+/// File the entry that keeps a removal's TOMBSTONE PAGE reachable.
+///
+/// # WHY NOT [`upsert_bucket_index_block`]
+///
+/// Three of the things that function does are wrong for a tombstone, and each would be a defect
+/// rather than an inefficiency:
+///
+///   * it STAGES AN OUTCOME. `mark_bucket_index_block_deleted_recording` has already staged one for
+///     this removal, carrying this very address; a second would replay as a page installed twice.
+///   * it CLEARS `deleted_object_index` for the object. A removal is not a re-add -- that line
+///     exists because writing a member back must clear the tombstone the removal filed -- so a
+///     tombstone page clearing it would undo the object deletion the removal just recorded.
+///   * it DROPS the object's existing entry for this component first. There is none left; the
+///     `retain` in the caller took it, which is the whole reason this runs afterwards.
+///
+/// # AND IT DOES NOT ENTER `object_block_lookup`
+///
+/// `insert_object_block_lookup` returns early on a deleted page and always has, so calling it would
+/// be a no-op -- it is called anyway, deliberately, so that the skip lives in the one function that
+/// owns the lookup's rules rather than being a condition this site remembers. What follows from the
+/// skip is the load-bearing part: the fast per-object reader `bucket_index_component_block_addresses`
+/// resolves THROUGH that lookup, so a tombstone entry is invisible to it and every index answer is
+/// unchanged. A derivation therefore has to walk `block_index` itself, which is what
+/// `container_membership` does and what makes its walk O(pages) rather than O(elements of one
+/// object).
+/// `routing_bucket` IS THE ONE THE REMOVED ENTRY WAS FILED IN, handed in by the caller that took it.
+/// It must not be recomputed here: `block_routing_bucket(key, 0, u32::MAX)` -- the form the removal's
+/// WAL outcome uses -- is a DIFFERENT number from the shard's own range, and filing the tombstone
+/// under it put the entry in a bucket holding nothing else for the object. That made the bucket
+/// all-tombstone (so a twelve-member set reported as a deleted object) and made its filed bucket
+/// disagree with the one its key routes to (so a compaction round refused with
+/// `page_compaction_owner_mismatch` on any container that had had a removal). Both were driven.
+pub(super) fn insert_container_tombstone_entry(
+    shard: &mut ShardState,
+    shard_id: ShardId,
+    kind: &str,
+    object_key: &str,
+    component: &str,
+    address: BlockAddress,
+    routing_bucket: u32,
+) {
+    let object_id = stable_block_object_id(shard_id, kind, object_key);
+    let mut address = address;
+    // The same one line the upsert path spends for the same reason: an address that arrived without
+    // an object id would otherwise lose the fallback identity computed for it, and `object_id()` on
+    // the entry reads straight through to this field.
+    address.set_object_id(Some(object_id));
+    let page = BlockIndex {
+        object_key: std::sync::Arc::from(object_key),
+        model_id: stored_model_kind(kind),
+        component: Some(std::sync::Arc::from(component)),
+        address,
+        dirty: true,
+        deleted: true,
+        log_backed: false,
+    };
+    let bucket = shard
+        .bucket_index
+        .bucket_map
+        .entry(routing_bucket)
+        .or_insert_with(|| BucketNode {
+            routing_bucket,
+            flags: BucketFlags::default()
+                .with(BucketFlags::META_LOADED, true)
+                .with(BucketFlags::IN_MEMORY, true),
+            ..BucketNode::default()
+        });
+    bucket.set_dirty(true);
+    // THE BUCKET IS NOT EMPTY ANY MORE. The caller ran `set_deleted(block_index.is_empty())` before
+    // this entry existed, so a bucket whose last live entry was the one just removed is marked
+    // deleted while it is about to hold a page. A deleted bucket is not dumped, and the tombstone
+    // would not survive a reload -- which is the one place it has to survive.
+    bucket.set_deleted(false);
+    bucket.set_in_memory(true);
+    bucket.dirty_generation = bucket.dirty_generation.saturating_add(1);
+    let block_ref_key = bucket
+        .block_index
+        .insert(page.clone(), &mut shard.bucket_index.block_slab_live);
+    if let Some(bucket) = shard.bucket_index.bucket_map.get_mut(&routing_bucket) {
+        classify_bucket_layout_in_place(bucket);
+    }
+    shard
+        .bucket_index
+        .insert_object_block_lookup(routing_bucket, block_ref_key, &page);
+    shard.buckets_pending_flag_refresh.insert(routing_bucket);
+}
+
 /// The same, with a say over whether an outcome is staged for the record.
 ///
 /// A block write produces an outcome, and this is where that outcome is produced -- so a caller
@@ -3510,6 +3704,59 @@ fn upsert_bucket_index_block_inner(
             {
                 bucket.object_index.remove(&object_id);
             }
+            classify_bucket_layout_in_place(bucket);
+        }
+    }
+    // AND THE TOMBSTONE FOR THIS COMPONENT, WHICH NEITHER BRANCH ABOVE CAN REACH.
+    //
+    // UNCONDITIONAL, AND THE CONDITIONAL VERSIONS WERE BOTH WRONG. A re-add must clear the tombstone
+    // its element left, and that is what bounds the cost of retaining one at ONE ENTRY PER DISTINCT
+    // ELEMENT REMOVED rather than one per removal. There are THREE cases above, not two:
+    //
+    //   * lookup established AND it names a live ref for this component -> the first branch removes
+    //     that ref, and a tombstone is never IN the lookup (`insert_object_block_lookup` returns early
+    //     on a deleted page), so the tombstone survives it;
+    //   * lookup NOT established -> the second branch's `retain` matches on the component and does
+    //     take the tombstone with it;
+    //   * LOOKUP ESTABLISHED AND IT NAMES NOTHING for this component -- which is EXACTLY the re-add
+    //     case, because the removal dropped the live ref -- so `direct_block_refs` is `None`, the
+    //     `else if !lookup_enabled` guard is false, and NEITHER BRANCH RUNS AT ALL.
+    //
+    // The third case is the one that was leaking, and putting the sweep inside the first branch did
+    // not fix it: I tried that and the guard stayed red, which is what showed there was a third case
+    // rather than two. So it runs unconditionally, where its own predicate is the only condition.
+    //
+    // Swept in the TARGET bucket only: a tombstone is filed in the bucket its live entry was removed
+    // from, and that is the bucket this write routes to.
+    //
+    // ASKED BEFORE IT IS DONE, because this runs on EVERY page write. `BlockIndexMap::retain` walks
+    // the bucket and then `shrink`s it, which can reallocate, and paying that per write for a
+    // tombstone that is almost never there would be a new cost on the hot path. A short-circuiting
+    // `any` is the same ORDER as the two `!any(|page| page.object_id() == ..)` scans the branches
+    // above already do over the same bucket, so the common case adds a scan and not an allocation.
+    let sweep = shard
+        .bucket_index
+        .bucket_map
+        .get(&routing_bucket)
+        .is_some_and(|bucket| {
+            bucket.block_index.values().any(|page| {
+                page.deleted
+                    && page.object_key == entry.object_key
+                    && page.model_id == entry.kind
+                    && page.component.as_deref() == entry.component.as_deref()
+            })
+        });
+    if sweep {
+        if let Some(bucket) = shard.bucket_index.bucket_map.get_mut(&routing_bucket) {
+            bucket
+                .block_index
+                .retain(&mut shard.bucket_index.block_slab_live, |_, page| {
+                    !(page.deleted
+                        && page.object_key == entry.object_key
+                        && page.model_id == entry.kind
+                        && page.component.as_deref() == entry.component.as_deref())
+                });
+            touched_buckets.push(routing_bucket);
             classify_bucket_layout_in_place(bucket);
         }
     }
@@ -4150,6 +4397,38 @@ pub(super) fn rebuild_bucket_first_index(
         .filter(|(_, bucket)| !bucket.deleted_object_index.is_empty())
         .map(|(routing_bucket, bucket)| (*routing_bucket, bucket.deleted_object_index.clone()))
         .collect();
+    // AND THE TOMBSTONE ENTRIES, FOR THE SAME REASON ONE STEP DOWN.
+    //
+    // The paragraph above is the precedent and it states the rule exactly: a delete takes the object
+    // out of the model maps, so a rebuild that reads those maps cannot re-derive it, and a
+    // reconstruct-based reload would silently drop what the deserialize path keeps. That was written
+    // about a deleted OBJECT's id. A per-element removal now keeps an ENTRY -- pointing at the page
+    // that records the removal, so a membership derived from the pages does not resurrect the element
+    // -- and it is invisible to `collect_model_live_block_entries` for precisely the same reason.
+    //
+    // WITHOUT THIS, A COMPACTION ROUND ERASED EVERY REMOVAL FROM THE PAGES. This function runs first
+    // in the round and `rebuild_bucket_block_ownership` runs after it; both rebuild from the model
+    // maps, and the tombstone count went to zero at this one. Driven by
+    // `a_removal_retains_one_entry_and_nothing_yet_collects_it`, whose denominator is
+    // `tombstones_refiled_count` so that "nothing was dropped" cannot be confused with "nothing was
+    // rebuilt".
+    //
+    // The bucket each was FILED IN travels with it rather than being recomputed from the key: the
+    // removal recorded that bucket because the outcome's `block_routing_bucket(key, 0, u32::MAX)` is a
+    // different number from the shard's own range, and filing a tombstone under the wrong one made a
+    // bucket all-tombstone and made ownership validation refuse the round.
+    let prior_tombstone_entries: Vec<(u32, BlockIndex)> = shard
+        .bucket_index
+        .bucket_map
+        .iter()
+        .flat_map(|(routing_bucket, bucket)| {
+            bucket
+                .block_index
+                .values()
+                .filter(|page| page.deleted)
+                .map(move |page| (*routing_bucket, page.clone()))
+        })
+        .collect();
     let mut bucket_index = CoreIndex::default();
     for entry in collect_model_live_block_entries(shard) {
         let routing_bucket =
@@ -4211,6 +4490,42 @@ pub(super) fn rebuild_bucket_first_index(
         }
         bucket.deleted_object_index.extend(deleted);
     }
+    // Re-attach the tombstone ENTRIES captured above, skipping any whose element the rebuild has just
+    // filed as LIVE. A re-add clears its tombstone through the upsert's retain, and a rebuild has to
+    // reach the same state or it would restate a removal the store has already undone -- the mirror
+    // image of the defect this exists to prevent, and the direction nothing else here would catch.
+    let mut refiled = 0usize;
+    for (routing_bucket, tombstone) in prior_tombstone_entries {
+        let live_again = bucket_index
+            .bucket_map
+            .get(&routing_bucket)
+            .is_some_and(|bucket| {
+                bucket.block_index.values().any(|page| {
+                    !page.deleted
+                        && page.model_id == tombstone.model_id
+                        && page.object_key == tombstone.object_key
+                        && page.component.as_deref() == tombstone.component.as_deref()
+                })
+            });
+        if live_again {
+            continue;
+        }
+        let bucket = bucket_index
+            .bucket_map
+            .entry(routing_bucket)
+            .or_insert_with(|| BucketNode {
+                routing_bucket,
+                flags: BucketFlags::default().with(BucketFlags::META_LOADED, true),
+                ..BucketNode::default()
+            });
+        bucket.set_dirty(true);
+        bucket
+            .block_index
+            .insert(tombstone, &mut bucket_index.block_slab_live);
+        refiled += 1;
+        update_bucket_layout(bucket);
+    }
+    note_tombstones_refiled(refiled);
     bucket_index.rebuild_object_block_lookup();
     shard.bucket_index = bucket_index;
     // The local index charged every block it filed, and it arrived empty, so the tally travelled

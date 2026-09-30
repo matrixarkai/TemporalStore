@@ -3666,13 +3666,30 @@ pub(super) fn next_block_index_for_object(
 ///     would have had on `main`, which makes this change a strict no-op for such an object. A
 ///     container past the ceiling loses the ordinal, never the element.
 ///
-/// IT NAMES A POSITION, NOT AN ELEMENT, and that is a property of the tree rather than a choice
-/// here. Every delete path REMOVES the block -- `mark_bucket_index_block_deleted_with` is named for
-/// a mark it does not make and its body is a `retain` returning false -- so `max` falls after a
-/// delete and the next insert is handed the ordinal that was just freed. That is correct for a
-/// position and would be silent corruption for an identity, which is why the element's identity
-/// stays in the component: nothing here reads the ordinal to find a row, and deletion still matches
-/// by component exactly as before.
+/// IT NAMES A POSITION AMONG AN OBJECT'S LIVE BLOCKS, NOT AN ELEMENT. `max` falls after a delete and
+/// the next insert is handed the ordinal that was just freed. That is correct for a position and
+/// would be silent corruption for an identity, which is why the element's identity stays in the
+/// component: nothing here reads the ordinal to find a row, and deletion still matches by component
+/// exactly as before.
+///
+/// # WHY THE WALK NOW FILTERS `deleted`, AND WHAT IT COST TO FIND OUT
+///
+/// It used to need no filter, because every delete path REMOVED the block: an entry that existed was a
+/// live entry, so "the object's entries" and "the object's live entries" were the same set and the
+/// distinction was not expressible. A container removal now leaves a TOMBSTONE ENTRY behind so the
+/// block recording it stays reachable, and that breaks the identity in both directions at once:
+///
+///   * `max` would no longer FALL after a delete, so the ordinal would climb once per element ever
+///     written rather than once per live element -- and a container churning distinct members would
+///     walk to `MAX_ADDRESSABLE_BLOCK_ID` and fall off the ceiling into the no-ordinal-at-all case,
+///     for a set that never held more than a handful of members at a time; and
+///   * the component-match early return would match the TOMBSTONE, so a re-add would be handed the
+///     dead block's position instead of a free one.
+///
+/// Neither is corruption -- the ceiling case is a documented graceful loss of the ordinal and not of
+/// the element -- and both are a real regression in headroom that nothing else would have reported.
+/// `element_ordinal_reuse` is the suite that measures the reuse and is what makes this filter
+/// attributable rather than defensive.
 pub(super) fn container_page_ordinal(
     bucket_index: &CoreIndex,
     routing_bucket: u32,
@@ -3683,6 +3700,9 @@ pub(super) fn container_page_ordinal(
     let mut highest: Option<u64> = None;
     if let Some(bucket) = bucket_index.bucket_map.get(&routing_bucket) {
         for page in bucket.block_index.values() {
+            if page.deleted {
+                continue;
+            }
             if page.model_id.as_str() != model_id || page.object_key.as_ref() != object_key {
                 continue;
             }

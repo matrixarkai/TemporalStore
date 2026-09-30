@@ -16,6 +16,7 @@ pub mod reports;
 
 mod admin_report;
 mod constants;
+mod container_membership;
 mod container_pages;
 mod execute_on_shard;
 mod context;
@@ -2409,7 +2410,43 @@ pub(crate) fn eager_cache_warm_on_load() -> bool {
 ///
 /// A stale stamp is treated as an ABSENT index and the caller replays the log, which rebuilds
 /// every id under one rule. Slower and correct, which is the trade this stamp exists to make.
-pub(super) const SHARD_INDEX_FORMAT_VERSION: u32 = 3;
+///
+/// 5 = a container page may state that one of its items was REMOVED, and a removal therefore leaves
+///     a page and an entry behind rather than only dropping the entry.
+///
+/// # WHY 5 AND NOT 4, WHICH IS FREE
+///
+/// 4 IS RESERVED AND UNSPENT, and this is the number that is not chosen by looking at the tree. A
+/// concurrent change takes `object_id` out of `BlockAddress` and needs 4 for it; at the time this
+/// landed that change had no open pull request, so nothing in `git log` or `gh pr list` claims 4 and
+/// a reader checking would conclude 4 was available. Taking it anyway would be the error.
+///
+/// The asymmetry is what decides it. A HOLE in the sequence costs nothing: the stamp is only ever
+/// compared for equality with the constant, never ordered or ranged, so 4 never existing is
+/// invisible to every reader. A COLLISION costs a silent misread -- two different stored shapes both
+/// stamped 4, each admitted by the other's binary because the stamp agrees, which is precisely the
+/// failure this constant exists to make impossible and which it would then be causing. So the
+/// expensive mistake is the one the tree's silence invites, and the cheap one is the one to make.
+///
+/// # WHAT THE BUMP DOES TO A FOLLOWER, AND TO REPLICATION
+///
+/// `SharedStoreStagedBlockProto` is the frame a follower reads, and a container page's payload
+/// travels inside it as opaque bytes. A follower on the previous binary handed a second-shape page
+/// therefore stages it intact and can serve it -- and would then read its tombstone item as an empty
+/// live value, resurrecting the element. That is the mixed-version case, and it is refused earlier
+/// than the page: this stamp makes such a follower treat the published index as ABSENT and replay,
+/// and mixed-version clusters are already documented as unsupported. The page format is not what
+/// makes them unsupported; it is one more reason they are.
+///
+/// The four encoders are NOT equally affected and the choice of which to touch was deliberate. The
+/// index log is positional (`encode_index_payload_into`, plain `rmp_serde`) and REFUSES on length, so
+/// a field added to a stored row breaks it loudly -- none is added here. The served index is named
+/// (`.with_struct_map()`) and SILENTLY DROPS a retired key, which is what this stamp guards and why
+/// the bump is not optional. The WAL record is protobuf plus a `serde_json` document, and the only
+/// change it carries is an `Option<BlockAddress>` that was always present and always `None` on a
+/// removal -- so it is an absent key becoming a present one, which both halves already tolerate.
+/// Nothing in the page payload passes through any of the three: it is bytes to all of them.
+pub(super) const SHARD_INDEX_FORMAT_VERSION: u32 = 5;
 
 /// Serialize a shard index, stamping the current format version.
 ///
@@ -4761,6 +4798,18 @@ fn bucket_index_target_buckets_for_object_key(shard: &ShardState, key: &str) -> 
     buckets
 }
 
+/// Remove an element's index entry, staging the outcome, and record NOTHING in the pages.
+///
+/// THE SEVEN TYPED CONTAINER REMOVALS NO LONGER COME THROUGH HERE. They call
+/// `execute_on_shard::remove_container_element`, which appends the page that states the removal and
+/// then calls [`mark_bucket_index_block_deleted_recording`] with its address. What is left for this
+/// entry point is the removal of an element whose kind has NO page-borne membership to keep true --
+/// and the four container kinds are the only kinds that have one.
+///
+/// It is kept rather than deleted because the distinction it now draws is the thing a reader of this
+/// file needs: a removal that records nothing in the pages is correct for a string or a feature
+/// series and is a DATA LOSS for a set. A caller reaching for a remover should have to pick.
+#[cfg_attr(not(test), allow(dead_code))]
 fn mark_bucket_index_block_deleted(
     shard: &mut ShardState,
     shard_id: ShardId,
@@ -4784,9 +4833,77 @@ fn mark_bucket_index_block_deleted_with(
     component: Option<&str>,
     stage: bool,
 ) -> bool {
+    mark_bucket_index_block_deleted_recording(shard, shard_id, model_id, key, component, stage, None)
+}
+
+/// The same, with the PAGE THAT RECORDS THE REMOVAL.
+///
+/// # WHY A REMOVAL NOW LEAVES AN ENTRY BEHIND, WHICH IT DID NOT
+///
+/// This function's `retain` DROPS the matched entry. It always has -- three test modules say so in
+/// their headers, and `mark_bucket_index_block_deleted` is named for a mark it does not make. That
+/// was fine while the index was the only statement of membership: an element with no entry is an
+/// element that is gone, and the page it left behind was unreachable and therefore harmless.
+///
+/// It is not fine once the PAGES state membership, because a page nothing points at is a page no
+/// derivation can read. So when a tombstone page is supplied the entry is not dropped: it is
+/// REPLACED by one that points at the tombstone and carries `deleted`, which keeps the page
+/// reachable by a walk while every index reader answers exactly as before.
+///
+/// EVERY INDEX READER FILTERS `deleted`, and that is CHECKED rather than assumed:
+/// `no_index_reader_answers_from_a_tombstone_entry` drives the five readers #2025 enumerated, and all
+/// thirty-nine walks of `block_index` are enumerated with a verdict each in
+/// `container_tombstone_entry`'s header. NOTHING IN PRODUCTION SET THIS FLAG TO TRUE BEFORE THIS
+/// CHANGE -- twenty-two of the thirty-nine filter it in branches that were therefore never exercised
+/// and seventeen do not filter it at all -- so the filters are load-bearing for the first time and
+/// three walks turned out to be wrong. Those three are fixed and named in that table.
+///
+/// # THE COST, STATED BECAUSE IT IS NOT FREE
+///
+/// A removal used to FREE an entry and now retains one. The bound is ONE ENTRY PER DISTINCT ELEMENT
+/// CURRENTLY REMOVED, not one per removal: `upsert_bucket_index_block_inner`'s `retain` matches on
+/// `(object_key, model_id, component)`, so writing an element back CLEARS its tombstone as a side
+/// effect of behaviour that predates tombstones -- five add/remove cycles on one member leave one
+/// entry, which `a_re_add_clears_the_tombstone_entry_so_churn_on_one_element_does_not_accumulate`
+/// drives. `a_removal_retains_one_entry_and_nothing_yet_collects_it` measures the other half.
+///
+/// AND NOTHING YET COLLECTS ONE, which is the part it would be easy to imply otherwise.
+/// `compact_container_pages_batched` takes its elements from the RESIDENT maps and those do not hold
+/// removed elements, so a fold round cannot see a tombstone: it neither collects one nor risks
+/// dropping one. `container_membership::may_drop_tombstones` is the rule a walk that CAN see them will
+/// have to obey, written and driven now so it cannot be added without one.
+///
+/// That is the price of the pages being authoritative at all, and it is the same price the comparison
+/// design pays in page bytes rather than entry bytes.
+///
+/// # REPLACE-THEN-INSERT, AND NOT A MUTATION IN PLACE
+///
+/// The obvious shape is to flip `deleted` and repoint `address` inside the `retain` closure. It
+/// cannot be done there: `BlockIndexMap::retain` decrements `BlockSlabLiveIndex` for the address of
+/// an entry it drops and the closure never sees `live`, so an address changed in place would leave
+/// the old slab counted live and the new one uncounted -- a slab the reclaim path could then purge
+/// while the durable index still names it. Dropping and reinserting runs both halves of that
+/// accounting through the paths that own it.
+fn mark_bucket_index_block_deleted_recording(
+    shard: &mut ShardState,
+    shard_id: ShardId,
+    model_id: &str,
+    key: &str,
+    component: Option<&str>,
+    stage: bool,
+    tombstone: Option<BlockAddress>,
+) -> bool {
     // Removing a member IS an outcome, and it is the one a command log states worst: replay has
     // to re-run the removal and hope the state it removes from matches. Saying "this component
     // is gone" needs no such hope. Recorded here because every typed removal comes through.
+    //
+    // AND THE OUTCOME NOW CARRIES THE TOMBSTONE'S ADDRESS, which is what makes the removal durable
+    // in the pages ACROSS A REPLAY rather than only in the process that performed it. The tombstone
+    // page is appended before this and survives a crash like any other page; without its address in
+    // the outcome, replay would re-drop the entry, the page would be named by nothing, and a
+    // derivation after the replay would resurrect the element -- the original defect, reappearing
+    // only on the recovery path, which is where it would have been hardest to find. The field was
+    // already `Option<BlockAddress>` and already `None` here, so this spends no format.
     if stage {
         block_in_wal::stage_outcome(crate::wal::WalOutcomeItem {
             kind: model_id.to_string(),
@@ -4794,7 +4911,7 @@ fn mark_bucket_index_block_deleted_with(
             component: component.map(str::to_string),
             object_id: stable_block_object_id(shard_id, model_id, key),
             routing_bucket: block_routing_bucket(key, 0, u32::MAX),
-            address: None,
+            address: tombstone.clone(),
             value: None,
             ttl: None,
             deleted: true,
@@ -4802,6 +4919,9 @@ fn mark_bucket_index_block_deleted_with(
         });
     }
     let mut removed = false;
+    // The bucket the removed entry was filed in, so the tombstone can be filed in the SAME one.
+    // `None` until a `retain` below actually matches something.
+    let mut tombstone_bucket: Option<u32> = None;
     let target_buckets = if shard.bucket_index.object_block_lookup.is_empty() {
         shard
             .bucket_index
@@ -4835,6 +4955,23 @@ fn mark_bucket_index_block_deleted_with(
                 deleted_object_ids.insert(page.object_id());
                 bucket_removed = true;
                 removed = true;
+                // WHERE THE TOMBSTONE ENTRY MUST GO: the bucket the live entry was actually filed
+                // in, recorded here rather than recomputed later.
+                //
+                // THE FIRST VERSION RECOMPUTED IT AND WAS WRONG. It asked
+                // `block_routing_bucket(key, 0, u32::MAX)`, which is the form the WAL OUTCOME above
+                // uses and is a different number from `block_routing_bucket(key, start, end)` over
+                // the shard's own range -- so the tombstone was filed in a bucket that held nothing
+                // else for the object. Two consequences, both found by driving it: the bucket's every
+                // entry was then a tombstone, so `refresh_one_bucket_runtime_flags` marked it deleted
+                // and `object_manager::runtime_report` reported a twelve-member set as a DELETED
+                // OBJECT; and `validate_bucket_ownership_index_from_entries` found the entry's filed
+                // bucket disagreeing with the one its key routes to, so a compaction round REFUSED
+                // with `page_compaction_owner_mismatch` on any container that had had a removal.
+                //
+                // Taking the bucket from the entry cannot drift from the write path, because it IS
+                // the write path's answer, read back.
+                tombstone_bucket = Some(routing_bucket);
                 false
             } else {
                 true
@@ -4866,11 +5003,18 @@ fn mark_bucket_index_block_deleted_with(
             // ON THE PREVIOUS IDENTITY THIS FILTER REMOVES NOTHING, and that is what makes it
             // attributable: a surviving block could only carry a removed block's id by sharing its
             // component, and `retain` took every such block.
+            //
+            // A TOMBSTONE ENTRY IS NOT A SURVIVING BLOCK. The filter asks whether any block still
+            // carries the id, and since a removal now leaves an entry behind, the removed element's
+            // own tombstone would answer yes -- so a key's last element would stop filing its object
+            // id here and `object_manager::runtime_report` would never call the object deleted. The
+            // question the filter means to ask is whether a LIVE block carries the id, and that is
+            // what it now asks. `a_keys_last_element_still_files_its_object_id` drives it.
             deleted_object_ids.retain(|object_id| {
                 !bucket
                     .block_index
                     .values()
-                    .any(|page| page.object_id() == *object_id)
+                    .any(|page| !page.deleted && page.object_id() == *object_id)
             });
             bucket.deleted_object_index.extend(deleted_object_ids);
             bucket.set_dirty(true);
@@ -4901,6 +5045,28 @@ fn mark_bucket_index_block_deleted_with(
         shard
             .bucket_index
             .remove_object_block_lookup_entry(model_id, key, component);
+    }
+    // THE ENTRY THAT KEEPS THE TOMBSTONE PAGE REACHABLE, filed after the drop above rather than
+    // instead of it -- see this function's doc comment on why the two halves of the slab-live
+    // accounting cannot both run inside the `retain`.
+    //
+    // ONLY WHERE SOMETHING WAS ACTUALLY REMOVED. A removal that matched no entry removed no element,
+    // so there is nothing for a page to record: filing a tombstone for it would state a removal that
+    // never happened, and `a_removal_that_matched_nothing_writes_no_tombstone_entry` drives that.
+    // The page has already been appended by then and is simply never pointed at, which is the same
+    // orphaned-page state every superseded page is already in.
+    if let (true, Some(address), Some(component), Some(routing_bucket)) =
+        (removed, tombstone, component, tombstone_bucket)
+    {
+        crate::engine::storage_bucket_internals::insert_container_tombstone_entry(
+            shard,
+            shard_id,
+            model_id,
+            key,
+            component,
+            address,
+            routing_bucket,
+        );
     }
     removed
 }
@@ -5821,7 +5987,12 @@ fn read_block_bytes(
     match container_pages::select_container_element(&bytes, component) {
         container_pages::ContainerElementRead::NotFramed => Some(bytes),
         container_pages::ContainerElementRead::Found(value) => Some(value),
-        container_pages::ContainerElementRead::Absent => None,
+        // A PAGE THAT STATES THE REMOVAL HAS NO VALUE TO HAND BACK, and this funnel's contract is a
+        // value or nothing. The two are one answer HERE and two answers to the derivation, which is
+        // why they are two variants and are collapsed at the one caller that cannot use the
+        // difference rather than never distinguished.
+        container_pages::ContainerElementRead::Absent
+        | container_pages::ContainerElementRead::Removed => None,
         container_pages::ContainerElementRead::Corrupt(_) => {
             note_corrupt_container_page();
             None
@@ -5896,7 +6067,9 @@ fn read_block_shared(
         return match container_pages::select_container_element(&bytes, component) {
             container_pages::ContainerElementRead::NotFramed => Some(bytes),
             container_pages::ContainerElementRead::Found(value) => Some(std::sync::Arc::from(value)),
-            container_pages::ContainerElementRead::Absent => None,
+            // Collapsed for the same reason as the owning funnel above: no value either way.
+            container_pages::ContainerElementRead::Absent
+            | container_pages::ContainerElementRead::Removed => None,
             container_pages::ContainerElementRead::Corrupt(_) => {
                 note_corrupt_container_page();
                 None

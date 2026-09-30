@@ -48,11 +48,28 @@
 //!
 //! ## 1. A TOMBSTONE THAT KEEPS ITS NUMBER IN THE `max`
 //!
-//! There is no tombstone to keep it in. **EVERY delete path in this engine REMOVES the page**, and
-//! `every_delete_path_removes_the_page_rather_than_tombstoning_it` drives all five. The per-element
-//! one is the surprise: `mark_bucket_index_block_deleted` -- the function `ZSetRemove`, `SetRemove`,
-//! `ListPop` and `HashDelete` all go through -- is named for a mark it does not make. Its body is
-//! `block_index.retain(.., |_, page| ..false..)`.
+//! **THIS SECTION HAS BEEN OVERTAKEN, AND WHAT OVERTOOK IT IS NOT THE ORDINAL.** It used to say there
+//! was no tombstone to keep a number in, because EVERY delete path removed the page: the per-element
+//! four went through `mark_bucket_index_block_deleted`, named for a mark it did not make, whose body
+//! was `block_index.retain(.., |_, page| ..false..)`. That was correct, and it is the reason the
+//! reservation this section is about could not be built.
+//!
+//! There IS a per-element tombstone now, and it arrived for an unrelated reason: a container's pages
+//! became the statement of its membership, and a page nothing points at is a page no derivation can
+//! read. So a removal keeps an entry pointing at the page that records it.
+//!
+//! **IT STILL DOES NOT RESERVE THE NUMBER, and that is deliberate rather than incidental.**
+//! `container_page_ordinal` filters `deleted`, so the tombstone is invisible to the `max` and the
+//! freed ordinal is still handed to the next element --
+//! `the_element_ordinal_a_delete_frees_is_handed_straight_back_to_the_next_element` still drives that
+//! and still passes. The filter was not free: without it the ordinal would climb once per element ever
+//! written rather than once per live element, and a container churning distinct members would walk to
+//! `MAX_ADDRESSABLE_BLOCK_ID` and fall off the ceiling. So the tombstone exists and the reuse this
+//! module is about is unchanged; what a reader must not conclude is that a tombstone now reserves
+//! anything.
+//!
+//! `every_per_element_delete_leaves_one_tombstone_and_the_whole_object_delete_leaves_none` drives the
+//! new split over the same five arms the old claim covered.
 //!
 //! **THIS WIDENS #1990.** That issue names the whole-object path (`FeatureAppend`, `FeatureDelete`,
 //! `FeatureAppend`) and says of a partial removal that it "does not free a number, because for the
@@ -337,17 +354,52 @@ fn write(engine: &TemporalEngine, command: Command) {
 /// Reads the SAME walk `next_block_index_for_object` reads -- every page of the object in the
 /// bucket, with no filter on `deleted` -- so a count taken here is the count the assignment would
 /// take.
+/// THE OBJECT'S LIVE PAGES. Tombstone entries are excluded, and the exclusion is new.
+///
+/// WHAT THIS USED TO RETURN AND WHY THE CHANGE IS NOT A RELAXATION. It returned EVERY entry, with no
+/// `deleted` filter -- and that was the same set, because nothing in this engine ever set
+/// `BlockIndex::deleted` to true. Live entries and all entries were one quantity, so the distinction
+/// could not be expressed and did not need to be. A container removal now leaves a tombstone entry
+/// behind so the page recording the removal stays reachable, and the two quantities have come apart.
+///
+/// Every assertion in this module that uses this helper means the LIVE set: it is asking what the
+/// object holds and what ordinal the next element would take. So the filter restores each of those
+/// claims to the quantity it was always about, rather than weakening any of them.
+/// [`tombstoned_pages_of`] is the other half, and the arms below assert BOTH.
 fn pages_of(engine: &TemporalEngine, kind: &str, key: &str) -> Vec<(Option<String>, Option<u64>)> {
     let shards = engine.shards.read().expect("engine lock poisoned");
     let shard = shards.get(&1).expect("shard 1 is loaded");
     let mut held = Vec::new();
     for bucket in shard.bucket_index.bucket_map.values() {
         for (_, page) in bucket.block_index.iter() {
+            if page.deleted {
+                continue;
+            }
             if page.model_id.as_str() == kind && &*page.object_key == key {
                 held.push((
                     page.component.as_deref().map(str::to_string),
                     page.address.block_id(),
                 ));
+            }
+        }
+    }
+    held.sort();
+    held
+}
+
+/// The ordinals the object's TOMBSTONE entries carry, ascending.
+///
+/// Needed because a freed ordinal is now held by two entries for a while -- the tombstone that kept
+/// it and the element that was handed it back -- and a guard about reuse has to be able to say which
+/// is which rather than counting two and calling it corruption.
+fn tombstone_ordinals_of(engine: &TemporalEngine, kind: &str, key: &str) -> Vec<Option<u64>> {
+    let shards = engine.shards.read().expect("engine lock poisoned");
+    let shard = shards.get(&1).expect("shard 1 is loaded");
+    let mut held = Vec::new();
+    for bucket in shard.bucket_index.bucket_map.values() {
+        for (_, page) in bucket.block_index.iter() {
+            if page.deleted && page.model_id.as_str() == kind && &*page.object_key == key {
+                held.push(page.address.block_id());
             }
         }
     }
@@ -412,21 +464,44 @@ fn zset_name(score: f64, member: &[u8]) -> String {
 }
 
 // =================================================================================================
-// 1. NO DELETE PATH LEAVES A TOMBSTONE IN THE PAGE INDEX
+// 1. A PER-ELEMENT DELETE NOW LEAVES A TOMBSTONE; A WHOLE-OBJECT DELETE STILL DOES NOT
 // =================================================================================================
 
-/// EVERY DELETE PATH REMOVES THE PAGE. FIVE COMMANDS, FIVE REMOVALS, ZERO TOMBSTONES.
+/// EVERY PER-ELEMENT DELETE PATH LEAVES EXACTLY ONE TOMBSTONE. THE WHOLE-OBJECT PATH LEAVES NONE.
 ///
-/// The per-element four go through `mark_bucket_index_block_deleted`, whose name states a mark it does
-/// not make; the whole-object one goes through `mark_bucket_index_object_deleted`. Both bodies are a
-/// `retain` returning false.
+/// # WHAT THIS ASSERTED BEFORE, AND WHY IT IS THE OPPOSITE NOW
+///
+/// It was called `FORMERLY(every_delete_path_removes_the_page_rather_than_tombstoning_it)` -- wrapped
+/// so that neither a reader nor the citation check mistakes a name that no longer exists for a guard
+/// that does, which is the same trap the unwritten-guard marker was for -- and it asserted
+/// `tombstoned == 0` on all five arms. That was true and load-bearing: the per-element four went
+/// through `mark_bucket_index_block_deleted`, whose name states a mark it does not make, and both its
+/// body and the whole-object deleter's were a `retain` returning false. Nothing in this engine ever
+/// set `BlockIndex::deleted` to true.
+///
+/// A container's PAGES are now the statement of its membership, which is what the fold this module
+/// sits under exists to make possible, and a page nothing points at is a page no derivation can read.
+/// So a per-element removal appends a page that records it and keeps an entry pointing at that page,
+/// carrying `deleted`. The old claim is therefore FALSE BY INTENT for four of the five arms.
+///
+/// IT IS INVERTED HERE RATHER THAN RELAXED OR DELETED. Relaxing it -- dropping the `tombstoned == 0`
+/// line -- would leave a module that no longer says anything about tombstones at all, and a guard
+/// that silently swaps sides is indistinguishable from one that was wrong all along. So the count is
+/// still asserted on every arm; what changed is the number it is asserted against, and that number is
+/// now PER ARM rather than one constant, because the two kinds of delete differ.
+///
+/// # THE WHOLE-OBJECT ARM IS THE CONTROL, NOT AN EXEMPTION
+///
+/// `CommonDelete` drops every entry of the key, tombstones included, because there is no membership
+/// left to keep true -- the object is gone. If that arm started leaving tombstones it would be
+/// leaking an entry per deleted object forever, so its zero is asserted as firmly as the others' one.
 ///
 /// THE DENOMINATOR IS PRINTED AND ASSERTED for every arm, because a delete of nothing and a delete
-/// that tombstones produce the same "0 pages carry `deleted`".
+/// that tombstones produce the same page counts.
 ///
 /// rust-internal: drives five commands, no external surface
 #[test]
-fn every_delete_path_removes_the_page_rather_than_tombstoning_it() {
+fn every_per_element_delete_leaves_one_tombstone_and_the_whole_object_delete_leaves_none() {
     let dir = tempfile::tempdir().expect("tempdir");
     let engine = engine_on(dir.path());
     load_on(&engine, OPERATOR_END);
@@ -500,7 +575,13 @@ fn every_delete_path_removes_the_page_rather_than_tombstoning_it() {
     ];
 
     let mut arms_checked = 0usize;
+    let mut per_element_arms = 0usize;
+    let mut whole_object_arms = 0usize;
     for (kind, key, seed, delete) in seeds {
+        // WHICH KIND OF DELETE THIS ARM IS, decided from the command rather than from the key's name.
+        // Reading it off a hand-written list of which arms are whole-object would go stale the moment
+        // a sixth arm was added, and nothing would fail.
+        let whole_object = matches!(delete, Command::CommonDelete { .. });
         write(&engine, seed);
         let before = pages_of(&engine, kind, key);
         assert!(
@@ -508,28 +589,49 @@ fn every_delete_path_removes_the_page_rather_than_tombstoning_it() {
             "DENOMINATOR: {kind}/{key} holds no page after its seed, so the delete below would \
              prove nothing"
         );
+        assert_eq!(
+            0,
+            tombstoned_pages_of(&engine, kind, key),
+            "DENOMINATOR: {kind}/{key} already carries a tombstone before its delete, so the count \
+             after it would not be attributable to the delete"
+        );
 
         write(&engine, delete);
         let after = pages_of(&engine, kind, key);
         let tombstoned = tombstoned_pages_of(&engine, kind, key);
 
         println!(
-            "  {kind:<5} {key:<14} pages {} -> {}, pages carrying deleted=true: {}",
+            "  {kind:<5} {key:<14} {:<12} live pages {} -> {}, entries carrying deleted=true: {}",
+            if whole_object { "whole-object" } else { "per-element" },
             before.len(),
             after.len(),
             tombstoned
         );
         assert!(
             after.len() < before.len(),
-            "{kind}/{key}: the delete left {} pages of {}, so it did not remove",
+            "{kind}/{key}: the delete left {} live pages of {}, so it did not remove",
             after.len(),
             before.len()
         );
-        assert_eq!(
-            tombstoned, 0,
-            "{kind}/{key}: {tombstoned} page(s) carry deleted=true, so this engine DOES tombstone \
-             and the whole of this module's premise has moved"
-        );
+        if whole_object {
+            whole_object_arms += 1;
+            assert_eq!(
+                0, tombstoned,
+                "{kind}/{key}: a WHOLE-OBJECT delete left {tombstoned} tombstone entry(ies). There \
+                 is no membership left to keep true once the object is gone, so an entry retained \
+                 here is leaked for the life of the store rather than collected by a rewrite."
+            );
+        } else {
+            per_element_arms += 1;
+            assert_eq!(
+                1, tombstoned,
+                "{kind}/{key}: a PER-ELEMENT delete left {tombstoned} tombstone entry(ies), not one. \
+                 Zero means the removal reached the index and NOT the pages, so a membership derived \
+                 from the pages would put the element back -- which is the defect #2028 drove and \
+                 this whole change exists to close. More than one means the removal filed a tombstone \
+                 per bucket rather than per element."
+            );
+        }
         arms_checked += 1;
     }
 
@@ -537,9 +639,18 @@ fn every_delete_path_removes_the_page_rather_than_tombstoning_it() {
         arms_checked, 5,
         "DENOMINATOR: {arms_checked} delete paths were driven, not the five this claim covers"
     );
+    // BOTH SIDES OF THE SPLIT ARE NON-EMPTY. Without this, five per-element arms and no whole-object
+    // arm would satisfy every assertion above and the control would be untested.
+    assert_eq!(
+        4, per_element_arms,
+        "DENOMINATOR: {per_element_arms} per-element arms were driven, not four"
+    );
+    assert_eq!(
+        1, whole_object_arms,
+        "DENOMINATOR: {whole_object_arms} whole-object arms were driven, not one"
+    );
     println!(
-        "\n  five delete paths, five removals, zero tombstones -- so there is nothing for a \
-         `max` to step over"
+        "\n  four per-element deletes left one tombstone each; the whole-object delete left none"
     );
 }
 
@@ -633,7 +744,36 @@ fn the_element_ordinal_a_delete_frees_is_handed_straight_back_to_the_next_elemen
         ordinal_the_arrival_took, ordinal_the_third_member_took,
         "the arrival took ordinal {ordinal_the_arrival_took} and the removed member had \
          {ordinal_the_third_member_took}. IF THIS IS RED, non-reuse is now enforced somewhere and \
-         this module's refutation should be re-read rather than this assertion relaxed."
+         this module's refutation should be re-read rather than this assertion relaxed. The helper \
+         above counts LIVE pages; a red caused by the tombstone being counted is a helper that lost \
+         its `deleted` filter, not a reservation."
+    );
+
+    // THE FREED NUMBER IS NOW HELD TWICE, AND EXACTLY ONE OF THE TWO IS LIVE.
+    //
+    // A NEW FACT, not a relaxation of the one above: the removal keeps an entry pointing at the page
+    // that records it, and `container_page_ordinal` filters `deleted`, so the tombstone keeps the
+    // number it had while the arrival is handed the same number. That is safe for exactly the reason
+    // this module has always given -- an ordinal names a POSITION and identity lives in the component
+    // -- and it is asserted here rather than left implicit, because "two entries share ordinal 2" is
+    // what corruption would also look like.
+    let tombstones = tombstone_ordinals_of(&engine, "zset", "eo-reuse");
+    println!(
+        "  [reuse, element axis] tombstone entries hold {tombstones:?}; the arrival holds \
+         Some({ordinal_the_arrival_took})"
+    );
+    assert_eq!(
+        1,
+        tombstones.len(),
+        "DENOMINATOR: {} tombstone entries for one removal, so the pairing below is not about one \
+         removed element",
+        tombstones.len()
+    );
+    assert_eq!(
+        Some(ordinal_the_third_member_took as u64),
+        tombstones[0],
+        "the tombstone does not hold the ordinal its element had, so the number it kept is not the \
+         one the arrival was handed back and this pairing is measuring two unrelated things"
     );
 }
 

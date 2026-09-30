@@ -199,3 +199,6 @@ mod resident_map_readers;
 mod container_pages_are_batched;
 mod view_rebuild_page_read_failures;
 mod folded_page_membership;
+mod container_tombstone_collection;
+mod container_tombstone_entry;
+mod tombstone_reload_path;

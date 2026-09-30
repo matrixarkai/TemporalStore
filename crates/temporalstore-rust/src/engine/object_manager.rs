@@ -85,7 +85,14 @@ pub(super) fn runtime_report(shard: &ShardState) -> ObjectManagerRuntimeReport {
             };
         }
         for page in bucket.block_index.values() {
-            live_block_ref_count = live_block_ref_count.saturating_add(1);
+            // A TOMBSTONE ENTRY IS NOT A LIVE BLOCK REF. It is counted below as a DELETED one, which
+            // is what it is, and the field this line fills is named `live`. The distinction did not
+            // exist before a container removal started leaving an entry behind: `deleted: true` was
+            // constructed in exactly one place, on a whole-object path where every entry carried it,
+            // so counting all entries and counting the live ones were the same number.
+            if !page.deleted {
+                live_block_ref_count = live_block_ref_count.saturating_add(1);
+            }
             object_ids.insert(page.object_id());
             *object_ref_counts.entry(page.object_id()).or_default() += 1;
             if page.address.object_id() != Some(page.object_id()) {
@@ -111,10 +118,20 @@ pub(super) fn runtime_report(shard: &ShardState) -> ObjectManagerRuntimeReport {
                 });
             object.block_ref_count = object.block_ref_count.saturating_add(1);
             object.dirty |= page.dirty || bucket.dirty();
+            // ONE PAGE'S DELETION IS NOT THE OBJECT'S, and separating the two is the whole of this
+            // change here. `page.deleted` still makes this a deleted BLOCK REF -- it is one -- but it
+            // no longer makes the OBJECT deleted, because a container removal now leaves a tombstone
+            // entry and one removed member out of twelve would otherwise report the whole set as a
+            // deleted object through the public runtime report.
+            //
+            // `residency` never went wrong: it already required `deleted_block_ref_count >=
+            // block_ref_count`, so eleven live refs beside one deleted one never read as "deleted".
+            // The FIELD did, and it is reported beside the residency that contradicts it.
+            // `a_removed_member_does_not_make_its_object_deleted` drives both.
             let object_deleted =
-                page.deleted || bucket.deleted() || bucket.deleted_object_index.contains(&page.object_id());
+                bucket.deleted() || bucket.deleted_object_index.contains(&page.object_id());
             object.deleted |= object_deleted;
-            if object_deleted {
+            if page.deleted || object_deleted {
                 object.deleted_block_ref_count = object.deleted_block_ref_count.saturating_add(1);
             } else if bucket.in_memory() && !page.log_backed {
                 object.hot_block_ref_count = object.hot_block_ref_count.saturating_add(1);
@@ -139,6 +156,18 @@ pub(super) fn runtime_report(shard: &ShardState) -> ObjectManagerRuntimeReport {
     let objects = objects
         .into_values()
         .map(|mut object| {
+            // AN OBJECT EVERY ONE OF WHOSE PAGES IS DELETED IS A DELETED OBJECT, and this is where
+            // that is decided now rather than per page. `object.deleted |= page.deleted` used to say
+            // it, and said it from ONE page -- correct while the only writer of that flag deleted a
+            // whole object's pages together (`packed_pages`), wrong the moment a single removed
+            // member carries it. This is the same claim quantified over the object instead of
+            // existentially over its pages, so the whole-object case still reports deleted and one
+            // removed member no longer does.
+            if object.block_ref_count > 0
+                && object.deleted_block_ref_count >= object.block_ref_count
+            {
+                object.deleted = true;
+            }
             object.residency = if object.deleted
                 && (object.block_ref_count == 0
                     || object.deleted_block_ref_count >= object.block_ref_count)
