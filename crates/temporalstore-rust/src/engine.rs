@@ -70,7 +70,10 @@ pub use shard_write_guard::{
 };
 mod compaction;
 // The maintenance round in `data_node` asks this before compacting; see the function's doc.
-pub use compaction::{compaction_drain_block_slab_ids, compaction_relocatable_block_refs};
+pub use compaction::{
+    compaction_drain_block_slab_ids, compaction_relocatable_block_refs, container_batch_counts,
+    reset_container_batch_counts, CONTAINER_BATCH_ELEMENT_CAP,
+};
 mod storage_reporting;
 pub(crate) mod hashing;
 mod bucket_store;

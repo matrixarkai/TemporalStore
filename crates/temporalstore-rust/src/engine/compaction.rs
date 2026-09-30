@@ -710,6 +710,349 @@ fn read_block_bytes_for_compaction(
     read_block_bytes(cache, block_store, shard_id, address, identity, routing_bucket)
 }
 
+/// How many elements one rewritten container page may hold.
+///
+/// A cap and not a target: the byte target below is what usually binds, and this stops a container
+/// of tiny elements -- a set of eight-byte members, a hash of counters -- from putting tens of
+/// thousands of them behind one address. Everything behind one address shares a cache entry, a
+/// checksum and a read, so a page that holds the whole container turns every point read into a read
+/// of the container.
+///
+/// 128 because that is the order the comparison design bounds its own delta chain at, and because
+/// the measured saving is nearly all spent by then: `container_pages`'s ladder puts a set of
+/// eight-byte members at 12 bytes of framing per element at one per page and 3.1 at 128, and the
+/// curve between 32 and 128 is worth half a byte.
+pub const CONTAINER_BATCH_ELEMENT_CAP: usize = 128;
+
+/// The byte target a rewritten container page is chunked against.
+///
+/// The SAME target the timestamped chunker uses (`context_block_target_bytes`), deliberately, so the
+/// engine has one answer to "how big should a page be" rather than two that can drift. A container
+/// page and a packed series page are read by the same block store through the same cache with the
+/// same record header; nothing about a container makes a different size right, and a second constant
+/// would be a second thing to tune.
+fn container_batch_target_bytes() -> usize {
+    crate::storage_config::context_block_target_bytes()
+}
+
+/// One element of a container, as compaction sees it: the bytes that name it, and where it lives.
+///
+/// The KEY BYTES and not the component. The component is a rendering of these -- hex for a set,
+/// a score before that hex for a zset, the biased word for a list, the field name itself for a hash
+/// -- and `container_pages::component_from_element_key` is the one renderer for all four. Before it
+/// existed, `read_block_bytes_for_compaction` documented at length why this function could not have
+/// the component: "There is no shared renderer to call; each write site spells it out inline.
+/// Re-spelling them here would be a second copy of four rules, free to drift from the four
+/// originals." There is a renderer now, so the caller hands over key bytes and this asks it.
+pub(super) struct ContainerElementRef<'a> {
+    pub(super) key: Vec<u8>,
+    pub(super) address: &'a mut BlockAddress,
+}
+
+/// Rewrite a container's pages as FEWER, LARGER pages that each hold several elements.
+///
+/// # WHAT THIS CHANGES AND WHAT IT DOES NOT
+///
+/// It changes the PAGE count and not the ENTRY count. Several elements come to share one address,
+/// and `block_index_handle` hashes the component beside the address, so the page index still holds
+/// one entry per element -- `entry_count_versus_page_count`'s
+/// `two_elements_sharing_one_page_are_still_two_entries_because_the_handle_names_the_component`
+/// drives exactly that and is unchanged by this. The entry count is a later stage's subject.
+///
+/// Page count is what a load path that reads every page pays, which is why it comes first: a replay
+/// that read a page per element once read 987 MB off a 32 MB log, and the reason that was
+/// affordable anywhere is that the timestamped kinds hold many items per page already.
+///
+/// # ONLY PAGES THIS ROUND WOULD HAVE MOVED ANYWAY
+///
+/// `should_relocate` is asked per element and an element it refuses is left where it is, its address
+/// untouched, and is NOT pulled into a batch. So this adds no reads and no writes to a round: it
+/// changes the shape of what a round was already going to rewrite. A round that relocates nothing
+/// batches nothing.
+///
+/// # AND IT IS THE MIGRATION OFF UNFRAMED PAGES
+///
+/// A page written before `container_pages` carries a bare value and no element key. Read through the
+/// funnel with its component it hands that value back, and this function writes it into a frame that
+/// names it. So an old store becomes a framed one as it is compacted, without a migration pass of
+/// its own.
+///
+/// # THE READ THAT MUST NOT BE SILENTLY EMPTY, AND MUST NOT BE SILENTLY SKIPPED EITHER
+///
+/// An element whose page cannot be read FAILS THE ROUND, which is what `compact_block_addresses`
+/// does for the same case and is not what this function did when it was first written. Both halves
+/// of that matter and they are different failures:
+///
+///   * contributing an EMPTY value to the batch would rewrite a live element as a zero-length one,
+///     and it would read back as PRESENT AND EMPTY -- #1989's shape, and worse than a miss because a
+///     miss is visible. That is why the read's failure arm is not an `unwrap_or_default`.
+///   * SKIPPING the element and carrying on would be safe for the element and unsafe for the ROUND.
+///     CP4 is the recorded reason: a round that hits an unreadable page must propagate the error so
+///     the handler durably commits the consistent partial index, because a round that returns
+///     success having quietly left the volatile index advanced past the durable one lets the
+///     independent reclaim path purge a slab the durable index still names.
+///     `part4::partial_compaction_failure_durably_persists_the_consistent_partial_index` is the
+///     guard, and it caught exactly this: the first version of this function skipped, so the round
+///     succeeded and that test's `result.is_err()` went red.
+///
+/// Whatever was already flushed stays flushed and its addresses stay moved -- that IS the consistent
+/// partial the handler commits. The batch under construction when the read failed is dropped
+/// unwritten, so its elements keep their own pages.
+/// `a_container_element_whose_page_cannot_be_read_fails_the_round_rather_than_folding_an_empty_value`
+/// drives it.
+#[allow(clippy::too_many_arguments)]
+pub(super) fn compact_container_pages_batched<'a>(
+    block_store: &BlockStore,
+    cache: &MultiLayerCache,
+    shard_id: ShardId,
+    model_id: &str,
+    // THE OBJECT THESE PAGES BELONG TO, and one value for the whole call rather than one per
+    // element -- the shape `compact_feature_block_addresses` already uses, for the same reason: the
+    // caller is standing on one object and every element it hands over is an element OF that object.
+    // `compact_block_addresses` carries a key per ITEM because its string arm walks a map of many
+    // objects; these four arms do not.
+    //
+    // AND IT IS NOT OPTIONAL, because a [`PageIdentity`] cannot be built without it. The read below
+    // asks for ONE ELEMENT of a page, and a read handed only a component and no object cannot say
+    // which object's element it means.
+    object_key: &str,
+    routing_bucket: u32,
+    elements: impl IntoIterator<Item = ContainerElementRef<'a>>,
+    rewrite_stats: &mut CompactionRewriteStats,
+) -> Result<(), Status> {
+    let Some(spelling) = super::container_pages::ElementKeySpelling::for_kind(model_id) else {
+        // Not a kind whose pages name an element, so there is nothing to batch by. Never reached
+        // from the arms below, which are the four container kinds; stated rather than asserted
+        // because a fifth kind added to those arms should degrade to doing nothing, not panic.
+        return Ok(());
+    };
+    let target_bytes = container_batch_target_bytes();
+
+    // One batch under construction: the items, the addresses that will point at it, and whether any
+    // of its pages was cold. Held as owned bytes because the frame is built from all of them at
+    // once, after the last one is read.
+    let mut items: Vec<(Vec<u8>, Vec<u8>)> = Vec::new();
+    let mut destinations: Vec<&mut BlockAddress> = Vec::new();
+    let mut batch_bytes = 0usize;
+    let mut cold_in_batch = false;
+    let mut batches = 0usize;
+    let mut pages_folded = 0usize;
+
+    // The object id every element of this object already carries. #2019 made it the OBJECT's rather
+    // than one of its elements, which is what lets one page stand for several elements at all: a
+    // batched page can carry only one object id, and before #2019 that id named one element and
+    // would have been wrong for the rest.
+    let mut object_id: Option<u64> = None;
+
+    for element in elements {
+        if !rewrite_stats.should_relocate(element.address) {
+            continue;
+        }
+        let component = match super::container_pages::component_from_element_key(
+            spelling,
+            &element.key,
+        ) {
+            Some(component) => component,
+            // A key this spelling cannot render names no component, so no page can be found for it.
+            // Counted by being skipped; the address is left alone.
+            None => continue,
+        };
+        let value = read_block_bytes_for_container_element(
+            cache,
+            block_store,
+            shard_id,
+            element.address,
+            // THE TERMS, NOT AN ID. The object comes from the key this call is standing on and the
+            // element from the component just rendered, so the identity is derived here from both
+            // halves rather than recovered from the address -- which is what #2024 made the only
+            // way to name a page, precisely so a relocation cannot read a page it cannot name.
+            PageIdentity::of(shard_id, model_id, object_key, Some(component.as_str())),
+            routing_bucket,
+        )
+        .ok_or_else(|| {
+            Status::error(
+                "page_compaction_failed",
+                "missing container element page bytes during compaction",
+            )
+        })?;
+        let cold = !block_memory_resident(cache, shard_id, element.address, Some(routing_bucket));
+        if object_id.is_none() {
+            object_id = element.address.object_id();
+        }
+
+        // Would this element take the batch past either bound? Flush first, so a batch is sealed
+        // BEFORE it exceeds the target rather than after -- the same order the timestamped chunker
+        // splits in.
+        let item_bytes = element.key.len() + value.len() + 8;
+        if !items.is_empty()
+            && (items.len() >= CONTAINER_BATCH_ELEMENT_CAP
+                || batch_bytes + item_bytes > target_bytes)
+        {
+            pages_folded += flush_container_batch(
+                block_store,
+                cache,
+                shard_id,
+                model_id,
+                spelling,
+                routing_bucket,
+                object_id,
+                batches,
+                &mut items,
+                &mut destinations,
+                &mut batch_bytes,
+                &mut cold_in_batch,
+                rewrite_stats,
+            )?;
+            batches += 1;
+        }
+
+        batch_bytes += item_bytes;
+        cold_in_batch |= cold;
+        items.push((element.key, value));
+        destinations.push(element.address);
+    }
+
+    if !items.is_empty() {
+        pages_folded += flush_container_batch(
+            block_store,
+            cache,
+            shard_id,
+            model_id,
+            spelling,
+            routing_bucket,
+            object_id,
+            batches,
+            &mut items,
+            &mut destinations,
+            &mut batch_bytes,
+            &mut cold_in_batch,
+            rewrite_stats,
+        )?;
+        batches += 1;
+    }
+    note_container_batch_round(batches, pages_folded);
+    Ok(())
+}
+
+/// One element's VALUE out of the page its index entry names.
+///
+/// Through the read funnel WITH THE COMPONENT NAMED IN THE IDENTITY, which is the one thing that
+/// makes this different from `read_block_bytes_for_compaction`: that one builds its identity with
+/// `None` for the component and so gets the whole payload, because until `container_pages` there was
+/// no renderer to turn a model-map key into a component. There is one now, so this asks for the
+/// element and gets its value whether the stored page is framed or is a bare value from before the
+/// frame existed -- `select_container_element` answers `NotFramed` for the second and the funnel
+/// hands back the whole page, which for an unframed page IS the element.
+fn read_block_bytes_for_container_element(
+    cache: &MultiLayerCache,
+    block_store: &BlockStore,
+    shard_id: ShardId,
+    address: &BlockAddress,
+    identity: PageIdentity<'_>,
+    routing_bucket: u32,
+) -> Option<Vec<u8>> {
+    #[cfg(test)]
+    {
+        let armed = FAIL_BLOCK_READ_AFTER.with(|cell| cell.get());
+        if let Some(remaining) = armed {
+            if remaining == 0 {
+                return None;
+            }
+            FAIL_BLOCK_READ_AFTER.with(|cell| cell.set(Some(remaining - 1)));
+        }
+    }
+    read_block_bytes(
+        cache,
+        block_store,
+        shard_id,
+        address,
+        identity,
+        Some(routing_bucket),
+    )
+}
+
+/// Write one batch and point every contributing address at it. Returns how many pages it folded.
+#[allow(clippy::too_many_arguments)]
+fn flush_container_batch(
+    block_store: &BlockStore,
+    cache: &MultiLayerCache,
+    shard_id: ShardId,
+    model_id: &str,
+    spelling: super::container_pages::ElementKeySpelling,
+    routing_bucket: u32,
+    object_id: Option<u64>,
+    batch_ordinal: usize,
+    items: &mut Vec<(Vec<u8>, Vec<u8>)>,
+    destinations: &mut Vec<&mut BlockAddress>,
+    batch_bytes: &mut usize,
+    cold_in_batch: &mut bool,
+    rewrite_stats: &mut CompactionRewriteStats,
+) -> Result<usize, Status> {
+    let borrowed: Vec<(&[u8], &[u8])> = items
+        .iter()
+        .map(|(key, value)| (key.as_slice(), value.as_slice()))
+        .collect();
+    let bytes = super::container_pages::encode_container_page(spelling, &borrowed);
+    // WHICH page of its object this is, and it is the BATCH's ordinal rather than any element's.
+    // #2008 threaded this so the record header and the address are built from ONE value, because
+    // `decode_block_record` refuses a page whose two copies disagree. A batched page has one
+    // header and one address, so it has one ordinal, and numbering batches is the only numbering
+    // that stays true when the elements inside them move between pages.
+    let ordinal = u32::try_from(batch_ordinal).unwrap_or(u32::MAX);
+    let new_address = block_store
+        .append_block_of_object(&bytes, object_id, Some(routing_bucket), ordinal)
+        .map_err(|err| Status::error("page_compaction_failed", err.to_string()))?;
+    let _ = cache.put(
+        CacheKey::page_with_slot_generation(
+            shard_id,
+            new_address.block_slab_id(),
+            new_address.offset(),
+            new_address.length(),
+            Some(routing_bucket),
+            new_address.generation(),
+        ),
+        bytes,
+    );
+    let folded = destinations.len();
+    for destination in destinations.drain(..) {
+        *destination = new_address.clone();
+        rewrite_stats.record(model_id, *cold_in_batch);
+    }
+    items.clear();
+    *batch_bytes = 0;
+    *cold_in_batch = false;
+    Ok(folded)
+}
+
+/// Batches written and pages folded into them, so a guard can assert a round actually batched.
+///
+/// A COUNTER AND NOT A DERIVED FIGURE. "Pages went down" is measurable from the store, and it is
+/// also what a round that relocated nothing reports, so a test that only looked at the store could
+/// not tell batching from an idle round. These two say what this code DID.
+static CONTAINER_BATCHES_WRITTEN: std::sync::atomic::AtomicU64 =
+    std::sync::atomic::AtomicU64::new(0);
+static CONTAINER_PAGES_FOLDED: std::sync::atomic::AtomicU64 =
+    std::sync::atomic::AtomicU64::new(0);
+
+fn note_container_batch_round(batches: usize, pages_folded: usize) {
+    CONTAINER_BATCHES_WRITTEN.fetch_add(batches as u64, std::sync::atomic::Ordering::Relaxed);
+    CONTAINER_PAGES_FOLDED.fetch_add(pages_folded as u64, std::sync::atomic::Ordering::Relaxed);
+}
+
+/// Batches written and element pages folded into them since the last reset.
+pub fn container_batch_counts() -> (u64, u64) {
+    (
+        CONTAINER_BATCHES_WRITTEN.load(std::sync::atomic::Ordering::Relaxed),
+        CONTAINER_PAGES_FOLDED.load(std::sync::atomic::Ordering::Relaxed),
+    )
+}
+
+/// Forget the counts, so a test measures its own round.
+pub fn reset_container_batch_counts() {
+    CONTAINER_BATCHES_WRITTEN.store(0, std::sync::atomic::Ordering::Relaxed);
+    CONTAINER_PAGES_FOLDED.store(0, std::sync::atomic::Ordering::Relaxed);
+}
+
 /// THE BUCKET AND THE KEY COME IN BESIDE EACH ADDRESS, because compaction reads and re-writes
 /// pages and the read is keyed by both.
 ///

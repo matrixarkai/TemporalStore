@@ -1529,67 +1529,94 @@ fn expiry_scan_budget(limit: usize) -> usize {
                 .map(|(key, address)| (bucket_of(key), std::borrow::Cow::Borrowed(key.as_str()), address)),
             &mut rewrite_stats,
         )?;
+        // THE FOUR CONTAINER ARMS BATCH, and each hands over the element's KEY BYTES rather than
+        // its component: `container_pages::component_from_element_key` renders the component from
+        // them, so the four inline renderings the write sites spell out are not copied here. That is
+        // the second copy `read_block_bytes_for_compaction` documented as the reason these arms
+        // could not name their elements at all, and it no longer has to exist.
+        //
+        // `iter_mut()` and not `values_mut()`, because the map's KEY is the element and it is what
+        // the frame has to carry -- and it is also what the read's component is rendered from, so
+        // these arms now name the page they read instead of asking for the whole of it.
+        //
+        // THE OBJECT KEY GOES IN ONCE PER ARM rather than once per item. `compact_block_addresses`
+        // pairs a key with every address because its string arm walks a map of many objects; each of
+        // these four arms is already standing on exactly one, so it says so once.
         for (key, fields) in shard.hashes.iter_mut() {
             let routing_bucket = bucket_of(key);
-            // Borrowed once per KEY and cloned per page, which for `Cow::Borrowed` is a
-            // pointer copy and not a string copy.
-            let object_key = std::borrow::Cow::Borrowed(key.as_str());
-            compact_block_addresses(
+            compact_container_pages_batched(
                 &self.block_store,
                 &self.cache,
                 shard_id,
                 "hash",
-                fields
-                    .values_mut()
-                    .map(move |address| (routing_bucket, object_key.clone(), address)),
+                key.as_str(),
+                routing_bucket,
+                fields.iter_mut().map(|(field, address)| ContainerElementRef {
+                    // A hash field's component IS the field name, so its key bytes are the name's.
+                    key: field.as_bytes().to_vec(),
+                    address,
+                }),
                 &mut rewrite_stats,
             )?;
         }
         for (key, members) in shard.zsets.iter_mut() {
             let routing_bucket = bucket_of(key);
-            // Borrowed once per KEY and cloned per page, which for `Cow::Borrowed` is a
-            // pointer copy and not a string copy.
-            let object_key = std::borrow::Cow::Borrowed(key.as_str());
-            compact_block_addresses(
+            compact_container_pages_batched(
                 &self.block_store,
                 &self.cache,
                 shard_id,
                 "zset",
-                members
-                    .values_mut()
-                    .map(move |entry| (routing_bucket, object_key.clone(), &mut entry.1)),
+                key.as_str(),
+                routing_bucket,
+                members.iter_mut().map(|(member, entry)| {
+                    // The biased score big-endian, then the member: the two halves the component
+                    // spells as sixteen hex characters and then the member's hex.
+                    let mut element_key = Vec::with_capacity(8 + member.len());
+                    element_key.extend_from_slice(&entry.0.to_be_bytes());
+                    element_key.extend_from_slice(member);
+                    ContainerElementRef {
+                        key: element_key,
+                        address: &mut entry.1,
+                    }
+                }),
                 &mut rewrite_stats,
             )?;
         }
         for (key, elements) in shard.lists.iter_mut() {
             let routing_bucket = bucket_of(key);
-            // Borrowed once per KEY and cloned per page, which for `Cow::Borrowed` is a
-            // pointer copy and not a string copy.
-            let object_key = std::borrow::Cow::Borrowed(key.as_str());
-            compact_block_addresses(
+            compact_container_pages_batched(
                 &self.block_store,
                 &self.cache,
                 shard_id,
                 "list",
-                elements
-                    .values_mut()
-                    .map(move |address| (routing_bucket, object_key.clone(), address)),
+                key.as_str(),
+                routing_bucket,
+                elements.iter_mut().map(|(sequence, address)| ContainerElementRef {
+                    // The same two's-complement bias `ListPush` renders as sixteen hex characters,
+                    // as the eight bytes underneath that rendering.
+                    key: (*sequence as u64)
+                        .wrapping_sub(i64::MIN as u64)
+                        .to_be_bytes()
+                        .to_vec(),
+                    address,
+                }),
                 &mut rewrite_stats,
             )?;
         }
         for (key, members) in shard.sets.iter_mut() {
             let routing_bucket = bucket_of(key);
-            // Borrowed once per KEY and cloned per page, which for `Cow::Borrowed` is a
-            // pointer copy and not a string copy.
-            let object_key = std::borrow::Cow::Borrowed(key.as_str());
-            compact_block_addresses(
+            compact_container_pages_batched(
                 &self.block_store,
                 &self.cache,
                 shard_id,
                 "set",
-                members
-                    .values_mut()
-                    .map(move |address| (routing_bucket, object_key.clone(), address)),
+                key.as_str(),
+                routing_bucket,
+                members.iter_mut().map(|(member, address)| ContainerElementRef {
+                    // A set member's component is `hex::encode(member)`, so the member IS the key.
+                    key: member.clone(),
+                    address,
+                }),
                 &mut rewrite_stats,
             )?;
         }
