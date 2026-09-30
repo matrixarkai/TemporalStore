@@ -160,10 +160,10 @@ pub struct TemporalEngine {
     /// The slab an unfinished compaction round is still filling, per shard, with the slab it
     /// rolled away from.
     ///
-    /// A round rolls a fresh slab and relocates live pages onto it. Once a round is BOUNDED it
-    /// can stop before every page has moved -- and rolling again next round would re-move
+    /// A round rolls a fresh slab and relocates live blocks onto it. Once a round is BOUNDED it
+    /// can stop before every block has moved -- and rolling again next round would re-move
     /// everything the last one moved, so the next round continues filling this slab instead.
-    /// That is what makes a bounded round make progress rather than shuffle the same pages.
+    /// That is what makes a bounded round make progress rather than shuffle the same blocks.
     /// Absent means no round is in flight, so the next one rolls.
     ///
     /// Not durable: a restart loses at most the knowledge that a round was open, and the next
@@ -171,25 +171,25 @@ pub struct TemporalEngine {
     compaction_rounds: Arc<RwLock<HashMap<ShardId, (u64, u64)>>>,
     /// Where the bounded readability probe should START reading on this shard's next round.
     ///
-    /// The probe reads at most `RECOVERY_READABLE_PROBE_PER_ROUND` live pages per round so its
+    /// The probe reads at most `RECOVERY_READABLE_PROBE_PER_ROUND` live blocks per round so its
     /// cost does not grow with the store. Without a resume position it began at the FIRST live
-    /// page every round, so it re-read the same prefix forever and a page past that prefix was
-    /// never read at all -- on a shard holding more live pages than the budget, the periodic
-    /// loop could not discover an unreadable page outside the first window in any number of
-    /// rounds, while the report it returned said the pages it HAD read were fine.
+    /// block every round, so it re-read the same prefix forever and a block past that prefix was
+    /// never read at all -- on a shard holding more live blocks than the budget, the periodic
+    /// loop could not discover an unreadable block outside the first window in any number of
+    /// rounds, while the report it returned said the blocks it HAD read were fine.
     ///
     /// Holding the index the next round resumes from turns that fixed prefix into a window that
     /// sweeps the whole shard and wraps, which is what makes a bounded round make PROGRESS
     /// rather than repeat itself -- the same reason `compaction_rounds` above is carried.
     ///
-    /// An INDEX into the live-page vector, not a page identity: the vector is rebuilt each round
-    /// and entries move, so a resumed round is not promised the exact page the previous one
+    /// An INDEX into the live-block vector, not a block identity: the vector is rebuilt each round
+    /// and entries move, so a resumed round is not promised the exact block the previous one
     /// stopped before. That is acceptable for a sampler whose job is to cover the store over
     /// time; nothing durable depends on this position.
     ///
     /// Not durable, for the same reason `compaction_rounds` is not: a restart costs one repeated
     /// window, not correctness. Only BOUNDED callers advance it -- an unbounded call
-    /// (`readable_probe_limit == 0`) reads every page anyway and leaves the position alone, so a
+    /// (`readable_probe_limit == 0`) reads every block anyway and leaves the position alone, so a
     /// diagnostic call cannot move the periodic loop's window out from under it.
     recovery_probe_cursors: Arc<RwLock<HashMap<ShardId, usize>>>,
     concurrent_commit: Arc<std::sync::atomic::AtomicBool>,
@@ -200,10 +200,10 @@ pub struct TemporalEngine {
     /// costs. A guard that can only observe zero cannot distinguish a shortened hold from a
     /// counter that stopped counting; this is how an engine takes the other side.
     expiry_index_flush_under_lock: Arc<std::sync::atomic::AtomicBool>,
-    /// Whether the cache warm-up reads its pages while still holding the shard-table read guard.
+    /// Whether the cache warm-up reads its blocks while still holding the shard-table read guard.
     ///
     /// False everywhere but the control arm of the guard that measures it. Same reason as the
-    /// flag above: an assertion that no page was read under a guard is satisfied just as well by
+    /// flag above: an assertion that no block was read under a guard is satisfied just as well by
     /// a stage that read nothing, so the guard runs an arm that still reads them all under the
     /// lock and checks that the counter can reach the other answer.
     warm_cache_under_shard_guard: Arc<std::sync::atomic::AtomicBool>,
@@ -216,7 +216,7 @@ pub struct TemporalEngine {
     /// everything, measured in the same process on the same fixture. Without it a guard
     /// asserting flat bytes would pass just as well against a round that stopped writing.
     expiry_index_flush_whole: Arc<std::sync::atomic::AtomicBool>,
-    /// Whether loading a shard warms the in-memory cache tier from the page store as part of
+    /// Whether loading a shard warms the in-memory cache tier from the block store as part of
     /// the load, rather than leaving it to be warmed in the background.
     ///
     /// Starts from `MATRIXARK_EAGER_CACHE_WARM_ON_LOAD`, which the shipped config and several
@@ -261,7 +261,7 @@ pub struct TemporalEngine {
 }
 
 
-/// How many times a sweep has moved pages out, for tests that need to know the bound fired
+/// How many times a sweep has moved blocks out, for tests that need to know the bound fired
 /// rather than that the count merely happened to stay low.
 pub(crate) static RESIDENT_SWEEPS: std::sync::atomic::AtomicU64 =
     std::sync::atomic::AtomicU64::new(0);
@@ -276,7 +276,7 @@ pub(crate) static RESIDENT_SWEEPS: std::sync::atomic::AtomicU64 =
 /// whatever the retention policy says. Measured on an ingest of distinct keys, registrations
 /// tracked writes ONE FOR ONE: 200 writes 200 held, 1200 writes 1200 held.
 ///
-/// The default is deliberately generous. The recent ones are worth keeping where they are: a page
+/// The default is deliberately generous. The recent ones are worth keeping where they are: a block
 /// written moments ago is the one a read is most likely to want, and its bytes are already in the
 /// record just written. This is a ceiling on how far behind the dump can fall, not a cache policy.
 fn wal_resident_block_limit() -> usize {
@@ -313,7 +313,7 @@ impl TemporalEngine {
             end_routing_bucket,
         );
         // The rebuild above just recomputed every bucket's object index by scanning that bucket's
-        // page index. The full sweep's own rebuild would scan the same pages again, from the same
+        // block index. The full sweep's own rebuild would scan the same blocks again, from the same
         // source, with nothing in between that could change the answer -- so the flags refresh,
         // and the duplicate scan does not.
         storage_bucket_internals::refresh_bucket_runtime_flags_after_reconstruct(shard);
@@ -330,15 +330,15 @@ impl TemporalEngine {
 
     /// Take the shard table's read lock, marking the region for the lock-hold measurement.
     ///
-    /// Identical to `self.shards.read()` in every observable way except that the page-read
+    /// Identical to `self.shards.read()` in every observable way except that the block-read
     /// counter can tell whether it is running inside the region.
     fn shards_read_marked(&self) -> MarkedShardReadGuard<'_> {
         MarkedShardReadGuard::new(self.shards.read().expect("engine lock poisoned"))
     }
 
-    /// Read one live page off the block store, counted against the shard-table guard.
+    /// Read one live block off the block store, counted against the shard-table guard.
     ///
-    /// The maintenance stages that read pages -- the cache warm-up and the recovery report's
+    /// The maintenance stages that read blocks -- the cache warm-up and the recovery report's
     /// readable probe -- go through here so a guard can state whether the reads happened while
     /// the shard table was held. The count is taken here and the REGION is marked at the
     /// acquisition, so moving a read out of a guarded region moves it out of the under-guard
@@ -503,7 +503,7 @@ impl TemporalEngine {
     /// Apply `request`, attaching `pages` to its log record instead of whatever this node
     /// would derive for it.
     ///
-    /// For replaying a write that was already acked somewhere else. A page can be derived
+    /// For replaying a write that was already acked somewhere else. A block can be derived
     /// state -- a serialized counter series, a hash map -- and re-executing the command that
     /// produced it reconstructs it only from a state this node may no longer have. When the
     /// original bytes travelled with the command, they are the truth, and re-deriving would
@@ -784,7 +784,7 @@ impl TemporalEngine {
         // Phase-1 flat-append fast-skip: once a promote scan has confirmed `bucket_index` is in
         // sync with the model maps, skip the O(store) re-scan on every subsequent command. The
         // live write path keeps `bucket_index` authoritative in lock-step (each mutating command
-        // upserts its page before returning), so the repeat scan can only re-confirm sync. The
+        // upserts its block before returning), so the repeat scan can only re-confirm sync. The
         // flag is `#[serde(skip)]` (false on any fresh load), so the first live command after a
         // reload still pays one full reconcile. Gate OFF -> the scan runs every command as before.
         if !defer_bucket_index_reconstruct()
@@ -875,7 +875,7 @@ impl TemporalEngine {
                 };
             }
         }
-        // Start this write with nothing staged, so a page put aside by a command that never
+        // Start this write with nothing staged, so a block put aside by a command that never
         // appended cannot ride along on the next command's record.
         block_in_wal::begin_write();
         // What the touched keys held before this command, so the capture below can be
@@ -1004,7 +1004,7 @@ impl TemporalEngine {
             // Maintain the index for the keys this write touched, and rebuild only if that did
             // not cover them.
             //
-            // A context write does not register its page, so the branch below fired a full
+            // A context write does not register its block, so the branch below fired a full
             // O(store) rebuild for every one -- the last term in an add that grew with the corpus.
             // Feature and Sequence writes already maintain on the write path, and replay already
             // maintains these same kinds; this closes the one path that did neither.
@@ -1024,8 +1024,8 @@ impl TemporalEngine {
                 });
             let rebuilt_bucket_index = !maintained_bucket_index
                 && !defer_bucket_index_reconstruct()
-                // A command that writes no page cannot have changed the page index, so rebuilding it
-                // recomputes what it already held -- measured at twice the shard's page count per
+                // A command that writes no block cannot have changed the block index, so rebuilding it
+                // recomputes what it already held -- measured at twice the shard's block count per
                 // call for SeenCheck and the control-state change/selection writes.
                 && !command_writes_no_block(&command)
                 && (!command_updates_bucket_index_directly(&command)
@@ -1045,15 +1045,15 @@ impl TemporalEngine {
                     refresh_bucket_runtime_flags(shard);
                 } else {
                     // Refresh only what this write touched. Sweeping the shard here cost
-                    // O(total pages) on EVERY write, which made ingestion quadratic in the corpus.
+                    // O(total blocks) on EVERY write, which made ingestion quadratic in the corpus.
                     refresh_pending_bucket_runtime_flags(shard);
                 }
             }
             // Every
-            // write records a WAL entry before any page is written.
+            // write records a WAL entry before any block is written.
             // async_storage only changes whether the commit BLOCKS: sync -> fsync,
             // async (or bulk backfill) -> buffered, no fsync (a fire-and-forget
-            // commit). Page/index materialization stays deferred to dump.
+            // commit). Block/index materialization stays deferred to dump.
             // Drain what this execution recorded, on EVERY path -- not only the ones that go
             // on to append. Staging happens during execution, but the append below is guarded,
             // so any write that does not reach it left its items sitting in the thread's
@@ -1104,9 +1104,9 @@ impl TemporalEngine {
                 // WAL sequence here; the single coalesced fdatasync is issued once for the whole
                 // batch in `execute_raft_apply_batch` (see `raft_apply_batch_active`). WAL order
                 // still equals apply order (reservation + byte-append stay under this lock).
-                // The reserve-only branch appends bytes without pages, so a write carrying
-                // pages must take the staged branch or they would be dropped on the floor.
-                // Staged pages still force the other branch -- their addresses are back-patched
+                // The reserve-only branch appends bytes without blocks, so a write carrying
+                // blocks must take the staged branch or they would be dropped on the floor.
+                // Staged blocks still force the other branch -- their addresses are back-patched
                 // once the record's log id exists, which this path does not do. Outcomes no
                 // longer do: they are resolved before they are staged, so they ride along and a
                 // recording write keeps its place in the group-commit queue.
@@ -1116,7 +1116,7 @@ impl TemporalEngine {
                         .concurrent_commit
                         .load(std::sync::atomic::Ordering::Relaxed)
                         || raft_apply_batch_active());
-                // Where each page this write stages ends up, so the index can carry it. Filled
+                // Where each block this write stages ends up, so the index can carry it. Filled
                 // by the append below, which is the first moment the log id exists.
                 let mut wal_resident_updates: Vec<(u64, crate::engine::state::WalResidentBlock)> =
                     Vec::new();
@@ -1146,7 +1146,7 @@ impl TemporalEngine {
                             if carried_blocks.is_empty() {
                                 block_in_wal::take_staged()
                             } else {
-                                // The caller handed us the pages the original write produced.
+                                // The caller handed us the blocks the original write produced.
                                 // Drop whatever this execute re-derived rather than letting a
                                 // reconstruction win over the bytes that were acked.
                                 let _ = block_in_wal::take_staged();
@@ -1156,7 +1156,7 @@ impl TemporalEngine {
                         )
                         .map(|(record, log_id)| {
                             appended_sequence = Some(record.sequence);
-                            // Point every page this record carries at the record, keyed on the
+                            // Point every block this record carries at the record, keyed on the
                             // object id the write derived -- which is what the stored address
                             // carries, so a read finds it by identity rather than by timing.
                             block_in_wal::register_record(
@@ -1170,8 +1170,8 @@ impl TemporalEngine {
                             // Same fact, written down where it survives this process.
                             wal_resident_updates.extend(record.staged_blocks.iter().map(|page| {
                                 (
-                                    // One entry per PAGE, not per object: the record says which
-                                    // element each page is, and a record carrying several
+                                    // One entry per BLOCK, not per object: the record says which
+                                    // element each block is, and a record carrying several
                                     // elements of one key files several entries here.
                                     block_in_wal::wal_resident_key(
                                         page.object_id,
@@ -1188,9 +1188,9 @@ impl TemporalEngine {
                 };
                 match append_result {
                     Ok(deferred_seq) => {
-                        // The index carries where each staged page landed, so a reload can hand
+                        // The index carries where each staged block landed, so a reload can hand
                         // the mapping back rather than leaving the address unresolvable until a
-                        // full replay re-derives the page.
+                        // full replay re-derives the block.
                         for (object_id, placement) in wal_resident_updates.drain(..) {
                             shard.wal_resident_blocks.insert(object_id, placement);
                         }
@@ -1272,7 +1272,7 @@ impl TemporalEngine {
                 } else {
                     self.wal_store.stats(request.shard_id).last_sequence
                 });
-                // Append ONLY the pages this write changed (O(delta)) to the index-log,
+                // Append ONLY the blocks this write changed (O(delta)) to the index-log,
                 // advancing the index-log sequence and populating the served-index delta
                 // stream. The whole base index is NOT rewritten per write (that O(store) path
                 // is gone); the base is materialized at compaction/unload, the funnel serves
@@ -1296,8 +1296,8 @@ impl TemporalEngine {
                             &delta_command_keys,
                             start_routing_bucket,
                             end_routing_bucket,
-                            // A removal that can name its component states that one page, not
-                            // every page the object holds.
+                            // A removal that can name its component states that one block, not
+                            // every block the object holds.
                             removed_component
                                 .as_ref()
                                 .map(|(kind, component)| (*kind, component.as_deref())),
@@ -1306,14 +1306,14 @@ impl TemporalEngine {
                     ),
                 };
                 // Capture the authoritative per-key state only when this write produced some
-                // that reconstruction from pages cannot redo: a membership SHRINK, or a
+                // that reconstruction from blocks cannot redo: a membership SHRINK, or a
                 // DEADLINE CHANGE. See `delta_key_state_change` for both halves and for why
                 // the second one has to be asked separately.
                 //
                 // The capture exists so a reload after WAL replay does not resurrect an entry
-                // the write evicted or tombstoned -- reconstruction from physical pages would
+                // the write evicted or tombstoned -- reconstruction from physical blocks would
                 // otherwise find it again. A write that only ADDED leaves nothing to resurrect:
-                // replay rebuilds the same membership from the same pages.
+                // replay rebuilds the same membership from the same blocks.
                 //
                 // It is not free. Capturing serializes every entry the per-key maps hold for the
                 // key, so appending to a node that held 850 events serialized all 850 -- 8,647 of
@@ -1330,7 +1330,7 @@ impl TemporalEngine {
                 // asks whether membership SHRANK or a deadline moved, and a pure ADD -- which is
                 // the write whose element the fold could not restore -- answers no. The gate's own
                 // reasoning is that an add "leaves nothing to resurrect: replay rebuilds the same
-                // membership from the same pages", which is true only because rebuilding decodes
+                // membership from the same blocks", which is true only because rebuilding decodes
                 // the member out of the component. This is what stops that being load-bearing.
                 //
                 // It costs one blob per touched key holding one entry per touched element, so it
@@ -1411,7 +1411,7 @@ impl TemporalEngine {
             }
         }
         // Locks are released and the barrier is done: a safe point to bound the resident set.
-        // Not inside the write lock -- moving a page takes the same lock -- and not before the
+        // Not inside the write lock -- moving a block takes the same lock -- and not before the
         // barrier, because the write this call is acking must reach disk first.
         if write_command && !replaying_wal() {
             let limit = wal_resident_block_limit();
@@ -1552,7 +1552,7 @@ impl TemporalEngine {
                                 &self.block_store,
                                 request.shard_id,
                                 address,
-                                // A string page IS its whole object, so the element is `None`.
+                                // A string block IS its whole object, so the element is `None`.
                                 PageIdentity::of(request.shard_id, "string", key, None),
                                 Some(routing_bucket),
                             )
@@ -2168,11 +2168,11 @@ impl TemporalEngine {
     /// THE SHARD'S OWN ROUTING RANGE, from the info row the engine publishes when it loads it.
     ///
     /// Every rebuild of the bucket index takes this range as an argument, and it decides WHERE A
-    /// PAGE IS FILED: an address that arrives carrying no routing bucket of its own is filed under
+    /// BLOCK IS FILED: an address that arrives carrying no routing bucket of its own is filed under
     /// `block_routing_bucket(key, start, end)`, and `bucket_for_object` reduces the key's hash
     /// modulo the bucket COUNT. So the range is not a filter over a fixed answer, it is an
     /// argument to the placement function -- pass `0, u32::MAX` on a shard loaded as `0..1023` and
-    /// every unrouted page is filed under a bucket the shard does not hold.
+    /// every unrouted block is filed under a bucket the shard does not hold.
     ///
     /// THE MISSING-INFO DEFAULT IS THE WHOLE RANGE, deliberately. That is what a caller which
     /// could not reach the info row passed unconditionally before, so a shard whose info row is
@@ -2205,7 +2205,7 @@ impl TemporalEngine {
     /// THE ONE WAY A `ShardState` ENTERS THE SERVED MAP, and the one place its routing range is
     /// stamped.
     ///
-    /// The two functions that decide where a page is FILED never see `&self`, so the range has to
+    /// The two functions that decide where a block is FILED never see `&self`, so the range has to
     /// reach them on the shard itself. Making the stamp part of the install, rather than a line
     /// every install site has to remember, is what makes "every served shard knows its range" a
     /// property of the code instead of a convention -- and there is nothing to forget at a new
@@ -2233,11 +2233,11 @@ impl TemporalEngine {
     }
 
     /// What the resident bucket index costs on this shard: one node per bucket, plus one entry
-    /// per page the bucket holds.
+    /// per block the bucket holds.
     ///
     /// The published `bucket_index_resident_bytes_floor` counts NODES only. That is a floor and
     /// says so, but it also cannot move when a bucket is released -- the node is exactly what a
-    /// release keeps. The per-page entries are what grows with the corpus and what a release
+    /// release keeps. The per-block entries are what grows with the corpus and what a release
     /// frees, so this is the number to gate on and to assert against.
     pub fn bucket_index_resident_bytes(&self, shard_id: ShardId) -> u64 {
         let shards = self.shards.read().expect("engine lock poisoned");
@@ -2247,7 +2247,7 @@ impl TemporalEngine {
             .unwrap_or_default()
     }
 
-    /// Release the named buckets' resident page lists, keeping each node routable and reloadable.
+    /// Release the named buckets' resident block lists, keeping each node routable and reloadable.
     ///
     /// Returns `(buckets released, pages released, candidates refused)`. Every precondition is
     /// checked against live state inside; naming a bucket that cannot be released is refused, not
@@ -2284,7 +2284,7 @@ impl TemporalEngine {
         self.release_bucket_index_blocks(shard_id, candidates)
     }
 
-    /// Load a released bucket's page list back. False when the bucket was not released.
+    /// Load a released bucket's block list back. False when the bucket was not released.
     pub fn reload_released_bucket_index_blocks(
         &self,
         shard_id: ShardId,
@@ -2369,7 +2369,7 @@ fn defer_bucket_index_reconstruct() -> bool {
     bulk_ingest_mode() || replaying_wal() || coalescing_index_reconstruct()
 }
 
-/// Whether load_shard should eagerly warm the in-memory cache tier from the page
+/// Whether load_shard should eagerly warm the in-memory cache tier from the block
 /// store after reconstructing the index (disk->memory promotion on restart).
 /// Defaults ON; set MATRIXARK_EAGER_CACHE_WARM_ON_LOAD to 0/false/off/no to disable.
 pub(crate) fn eager_cache_warm_on_load() -> bool {
@@ -2387,7 +2387,7 @@ pub(crate) fn eager_cache_warm_on_load() -> bool {
 ///
 /// 1 = pre-rekey: context_events keyed by timeline_key.
 /// 2 = context_events keyed by event_id_hash, with context_event_timeline carrying time order.
-/// 3 = the object id is `(shard, kind, key)`: an object, not one of its pages.
+/// 3 = the object id is `(shard, kind, key)`: an object, not one of its blocks.
 ///
 /// Bump this whenever a field's MEANING changes, not only when its type does -- a same-typed
 /// reinterpretation is the case that decodes cleanly and serves wrong data.
@@ -2395,7 +2395,7 @@ pub(crate) fn eager_cache_warm_on_load() -> bool {
 /// 3 IS THAT CASE, EXACTLY AS THE SENTENCE ABOVE DESCRIBES IT, and this is why the bump is not
 /// optional. `oi` is a `u64` before and a `u64` after, so an index written by the previous binary
 /// decodes without complaint and every value in it is intact. What moved is what the number
-/// MEANS: it used to name a page (shard, kind, key, component) and now names an object
+/// MEANS: it used to name a block (shard, kind, key, component) and now names an object
 /// (shard, kind, key).
 ///
 /// Nothing in the decode can see that. `BlockAddress::try_from` compares the stored `g` against
@@ -2456,10 +2456,10 @@ enum FastPathRead<'a> {
         /// THE OBJECT KEY, which this variant did not carry and the read below now needs.
         ///
         /// The bucket beside it was ALREADY derived from this key while the guard was held, so the
-        /// key was in hand at plan time and was simply not carried past it. A page's identity is
+        /// key was in hand at plan time and was simply not carried past it. A block's identity is
         /// `(shard, kind, key)` and the field names only the ELEMENT, so `fields` alone cannot say
-        /// which object these pages belong to -- a `string` and a `hash` may share a key, and it is
-        /// the pair that tells their pages apart. Borrowed, as `String`'s is: the plan is consumed
+        /// which object these blocks belong to -- a `string` and a `hash` may share a key, and it is
+        /// the pair that tells their blocks apart. Borrowed, as `String`'s is: the plan is consumed
         /// inside the same call that built it.
         key: &'a str,
         fields: Vec<(String, BlockAddress)>,
@@ -2554,7 +2554,7 @@ pub mod shard_write_guard {
         ///
         /// Kept apart from the write depth because the two answer different questions. A write
         /// guard excludes everyone; a read guard admits other readers and excludes only writers.
-        /// A maintenance stage that reads pages while holding this one is not blocking other
+        /// A maintenance stage that reads blocks while holding this one is not blocking other
         /// reads -- it is blocking every WRITE on the shard, including the rest of its own round.
         static READ_DEPTH: Cell<u32> = const { Cell::new(0) };
         static BLOCK_READS_UNDER_GUARD: Cell<u64> = const { Cell::new(0) };
@@ -2580,12 +2580,12 @@ pub mod shard_write_guard {
         held_any()
     }
 
-    /// Page-store reads the maintenance paths performed, and how many of them were performed
+    /// Block-store reads the maintenance paths performed, and how many of them were performed
     /// while this thread held a shard-table guard.
     ///
     /// Same reasoning as the encode counters above, applied to the other thing a maintenance
     /// stage does that scales with the STORE rather than with the round's budget: reading live
-    /// pages off the block store. The `_total` is the denominator -- "no reads happened under a
+    /// blocks off the block store. The `_total` is the denominator -- "no reads happened under a
     /// guard" is satisfied just as well by a stage that read nothing, or did not run.
     #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
     pub struct MaintenanceBlockReadCounts {
@@ -2595,7 +2595,7 @@ pub mod shard_write_guard {
 
     thread_local! {
         /// Whether the serving read fast path should keep the shard-table read guard alive
-        /// across its page reads, the way it did before they were moved out.
+        /// across its block reads, the way it did before they were moved out.
         ///
         /// Kept for the reason the other control arms are kept: a guard asserting ZERO reads
         /// under the lock is vacuous unless an arm in the same process, on the same fixture,
@@ -2614,7 +2614,7 @@ pub mod shard_write_guard {
         SERVE_UNDER_SHARD_GUARD.with(|flag| flag.get())
     }
 
-    /// Always false outside tests: the shipped path reads its pages after the guard drops.
+    /// Always false outside tests: the shipped path reads its blocks after the guard drops.
     #[cfg(not(test))]
     pub(super) fn serving_holds_guard_across_reads() -> bool {
         false
@@ -2634,7 +2634,7 @@ pub mod shard_write_guard {
         }
     }
 
-    /// Clear this thread's page-read tallies. For a test measuring one stage.
+    /// Clear this thread's block-read tallies. For a test measuring one stage.
     pub fn reset_maintenance_block_read_counts() {
         BLOCK_READS_UNDER_GUARD.with(|count| count.set(0));
         BLOCK_READS_TOTAL.with(|count| count.set(0));
@@ -2706,7 +2706,7 @@ impl Drop for MarkedShardWriteGuard<'_> {
 /// The shard table's READ guard, with the region it covers marked the same way.
 ///
 /// A read guard looks harmless and is not: it admits other readers but excludes every writer, so
-/// a maintenance stage holding one across per-page I/O stops all writes on the shard for as long
+/// a maintenance stage holding one across per-block I/O stops all writes on the shard for as long
 /// as the I/O takes. Marked at the acquisition for the same reason the write guard is -- work
 /// moving out of the region stops being counted because of WHERE IT IS, not because a wrapper
 /// was remembered.
@@ -2871,7 +2871,7 @@ fn encode_index_msgpack(shard: &ShardState) -> Option<Vec<u8>> {
 /// ```
 ///
 /// 46% less durable disk per memory. The WAL falls with it because index deltas ride the WAL, and
-/// page bytes do not move at all -- the data is unchanged, only the way the index is written.
+/// block bytes do not move at all -- the data is unchanged, only the way the index is written.
 ///
 /// A format default is a durability decision, not a size one, so the flip is gated on recovery
 /// rather than on the table above. Measured over 120 memories per case, comparing full retrieval
@@ -2983,12 +2983,12 @@ pub(super) fn decode_index_bytes(bytes: &[u8]) -> Result<ShardState, String> {
 
 /// Collect the served-index delta items for exactly the object keys a single write
 /// touched. Looks up only the routing buckets those keys map to (never the whole store),
-/// so the result is O(delta): one `IndexItem` per live/tombstoned page currently backing a
-/// touched key. Deleted pages ride as `deleted` tombstones so a fold applies the removal.
+/// so the result is O(delta): one `IndexItem` per live/tombstoned block currently backing a
+/// touched key. Deleted blocks ride as `deleted` tombstones so a fold applies the removal.
 /// Empty when the command has no object keys (e.g. a context rebuild command); the caller
 /// still appends the record so the index-log sequence advances per write.
 /// The (kind, object_key, component) writes a command performs when -- and only when -- every
-/// one of them lands through the page-upsert path (one new page per component, predecessor
+/// one of them lands through the block-upsert path (one new block per component, predecessor
 /// replaced). `None` = the command's write shape is not a pure upsert (deletes, features,
 /// rewrites), and the caller must fall back to the whole-object snapshot record.
 fn command_upsert_components(
@@ -3010,7 +3010,7 @@ fn command_upsert_components(
         }
         Command::StringSet { key, .. } => Some(vec![("string", key.clone(), None)]),
         // A zset add writes exactly one component, and it is derivable from the command. Declaring
-        // it takes the O(1) delta path; without it the record snapshots every page of the object,
+        // it takes the O(1) delta path; without it the record snapshots every block of the object,
         // which cost 4 allocations per member already present.
         Command::ZSetAdd { key, member, score } => Some(vec![(
             "zset",
@@ -3023,7 +3023,7 @@ fn command_upsert_components(
         Command::SetAdd { key, member } => {
             Some(vec![("set", key.clone(), Some(hex::encode(member)))])
         }
-        // A push files its page under its sequence number, which is only knowable once the
+        // A push files its block under its sequence number, which is only knowable once the
         // write has landed: post-apply the pushed element is the list's FIRST entry for a left
         // push and its LAST for a right one. That is why this needs shard state and the other
         // arms do not.
@@ -3046,9 +3046,9 @@ fn command_upsert_components(
 }
 
 /// Build the exact index items for an upsert record from post-apply shard state: each written
-/// component's address is read back from the map the write just updated, so the logged page is
+/// component's address is read back from the map the write just updated, so the logged block is
 /// precisely the one a reload must serve. A component absent from the map (its append failed)
-/// is skipped -- it produced no page to pin.
+/// is skipped -- it produced no block to pin.
 fn collect_upsert_index_items(
     shard: &ShardState,
     shard_id: ShardId,
@@ -3077,7 +3077,7 @@ fn collect_upsert_index_items(
                         .and_then(|members| members.get(&member))
                         .map(|(_, address)| address.clone())
                 }),
-            // `hex::encode(member)` is the component a set add files its page under, so
+            // `hex::encode(member)` is the component a set add files its block under, so
             // the member the map is keyed by is recoverable from the component itself.
             // `{biased:016x}` of the entry's sequence, so the key the list map is keyed by
             // is recoverable from the component it was filed under.
@@ -3162,13 +3162,13 @@ fn collect_command_index_items(
 
 /// The same, restricted to one component when the command can name what it touched.
 ///
-/// Without a filter this states EVERY page the object holds, and each item costs four string
+/// Without a filter this states EVERY block the object holds, and each item costs four string
 /// allocations -- so a removal from a 3,200-member collection built 3,200 items to record that
 /// one member went away, measured at ~2.5 MB per call. A command that can name its component
-/// states that one page instead, which is what the add path already does through
+/// states that one block instead, which is what the add path already does through
 /// `command_upsert_components`.
 ///
-/// The page is still found: a typed removal marks its page deleted in the bucket index rather
+/// The block is still found: a typed removal marks its block deleted in the bucket index rather
 /// than dropping it, so the item this emits carries `deleted: true` and the deletion is recorded
 /// exactly as before -- the guarantee that keeps a replay from resurrecting it.
 fn collect_command_index_items_for(
@@ -3220,14 +3220,14 @@ fn collect_command_index_items_for(
     items
 }
 
-/// Capture the authoritative post-write state of the maps that a single page-index entry
+/// Capture the authoritative post-write state of the maps that a single block-index entry
 /// cannot reconstruct on reload, for exactly the object keys a write touched (O(delta)):
 ///  - packed timestamped series (features + the context timestamped maps): one physical
-///    page holds many timestamps, so an eviction that trims the in-memory membership leaves
-///    the dropped timestamps physically in the page. Pinning the membership here stops
-///    reconstruction-from-pages resurrecting them.
-///  - non-page maps that ride only on the serialized index (TTL expiry, control-state
-///    change/sketch/selection, context nodes/entities/embeddings), which no page entry
+///    block holds many timestamps, so an eviction that trims the in-memory membership leaves
+///    the dropped timestamps physically in the block. Pinning the membership here stops
+///    reconstruction-from-blocks resurrecting them.
+///  - non-block maps that ride only on the serialized index (TTL expiry, control-state
+///    change/sketch/selection, context nodes/entities/embeddings), which no block entry
 ///    encodes.
 /// Each blob is `{"key": ..., "<map>": <value>}`, carrying ONLY the maps the key is actually
 /// in. A field left out means the same thing an explicit null used to: the key is absent from
@@ -3259,12 +3259,12 @@ fn key_membership_size(shard: &ShardState, key: &str) -> usize {
         + shard.context_entities.get(key).map_or(0, |v| v.len())
 }
 
-/// Did this write produce per-key state that reconstruction from physical pages cannot redo?
+/// Did this write produce per-key state that reconstruction from physical blocks cannot redo?
 ///
 /// TWO REASONS, AND THE SECOND ONE COVERS THE HALF THE FIRST CANNOT SEE.
 ///
 /// The first is a MEMBERSHIP SHRINK: an entry was evicted or tombstoned, and rebuilding the
-/// index from the pages on disk would find it again and resurrect it. That is what this used
+/// index from the blocks on disk would find it again and resurrect it. That is what this used
 /// to ask on its own, and it is still asked first because it is the cheap half.
 ///
 /// The second is a DEADLINE CHANGE. `key_membership_size` DOES count the deadline -- but only
@@ -3306,7 +3306,7 @@ fn delta_key_state_change(
 }
 
 /// One container element a write added or replaced, named by the identity its DURABLE map is keyed
-/// by -- member bytes, list sequence, hash field -- and not by the component its page was filed
+/// by -- member bytes, list sequence, hash field -- and not by the component its block was filed
 /// under.
 ///
 /// PER ELEMENT, AND THAT IS THE WHOLE POINT. `apply_key_states` folds thirteen maps and restores
@@ -3341,14 +3341,14 @@ impl TouchedContainerElement {
 ///
 /// THE IDENTITY COMES FROM THE COMMAND, NOT FROM THE COMPONENT, and that is the difference between
 /// this and `command_upsert_components` beside it. That function answers the same question in the
-/// page index's vocabulary and spells each element as a component -- `hex::encode(member)` for a
+/// block index's vocabulary and spells each element as a component -- `hex::encode(member)` for a
 /// set, sixteen hex digits of score followed by the member for a zset. Recovering the member back
 /// out of one of those is what the reconcile does, and it is precisely the dependency this removes:
 /// here the member is the `Vec<u8>` the caller asked to store.
 ///
 /// A REMOVAL IS NOT HERE, and it does not need to be. An element is only ever restored if the
-/// finished fold still holds a page at the address it was carried with, so a removal needs to say
-/// nothing: taking the page away is already the whole answer. See
+/// finished fold still holds a block at the address it was carried with, so a removal needs to say
+/// nothing: taking the block away is already the whole answer. See
 /// [`fold_carried_container_elements`].
 fn command_touched_container_elements(
     command: &Command,
@@ -3410,15 +3410,15 @@ fn command_touched_container_elements(
 /// ADDITIVE AND MATCHED BY NAME, which is the whole compatibility story. These are new fields in
 /// the delta record's existing opaque per-key state channel, whose own documentation calls it "the
 /// authoritative post-write value of the maps that are NOT reconstructable from a single
-/// page-index entry" -- which, on the fold path, is exactly what the four container maps are. A
+/// block-index entry" -- which, on the fold path, is exactly what the four container maps are. A
 /// record written before this field existed simply does not carry it, `apply_key_states` finds it
 /// absent and does nothing, and the fold behaves as it always has. So nothing positional moves,
 /// no reader has to be upgraded first, and `SHARD_INDEX_FORMAT_VERSION` does not change.
 ///
 /// THE ADDRESS, AND A ZSET'S SCORE, ARE READ BACK OUT OF THE MAP THE WRITE JUST UPDATED, so the
 /// entry carried is the one a reload has to serve. That is the rule `collect_upsert_index_items`
-/// already applies to the page items beside these blobs, and an element the map does not hold is
-/// skipped here for the same reason it is skipped there: its append failed, so it produced no page
+/// already applies to the block items beside these blobs, and an element the map does not hold is
+/// skipped here for the same reason it is skipped there: its append failed, so it produced no block
 /// to pin and there is nothing to fold.
 /// The blob fields the container-element carry rides in. Named once so the writer, the fold's
 /// collector and any future reader cannot disagree about the spelling of one of them -- a
@@ -3518,7 +3518,7 @@ fn capture_key_states(shard: &ShardState, keys: &[String]) -> Vec<serde_json::Va
 
 /// Apply the captured per-key state blobs back onto a shard (last blob wins per key),
 /// pinning the authoritative membership a write produced. Used on reload after WAL replay
-/// to correct the exact touched keys, so reconstruction from physical pages honors the
+/// to correct the exact touched keys, so reconstruction from physical blocks honors the
 /// evicted/tombstoned membership instead of resurrecting it.
 fn apply_key_states(shard: &mut ShardState, key_states: &[serde_json::Value]) {
     for blob in key_states {
@@ -3577,7 +3577,7 @@ fn apply_key_states(shard: &mut ShardState, key_states: &[serde_json::Value]) {
         apply_key_state_field(&mut shard.context_entities, key, blob.get("context_entities"));
         // THE FOUR CONTAINER MAPS ARE NOT APPLIED HERE, and the reason is the whole shape of
         // `fold_carried_container_elements`: an element may only be restored once the fold has
-        // FINISHED, because a later record in the same fold can take its page away again. See
+        // FINISHED, because a later record in the same fold can take its block away again. See
         // that function.
     }
     if !key_states.is_empty() {
@@ -3636,8 +3636,8 @@ where
     }
 }
 
-/// The page a carried durable-map value points at, so [`fold_carried_container_elements`] can ask
-/// whether that page is still there without knowing which of the four maps it came from.
+/// The block a carried durable-map value points at, so [`fold_carried_container_elements`] can ask
+/// whether that block is still there without knowing which of the four maps it came from.
 trait CarriedValue {
     fn carried_address(&self) -> &BlockAddress;
 }
@@ -3655,9 +3655,9 @@ impl CarriedValue for (u64, BlockAddress) {
     }
 }
 
-/// The identity of a page as a live-address set holds it. Slab, offset and length together name
-/// exactly one page, and `fold_delta_block_items` restores a page at its ORIGINAL address -- which
-/// is what makes the address a usable answer to "is this element's page still here".
+/// The identity of a block as a live-address set holds it. Slab, offset and length together name
+/// exactly one block, and `fold_delta_block_items` restores a block at its ORIGINAL address -- which
+/// is what makes the address a usable answer to "is this element's block still here".
 type LiveBlockKey = (u64, u64, u64);
 
 fn live_page_key(address: &BlockAddress) -> LiveBlockKey {
@@ -3665,7 +3665,7 @@ fn live_page_key(address: &BlockAddress) -> LiveBlockKey {
 }
 
 /// Fold one key's carried container elements into the map that holds them, skipping any element
-/// whose page the fold did not leave behind.
+/// whose block the fold did not leave behind.
 ///
 /// INSERTS AND NEVER REMOVES. An absent field is a no-op, not a removal -- both because the record
 /// carries only the elements one write touched (so absence says nothing about the rest) and because
@@ -3673,7 +3673,7 @@ fn live_page_key(address: &BlockAddress) -> LiveBlockKey {
 /// before.
 ///
 /// A field that does not deserialize is dropped rather than guessed at. The reconcile's derived
-/// view still produces the element from its page, so the outcome is the behaviour that predates
+/// view still produces the element from its block, so the outcome is the behaviour that predates
 /// this carry -- never a defaulted identity, which is the failure #1989 took out of three arms.
 fn merge_container_elements<M>(
     outer: &mut std::collections::HashMap<String, M>,
@@ -3707,19 +3707,19 @@ fn merge_container_elements<M>(
 }
 
 /// Restore the container elements a whole fold carried, AFTER the fold has finished, and only where
-/// the page each one names is still in the bucket index.
+/// the block each one names is still in the bucket index.
 ///
 /// WHY THIS CANNOT BE DONE RECORD BY RECORD, which is where the first shape of this change was
 /// wrong. A fold replays a SUFFIX of the log, so one fold can both add an element and take it away
 /// again. Applying a record's carried elements as that record is folded puts the element into the
 /// durable map, and `fill_absent_elements` -- which keeps every durable element the derived view
-/// could not produce, #1989's rule -- then handed it back after a later record removed its page. The
+/// could not produce, #1989's rule -- then handed it back after a later record removed its block. The
 /// element would be served after being deleted. Nothing did that before the carry existed, because
 /// the fold never wrote these maps at all.
 ///
 /// THAT MERGE NOW ASKS THE SAME QUESTION THIS FUNCTION DOES, so a per-record carry would no longer
 /// be handed back: the carry lands in `shard.sets`, which the reconcile then takes as its PERSISTED
-/// input and filters on whether each element's page is still there. So this is no longer the only
+/// input and filters on whether each element's block is still there. So this is no longer the only
 /// guard against that particular resurrection. It is still the right shape and is not relaxed: the
 /// ordering argument above is about which answer this function computes, not about who catches it
 /// afterwards, and a fold that left a known-dead element in the map for a later stage to strip would
@@ -3728,16 +3728,16 @@ fn merge_container_elements<M>(
 /// AND A TOMBSTONE IS NOT ENOUGH TO CATCH IT. Matching the record's `deleted` items would look like
 /// the symmetric answer and is not one: `mark_bucket_index_block_deleted_with` -- which `SetRemove`,
 /// `ZSetRemove`, `ListPop` and `HashDelete` all reach -- is named for a mark it does not make, and
-/// its body is a `retain` that DROPS the page. So by the time the record is built there is no page
-/// left to describe and no tombstone is emitted; the removal is spelled as the ABSENCE of a page
+/// its body is a `retain` that DROPS the block. So by the time the record is built there is no block
+/// left to describe and no tombstone is emitted; the removal is spelled as the ABSENCE of a block
 /// under a covered key, which the fold's covered-key wipe then performs. (The doc on
-/// `collect_command_index_items_for` still claims a typed removal "marks its page deleted ... so
+/// `collect_command_index_items_for` still claims a typed removal "marks its block deleted ... so
 /// the item this emits carries `deleted: true`". That claim does not hold, and a removal half built
 /// on it is dead code.)
 ///
-/// SO THE QUESTION ASKED IS THE ONLY ONE THAT SETTLES IT: is there still a page at the address this
+/// SO THE QUESTION ASKED IS THE ONLY ONE THAT SETTLES IT: is there still a block at the address this
 /// element was carried with? That is answered once, against the finished bucket index, and it is
-/// correct however the page went away -- a covered-key wipe, a tombstone, or an upsert record
+/// correct however the block went away -- a covered-key wipe, a tombstone, or an upsert record
 /// replacing its predecessor at a new address (in which case the stale carry is skipped and the
 /// fresh one applied, with no reliance on record order).
 fn fold_carried_container_elements(shard: &mut ShardState, carried: &[serde_json::Value]) {
@@ -3848,12 +3848,12 @@ where
     }
 }
 
-/// Apply one delta record's page items to the bucket index, making the delta's view of the
-/// covered object keys authoritative: every existing live page entry for a covered key is
-/// removed first (so an overwrite that relocated or dropped a page does not leave the stale
+/// Apply one delta record's block items to the bucket index, making the delta's view of the
+/// covered object keys authoritative: every existing live block entry for a covered key is
+/// removed first (so an overwrite that relocated or dropped a block does not leave the stale
 /// entry behind), then the delta's live items are inserted at their ORIGINAL recorded
-/// addresses. This is what lets reload reconstruct the exact on-disk page layout without
-/// re-executing the WAL (which would write fresh pages and relocate them to the active
+/// addresses. This is what lets reload reconstruct the exact on-disk block layout without
+/// re-executing the WAL (which would write fresh blocks and relocate them to the active
 /// slab). `covered_keys` are the object keys the write touched (from the key-state blobs).
 fn fold_delta_block_items(
     bucket_index: &mut CoreIndex,
@@ -3936,7 +3936,7 @@ fn delta_record_covered_keys(record: &crate::index_log::IndexDeltaRecord) -> BTr
         .filter_map(|blob| blob.get("key").and_then(|value| value.as_str()))
         .map(str::to_string)
         .collect();
-    // Fall back to the items' own object keys if a record carried page items but no blobs.
+    // Fall back to the items' own object keys if a record carried block items but no blobs.
     for item in &record.items {
         keys.insert(item.object_key.clone());
     }
@@ -4094,7 +4094,7 @@ pub(crate) fn coalescing_index_reconstruct() -> bool {
 ///
 /// A context ingest issues about eight writes, and no `Command::Context*` appears in
 /// `command_updates_bucket_index_directly`, so each one fires `rebuild_bucket_first_index` --
-/// which walks every live page in the shard. Measured end to end: 5 762 400 page visits across
+/// which walks every live block in the shard. Measured end to end: 5 762 400 block visits across
 /// 600 adds, the per-add cost doubling as the corpus doubles, and latency degrading 11.79x over a
 /// run. With the reconstruct deferred the same run is FLAT at 0.97x and 26.6x faster on the last
 /// thirty adds.
@@ -4202,7 +4202,7 @@ fn sync_parent_dir(path: &Path) -> Result<(), std::io::Error> {
 }
 
 /// TS_WAL_LEGACY_RECOVERY: emergency escape hatch. When set, the engine falls back to the
-/// legacy multi-barrier write path (WAL + data-page + served-index delta all fsync'd on the ack
+/// legacy multi-barrier write path (WAL + data-block + served-index delta all fsync'd on the ack
 /// path) AND delta-fold recovery. Default OFF -> the single write-path durability barrier
 /// (WAL-only fsync) + base-only recovery is the DEFAULT. This exists solely so an operator can
 /// revert the default in the field without a rebuild; steady state runs single-barrier.
@@ -4219,7 +4219,7 @@ pub(super) fn wal_only_sync() -> bool {
 }
 
 /// The true SINGLE write-path durability barrier. Only the WAL takes a
-/// synchronous fdatasync per write (1.00/write); the data-page fdatasync, the served-index
+/// synchronous fdatasync per write (1.00/write); the data-block fdatasync, the served-index
 /// delta-log fdatasync, the slab-manifest persist, and the base-index sync are all deferred.
 /// Correctness rests on the WAL + the durable dump checkpoint being a COMPLETE source of truth:
 ///  - config changes (feature_max_size etc.) become durable and WAL-sequence-ordered via a
@@ -4230,12 +4230,12 @@ pub(super) fn wal_only_sync() -> bool {
 ///  - expiry (TTL) resolves against the leader timestamp captured in each WAL record (replay
 ///    clock) and applies lazily; compaction is background + non-destructive to logical
 ///    membership -- both already WAL-re-derivable.
-///  - `flush_shard_index` fsyncs every data page (and the WAL) BEFORE advancing the dump
-///    watermark, so every page at/below the watermark is durable. Recovery is BASE-ONLY: it
+///  - `flush_shard_index` fsyncs every data block (and the WAL) BEFORE advancing the dump
+///    watermark, so every block at/below the watermark is durable. Recovery is BASE-ONLY: it
 ///    trusts only the durable base/manifest checkpoint (never the un-synced delta or the anchor
 ///    it advances), then replays the WAL tail from the watermark, re-deriving every post-dump
-///    page EXACTLY ONCE. A page written but never fsync'd is rebuilt from its WAL command rather
-///    than left dangling -- no page loss, no double-apply.
+///    block EXACTLY ONCE. A block written but never fsync'd is rebuilt from its WAL command rather
+///    than left dangling -- no block loss, no double-apply.
 /// Default ON (the productionized write/recovery path). Set TS_WAL_LEGACY_RECOVERY=1 to fall
 /// back to the legacy multi-barrier write path + delta-fold recovery.
 ///
@@ -4686,11 +4686,11 @@ fn delete_record_exact(shard: &mut ShardState, key: &str) -> bool {
 }
 
 fn mark_bucket_index_object_deleted(shard: &mut ShardState, key: &str) -> bool {
-    // A RELEASED bucket holds no page entries, so the walk below finds nothing to remove and the
+    // A RELEASED bucket holds no block entries, so the walk below finds nothing to remove and the
     // object id would stay claimed until some later reload re-derived the set. Settle it here,
-    // while the model map this reads the address out of still holds the page.
+    // while the model map this reads the address out of still holds the block.
     //
-    // Kept out of `removed`: that flag also decides whether the object-page lookup is corrected,
+    // Kept out of `removed`: that flag also decides whether the object-block lookup is corrected,
     // and a released bucket's lookup entries were dropped by the release itself. There is nothing
     // there to correct, and establishing the lookup as a side effect of a delete is not this
     // change's to make.
@@ -4725,7 +4725,7 @@ fn mark_bucket_index_object_deleted(shard: &mut ShardState, key: &str) -> bool {
     }
     if removed {
         // Drop this object's own entries rather than rebuilding the lookup for the whole shard.
-        // The rebuild cloned every page in every bucket, so a single delete allocated in
+        // The rebuild cloned every block in every bucket, so a single delete allocated in
         // proportion to the store -- 409 allocations at 200 resident keys, 3,851 at 3,200 -- and
         // deleting a store cost the square of its size.
         //
@@ -4846,14 +4846,14 @@ fn mark_bucket_index_block_deleted_with(
             //
             // This function removes ONE element -- the `retain` above matches on
             // `(model_id, object_key, component)` -- and then tombstones the ids of what it
-            // removed. That was exactly right while the object id named a page: every page
-            // sharing the removed page's id had the same component and was removed with it, so
-            // no surviving page could carry it and the tombstone could not be premature.
+            // removed. That was exactly right while the object id named a block: every block
+            // sharing the removed block's id had the same component and was removed with it, so
+            // no surviving block could carry it and the tombstone could not be premature.
             //
             // Now one id covers every element of the key. Dropping field `f0` of a
             // twenty-five-field hash would file the hash's id here while twenty-four fields are
             // still live, and `object_manager::runtime_report` asks
-            // `deleted_object_index.contains(page.object_id())` per page -- so all twenty-four
+            // `deleted_object_index.contains(page.object_id())` per block -- so all twenty-four
             // survivors would be counted `deleted_block_ref_count` instead of hot or cold.
             //
             // So the tombstone is now written only at a key's LAST element, which is the same
@@ -4864,8 +4864,8 @@ fn mark_bucket_index_block_deleted_with(
             // `settle_released_bucket_object_delete` contrasts itself against.
             //
             // ON THE PREVIOUS IDENTITY THIS FILTER REMOVES NOTHING, and that is what makes it
-            // attributable: a surviving page could only carry a removed page's id by sharing its
-            // component, and `retain` took every such page.
+            // attributable: a surviving block could only carry a removed block's id by sharing its
+            // component, and `retain` took every such block.
             deleted_object_ids.retain(|object_id| {
                 !bucket
                     .block_index
@@ -4885,15 +4885,15 @@ fn mark_bucket_index_block_deleted_with(
         // Removes exactly the entry it deleted, instead of rebuilding the whole lookup.
         //
         // `rebuild_object_block_lookup` clears `object_page_lookup` and `object_component_lookup`
-        // and re-inserts one entry per page in the shard -- 58 696 of them on a 250 MB store --
-        // and this ran once per deleted page. A purge deleting five fields paid it five times.
+        // and re-inserts one entry per block in the shard -- 58 696 of them on a 250 MB store --
+        // and this ran once per deleted block. A purge deleting five fields paid it five times.
         // That is why deleting an identical, freshly created memory cost 41.7 ms against a 20 MB
         // store and 385.7 ms against a 249 MB one, for provably the same closure: same four ids,
         // same 96 records scanned, same five fields rewritten. Identical work, nine times the
         // time, all of it spent rebuilding a lookup to the same shape it already had minus one
         // entry.
         //
-        // This is the exact inverse of the `insert_object_block_lookup` the page went in through,
+        // This is the exact inverse of the `insert_object_block_lookup` the block went in through,
         // keyed on the same (model_id, object_key, component) -- which is how the upsert path
         // has always maintained the lookup. The whole-object deleter above still rebuilds; it
         // drops every component of a key at once, so the entry-at-a-time inverse does not apply
@@ -5034,10 +5034,10 @@ fn collect_live_block_slab_ids(shard: &ShardState) -> BTreeSet<u64> {
             series.values().map(|address| address.block_slab_id()),
         );
     }
-    // control_state_pages is the page-backed control-state model and MUST be in the
-    // GC live set: it feeds both the reclaim live-slab set and the page-gc dependency plan.
-    // Omitting it let a slab holding only a control-state page be reclaimed while the index
-    // still referenced it -> DataLoss on the next read. keeps any model's live pages
+    // control_state_pages is the block-backed control-state model and MUST be in the
+    // GC live set: it feeds both the reclaim live-slab set and the block-gc dependency plan.
+    // Omitting it let a slab holding only a control-state block be reclaimed while the index
+    // still referenced it -> DataLoss on the next read. keeps any model's live blocks
     // counted in the slab's used_bytes so the slab is never destroyed while referenced. The
     // sibling collect_model_live_block_entries already includes it -- the two lists had drifted.
     absorb_live_block_slab_ids(
@@ -5078,12 +5078,12 @@ fn append_value(
     )
 }
 
-/// The same append, saying WHICH page of its object this is.
+/// The same append, saying WHICH block of its object this is.
 ///
 /// The ordinal is threaded all the way to `append_block_of_object`, and that matters rather than
 /// being tidier: that function stamps the record header and the returned address from the SAME
 /// value. Assigning the ordinal on the index's copy afterwards would leave the header saying 0 and
-/// the address saying N, and `decode_block_record` compares exactly those two and refuses the page
+/// the address saying N, and `decode_block_record` compares exactly those two and refuses the block
 /// with "page id mismatch" -- the one cross-check on a read that can actually fire. So the ordinal
 /// has to be an argument to the append, not a field set after it.
 ///
@@ -5132,7 +5132,7 @@ fn append_value_inner(
     block_ordinal: u32,
 ) -> Result<BlockAddress, BlockStoreError> {
     if !async_storage {
-        // Carry the page in this write's record, the same as the asynchronous arm below.
+        // Carry the block in this write's record, the same as the asynchronous arm below.
         //
         // The record is allowed to state its results and drop the operation only when the blocks
         // those results name survive a crash. A carried block does -- it IS the record. A
@@ -5143,7 +5143,7 @@ fn append_value_inner(
         // recovery suite has been reporting.
         //
         // Carrying it costs the bytes twice for as long as the record lives, and no longer: the
-        // storage manager's reclaim stage moves carried pages into the block store and drops the
+        // storage manager's reclaim stage moves carried blocks into the block store and drops the
         // registration that pins the log floor.
         if let Some(object_id) = object_id {
             block_in_wal::stage(object_id, component, bytes);
@@ -5157,15 +5157,15 @@ fn append_value_inner(
     }
     // THE COUNTER IS NOW BOUNDED, AND IT IS REFUSED RATHER THAN WRAPPED.
     //
-    // A hot page's "offset" is not a position, it is a ticket from a process-wide counter, and
+    // A hot block's "offset" is not a position, it is a ticket from a process-wide counter, and
     // the address word gives that ticket 32 bits. Four billion hot writes in ONE process is a
     // long run but not an impossible one, and the two things that could happen at the boundary
-    // are both worse than a refusal: wrapping hands a live page the address of an older one, and
+    // are both worse than a refusal: wrapping hands a live block the address of an older one, and
     // truncating does the same thing without even reaching the boundary. So the mint is checked,
     // and a process that exhausts its tickets stops minting hot addresses instead of aliasing
     // them. The counter is process-local and a reload starts it again at one.
     let address = BlockAddress::try_from_parts(HOT_BLOCK_SLAB_ID, HOT_BLOCK_OFFSET.fetch_add(1, Ordering::Relaxed), bytes.len() as u64, None, object_id)?;
-    // Put the page aside for this write's record. It is often derived state rather than the
+    // Put the block aside for this write's record. It is often derived state rather than the
     // command's own bytes, so the record has to carry it for a read to serve it back.
     if let Some(object_id) = object_id {
         block_in_wal::stage(object_id, component, bytes);
@@ -5201,7 +5201,7 @@ fn persist_control_state_block(
     };
     // Coalesced-persistence mode: the counter series is durable via the index snapshot
     // (flush) + WAL replay — the same model control_state_changes/fol already use — so skip
-    // the O(series) per-write whole-series page rewrite (the write-amplification source).
+    // the O(series) per-write whole-series block rewrite (the write-amplification source).
     // Gated on async_storage so the WAL actually covers between-flush increments.
     if async_storage && shard.control_coalesce_persist {
         return true;
@@ -5327,7 +5327,7 @@ fn storage_model_kinds() -> &'static [&'static str] {
     ]
 }
 
-/// The invalidation a page-backed context object actually needs.
+/// The invalidation a block-backed context object actually needs.
 ///
 /// `invalidate_record_all` also sweeps the `hash`, `set` and `feature` record namespaces, and each
 /// of those three is `MultiLayerCache::invalidate_record`, which walks EVERY key in all three
@@ -5671,11 +5671,11 @@ fn invalidate_records_all_batched<K: AsRef<str>>(
 /// `None` is accepted and means "no bucket to key by", which is what a caller with no object key in
 /// hand passes -- a slab walk, a report over raw addresses. It was reachable before this change too,
 /// for an address that carried no bucket.
-/// `identity` NAMES THE PAGE, AND THE CALLER HAS TO BE ABLE TO NAME IT.
+/// `identity` NAMES THE BLOCK, AND THE CALLER HAS TO BE ABLE TO NAME IT.
 ///
 /// It used to be `component: Option<&str>` beside an object recovered from `address.object_id()`
 /// with `and_then`, and that was the one `Option` on this path that could lose data rather than
-/// weaken a cache key. The in-log fallbacks below are what serve a page whose only durable copy is
+/// weaken a cache key. The in-log fallbacks below are what serve a block whose only durable copy is
 /// its WAL record; a caller that could not name the object got `None` from the `and_then` and the
 /// read fell through to MISSING for a durably acknowledged write. See [`PageIdentity`] for why the
 /// type takes the shard, the kind and the key rather than an id: there is no value to pass that
@@ -5683,12 +5683,12 @@ fn invalidate_records_all_batched<K: AsRef<str>>(
 ///
 /// THE IDENTITY IS DERIVED, NOT READ OFF THE ADDRESS, and the two agree.
 /// `engine::tests::address_footprint::the_object_id_on_a_live_page_entry_is_the_hash_of_fields_beside_it`
-/// walks every live page entry at two corpus sizes and compares the stored id to
+/// walks every live block entry at two corpus sizes and compares the stored id to
 /// `stable_block_object_id(shard, kind, key)`: 2,524 of 2,524 and 20,632 of 20,632 agree, none
 /// differ, none absent. That measurement is what makes taking the derived value here a no-op rather
 /// than a change of behaviour, and it is why this function no longer consults the field at all.
 ///
-/// THIS FUNCTION ANSWERS WITH THE PAGE'S WHOLE PAYLOAD, which since `container_pages` is not
+/// THIS FUNCTION ANSWERS WITH THE BLOCK'S WHOLE PAYLOAD, which since `container_pages` is not
 /// necessarily one element's value. `read_block_bytes` wraps it and does the selection; everything
 /// that wants the frame itself -- a rewrite, a walk, a report -- comes here.
 #[allow(clippy::too_many_arguments)]
@@ -5716,7 +5716,7 @@ fn read_block_frame_bytes(
     // three fallbacks below because every one of them is a trip to the store and they must not
     // drift apart in the tally; a cache HIT returns above and is not I/O.
     shard_write_guard::note_block_read();
-    // Log-backed hot page (synthetic address, no block-store file): a cache miss here would read
+    // Log-backed hot block (synthetic address, no block-store file): a cache miss here would read
     // as MISSING for an acked async write. If it was spilled to a real slab on eviction, resolve
     // the redirect and read the durable copy. On a genuine miss (never spilled, or spill failed)
     // this falls through to the normal read below, which returns None -- the WAL still holds the
@@ -5746,7 +5746,7 @@ fn read_block_frame_bytes(
         let _ = cache.put(cache_key, bytes.clone());
         return Some(bytes);
     }
-    // The block store could not answer, so try the record that carries this page.
+    // The block store could not answer, so try the record that carries this block.
     //
     // This is the same fallback the synthetic-address branch above performs, which until now was
     // the ONLY way to reach it: the branch is entered on `is_wal_resident(address.block_slab_id)`.
@@ -5773,29 +5773,29 @@ fn read_block_frame_bytes(
     None
 }
 
-/// One element's value out of the page an address names.
+/// One element's value out of the block an address names.
 ///
 /// # WHY `None` FOR THE COMPONENT HANDS BACK THE FRAME
 ///
 /// `None` has one meaning at every call site of this function and it is not "no element in
-/// particular": it means THE PAGE IS ITS WHOLE OBJECT -- a string, a control state, a packed
-/// timestamped series. Such a page is never framed, so returning its payload unchanged is not a
-/// fallback, it is the only correct answer. The callers that pass `None` over a page that COULD be
+/// particular": it means THE BLOCK IS ITS WHOLE OBJECT -- a string, a control state, a packed
+/// timestamped series. Such a block is never framed, so returning its payload unchanged is not a
+/// fallback, it is the only correct answer. The callers that pass `None` over a block that COULD be
 /// framed are the ones that want the frame: `compaction` rewrites the bytes it was handed, and a
 /// slab walk has no object key to name an element with. Both are served by the frame and would be
 /// corrupted by a value.
 ///
 /// # AND A FRAMED PAGE THAT DOES NOT HOLD THE ELEMENT ANSWERS `None`
 ///
-/// Which is the same answer a missing page gives, deliberately. The index named this page for this
-/// element; if the page does not hold it then the element is not there, and that is a miss rather
+/// Which is the same answer a missing block gives, deliberately. The index named this block for this
+/// element; if the block does not hold it then the element is not there, and that is a miss rather
 /// than an error. A CORRUPT frame answers `None` too and is counted, because the alternative --
 /// handing the framing bytes back as a value -- is the failure mode this whole module exists to make
 /// impossible, and it is exactly #2016's shape: an unreadable name becoming a real one.
 /// ONE VALUE CARRIES BOTH HALVES, WHICH IS WHY THE SELECTION BELOW CANNOT DISAGREE WITH THE READ.
 ///
-/// This door asks the frame reader for a page and then picks one element out of it. Those are two
-/// questions about the same page -- which object, and which element of it -- and they were two
+/// This door asks the frame reader for a block and then picks one element out of it. Those are two
+/// questions about the same block -- which object, and which element of it -- and they were two
 /// parameters that happened to be spelled once. A [`PageIdentity`] is the pair: the element the
 /// frame reader resolves a WAL record by is `identity.component()`, and so is the element selected
 /// out of the bytes, because there is only one place either can come from.
@@ -5832,7 +5832,7 @@ fn read_block_bytes(
 /// Container pages this process could not walk.
 ///
 /// A counter and not a log line: the one thing a test needs to tell apart is "the element is not in
-/// the page" from "the page could not be read", and #1989 is the recorded case of those two being
+/// the block" from "the block could not be read", and #1989 is the recorded case of those two being
 /// the same answer. Counting the second is what lets a guard assert the first happened zero times.
 static CORRUPT_CONTAINER_PAGES: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 
@@ -5850,7 +5850,7 @@ pub fn reset_corrupt_container_page_count() {
     CORRUPT_CONTAINER_PAGES.store(0, std::sync::atomic::Ordering::Relaxed);
 }
 
-/// The page's bytes, shared rather than copied.
+/// The block's bytes, shared rather than copied.
 ///
 /// `read_block_bytes` hands back a `Vec<u8>` the cache built by copying the `Arc<[u8]>` it already
 /// holds. A caller that parses the bytes and drops them pays that memcpy and that allocation for
@@ -5860,11 +5860,11 @@ pub fn reset_corrupt_container_page_count() {
 /// fallbacks, same promotion. It differs only in not owning the result. Callers that keep or mutate
 /// the bytes should keep using `read_block_bytes`.
 /// `component` says WHICH ELEMENT of the object this address names, and it is not optional
-/// information dressed as an `Option`: `None` means the page IS its whole object -- a string,
+/// information dressed as an `Option`: `None` means the block IS its whole object -- a string,
 /// a control state -- and `Some` names the element, exactly as `BlockIndex::component` beside
 /// this address already does. The in-log fallback below needs it because a record carries many
-/// pages and picks one out of itself by identity; handed only the object id it answers with the
-/// FIRST page of that object, which is another element's bytes rather than a miss.
+/// blocks and picks one out of itself by identity; handed only the object id it answers with the
+/// FIRST block of that object, which is another element's bytes rather than a miss.
 #[allow(clippy::too_many_arguments)]
 fn read_block_shared(
     cache: &MultiLayerCache,
@@ -5885,10 +5885,10 @@ fn read_block_shared(
     });
     if let Ok(Some(bytes)) = cached {
         // THE CACHE HOLDS THE FRAME, NOT THE ELEMENT. It is keyed by address, and since
-        // `container_pages` one address can name a page holding several elements -- so the shared
+        // `container_pages` one address can name a block holding several elements -- so the shared
         // path has to select out of a cache HIT exactly as `read_block_bytes` selects out of a
         // store read. Returning the hit unselected is the one way the two doors can disagree, and
-        // it would disagree only when the page is warm: a cold read would answer correctly and a
+        // it would disagree only when the block is warm: a cold read would answer correctly and a
         // second read of the same element would answer with framing bytes.
         let Some(component) = identity.component() else {
             return Some(bytes);
@@ -6072,7 +6072,7 @@ fn object_manager_stats(
                 .iter()
                 .filter_map(|(bucket_id, bucket)| bucket.dirty().then_some(*bucket_id))
                 .collect::<BTreeSet<_>>();
-            // The loop below asks, per dirty object, which buckets hold its pages -- building a
+            // The loop below asks, per dirty object, which buckets hold its blocks -- building a
             // composite lookup key each time. `dirty_objects` grows with the ingest, and this
             // runs on the heartbeat timer under the shard read lock, so it was the shard-sized
             // work that made writes cost more as the store grew: profiling a running ingest
@@ -6311,7 +6311,7 @@ mod key_state_shape_tests {
     /// The property the capture side now relies on: a field LEFT OUT and a field written as
     /// an explicit null mean the same thing to the apply side. If that ever stops being true,
     /// omitting the nulls silently stops tombstoning keys on reload, and evicted membership
-    /// comes back from the pages.
+    /// comes back from the blocks.
     #[test]
     fn an_omitted_key_state_field_delete_markers_exactly_like_an_explicit_null() {
         let mut with_null: HashMap<String, u64> = HashMap::new();

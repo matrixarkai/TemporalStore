@@ -37,7 +37,7 @@ pub(super) struct ContextDirtyEntry {
     pub(super) mark_count: u64,
 }
 
-/// Where a WAL-resident page's bytes are: the log id of the record carrying it, and that
+/// Where a WAL-resident block's bytes are: the log id of the record carrying it, and that
 /// record's sequence (which is what log reclaim reasons about).
 #[derive(Debug, Default, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 pub(super) struct WalResidentBlock {
@@ -45,7 +45,7 @@ pub(super) struct WalResidentBlock {
     pub(super) sequence: u64,
 }
 
-/// Two log coordinates. One per page whose only durable copy is a log record.
+/// Two log coordinates. One per block whose only durable copy is a log record.
 const _: () = assert!(std::mem::size_of::<WalResidentBlock>() == 16);
 
 #[derive(Debug, Default, Clone, Serialize, Deserialize)]
@@ -63,15 +63,15 @@ pub(super) struct ShardState {
     /// both maps correctly through insert_context_event_views.
     #[serde(default)]
     pub(super) index_format_version: u32,
-    /// Pages whose only durable copy is a WAL record, and which record holds each one.
+    /// Blocks whose only durable copy is a WAL record, and which record holds each one.
     ///
     /// The resolver's table is process-local, so after a restart it is empty: the served index
     /// still points at a synthetic address and nothing can turn it back into bytes until a full
-    /// replay re-derives the page. Recording the log id HERE means the mapping travels with the
+    /// replay re-derives the block. Recording the log id HERE means the mapping travels with the
     /// index that depends on it, and a reload hands it straight back.
     ///
     /// A stale entry costs a miss, never wrong bytes. The resolver reads the record at that log
-    /// id and looks for the object inside it, so a reclaimed record or a superseded page simply
+    /// id and looks for the object inside it, so a reclaimed record or a superseded block simply
     /// is not found, and the read falls through exactly as it did before this existed.
     #[serde(default)]
     pub(super) wal_resident_blocks: BTreeMap<u64, WalResidentBlock>,
@@ -82,7 +82,7 @@ pub(super) struct ShardState {
     /// `layout` for EVERY bucket, and the single-write path called it on every write. Each bucket
     /// costs `O(its pages)`, so the sweep is `O(total pages)` per write and ingestion is quadratic
     /// in the corpus. Note that the routing-slot range does not soften this: fewer slots means
-    /// fewer, larger buckets and the same total page count.
+    /// fewer, larger buckets and the same total block count.
     ///
     /// Recorded where the routing bucket is already known -- the bucket-index upsert, the removal
     /// paths, and the async dirty mark -- rather than inferred from the key, because a stored
@@ -119,12 +119,12 @@ pub(super) struct ShardState {
     #[serde(skip)]
     pub(super) expiry_by_deadline: BTreeMap<(u64, String), ()>,
     pub(super) strings: HashMap<String, BlockAddress>,
-    // Rebuildable from the durable bucket/page index on load; do not duplicate in checkpoints.
+    // Rebuildable from the durable bucket/block index on load; do not duplicate in checkpoints.
     //
     // THE INNER CONTAINER IS A SORTED VECTOR, NOT A TABLE AND NOT A B-TREE, and it is the only one
     // of the eighteen nested model maps that is either. Measured on the counting allocator, a hash
     // of ONE field -- which is every context node in a store, because `write_context_node` files
-    // its page under the single constant `CONTEXT_NODE_FIELD` -- cost 272 chunk bytes as a table
+    // its block under the single constant `CONTEXT_NODE_FIELD` -- cost 272 chunk bytes as a table
     // and 560 as a `BTreeMap`, against 64 as an exact-sized vector. Matching the seventeen ordered
     // siblings was measured and LOST, by more than 2x at the occupancy that is 100% of the product
     // write path. See `engine::hash_field_map` for the trade and
@@ -138,26 +138,26 @@ pub(super) struct ShardState {
     pub(super) sets: HashMap<String, BTreeMap<Vec<u8>, BlockAddress>>,
     /// Windowed seen-sets backing idempotency keys: member -> when it was last seen, plus
     /// the same entries time-ordered so expiry pops from the front in bounded steps. Like the
-    /// buckets, no pages back this state -- it persists with the shard index snapshot, and a
+    /// buckets, no blocks back this state -- it persists with the shard index snapshot, and a
     /// crash forgetting a window's worth of members re-admits a duplicate rather than
     /// dropping a legitimate first ingest.
     #[serde(default, with = "super::seen_index_serde")]
     pub(super) seen: HashMap<String, SeenSet>,
     /// Token buckets: key -> (tokens remaining, last refill ms). Config rides each command,
     /// never the store -- the caller owns policy, which is exactly what a quota layer wants.
-    /// No pages back this state: it persists only with the shard index snapshot, so a crash
+    /// No blocks back this state: it persists only with the shard index snapshot, so a crash
     /// refills every bucket to capacity. That direction is deliberate and documented -- a
     /// limiter that briefly over-admits after a crash beats one that starves recovered
     /// tenants on stale counts.
     #[serde(default)]
     pub(super) buckets: HashMap<String, (f64, u64)>,
-    /// Sorted sets: member -> (total-order score bits, element page). The score-ordered view
+    /// Sorted sets: member -> (total-order score bits, element block). The score-ordered view
     /// is derived per query -- V1 accepts the per-range sort; the upgrade path is a second
     /// in-memory map rebuilt at load, never a second persisted structure (the index component
     /// already encodes score-then-member, so recovery has the order for free).
     #[serde(default, with = "super::zset_index_serde")]
     pub(super) zsets: HashMap<String, BTreeMap<Vec<u8>, (u64, BlockAddress)>>,
-    /// Redis-style lists: element pages keyed by a signed sequence -- left pushes walk the
+    /// Redis-style lists: element blocks keyed by a signed sequence -- left pushes walk the
     /// low end down, right pushes walk the high end up, so both ends are O(log n) and the
     /// BTree's order IS the list's order.
     #[serde(default)]
@@ -196,7 +196,7 @@ pub(super) struct ShardState {
     #[serde(skip)]
     pub(super) control_state_rollups: HashMap<String, RollupEntry>,
     // Transient per-execute hint: when true (async_storage + control_coalesce_persist),
-    // control-state counter writes skip the redundant per-write whole-series page rewrite
+    // control-state counter writes skip the redundant per-write whole-series block rewrite
     // and rely on the index snapshot + WAL replay for durability, exactly like the
     // control_state_changes/fol sub-stores already do. Serde-skipped; set on every execute.
     #[serde(skip)]
@@ -228,7 +228,7 @@ pub(super) struct ShardState {
     // over this index and dereference into the primary, keeping time reads at log n + k rather
     // than degrading them to a full series scan to make deletes cheaper.
     //
-    // Rebuilt at load from the same page decode the event load path already performs, so it
+    // Rebuilt at load from the same block decode the event load path already performs, so it
     // costs no extra on-disk state; it is serialized with the index like the primary because
     // ShardState is snapshotted whole.
     #[serde(default)]
@@ -238,8 +238,8 @@ pub(super) struct ShardState {
     #[serde(default)]
     pub(super) context_audits: HashMap<String, BTreeMap<u64, BlockAddress>>,
     // Summary-dirty tracking is intentionally in-memory only. Instead of appending a
-    // persisted `ctx:dirty` page per event (which produced one dirty node per write and
-    // unbounded dirty-page growth: a real e2e capture stored 47 dirty records for only 6
+    // persisted `ctx:dirty` block per event (which produced one dirty node per write and
+    // unbounded dirty-block growth: a real e2e capture stored 47 dirty records for only 6
     // events), we keep a coalescing hashmap keyed by dirty object key so repeated edits to
     // the same node collapse into a single entry. This map is `#[serde(skip)]`: it is
     // ephemeral and may be lost on restart, which is acceptable because the async summary
@@ -305,7 +305,7 @@ pub(super) struct ShardState {
     /// Phase-1 flat-append fast-skip flag for the per-execute
     /// `promote_model_maps_to_bucket_index_authority` reconciliation. The live write path already
     /// keeps `bucket_index` authoritative in step with the model maps (each mutating command
-    /// upserts its page into `bucket_index` before returning), so once a full promote scan has
+    /// upserts its block into `bucket_index` before returning), so once a full promote scan has
     /// confirmed the two are in sync a repeat per-command O(store) scan can only re-confirm it.
     /// Set true after a confirmed/rebuilt reconcile at the hot-path call site; `#[serde(skip)]`
     /// so it is false on every fresh load -> the first live command after any reload pays one
@@ -320,11 +320,11 @@ pub(super) struct ShardState {
     /// THE ROUTING RANGE THIS SHARD IS LOADED ON, travelling with the shard instead of with a
     /// caller. Read through [`ShardState::routing_range`], never directly.
     ///
-    /// The two functions that decide WHERE A PAGE IS FILED -- `upsert_bucket_index_block_inner`
+    /// The two functions that decide WHERE A BLOCK IS FILED -- `upsert_bucket_index_block_inner`
     /// and `sync_bucket_index_object_blocks_with_mode` -- take `&mut ShardState` and a `ShardId`
     /// and never `&self`, so the engine's `shard_routing_range` accessor, which reads the info
     /// rows under `infos.read()`, is not reachable from either. They answered with the WHOLE
-    /// range, which on a shard loaded on `0..1023` files an unrouted page in a bucket the shard
+    /// range, which on a shard loaded on `0..1023` files an unrouted block in a bucket the shard
     /// does not hold, where nothing scoped to the shard will ever look for it.
     ///
     /// THREE `u32`-WIDE FIELDS RATHER THAN AN `Option<(u32, u32)>`, for the same reason
@@ -352,7 +352,7 @@ pub(super) struct ShardState {
     /// THE SHARD THIS STATE IS SERVED UNDER, travelling with the shard for the same reason the
     /// routing range above does. Read through [`ShardState::shard_id`], never directly.
     ///
-    /// A page's object id is `stable_block_object_id(shard, kind, key)`. `BlockIndex` carries the
+    /// A block's object id is `stable_block_object_id(shard, kind, key)`. `BlockIndex` carries the
     /// kind and the key beside the address, so the only term a `&ShardState` could not supply was
     /// the first one, and four functions that take a shard and never `&self` say so in their own
     /// words: `BlockIndex::object_id`, `object_manager::runtime_report`,
@@ -403,7 +403,7 @@ impl ShardState {
         self.routing_range_known = true;
     }
 
-    /// The range to file an unrouted page under.
+    /// The range to file an unrouted block under.
     ///
     /// An unstamped state answers the WHOLE range -- what every caller of these two writers
     /// passed unconditionally before the field existed -- so a state that never entered the
@@ -441,10 +441,10 @@ impl ShardState {
 pub(super) struct CoreIndex {
     #[serde(default, alias = "slots")]
     pub(super) bucket_map: BucketMap,
-    /// Per-slab live page refs and live bytes, maintained by every mutation of the map above.
+    /// Per-slab live block refs and live bytes, maintained by every mutation of the map above.
     ///
     /// HERE, and not one level up on `ShardState`, for two reasons. `fold_delta_block_items` files
-    /// pages through a bare `&mut CoreIndex` and has no shard to reach for -- a tally it could not
+    /// blocks through a bare `&mut CoreIndex` and has no shard to reach for -- a tally it could not
     /// see would be a hole in the mutation surface, which is the one thing this must not have. And
     /// two fields of ONE struct are what make the borrows work at every other site:
     /// `bucket_map.get_mut(..)` loans one field while `&mut ..block_slab_live` takes the other,
@@ -455,15 +455,15 @@ pub(super) struct CoreIndex {
     #[serde(skip)]
     pub(super) block_slab_live: BlockSlabLiveIndex,
     // Derived lookup tables rebuilt from the bucket map on load. Persisting them duplicates
-    // page references already carried by the bucket index and made large context backfill
+    // block references already carried by the bucket index and made large context backfill
     // checkpoints tens of MB larger without adding authoritative recovery state.
     #[serde(default, skip_serializing)]
     pub(super) object_block_lookup: ObjectBlockLookup,
-    /// One shared copy of each page kind, so a page holds a pointer rather than its own string.
+    /// One shared copy of each block kind, so a block holds a pointer rather than its own string.
     ///
-    /// Measured over 2700 pages: `model_id` had 2 distinct values and 2700 copies -- 1350 copies
+    /// Measured over 2700 blocks: `model_id` had 2 distinct values and 2700 copies -- 1350 copies
     /// of each, and an allocation apiece. The object key, by contrast, had 1650 distinct values
-    /// for those same 2700 pages, which is why it is not interned here: sharing something that is
+    /// for those same 2700 blocks, which is why it is not interned here: sharing something that is
     /// nearly unique saves nothing.
     ///
     /// COMPONENT names share it, and that used to destroy it. The cap exists so that being
@@ -471,7 +471,7 @@ pub(super) struct CoreIndex {
     /// components are one per field, member or element of a container, so the FIRST container key
     /// written fills the cap, and after that the pool took nothing new. Including the kinds of
     /// every container written afterwards, which then allocated their own copy of a
-    /// four-character string once per page. Measured over a container store of 40,000 pages in
+    /// four-character string once per block. Measured over a container store of 40,000 blocks in
     /// 400 objects: 300 of the 400 held up to ONE HUNDRED distinct allocations of their model id,
     /// a name with four distinct values in the whole store.
     ///
@@ -486,7 +486,7 @@ pub(super) struct CoreIndex {
     /// of the index.
     #[serde(skip)]
     pub(super) kind_pool: std::collections::HashSet<Arc<str>>,
-    /// Running total of page refs across `object_component_lookup`, or `None` when not known.
+    /// Running total of block refs across `object_component_lookup`, or `None` when not known.
     ///
     /// The stats path reports this number, and computing it as
     /// `object_component_lookup.values().map(BTreeSet::len).sum()` walks every object in the
@@ -502,18 +502,18 @@ pub(super) struct CoreIndex {
     /// so a missing value costs time rather than correctness.
     #[serde(skip)]
     pub(super) object_component_block_refs: Option<usize>,
-    /// Buckets whose page list has been released: present in `bucket_map`, `in_memory: false`,
+    /// Buckets whose block list has been released: present in `bucket_map`, `in_memory: false`,
     /// `page_index` empty, reloadable from the model maps on demand.
     ///
     /// A registry rather than a scan, because three hot paths need the answer "is anything
     /// released" in O(1): the per-execute promote reconcile (which would otherwise see a released
     /// bucket as an index that has fallen out of sync and rebuild the whole shard), the
-    /// bucket-index page walk (which must supplement released buckets from the model maps rather
+    /// bucket-index block walk (which must supplement released buckets from the model maps rather
     /// than report them as empty), and the write path (which must reload a bucket before filing a
-    /// page into it, so a node never ends up half-resident).
+    /// block into it, so a node never ends up half-resident).
     ///
     /// Not serialized: release is a memory state, not a durable one. An index written while a
-    /// bucket is released decodes with that bucket simply holding no pages, and every load path
+    /// bucket is released decodes with that bucket simply holding no blocks, and every load path
     /// re-derives `bucket_map` from the model maps anyway -- which is why the release rules above
     /// refuse the three model maps that are themselves rebuilt from the index.
     #[serde(skip)]
@@ -790,7 +790,7 @@ impl<'de> Deserialize<'de> for ObjectIndex {
 /// THE TOMBSTONE SIDE OF A BUCKET, held so that ABSENCE costs a pointer and nothing else.
 ///
 /// `deleted_object_index` is the ids a bucket has had deleted and not yet reclaimed. It is
-/// written by one path -- a delete that finds pages to retire -- and cleared by the next write of
+/// written by one path -- a delete that finds blocks to retire -- and cleared by the next write of
 /// the same object, so on a store that is not being deleted from it holds nothing at all.
 /// MEASURED over a seeded corpus at two sizes with one string key in twenty deleted: 97.68% of
 /// buckets carry no tombstone, and the widest bucket that carries one carries a single id.
@@ -928,20 +928,20 @@ impl<'de> Deserialize<'de> for DeletedObjectIndex {
     }
 }
 
-/// Keyed by a SHARED page-ref key: the same allocation is held by the lookups that point at this
-/// page, instead of each of the three keeping its own copy of the same ~117-byte string.
-/// Pages of one bucket, keyed by an id assigned when the page is filed.
+/// Keyed by a SHARED block-ref key: the same allocation is held by the lookups that point at this
+/// block, instead of each of the three keeping its own copy of the same ~117-byte string.
+/// Blocks of one bucket, keyed by an id assigned when the block is filed.
 ///
-/// The key used to be a rendered string of the page's identity and address -- 45.6 B a page, and
-/// three quarters of what a page cost on the heap. It was never read as a name: every lookup goes
+/// The key used to be a rendered string of the block's identity and address -- 45.6 B a block, and
+/// three quarters of what a block cost on the heap. It was never read as a name: every lookup goes
 /// through a ref this map handed out, and a rewrite produces a different key while leaving one
 /// entry, so identity comes from the lookup rather than from key equality.
 ///
 /// Serializes as the string map it always was. The key is rebuilt from the value, which carries
-/// every part of it, and the handle is recomputed from the page on load.
+/// every part of it, and the handle is recomputed from the block on load.
 ///
 /// The handle is NOT free to choose: the lookup's refs hold handles and the lookup is written to
-/// disk, so a handle has to mean the same page in every process that reads the file. Assigning
+/// disk, so a handle has to mean the same block in every process that reads the file. Assigning
 /// them from a counter compiled, round-tripped, and lost an object on the first reload.
 #[derive(Debug, Default, Clone, Deserialize)]
 #[serde(from = "BTreeMap<String, BlockIndex>")]
@@ -955,30 +955,30 @@ pub(super) enum BlockIndexMap {
     /// one the release lifecycle assigns. `the_empty_arm_is_an_alias_for_no_pages_and_costs_nothing_to_keep`
     /// asserts both halves of "free" and the release/reload round trip that depends on it.
     ///
-    /// AN ALIAS, NOT A RELEASE MARKER. A released bucket has an empty page index, but what makes it
+    /// AN ALIAS, NOT A RELEASE MARKER. A released bucket has an empty block index, but what makes it
     /// RELEASED rather than legitimately empty is `released_buckets` plus its retained
     /// `object_index` -- `release_bucket_blocks` says so where it keeps that index. Nothing reads
     /// this discriminant as a lifecycle state.
     #[default]
     Empty,
-    /// One page, held behind a POINTER rather than inline.
+    /// One block, held behind a POINTER rather than inline.
     ///
     /// THE ARM SURVIVES; WHAT IT COSTS THE NODE DOES NOT. It used to hold the whole entry inline, so
     /// this enum was `8 + size_of::<BlockIndex>()` and every `BucketNode` in the `BucketMap` paid
-    /// that width whether or not its bucket held exactly one page. Now the arm is a handle and a
+    /// that width whether or not its bucket held exactly one block. Now the arm is a handle and a
     /// box, the enum is exactly as wide as the list it also holds -- the tag rides in a pointer
-    /// niche -- and the single-page case still has a representation of its own.
+    /// niche -- and the single-block case still has a representation of its own.
     ///
     /// WHY THE WIDTH WAS PAYABLE ONLY NOW. #1964 kept the inline entry on an explicit measurement,
     /// and the measurement was sound on the population it sampled: `load_shard` defaulted
     /// `end_routing_bucket` to the whole `u32` keyspace, which gives EVERY KEY A BUCKET OF ITS OWN
-    /// BY CONSTRUCTION, so 100% of buckets were single-page and the arm was free of charge there.
+    /// BY CONSTRUCTION, so 100% of buckets were single-block and the arm was free of charge there.
     /// #1973 made 1023 the shipped default. At 1,024 buckets the same routed keys FILL them --
-    /// measured 4.510% single-page at 4,000 records and 0.000% at 40,000, p50 39 and MAX 52 -- so
+    /// measured 4.510% single-block at 4,000 records and 0.000% at 40,000, p50 39 and MAX 52 -- so
     /// the inline width became a toll on 95.5% to 100% of buckets that could never use it.
     ///
     /// AND WHY BOXING RATHER THAN DROPPING THE ARM ALTOGETHER, which recovers the identical 24-byte
-    /// width. Dropping it makes a single-page bucket hold a one-entry LIST, and the list's first
+    /// width. Dropping it makes a single-block bucket hold a one-entry LIST, and the list's first
     /// block is a whole growth step -- four entries to carry one. Measured over the real bucket
     /// population in both allocator columns: at the shipped range the two are within 13.7 B a bucket
     /// at 4,000 records and identical at 40,000, but on the WHOLE-KEYSPACE range dropping the arm
@@ -988,17 +988,17 @@ pub(super) enum BlockIndexMap {
     /// is the only one of the three that wins at both. `inline_arm_trade.rs` is that measurement,
     /// four shapes wide.
     ///
-    /// WHAT THE ARM STILL COSTS, AND IT IS REAL. One allocation per single-page bucket that the
-    /// inline entry did not take, and one DEPENDENT load on every read of such a page -- the entry's
+    /// WHAT THE ARM STILL COSTS, AND IT IS REAL. One allocation per single-block bucket that the
+    /// inline entry did not take, and one DEPENDENT load on every read of such a block -- the entry's
     /// address is not known until the node has been read. Both are measured; dropping the arm would
     /// have paid both too.
     One(u64, Box<BlockIndex>),
-    /// Several pages -- an object with components, or several keys routed to one bucket -- held
+    /// Several blocks -- an object with components, or several keys routed to one bucket -- held
     /// as a FLAT LIST SORTED BY HANDLE rather than as a tree.
     ///
     /// WHY A LIST AND NOT A TREE. A `BTreeMap` leaf holds eleven value slots whether or not it
-    /// fills them: at 104 bytes a page that is a 1,248-byte node per eleven pages, and the fill
-    /// was measured at 63%. A page list is short, and the operations it actually takes are a
+    /// fills them: at 104 bytes a block that is a 1,248-byte node per eleven blocks, and the fill
+    /// was measured at 63%. A block list is short, and the operations it actually takes are a
     /// lookup by handle, an ordered walk, and an insert -- none of which needs a tree's
     /// rebalancing. `the_page_index_of_a_real_store_costs_less_as_a_list_than_as_a_tree` measures
     /// what the node costs against what the list costs at the real length distribution, and
@@ -1006,15 +1006,15 @@ pub(super) enum BlockIndexMap {
     ///
     /// SORTED BY HANDLE, AND THAT IS NOT AN IMPLEMENTATION DETAIL. A `BTreeMap<u64, _>` iterates
     /// in ascending key order, and readers of this index depend on that: the index-log item
-    /// builder emits pages in this order, `collect_live_block_entries` materialises them in it,
-    /// the storage-topology sampler TRUNCATES at a sample cap so the order decides which pages
+    /// builder emits blocks in this order, `collect_live_block_entries` materialises them in it,
+    /// the storage-topology sampler TRUNCATES at a sample cap so the order decides which blocks
     /// are reported, `bucket_index_shape_for_test` renders it as the comparison between a shard
     /// built by commands and one rebuilt from records, and the whole-scan address lookup in
     /// `bucket_store` takes the FIRST match. Keeping the list sorted by the same key the tree was
     /// keyed by makes every one of those readers see the identical sequence, which is why this is
     /// a container change and not a behaviour change.
     /// `an_unsorted_page_list_would_reorder_every_walk_of_this_index` is the control: it builds
-    /// the same pages in three different orders and asserts one walk, with a negative control
+    /// the same blocks in three different orders and asserts one walk, with a negative control
     /// showing that fill order and handle order genuinely differ.
     ///
     /// DUPLICATES ARE REPLACED, NOT APPENDED. A map deduplicated by construction; a list does
@@ -1024,13 +1024,13 @@ pub(super) enum BlockIndexMap {
     Many(Vec<(u64, BlockIndex)>),
 }
 
-/// AS WIDE AS THE PAGE LIST IT HOLDS, AND NO WIDER -- three arms in the space of one vector header.
-/// `Empty` and the boxed single-page arm both ride in pointer niches, so there is no discriminant
+/// AS WIDE AS THE BLOCK LIST IT HOLDS, AND NO WIDER -- three arms in the space of one vector header.
+/// `Empty` and the boxed single-block arm both ride in pointer niches, so there is no discriminant
 /// word and no inline payload to be the widest field of `BucketNode` any more.
 ///
-/// 24, not 80, since the single-page case stopped being held INLINE and started being held behind a
+/// 24, not 80, since the single-block case stopped being held INLINE and started being held behind a
 /// pointer. That arm was `8 + size_of::<BlockIndex>()` -- a handle plus a whole entry -- and every
-/// `BucketNode` in the `BucketMap` paid its width whether or not its bucket held exactly one page.
+/// `BucketNode` in the `BucketMap` paid its width whether or not its bucket held exactly one block.
 /// The 56 bytes leave the structure rather than moving into its tail, which is why they take
 /// `BucketNode` with them.
 ///
@@ -1053,7 +1053,7 @@ const _: () = assert!(
     std::mem::size_of::<BlockIndexMap>() == std::mem::size_of::<Vec<(u64, BlockIndex)>>()
 );
 
-/// Entries this process has examined looking a page up, counted under `cfg(test)` only.
+/// Entries this process has examined looking a block up, counted under `cfg(test)` only.
 ///
 /// THE READ PATH IS WHERE THIS CHANGE IS WON OR LOST -- it trades a tree descent for a walk --
 /// and a duration cannot say so on a box that sits at load 40. This counts the entries the
@@ -1135,10 +1135,10 @@ fn note_entries_examined(count: usize) {
 #[inline(always)]
 fn note_entries_examined(_count: usize) {}
 
-/// Walk a sorted page list from the front. THE STRATEGY THE MEASUREMENT DECLINED, kept for the
+/// Walk a sorted block list from the front. THE STRATEGY THE MEASUREMENT DECLINED, kept for the
 /// measurement and compiled only into tests.
 ///
-/// A walk was the obvious candidate here: a page list is short, its entries are contiguous, and a
+/// A walk was the obvious candidate here: a block list is short, its entries are contiguous, and a
 /// walk has no unpredictable branch. `the_walk_and_the_bisection_cross_over_where_the_measurement_says`
 /// counts the entries each strategy touches and the bisection becomes the cheaper of the two at a
 /// list of THREE -- while the `Many` arm exists only from TWO, where the two tie exactly. So there
@@ -1169,13 +1169,13 @@ pub(super) fn scan_page(pages: &[(u64, BlockIndex)], key: &u64) -> Result<usize,
     Err(pages.len())
 }
 
-/// Bisect a sorted page list. THE SHIPPED LOOKUP.
+/// Bisect a sorted block list. THE SHIPPED LOOKUP.
 ///
 /// Written out rather than delegated to `binary_search_by` so the entries it touches can be
 /// COUNTED as they are touched. A count derived from `log2(len)` would be a model of the search
 /// rather than the search, and this campaign has already had an instrument report a model.
 ///
-/// It also has no cliff: the widest list measured holds 50 pages, and ten times that is four more
+/// It also has no cliff: the widest list measured holds 50 blocks, and ten times that is four more
 /// probes. A walk at the same length would be five hundred entries, which is the reason a
 /// fallback for the tail is not needed here -- the shipped strategy IS the tail's strategy.
 pub(super) fn bisect_page(pages: &[(u64, BlockIndex)], key: &u64) -> Result<usize, usize> {
@@ -1197,7 +1197,7 @@ pub(super) fn bisect_page(pages: &[(u64, BlockIndex)], key: &u64) -> Result<usiz
     Err(low)
 }
 
-/// Find a handle in a sorted page list.
+/// Find a handle in a sorted block list.
 ///
 /// THE ONE DOOR. Every lookup, removal and insert into the `Many` arm comes through here, which
 /// is what makes the entry counter above a reading of the path production runs rather than of a
@@ -1207,7 +1207,7 @@ pub(super) fn find_page(pages: &[(u64, BlockIndex)], key: &u64) -> Result<usize,
     bisect_page(pages, key)
 }
 
-/// Room for one more page, taken in fixed steps rather than by doubling.
+/// Room for one more block, taken in fixed steps rather than by doubling.
 ///
 /// `Vec`'s own growth doubles: a list of 39 entries takes a capacity of 64, which is a quarter of
 /// its bytes unused -- almost exactly the slack the `BTreeMap` node left, so a change that
@@ -1229,7 +1229,7 @@ fn reserve_one_more(pages: &mut Vec<(u64, BlockIndex)>) {
     }
 }
 
-/// Iterating a page index, whichever shape it is in.
+/// Iterating a block index, whichever shape it is in.
 pub(super) enum BlockIndexIter<'a> {
     Empty,
     One(std::iter::Once<(&'a u64, &'a BlockIndex)>),
@@ -1266,35 +1266,35 @@ impl<'a> Iterator for BlockIndexValuesMut<'a> {
     }
 }
 
-/// Live pages sitting on ONE slab: how many, and how many logical bytes of them.
+/// Live blocks sitting on ONE slab: how many, and how many logical bytes of them.
 ///
 /// `bytes` sums `BlockAddress::length`, which is what every existing per-slab live figure sums --
-/// `storage_reclaim_slab_reports` fills `live_physical_bytes` from exactly that. Page refs and
+/// `storage_reclaim_slab_reports` fills `live_physical_bytes` from exactly that. Block refs and
 /// bytes are both kept because they answer different questions and neither derives the other: the
-/// compaction drain set asks whether ANY page is still there, a garbage fraction asks how MUCH.
+/// compaction drain set asks whether ANY block is still there, a garbage fraction asks how MUCH.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub(super) struct SlabLiveTally {
     pub(super) block_refs: u64,
     pub(super) bytes: u64,
 }
 
-/// Per-slab live-page tally, MAINTAINED on every index mutation rather than recomputed by a
+/// Per-slab live-block tally, MAINTAINED on every index mutation rather than recomputed by a
 /// whole-shard walk.
 ///
-/// WHAT IT COUNTS. Exactly the page set `collect_live_block_entries` returns: every page held in
-/// the bucket index, plus -- for a RELEASED bucket -- the pages that bucket held when it was
-/// released. Delete-marked pages are included, because that walk includes them; a page leaves
+/// WHAT IT COUNTS. Exactly the block set `collect_live_block_entries` returns: every block held in
+/// the bucket index, plus -- for a RELEASED bucket -- the blocks that bucket held when it was
+/// released. Delete-marked blocks are included, because that walk includes them; a block leaves
 /// this tally when its index entry does, not when a flag on it changes.
 ///
-/// WHY THE INDEX AND NOT THE BLOCK STORE. The block store never learns that a page died. It sees
+/// WHY THE INDEX AND NOT THE BLOCK STORE. The block store never learns that a block died. It sees
 /// appends, and it sees whole slabs arrive and leave; the fact that an index entry stopped
 /// pointing at an offset reaches it nowhere. A live-byte figure maintained there could only be
 /// recomputed from the index anyway, which is the walk this exists to remove.
 ///
-/// RELEASE IS COUNTER-NEUTRAL, DELIBERATELY. `release_bucket_blocks` empties a bucket page index
-/// while its pages stay live -- they are still in the model maps, and
+/// RELEASE IS COUNTER-NEUTRAL, DELIBERATELY. `release_bucket_blocks` empties a bucket block index
+/// while its blocks stay live -- they are still in the model maps, and
 /// `collect_bucket_index_live_block_entries` supplements them back into the walk. So release does
-/// NOT decrement, and `reload_released_bucket` does NOT increment: it re-files the same pages
+/// NOT decrement, and `reload_released_bucket` does NOT increment: it re-files the same blocks
 /// through `insert_released`. The pair cancels, which is why a released-then-reloaded bucket is
 /// one of the workloads the drift check is required to cover rather than one it may assume.
 ///
@@ -1307,7 +1307,7 @@ pub(super) struct BlockSlabLiveIndex {
     /// False until something has derived this from the index it counts.
     ///
     /// A ShardState arrives from serde with this empty, and an empty tally is indistinguishable
-    /// from a shard holding no live pages at all. Every consumer checks this before believing a
+    /// from a shard holding no live blocks at all. Every consumer checks this before believing a
     /// zero, and the fallback is the walk -- so a load path that forgets to seed it costs the old
     /// cost rather than reporting a store made entirely of garbage.
     ready: bool,
@@ -1386,7 +1386,7 @@ impl BlockSlabLiveIndex {
 
     /// Declare the tally derived, without replacing it.
     ///
-    /// For a rebuild that CHARGED every page as it filed it: the tally is already correct and a
+    /// For a rebuild that CHARGED every block as it filed it: the tally is already correct and a
     /// walk to confirm that would be the walk this type exists to remove. Callers must have
     /// emptied it first -- `rebuild_bucket_block_ownership` does, right where it clears the map it
     /// counts.
@@ -1416,7 +1416,7 @@ impl BlockIndexMap {
             BlockIndexMap::Empty => None,
             // ONE COMPARISON AND ONE POINTER LOAD, not a bisection. The arm does not enter
             // `find_page`, which is why `PAGE_LOOKUP_ENTRIES_EXAMINED` counts nothing at all for a
-            // single-page bucket.
+            // single-block bucket.
             BlockIndexMap::One(handle, page) => (handle == key).then_some(&**page),
             BlockIndexMap::Many(pages) => find_page(pages, key).ok().map(|at| &pages[at].1),
         }
@@ -1432,7 +1432,7 @@ impl BlockIndexMap {
         }
     }
 
-    /// Drop a page and charge the removal to the live tally.
+    /// Drop a block and charge the removal to the live tally.
     pub(super) fn remove(
         &mut self,
         key: &u64,
@@ -1469,9 +1469,9 @@ impl BlockIndexMap {
         }
     }
 
-    /// Install a page, charge it to the live tally, and return its handle.
+    /// Install a block, charge it to the live tally, and return its handle.
     ///
-    /// A page with the same identity replaces the one already there rather than adding beside it,
+    /// A block with the same identity replaces the one already there rather than adding beside it,
     /// which is what the rendered string key used to do by being the key -- so an OVERWRITE both
     /// discharges the address it displaced and charges the new one. Those are different slabs
     /// whenever a rewrite rolled, which is the whole reason a counter has to see the displaced
@@ -1486,9 +1486,9 @@ impl BlockIndexMap {
         handle
     }
 
-    /// Install a page that is ALREADY counted.
+    /// Install a block that is ALREADY counted.
     ///
-    /// One caller, and it must stay that way: `reload_released_bucket` re-files the pages a
+    /// One caller, and it must stay that way: `reload_released_bucket` re-files the blocks a
     /// release took out of the index, and release never discharged them. Counting them here would
     /// double every released bucket the moment it was touched again.
     pub(super) fn insert_released(&mut self, page: BlockIndex) -> u64 {
@@ -1501,7 +1501,7 @@ impl BlockIndexMap {
         let displaced = match self {
             BlockIndexMap::Empty => {
                 // THE ONE ALLOCATION THE INLINE ENTRY DID NOT TAKE, and it is taken here. ONE ENTRY
-                // and not a growth step: this is a box, so it is sized for exactly the page it holds.
+                // and not a growth step: this is a box, so it is sized for exactly the block it holds.
                 // That is the whole of boxing's advantage over dropping the arm, which would put the
                 // same page in a list whose first block is four entries -- measured at 482.0 B a
                 // bucket against 178.3 on the whole-keyspace range.
@@ -1510,11 +1510,11 @@ impl BlockIndexMap {
             }
             BlockIndexMap::One(existing, held) => {
                 if *existing == handle {
-                    // A rewrite of the same page: the entry is replaced INSIDE the box it already
-                    // has, so a rewrite of a single-page bucket allocates nothing at all.
+                    // A rewrite of the same block: the entry is replaced INSIDE the box it already
+                    // has, so a rewrite of a single-block bucket allocates nothing at all.
                     Some(std::mem::replace(&mut **held, page).address)
                 } else {
-                    // A second page: this bucket has earned a list. Built SORTED, because every
+                    // A second block: this bucket has earned a list. Built SORTED, because every
                     // walk of this index reads it in handle order.
                     let (first_handle, first) = match std::mem::replace(self, BlockIndexMap::Empty) {
                         BlockIndexMap::One(first_handle, first) => (first_handle, *first),
@@ -1540,9 +1540,9 @@ impl BlockIndexMap {
                 }
             }
             BlockIndexMap::Many(pages) => match find_page(pages, &handle) {
-                // A page with this identity is already filed: overwrite it where it sits. A list
+                // A block with this identity is already filed: overwrite it where it sits. A list
                 // does not deduplicate by construction the way the tree did, so this is the only
-                // thing standing between a rewrite and a bucket holding the same page twice.
+                // thing standing between a rewrite and a bucket holding the same block twice.
                 Ok(at) => Some(std::mem::replace(&mut pages[at].1, page).address),
                 Err(at) => {
                     reserve_one_more(pages);
@@ -1559,8 +1559,8 @@ impl BlockIndexMap {
     /// TWO COLLAPSES, AND BOTH GIVE AN ALLOCATION BACK. At one entry the list becomes a box, which
     /// trades a buffer sized for a whole growth step for one sized for the entry; at zero it becomes
     /// `Empty`, which gives the buffer back outright. Without the second, a bucket emptied by an
-    /// expiry sweep would go on holding a list sized for the fifty pages it used to have; without
-    /// the first, a bucket that briefly held two pages would keep a four-entry buffer for the rest
+    /// expiry sweep would go on holding a list sized for the fifty blocks it used to have; without
+    /// the first, a bucket that briefly held two blocks would keep a four-entry buffer for the rest
     /// of its life -- which is the cost this type exists to avoid.
     fn shrink(&mut self) {
         let len = match self {
@@ -1589,7 +1589,7 @@ impl BlockIndexMap {
         }
     }
 
-    /// What this page index owns on the heap, in REQUEST bytes.
+    /// What this block index owns on the heap, in REQUEST bytes.
     ///
     /// HERE, AND NOT AT THE CALL SITE, BECAUSE A CALL SITE CAN ONLY NAME A TYPE. The published
     /// index figure used to spell its own arithmetic as `pages * size_of::<BlockIndex>()`, which is
@@ -1605,9 +1605,9 @@ impl BlockIndexMap {
     ///   * `Empty` owns nothing -- `the_empty_arm_is_an_alias_for_no_pages_and_costs_nothing_to_keep`
     ///     is the standing assertion that this is still true.
     ///   * `One` owns a `Box<BlockIndex>`. The handle rides in the enum, so this allocation is one
-    ///     ENTRY wide and the old per-page charge was exactly right for it -- measured 1.0000
+    ///     ENTRY wide and the old per-block charge was exactly right for it -- measured 1.0000
     ///     against the allocator at both corpus sizes on the whole-keyspace range, where every
-    ///     bucket is single-page. A blanket move to the pair stride would have OVER-charged that
+    ///     bucket is single-block. A blanket move to the pair stride would have OVER-charged that
     ///     whole deployment by 12.5%.
     ///   * `Many` owns `Vec<(u64, BlockIndex)>`. Its element is the PAIR, eight bytes wider than
     ///     the entry, and the buffer is owned at CAPACITY -- `reserve_one_more` steps it by
@@ -1618,7 +1618,7 @@ impl BlockIndexMap {
     /// entry. They are not added here because this index does not OWN them: over four fixtures --
     /// routed keys and hash fields, at two corpus sizes, at both routing ranges -- every distinct
     /// name allocation had a strong count higher than the number of index entries holding it, and
-    /// dropping every page index in the shard returned the page buffers and not one byte of name.
+    /// dropping every block index in the shard returned the block buffers and not one byte of name.
     /// The model maps own them and a read resolves through those, not through here. Charging them
     /// would double-count, and charging them once per ENTRY rather than once per allocation would
     /// over-count a container store's key names by 100x.
@@ -1646,7 +1646,7 @@ impl BlockIndexMap {
     /// SO THE ERROR IS SIGNED AND ITS SIZE IS KNOWN: this reads 0.2% to 4.3% below what the
     /// allocator holds wherever the index is list-shaped, and about 20% below on the whole-keyspace
     /// range, where every bucket is one boxed 64-byte entry and glibc's 16-byte rounding is paid
-    /// once per page instead of once per list. It is never HIGH. An eviction gate reading this can
+    /// once per block instead of once per list. It is never HIGH. An eviction gate reading this can
     /// treat it as a lower bound on the index's real footprint, which is the direction that makes
     /// it safe to act on.
     pub(super) fn resident_heap_bytes(&self) -> u64 {
@@ -1661,9 +1661,9 @@ impl BlockIndexMap {
         }
     }
 
-    /// Whether this bucket holds no pages.
+    /// Whether this bucket holds no blocks.
     ///
-    /// READS THE LENGTH, NOT THE DISCRIMINANT. `Empty` and `Many(vec![])` are both "no pages", and
+    /// READS THE LENGTH, NOT THE DISCRIMINANT. `Empty` and `Many(vec![])` are both "no blocks", and
     /// `shrink` normalises the second into the first -- but a predicate that trusted the
     /// normalisation would answer `false` for an empty list if any path ever missed it, and the
     /// release lifecycle branches on this. Reading the length makes the two indistinguishable by
@@ -1686,7 +1686,7 @@ impl BlockIndexMap {
         self.iter().map(|(_handle, page)| page)
     }
 
-    /// Mutable pages, UNACCOUNTED.
+    /// Mutable blocks, UNACCOUNTED.
     ///
     /// Named for the contract rather than for the shape, because the shape cannot express it: a
     /// holder of `&mut BlockIndex` can rewrite `address`, and the live tally keys on
@@ -1694,7 +1694,7 @@ impl BlockIndexMap {
     /// NEITHER. Everything else is fair game -- today's callers set `dirty`, and two tests
     /// deliberately corrupt `object_id` and `routing_bucket`, none of which the tally reads.
     ///
-    /// A page that needs to MOVE goes through `insert`, which discharges the address it displaces
+    /// A block that needs to MOVE goes through `insert`, which discharges the address it displaces
     /// and charges the new one.
     ///
     /// This is a NAMED boundary, not a compiler-enforced one: enforcing it would mean making
@@ -1709,7 +1709,7 @@ impl BlockIndexMap {
         }
     }
 
-    /// Drop the pages a predicate rejects, discharging each from the live tally as it goes.
+    /// Drop the blocks a predicate rejects, discharging each from the live tally as it goes.
     ///
     /// `live` comes first so the predicate stays the trailing argument it was.
     pub(super) fn retain(
@@ -1748,11 +1748,11 @@ impl<'a> IntoIterator for &'a BlockIndexMap {
     }
 }
 
-/// Collecting pages assigns handles, the same as inserting them one at a time.
+/// Collecting blocks assigns handles, the same as inserting them one at a time.
 impl FromIterator<BlockIndex> for BlockIndexMap {
     fn from_iter<I: IntoIterator<Item = BlockIndex>>(pages: I) -> Self {
         // Unaccounted: this is how a ShardState arrives from serde, and the tally is derived
-        // AFTER a load by `reconcile_block_slab_live`. Charging pages here would count a loaded
+        // AFTER a load by `reconcile_block_slab_live`. Charging blocks here would count a loaded
         // index twice over -- once on the way in, once when the load seeds the tally.
         let mut map = Self::default();
         for page in pages {
@@ -1764,12 +1764,12 @@ impl FromIterator<BlockIndex> for BlockIndexMap {
 
 impl From<BTreeMap<String, BlockIndex>> for BlockIndexMap {
     fn from(flat: BTreeMap<String, BlockIndex>) -> Self {
-        // The handle is recomputed from the page, not read from the file and not assigned by a
+        // The handle is recomputed from the block, not read from the file and not assigned by a
         // counter. A counter would hand out different handles than the ones the lookup refs were
         // written with, and those refs are on disk too.
         //
         // Built through `insert`, so a loaded index takes the same shape a written one does: a
-        // bucket that loads a single page must not come back holding a map.
+        // bucket that loads a single block must not come back holding a map.
         flat.into_values().collect()
     }
 }
@@ -1804,19 +1804,19 @@ impl Serialize for BlockIndexMap {
     }
 }
 
-/// The key this map writes, rebuilt from the page it is stored against.
+/// The key this map writes, rebuilt from the block it is stored against.
 ///
 /// The same spelling the map used to hold, so a dump written now reads the same as one written
 /// before. Shared with the replay log so the two cannot drift.
-/// The in-memory handle for a page: its identity, hashed.
+/// The in-memory handle for a block: its identity, hashed.
 ///
 /// Derived rather than assigned, because handles are written to disk inside the lookup's refs.
-/// Two processes holding the same page must compute the same handle or those refs point at
+/// Two processes holding the same block must compute the same handle or those refs point at
 /// nothing -- which is what a counter did, silently, until a reload lost an object.
 ///
 /// Hashes exactly the fields [`block_index_written_key`] renders, so the handle and the written
-/// key always name the same page. Equal identity therefore lands on one slot, which is also how
-/// this map keeps a rewrite from accumulating a second entry for the same page.
+/// key always name the same block. Equal identity therefore lands on one slot, which is also how
+/// this map keeps a rewrite from accumulating a second entry for the same block.
 pub(super) fn block_index_handle(page: &BlockIndex) -> u64 {
     use std::hash::{Hash, Hasher};
     let mut hasher = std::collections::hash_map::DefaultHasher::new();
@@ -1856,7 +1856,7 @@ pub(super) fn block_index_written_key(page: &BlockIndex) -> String {
 /// reports. That question is precisely why the per-component map could not simply be dropped in
 /// favour of a range scan over the other: a scan of a map keyed by (object, component) cannot
 /// count distinct objects without walking every entry.
-/// Pages by object, nested under the model that owns them.
+/// Blocks by object, nested under the model that owns them.
 ///
 /// Flat, this was keyed by a `model|object` concatenation: a string built for every stored object
 /// and rebuilt for every lookup. Measured at 37 B per object -- more than either copy of the object
@@ -1888,8 +1888,8 @@ impl ObjectBlockLookup {
 
     /// The entry for this object, created empty if absent. Takes the model by shared pointer so
     /// the outer key costs nothing to store.
-    /// Takes both keys by shared pointer. The object key is the one the page entry already
-    /// holds, so filing a page adds a pointer rather than a second copy of its identity.
+    /// Takes both keys by shared pointer. The object key is the one the block entry already
+    /// holds, so filing a block adds a pointer rather than a second copy of its identity.
     pub(super) fn entry(
         &mut self,
         model_id: &Arc<str>,
@@ -1904,24 +1904,24 @@ impl ObjectBlockLookup {
             .expect("just inserted")
     }
 
-    /// The allocation this map already holds for an object's key, for a page about to be filed
+    /// The allocation this map already holds for an object's key, for a block about to be filed
     /// under that object.
     ///
-    /// The write path used to build `Arc::from(object_key)` for every page. For a store of keys
-    /// that route one to a bucket that is right -- there is one page, and the allocation it makes
+    /// The write path used to build `Arc::from(object_key)` for every block. For a store of keys
+    /// that route one to a bucket that is right -- there is one block, and the allocation it makes
     /// is the one the map then keeps. For a CONTAINER it is a hundred allocations of one short
     /// string, because every field, member and element is filed by its own call and each call
     /// started again. Ninety-nine of the hundred carried nothing the first did not, and pointer
     /// identity is the only thing that could ever have told them apart.
     ///
-    /// Answers `None` before the object has any pages, which is the first call for a new object
+    /// Answers `None` before the object has any blocks, which is the first call for a new object
     /// and the one that must allocate. The caller falls back to allocating then.
     pub(super) fn shared_object_key(&self, model_id: &str, object_key: &str) -> Option<Arc<str>> {
         let (stored, _) = self.by_model.get(model_id)?.get_key_value(object_key)?;
         Some(Arc::clone(stored))
     }
 
-    /// The address of the inner key allocation, so a test can assert that a page and this map
+    /// The address of the inner key allocation, so a test can assert that a block and this map
     /// point at one copy of the object identity rather than two equal ones. Contents cannot tell
     /// those apart; pointers can.
     #[cfg(test)]
@@ -2013,7 +2013,7 @@ impl From<ObjectBlockLookup> for BTreeMap<String, ObjectBlockRefs> {
     }
 }
 
-/// The page refs of one object, grouped by component and ordered by it.
+/// The block refs of one object, grouped by component and ordered by it.
 ///
 /// A sorted vector rather than a map because the measured average is 1.0 components per object: a
 /// B-tree holding a single entry is a node and an allocation spent to express a list of one.
@@ -2196,7 +2196,7 @@ impl<'de> Deserialize<'de> for ComponentList {
     }
 }
 
-/// One component of one object, and the pages holding it.
+/// One component of one object, and the blocks holding it.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub(super) struct ComponentBlocks {
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -2224,7 +2224,7 @@ impl ObjectBlockRefs {
             .map(|at| self.by_component[at].refs.as_slice())
     }
 
-    /// Every page ref of this object, across every component, in component order.
+    /// Every block ref of this object, across every component, in component order.
     pub(super) fn all_refs(&self) -> impl Iterator<Item = &BlockLookupRef> {
         self.by_component.iter().flat_map(|entry| entry.refs.iter())
     }
@@ -2273,7 +2273,7 @@ fn intern_up_to(
     shared
 }
 
-/// The pages holding one component, with the single-page case held inline.
+/// The blocks holding one component, with the single-block case held inline.
 ///
 /// Measured over a corpus mixing single-value objects and multi-field ones: 3600 of 3600
 /// components hold exactly one ref. That is not a property of the workload mix the way the
@@ -2283,7 +2283,7 @@ fn intern_up_to(
 /// A `Vec` for one element costs a 24-byte header and, more expensively, its own heap allocation
 /// to hold a single 24-byte value. Inline costs 8 bytes more inside the enclosing vector and no
 /// allocation at all. The spilled arm keeps the behaviour unchanged for a component that does span
-/// several pages -- nothing in the measured corpus does, but the format allows it, so it stays
+/// several blocks -- nothing in the measured corpus does, but the format allows it, so it stays
 /// representable rather than being asserted away.
 ///
 /// Serializes as a sequence exactly as the vector did, so the on-disk index is unchanged.
@@ -2864,26 +2864,26 @@ pub(super) struct BucketNode {
     /// A RELEASED bucket is `meta_loaded: true, loading: false, in_memory: false` with an empty
     /// `page_index` and its `object_index` intact: the node stays in `bucket_map`, so the bucket
     /// is still routable, still countable, and still findable -- it simply no longer holds the
-    /// per-page entries, which are what the index actually costs (~760 B a record).
+    /// per-block entries, which are what the index actually costs (~760 B a record).
     ///
-    /// WHERE THE PAGE LIST COMES BACK FROM. `bucket_map` is derived:
+    /// WHERE THE BLOCK LIST COMES BACK FROM. `bucket_map` is derived:
     /// `rebuild_bucket_block_ownership` builds it by walking `collect_model_live_block_entries`,
     /// which iterates `strings`, `zsets`, `lists` and the rest -- the resident address maps. That
     /// used to read as the reason a bucket could not be released, and it is in fact the reason it
     /// CAN be: the model maps, not the bucket index, are what a read resolves through (see
     /// `Command::StringGet`, which goes straight to `shard.strings`), so releasing the derived
-    /// per-page view frees memory without touching anything a read needs. Reload re-derives
-    /// exactly that bucket's pages from the same maps.
+    /// per-block view frees memory without touching anything a read needs. Reload re-derives
+    /// exactly that bucket's blocks from the same maps.
     ///
     /// WHAT THAT COSTS IN PRECONDITIONS, all checked by `release_bucket_blocks`, none assumed:
     ///
-    ///   * the bucket must be clean and undeleted, page by page -- the model maps carry no
-    ///     per-page `dirty`/`deleted` bit, so a release that had to restore one could not;
-    ///   * every page's address must carry an explicit routing bucket equal to this one, so
+    ///   * the bucket must be clean and undeleted, block by block -- the model maps carry no
+    ///     per-block `dirty`/`deleted` bit, so a release that had to restore one could not;
+    ///   * every block's address must carry an explicit routing bucket equal to this one, so
     ///     "which model entries are this bucket's" needs no hash fallback to answer;
-    ///   * the page set must be EQUAL to what the model maps derive for the bucket right now,
+    ///   * the block set must be EQUAL to what the model maps derive for the bucket right now,
     ///     which is what makes the release reversible rather than hopeful; and
-    ///   * no page may belong to `hashes`, `context_events` or `context_indexes`. Those three
+    ///   * no block may belong to `hashes`, `context_events` or `context_indexes`. Those three
     ///     maps are `skip_serializing` on `ShardState` and are rebuilt FROM the bucket index on
     ///     load, so a released bucket of one of those kinds would have nothing left to rebuild
     ///     from once the index was written and read back.
@@ -2940,9 +2940,9 @@ pub(super) struct BucketNode {
 
 /// The widest per-item structure in the engine, and the one whose count is the bucket count.
 ///
-/// MOST OF IT USED TO BE THE PAGE INDEX, AND IS NOT ANY MORE. `block_index` held a page entry
+/// MOST OF IT USED TO BE THE BLOCK INDEX, AND IS NOT ANY MORE. `block_index` held a block entry
 /// INLINE -- 96 of a 160-byte node was one entry plus its handle -- so an accounting of this
-/// structure had to start there. The entry moved behind a POINTER and the page index is 24 bytes,
+/// structure had to start there. The entry moved behind a POINTER and the block index is 24 bytes,
 /// so the two 24-byte collections and the three `u64` claims are now the terms that matter, and the
 /// widest single field is no longer obvious from the declaration. `every_byte_of_the_bucket_node_is_accounted_for`
 /// is what says which it is rather than this comment.
@@ -2950,7 +2950,7 @@ pub(super) struct BucketNode {
 /// 202 bytes of field became 194 when `ttl_ms` stopped spending a word on a discriminant, and
 /// 186 when the tombstone index stopped spending sixteen on a case it is in 2.32% of the time;
 /// the struct went 208 -> 200 -> 192 with them, and 192 -> 184 when the address inside the inline
-/// page entry shed its derived `generation`. 184 -> 176 is the five `bool` becoming five BITS.
+/// block entry shed its derived `generation`. 184 -> 176 is the five `bool` becoming five BITS.
 /// 176 -> 168 is `last_dump_sequence` leaving: a whole word out of the eight-aligned group.
 /// 168 -> 160 is that same inline address merging its slab id and its offset into ONE WORD: a
 /// SECOND whole word out of that group.
@@ -2979,7 +2979,7 @@ pub(super) struct BucketNode {
 /// THE SECOND OF THOSE TWO SHAPES HAS NOW BEEN TAKEN FOUR TIMES. `last_dump_sequence` was
 /// eight-aligned, so removing it took a whole word out of the packed group and the six-byte
 /// tail did not move at all. The address merge does the same thing one level in: two 8-byte
-/// fields inside the inline page entry become one, so `BlockIndexMap` went 104 -> 96 and the
+/// fields inside the inline block entry become one, so `BlockIndexMap` went 104 -> 96 and the
 /// group went 168 -> 160, with the tail still six rounded to eight. The model spelling is the
 /// largest of the four: a sixteen-byte fat pointer inside that same inline entry becomes one
 /// byte, `BlockIndexMap` goes 96 -> 80, and TWO whole words leave the group at once, so the
@@ -2992,13 +2992,13 @@ pub(super) struct BucketNode {
 /// AND THE FOURTH IS THE ONE THAT SHOWS WHY A PER-FIELD VERDICT IS NOT A VERDICT ON THE FIELD.
 /// Six bytes of address payload left in two independent narrowings, NEITHER of which moves this
 /// struct on its own -- 25 bytes of payload rounds to 32 and so does 27. The pair is worth a word
-/// here and a word in every other structure that holds a page entry.
+/// here and a word in every other structure that holds a block entry.
 ///
 /// AND THE LARGEST STEP OF ALL IS A WHOLE FIELD NARROWING BY FIFTY-SIX BYTES AT ONCE.
-/// `block_index` stopped holding a page entry INLINE and started holding it behind a POINTER. That
+/// `block_index` stopped holding a block entry INLINE and started holding it behind a POINTER. That
 /// arm was a handle plus a whole `BlockIndex`, so `BlockIndexMap` was `8 + size_of::<BlockIndex>()`
-/// and every node in the `BucketMap` carried it whether or not its bucket held exactly one page;
-/// the page index is now 24 bytes, the width of the list it also holds, because the tags ride in
+/// and every node in the `BucketMap` carried it whether or not its bucket held exactly one block;
+/// the block index is now 24 bytes, the width of the list it also holds, because the tags ride in
 /// pointer niches. The eight-aligned group goes 136 -> 80 and the struct 144 -> 88, with the tail
 /// still six rounded to eight. This is the same SHAPE of change as the steps above -- whole words
 /// leaving the eight-aligned group -- taken seven times over in one field.
@@ -3010,7 +3010,7 @@ pub(super) struct BucketNode {
 /// the heap: every boxed arm and every list element is sixteen bytes smaller.
 ///
 /// WHY IT WAS AVAILABLE ONLY NOW. The inline entry was kept by #1964 on a measurement over a
-/// population where every bucket held exactly one page, which was a property of `load_shard`
+/// population where every bucket held exactly one block, which was a property of `load_shard`
 /// defaulting the routing range to the whole `u32` keyspace rather than of any workload. #1973 made
 /// 1023 the default and the population inverted. `inline_arm_trade.rs` re-derives both halves of
 /// that arithmetic at both ranges, and prices dropping the arm altogether beside boxing it: the two
@@ -3366,7 +3366,7 @@ pub(super) struct BlockIndex {
     pub(super) log_backed: bool,
 }
 
-/// One per stored page. TWO shared names, a one-byte model spelling, an address, and three
+/// One per stored block. TWO shared names, a one-byte model spelling, an address, and three
 /// flags -- 60 bytes of field in 64.
 ///
 /// 64, not 72, since the address inside it is 24 bytes and not 32: it shed the `routing_bucket`
@@ -3396,10 +3396,10 @@ pub(super) struct BlockIndex {
 const _: () = assert!(std::mem::size_of::<BlockIndex>() == 64);
 
 impl BlockIndex {
-    /// The object this page belongs to.
+    /// The object this block belongs to.
     ///
     /// Held once, in the address, rather than beside it. The entry used to carry its own copy and
-    /// the two agreed on every page -- necessarily, since the field was assigned from the address.
+    /// the two agreed on every block -- necessarily, since the field was assigned from the address.
     /// The write path now puts the computed id into the address, including the fallback used when
     /// an address arrives without one, so this can always answer.
     pub(super) fn object_id(&self) -> u64 {
@@ -3409,7 +3409,7 @@ impl BlockIndex {
 
 impl CoreIndex {
     pub(super) fn rebuild_object_block_lookup(&mut self) {
-        // The rebuild is already O(pages); establishing the total here costs nothing extra and
+        // The rebuild is already O(blocks); establishing the total here costs nothing extra and
         // is what lets the stats path stop walking the shard.
         self.object_component_block_refs = Some(0);
         self.object_block_lookup.clear();
@@ -3427,7 +3427,7 @@ impl CoreIndex {
         }
     }
 
-    /// Takes the handle the page index filed this page under, so the two cannot name different
+    /// Takes the handle the block index filed this block under, so the two cannot name different
     /// things. It used to take the rendered key by shared pointer; the key is a number now and
     /// costs nothing to copy.
     pub(super) fn insert_object_block_lookup(
@@ -3440,9 +3440,9 @@ impl CoreIndex {
             return;
         }
         let added = {
-            // The lookup is keyed by the kind's SHARED name, and the page no longer carries one --
+            // The lookup is keyed by the kind's SHARED name, and the block no longer carries one --
             // it carries the one-byte spelling. `kind_pool` is where that shared name already
-            // lives: the kinds are a closed set of about fifteen, so only the first page of each
+            // lives: the kinds are a closed set of about fifteen, so only the first block of each
             // allocates and the reserve in the pool exists for precisely this.
             let kind = crate::engine::state::intern_kind(
                 &mut self.kind_pool,
@@ -3458,7 +3458,7 @@ impl CoreIndex {
             match entry.position(page.component.as_deref()) {
                 Ok(at) => entry.by_component[at].refs.insert(value),
                 Err(at) => {
-                    // A component's first page. Build the entry already holding it, so the common
+                    // A component's first block. Build the entry already holding it, so the common
                     // case never allocates and there is no empty state in between.
                     entry.by_component.insert(
                         at,
@@ -3478,7 +3478,7 @@ impl CoreIndex {
         }
     }
 
-    /// Every page ref this object holds, for one component.
+    /// Every block ref this object holds, for one component.
     pub(super) fn block_refs_for(
         &self,
         model_id: &str,
@@ -3490,7 +3490,7 @@ impl CoreIndex {
             .and_then(|entry| entry.refs_for(component))
     }
 
-    /// Every component of this object, and the pages holding each.
+    /// Every component of this object, and the blocks holding each.
     pub(super) fn object_block_refs(
         &self,
         model_id: &str,
@@ -3531,7 +3531,7 @@ impl CoreIndex {
     /// Drop every ref an object holds under one kind.
     ///
     /// The delete path used to call `rebuild_object_block_lookup` instead, which clears the whole
-    /// lookup, clones every page in every bucket into a vector, and re-inserts them -- so one
+    /// lookup, clones every block in every bucket into a vector, and re-inserts them -- so one
     /// delete cost work proportional to the entire shard, and deleting a store cost the square of
     /// it. Removing the object's own entry is the same result for a fraction of the work.
     ///
@@ -3645,29 +3645,29 @@ pub(super) fn next_block_index_for_object(
 /// TIMESTAMPED kind gets -- thirteen call sites covering `feature` and the six `context_*` kinds. No
 /// container kind ever called it, so a container page reached `append_block_of_object` through
 /// `append_with_block_metadata`, which passes a hardcoded `0`. That is the whole reason every
-/// container page carries page id 0: not a format limit, not a missing field, an argument nobody
+/// container page carries block id 0: not a format limit, not a missing field, an argument nobody
 /// supplied.
 ///
 /// This is that same derivation for the container kinds, and it differs from the series one in
 /// exactly two ways, both forced:
 ///
 ///   * AN OVERWRITE KEEPS THE ORDINAL IT ALREADY HAS. A container element is addressed by its
-///     component, and `HashSet` or `SetAdd` on an existing member REPLACES that member's page.
+///     component, and `HashSet` or `SetAdd` on an existing member REPLACES that member's block.
 ///     Handing the replacement `max + 1` would make the ordinal climb once per WRITE rather than
 ///     once per ELEMENT, so a single member rewritten 65,536 times would reach the ceiling on a set
-///     of one. Reading the component's own page first bounds the ordinal by the object's live
+///     of one. Reading the component's own block first bounds the ordinal by the object's live
 ///     element high-water mark instead, which is what a position means.
 ///   * PAST THE CEILING IT LEAVES THE ORDINAL AT `0` RATHER THAN PANICKING OR SATURATING.
 ///     `narrow_block_id` refuses a value above `MAX_ADDRESSABLE_BLOCK_ID`, and refusing is right
 ///     for a value a caller chose -- but an object's 65,536th element is not a caller's mistake, it
 ///     is a container this store serves today with no ordinal at all. Saturating is worse still:
-///     this tree's own doctrine is that a saturated page id is a legal page id for a DIFFERENT page
-///     of the same object. So past the ceiling nothing is assigned and the page keeps the `0` it
+///     this tree's own doctrine is that a saturated block id is a legal block id for a DIFFERENT block
+///     of the same object. So past the ceiling nothing is assigned and the block keeps the `0` it
 ///     would have had on `main`, which makes this change a strict no-op for such an object. A
 ///     container past the ceiling loses the ordinal, never the element.
 ///
 /// IT NAMES A POSITION, NOT AN ELEMENT, and that is a property of the tree rather than a choice
-/// here. Every delete path REMOVES the page -- `mark_bucket_index_block_deleted_with` is named for
+/// here. Every delete path REMOVES the block -- `mark_bucket_index_block_deleted_with` is named for
 /// a mark it does not make and its body is a `retain` returning false -- so `max` falls after a
 /// delete and the next insert is handed the ordinal that was just freed. That is correct for a
 /// position and would be silent corruption for an identity, which is why the element's identity
@@ -3690,7 +3690,7 @@ pub(super) fn container_page_ordinal(
                 continue;
             };
             if page.component.as_deref() == Some(component) {
-                // This member already holds a page, and the ordinal on it IS its position. An
+                // This member already holds a block, and the ordinal on it IS its position. An
                 // overwrite is the same element in the same place.
                 return u32::try_from(held).unwrap_or(0);
             }
@@ -3737,8 +3737,8 @@ fn same_block_address(left: &BlockAddress, right: &BlockAddress) -> bool {
         && left.block_id() == right.block_id()
         && left.object_id() == right.object_id()
     // `routing_bucket` is not compared, because an address no longer holds one. It was the same
-    // kind of clause `generation` is: a page's copy of a value the container decides. Two pages
-    // in ONE bucket cannot differ on the bucket, and two pages in different buckets differ on the
+    // kind of clause `generation` is: a block's copy of a value the container decides. Two blocks
+    // in ONE bucket cannot differ on the bucket, and two blocks in different buckets differ on the
     // map key rather than on anything inside the address.
     //
     // `generation` is not compared either, because it no longer CAN differ here: it is derived as
@@ -3805,7 +3805,7 @@ pub(super) struct SeenSet {
 mod component_lookup_tests {
     use super::*;
 
-    /// A page carrying nothing but the identity the lookup keys on.
+    /// A block carrying nothing but the identity the lookup keys on.
     fn page(object: &str, component: Option<&str>) -> BlockIndex {
         BlockIndex {
             object_key: Arc::from(object.to_string()),
