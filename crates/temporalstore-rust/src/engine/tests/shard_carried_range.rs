@@ -1074,13 +1074,19 @@ fn shard_map_insert_sites(lines: &[&str]) -> Vec<String> {
 fn the_shard_carried_range_costs_eight_bytes_on_a_structure_there_is_one_of() {
     use std::mem::size_of;
     let state = size_of::<crate::engine::state::ShardState>();
-    println!("  ShardState {state} bytes, three routing-range fields inside it");
+    println!(
+        "  ShardState {state} bytes: three routing-range fields, and the shard id it is served under"
+    );
     assert_eq!(
-        1_888, state,
+        1_904, state,
         "`ShardState` is {state} bytes. It was 1,880 before the routing range was carried on it \
-         and 1,888 after -- the two u32s, with the flag landing in padding this struct already \
-         had. A change here means either a field was added or the flag stopped being free; say \
-         which, and pay it down rather than widening this number."
+         and 1,888 after -- the two u32s, with THAT flag landing in padding this struct already \
+         had -- and 1,904 since it also carries the shard id it is served under. THAT step cost \
+         SIXTEEN, not eight: the second flag did NOT land free, which was measured rather than \
+         predicted, and an `Option<u64>` would have cost the same sixteen. It is paid rather than \
+         argued down because there is one of this struct per shard. A change here means either a \
+         field was added or a flag stopped being free; say which, and pay it down rather than \
+         widening this number."
     );
     assert_eq!(
         4,

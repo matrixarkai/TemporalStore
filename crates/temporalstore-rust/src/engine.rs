@@ -2223,6 +2223,9 @@ impl TemporalEngine {
     ) {
         let (start_routing_bucket, end_routing_bucket) = self.shard_routing_range(shard_id);
         state.set_routing_range(start_routing_bucket, end_routing_bucket);
+        // The id it is being INSERTED UNDER, so the shard and the key the served map routes it by
+        // can never be two different numbers.
+        state.set_shard_id(shard_id);
         self.shards
             .write()
             .expect("engine lock poisoned")

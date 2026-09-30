@@ -349,6 +349,50 @@ pub(super) struct ShardState {
     pub(super) routing_range_end: u32,
     #[serde(skip)]
     pub(super) routing_range_known: bool,
+    /// THE SHARD THIS STATE IS SERVED UNDER, travelling with the shard for the same reason the
+    /// routing range above does. Read through [`ShardState::shard_id`], never directly.
+    ///
+    /// A page's object id is `stable_block_object_id(shard, kind, key)`. `BlockIndex` carries the
+    /// kind and the key beside the address, so the only term a `&ShardState` could not supply was
+    /// the first one, and four functions that take a shard and never `&self` say so in their own
+    /// words: `BlockIndex::object_id`, `object_manager::runtime_report`,
+    /// `settle_released_bucket_object_delete` -- whose comment reads "recomputing one needs a
+    /// shard id this path does not carry" -- and `bucket_generation_fingerprints_by_bucket`. None
+    /// of them is changed by this field existing; what changes is that the term is now reachable.
+    ///
+    /// A `u64` AND A FLAG, NOT AN `Option<ShardId>`, and the flag is not decoration: shard 0 is a
+    /// real shard, so a bare zero cannot mean "unstamped" the way `u32::MAX` can stand in for an
+    /// unknown range end.
+    ///
+    /// THE PAIR COSTS SIXTEEN BYTES, MEASURED, AND THIS FLAG DID NOT LAND FREE. `ShardState` goes
+    /// from 1,888 to 1,904. The routing range's flag above DID land in padding this struct already
+    /// had and its doc says so; that reasoning was written into this field's first draft and the
+    /// measurement refuted it, so it is recorded here rather than repeated. An `Option<u64>` would
+    /// have cost the same sixteen, so the flag is not what is being paid for -- the `u64` is.
+    ///
+    /// Paid rather than argued down, because this struct has ONE INSTANCE PER SHARD: that is the
+    /// same reason `per_item_byte_budget` carries `ShardState` as a printed control and not as a
+    /// budgeted row, and at a count of one, width is not worth trading the flag's clarity for.
+    /// `the_shard_carried_range_costs_eight_bytes_on_a_structure_there_is_one_of` pins the number
+    /// so a later widening is a named failure rather than a silent one.
+    ///
+    /// `#[serde(skip)]`, SO THE STORED SHAPE DOES NOT MOVE -- see `index_format_version` at the top
+    /// of this struct for what a change to that shape has cost once, and
+    /// `the_shard_id_field_changes_no_serialized_byte` for the drive rather than the claim. The
+    /// stamp cannot be persisted anyway: it is the id the state is SERVED under, and an index file
+    /// is read back by whichever shard the engine is loading.
+    ///
+    /// THERE IS NO DEFAULT AND THE ACCESSOR SAYS SO. An unstamped state answers `None`, which is
+    /// the one behaviour that cannot derive a plausible WRONG object id -- a zero here would hash
+    /// to a real-looking value for the wrong shard. Every state the engine SERVES is stamped,
+    /// because there is one function that installs one (`install_shard_state`) and it stamps; the
+    /// existing `every_shard_the_engine_installs_carries_its_routing_range` holds that there is no
+    /// other way in, and `every_served_shard_carries_the_id_its_owner_routes_it_under` holds that
+    /// what it stamps equals the key the served map routes under, for every shard it holds.
+    #[serde(skip)]
+    shard_id: u64,
+    #[serde(skip)]
+    shard_id_known: bool,
 }
 
 impl ShardState {
@@ -369,6 +413,26 @@ impl ShardState {
             (self.routing_range_start, self.routing_range_end)
         } else {
             (0, u32::MAX)
+        }
+    }
+
+    /// Record the shard this state is served under. Called once, by `install_shard_state`.
+    pub(super) fn set_shard_id(&mut self, shard_id: crate::types::ShardId) {
+        self.shard_id = shard_id;
+        self.shard_id_known = true;
+    }
+
+    /// The shard this state is served under, or `None` for a state that never entered the engine.
+    ///
+    /// `None` and not a default, deliberately: there is no shard id that is safe to guess. A
+    /// caller that answers with a zero here derives `stable_block_object_id(0, kind, key)`, which
+    /// is a well-formed id belonging to a different shard -- worse than having no id at all,
+    /// because nothing downstream can tell it from the right one.
+    pub(super) fn shard_id(&self) -> Option<crate::types::ShardId> {
+        if self.shard_id_known {
+            Some(self.shard_id)
+        } else {
+            None
         }
     }
 }

@@ -105,6 +105,7 @@ mod round_walk_scope;
 mod bucket_filing_range;
 mod inner_range;
 mod shard_carried_range;
+mod shard_carried_identity;
 mod index_bytes_per_key;
 mod dump_scale;
 mod dump_release_scale;

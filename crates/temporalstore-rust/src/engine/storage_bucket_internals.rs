@@ -1894,8 +1894,12 @@ pub(super) fn settle_released_bucket_object_delete(
         };
         // The bucket is the KEY's bucket -- `released_bucket_block_address` above answered for
         // exactly that bucket, so asking again here gets the same number. The object id may still
-        // be absent: an address that carries none names no member to drop, and recomputing one
-        // needs a shard id this path does not carry. Skipping leaves exactly today's behaviour.
+        // be absent: an address that carries none names no member to drop, and this path skips
+        // it. THE REASON IS NO LONGER A MISSING SHARD ID -- this function takes a
+        // `&mut ShardState` and `shard.shard_id()` now answers, so
+        // `stable_block_object_id(shard, model_id, object_key)` is computable right here. What
+        // stops it is that recomputing would be a behaviour change, and the change that made the
+        // id reachable was the precondition only. Skipping leaves exactly today's behaviour.
         let routing_bucket =
             block_routing_bucket(object_key, start_routing_bucket, end_routing_bucket);
         let Some(object_id) = address.object_id() else {
