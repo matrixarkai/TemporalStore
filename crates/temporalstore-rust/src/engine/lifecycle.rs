@@ -546,7 +546,9 @@ impl TemporalEngine {
             return false;
         };
         let (start_routing_bucket, end_routing_bucket) = shard.routing_range();
-        let object_id = super::stable_block_object_id(shard_id, "hash", object_key, Some(field));
+        // The OBJECT's id, not the element's -- #2019 made that the only shape. The element is
+        // named by the component argument below, as it is on the real write path.
+        let object_id = super::stable_block_object_id(shard_id, "hash", object_key);
         let routing_bucket = super::hashing::block_routing_bucket(
             object_key,
             start_routing_bucket,
