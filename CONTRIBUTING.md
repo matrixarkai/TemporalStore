@@ -35,19 +35,68 @@ follow the same shape:
 
 ```bash
 cargo build --all-targets
-cargo test --lib -p temporalstore-rust
+cargo test -p temporalstore-rust --lib --tests --no-fail-fast -- --test-threads=1
 cargo fmt --all
 cargo clippy --all-targets
 ```
 
-Some suites are large. When iterating, filter to the area you touched
-(`cargo test --lib -p temporalstore-rust -- raft::`), but run the broader suite before
-opening the pull request — several subsystems share the engine, and a change to
-compaction can surface in the dump or reload tests.
+That test line is deliberately the shape continuous integration runs (it adds `--release`),
+and each part of it matters:
 
-Tests run in parallel and share the machine. A test that pins a process-global (an
-environment flag, a fixed port) can fail for reasons that have nothing to do with your
-change; re-run the failure on its own before assuming it is yours.
+- **`--tests`** — without it only the library suite runs, and the integration test
+  binaries under `tests/` do not. Those are where the restart-through-real-artifacts
+  coverage lives, so a recovery change that only passes `--lib` has not been exercised.
+- **`--no-fail-fast`** — cargo stops at the first failing *target*, not the first failing
+  test. One library failure therefore hides every integration binary behind it, and a run
+  has printed two `test result:` lines for a command asked to run every target.
+- **`--test-threads=1`** — several suites pin process-global state (an environment flag, a
+  fixed port, a working directory). Running them in parallel produces failures that belong
+  to the interleaving rather than to your change.
+
+Some modules are entirely `#[ignore]`d, usually because they measure something that needs
+the machine to itself. They do not run in the command above, and a filter that matches
+nothing exits successfully, so check rather than assume:
+
+```bash
+cargo test -p temporalstore-rust --lib -- --ignored --list
+```
+
+There is an `alloc-probe` feature that installs a counting allocator in test builds. It is
+a measurement tool, **not** a second gate: with it installed, socket-bound proxy and raft
+tests go red that pass individually, as a group, and in a run without it. Use it to measure
+one thing, not to check your change:
+
+```bash
+cargo test -p temporalstore-rust --features alloc-probe --lib <the_one_test> -- --ignored --nocapture
+```
+
+### The check mark is a compile gate, not a test gate
+
+The `cargo test` step in `.github/workflows/rust-ci.yml` is marked
+`continue-on-error: true`, and the comment above it says why: the compile steps are what
+enforce the workflow, and the suite runs for visibility until the baseline is fully green.
+So a green check mark on your pull request means the tree **compiled**. It does not mean
+your change was tested, and a maintainer may still come back with a failure the check did
+not show you.
+
+Run the suite locally, and when something fails, find out whether you caused it before
+changing anything:
+
+```bash
+git stash && cargo test -p temporalstore-rust --lib --tests --no-fail-fast -- --test-threads=1 2>&1 | tee /tmp/before.txt
+git stash pop && cargo test -p temporalstore-rust --lib --tests --no-fail-fast -- --test-threads=1 2>&1 | tee /tmp/after.txt
+```
+
+Then compare the **names** that failed, not the counts. A count that matches can hide one
+failure appearing while another disappears, and a name that fails identically on an
+unmodified tree is not yours to fix in this pull request — say so in the description and
+move on. This is the single most useful thing to include when a suite is not green: which
+names are new.
+
+Once you are iterating on one area, filter to it
+(`cargo test -p temporalstore-rust --lib -- raft::`), but run the full line above before
+opening the pull request. Several subsystems share the engine, and a change to compaction
+surfaces in the dump and reload tests.
 
 ## Reporting a problem
 

@@ -115,7 +115,7 @@ jobs:
       #
       # `--no-fail-fast` is what makes "for visibility" true of more than the lib.
       # cargo stops at the first failing TARGET, not the first failing test, and the
-      # two known lib failures were stopping it before it reached any of the fourteen
+      # two known lib failures were stopping it before it reached any of the sixteen
       # binaries under `tests/` -- the whole integration suite, including
       # `wal_single_barrier_recovery`, never ran. `continue-on-error` does not help:
       # it stops the step failing the job, which is why this reported success, and has
