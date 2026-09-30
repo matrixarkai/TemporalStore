@@ -298,10 +298,11 @@ fn the_id_a_served_shard_carries_derives_the_object_id_already_stored_on_its_pag
         let mut pages_here = 0usize;
         for bucket in state.bucket_index.bucket_map.values() {
             for (_handle, page) in bucket.block_index.iter() {
-                let Some(stored) = page.address.object_id() else {
-                    without_stored_id += 1;
-                    continue;
-                };
+                // THE INDEPENDENT SIDE IS NOW THE WRITE PATH'S OWN COPY, and it has to be: the
+                // address used to hold one and does not any more. `bucket.object_index` was filled
+                // by the write path from the id it ACTUALLY USED, before this field existed and
+                // without consulting it -- so comparing a fresh derivation against that membership
+                // is still an equality between two answers rather than between one and itself.
                 let derived = crate::engine::hashing::stable_block_object_id(
                     carried,
                     page.model_id.as_str(),
@@ -309,9 +310,11 @@ fn the_id_a_served_shard_carries_derives_the_object_id_already_stored_on_its_pag
                 );
                 pages_here += 1;
                 checked += 1;
-                if derived != stored {
+                if !bucket.object_index.contains(&derived) {
+                    without_stored_id += 1;
                     differed.push(format!(
-                        "shard {routed_under} kind {} key {} stored {stored} derived {derived}",
+                        "shard {routed_under} kind {} key {} derived {derived}, which the bucket's \
+                         own object index does not hold",
                         page.model_id.as_str(),
                         page.object_key
                     ));
@@ -325,7 +328,7 @@ fn the_id_a_served_shard_carries_derives_the_object_id_already_stored_on_its_pag
 
     println!(
         "  derived from the shard's own id on {checked} live page entries across \
-         {shards_with_pages} shards ({without_stored_id} entries carried no stored id), \
+         {shards_with_pages} shards ({without_stored_id} not held by their bucket's object index), \
          {} differed",
         differed.len()
     );

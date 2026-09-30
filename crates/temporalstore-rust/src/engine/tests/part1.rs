@@ -1575,10 +1575,9 @@ fn block_compaction_rewrites_live_addresses_and_allows_old_slab_gc() {
             .get("h")
             .and_then(|fields| fields.get("f"))
             .expect("hash address");
-        assert_eq!(
-            string_address.object_id(),
-            Some(stable_block_object_id(1, "string", "k"))
-        );
+        // The address used to carry the id the engine computes. It carries none now, and the
+        // property moved to the ENTRY, which derives it -- `shard_carried_identity` is where that
+        // is asserted against the ids the write path stored.
         // WHERE THE BLOCK IS FILED, not what the address claims -- the address carries no bucket.
         // The bucket map's key is the container's answer, and it has to be the key's own bucket.
         assert_eq!(
@@ -1594,10 +1593,7 @@ fn block_compaction_rewrites_live_addresses_and_allows_old_slab_gc() {
                 .collect::<Vec<_>>(),
             vec![block_routing_bucket("k", 0, u32::MAX)]
         );
-        assert_eq!(
-            hash_address.object_id(),
-            Some(stable_block_object_id(1, "hash", "h"))
-        );
+        // As above: the id is derived from the entry's terms, not read off the address.
         assert_eq!(
             shard
                 .bucket_index
@@ -2175,116 +2171,42 @@ fn storage_manager_loop_runs_prepare_reclaim_evict_expire_compact_and_index_gc()
         .any(|item| item.contains("prepare/reclaim/evict/expire/compact/index-GC")));
 }
 
+/// RETIRED: THE MISMATCH THIS PLANTED CANNOT BE PLANTED ANY MORE.
+///
+/// It set a wrong object id on a page's address and asserted that
+/// `storage_recovery_report` reported one `owner_mismatch_block_ref` and refused compaction. Both
+/// halves rested on an address carrying an id that could disagree with the entry's. An address
+/// carries none now, so there is no value to make wrong -- and the detection went with it, because
+/// a comparison between a derived id and the same derivation cannot fail. That loss is deliberate
+/// and is recorded here rather than left as a test asserting zero.
+///
+/// WHAT STILL FIRES in its place: `validate_bucket_ownership_index_from_entries` keeps its FILING
+/// comparison, which is the container's key against the key's own hash -- two independent answers --
+/// and its `!bucket_block_present` term. `storage_reporting` keeps a reuse check, restated over
+/// distinct (kind, key) pairs reaching one derived id, which is a real collision rather than a
+/// planted one.
 #[test]
+#[ignore = "retired: an address carries no object id that could mismatch the entry's"]
 fn recovery_reports_owner_mismatch_and_compaction_refuses_it() {
-    let engine = TemporalEngine::default();
-    engine.load_shard(1);
-    assert!(
-        engine
-            .execute(ExecuteRequest {
-                shard_id: 1,
-                command: Command::StringSet {
-                    key: "owned".to_string(),
-                    value: b"value".to_vec(),
-                },
-            })
-            .status
-            .ok
-    );
-
-    {
-        let mut shards = engine.shards.write().expect("engine lock poisoned");
-        let shard = shards.get_mut(&1).expect("loaded shard");
-        let page = shard
-            .bucket_index
-            .bucket_map
-            .values_mut()
-            .flat_map(|bucket| bucket.block_index.blocks_mut_unaccounted())
-            .find(|page| page.object_key == Arc::from("owned"))
-            .expect("owned slot page");
-        page.address.set_object_id(Some(page.object_id().wrapping_add(1)));
-    }
-
-    let recovery = engine.storage_recovery_report(1);
-    assert_eq!(recovery.owner_mismatch_block_refs.len(), 1);
-    assert!(!recovery.slab_integrity.integrity_ok);
-    assert_eq!(recovery.slab_integrity.owner_mismatch_block_ref_count, 1);
-    assert_eq!(recovery.slab_integrity.missing_owner_block_ref_count, 0);
-    assert_eq!(recovery.object_lifecycle.live_object_ids, 1);
-    assert_eq!(recovery.object_lifecycle.live_block_refs, 1);
-    assert_eq!(recovery.object_lifecycle.owner_mismatch_block_refs, 1);
-    assert_eq!(
-        recovery.owner_mismatch_block_refs[0].expected_object_id,
-        stable_block_object_id(1, "string", "owned")
-    );
-    assert_eq!(recovery.boundary.owner_mismatch_block_refs.len(), 1);
-    assert_eq!(
-        recovery.boundary.object_lifecycle.owner_mismatch_block_refs,
-        1
-    );
-
-    let err = engine.compact_shard_blocks(1).unwrap_err();
-    assert_eq!(err.code, "page_compaction_owner_mismatch");
+    println!("retired: the owner-mismatch detection had no second copy left to compare against");
 }
 
+
+/// RETIRED: A REUSED ID CANNOT BE PLANTED BY ASSIGNMENT ANY MORE.
+///
+/// It copied one page's object id onto another page's address and asserted the recovery report
+/// named the reuse. The id is derived from (shard, kind, key) now, so the only way two pages share
+/// one is a genuine hash collision, which this fixture cannot manufacture.
+///
+/// The check itself is NOT gone: `object_lifecycle_report_from_entries` still reports
+/// `reused_object_ids`, restated as "one derived id reached by more than one distinct (kind, key)".
+/// That fires on a real collision and could not fire on a planted one, which is the right way round.
 #[test]
+#[ignore = "retired: an id derived from the key cannot be reassigned to another key"]
 fn recovery_reports_reused_object_id_conflicts() {
-    let engine = TemporalEngine::default();
-    engine.load_shard(1);
-    for key in ["first", "second"] {
-        assert!(
-            engine
-                .execute(ExecuteRequest {
-                    shard_id: 1,
-                    command: Command::StringSet {
-                        key: key.to_string(),
-                        value: key.as_bytes().to_vec(),
-                    },
-                })
-                .status
-                .ok
-        );
-    }
-
-    let reused_object_id = {
-        let mut shards = engine.shards.write().expect("engine lock poisoned");
-        let shard = shards.get_mut(&1).expect("loaded shard");
-        let first_object_id = shard
-            .bucket_index
-            .bucket_map
-            .values()
-            .flat_map(|bucket| bucket.block_index.values())
-            .find(|page| page.object_key == Arc::from("first"))
-            .map(|page| page.object_id())
-            .expect("first object id");
-        let second = shard
-            .bucket_index
-            .bucket_map
-            .values_mut()
-            .flat_map(|bucket| bucket.block_index.blocks_mut_unaccounted())
-            .find(|page| page.object_key == Arc::from("second"))
-            .expect("second slot page");
-        second.address.set_object_id(Some(first_object_id));
-        first_object_id
-    };
-
-    let recovery = engine.storage_recovery_report(1);
-    assert_eq!(recovery.object_lifecycle.live_object_ids, 2);
-    assert_eq!(recovery.object_lifecycle.live_block_refs, 2);
-    assert_eq!(recovery.object_lifecycle.reused_object_id_conflicts, 1);
-    assert_eq!(
-        recovery.object_lifecycle.reused_object_ids,
-        vec![reused_object_id]
-    );
-    assert_eq!(recovery.object_lifecycle.owner_mismatch_block_refs, 1);
-    assert_eq!(
-        recovery
-            .boundary
-            .object_lifecycle
-            .reused_object_id_conflicts,
-        1
-    );
+    println!("retired: reuse is now a hash collision, not an assignable field");
 }
+
 
 #[test]
 fn crash_recovery_report_covers_wal_index_block_and_slab_manifest() {
@@ -2758,10 +2680,9 @@ fn durable_writes_stamp_stable_object_ids_on_block_addresses() {
         .and_then(|fields| fields.get("f"))
         .expect("hash address");
 
-    assert_eq!(
-        string_address.object_id(),
-        Some(stable_block_object_id(1, "string", "k"))
-    );
+    // See the note in `block_compaction_rewrites_live_addresses_and_allows_old_slab_gc`: a durable
+    // write no longer stamps an id onto the address, so what this asserted is now a property of the
+    // entry. The FILING assertions below are the part of this test that still reads the address.
     // The FILING, on a shard loaded 10..20 -- see the note at the string arm above.
     assert_eq!(
         shard
@@ -2780,10 +2701,7 @@ fn durable_writes_stamp_stable_object_ids_on_block_addresses() {
         string_address.slab_id(),
         Some(string_address.block_slab_id())
     );
-    assert_eq!(
-        hash_address.object_id(),
-        Some(stable_block_object_id(1, "hash", "h"))
-    );
+    // As above.
     assert_eq!(
         shard
             .bucket_index
@@ -2798,7 +2716,12 @@ fn durable_writes_stamp_stable_object_ids_on_block_addresses() {
         vec![block_routing_bucket("h", 10, 20)]
     );
     assert_eq!(hash_address.slab_id(), Some(hash_address.block_slab_id()));
-    assert_ne!(string_address.object_id(), hash_address.object_id());
+    // TWO KEYS STILL GET TWO IDS, which is the claim this line was making; it is now stated over
+    // the derivation rather than over two fields that no longer exist.
+    assert_ne!(
+        stable_block_object_id(1, "string", "k"),
+        stable_block_object_id(1, "hash", "h")
+    );
 }
 
 #[test]
@@ -4426,7 +4349,7 @@ fn deep_compare_the_index_a_reconstruct_produces() {
                     page.object_key,
                     page.model_id,
                     page.component,
-                    page.object_id(),
+                    page.object_id(1),
                     page.address.block_slab_id(),
                     page.address.offset(),
                     page.address.length(),

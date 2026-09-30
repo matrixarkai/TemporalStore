@@ -366,7 +366,8 @@ fn address_to_proto(address: &BlockAddress, implied_length: Option<u64>) -> v1::
             address.length()
         },
         block_id: address.block_id(),
-        object_id: address.object_id(),
+        // The address stopped carrying one; the item beside it carries the id.
+        object_id: None,
         // Deliberately dropped, exactly as the text encoding drops it: the item carries the
         // routing bucket, and `resolved_address` puts it back. Writing it here made the two
         // encodings of one record decode differently, which is a divergence whether or not
@@ -770,15 +771,11 @@ pub(crate) fn item_from_proto(
         component,
         object_id,
         routing_bucket: item.routing_bucket.unwrap_or_default(),
-        address: item.block.map(|block| {
-            let mut address = address_from_proto(block, implied_length);
-            // Absent means "the same as the item's", which is the only thing it can mean: the
-            // encoder omits it exactly when they match, and it is never otherwise unset.
-            if address.object_id().is_none() {
-                address.set_object_id(Some(object_id));
-            }
-            address
-        }),
+        // The address carries no object id to restore: the item's own `object_id` above is the
+        // only copy, which is what the encoder's omission was arranging for.
+        address: item
+            .block
+            .map(|block| address_from_proto(block, implied_length)),
         value: item.value,
         ttl: item.ttl_ms,
         deleted: item.deleted,

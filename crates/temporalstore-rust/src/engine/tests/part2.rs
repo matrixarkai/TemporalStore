@@ -3820,10 +3820,7 @@ fn feature_append_packs_many_timestamp_values_into_one_block() {
         )
     };
     assert_eq!(first_address, second_address);
-    assert_eq!(
-        first_address.object_id(),
-        Some(stable_block_object_id(1, "feature", "packed-feature"))
-    );
+    // The address carries no object id; the entry derives one from its terms.
     let packed_bytes = engine.block_store().read(&first_address).unwrap();
     let packed_points = decode_feature_block(&packed_bytes).expect("packed feature page");
     assert_eq!(packed_points.len(), 2);
@@ -4044,10 +4041,7 @@ fn feature_append_chunks_and_persists_timestamped_kv_blocks() {
     );
     let mut persisted_timestamps = Vec::new();
     for address in &addresses {
-        assert_eq!(
-            address.object_id(),
-            Some(stable_block_object_id(1, "feature", "chunked-feature"))
-        );
+        // The address carries no object id; the entry derives one from its terms.
         let bytes = engine.block_store().read(address).unwrap();
         let chunk = decode_feature_block(&bytes).expect("persisted packed page chunk");
         assert!(!chunk.is_empty());

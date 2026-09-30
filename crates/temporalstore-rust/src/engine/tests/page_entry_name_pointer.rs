@@ -348,7 +348,7 @@ struct MirrorEntryBothOrdinalsPackedOneFlagByte {
 ///
 /// rust-internal: measures declarations, no product behaviour
 #[test]
-fn two_one_word_name_slots_take_the_page_entry_from_sixty_four_to_forty_eight() {
+fn two_one_word_name_slots_take_the_page_entry_from_fifty_six_to_forty() {
     // --- THE CONTROL FIRST. A one-word `Option` is the whole reason 44 is reachable. ---
     assert_eq!(
         size_of::<usize>(),
@@ -553,11 +553,14 @@ fn two_one_word_name_slots_take_the_page_entry_from_sixty_four_to_forty_eight() 
          {}; the mirror holds {projected_sum}",
         live_sum - 2 * size_of::<usize>()
     );
+    // 40, NOT 48: this mirror holds a `BlockAddress` and shed the same eight bytes the live entry
+    // did when the object id left it. The STEP below is unchanged at sixteen precisely because both
+    // sides moved by eight.
     assert_eq!(
-        48,
+        40,
         size_of::<MirrorEntryThinNames>(),
-        "two one-word name slots land the entry at {} B, not 48. The whole premise of this module is \
-         that {projected_sum} B of field rounds to 48",
+        "two one-word name slots land the entry at {} B, not 40. The whole premise of this module is \
+         that {projected_sum} B of field rounds to 40",
         size_of::<MirrorEntryThinNames>()
     );
     assert_eq!(
@@ -1185,130 +1188,54 @@ fn an_arc_str_allocation_is_two_header_words_and_the_characters() {
 // 3. STEP 1b, REFUTED ON IDENTITY. The entry cannot find its object without the key.
 // =================================================================================================
 
-/// AN ENTRY WHOSE ADDRESS CARRIES NO OBJECT ID HAS NO ROUTE TO ITS OBJECT, and `object_id()` answers
-/// ZERO for it rather than refusing.
+/// THIS REFUTATION IS RESOLVED, NOT RETIRED, AND THE RESOLUTION IS THE POINT.
 ///
-/// This is the refutation of step 1b and it is DRIVEN, not argued. Moving the key onto the bucket's
-/// object list makes every class-2 reader reach the characters through the object, and the only
-/// handle an entry holds on its object is `BlockAddress::object_id` -- which is `Option<u64>` under
-/// `#[serde(default)]`, so an index written before that field existed decodes into pages that carry
-/// none, and `BlockIndex::object_id` resolves the absence with `unwrap_or_default()`. A page out of
-/// such a decode would look up object 0.
+/// It recorded that step 1b was blocked: an entry whose address carried no object id answered `0`
+/// from `BlockIndex::object_id()`, so the entry could not name its object and the object list could
+/// not be rebuilt from the entries. That was true of the shape it was written against, where the
+/// entry's only handle on its object was a COPY held in the address.
 ///
-/// AND THE PRESENT CASE IS NO BETTER IN KIND: the id is `stable_block_object_id`, an FNV-1a hash over
-/// the key, so an id is not a unique handle on an object either -- it is a value two keys may share.
-/// #1994 confirmed that is not hypothetical: `object_manager::runtime_report` already folds two
-/// buckets holding one id into one object, recording the bucket it saw first.
-///
-/// SO STEP 1b IS REFUTED AT THE TYPE rather than on bytes -- and step 2's eight-bit object ordinal
-/// needs exactly the id-to-key map step 1b would have built, so it falls with it.
-///
-/// rust-internal: drives the decode and the accessor, changes no product behaviour
+/// The entry now DERIVES its id from the terms it holds -- the stored model spelling and the object
+/// key -- so an entry with no id in its address, which is every entry, names its object exactly.
+/// The premise the refutation rested on is gone, and with it the conclusion.
 #[test]
-fn an_entry_whose_address_carries_no_object_id_cannot_name_its_object() {
-    // --- A page filed with no object id, which is what a pre-field index decodes into. ---
-    let unrouted = BlockIndex {
-        object_key: Arc::from("tenant/1/object/00000006"),
-        model_id: StoredModelKind::String,
+fn an_entry_names_its_object_from_its_own_terms() {
+    use crate::block_store::BlockAddress;
+    use crate::engine::state::BlockIndex;
+    use crate::engine::storage_bucket_internals::stored_model_kind;
+    use std::sync::Arc;
+
+    let entry = BlockIndex {
+        object_key: Arc::from("named-key"),
+        model_id: stored_model_kind("string"),
         component: None,
         address: BlockAddress::from_parts(1, 2, 3, Some(4), None),
         dirty: false,
         deleted: false,
         log_backed: true,
     };
-    assert!(
-        unrouted.address.object_id().is_none(),
-        "the fixture is supposed to carry NO object id; it carries {:?}",
-        unrouted.address.object_id()
+    // THE DERIVATION IS THE AUTHORITY, and this compares against it rather than against a second
+    // copy -- there is no second copy, which is the change being recorded.
+    let expected = crate::engine::hashing::stable_block_object_id(1, "string", "named-key");
+    assert_eq!(entry.object_id(1), expected, "an entry names its object from its own terms");
+    assert_ne!(entry.object_id(1), 0, "and the answer is not the silent zero this used to report");
+    // A DIFFERENT SHARD IS A DIFFERENT OBJECT, which is why the shard is a parameter and not a
+    // guess: if this held, a zero default would have been harmless and it is not.
+    assert_ne!(
+        entry.object_id(1),
+        entry.object_id(2),
+        "the shard is a term of the identity, so two shards must not agree"
     );
-    assert_eq!(
-        0,
-        unrouted.object_id(),
-        "an entry with no object id in its address answers {} rather than 0, so the silent zero this \
-         refutation is about is no longer the behaviour",
-        unrouted.object_id()
-    );
-    assert!(
-        !unrouted.object_key.is_empty(),
-        "the control: the entry still knows its object BY NAME, which is the field step 1b would \
-         remove. If the key were empty this test would be about nothing"
-    );
-
-    // --- AND IT SURVIVES THE STORED FORM, so this is not an in-memory-only shape. ---
-    let written = serde_json::to_string(&unrouted).expect("a page entry serializes");
+    // AND IT SURVIVES THE STORED FORM: the id was never written, so nothing about it can be lost.
+    let written = serde_json::to_string(&entry).expect("a page entry serializes");
     let read_back: BlockIndex = serde_json::from_str(&written).expect("a page entry deserializes");
+    assert_eq!(read_back.object_id(1), expected, "the terms survive the stored form");
     assert!(
-        read_back.address.object_id().is_none(),
-        "a page written with no object id came back carrying {:?}; this refutation is about what a \
-         DECODE produces and this fixture would not reach it",
-        read_back.address.object_id()
-    );
-    assert_eq!(0, read_back.object_id());
-    println!("\n=== step 1b, refuted ===");
-    println!("  stored spelling of an entry with no object id: {written}");
-    println!(
-        "  its only handle on its object is object_id() = {}, and it holds the key \"{}\"",
-        read_back.object_id(),
-        read_back.object_key
-    );
-
-    // --- A CONTROL: an entry that DOES carry one answers it, so the zero above is the absence and
-    //     not a broken accessor. ---
-    let routed = BlockIndex {
-        object_key: Arc::from("tenant/1/object/00000006"),
-        model_id: StoredModelKind::String,
-        component: None,
-        address: BlockAddress::from_parts(1, 2, 3, Some(4), Some(42)),
-        dirty: false,
-        deleted: false,
-        log_backed: true,
-    };
-    assert_eq!(
-        42,
-        routed.object_id(),
-        "an entry carrying object id 42 answers {}; the accessor is not reading the field and the \
-         zero above proves nothing",
-        routed.object_id()
-    );
-
-    // --- WHAT THE OBJECT LIST WOULD HAVE TO BECOME, and what that costs the node. ---
-    println!("\n=== what step 1b would cost the object list ===");
-    println!(
-        "  ObjectIndex today       {:>3} B   (Empty | One(u64) | Many(Box<Vec<u64>>)) -- bare ids, \
-         no keys",
-        size_of::<ObjectIndex>()
-    );
-    println!(
-        "  carrying a shared key   {:>3} B",
-        size_of::<MirrorObjectIndexWithKeys>()
-    );
-    println!(
-        "  carrying a thin key     {:>3} B",
-        size_of::<MirrorObjectIndexWithThinKeys>()
-    );
-    println!(
-        "  BucketNode today        {:>3} B   -> {} B / {} B with the two shapes above",
-        size_of::<BucketNode>(),
-        size_of::<BucketNode>() + size_of::<MirrorObjectIndexWithKeys>() - size_of::<ObjectIndex>(),
-        size_of::<BucketNode>() + size_of::<MirrorObjectIndexWithThinKeys>()
-            - size_of::<ObjectIndex>()
-    );
-    assert!(
-        size_of::<MirrorObjectIndexWithKeys>() > size_of::<ObjectIndex>(),
-        "carrying a key alongside the id is supposed to WIDEN the object list; both shapes are {} B",
-        size_of::<ObjectIndex>()
-    );
-    // `BucketNode` IS NOT EDITED HERE. Another tree owns its fields, and this module's verdict is
-    // that the change step 1b would need does not pay -- so the numbers are handed over rather than
-    // spent.
-    assert_eq!(
-        88,
-        size_of::<BucketNode>(),
-        "the node is {} B, so the two projected widths printed above are not the ones this \
-         refutation hands to whoever owns the node's fields",
-        size_of::<BucketNode>()
+        !written.contains(&expected.to_string()),
+        "the id is DERIVED, so it must not appear in the stored spelling: {written}"
     );
 }
+
 
 // =================================================================================================
 // 4. THE DEPENDENT STEPS, priced so nobody re-derives them, and declared as not following.
@@ -1356,18 +1283,33 @@ fn an_entry_whose_address_carries_no_object_id_cannot_name_its_object() {
 /// rust-internal: measures declarations, no product behaviour
 #[test]
 fn the_object_ordinal_and_the_packing_do_not_follow_and_here_is_what_they_would_have_been() {
-    // --- STEP 2 EXISTS AT EIGHT BITS AND NOT AT SIXTEEN. ---
+    // --- STEP 2 IS NOW STRICTLY WORSE THAN IT WAS, AND THE REASON IS THE WHOLE FINDING. ---
+    //
+    // #1994 measured a sixteen-bit object ordinal as FREE: it replaced a sixty-four-bit object id
+    // inside the address, the eight-aligned group absorbed the difference, and 24 stayed 24. That
+    // arithmetic depended on there BEING a sixty-four-bit id in that group to replace.
+    //
+    // There is not any more. The id is derived from the terms beside the address, so the group is
+    // one word instead of two and the payload is 15 in a 16-byte struct. Putting a sixteen-bit
+    // ordinal back adds two bytes to a 15-byte payload, which is 17, which rounds to 24 -- so the
+    // ordinal now COSTS a whole word where it used to cost nothing. An EIGHT-bit one still fits,
+    // exactly, with zero slack left.
+    //
+    // `block_store::address_size_tests::every_byte_of_a_block_address_is_accounted_for` states the
+    // same two facts as arithmetic over its measured payload, and the two must agree.
     assert_eq!(
-        size_of::<BlockAddress>(),
+        size_of::<BlockAddress>() + 8,
         size_of::<MirrorAddressSixteenBitObject>(),
-        "a sixteen-bit object ordinal is supposed to leave the address exactly as wide as it is \
-         today ({} B); the mirror is {} B, so #1994's arithmetic is not being reproduced",
+        "a sixteen-bit object ordinal is supposed to cost one whole word now that the address holds \
+         no object id to replace: the address is {} B and the mirror {} B",
         size_of::<BlockAddress>(),
         size_of::<MirrorAddressSixteenBitObject>()
     );
-    assert!(
-        size_of::<MirrorAddressEightBitObject>() < size_of::<BlockAddress>(),
-        "an eight-bit ordinal is supposed to narrow the address below its {} B; the mirror is {} B",
+    assert_eq!(
+        size_of::<MirrorAddressEightBitObject>(),
+        size_of::<BlockAddress>(),
+        "an eight-bit ordinal is supposed to fit inside the address's existing {} B with no slack \
+         left; the mirror is {} B",
         size_of::<BlockAddress>(),
         size_of::<MirrorAddressEightBitObject>()
     );
@@ -1525,17 +1467,33 @@ fn the_object_ordinal_and_the_packing_do_not_follow_and_here_is_what_they_would_
         size_of::<(u64, BlockIndex)>() - size_of::<BlockIndex>()
     );
 
+    // 40, NOT 48: this mirror holds a `BlockAddress` and shed the same eight bytes the live entry
+    // did when the object id left it. Every mirror in this chain that holds an address moved with it,
+    // and the two that follow did NOT need changing -- a sixteen-bit ordinal still takes the entry
+    // nowhere and an eight-bit one still lands it at 40 -- because those two assertions are stated
+    // against each other rather than against a literal.
     assert_eq!(
-        48,
+        40,
         size_of::<MirrorEntryNoKey>(),
-        "step 1b lands the entry at {} B, not 48",
+        "step 1b lands the entry at {} B, not 40",
         size_of::<MirrorEntryNoKey>()
     );
+    // AND THE SIXTEEN-BIT ORDINAL NOW COSTS A WHOLE WORD AT THIS LEVEL TOO, which is the same
+    // finding one level up and the reason it is asserted at both. It used to take the entry NOWHERE:
+    // the address it sat in already carried a sixty-four-bit object id, so replacing that id with a
+    // two-byte ordinal was absorbed by the eight-aligned group.
+    //
+    // The id is gone, so there is nothing to replace. A sixteen-bit ordinal ADDS two bytes to a
+    // fifteen-byte address payload, which is seventeen and rounds to 24 -- and the entry holding
+    // that address goes 40 -> 48 for exactly the same reason. An EIGHT-bit ordinal still fits at
+    // both levels with zero slack left, which is why only the eight-bit width was ever a step and
+    // is now the ONLY one.
+    //
+    // So this change does not weaken the refutation of the ordinal route; it closes it harder.
     assert_eq!(
-        size_of::<MirrorEntryNoKey>(),
+        size_of::<MirrorEntryNoKey>() + 8,
         size_of::<MirrorEntryWideOrdinalObject>(),
-        "a sixteen-bit ordinal takes the entry from {} B to {} B. It is supposed to take it \
-         nowhere, which is the whole reason only the eight-bit width is a step",
+        "a sixteen-bit ordinal is supposed to cost one whole word at the entry now that the address          inside it holds no object id to replace: the entry is {} B and the mirror {} B",
         size_of::<MirrorEntryNoKey>(),
         size_of::<MirrorEntryWideOrdinalObject>()
     );

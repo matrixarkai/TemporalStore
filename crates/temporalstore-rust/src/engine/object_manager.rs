@@ -24,13 +24,15 @@ pub(super) struct ObjectRuntimeState {
     pub ttl_ms: Option<u64>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+/// `Default` is the "no shard, nothing to say" report: every count zero and no objects. It is
+/// not a valid description of a populated shard and is never returned for one -- see
+/// `runtime_report`, which returns it only when the state carries no shard id to derive with.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub(super) struct ObjectManagerRuntimeReport {
     pub object_manager_runtime_module: bool,
     pub bucket_index_authority: bool,
     pub live_object_count: usize,
     pub live_block_ref_count: usize,
-    pub missing_object_owner_refs: usize,
     pub reused_object_ids: usize,
     pub dirty_object_count: usize,
     pub deleted_object_count: usize,
@@ -46,8 +48,14 @@ pub(super) struct ObjectManagerRuntimeReport {
 
 #[allow(dead_code)]
 pub(super) fn runtime_report(shard: &ShardState) -> ObjectManagerRuntimeReport {
+    // NO SHARD, NO REPORT. Every object id below is derived from (shard, kind, key), and a state
+    // that never entered the engine has no shard to derive with. An empty report says "nothing to
+    // say"; a report built on a guessed zero would name objects belonging to a different shard and
+    // nothing downstream could tell the difference.
+    let Some(shard_id) = shard.shard_id() else {
+        return ObjectManagerRuntimeReport::default();
+    };
     let mut object_ids = std::collections::BTreeSet::new();
-    let mut missing_object_owner_refs = 0usize;
     let mut object_ref_counts = std::collections::BTreeMap::<u64, usize>::new();
     let mut objects = std::collections::BTreeMap::<u64, ObjectRuntimeState>::new();
     let mut live_block_ref_count = 0usize;
@@ -93,15 +101,18 @@ pub(super) fn runtime_report(shard: &ShardState) -> ObjectManagerRuntimeReport {
             if !page.deleted {
                 live_block_ref_count = live_block_ref_count.saturating_add(1);
             }
-            object_ids.insert(page.object_id());
-            *object_ref_counts.entry(page.object_id()).or_default() += 1;
-            if page.address.object_id() != Some(page.object_id()) {
-                missing_object_owner_refs = missing_object_owner_refs.saturating_add(1);
-            }
+            let page_object_id = page.object_id(shard_id);
+            object_ids.insert(page_object_id);
+            *object_ref_counts.entry(page_object_id).or_default() += 1;
+            // `missing_object_owner_refs` STOOD HERE AND HAS BEEN RETIRED, not zeroed. It counted
+            // blocks whose address named an object other than the entry's -- a real comparison of
+            // two stored copies while there were two. There is one source now, so the test could
+            // only compare a value with itself, and a counter that is structurally zero reports
+            // "no problems" indistinguishably from a counter that works.
             let object = objects
-                .entry(page.object_id())
+                .entry(page_object_id)
                 .or_insert_with(|| ObjectRuntimeState {
-                    object_id: page.object_id(),
+                    object_id: page_object_id,
                     routing_bucket: bucket.routing_bucket,
                     object_keys: Vec::new(),
                     model_ids: Vec::new(),
@@ -129,7 +140,7 @@ pub(super) fn runtime_report(shard: &ShardState) -> ObjectManagerRuntimeReport {
             // The FIELD did, and it is reported beside the residency that contradicts it.
             // `a_removed_member_does_not_make_its_object_deleted` drives both.
             let object_deleted =
-                bucket.deleted() || bucket.deleted_object_index.contains(&page.object_id());
+                bucket.deleted() || bucket.deleted_object_index.contains(&page_object_id);
             object.deleted |= object_deleted;
             if page.deleted || object_deleted {
                 object.deleted_block_ref_count = object.deleted_block_ref_count.saturating_add(1);
@@ -191,7 +202,6 @@ pub(super) fn runtime_report(shard: &ShardState) -> ObjectManagerRuntimeReport {
         bucket_index_authority: !shard.bucket_index.bucket_map.is_empty(),
         live_object_count: object_ids.len(),
         live_block_ref_count,
-        missing_object_owner_refs,
         reused_object_ids: object_ref_counts.values().filter(|refs| **refs > 1).count(),
         dirty_object_count: objects.iter().filter(|object| object.dirty).count(),
         deleted_object_count: objects.iter().filter(|object| object.deleted).count(),

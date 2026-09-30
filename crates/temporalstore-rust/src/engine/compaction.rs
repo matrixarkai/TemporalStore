@@ -877,7 +877,7 @@ pub(super) fn compact_container_pages_batched<'a>(
         })?;
         let cold = !block_memory_resident(cache, shard_id, element.address, Some(routing_bucket));
         if object_id.is_none() {
-            object_id = element.address.object_id();
+            object_id = Some(stable_block_object_id(shard_id, model_id, object_key));
         }
 
         // Would this element take the batch past either bound? Flush first, so a batch is sealed
@@ -1106,7 +1106,7 @@ pub(super) fn compact_block_addresses<'a>(
         let new_address = block_store
             .append_block_of_object(
                 &bytes,
-                address.object_id(),
+                Some(stable_block_object_id(shard_id, model_id, &object_key)),
                 Some(routing_bucket),
                 address.block_id().unwrap_or_default() as u32,
             )
@@ -1166,7 +1166,7 @@ pub(super) fn compact_feature_block_addresses(
         let new_address = block_store
             .append_block_of_object(
                 &bytes,
-                old_address.object_id(),
+                Some(stable_block_object_id(shard_id, model_id, object_key)),
                 Some(routing_bucket),
                 old_address.block_id().unwrap_or_default() as u32,
             )

@@ -99,13 +99,18 @@ fn budget() -> Vec<Budgeted> {
             size: size_of::<BlockAddress>(),
             align: align_of::<BlockAddress>(),
             // address               : u64  (slab id in the high 32 bits, offset in the low 32)
-            // object_id             : u64
             // length                : u32
             // block_id              : u16
             // present               : u8
             //
-            // `generation` was a fourth u64 here until it became derived from
-            // `block_id.or(object_id)`; it is not a field any more, so it is not a row here.
+            // `object_id` was a second u64 here until it became DERIVED from the terms beside the
+            // address -- the shard, the stored model spelling and the object key -- so it is not a
+            // field any more and not a row here. It was a WHOLE eight-byte field in the eight-aligned
+            // group, which is why shedding it alone paid where no single NARROWING here ever has:
+            // payload 23 -> 15, struct 24 -> 16.
+            //
+            // `generation` was a third u64 here until it became derived from `block_id.or(object_id)`;
+            // it is now the block id alone, and still not a row.
             // `block_slab_id` and `offset` were two more u64s until they became the two halves of
             // `address` -- two rows became one for the same reason, and by the same eight bytes.
             // `routing_bucket` was a third u32 until it stopped being held at all: a page's bucket
@@ -114,7 +119,7 @@ fn budget() -> Vec<Budgeted> {
             // to 16 in the same change, and NEITHER of those is worth anything on its own -- four
             // bytes off 29 is 25 and two off 29 is 27, both of which round back to 32. Together
             // they shed six and the struct crosses to 24.
-            fields: 2 * size_of::<u64>() + size_of::<u32>() + size_of::<u16>() + size_of::<u8>(),
+            fields: size_of::<u64>() + size_of::<u32>() + size_of::<u16>() + size_of::<u8>(),
             per_item: true,
         },
         Budgeted {
@@ -322,8 +327,8 @@ fn every_per_item_structure_states_its_width_and_its_padding() {
     }
 
     // --- The pinned widths. ---
-    assert_eq!(24, size_of::<BlockAddress>(), "BlockAddress width moved");
-    assert_eq!(64, size_of::<BlockIndex>(), "BlockIndex width moved");
+    assert_eq!(16, size_of::<BlockAddress>(), "BlockAddress width moved");
+    assert_eq!(56, size_of::<BlockIndex>(), "BlockIndex width moved");
     assert_eq!(24, size_of::<BlockIndexMap>(), "BlockIndexMap width moved");
     assert_eq!(88, size_of::<BucketNode>(), "BucketNode width moved");
     assert_eq!(16, size_of::<BlockLookupRef>(), "BlockLookupRef width moved");
@@ -335,7 +340,7 @@ fn every_per_item_structure_states_its_width_and_its_padding() {
     assert_eq!(8, size_of::<DeletedObjectIndex>(), "DeletedObjectIndex width moved");
     assert_eq!(24, size_of::<DirtyKeySet>(), "DirtyKeySet width moved");
     assert_eq!(16, size_of::<WalResidentBlock>(), "WalResidentBlock width moved");
-    assert_eq!(160, size_of::<IndexItem>(), "IndexItem width moved");
+    assert_eq!(152, size_of::<IndexItem>(), "IndexItem width moved");
     assert_eq!(104, size_of::<SlabCatalogEntry>(), "SlabCatalogEntry width moved");
     assert_eq!(
         168,
@@ -561,10 +566,16 @@ fn only_the_structures_that_hold_an_address_moved() {
     //
     // The "before" column is history and is written down; every "now" is read off the type. A row
     // whose two columns differ by anything but 8 x addresses is a row this change did not explain.
+    //
+    // THE COLUMN IS RELATIVE TO THE LATEST CHANGE, NOT TO THE OLDEST. It read 32 / 72 / 168 while
+    // the previous step was the one being explained; those are now two steps back, and leaving them
+    // would make each holder row report a delta of 16 and fail as "something else moved with it".
+    // The step this column explains is `object_id` leaving the address: 24 -> 16, 64 -> 56,
+    // 160 -> 152.
     let rows: Vec<(&str, usize, usize, usize)> = vec![
-        ("BlockAddress", size_of::<BlockAddress>(), 32, 1),
-        ("BlockIndex", size_of::<BlockIndex>(), 72, 1),
-        ("IndexItem", size_of::<crate::index_log::IndexItem>(), 168, 1),
+        ("BlockAddress", size_of::<BlockAddress>(), 24, 1),
+        ("BlockIndex", size_of::<BlockIndex>(), 64, 1),
+        ("IndexItem", size_of::<crate::index_log::IndexItem>(), 160, 1),
         // Held an address inline until #1975 boxed the single-page arm; 24 and 88 whatever the
         // entry weighs now, so they are control rows and not holder rows.
         ("BlockIndexMap", size_of::<BlockIndexMap>(), 24, 0),
@@ -680,17 +691,30 @@ fn setting_a_length_after_the_fact_writes_it_and_saturates_it() {
 /// written after it is byte-identical to one written before. If this test fails, a stored format
 /// has moved and the change is not what its own pull request says it is.
 ///
-/// THE ONE BYTE-LEVEL CHANGE SINCE, AND WHY IT IS NOT THAT. `generation` became DERIVED as
-/// `block_id.or(object_id)` rather than stored. The wire still carries `g`, still reads it, and
-/// still writes it -- so for every address this engine produces the spelling is unchanged, because
-/// every production constructor already passed exactly that expression. What moved is this
-/// FIXTURE: it had chosen an independent `0x0123456789ABCDEF` beside a `block_id` of 7, which no
-/// writer emits, and the address can no longer represent it. The golden below therefore reads
-/// `"g":7`. An index that really did carry a disagreeing generation is now REFUSED at load rather
-/// than re-keyed -- see
-/// `engine::tests::page_entry_names::an_old_store_whose_generation_disagrees_is_refused_before_the_decode`.
+/// AND THEN IT MOVED, IN EXACTLY ONE SLOT, AND THIS TEST IS WHAT SAID SO.
+///
+/// The sentence above is the contract this test was written to hold, and it fired: `object_id` left
+/// `BlockAddress`, so `From<BlockAddress> for BlockAddressWire` -- handed an address and nothing
+/// else -- can no longer produce a value for `oi`, and the golden below now reads `"oi":null` where
+/// it read a real id. Nothing but running this could have said so, which is why the test is restated
+/// rather than deleted: it remains the tripwire, now pinned to the shape that is actually written.
+///
+/// WHAT PAYS FOR IT is `engine::SHARD_INDEX_FORMAT_VERSION` at 6 -- 4 was reserved while main held 3,
+/// the tombstone took main to 5, and a stamp may only increase. The slot STAYS on the wire because
+/// the index log packs this struct positionally and retiring it would shorten the array and refuse
+/// every existing row; it is written empty because there is no identity in scope at the point it is
+/// written. An old row carrying a real `oi` beside a `g` that agrees with it still DECODES -- both
+/// sides of that cross-check come off the wire -- and then yields an address whose
+/// `ADDRESS_HAS_GENERATION` bit is set while `generation()` answers `None`. The stamp refusing the
+/// load is the only point at which that is visible, and `page_entry_names::
+/// a_store_stamped_with_the_wrong_struct_version_is_refused_before_it_is_decoded` drives it.
+///
+/// THE EARLIER NOTE, KEPT because it is the other half of the same slot's history: `generation`
+/// became DERIVED as `block_id.or(object_id)` rather than stored, and for every address the engine
+/// then produced the spelling was unchanged, because every production constructor already passed
+/// exactly that expression. The fixture's independent generation was what had to move that time.
 #[test]
-fn narrowing_the_resident_fields_did_not_move_the_stored_form() {
+fn the_stored_form_moved_in_one_slot_and_the_version_stamp_pays_for_it() {
     // THE SLAB AND THE OFFSET AT THEIR ADDRESSABLE MAXIMUMS, taken from the constants rather than
     // written as a literal. This fixture used to carry a slab id of 9,876,543,210 -- above 2^32 --
     // to state that the stored form kept 64-bit slab coordinates whatever the resident fields did.
@@ -718,10 +742,21 @@ fn narrowing_the_resident_fields_did_not_move_the_stored_form() {
     // `g` stays because its PRESENCE is the meaning -- it becomes `ADDRESS_HAS_GENERATION` -- and
     // the named served-index path would drop it in silence, which needs the format-version stamp
     // rather than this reasoning.
+    // `oi` IS WRITTEN NULL, AND THAT IS THE MOVE. The address was built WITH an object id -- the
+    // parameter is still there and its presence still decides `has_generation` -- and the wire
+    // cannot carry the value because the struct no longer holds one to carry.
     assert_eq!(
-        format!("{{\"a\":{word},\"l\":1048576,\"pi\":7,\"oi\":16045690984503111693,\"g\":7}}"),
+        format!("{{\"a\":{word},\"l\":1048576,\"pi\":7,\"oi\":null,\"g\":7}}"),
         json,
-        "the stored spelling of an address moved"
+        "the stored spelling of an address moved AGAIN, beyond the one slot this change moved"
+    );
+    // AND THE SLOT IS STILL THERE, which is a separate fact from what it holds: a positional row
+    // that lost a field shifts every field behind it, so `oi` being PRESENT and null is what keeps
+    // the index log readable.
+    assert!(
+        json.contains("\"oi\":"),
+        "the `oi` slot must stay on the wire even written empty, or the index log's positional \
+         rows shift: {json}"
     );
     assert!(
         !json.contains("\"ps\"") && !json.contains("\"o\":"),

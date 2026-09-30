@@ -1180,7 +1180,7 @@ impl TemporalEngine {
                     page.model_id,
                     page.object_key,
                     page.component,
-                    page.object_id(),
+                    page.object_id(shard_id),
                     page.address.block_slab_id(),
                     page.address.offset(),
                     page.address.length(),
@@ -2205,9 +2205,7 @@ impl TemporalEngine {
                 if page.deleted {
                     continue;
                 }
-                let Some(object_id) = page.address.object_id() else {
-                    continue;
-                };
+                let object_id = page.object_id(shard_id);
                 let component = page.component.as_deref();
                 let folded = super::block_in_wal::wal_resident_key(object_id, component);
                 let Some(placement) = shard.wal_resident_blocks.get(&folded) else {

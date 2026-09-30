@@ -106,6 +106,13 @@
 //! and so ACCEPTS a lower stamp and misreads it rather than refusing it. #2019's own bump records the
 //! shape of the hazard: an old index decodes CLEANLY because both sides of the generation check come
 //! off the wire, and the disagreement appears later, on a recovery path.
+//!
+//! AND THE CHANGE THAT SHEDS `object_id` FROM `BlockAddress` TAKES 6. The constant was 5 when that
+//! change landed, so 6 is the next value above what the tree actually held -- read at landing and
+//! not at commit, because landing order is not commit order. 4 was reserved for it while the
+//! constant was 3, and that reservation is VOID: spending it would LOWER the constant, and the
+//! one-sided `<` named above turns a lowering into a silent ACCEPT rather than a refusal. A stamp
+//! may only ever increase.
 #![allow(clippy::all)]
 use super::*;
 use std::collections::BTreeSet;
@@ -473,7 +480,7 @@ fn the_object_list_holds_ids_and_the_entry_already_answers_the_id_without_one() 
             }
             pages_seen += 1;
             // What the entry can answer WITHOUT an ordinal, from the address alone.
-            let from_address = page.object_id();
+            let from_address = page.object_id(1);
             let recomputed = stable_block_object_id(1, page.model_id.as_str(), &page.object_key);
             if from_address == recomputed {
                 id_already_answered += 1;

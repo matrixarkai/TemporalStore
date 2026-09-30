@@ -600,10 +600,11 @@ fn dropping_the_routing_bucket_from_the_wire_decodes_to_the_same_address() {
     assert_eq!(older.block_slab_id(), 7, "the rest of the record still decoded");
     assert_eq!(older.length(), 64, "the rest of the record still decoded");
     assert_eq!(
-        older.object_id(),
+        older.generation(),
         None,
         "`BlockAddressWire`'s optional fields are `#[serde(default)]`, so a record written before \
-         they existed has to decode to None. It did not."
+         they existed has to decode to None. It did not. Stated over `generation` because the \
+         object id is no longer a field to observe -- the slot is still read off the wire."
     );
 
     // And a REAL address, round-tripped through the same shape with the key removed.

@@ -2301,7 +2301,9 @@ fn storage_recovery_uses_bucket_index_not_stale_secondary_model_maps() {
             .strings
             .get_mut("slot-authority")
             .expect("secondary string view");
-        stale.set_object_id(Some(stale.object_id().unwrap_or_default().wrapping_add(99)));
+        // The object id used to be planted here too. An address holds none, so what makes this
+        // address STALE is the slab coordinates below -- which is the whole of what a reader reads
+        // off it.
         // The routing bucket used to be planted here too. An address does not hold one, so what
         // made this address STALE is now the object id and the slab coordinates below -- which is
         // the whole of what a reader reads off it.
@@ -2313,7 +2315,7 @@ fn storage_recovery_uses_bucket_index_not_stale_secondary_model_maps() {
             stale.offset(),
             stale.length(),
             stale.block_id(),
-            stale.object_id(),
+            None,
         );
     }
 

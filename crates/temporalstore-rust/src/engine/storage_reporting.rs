@@ -106,31 +106,32 @@ pub(super) fn object_lifecycle_report_from_entries(
         // property of the walk rather than of the page -- and the two derivations this report is
         // compared against are one of each, so keeping it made a consistent dump refuse to install.
         //
-        // What is still a fact about the PAGE is whether its address names its object, which is the
-        // identity the address still carries. `validate_bucket_ownership_index_from_entries` is where
-        // the filing is checked, against where the key routes, which is a comparison of two
-        // independent answers rather than of a walk with itself.
-        if entry.address.object_id().is_none() {
-            missing_owner_block_refs = missing_owner_block_refs.saturating_add(1);
-        }
-        match entry.address.object_id() {
-            Some(actual_object_id) => {
-                actual_object_owners
-                    .entry(actual_object_id)
-                    .or_default()
-                    .insert(expected_object_id);
-                if actual_object_id != expected_object_id {
-                    owner_mismatch_block_refs = owner_mismatch_block_refs.saturating_add(1);
-                }
-            }
-            None => {}
-        }
+        // AND THE OTHER HALF HAS STOPPED BEING ANSWERABLE HERE TOO, for the same reason one level
+        // down: it asked whether the address NAMED its object, and an address names nothing now. Both
+        // `missing_owner_block_refs` and `owner_mismatch_block_refs` had that as their only
+        // remaining term, so both are structurally zero from THIS report. They are left in the
+        // shape because the aggregate in `reports.rs` also sums the validation path, which still
+        // has a term that fires -- `!bucket_block_present`. What is gone is this report's
+        // contribution, and it is gone because it could only have compared a value with itself.
+        //
+        // REUSE IS STILL A REAL QUESTION AND IS NOW ASKED OF THE DERIVATION. Two DISTINCT (kind,
+        // key) pairs hashing to one id is a collision the store would serve wrong, and it is
+        // detectable without a second stored copy: derive per pair and look for an id reached by
+        // more than one pair. That is a check that can fire, which the one it replaces could not.
+        actual_object_owners
+            .entry(expected_object_id)
+            .or_default()
+            .insert(stable_object_hash(&format!(
+                "{}:{}",
+                entry.kind.as_str(),
+                entry.object_key
+            )));
     }
 
     let reused_object_ids = actual_object_owners
         .into_iter()
-        .filter_map(|(actual_object_id, expected_ids)| {
-            (expected_ids.len() > 1).then_some(actual_object_id)
+        .filter_map(|(object_id, distinct_terms)| {
+            (distinct_terms.len() > 1).then_some(object_id)
         })
         .collect::<Vec<_>>();
     let delete_marked_object_keys = shard
@@ -442,7 +443,7 @@ pub(super) fn storage_physical_index_report(
             offset: entry.address.offset(),
             length: entry.address.length(),
             block_id: entry.address.block_id(),
-            object_id: entry.address.object_id(),
+            object_id: Some(expected_live_block_object_id(shard_id, &entry)),
             stored_slab_id: entry.address.slab_id(),
             // The index does not hold a digest; a caller wanting one reads the page.
             checksum: None,
@@ -506,7 +507,7 @@ pub(super) fn storage_physical_index_report(
                 offset: page.address.offset(),
                 length: page.address.length(),
                 block_id: page.address.block_id(),
-                object_id: Some(page.object_id()),
+                object_id: Some(page.object_id(shard_id)),
                 stored_slab_id: page.address.slab_id(),
                 checksum: None,
                 dirty: page.dirty,
@@ -863,12 +864,37 @@ pub(super) fn bucket_dump_summary_matches_current_generation(
             == current_bucket_fingerprints.get(&current_summary.routing_bucket)
 }
 
-pub(super) fn bucket_generation_fingerprints_by_bucket(shard: &ShardState) -> BTreeMap<u32, BTreeSet<String>> {
+/// THE SHARD IS A PARAMETER, NOT A QUESTION PUT TO THE STATE, and the reclaim plan is why.
+///
+/// Each line below carries a derived object id, so this needs a shard. An earlier version asked the
+/// STATE for it and returned an empty map when it had none, reasoning that an empty map is honest
+/// where a guessed zero is not. Both halves of that were right and the conclusion was still wrong:
+/// `storage_wal_reclaim_plan` calls this on a state produced by `decode_index_bytes` from a dump
+/// manifest, and a decoded state has never passed through `install_shard_state`, which is the only
+/// place `set_shard_id` is called. So every manifest fingerprinted as EMPTY, matched nothing, and the
+/// durable frontier never advanced -- measured as `left: 0, right: 3` in
+/// `part4::the_reclaim_plan_pairs_each_manifest_with_its_own_fingerprints`.
+///
+/// The caller knows the shard in both cases: it is planning for one. So it says so.
+///
+/// AND THE CONTENT IS ALLOWED TO MOVE, which is the question worth asking before deriving anything
+/// into a fingerprint. A fingerprint is a comparison key, so it would belong on the version stamp's
+/// side of the line IF it were ever compared against a STORED one. It is not: both sides are
+/// recomputed by this binary -- the live shard here, the manifest's decoded state there -- so a
+/// change in what the terms produce moves both sides together and compares equal. Nothing reads a
+/// fingerprint off disk.
+pub(super) fn bucket_generation_fingerprints_by_bucket(
+    shard_id: ShardId,
+    shard: &ShardState,
+) -> BTreeMap<u32, BTreeSet<String>> {
     let mut by_bucket = BTreeMap::<u32, BTreeSet<String>>::new();
     for entry in collect_live_block_entries(shard) {
         let routing_bucket = entry
             .filed_bucket()
             .unwrap_or_else(|| bucket_for_object(&entry.object_key, 0, u32::MAX));
+        // Derived BEFORE the component moves out of the entry below: the derivation borrows the
+        // entry's own terms, and `unwrap_or_default()` takes the component by value.
+        let object_id = expected_live_block_object_id(shard_id, &entry);
         by_bucket.entry(routing_bucket).or_default().insert(format!(
             "{}|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}",
             entry.kind,
@@ -878,7 +904,7 @@ pub(super) fn bucket_generation_fingerprints_by_bucket(shard: &ShardState) -> BT
             entry.address.offset(),
             entry.address.length(),
             entry.address.block_id().unwrap_or_default(),
-            entry.address.object_id().unwrap_or_default(),
+            object_id,
             routing_bucket,
             entry.address.generation().unwrap_or_default(),
             String::new()

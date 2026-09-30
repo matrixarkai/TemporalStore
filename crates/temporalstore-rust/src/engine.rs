@@ -2446,7 +2446,43 @@ pub(crate) fn eager_cache_warm_on_load() -> bool {
 /// change it carries is an `Option<BlockAddress>` that was always present and always `None` on a
 /// removal -- so it is an absent key becoming a present one, which both halves already tolerate.
 /// Nothing in the page payload passes through any of the three: it is bytes to all of them.
-pub(super) const SHARD_INDEX_FORMAT_VERSION: u32 = 5;
+///
+/// 5 -> 6 WHEN `object_id` LEFT `BlockAddress`, and the hazard has the same shape as both bumps
+/// before it: the decode cannot see the disagreement. `generation` was `block_id.or(object_id)` and
+/// is the block id alone now. For a BLOCK-RESIDENT page that is the value it always was. For a
+/// WAL-RESIDENT page -- where the block id is absent -- the generation WAS the object id and is now
+/// `None`, and `state::block_index_handle` hashes the generation while
+/// `state::block_index_written_key` renders it into the ref key already on disk. So every
+/// WAL-resident ref moves.
+///
+/// AND AN OMITTED REF KEY RESTORES WRONG, which is the half that costs data rather than bytes.
+/// `index_log::strip_block_ref_key_repeat` OMITS a page's composite handle whenever it is derivable,
+/// and `restore_block_ref_key_repeat` rebuilds it -- both through `block_ref_key_from_parts`, one of
+/// whose eight parts is the generation. A row already on disk whose handle was omitted under the old
+/// rule therefore rebuilds to a DIFFERENT handle, and the page is then looked up under a key nothing
+/// wrote: a durably acknowledged write reads MISSING. See
+/// `page_entry_names::an_omitted_page_handle_restores_to_a_different_key_under_the_new_generation_rule`.
+///
+/// # THE RESERVATION OF 4 IS VOID, AND IS VOIDED HERE RATHER THAN SILENTLY
+///
+/// The paragraph above this one reserved 4 for exactly this change, and that reservation was correct
+/// WHEN IT WAS MADE: the constant was 3, so 4 was the next value and holding it cost nothing. It did
+/// not survive main moving. The constant is 5 now, so spending 4 would LOWER it -- and lowering is
+/// not symmetric with raising. `persistence.rs` compares the base snapshot with `<`, so a binary
+/// carrying 4 computes `5 < 4 == false`, reaches `IndexLoadPath::Accepted`, and reads a 5-stamped
+/// store as its own. That is the silent misread this constant exists to prevent, arriving by the one
+/// route a one-sided comparison leaves open.
+///
+/// So 4 is a PERMANENT HOLE, this change takes 6, and the next takes 7. The rule the two together
+/// imply: a stamp may only ever INCREASE -- read the constant from the tree immediately before
+/// committing and take the next value above it, never a number reserved while the tree held less.
+///
+/// AND THE CLAIM THAT A HOLE IS INVISIBLE IS NOT QUITE TRUE, which is why the rule is "increase"
+/// rather than "any unused number". The paragraph above says the stamp is "only ever compared for
+/// equality with the constant, never ordered or ranged". `engine::decode_index_bytes` does compare
+/// with `!=` -- but only in its MSGPACK arm, and `persistence.rs` compares with `<`. #2051 tracks
+/// that asymmetry and the decision it needs; nothing here depends on the equality claim.
+pub(super) const SHARD_INDEX_FORMAT_VERSION: u32 = 6;
 
 /// Serialize a shard index, stamping the current format version.
 ///
@@ -3142,19 +3178,26 @@ fn collect_upsert_index_items(
         let Some(address) = address else { continue };
         let routing_bucket =
             block_routing_bucket(object_key, start_routing_bucket, end_routing_bucket);
-        let object_id = address.object_id().unwrap_or_else(|| {
-            stable_block_object_id(shard_id, kind, object_key)
-        });
-        let block_ref_key = format!(
-            "{}:{}:{}:{}:{}:{}:{}:{}",
+        let object_id = stable_block_object_id(shard_id, kind, object_key);
+        // THE AUTHORITY, CALLED RATHER THAN COPIED. `block_ref_key_from_parts` says of itself:
+        // "One definition, called from the page index's serialization and from the replay log, so
+        // the two cannot drift into different spellings of the same page." This site was a hand
+        // rolled second copy of exactly those eight parts in exactly that order -- which is how a
+        // derivation drifts, and this one did: when `generation` stopped being
+        // `block_id.or(object_id)` the two copies began disagreeing for WAL-resident pages, and
+        // `strip_block_ref_key_repeat` -- which clears the stored key only on an EXACT match against
+        // the authority -- started declining on every such item. Measured as `index_log_delta`
+        // going from 100 allocations and 4,520 bytes to 2,202 and 82,653 over twenty `SetAdd`s at a
+        // 3,200-member set, and identical at 200: a scaling defect invisible per call.
+        let block_ref_key = crate::index_log::block_ref_key_from_parts(
             kind,
             object_key,
-            component.as_deref().unwrap_or(""),
+            component.as_deref(),
             address.block_slab_id(),
             address.offset(),
             address.length(),
             address.block_id().unwrap_or_default(),
-            address.generation().unwrap_or_default()
+            address.generation().unwrap_or_default(),
         );
         items.push(crate::index_log::IndexItem {
             kind: crate::index_log::IndexItemKind::Page,
@@ -3220,6 +3263,12 @@ fn collect_command_index_items_for(
     if keys.is_empty() {
         return Vec::new();
     }
+    // NO SHARD, NO ITEMS. Each item states an object id derived from (shard, kind, key). A state
+    // that never entered the engine has no shard to derive with and also no blocks to state, so an
+    // empty list is the truthful answer rather than a list of ids belonging to shard zero.
+    let Some(shard_id) = shard.shard_id() else {
+        return Vec::new();
+    };
     let buckets: BTreeSet<u32> = keys
         .iter()
         .map(|key| block_routing_bucket(key, start_routing_bucket, end_routing_bucket))
@@ -3245,7 +3294,7 @@ fn collect_command_index_items_for(
                 object_key: page.object_key.clone().to_string(),
                 model_id: page.model_id.clone().to_string(),
                 component: page.component.clone().map(|value| value.to_string()),
-                object_id: page.object_id(),
+                object_id: page.object_id(shard_id),
                 block_id: page.address.block_id().unwrap_or(0),
                 address: Some(page.address.clone()),
                 size: page.address.length(),
@@ -3970,12 +4019,9 @@ fn fold_delta_block_items(
                     &item.model_id,
                 ),
                 component: item.component.clone().map(Arc::from),
-                address: {
-                    // The record carries the id separately; the address holds it now.
-                    let mut address = address;
-                    address.set_object_id(Some(item.object_id));
-                    address
-                },
+                // The record carries the id and the address no longer does, so there is nothing
+                // to copy across: the entry derives the id from its own terms.
+                address,
                 dirty: false,
                 deleted: false,
                 log_backed: item.in_log,
@@ -4743,6 +4789,11 @@ fn delete_record_exact(shard: &mut ShardState, key: &str) -> bool {
 }
 
 fn mark_bucket_index_object_deleted(shard: &mut ShardState, key: &str) -> bool {
+    // NO SHARD, NOTHING TO MARK. The ids this removes are derived from (shard, kind, key), and a
+    // state with no shard id has no bucket index built under one either.
+    let Some(shard_id) = shard.shard_id() else {
+        return false;
+    };
     // A RELEASED bucket holds no block entries, so the walk below finds nothing to remove and the
     // object id would stay claimed until some later reload re-derived the set. Settle it here,
     // while the model map this reads the address out of still holds the block.
@@ -4762,7 +4813,7 @@ fn mark_bucket_index_object_deleted(shard: &mut ShardState, key: &str) -> bool {
         let mut deleted_object_ids = BTreeSet::new();
         bucket.block_index.retain(&mut shard.bucket_index.block_slab_live, |_, page| {
             if &*page.object_key == key {
-                deleted_object_ids.insert(page.object_id());
+                deleted_object_ids.insert(page.object_id(shard_id));
                 removed = true;
                 false
             } else {
@@ -4777,7 +4828,7 @@ fn mark_bucket_index_object_deleted(shard: &mut ShardState, key: &str) -> bool {
             bucket.dirty_generation = bucket.dirty_generation.saturating_add(1);
             bucket.set_meta_loaded(true);
             bucket.set_in_memory(!bucket.block_index.is_empty());
-            update_bucket_layout(bucket);
+            update_bucket_layout(shard_id, bucket);
         }
     }
     if removed {
@@ -4972,7 +5023,7 @@ fn mark_bucket_index_block_deleted_recording(
                 && &*page.object_key == key
                 && page.component.as_deref() == component;
             if matches {
-                deleted_object_ids.insert(page.object_id());
+                deleted_object_ids.insert(page.object_id(shard_id));
                 bucket_removed = true;
                 removed = true;
                 // WHERE THE TOMBSTONE ENTRY MUST GO: the bucket the live entry was actually filed
@@ -5034,7 +5085,7 @@ fn mark_bucket_index_block_deleted_recording(
                 !bucket
                     .block_index
                     .values()
-                    .any(|page| !page.deleted && page.object_id() == *object_id)
+                    .any(|page| !page.deleted && page.object_id(shard_id) == *object_id)
             });
             bucket.deleted_object_index.extend(deleted_object_ids);
             bucket.set_dirty(true);
@@ -5042,7 +5093,7 @@ fn mark_bucket_index_block_deleted_recording(
             bucket.dirty_generation = bucket.dirty_generation.saturating_add(1);
             bucket.set_meta_loaded(true);
             bucket.set_in_memory(!bucket.block_index.is_empty());
-            update_bucket_layout(bucket);
+            update_bucket_layout(shard_id, bucket);
         }
     }
     if removed {

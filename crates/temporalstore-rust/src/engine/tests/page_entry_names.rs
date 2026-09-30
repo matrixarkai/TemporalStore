@@ -1600,9 +1600,83 @@ fn a_store_stamped_with_the_wrong_struct_version_is_refused_before_it_is_decoded
     // --- The other stamp, stated rather than assumed: the in-payload field is NOT what refuses
     // at this layer. `load_index_inner` is. Saying so here keeps the two from being confused. ---
     assert_eq!(
-        5, SHARD_INDEX_FORMAT_VERSION,
-         "the struct version moved; the refusal messages pinned above quote it. Moved 2 -> 3 when the object id stopped folding the component in: the stored `oi` keeps its type, so an old index decodes cleanly and serves a recomputed id that disagrees with its own `object_index`. Moved 3 -> 5 when a container page gained the ability to state that one of its items was REMOVED: the payload is opaque to every index encoder, so an old index again decodes cleanly, and what disagrees is what a tombstone item MEANS -- the previous binary reads one as an empty live value and puts the element back. 4 was skipped and is reserved; see the constant for why a hole is cheaper than a collision. The pinned assertions above resolve the constant symbolically, so they followed it -- this literal is the tripwire that made someone come and check that they did"
+        6, SHARD_INDEX_FORMAT_VERSION,
+         "the struct version moved; the refusal messages pinned above quote it. Moved 2 -> 3 when the object id stopped folding the component in: the stored `oi` keeps its type, so an old index decodes cleanly and serves a recomputed id that disagrees with its own `object_index`. Moved 3 -> 5 when a container page gained the ability to state that one of its items was REMOVED: the payload is opaque to every index encoder, so an old index again decodes cleanly, and what disagrees is what a tombstone item MEANS -- the previous binary reads one as an empty live value and puts the element back. Moved 5 -> 6 when `object_id` left `BlockAddress`: `generation` is the block id alone now, so a WAL-resident page's generation went from Some(object_id) to None, every ref key it resolves through moves, and an OMITTED ref key restores to a different handle entirely. 4 was skipped and its reservation is now VOID -- it was held while this constant was 3, main moved to 5, and spending 4 would LOWER the constant, which `persistence.rs`'s one-sided `<` turns into a silent accept. A stamp may only ever increase. All three bumps share one shape: the stored row decodes cleanly and the disagreement appears later, on a recovery path. The pinned assertions above resolve the constant symbolically, so they followed it -- this literal is the tripwire that made someone come and check that they did"
     );
+    // --- AND THE REFUSAL IS COUNTED APART FROM AN ABSENCE, which is the whole reason the counters
+    //     exist: `load_index_inner` answers `Ok(None)` for stale, undecodable and absent alike, so
+    //     without them a stamp bump is invisible from outside. ---
+    {
+        use crate::engine::{index_load_stamp_counts, reset_index_load_stamp_counts};
+        let dir = tempfile::tempdir().expect("tempdir");
+        let engine = crate::engine::TemporalEngine::with_local_dirs(
+            1024,
+            dir.path().join("cache"),
+            dir.path().join("pages"),
+            dir.path().join("indexes"),
+        );
+
+        // ABSENT: no base index has ever been written for this shard.
+        reset_index_load_stamp_counts();
+        engine.load_shard(7);
+        let (stale_n, decode_n, absent_n, accepted_n) = index_load_stamp_counts();
+        println!(
+            "  absent index -> stale {stale_n}, decode {decode_n}, absent {absent_n}, accepted {accepted_n}"
+        );
+        assert!(
+            absent_n > 0,
+            "a shard with no base index must count as ABSENT; got stale {stale_n} decode              {decode_n} absent {absent_n} accepted {accepted_n}"
+        );
+        assert_eq!(
+            0, stale_n,
+            "an absent index must NOT be counted as a stale-stamp refusal, or the two cannot be              told apart and the counters say nothing"
+        );
+
+        // STALE: a base index written under an older stamp.
+        engine.execute(crate::types::ExecuteRequest {
+            shard_id: 7,
+            command: crate::types::Command::StringSet {
+                key: "stamped".to_string(),
+                value: b"v".to_vec(),
+            },
+        });
+        engine.flush_shard_index(7);
+        // THROUGH THE FUNNEL, not as JSON. A base index is zstd inside a container with magic
+        // bytes, so `serde_json::from_slice` on the file does not parse it -- which is how the first
+        // version of this test failed.
+        let path = dir.path().join("indexes").join("shard-7.index.json");
+        let bytes = std::fs::read(&path).expect("a flushed base index exists");
+        let mut restored = decode_index_bytes(&bytes).expect("the base index decodes");
+        assert_eq!(
+            restored.index_format_version, SHARD_INDEX_FORMAT_VERSION,
+            "denominator: the index just written must carry the CURRENT stamp, or staling it below              changes nothing"
+        );
+        restored.index_format_version = SHARD_INDEX_FORMAT_VERSION - 1;
+        std::fs::write(&path, crate::engine::encode_index_bytes(&restored)).expect("write");
+
+        reset_index_load_stamp_counts();
+        let reloaded = crate::engine::TemporalEngine::with_local_dirs(
+            1024,
+            dir.path().join("cache"),
+            dir.path().join("pages"),
+            dir.path().join("indexes"),
+        );
+        reloaded.load_shard(7);
+        let (stale_n, decode_n, absent_n, accepted_n) = index_load_stamp_counts();
+        println!(
+            "  stale stamp  -> stale {stale_n}, decode {decode_n}, absent {absent_n}, accepted {accepted_n}"
+        );
+        assert!(
+            stale_n > 0,
+            "an index stamped {} against a current {SHARD_INDEX_FORMAT_VERSION} must be counted as              a STALE-STAMP refusal; got stale {stale_n} decode {decode_n} absent {absent_n}              accepted {accepted_n}",
+            SHARD_INDEX_FORMAT_VERSION - 1
+        );
+        assert_eq!(
+            0, absent_n,
+            "a stale index is not an absent one; if both counters move, a bump is still invisible"
+        );
+    }
+
     let mut stale = shard.clone();
     stale.index_format_version = 0;
     let stale_json = serde_json::to_vec(&stale).expect("a shard serializes as JSON");
@@ -1640,4 +1714,87 @@ fn page_tuples(
         .collect();
     pages.sort();
     pages
+}
+
+
+/// AN OMITTED HANDLE RESTORES WRONG, AND THIS IS WHY THE FORMAT STAMP IS NOT A FORMALITY.
+///
+/// `index_log::strip_block_ref_key_repeat` OMITS a page's composite handle from the delta whenever
+/// the handle is derivable from the item's own parts, and `restore_block_ref_key_repeat` rebuilds it
+/// on the way back in. Both derive it through `block_ref_key_from_parts`, and one of the eight parts
+/// is `address.generation().unwrap_or_default()`.
+///
+/// `generation` was `block_id.or(object_id)` and is the block id alone. For a BLOCK-RESIDENT page
+/// that is the value it always was. For a WAL-RESIDENT page -- no block id -- it was the object id
+/// and is now `None`, so the eighth part goes from the object id to ZERO.
+///
+/// So a row ALREADY ON DISK whose handle was omitted because it was derivable under the old rule
+/// now rebuilds to a DIFFERENT handle. The page is then filed and looked up under a key nothing
+/// wrote, which resolves a durably acknowledged write to MISSING -- the exact hole `block_in_wal`
+/// exists to close. The declined strip and its wasted allocation are the symptom; this is the
+/// disease, and refusing the load is the only thing standing between the two.
+#[test]
+fn an_omitted_page_handle_restores_to_a_different_key_under_the_new_generation_rule() {
+    use crate::block_store::BlockAddress;
+
+    const SLAB: u64 = 3;
+    const OFFSET: u64 = 4_096;
+    const LENGTH: u64 = 512;
+    const OBJECT_ID: u64 = 0x0123_4567_89AB_CDEF;
+
+    // A WAL-RESIDENT page: no block id, an object id. This is the shape every container member
+    // takes -- `log_backed` is literally `address.block_id().is_none()`.
+    let address = BlockAddress::from_parts(SLAB, OFFSET, LENGTH, None, Some(OBJECT_ID));
+    assert!(
+        address.block_id().is_none(),
+        "the fixture must be WAL-resident, or the generation term does not move and this test is \
+         about nothing"
+    );
+
+    // WHAT THE OLD RULE DERIVED: generation = block_id.or(object_id) = the object id.
+    let written_under_the_old_rule = crate::index_log::block_ref_key_from_parts(
+        "set", "s", Some("6d30"), SLAB, OFFSET, LENGTH, 0, OBJECT_ID,
+    );
+    // WHAT THIS BINARY DERIVES, taken from the address itself rather than restated.
+    let derived_now = crate::index_log::block_ref_key_from_parts(
+        "set",
+        "s",
+        Some("6d30"),
+        address.block_slab_id(),
+        address.offset(),
+        address.length(),
+        address.block_id().unwrap_or_default(),
+        address.generation().unwrap_or_default(),
+    );
+
+    assert_eq!(
+        address.generation(),
+        None,
+        "a WAL-resident address is supposed to carry no generation now; if it carries one the rule \
+         has moved back and the hazard below is not the live one"
+    );
+    assert_ne!(
+        written_under_the_old_rule, derived_now,
+        "the two derivations must DIFFER, or there is no hazard to guard and the stamp is \
+         unnecessary: old {written_under_the_old_rule}, now {derived_now}"
+    );
+    // And name the single term that moved, so a future change that alters a DIFFERENT part cannot
+    // satisfy this test for the wrong reason.
+    let same_parts_same_generation = crate::index_log::block_ref_key_from_parts(
+        "set", "s", Some("6d30"), SLAB, OFFSET, LENGTH, 0, OBJECT_ID,
+    );
+    assert_eq!(
+        written_under_the_old_rule, same_parts_same_generation,
+        "control: the builder is deterministic over its parts, so the difference above is the \
+         generation term and nothing else"
+    );
+    assert!(
+        derived_now.ends_with(":0"),
+        "the new derivation's generation term is supposed to be zero: {derived_now}"
+    );
+    assert!(
+        written_under_the_old_rule.ends_with(&format!(":{OBJECT_ID}")),
+        "the old derivation's generation term is supposed to be the object id: \
+         {written_under_the_old_rule}"
+    );
 }

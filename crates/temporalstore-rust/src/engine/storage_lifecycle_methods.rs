@@ -1043,7 +1043,7 @@ impl TemporalEngine {
             .read()
             .expect("shards lock poisoned")
             .get(&shard_id)
-            .map(bucket_generation_fingerprints_by_bucket)
+            .map(|shard| bucket_generation_fingerprints_by_bucket(shard_id, shard))
             .unwrap_or_default();
         // What each bucket holds over the two logs when no manifest covers it.
         //
@@ -1161,7 +1161,10 @@ impl TemporalEngine {
                         crate::engine::decode_index_bytes(&manifest.index_bytes)
                             .ok()
                             .map(|manifest_state| {
-                                bucket_generation_fingerprints_by_bucket(&manifest_state)
+                                // The shard this plan is FOR. A decoded manifest state carries no
+                                // stamp of its own -- only `install_shard_state` sets one -- so
+                                // asking IT for a shard yields None and fingerprints nothing.
+                                bucket_generation_fingerprints_by_bucket(shard_id, &manifest_state)
                             }),
                     );
                 }

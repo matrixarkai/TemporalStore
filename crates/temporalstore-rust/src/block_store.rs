@@ -101,19 +101,19 @@ pub enum BlockStoreError {
 /// absent" would silently erase real values. A byte of presence bits costs almost nothing and
 /// cannot make that mistake.
 ///
-/// So this byte is a PRESENCE byte and nothing else: one bit per optional part -- block id, object
-/// id, generation -- rather than an `Option` wrapped around each value. It is in-memory only and
+/// So this byte is a PRESENCE byte and nothing else: one bit per optional part -- block id and
+/// generation -- rather than an `Option` wrapped around each value. It is in-memory only and
 /// never a wire field, which is what lets the bit numbering keep the hole the retired
 /// routing-bucket bit left instead of paying a renumbering to close it.
 const ADDRESS_HAS_BLOCK_ID: u8 = 1 << 0;
-const ADDRESS_HAS_OBJECT_ID: u8 = 1 << 1;
 /// Whether this address HAS a generation. Its VALUE is derived from the two identities above and
 /// is not stored; this bit is all that is left of the field, and it costs nothing because the
 /// presence byte was already here. See [`BlockAddress::generation`].
 ///
-/// THE BIT THAT USED TO SIT BETWEEN THESE TWO IS GONE with the routing bucket it recorded, and
-/// its position is not reused: these bits are in-memory only -- `present` is not a wire field --
-/// so the numbering is free to have a hole and a hole is cheaper to read than a renumbering.
+/// TWO BITS THAT USED TO SIT BETWEEN THESE ARE GONE -- the routing bucket's, and the object
+/// id's with the field itself -- and neither position is reused: these bits are in-memory only
+/// -- `present` is not a wire field -- so the numbering is free to have holes and a hole is
+/// cheaper to read than a renumbering.
 const ADDRESS_HAS_GENERATION: u8 = 1 << 3;
 
 /// The address as it travels on the wire and on disk.
@@ -297,7 +297,6 @@ impl TryFrom<BlockAddressWire> for BlockAddress {
             offset,
             wire.length,
             wire.block_id,
-            wire.object_id,
             wire.generation.is_some(),
         )
         .map_err(|out_of_range| out_of_range.to_string())
@@ -310,7 +309,7 @@ impl From<BlockAddress> for BlockAddressWire {
             address: Some(address.address_word()),
             length: address.length(),
             block_id: address.block_id(),
-            object_id: address.object_id(),
+            object_id: None,
             // `routing_bucket` and `sha256` used to be written here as nil, because the slots
             // were kept. Both slots are gone, so there is nothing to write: the bucket is the
             // container's answer and the block envelope carries the digest that verifies the bytes.
@@ -331,8 +330,7 @@ impl From<BlockAddress> for BlockAddressWire {
 /// because either width looked like enough. `encode_block_record` returns an error above
 /// `BLOCK_RECORD_LENGTH_MASK` (2^30 - 1) bytes for a record, and above `u16::MAX` for a block
 /// id -- so `length` holds four times the largest length that can ever reach it and `block_id`
-/// holds EXACTLY the largest block id that can. `object_id` stays 64 bits and has to: it is a full
-/// FNV-1a hash of the object identity, so it uses the whole range by construction.
+/// holds EXACTLY the largest block id that can.
 ///
 /// `address` is ONE WORD HOLDING TWO NUMBERS: the slab in the high 32 bits, the offset inside
 /// that slab in the low 32. See [`make_block_address_word`] for why each half fits, and
@@ -364,7 +362,6 @@ pub struct BlockAddress {
     /// [`BlockAddress::block_slab_id`] and [`BlockAddress::offset`]; the raw word is
     /// [`BlockAddress::address_word`] and is what the stored form carries.
     address: u64,
-    object_id: u64,
     length: u32,
     /// Sixteen bits because THE ENCODER REFUSES ANYTHING WIDER, and CHECKED rather than
     /// saturated -- see [`BlockAddress::try_from_wire_parts`] and [`narrow_block_id`].
@@ -470,33 +467,59 @@ pub struct BlockAddress {
 /// durably acknowledged write, on exactly the path this whole entry is about. The identity cannot be
 /// built without naming a kind, so the arms had to separate and the element came right with them.
 ///
-/// WHAT IS LEFT BEFORE THE FIELD CAN GO, stated so the next change does not have to re-derive it.
-/// Shedding `object_id` is ONE change and not two: it is a whole eight-byte field in the
-/// eight-aligned group, so the group becomes 8, the tail stays 4 + 2 + 1 = 7 and rounds to 8, and
-/// the struct is 16. That is this file's own rule read correctly -- "a narrowing of ONE field cannot
-/// [pay]" is about narrowing, and shedding eight bytes from the aligned group IS a whole step. What
-/// it costs is the STORED shape: `generation` is `block_id.or(object_id)`, so for a WAL-resident block
-/// -- where the block id is absent -- the generation IS the object id, and `state::block_index_handle`
-/// hashes it while `state::block_index_written_key` renders it into the ref key already on disk.
-/// Every such ref moves, which needs `engine::SHARD_INDEX_FORMAT_VERSION` at 4; #2019 spent 3 on a
-/// same-typed reinterpretation and this is a different one. The `oi` slot can STAY on the wire while
-/// the in-memory field goes -- `BlockAddressWire` is a separate struct and the index log packs it
-/// POSITIONALLY, so retiring the slot would shorten that array and refuse every existing row -- and
-/// keeping it is also what lets `TryFrom` go on cross-checking an old `g` against the value the
-/// writer recorded.
+/// WHAT THE FIELD COST WHEN IT WENT, stated so the next change does not have to re-derive it.
+/// Shedding `object_id` was ONE change and not two: it was a whole eight-byte field in the
+/// eight-aligned group, so the group became 8, the tail stayed 4 + 2 + 1 = 7 and rounded to 8, and
+/// the struct is 16. That is this file's own rule read correctly -- "a narrowing of ONE field
+/// cannot [pay]" is about narrowing, and shedding eight bytes from the aligned group IS a whole
+/// step. `BlockIndex` followed 64 -> 56 and the page-list stride 72 -> 64.
 ///
-/// AND IT MOVES EVERY REF ON DISK, because `generation` is `block_id.or(object_id)` and
-/// `state::block_index_handle` hashes the generation while `state::block_index_written_key` renders
-/// it into the stored ref key. For a WAL-resident block the block id is absent, so the generation IS
-/// the object id and both the handle and the written key move with it.
-const _: () = assert!(std::mem::size_of::<BlockAddress>() == 24);
+/// WHAT IT COST WAS THE STORED SHAPE, AND THE STAMP IS WHAT PAYS FOR IT. `generation` was
+/// `block_id.or(object_id)`; it is now the block id alone. For a BLOCK-RESIDENT page that is the
+/// same value it always was. For a WAL-RESIDENT page -- where the block id is absent -- the
+/// generation WAS the object id and is now `None`, and `state::block_index_handle` hashes the
+/// generation while `state::block_index_written_key` renders it into the ref key already on disk.
+/// So every WAL-resident ref moves, and that is what the format stamp pays for.
+///
+/// THE STAMP LEDGER, WRITTEN DOWN HERE BECAUSE A VALUE IN A CONVERSATION IS NOT A LEDGER.
+/// `engine::SHARD_INDEX_FORMAT_VERSION` was 3 when this paragraph was first drafted, and 4 was
+/// RESERVED for this change on that basis. It is not 3 any more: the container-page tombstone took
+/// it 3 -> 5, skipping 4 to hold the reservation. That reservation did not survive main moving past
+/// it. This change therefore takes **6**, and the next one takes 7.
+///
+/// 4 IS A HOLE AND MUST NEVER BE TAKEN. A hole is free going forwards and lethal going backwards,
+/// because the two comparisons are not the same: `engine.rs` checks the served index with `!=` and
+/// refuses either direction, but `persistence.rs` checks the BASE SNAPSHOT with `<`. A binary
+/// carrying 4 computes `5 < 4 == false`, falls through to `IndexLoadPath::Accepted`, and reads a
+/// 5-stamped store as though it were its own -- which is the silent misread the stamp exists to
+/// prevent, reached by the one route the guard does not cover. So the rule is that a stamp may only
+/// ever INCREASE: read the constant from the tree immediately before committing and take the next
+/// value above it.
+///
+/// AND THE REASON THE STAMP IS NOT OPTIONAL IS THAT THE DECODE CANNOT SEE THE DISAGREEMENT. An
+/// old row `{oi: 42, block_id: None, g: 42}` passes the generation cross-check in
+/// [`TryFrom<BlockAddressWire>`] because BOTH sides of that comparison come off the wire and an
+/// old row agrees with itself. It then builds an address whose `ADDRESS_HAS_GENERATION` bit is SET
+/// while [`BlockAddress::generation`] answers `None` -- presence recorded, value absent -- and the
+/// consequence appears later, on a recovery path. Refusing the load is the only point at which
+/// that is visible at all.
+///
+/// THE `oi` SLOT STAYS ON THE WIRE AND IS WRITTEN EMPTY. `BlockAddressWire` is a separate struct
+/// and the index log packs it POSITIONALLY, so retiring the slot would shorten that array and
+/// refuse every existing row. Keeping it is also what lets the decode go on cross-checking an old
+/// `g`. It cannot be written with a real value: `From<BlockAddress> for BlockAddressWire` is handed
+/// an address and nothing else, and this type rides `#[serde(into)]` through fifteen nested
+/// `ShardState` maps where the object key is the OUTER map key -- so there is no identity in scope
+/// at the point the slot is written, and putting one there is a serializer rewrite rather than a
+/// constructor change.
+const _: () = assert!(std::mem::size_of::<BlockAddress>() == 16);
 
 /// The width is a RECONSTRUCTION, not a total: the eight-aligned group plus the rounded tail.
 ///
 /// Asserted rather than restated, so that a field moving between the two groups cannot leave the
 /// documented arithmetic still adding up to the right answer for the wrong reason.
 const _: () = {
-    let eight_aligned = 2 * 8; // address, object_id
+    let eight_aligned = 1 * 8; // address
     let tail = 4 + 2 + 1; // length, block_id, present
     let round_up_tail = (tail + 7) / 8 * 8;
     assert!(eight_aligned + round_up_tail == std::mem::size_of::<BlockAddress>());
@@ -661,6 +684,15 @@ impl BlockAddress {
     ///
     /// A generation is therefore PRESENT here exactly when an identity is present to derive it
     /// from, which is what all six of those callers already did.
+    ///
+    /// `object_id` IS STILL A PARAMETER AND ONLY ITS PRESENCE IS CONSUMED, which is the one
+    /// shape of "accepted and not kept" this file's doctrine permits. The struct no longer holds
+    /// an object id, so there is no field for a value to disagree with -- what the argument still
+    /// decides is `has_generation`, and that is a real effect a caller can observe through
+    /// [`BlockAddress::generation`]. Removing the parameter instead would have moved 114 call
+    /// sites to say nothing new: the presence it carries is exactly what those sites already
+    /// mean by passing `Some`. Contrast the digest, the generation and the routing bucket above,
+    /// each of which was removed because its VALUE was being dropped.
     /// There is deliberately no `routing_bucket` parameter, and for the THIRD instance of the same
     /// reason. The bucket a block is filed under is `start + FNV-1a-64(object_key) % width` over the
     /// range the store is stamped with, so a constructor that accepted one and discarded it would
@@ -699,13 +731,24 @@ impl BlockAddress {
         block_id: Option<u64>,
         object_id: Option<u64>,
     ) -> Result<Self, BlockAddressOutOfRange> {
-        let has_generation = block_id.is_some() || object_id.is_some();
+        // A GENERATION EXISTS EXACTLY WHEN A BLOCK ID DOES, and the round trip is what settled it.
+        //
+        // This read `block_id.is_some() || object_id.is_some()` on the reasoning that a bit set with
+        // no value to go with it was unobservable, since `generation()` answers `None` either way.
+        // THAT WAS WRONG. An address built with an object id and NO block id carried
+        // `ADDRESS_HAS_GENERATION` while the wire could represent no generation at all -- `g` is
+        // derived from the block id and there is none -- so it decoded back with the bit CLEAR and
+        // the two addresses compared unequal. `index_log::the_address_repeats_round_trip` measured
+        // exactly that: `present: 8` out, `present: 0` back.
+        //
+        // So presence follows the only identity that survives in the struct. `object_id` is now
+        // INERT here, which is why it is no longer a parameter.
+        let has_generation = block_id.is_some();
         Self::try_from_wire_parts(
             block_slab_id,
             offset,
             length,
             block_id,
-            object_id,
             has_generation,
         )
     }
@@ -740,7 +783,6 @@ impl BlockAddress {
         offset: u64,
         length: u64,
         block_id: Option<u64>,
-        object_id: Option<u64>,
         has_generation: bool,
     ) -> Result<Self, BlockAddressOutOfRange> {
         // The two sentinels are ALLOWED above `MAX_ADDRESSABLE_BLOCK_SLAB_ID` -- they are what
@@ -775,9 +817,6 @@ impl BlockAddress {
         if block_id.is_some() {
             present |= ADDRESS_HAS_BLOCK_ID;
         }
-        if object_id.is_some() {
-            present |= ADDRESS_HAS_OBJECT_ID;
-        }
         if has_generation {
             present |= ADDRESS_HAS_GENERATION;
         }
@@ -785,7 +824,6 @@ impl BlockAddress {
             address: make_block_address_word(block_slab_id as u32, offset as u32),
             length: narrow(length),
             block_id: block_id.unwrap_or_default() as u16,
-            object_id: object_id.unwrap_or_default(),
             present,
         })
     }
@@ -808,13 +846,9 @@ impl BlockAddress {
         (self.present & ADDRESS_HAS_BLOCK_ID != 0).then_some(u64::from(self.block_id))
     }
 
-    pub fn object_id(&self) -> Option<u64> {
-        (self.present & ADDRESS_HAS_OBJECT_ID != 0).then_some(self.object_id)
-    }
-
     /// THE VALUE IS DERIVED; THE PRESENCE IS STILL A BIT.
     ///
-    /// Every production write site passed `block_id.or(object_id)` into the field this now
+    /// Every production write site passed `block_id.or(object_id)` into the field this once
     /// computes: the two block-store appends pass `Some(block_id)` beside a `block_id` argument of
     /// `Some(block_id)`; the record decoder and the storage reporter pass the expression itself;
     /// the hot-slab append passes `object_id` beside a `block_id` of `None`. Measured on a seeded
@@ -831,7 +865,7 @@ impl BlockAddress {
         if self.present & ADDRESS_HAS_GENERATION == 0 {
             return None;
         }
-        self.block_id().or_else(|| self.object_id())
+        self.block_id()
     }
 
     /// The slab this address is in, which is the slab it is in.
@@ -864,11 +898,6 @@ impl BlockAddress {
     pub fn set_block_id(&mut self, value: Option<u64>) {
         self.block_id = narrow_block_id(value.unwrap_or_default());
         self.set_present(ADDRESS_HAS_BLOCK_ID, value.is_some());
-    }
-
-    pub fn set_object_id(&mut self, value: Option<u64>) {
-        self.object_id = value.unwrap_or_default();
-        self.set_present(ADDRESS_HAS_OBJECT_ID, value.is_some());
     }
 
     fn set_present(&mut self, bit: u8, on: bool) {
@@ -3191,7 +3220,6 @@ mod address_size_tests {
         let total = size_of::<BlockAddress>();
         let fields: Vec<(&'static str, usize, usize)> = vec![
             ("address", offset_of!(BlockAddress, address), size_of::<u64>()),
-            ("object_id", offset_of!(BlockAddress, object_id), size_of::<u64>()),
             ("length", offset_of!(BlockAddress, length), size_of::<u32>()),
             ("block_id", offset_of!(BlockAddress, block_id), size_of::<u16>()),
             ("present", offset_of!(BlockAddress, present), size_of::<u8>()),
@@ -3211,25 +3239,31 @@ mod address_size_tests {
         println!("  tail padding {}", total - cursor);
         println!("  field bytes {covered}, padding {padding}, total {total}");
 
-        assert_eq!(covered, 23, "the payload is 23 bytes of field");
+        assert_eq!(covered, 15, "the payload is 15 bytes of field");
         assert_eq!(padding, 1, "and one of alignment");
         assert_eq!(covered + padding, total);
-        assert_eq!(total, 24);
+        assert_eq!(total, 16);
         assert_eq!(align_of::<BlockAddress>(), 8);
 
         // The reconstruction, not the total: the eight-aligned group plus the rounded tail.
-        let eight_aligned: usize = 2 * 8;
+        let eight_aligned: usize = 1 * 8;
         let tail: usize = 4 + 2 + 1;
         assert_eq!(eight_aligned + tail.div_ceil(8) * 8, total);
 
-        // AND THE PAIR IS NOT A NARROWING THAT HAPPENED TO PAY -- between them the two changes shed
-        // six bytes, and six is what it takes to cross from 29 to a payload that rounds to 24.
-        // Stated over the measured payload so it cannot drift.
+        // AND THIS STEP DID PAY ON ITS OWN, which is the one thing the per-field rule above never
+        // said. `object_id` was a WHOLE eight-byte field in the eight-aligned group, so the group
+        // went 16 -> 8 while the tail stayed 7 and rounded to 8: the payload 23 -> 15 and the width
+        // 24 -> 16. Stated over the measured payload so it cannot drift.
         assert_eq!(
-            covered + 6,
-            29,
-            "the payload was 29 bytes before the bucket left and the block id narrowed; it is \
-             {covered} now, so the step this change claims is not the step it took"
+            covered + 8,
+            23,
+            "the payload was 23 bytes before the object id left; it is {covered} now, so the step \
+             this change claims is not the step it took"
+        );
+        assert_eq!(
+            (covered + 8).div_ceil(8) * 8,
+            24,
+            "and 23 bytes of payload rounded to 24, which is the width this shed from"
         );
 
         // EACH HALF OF THE PAIR, ON ITS OWN, IS WORTH ZERO -- asserted, because that is the claim
@@ -3247,21 +3281,22 @@ mod address_size_tests {
              back to 32: worth nothing on its own"
         );
 
-        // AND WHAT IS LEFT BETWEEN 24 AND 16, which is one field. The payload without `object_id`
-        // is 15 bytes, so `object_id` at ONE byte would cross and at two bytes would not -- the
-        // reason 24 is the floor while it is a 64-bit hash, and the reason a per-bucket ordinal
-        // would have to fit in 255 objects to be worth anything at all.
-        let without_object_id = covered - 8;
-        assert_eq!(without_object_id, 15, "8 address + 4 length + 2 block id + 1 present");
+        // AND WHAT PUTTING AN OBJECT ID BACK WOULD COST, which is why 16 is the floor for as long
+        // as an id of any width would have to live here. The payload is 15, so an id at ONE byte
+        // would still fit inside 16 and at TWO would push to 24 -- the same arithmetic that made a
+        // per-bucket ordinal worth nothing unless it fitted in 255 objects. Kept as the record of
+        // what this width is the floor OF, now measured from the shed payload rather than towards
+        // it.
+        assert_eq!(covered, 15, "8 address + 4 length + 2 block id + 1 present");
         assert_eq!(
-            (without_object_id + 1).div_ceil(8) * 8,
+            (covered + 1).div_ceil(8) * 8,
             16,
-            "an 8-bit object id would cross to 16"
+            "an 8-bit object id would still fit inside 16"
         );
         assert_eq!(
-            (without_object_id + 2).div_ceil(8) * 8,
+            (covered + 2).div_ceil(8) * 8,
             24,
-            "a 16-bit object id would not: 17 rounds back to 24"
+            "a 16-bit object id would not: 17 rounds up to 24"
         );
 
         // A NARROWING THAT DOES NOT CROSS THE STEP IS WORTH ZERO. Stated as arithmetic over the
@@ -3283,9 +3318,9 @@ mod address_size_tests {
         // that lost its wide entries would make it vacuous, and this change removed one.
         assert_eq!(
             fields.iter().filter(|(_, _, width)| *width >= 2).count(),
-            4,
-            "denominator: address, object_id, length and block_id are the four fields the \
-             one-field rule is asserted over"
+            3,
+            "denominator: address, length and block_id are the three fields the one-field rule is \
+             asserted over -- it was four while `object_id` was one of them"
         );
     }
 
@@ -3380,16 +3415,19 @@ mod address_size_tests {
     /// a zero `block_id` is, and that is what the second pair below states.
     #[test]
     fn zero_is_distinguishable_from_absent() {
-        let zero = BlockAddress::from_parts(1, 0, 0, None, Some(0));
+        // THE OBJECT ID WAS THE OTHER HALF OF THIS AND IS GONE, so the pair is stated over the
+        // identity that is still a field. A zero block id is a legitimate block id -- it is the
+        // FIRST block of an object -- which is exactly why presence is a bit rather than a zero.
+        let zero = BlockAddress::from_parts(1, 0, 0, Some(0), None);
         let absent = BlockAddress::from_parts(1, 0, 0, None, None);
-        assert_eq!(zero.object_id(), Some(0));
-        assert_eq!(absent.object_id(), None);
+        assert_eq!(zero.block_id(), Some(0));
+        assert_eq!(absent.block_id(), None);
         assert_ne!(zero, absent);
         assert_eq!(zero.slab_id(), Some(1), "the slab id is derived, present either way");
         assert_eq!(absent.slab_id(), Some(1));
 
-        // A zero generation is still distinguishable from an absent one -- through the identity
-        // it is derived from, which carries the presence bit that used to sit beside it.
+        // A zero generation is still distinguishable from an absent one -- through the block id it
+        // is now derived from, which carries the presence bit that used to sit beside it.
         let zero_generation = BlockAddress::from_parts(1, 0, 0, Some(0), None);
         assert_eq!(zero_generation.generation(), Some(0));
         assert_eq!(absent.generation(), None);
@@ -3406,8 +3444,11 @@ mod address_size_tests {
         assert_eq!(address.block_id(), None);
         address.set_block_id(Some(9));
         assert_eq!(address.block_id(), Some(9));
-        address.set_object_id(Some(3));
-        assert_eq!(address.object_id(), Some(3));
+        // The second setter is `set_length`, since `set_object_id` went with the field. The claim
+        // being tested is that one setter does not disturb another's presence bit, and it needs two
+        // setters to mean anything.
+        address.set_length(3);
+        assert_eq!(address.length(), 3);
         assert_eq!(address.block_id(), Some(9), "one setter disturbed another");
     }
 
@@ -4154,7 +4195,12 @@ const RETIRED_NAMES: &[&str] = &[
         // "all of them must still land" the comment above promises, and asserting one of them was
         // never enough to keep that promise.
         assert_eq!(address.block_id(), Some(9));
-        assert_eq!(address.object_id(), Some(122110326161599232));
+        // `object_id` IS STILL READ OFF THE WIRE AND NO LONGER LANDS IN A FIELD, which is the third
+        // slot to reach that state after `routing_slot` and `sha256`. The legacy record carries a
+        // real one; what it now feeds is the generation cross-check in `TryFrom`, not a field. So
+        // the assertion that used to compare it is replaced by the generation it agrees with --
+        // and that this record LOADS at all is the compatibility being tested.
+        assert_eq!(address.generation(), Some(9), "the generation is the block id");
         // `routing_slot` IS STILL READ AND STILL IGNORED, and the SLOT IS NOW GONE from the
         // struct rather than written empty. Both halves matter and they are asserted separately.
         //
@@ -4756,7 +4802,9 @@ const RETIRED_NAMES: &[&str] = &[
         assert_eq!(address.offset(), 0);
         assert!(address.length() > b"address-contract".len() as u64);
         assert_eq!(address.block_id(), Some(0));
-        assert_eq!(address.object_id(), Some(4242));
+        // The append was handed 4242 as the object id and the address does not keep one. What it
+        // keeps is the generation, which is the block id.
+        assert_eq!(address.generation(), Some(0));
         assert_eq!(address.slab_id(), Some(0));
         assert_eq!(address.compact_slab_id(), Some(0));
         assert_eq!(address.compact_slab_offset(), Some(0));
@@ -4779,7 +4827,11 @@ const RETIRED_NAMES: &[&str] = &[
             "a": address.address_word(),
             "length": address.length,
             "page_id": address.block_id(),
-            "object_id": address.object_id(),
+            // A VALUE THE ADDRESS CANNOT PRODUCE, for the same reason `routing_slot` below is one:
+            // an old index carries a real `object_id`, the slot is still read, and loading such a
+            // row must neither fail nor change the address. It feeds the generation cross-check and
+            // lands in no field.
+            "object_id": 4242_u64,
             // A NUMBER THE ADDRESS CANNOT PRODUCE, which is what makes this row worth keeping: the
             // key is still on the wire, an older index carries a real bucket in it, and loading one
             // must neither fail nor change the address. `from_checksum_alias == address` below is

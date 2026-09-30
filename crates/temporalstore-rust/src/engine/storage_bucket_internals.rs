@@ -401,7 +401,7 @@ pub(super) fn storage_page_address_sample(
         block_id: address.block_id().unwrap_or(address.block_slab_id()),
         offset: address.offset(),
         length: address.length(),
-        generation: address.object_id().unwrap_or(0),
+        generation: address.generation().unwrap_or(0),
     }
 }
 
@@ -480,7 +480,7 @@ pub(super) fn storage_index_snapshot_with_samples_from_entries(
                 timestamp_range: None,
                 block_addresses: vec![page_address],
                 append_watermark: entry.address.offset(),
-                generation: entry.address.object_id().unwrap_or(0),
+                generation: expected_live_block_object_id(shard_id, entry),
             }
         })
         .collect();
@@ -496,7 +496,7 @@ pub(super) fn storage_index_snapshot_with_samples_from_entries(
                     .slab_id()
                     .unwrap_or(entry.address.block_slab_id()),
                 checksum: String::new(),
-                generation: entry.address.object_id().unwrap_or(0),
+                generation: expected_live_block_object_id(shard_id, entry),
                 page_address,
                 block_address,
             }
@@ -522,7 +522,7 @@ pub(super) fn storage_index_snapshot_with_samples_from_entries(
                 object_key: entry.object_key.to_string(),
                 block_chain: Vec::new(),
                 delete_marker: entry.deleted,
-                generation: entry.address.object_id().unwrap_or(0),
+                generation: expected_live_block_object_id(shard_id, entry),
             });
         if sample.block_chain.len() < MAX_STORAGE_INDEX_SAMPLES {
             sample
@@ -530,7 +530,7 @@ pub(super) fn storage_index_snapshot_with_samples_from_entries(
                 .push(storage_page_address_sample(shard_id, &entry.address));
         }
         sample.delete_marker |= entry.deleted;
-        sample.generation = sample.generation.max(entry.address.object_id().unwrap_or(0));
+        sample.generation = sample.generation.max(expected_live_block_object_id(shard_id, entry));
     }
     snapshot.object_index_entry_samples = object_entries
         .into_iter()
@@ -587,7 +587,7 @@ pub(super) fn storage_watermark_snapshot_with_samples_from_entries(
         let bucket_id = entry
             .filed_bucket()
             .unwrap_or_else(|| bucket_for_object(&entry.object_key, 0, u32::MAX));
-        let generation = entry.address.object_id().unwrap_or(0);
+        let generation = expected_live_block_object_id(shard_id, entry);
         bucket_watermarks
             .entry(bucket_id)
             .and_modify(|current| *current = (*current).max(generation))
@@ -642,7 +642,7 @@ pub(super) fn storage_gc_snapshot_with_samples(
 /// sampling builders is safe: one lock, an unchanged `&ShardState`, and these feed report SAMPLES
 /// rather than a decision.
 pub(super) fn storage_gc_snapshot_with_samples_from_entries(
-    _shard_id: ShardId,
+    shard_id: ShardId,
     shard: &ShardState,
     entries: &[LiveBlockEntry],
     mut snapshot: StorageGcSnapshot,
@@ -675,7 +675,7 @@ pub(super) fn storage_gc_snapshot_with_samples_from_entries(
         .take(MAX_STORAGE_GC_SAMPLES)
         .map(|entry| StorageDeleteMarkerSample {
             ref_id: storage_gc_ref(entry),
-            generation: entry.address.object_id().unwrap_or(0),
+            generation: expected_live_block_object_id(shard_id, entry),
             deleted_at_ms: now,
             reason: "object_tombstone".to_string(),
         })
@@ -826,7 +826,7 @@ pub(super) fn storage_topology_snapshot_with_samples_from_entries(
             .slab_id()
             .unwrap_or(entry.address.block_slab_id());
         let slab_id = entry.address.block_slab_id();
-        let generation = entry.address.object_id().unwrap_or(0);
+        let generation = expected_live_block_object_id(shard_id, entry);
         let usage = slabs_usage.entry(stored_slab_id).or_default();
         usage.slabs.insert(slab_id);
         usage.generation = usage.generation.max(generation);
@@ -1405,13 +1405,7 @@ pub(super) fn rebuild_bucket_block_ownership(
         // What this removes is not a check but a HAZARD: mx#1974 measured this filter dropping a
         // block from the index entirely when an explicit bucket sat outside the range, and bounded it
         // by showing the engine does not produce that state. It now cannot be produced at all.
-        let object_id = entry.address.object_id().unwrap_or_else(|| {
-            stable_block_object_id(
-                shard_id,
-                entry.kind.as_str(),
-                &entry.object_key,
-            )
-        });
+        let object_id = expected_live_block_object_id(shard_id, &entry);
         let bucket = shard
             .bucket_index
             .bucket_map
@@ -1438,11 +1432,7 @@ pub(super) fn rebuild_bucket_block_ownership(
                 object_key: entry.object_key,
                 model_id: entry.kind,
                 component: entry.component.clone(),
-                address: {
-                    let mut address = entry.address;
-                    address.set_object_id(Some(object_id));
-                    address
-                },
+                address: entry.address,
                 dirty: entry.dirty,
                 deleted: entry.deleted,
                 log_backed: entry.log_backed,
@@ -1513,7 +1503,7 @@ pub(super) fn rebuild_bucket_block_ownership(
         let every_page_deleted =
             !bucket.block_index.is_empty() && bucket.block_index.values().all(|page| page.deleted);
         bucket.set_deleted(every_page_deleted);
-        update_bucket_layout(bucket);
+        update_bucket_layout(shard_id, bucket);
     }
     // Every block above was charged as it was filed, and the tally started empty, so it now
     // describes exactly what `bucket_map` holds. Declaring that is the last step; confirming it
@@ -2019,6 +2009,11 @@ pub(super) fn settle_released_bucket_object_delete(
     if shard.bucket_index.released_buckets.is_empty() {
         return false;
     }
+    // NO SHARD, NO DERIVATION. A state that never entered the engine has no id to derive with, and
+    // there is no id that is safe to guess here: a zero would name a member of a different shard.
+    let Some(shard_id) = shard.shard_id() else {
+        return false;
+    };
     let (start_routing_bucket, end_routing_bucket) = shard.routing_range();
     let mut settled = false;
     for model_id in RELEASABLE_MODEL_KINDS {
@@ -2028,18 +2023,16 @@ pub(super) fn settle_released_bucket_object_delete(
             continue;
         };
         // The bucket is the KEY's bucket -- `released_bucket_block_address` above answered for
-        // exactly that bucket, so asking again here gets the same number. The object id may still
-        // be absent: an address that carries none names no member to drop, and this path skips
-        // it. THE REASON IS NO LONGER A MISSING SHARD ID -- this function takes a
-        // `&mut ShardState` and `shard.shard_id()` now answers, so
-        // `stable_block_object_id(shard, model_id, object_key)` is computable right here. What
-        // stops it is that recomputing would be a behaviour change, and the change that made the
-        // id reachable was the precondition only. Skipping leaves exactly today's behaviour.
+        // exactly that bucket, so asking again here gets the same number.
+        //
+        // THE ID IS NOW DERIVED RATHER THAN SKIPPED, and that IS the behaviour it always had. The
+        // skip existed because an address could carry no object id; an address carries none at all
+        // now, so skipping unconditionally would mean never removing a member -- which is a
+        // behaviour change, where deriving is not. Every address this path saw was written by a
+        // write path that put the derived id on it, so the derivation answers what the field held.
         let routing_bucket =
             block_routing_bucket(object_key, start_routing_bucket, end_routing_bucket);
-        let Some(object_id) = address.object_id() else {
-            continue;
-        };
+        let object_id = stable_block_object_id(shard_id, model_id, object_key);
         let Some(bucket) = shard.bucket_index.bucket_map.get_mut(&routing_bucket) else {
             continue;
         };
@@ -2377,15 +2370,8 @@ pub(super) fn reload_released_bucket(
     // would have paid the whole store N times. The walk now filters by bucket, so one reload
     // costs one bucket's blocks.
     for entry in collect_model_live_block_entries_in_bucket(shard, routing_bucket) {
-        let object_id = entry.address.object_id().unwrap_or_else(|| {
-            stable_block_object_id(
-                shard_id,
-                entry.kind.as_str(),
-                &entry.object_key,
-            )
-        });
-        let mut address = entry.address;
-        address.set_object_id(Some(object_id));
+        let object_id = expected_live_block_object_id(shard_id, &entry);
+        let address = entry.address;
         pages.push((
             BlockIndex {
                 object_key: entry.object_key,
@@ -2426,7 +2412,7 @@ pub(super) fn reload_released_bucket(
         shard.bucket_index.released_buckets.remove(&routing_bucket);
         return true;
     }
-    update_bucket_layout(bucket);
+    update_bucket_layout(shard_id, bucket);
     for (handle, page) in installed {
         shard
             .bucket_index
@@ -3455,13 +3441,15 @@ fn derive_released_block_identities(
 /// the set it partitions cannot split it.
 pub(super) fn block_physical_identity_key(
     address: &BlockAddress,
-) -> (u64, u64, u64, Option<u64>, Option<u64>, Option<u64>) {
+) -> (u64, u64, u64, Option<u64>, Option<u64>) {
     (
         address.block_slab_id(),
         address.offset(),
         address.length(),
         address.block_id(),
-        address.object_id(),
+        // The object id was a term here and is not one any more: an address does not carry one, and
+        // this key dedupes the addresses of ONE object key inside one publish, so a term equal
+        // across every member of the set it partitions could not split it either way.
         address.generation(),
     )
 }
@@ -3624,9 +3612,7 @@ fn upsert_bucket_index_block_inner(
     // be resident, with the rest of its blocks still only in the model maps -- neither released
     // nor whole. Load it back first; a no-op for every bucket that was never released.
     reload_released_bucket(shard, shard_id, routing_bucket);
-    let object_id = address
-        .object_id()
-        .unwrap_or_else(|| stable_block_object_id(shard_id, kind, object_key));
+    let object_id = stable_block_object_id(shard_id, kind, object_key);
     // This IS the outcome: an object, its identity, and where its block ended up. Put it aside
     // for the record, so replay has the option of installing it instead of re-running the
     // command that produced it.
@@ -3699,12 +3685,12 @@ fn upsert_bucket_index_block_inner(
             let removed_object_id = bucket
                 .block_index
                 .remove(&block_ref.block_ref_key, &mut shard.bucket_index.block_slab_live)
-                .map(|page| page.object_id());
+                .map(|page| page.object_id(shard_id));
             if let Some(removed_object_id) = removed_object_id {
                 if !bucket
                     .block_index
                     .values()
-                    .any(|page| page.object_id() == removed_object_id)
+                    .any(|page| page.object_id(shard_id) == removed_object_id)
                 {
                     bucket.object_index.remove(&removed_object_id);
                 }
@@ -3728,7 +3714,7 @@ fn upsert_bucket_index_block_inner(
             if !bucket
                 .block_index
                 .values()
-                .any(|page| page.object_id() == object_id)
+                .any(|page| page.object_id(shard_id) == object_id)
             {
                 bucket.object_index.remove(&object_id);
             }
@@ -3789,11 +3775,9 @@ fn upsert_bucket_index_block_inner(
         }
     }
     let mut block_ref_key: u64 = 0;
-    // Give the address the id the entry is filed under, so one field answers for both. Without
-    // this, a block whose address arrived without an object id would lose the fallback identity
-    // computed for it.
-    let mut address = entry.address;
-    address.set_object_id(Some(object_id));
+    // The address carries no object id to be given: the entry derives one from its own terms, so
+    // there is no second copy to keep in step.
+    let address = entry.address;
     let block_index = BlockIndex {
         object_key: entry.object_key,
         model_id: entry.kind,
@@ -3959,7 +3943,7 @@ pub(super) fn sync_bucket_index_object_blocks_with_mode(
                 bucket.dirty_generation = bucket.dirty_generation.saturating_add(1);
             }
             bucket.set_in_memory(!bucket.block_index.is_empty());
-            update_bucket_layout(bucket);
+            update_bucket_layout(shard_id, bucket);
         }
     }
 
@@ -3975,7 +3959,7 @@ pub(super) fn sync_bucket_index_object_blocks_with_mode(
     }
 
     let mut unique_addresses = BTreeMap::<
-        (u64, u64, u64, Option<u64>, Option<u64>, Option<u64>),
+        (u64, u64, u64, Option<u64>, Option<u64>),
         BlockAddress,
     >::new();
     for address in addresses {
@@ -3990,9 +3974,7 @@ pub(super) fn sync_bucket_index_object_blocks_with_mode(
     for address in unique_addresses.into_values() {
         let routing_bucket =
             block_routing_bucket(object_key, start_routing_bucket, end_routing_bucket);
-        let object_id = address
-            .object_id()
-            .unwrap_or_else(|| stable_block_object_id(shard_id, kind, object_key));
+        let object_id = stable_block_object_id(shard_id, kind, object_key);
         let entry = LiveBlockEntry {
             object_key: Arc::clone(&object_key_arc),
             kind: entry_kind,
@@ -4031,8 +4013,7 @@ pub(super) fn sync_bucket_index_object_blocks_with_mode(
             component: entry.component.clone(),
             address: {
                 let mut address = entry.address;
-                address.set_object_id(Some(object_id));
-                address
+                    address
             },
             dirty: entry.dirty,
             deleted: entry.deleted,
@@ -4179,7 +4160,23 @@ pub mod layout_by_caller {
 // callers -- it looked like attribution and was not. Applied only under `cfg(test)`, because the
 // attribute adds a hidden location argument at every call site and this is a write path.
 #[cfg_attr(test, track_caller)]
-pub(super) fn update_bucket_layout(bucket: &mut BucketNode) {
+/// Rebuild one bucket's live-object set from its pages, then classify the layout.
+///
+/// THE SHARD IS A PARAMETER BECAUSE THE SET IS DERIVED PER PAGE. A page's object id is
+/// `stable_block_object_id(shard, kind, key)`, so this cannot be done without a shard and must not
+/// be done with a guessed one -- a zero derives a well-formed id belonging to a different shard.
+///
+/// AND THE PRUNING IS THE POINT, which is what an earlier version of this change lost. It asked the
+/// bucket for the ids it ALREADY held rather than deriving them, on the reasoning that the function
+/// had no shard. That kept every id for as long as any page in the bucket was live, so an object
+/// whose last page was deleted was never dropped: `object_index` grew monotonically, the count fed
+/// to `classify_bucket_layout` was wrong, and the collect below grew with the corpus. Measured on the
+/// allocation probe, `SetAdd` went from 5,784 -> 5,785 bytes (1.00x flat) across a sixteen-fold
+/// corpus to 5,723 -> 9,631 (1.68x). A width pin could not have found that and neither could a
+/// compile; the scaling control did.
+///
+/// A caller that genuinely has no shard uses [`reclassify_bucket_layout`] instead, which says so.
+pub(super) fn update_bucket_layout(shard_id: ShardId, bucket: &mut BucketNode) {
     note_site(&bucket_visit_sites::LAYOUT, bucket.block_index.len());
     // Tests only: this takes a lock, and `update_bucket_layout` is on a write path. It exists
     // because the visit counter lives INSIDE this function and so reports how much work happened
@@ -4191,7 +4188,7 @@ pub(super) fn update_bucket_layout(bucket: &mut BucketNode) {
         .block_index
         .values()
         .filter(|page| !page.deleted)
-        .map(|page| page.object_id())
+        .map(|page| page.object_id(shard_id))
         .collect();
     if !live_object_ids.is_empty() {
         bucket.object_index = live_object_ids.into();
@@ -4199,6 +4196,17 @@ pub(super) fn update_bucket_layout(bucket: &mut BucketNode) {
         bucket.object_index.clear();
     }
     bucket.layout = classify_bucket_layout(bucket.object_index.object_count(), bucket.block_index.len());
+}
+
+/// Classify the layout from the set the bucket already holds, WITHOUT rebuilding it.
+///
+/// For the three callers that have no shard to derive a page's object id with. Naming it rather than
+/// passing a bool is deliberate: the call site states which of the two things it is doing, so a site
+/// that cannot rebuild cannot look like one that chose not to. `object_index` is left exactly as the
+/// mutation sites maintained it -- a block insert adds its id, a removal drops it once no live block
+/// carries it -- so declining to rescan is not the same as losing the pruning.
+pub(super) fn reclassify_bucket_layout(bucket: &mut BucketNode) {
+    bucket.layout = classify_bucket_layout(bucket.object_index.len(), bucket.block_index.len());
 }
 
 /// Note that a bucket's derived runtime flags may be stale.
@@ -4227,6 +4235,12 @@ pub(super) fn note_bucket_flags_stale(shard: &mut ShardState, routing_bucket: u3
 /// dropping it everywhere else.
 #[cfg_attr(test, track_caller)]
 fn refresh_one_bucket_runtime_flags(
+    // `None` for a state that carries no shard id. The object-index rebuild below needs one to
+    // derive a page's object with, and there is no id that is safe to guess, so an unstamped state
+    // RECLASSIFIES what it already holds rather than rebuilding against a different shard's terms.
+    // In production a served state is always stamped -- `install_shard_state` is the only place
+    // `set_shard_id` is called -- so the rebuild always runs where it matters.
+    shard_id: Option<ShardId>,
     bucket: &mut BucketNode,
     now: u64,
     dirty_objects: &DirtyObjectIndex,
@@ -4264,11 +4278,9 @@ fn refresh_one_bucket_runtime_flags(
                 .min(),
         );
     }
-    if rebuild_object_index {
-        update_bucket_layout(bucket);
-    } else {
-        bucket.layout =
-            classify_bucket_layout(bucket.object_index.object_count(), bucket.block_index.len());
+    match (rebuild_object_index, shard_id) {
+        (true, Some(shard_id)) => update_bucket_layout(shard_id, bucket),
+        _ => reclassify_bucket_layout(bucket),
     }
 }
 
@@ -4304,8 +4316,11 @@ pub(super) fn refresh_bucket_runtime_flags_after_reconstruct(shard: &mut ShardSt
 #[cfg_attr(test, track_caller)]
 fn refresh_all_bucket_runtime_flags(shard: &mut ShardState, rebuild_object_index: bool) {
     let now = now_ms();
+    // Resolved ONCE, outside the loop: it is a property of the shard, not of a bucket.
+    let shard_id = shard.shard_id();
     for bucket in shard.bucket_index.bucket_map.values_mut() {
         refresh_one_bucket_runtime_flags(
+            shard_id,
             bucket,
             now,
             &shard.dirty_objects,
@@ -4348,12 +4363,14 @@ pub(super) fn refresh_pending_bucket_runtime_flags(shard: &mut ShardState) {
         return;
     }
     let now = now_ms();
+    let shard_id = shard.shard_id();
     let pending = std::mem::take(&mut shard.buckets_pending_flag_refresh);
     for routing_bucket in pending {
         let Some(bucket) = shard.bucket_index.bucket_map.get_mut(&routing_bucket) else {
             continue;
         };
         refresh_one_bucket_runtime_flags(
+            shard_id,
             bucket,
             now,
             &shard.dirty_objects,
@@ -4384,6 +4401,9 @@ pub(super) fn clear_published_object_dirty_state(shard: &mut ShardState, object_
     if object_still_has_hot_block(shard, object_key) {
         return;
     }
+    // Clearing a dirty bit needs no shard; re-deriving the object index does. Resolved here so the
+    // loop below can rebuild when the state is stamped and reclassify when it is not.
+    let shard_id = shard.shard_id();
     shard.dirty_objects.remove(object_key);
     for bucket in shard.bucket_index.bucket_map.values_mut() {
         note_site(&bucket_visit_sites::CLEAR_DIRTY, bucket.block_index.len());
@@ -4401,7 +4421,10 @@ pub(super) fn clear_published_object_dirty_state(shard: &mut ShardState, object_
                 .values()
                 .any(|page| page.dirty || shard.dirty_objects.contains(page.object_key.as_ref()));
             bucket.set_dirty(any_page_dirty);
-            update_bucket_layout(bucket);
+            match shard_id {
+                Some(shard_id) => update_bucket_layout(shard_id, bucket),
+                None => reclassify_bucket_layout(bucket),
+            }
         }
     }
 }
@@ -4461,13 +4484,7 @@ pub(super) fn rebuild_bucket_first_index(
     for entry in collect_model_live_block_entries(shard) {
         let routing_bucket =
             block_routing_bucket(&entry.object_key, start_routing_bucket, end_routing_bucket);
-        let object_id = entry.address.object_id().unwrap_or_else(|| {
-            stable_block_object_id(
-                shard_id,
-                entry.kind.as_str(),
-                &entry.object_key,
-            )
-        });
+        let object_id = expected_live_block_object_id(shard_id, &entry);
         let bucket = bucket_index
             .bucket_map
             .entry(routing_bucket)
@@ -4488,18 +4505,14 @@ pub(super) fn rebuild_bucket_first_index(
                 object_key: entry.object_key,
                 model_id: entry.kind,
                 component: entry.component.clone(),
-                address: {
-                    let mut address = entry.address;
-                    address.set_object_id(Some(object_id));
-                    address
-                },
+                address: entry.address,
                 dirty: block_dirty,
                 deleted: entry.deleted,
                 log_backed: entry.log_backed,
             },
             &mut bucket_index.block_slab_live,
         );
-        update_bucket_layout(bucket);
+        update_bucket_layout(shard_id, bucket);
     }
     // Re-attach the tombstone ids captured above. Keep them in object_index too so the object
     // manager's object_count matches the deserialize/reconcile load path (which never dropped
@@ -5275,8 +5288,16 @@ pub(super) fn reconcile_secondary_views_from_bucket_index(
             reconcile_timestamped_series_membership(&persisted, context_compressions);
     }
 
+    // THE SHARD, FROM WHICHEVER OF THE TWO PLACES HAS IT, resolved before the mutable borrow below.
+    // `warm` carries one when this reconcile is warming the cache; a state that entered the engine
+    // carries its own. Neither is a guess. If neither is present the layout is reclassified from the
+    // set the mutation sites already maintain rather than rebuilt against an invented shard.
+    let shard_id = warm.map(|(_, shard_id)| shard_id).or_else(|| shard.shard_id());
     for bucket in shard.bucket_index.bucket_map.values_mut() {
-        update_bucket_layout(bucket);
+        match shard_id {
+            Some(shard_id) => update_bucket_layout(shard_id, bucket),
+            None => reclassify_bucket_layout(bucket),
+        }
     }
 
     // Promote all blocks read above into the cache tier in a single batched put (one
@@ -5535,10 +5556,12 @@ pub(super) fn validate_bucket_ownership_index_from_entries(
         let expected_routing_bucket =
             block_routing_bucket(&entry.object_key, start_routing_bucket, end_routing_bucket);
         let expected_block_id = entry.address.block_id();
-        let object_mismatch = entry
-            .address
-            .object_id()
-            .is_some_and(|actual| actual != expected_object_id);
+        // THE OBJECT HALF OF THIS COMPARISON IS GONE, AND DELETING IT IS THE POINT. It compared
+        // the id an address CARRIED against the id the terms DERIVE. An address carries none now,
+        // so both sides would come from `expected_live_block_object_id` and the test could only
+        // ever compare a value with itself -- a check that cannot fail, which reads exactly like a
+        // check that passes. The filing comparison below is unaffected: `filed_bucket()` is the key
+        // of the map the walk was iterating, so it remains two independent answers.
         // WHERE THE BLOCK IS, against where its KEY routes -- two independent answers, which is what
         // this report has to compare. It used to read the bucket off the ADDRESS, and an address's
         // bucket was written by the same expression `expected_routing_bucket` is: the comparison
@@ -5548,7 +5571,7 @@ pub(super) fn validate_bucket_ownership_index_from_entries(
         let bucket_mismatch = entry
             .filed_bucket()
             .is_some_and(|actual| actual != expected_routing_bucket);
-        if entry.address.object_id().is_none() || entry.filed_bucket().is_none() {
+        if entry.filed_bucket().is_none() {
             validation.missing_owner_block_refs =
                 validation.missing_owner_block_refs.saturating_add(1);
         }
@@ -5570,7 +5593,7 @@ pub(super) fn validate_bucket_ownership_index_from_entries(
             validation.missing_owner_block_refs =
                 validation.missing_owner_block_refs.saturating_add(1);
         }
-        if object_mismatch || bucket_mismatch {
+        if bucket_mismatch {
             validation
                 .mismatches
                 .push(StorageRecoveryBlockOwnerMismatch {
@@ -5578,7 +5601,10 @@ pub(super) fn validate_bucket_ownership_index_from_entries(
                     block_slab_id: entry.address.block_slab_id(),
                     offset: entry.address.offset(),
                     expected_object_id,
-                    actual_object_id: entry.address.object_id(),
+                    // An address carries no object id to disagree, so a row here is always a
+                    // FILING mismatch. Reported absent rather than echoing `expected_object_id`,
+                    // which would read as agreement that was never tested.
+                    actual_object_id: None,
                     expected_routing_bucket,
                     actual_routing_bucket: entry.filed_bucket(),
                 });

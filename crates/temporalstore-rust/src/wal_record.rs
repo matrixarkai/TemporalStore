@@ -288,7 +288,9 @@ mod tests {
         // container that holds it, and every reader of this address reaches it through that item.
         assert_eq!(item.routing_bucket, 11, "the item still carries the bucket");
         assert_eq!(address.block_id(), Some(7));
-        assert_eq!(address.object_id(), Some(3));
+        // The object id is not stamped onto the address either, for the same reason as the bucket:
+        // the item is the container that carries it, and a reader derives it from the item's terms.
+        assert_eq!(address.generation(), Some(7), "the generation is the block id");
     }
 
     /// A LOG ID PAST THE ADDRESS WORD IS REFUSED, AND A LOG ID IS THE ONE OFFSET NOTHING CAPS.

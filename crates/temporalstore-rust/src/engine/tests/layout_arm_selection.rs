@@ -263,14 +263,13 @@ fn population(engine: &TemporalEngine) -> Population {
             out.objects_per_bucket.push(objects);
         }
         for entry in node.block_index.values() {
-            match entry.address.object_id() {
-                Some(id) => {
-                    *out.by_object_id.entry(id).or_default() += 1;
-                    if entry.component.is_none() {
-                        *out.component_free_by_object_id.entry(id).or_default() += 1;
-                    }
-                }
-                None => out.pages_without_object_id += 1,
+            // DERIVED, not read off the address. `pages_without_object_id` is therefore structurally
+            // zero and is left at zero rather than removed from the shape: every page can name its
+            // object now, which is the fact that used to be worth counting.
+            let id = entry.object_id(1);
+            *out.by_object_id.entry(id).or_default() += 1;
+            if entry.component.is_none() {
+                *out.component_free_by_object_id.entry(id).or_default() += 1;
             }
             let kind_key = format!("{:?}\u{1}{}", entry.model_id, entry.object_key);
             *out.by_kind_key.entry(kind_key.clone()).or_default() += 1;

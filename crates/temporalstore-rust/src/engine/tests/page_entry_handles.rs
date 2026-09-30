@@ -1151,7 +1151,7 @@ fn an_ordinal_does_not_cost_the_component_list_its_tag() {
 /// AND WHAT EACH OF THE THREE NAMES WOULD BE WORTH, measured on mirrors rather than projected, so
 /// the remaining two verdicts are stated against the same arithmetic as the one that shipped.
 #[test]
-fn the_entry_is_sixty_four_bytes_and_every_one_is_accounted_for() {
+fn the_entry_is_fifty_six_bytes_and_every_one_is_accounted_for() {
     use std::mem::{align_of, offset_of, size_of};
 
     let address = size_of::<crate::block_store::BlockAddress>();
@@ -1193,11 +1193,13 @@ fn the_entry_is_sixty_four_bytes_and_every_one_is_accounted_for() {
         align_of::<BlockIndex>(),
         size_of::<BlockIndex>()
     );
-    // 64 AND NOT 72: the address inside the entry shed its routing bucket and narrowed its block
-    // id. The accounting above is a RECONSTRUCTION and needed no change for it -- which is the point
-    // of reconstructing rather than totalling -- but this literal did, and nothing but running it
-    // could have said so.
-    assert_eq!(64, size_of::<BlockIndex>());
+    // 56 AND NOT 64: the address inside the entry shed its object id, a whole eight-byte field in
+    // the eight-aligned group. The accounting above is a RECONSTRUCTION and needed no change for it
+    // -- which is the point of reconstructing rather than totalling -- but this literal did, and
+    // NOTHING BUT RUNNING IT COULD HAVE SAID SO. That sentence was already here for the 72 -> 64
+    // step and it earned itself again: a scan for `const _: () = assert!(size_of...)` does not see
+    // an `assert_eq!` in a test body, so this pin compiled clean and failed at run time.
+    assert_eq!(56, size_of::<BlockIndex>());
 
     // The slack, which is why every step here is sixteen bytes and not twelve.
     let slack = size_of::<BlockIndex>() - (eight_aligned + tail);
@@ -1624,7 +1626,7 @@ fn a_retired_spelling_still_decodes_into_a_page_entry() {
 /// and a field that changed shape would shift every field after it -- and the bytes are compared
 /// against the spelling recorded when the field was an `Arc<str>`.
 #[test]
-fn the_stored_bytes_of_an_entry_did_not_move_at_all() {
+fn the_model_spelling_did_not_move_on_the_wire_and_the_entry_lost_three_steps_in_memory() {
     // What the entry encoded to when `model_id` was an `Arc<str>`, captured at b8b12d30 by
     // `page_entry_names::capture_the_stored_spelling_of_a_page_entry`'s shape and re-derived here
     // from an equal-valued map so the golden is the VALUE, not this type's own impl.
@@ -1667,21 +1669,32 @@ fn the_stored_bytes_of_an_entry_did_not_move_at_all() {
         assert_eq!(page.log_backed, decoded.log_backed, "{label}: log_backed moved");
     }
 
-    // THE ABSENT EFFECT, as a number -- and now as TWO numbers, because two changes have taken
-    // bytes off this entry and a single subtraction would let either absorb the other's.
+    // THE ABSENT EFFECT, as THREE numbers now, because three changes have taken bytes off this entry
+    // and a single subtraction would let any of them absorb another's.
     //
-    // The model spelling took it 88 -> 72, which is the sixteen this test was written for. The
-    // address inside it then took it 72 -> 64 by shedding its routing bucket and narrowing its block
-    // id. Both steps are asserted, so neither can be credited with the other's bytes, and the wire
-    // is still zero for both: the spelling is written as a string and the address's routing slot is
-    // still on the wire, read and written nil.
+    // The model spelling took it 88 -> 72, which is the sixteen this test was written for. The address
+    // inside it then took it 72 -> 64 by shedding its routing bucket and narrowing its block id. Then
+    // `object_id` left that address and took it 64 -> 56 -- a WHOLE eight-byte field out of the
+    // eight-aligned group, which is why it paid alone where neither narrowing did. All three are
+    // asserted separately, so none can be credited with another's bytes.
+    //
+    // AND THE WIRE IS NO LONGER UNTOUCHED, WHICH IS WHY THIS TEST IS RENAMED. It held that the stored
+    // bytes did not move AT ALL. The MODEL SPELLING still has not moved -- asserted above, written as
+    // the string it always was -- but the address inside this entry now writes its `oi` slot empty,
+    // which IS a stored move and is what the format stamp pays for -- 6, not the 4 this text first
+    // named: 4 was reserved while main held 3, main is 5 now, and a stamp may only increase. The slot is
+    // still present, because the index log packs positionally. See
+    // `per_item_byte_budget::the_stored_form_moved_in_one_slot_and_the_version_stamp_pays_for_it`,
+    // which is the tripwire for that and fired on this change.
     let in_memory_before = 88usize;
     let after_the_spelling = 72usize;
+    let after_the_address_narrowing = 64usize;
     let in_memory_after = std::mem::size_of::<BlockIndex>();
-    let wire_delta = 0i64;
+    let spelling_wire_delta = 0i64;
     println!(
-        "  in memory {in_memory_before} -> {after_the_spelling} -> {in_memory_after} B ({:.2}% in \
-         total), on the wire {wire_delta} B (0.00%)",
+        "  in memory {in_memory_before} -> {after_the_spelling} -> {after_the_address_narrowing} \
+         -> {in_memory_after} B ({:.2}% in total), model spelling on the wire \
+         {spelling_wire_delta} B (0.00%)",
         100.0 * (in_memory_before - in_memory_after) as f64 / in_memory_before as f64
     );
     assert_eq!(
@@ -1691,12 +1704,23 @@ fn the_stored_bytes_of_an_entry_did_not_move_at_all() {
     );
     assert_eq!(
         8,
-        after_the_spelling - in_memory_after,
+        after_the_spelling - after_the_address_narrowing,
         "the address narrowing's in-memory effect is supposed to be eight bytes, and it is eight \
          because SIX bytes of address payload left in two narrowings of which neither crosses a \
          multiple of eight alone"
     );
-    assert_eq!(0, wire_delta, "the wire is supposed to be untouched");
+    assert_eq!(
+        8,
+        after_the_address_narrowing - in_memory_after,
+        "shedding the address's object id is supposed to be eight bytes, and unlike the two \
+         narrowings above it pays ALONE: it is a whole eight-byte field leaving the eight-aligned \
+         group, not a field getting smaller inside it"
+    );
+    assert_eq!(
+        0, spelling_wire_delta,
+        "the model spelling is supposed to be untouched on the wire; the address's `oi` slot is a \
+         separate matter and the version stamp covers it"
+    );
 }
 
 
@@ -1794,9 +1818,10 @@ mod tail_layout {
         pub(super) flags: PageFlags,
     }
 
-    /// TODAY: both names as `Arc`s and the address at 24. This is the live shape, and it is the one
-    /// the assertion below pins against `BlockIndex` -- `A0` was that shape until the address shed
-    /// its routing bucket and narrowed its block id, and `A0` is kept as the row BEFORE that.
+    /// The shape while the address was 24: both names as `Arc`s. It was TODAY until `object_id` left
+    /// the address, and it is kept as the row BEFORE that step -- exactly as `A0` is kept as the row
+    /// before the address narrowed. The module prices a STEP, and a step whose before-state has been
+    /// deleted cannot be priced.
     pub(super) struct E0 {
         pub(super) object_key: Arc<str>,
         pub(super) component: Option<Arc<str>>,
@@ -1810,6 +1835,26 @@ mod tail_layout {
         pub(super) object_key: Arc<str>,
         pub(super) component: Option<Arc<str>>,
         pub(super) address: [u64; 3],
+        pub(super) model: u8,
+        pub(super) flags: PageFlags,
+    }
+
+    /// TODAY: both names as `Arc`s and the address at 16, after `object_id` stopped being a field and
+    /// became a derivation from the terms beside it. This is the live shape and it is what the
+    /// assertion below pins against `BlockIndex`.
+    pub(super) struct F0 {
+        pub(super) object_key: Arc<str>,
+        pub(super) component: Option<Arc<str>>,
+        pub(super) address: [u64; 2],
+        pub(super) model: u8,
+        pub(super) dirty: bool,
+        pub(super) deleted: bool,
+        pub(super) log_backed: bool,
+    }
+    pub(super) struct F1 {
+        pub(super) object_key: Arc<str>,
+        pub(super) component: Option<Arc<str>>,
+        pub(super) address: [u64; 2],
         pub(super) model: u8,
         pub(super) flags: PageFlags,
     }
@@ -1855,7 +1900,8 @@ fn packing_the_flag_bytes_is_worth_nothing_alone_and_a_step_in_combination() {
 
     let rows = [
         ("names, 32 B address (before)", size_of::<A0>(), size_of::<A1>()),
-        ("names, 24 B address (TODAY)", size_of::<E0>(), size_of::<E1>()),
+        ("names, 24 B address (before)", size_of::<E0>(), size_of::<E1>()),
+        ("names, 16 B address (TODAY)", size_of::<F0>(), size_of::<F1>()),
         ("component ordinal, 32 B", size_of::<B0>(), size_of::<B1>()),
         ("both names ordinals, 32 B", size_of::<C0>(), size_of::<C1>()),
         ("both names + 24 B address", size_of::<D0>(), size_of::<D1>()),
@@ -1876,16 +1922,18 @@ fn packing_the_flag_bytes_is_worth_nothing_alone_and_a_step_in_combination() {
 
     // TODAY'S ARM MUST MATCH THE REAL STRUCT, or the mirrors are measuring something else.
     //
-    // It is `E0` and not `A0` now: `A0` carries a 32-byte address and the live one is 24, so `A0` is
-    // the row BEFORE this change and `E0` is today. This assertion is what said so -- it reported
-    // "the mirror of today's entry is 72 B against the real 64 B", which is a mirror naming a shape
-    // the engine no longer has, and no compiler pass can reach a claim of that kind.
+    // It is `F0` now, and the trail of relabellings is the point: `A0` carries a 32-byte address,
+    // `E0` a 24-byte one, and the live address is 16. This assertion is what says so each time -- it
+    // reported "the mirror of today's entry is 72 B against the real 64 B" when the address narrowed,
+    // and "64 B against the real 56 B" when `object_id` left it. Both times a mirror was naming a
+    // shape the engine no longer had, and NO COMPILER PASS CAN REACH A CLAIM OF THAT KIND: this is an
+    // `assert_eq!` in a test body, so it compiles clean and only a run can find it.
     assert_eq!(
         size_of::<BlockIndex>(),
-        size_of::<E0>(),
+        size_of::<F0>(),
         "the mirror of today's entry is {} B against the real {} B; every row below is then about \
          a different structure",
-        size_of::<E0>(),
+        size_of::<F0>(),
         size_of::<BlockIndex>()
     );
     assert_eq!(

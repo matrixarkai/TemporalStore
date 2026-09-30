@@ -366,17 +366,13 @@ pub(super) fn decode_block_record(
     // agree in every reachable state INCLUDING a reused slab id, where a record in the new slab
     // stamps the reused number and a stale address naming that number compares it against itself.
     // Carrying the field would have bought no discrimination at any offset in the format.
-    if let (Some(address_object_id), Some(record_object_id)) = (address.object_id(), header.object_id)
-    {
-        if address_object_id != record_object_id {
-            return Err(corrupt_block_envelope(
-                address,
-                format!(
-                    "object id mismatch: address {address_object_id}, record {record_object_id}"
-                ),
-            ));
-        }
-    }
+    // THE OBJECT-ID CROSS-CHECK STOOD HERE AND WAS ALREADY UNFIREABLE, which is why it went with
+    // the field rather than being rebuilt around a derived value. `encode_block_record` takes an
+    // `object_id` and discards it; `parse_block_record_header` returns `None` for it
+    // unconditionally. So no record can be built whose header disagrees with anything, and
+    // `the_envelope_carries_a_crc_not_a_digest` asserts that `None` in place. Rebuilding the check
+    // against an id DERIVED from the key would have been strictly worse than deleting it: both
+    // sides would come from the same terms, so it could only ever compare a value with itself.
     // The length check below is not an identity check, but it IS the only thing besides the block
     // ordinal that stands between a stale address and a different record's bytes: the address
     // hands `read_range` a length, and a record at that offset whose header states a different
@@ -894,7 +890,6 @@ pub(super) fn inspect_slab(slab: &[u8], block_slab_id: u64) -> BlockStoreSlabRep
         }
         address.set_length(record_len as u64);
         address.set_block_id(header.block_id);
-        address.set_object_id(header.object_id);
         match decode_block_record(&remaining[..record_len], &address) {
             Ok(decoded) => {
                 report.block_count = report.block_count.saturating_add(1);

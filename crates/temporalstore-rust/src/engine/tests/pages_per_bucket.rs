@@ -501,7 +501,7 @@ fn every_byte_of_the_page_index_is_accounted_for() {
         "the page entry no longer reconstructs as {index_eight_aligned} bytes of eight-aligned \
          field plus {index_tail} bytes of flag rounded up to {index_rounded_tail}"
     );
-    assert_eq!(64, size_of::<BlockIndex>(), "the page entry's budgeted width moved");
+    assert_eq!(56, size_of::<BlockIndex>(), "the page entry's budgeted width moved");
 
     // The three flags are ALREADY inside the rounding. Narrowing them reclaims nothing; only
     // removing the tail entirely would, and it is three keys of the stored index.

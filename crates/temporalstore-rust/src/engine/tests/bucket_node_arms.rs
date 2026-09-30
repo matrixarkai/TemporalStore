@@ -693,15 +693,15 @@ fn a_simple_bucket_holds_no_general_case_to_take_away() {
 
     // THE ONE FACT THAT DECIDES THE SHAPE: what a simple bucket's data actually is.
     assert_eq!(
-        24,
+        16,
         size_of::<crate::block_store::BlockAddress>(),
-        "an address is {} bytes, not 24",
+        "an address is {} bytes, not 16",
         size_of::<crate::block_store::BlockAddress>()
     );
     assert_eq!(
-        64,
+        56,
         size_of::<BlockIndex>(),
-        "a page entry is {} bytes, not 64",
+        "a page entry is {} bytes, not 56",
         size_of::<BlockIndex>()
     );
     assert!(
@@ -1044,10 +1044,13 @@ fn the_tagged_node_is_fifty_six_bytes_and_every_arm_reconstructs() {
         "the tagged node is {} bytes, not 48",
         size_of::<TaggedNode>()
     );
+    // 72, not 80: this payload holds a page entry, and the entry shed eight bytes when its address
+    // shed the object id. The reconstruction above is symbolic and followed on its own; this literal
+    // did not.
     assert_eq!(
-        80,
+        72,
         size_of::<SimpleLayout>(),
-        "the simple payload is {} bytes, not 80",
+        "the simple payload is {} bytes, not 72",
         size_of::<SimpleLayout>()
     );
 

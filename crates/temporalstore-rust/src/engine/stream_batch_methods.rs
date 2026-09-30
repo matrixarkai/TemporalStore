@@ -943,11 +943,14 @@ impl TemporalEngine {
                 PageIdentity::of(shard_id, target.kind(), target.object_key(), target.component()),
                 Some(routing_bucket),
             ) {
+                // Derived BEFORE `target` moves into the tuple: the terms are borrowed from it.
+                let object_id =
+                    stable_block_object_id(shard_id, target.kind(), target.object_key());
                 publish_records.push((
                     target,
                     address.clone(),
                     bytes,
-                    address.object_id(),
+                    Some(object_id),
                     Some(routing_bucket),
                 ));
             }

@@ -2836,11 +2836,18 @@ fn bucket_dump_manifest_rejects_object_lifecycle_mismatch() {
         // through the funnel rather than assuming JSON on either side.
         let mut restored = crate::engine::decode_index_bytes(&reused_owner.index_bytes)
             .expect("manifest index should decode");
+        // THE MISMATCH IS PLANTED IN THE KEY, NOT IN A STORED ID. An object id is derived from
+        // (shard, kind, key), so there is no field on the address to make wrong -- but renaming the
+        // key the manifest's index holds changes the id the install DERIVES for it, which is the
+        // same disagreement this test has always been about, reached through a mechanism that still
+        // exists. Without this the install gate would be tested by planting a value nothing reads.
         let address = restored
             .strings
-            .get_mut("lifecycle")
+            .remove("lifecycle")
             .expect("manifest string address");
-        address.set_object_id(Some(address.object_id().unwrap_or_default().wrapping_add(1)));
+        restored
+            .strings
+            .insert("lifecycle-renamed-to-move-its-derived-id".to_string(), address);
         reused_owner.index_bytes = crate::engine::encode_index_bytes(&restored);
         reused_owner.index_sha256 = sha256_hex_bytes(&reused_owner.index_bytes);
         reused_owner.dump_generation_id = bucket_dump_generation_id(&reused_owner);
@@ -4961,7 +4968,6 @@ fn what_each_address_field_actually_ranges_over() {
             offset = offset.max(a.offset());
             length = length.max(a.length());
             block_id = block_id.max(a.block_id().unwrap_or(0));
-            object_id = object_id.max(a.object_id().unwrap_or(0));
             generation = generation.max(a.generation().unwrap_or(0));
             derived_slab = derived_slab.max(a.slab_id().unwrap_or(0));
         }
@@ -5230,9 +5236,9 @@ fn a_block_whose_address_carries_no_object_id_still_reports_one() {
     {
         let mut shards = engine.shards.write().expect("shards lock poisoned");
         let shard = shards.get_mut(&1).expect("shard 1 loaded");
-        // Deliberately no object id, and no routing slot either.
+        // Deliberately no object id, and no routing slot either -- which is now EVERY address,
+        // since the field is gone. What is under test is that the ENTRY still reports one.
         let address = BlockAddress::from_parts(0, 0, 16, Some(7), None);
-        assert!(address.object_id().is_none(), "the case under test");
         crate::engine::storage_bucket_internals::upsert_bucket_index_block(
             shard,
             1,
@@ -5254,7 +5260,7 @@ fn a_block_whose_address_carries_no_object_id_still_reports_one() {
             }
             seen += 1;
             assert_ne!(
-                page.object_id(),
+                page.object_id(1),
                 0,
                 "a page filed from an address with no object id must still report the computed one"
             );
@@ -5262,7 +5268,7 @@ fn a_block_whose_address_carries_no_object_id_still_reports_one() {
             // the same function and comparing it with itself: the bucket's object index was
             // populated from the id the write path actually used.
             assert!(
-                bucket.object_index.contains(&page.object_id()),
+                bucket.object_index.contains(&page.object_id(1)),
                 "the id the page reports must be the one the write path filed it under"
             );
         }
@@ -8306,7 +8312,7 @@ fn bucket_object_index_already_matches_a_from_scratch_recompute() {
             .block_index
             .values()
             .filter(|page| !page.deleted)
-            .map(|page| page.object_id())
+            .map(|page| page.object_id(1))
             .collect();
         // Mirrors update_bucket_layout: an empty live set over an empty block index leaves the
         // stored set untouched, so only compare where the rebuild would actually assign.
@@ -9228,12 +9234,14 @@ fn a_recorded_outcome_matches_the_index_entry_the_command_produced() {
         .expect("the object it touched must be named");
     assert_eq!(item.kind, "string");
     assert!(!item.deleted);
+    // The item states the id the TERMS derive. It used to be compared against a copy on the
+    // address; the address carries none, so the comparison is against the derivation itself -- which
+    // is not circular here, because `item.object_id` was written by the engine's write path and this
+    // side is computed in the test.
     assert_eq!(
         item.object_id,
-        item.address
-            .as_ref()
-            .and_then(|address| address.object_id())
-            .unwrap_or_default()
+        crate::engine::hashing::stable_block_object_id(1, "string", "outcome-key"),
+        "the outcome states the id the write path derived for the key it names"
     );
 
     // The claim has to equal what the index actually holds. This is the whole point.
@@ -12197,11 +12205,10 @@ fn what_a_live_record_is_made_of() {
         });
     }
 
-    // Does address.object_id() EVER differ from the item's, or go absent? That decides whether it
-    // can be dropped from the wire and rebuilt.
-    let mut same = 0usize;
-    let mut differ = 0usize;
-    let mut absent = 0usize;
+    // THAT QUESTION IS ANSWERED AND ACTED ON. This counted whether `address.object_id()` ever
+    // differed from the item's or went absent, to decide whether it could be dropped from the wire
+    // and rebuilt. It never differed, so it was dropped: an address carries no object id and the
+    // item's own field is the only copy. There is nothing left to count.
     let mut no_address = 0usize;
     for (_, line) in engine
         .write_ahead_log_store()
@@ -12210,15 +12217,12 @@ fn what_a_live_record_is_made_of() {
     {
         let record = crate::wal::decode_wal_line(&line).expect("decodes");
         for item in &record.outcomes {
-            match item.resolved_address().map(|a| a.object_id()) {
-                None => no_address += 1,
-                Some(None) => absent += 1,
-                Some(Some(id)) if id == item.object_id => same += 1,
-                Some(Some(_)) => differ += 1,
+            if item.resolved_address().is_none() {
+                no_address += 1;
             }
         }
     }
-    println!("[census] address object_id: {same} same, {differ} differ, {absent} absent, {no_address} item(s) with no address");
+    println!("[census] {no_address} item(s) with no address; the address carries no object id to compare");
 
     for (_, line) in engine
         .write_ahead_log_store()
@@ -12241,18 +12245,13 @@ fn what_a_live_record_is_made_of() {
             );
             if let Some(address) = item.resolved_address() {
                 println!(
-                    "[census]   address: slab={} off={} len={} block_id={:?} object_id={:?} gen={:?} slab_id={:?}",
+                    "[census]   address: slab={} off={} len={} block_id={:?} gen={:?} slab_id={:?}",
                     address.block_slab_id(),
                     address.offset(),
                     address.length(),
                     address.block_id(),
-                    address.object_id(),
                     address.generation(),
                     address.slab_id(),
-                );
-                println!(
-                    "[census]   item.object_id == address.object_id()? {}",
-                    address.object_id() == Some(item.object_id)
                 );
             }
         }
@@ -13677,7 +13676,7 @@ fn the_maintained_object_index_matches_a_full_rebuild() {
             .block_index
             .values()
             .filter(|page| !page.deleted)
-            .map(|page| page.object_id())
+            .map(|page| page.object_id(1))
             .collect();
         checked += 1;
         live_total += rebuilt.object_count();
@@ -13996,7 +13995,6 @@ fn which_parts_of_a_block_address_are_populated() {
             pages += 1;
             let a = &page.address;
             block_id += usize::from(a.block_id().is_some());
-            object_id += usize::from(a.object_id().is_some());
             generation += usize::from(a.generation().is_some());
             slab_id += usize::from(a.slab_id().is_some());
             compactable += usize::from(a.compact_slab_address().is_some());
@@ -14088,9 +14086,10 @@ fn which_parts_of_a_block_address_restate_their_surroundings() {
             if block_routing_bucket(&page.object_key, 0, u32::MAX) == *bucket_key {
                 routing_matches_bucket += 1;
             }
-            if page.address.object_id() == Some(page.object_id()) {
-                object_id_matches_entry += 1;
-            }
+            // `object_id_matches_entry` STOOD HERE and has gone with the field. It compared the
+            // id an address CARRIED against the id the entry reports; the entry now derives that id
+            // from its own terms and the address carries none, so both sides would be the same
+            // expression. That is the shape the comment above rejects for the bucket.
         }
     }
     assert!(pages > 0, "the workload must produce pages, or this measures nothing");

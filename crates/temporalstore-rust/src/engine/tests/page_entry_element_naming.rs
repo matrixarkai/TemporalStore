@@ -501,7 +501,7 @@ fn round_up_to_eight(bytes: usize) -> usize {
 /// #1997's warning is the reason: a sibling's sixteen-bit ordinal was worth exactly nothing because
 /// the tail rounded back, and a bare `== 48` would not have shown that.
 #[test]
-fn the_entry_without_a_component_is_forty_eight_and_the_stride_fifty_six() {
+fn the_entry_without_a_component_is_forty_and_the_stride_forty_eight() {
     // --- THE LIVE ENTRY, RECONSTRUCTED. ---
     let live_fields = size_of::<Arc<str>>()          // object_key
         + size_of::<StoredModelKind>()               // model_id
@@ -551,14 +551,17 @@ fn the_entry_without_a_component_is_forty_eight_and_the_stride_fifty_six() {
     );
 
     // --- THE VERDICT, AS NUMBERS. ---
-    assert_eq!(64, size_of::<BlockIndex>(), "the entry pin moved");
-    assert_eq!(72, live_stride, "the stride pin moved");
+    assert_eq!(56, size_of::<BlockIndex>(), "the entry pin moved");
+    assert_eq!(64, live_stride, "the stride pin moved");
+    // 40 AND 48, NOT 48 AND 56: this mirror holds a `BlockAddress` too, so it shed the same eight
+    // bytes the live entry did. BOTH sides moving is why the STEP this module prices is unchanged --
+    // see the sixteen asserted in `page_entry_name_pointer`, which still holds for that reason.
     assert_eq!(
-        48,
+        40,
         size_of::<MirrorEntryNoComponent>(),
-        "the component-less entry is not 48"
+        "the component-less entry is not 40"
     );
-    assert_eq!(56, mirror_stride, "the component-less stride is not 56");
+    assert_eq!(48, mirror_stride, "the component-less stride is not 48");
     assert!(
         mirror_stride < live_stride,
         "the step is worth nothing, which would refute it on bytes as well"

@@ -467,7 +467,7 @@ fn a_tombstone_outlives_every_page_that_could_have_carried_it() {
             let paged: std::collections::BTreeSet<u64> = bucket
                 .block_index
                 .values()
-                .map(|page| page.object_id())
+                .map(|page| page.object_id(1))
                 .collect();
             let orphaned: Vec<u64> = bucket
                 .deleted_object_index
@@ -594,7 +594,7 @@ fn a_tombstone_outlives_every_page_that_could_have_carried_it() {
             bucket
                 .block_index
                 .values()
-                .filter(|page| page.object_id() == object_id)
+                .filter(|page| page.object_id(1) == object_id)
                 .count(),
             bucket.deleted(),
             bucket.deleted_object_index.contains(&object_id),
@@ -610,7 +610,7 @@ fn a_tombstone_outlives_every_page_that_could_have_carried_it() {
             bucket
                 .block_index
                 .values()
-                .filter(|page| page.object_id() == object_id)
+                .filter(|page| page.object_id(1) == object_id)
                 .count(),
             "a page in bucket {routing_bucket} still carries object {object_id}, so a per-page \
              `deleted` bit COULD have carried this deletion and this is not the state the module \

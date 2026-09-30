@@ -676,7 +676,7 @@ pub struct IndexItem {
 /// the six bytes of payload that left round to one whole word -- the same step, and the same reason,
 /// as in the page entry. 168, not 176, since that address merged its slab id and its offset into one
 /// word; 176, not 184, since it shed its derived `generation` before that.
-const _: () = assert!(std::mem::size_of::<IndexItem>() == 160);
+const _: () = assert!(std::mem::size_of::<IndexItem>() == 152);
 
 /// A field whose value is its default says nothing, and every field here carries
 /// `#[serde(default)]` -- so a reader that meets an absent one fills in the same value it would
@@ -857,27 +857,24 @@ impl IndexItem {
         )
     }
 
-    /// Drop from the address what the item already states, so it is not written twice.
+    /// NOTHING LEFT TO STRIP, AND THE FUNCTION STAYS AS THE PLACE THAT RECORDS WHY.
     ///
-    /// A page item carries `object_id` and `routing_bucket`, and the address it points at carries
-    /// both again. For a page belonging to one object they are the same value. Measured, the pair
-    /// is 18 bytes of a 142-byte item -- 12.7%. The WAL side already strips exactly this on its way
-    /// to protobuf; `item_to_proto` calls it "a full varint on every item whose page belongs to one
-    /// object".
+    /// It stripped the object-id repeat that an item and its address both carried: for a page
+    /// belonging to one object those were the same value, and the WAL side strips the same pair on
+    /// its way to protobuf -- `item_to_proto` calls it "a full varint on every item whose page
+    /// belongs to one object". MEASURED WHILE IT EXISTED, the pair was 18 bytes of a 142-byte item,
+    /// 12.7%. That figure is kept rather than deleted with the behaviour, because it is the reason
+    /// there was something to strip and therefore the reason there is now nothing.
     ///
-    /// Only what MATCHES is dropped. An address that carries a different object id keeps it, and
-    /// `restore_address_repeats` puts back only what is absent, so the pair round-trips.
-    fn strip_address_repeats(&mut self) {
-        let object_id = self.object_id;
-        if let Some(address) = self.address.as_mut() {
-            if address.object_id() == Some(object_id) {
-                address.set_object_id(None);
-            }
-        }
-        // THE ROUTING BUCKET IS NO LONGER A REPEAT TO STRIP. An address does not hold one, so the
-        // item's own `routing_bucket` is the only copy on the wire -- which is what this stripping
-        // was arranging for in the first place.
-    }
+    /// THE ADDRESS CARRIES NEITHER OF THEM NOW. The routing bucket went when an address stopped
+    /// holding one; the object id went the same way, and the entry derives it from its own terms.
+    /// So the item's own fields are the only copy on the wire, which is exactly the state this
+    /// stripping existed to arrange -- it did not become unnecessary, it succeeded.
+    ///
+    /// `restore_address_repeats` is its inverse and is empty for the same reason: a row written
+    /// before the width moved still carries an `oi`, the decode reads it for the generation
+    /// cross-check, and the entry ignores it.
+    fn strip_address_repeats(&mut self) {}
 
     /// Put back what the writer left out, from the fields that carry it.
     ///
@@ -885,11 +882,7 @@ impl IndexItem {
     /// before that stripping still carries both, and this leaves those alone: it fills only what is
     /// absent.
     fn restore_address_repeats(&mut self) {
-        let object_id = self.object_id;
-        if let Some(address) = self.address.as_mut() {
-            if address.object_id().is_none() {
-                address.set_object_id(Some(object_id));
-            }
+        if self.address.as_mut().is_some() {
         }
         // The routing bucket is not restored onto the address because the address has nowhere to
         // put it. The item's `routing_bucket` field is what every reader of this item uses.
@@ -2222,6 +2215,14 @@ impl LocalIndexLogStore {
     ) -> Result<u64, IndexLogError> {
         if bulk_ingest_mode() || !indexlog_enabled() {
             return Ok(0);
+        }
+        // s8112-count: TEMPORARY. Is the index-log-delta regression item COUNT or item SIZE?
+        if std::env::var("S8112_COUNT").is_ok() {
+            eprintln!(
+                "[s8112-count] shard={shard_id} items={} key_states={}",
+                items.len(),
+                key_states.len()
+            );
         }
         let mut inner = self.inner.lock().expect("index log lock poisoned");
         inner.ensure_root()?;
@@ -6837,13 +6838,13 @@ mod tests {
             back.restore_address_repeats();
 
             match label {
-                // An address that never carried an object id gains the item's, which is the same
-                // answer the WAL gives and is what the index means by a page of this object. The
-                // ROUTING BUCKET is not restored: an address has nowhere to put one, and the item's
-                // own `routing_bucket` field is what every reader of this item uses.
+                // NEITHER IS RESTORED ANY MORE, and there is nothing left to restore: an address
+                // has nowhere to put a routing bucket and nowhere to put an object id. The item's
+                // own fields are the only copy on the wire, which is what the stripping was
+                // arranging for, and `derived_object_id` turns the terms back into the id.
                 "address holds neither" => {
-                    let addr = back.address.as_ref().expect("address survives");
-                    assert_eq!(addr.object_id(), Some(object_id), "{label}");
+                    assert!(back.address.is_some(), "{label}: address survives");
+                    assert_eq!(back.object_id, object_id, "{label}: the item carries the id");
                     assert_eq!(back.routing_bucket, bucket, "{label}");
                 }
                 _ => assert_eq!(back, original, "{label} did not round-trip"),

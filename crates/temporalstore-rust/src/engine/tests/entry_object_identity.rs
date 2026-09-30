@@ -172,7 +172,7 @@ fn ids_by_object_key(engine: &TemporalEngine) -> BTreeMap<String, Vec<u64>> {
             by_key
                 .entry(page.object_key.to_string())
                 .or_default()
-                .push(page.object_id());
+                .push(page.object_id(1));
         }
     }
     by_key
@@ -436,7 +436,7 @@ fn the_written_key_of_a_page_spells_its_object_key_so_an_id_cannot_render_it() {
     );
 
     // --- AND THE ID IS NOT IN IT, so the characters are not substitutable by the id. ---
-    let id = page.object_id();
+    let id = page.object_id(1);
     assert_ne!(
         0, id,
         "the fixture page carries no object id, so the comparison below is vacuous"

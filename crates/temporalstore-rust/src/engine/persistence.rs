@@ -300,6 +300,10 @@ impl TemporalEngine {
                     // Refusing is treated exactly like a corrupt or absent index: the caller
                     // falls back to WAL replay, which rebuilds both maps correctly through
                     // insert_context_event_views. Slower, and correct.
+                    //
+                    // COUNTED, because all three outcomes below return the same `Ok(None)` and a
+                    // caller cannot tell a refusal from an absence. See
+                    // `engine::index_load_stamp_counts`.
                     if shard.index_format_version < super::SHARD_INDEX_FORMAT_VERSION {
                         note_index_load(IndexLoadPath::RefusedStaleStamp);
                         return Ok(None);
@@ -480,7 +484,7 @@ impl TemporalEngine {
         }
         if applied {
             for bucket in shard.bucket_index.bucket_map.values_mut() {
-                update_bucket_layout(bucket);
+                update_bucket_layout(shard_id, bucket);
             }
             shard.bucket_index.rebuild_object_block_lookup();
             // AFTER the page index has settled, because this asks of every carried element whether
