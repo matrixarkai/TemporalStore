@@ -1270,7 +1270,7 @@ counts on this stage are NOT MEASURED and read 0, they are not a measurement of 
 
         // MANIFEST-CONFORMANCE FOLD threshold dump (gate on only, never on a dry run): if the undumped
         // index-log gap has crossed `index_dump_wal_gap_bytes`, materialize the base index +
-        // fold the slab/zone catalog into an index-log anchor here, in the background cycle --
+        // fold the slab catalog into an index-log anchor here, in the background cycle --
         // mirroring this design's background `StorageManager` dump-on-WAL-gap cadence, never
         // per write. No-op with the gate off, so the cycle stays byte-identical when the fold is
         // not enabled.

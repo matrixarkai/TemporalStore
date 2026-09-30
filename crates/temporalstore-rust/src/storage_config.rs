@@ -247,7 +247,7 @@ impl StorageTuningConfig {
 
     pub fn effective_slab_target_bytes(self) -> u64 {
         // A slab must be able to hold the largest blob it stores, so the max blob
-        // size is a FLOOR, not a ceiling. asserts a record fits within a zone
+        // size is a FLOOR, not a ceiling. asserts a record fits within a slab
         // (specification), i.e. seal >= max_blob. The previous
         // `.min` inverted this, clamping the 1GiB seal target down to the 10MiB blob
         // size and sealing slabs 100x too small.

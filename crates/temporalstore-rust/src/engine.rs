@@ -5035,7 +5035,7 @@ fn collect_live_block_slab_ids(shard: &ShardState) -> BTreeSet<u64> {
     // GC live set: it feeds both the reclaim live-slab set and the page-gc dependency plan.
     // Omitting it let a slab holding only a control-state page be reclaimed while the index
     // still referenced it -> DataLoss on the next read. keeps any model's live pages
-    // counted in the zone's used_bytes so the zone is never destroyed while referenced. The
+    // counted in the slab's used_bytes so the slab is never destroyed while referenced. The
     // sibling collect_model_live_block_entries already includes it -- the two lists had drifted.
     absorb_live_block_slab_ids(
         &mut ids,

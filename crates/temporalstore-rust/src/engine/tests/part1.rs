@@ -2326,7 +2326,7 @@ fn crash_recovery_report_covers_wal_index_block_and_slab_manifest() {
     let report = recovered.storage_recovery_report(1);
 
     // Base-only single-barrier recovery re-derives page layout from WAL replay (the out-of-band
-    // roll_slab() is not a WAL command), so the detailed physical report -- slab ids, zone
+    // roll_slab() is not a WAL command), so the detailed physical report -- slab ids, slab
     // descriptors, per-slab density -- differs from the delta-fold path. It still recovers every
     // acked write (asserted by the reads below) with all live pages readable and integral.
     if crate::engine::wal_single_barrier() {
