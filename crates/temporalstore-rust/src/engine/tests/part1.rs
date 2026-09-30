@@ -3805,7 +3805,7 @@ fn what_reading_one_summary_actually_costs() {
             assert!(response.status.ok, "{:?}", response.status);
         }
 
-        let (address, routing_bucket) = {
+        let (address, object_key, routing_bucket) = {
             let shards = engine.shards.read().expect("engine lock poisoned");
             let shard = shards.get(&1).expect("loaded shard");
             let key = super::context::context_summary_key(7201, 60, 2);
@@ -3821,12 +3821,13 @@ fn what_reading_one_summary_actually_costs() {
             let (start, end) = shard.routing_range();
             (
                 address,
+                key.clone(),
                 Some(super::hashing::block_routing_bucket(&key, start, end)),
             )
         };
 
         // Warm, so neither half is charged for filling a cache that a steady-state read finds warm.
-        let _ = super::read_block_bytes(&engine.cache, &engine.block_store, 1, &address, None, routing_bucket);
+        let _ = super::read_block_bytes(&engine.cache, &engine.block_store, 1, &address, crate::engine::hashing::PageIdentity::of(1, "context_summary", &object_key, None), routing_bucket);
 
         // THE BUCKET IS HOISTED OUT OF THE PROBE, and that is not hiding a cost. It is one FNV-1a
         // pass over a borrowed `&str` returning a `u32`: no allocation, so it cannot move an
@@ -3837,7 +3838,7 @@ fn what_reading_one_summary_actually_costs() {
         let read_probe = crate::alloc_probe::Probe::start();
         let mut bytes = Vec::new();
         for _ in 0..5 {
-            bytes = super::read_block_bytes(&engine.cache, &engine.block_store, 1, &address, None, routing_bucket)
+            bytes = super::read_block_bytes(&engine.cache, &engine.block_store, 1, &address, crate::engine::hashing::PageIdentity::of(1, "context_summary", &object_key, None), routing_bucket)
                 .expect("the page must read, or the split below is measuring a None");
         }
         let read = read_probe.stop();
@@ -3869,7 +3870,7 @@ fn what_reading_one_summary_actually_costs() {
         // reason given at the first probe in this test: the derivation allocates nothing, so it
         // cannot move an allocation count, and hoisting it keeps the numbers comparable with the
         // runs taken before the bucket became an argument.
-        let addresses_with_buckets: Vec<(u32, crate::block_store::BlockAddress)> = {
+        let addresses_with_buckets: Vec<(u32, String, crate::block_store::BlockAddress)> = {
             let shards = engine.shards.read().expect("engine lock poisoned");
             let shard = shards.get(&1).expect("loaded shard");
             let (start, end) = shard.routing_range();
@@ -3883,6 +3884,7 @@ fn what_reading_one_summary_actually_costs() {
                         .map(|(_, address)| {
                             (
                                 super::hashing::block_routing_bucket(&key, start, end),
+                                key.clone(),
                                 address.clone(),
                             )
                         })
@@ -3891,7 +3893,7 @@ fn what_reading_one_summary_actually_costs() {
         };
         let addresses: Vec<crate::block_store::BlockAddress> = addresses_with_buckets
             .iter()
-            .map(|(_, address)| address.clone())
+            .map(|(_, _, address)| address.clone())
             .collect();
         assert_eq!(addresses.len(), 120, "every summary must be addressable");
         let wal_resident = addresses
@@ -3909,13 +3911,13 @@ fn what_reading_one_summary_actually_costs() {
 
         let walk_probe = crate::alloc_probe::Probe::start();
         let mut decoded = 0usize;
-        for (routing_bucket, address) in &addresses_with_buckets {
+        for (routing_bucket, object_key, address) in &addresses_with_buckets {
             if let Some(page) = super::read_block_bytes(
                 &engine.cache,
                 &engine.block_store,
                 1,
                 address,
-                None,
+                crate::engine::hashing::PageIdentity::of(1, "context_summary", object_key, None),
                 Some(*routing_bucket),
             ) {
                 if let super::state::PackedFeatureBlockDecode::Packed(points) =
@@ -5666,16 +5668,20 @@ fn where_a_block_read_miss_allocates() {
         });
         assert!(response.status.ok, "write {index}: {:?}", response.status);
     }
-    let addresses: Vec<(Option<u32>, crate::block_store::BlockAddress)> = {
+    let addresses: Vec<(Option<u32>, String, crate::block_store::BlockAddress)> = {
         let shards = engine.shards.read().expect("engine lock poisoned");
         let shard = shards.get(&1).expect("loaded shard");
         let (start, end) = shard.routing_range();
         shard
             .strings
             .iter()
+            // THE KEY IS CARRIED, not dropped. The bucket beside it is derived from it, and the
+            // read now needs the same string to name the object -- so the fixture keeps what it was
+            // already reading. Owned, because the shard guard is released before the reads.
             .map(|(key, address)| {
                 (
                     Some(super::hashing::block_routing_bucket(key, start, end)),
+                    key.clone(),
                     address.clone(),
                 )
             })
@@ -5691,7 +5697,7 @@ fn where_a_block_read_miss_allocates() {
     let mut store_allocs = 0u64;
     let mut store_bytes = 0u64;
     for round in 0..ROUNDS {
-        let (_, address) = &addresses[round as usize % addresses.len()];
+        let (_, _, address) = &addresses[round as usize % addresses.len()];
         let probe = crate::alloc_probe::Probe::start();
         let got = block_store.read(address);
         let counts = probe.stop();
@@ -5704,9 +5710,9 @@ fn where_a_block_read_miss_allocates() {
     let mut whole_allocs = 0u64;
     let mut whole_bytes = 0u64;
     for round in 0..ROUNDS {
-        let (routing_bucket, address) = &addresses[round as usize % addresses.len()];
+        let (routing_bucket, key, address) = &addresses[round as usize % addresses.len()];
         let probe = crate::alloc_probe::Probe::start();
-        let got = super::read_block_bytes(&engine.cache, block_store, 1, address, None, *routing_bucket);
+        let got = super::read_block_bytes(&engine.cache, block_store, 1, address, crate::engine::hashing::PageIdentity::of(1, "string", key, None), *routing_bucket);
         let counts = probe.stop();
         assert!(got.is_some(), "the page must read back");
         whole_allocs += counts.allocs;
@@ -5775,7 +5781,7 @@ fn what_a_block_read_costs_hit_against_miss() {
         assert!(response.status.ok, "write {index}: {:?}", response.status);
     }
 
-    let (address, routing_bucket) = {
+    let (address, object_key, routing_bucket) = {
         let shards = engine.shards.read().expect("engine lock poisoned");
         let shard = shards.get(&1).expect("loaded shard");
         let (start, end) = shard.routing_range();
@@ -5786,6 +5792,7 @@ fn what_a_block_read_costs_hit_against_miss() {
             .map(|(key, address)| {
                 (
                     address.clone(),
+                    key.clone(),
                     Some(super::hashing::block_routing_bucket(key, start, end)),
                 )
             })
@@ -5797,7 +5804,7 @@ fn what_a_block_read_costs_hit_against_miss() {
 
     // Warm once: the first read of anything touches one-off structures that would otherwise be
     // counted against whichever arm ran first.
-    let warm = super::read_block_shared(cache, block_store, 1, &address, None, routing_bucket)
+    let warm = super::read_block_shared(cache, block_store, 1, &address, crate::engine::hashing::PageIdentity::of(1, "string", &object_key, None), routing_bucket)
         .expect("the page reads back");
     assert!(!warm.is_empty(), "an empty page would make every number below meaningless");
 
@@ -5807,7 +5814,7 @@ fn what_a_block_read_costs_hit_against_miss() {
     let mut hit_bytes = 0u64;
     for _ in 0..ROUNDS {
         let probe = crate::alloc_probe::Probe::start();
-        let got = super::read_block_shared(cache, block_store, 1, &address, None, routing_bucket);
+        let got = super::read_block_shared(cache, block_store, 1, &address, crate::engine::hashing::PageIdentity::of(1, "string", &object_key, None), routing_bucket);
         let counts = probe.stop();
         assert!(got.is_some(), "the page must read back on the hit path");
         hit_allocs += counts.allocs;
@@ -5824,16 +5831,20 @@ fn what_a_block_read_costs_hit_against_miss() {
         dir.path().join("indexes"),
     );
     small.load_shard(1);
-    let addresses: Vec<(Option<u32>, crate::block_store::BlockAddress)> = {
+    let addresses: Vec<(Option<u32>, String, crate::block_store::BlockAddress)> = {
         let shards = small.shards.read().expect("engine lock poisoned");
         let shard = shards.get(&1).expect("loaded shard");
         let (start, end) = shard.routing_range();
         shard
             .strings
             .iter()
+            // THE KEY IS CARRIED, not dropped. The bucket beside it is derived from it, and the
+            // read now needs the same string to name the object -- so the fixture keeps what it was
+            // already reading. Owned, because the shard guard is released before the reads.
             .map(|(key, address)| {
                 (
                     Some(super::hashing::block_routing_bucket(key, start, end)),
+                    key.clone(),
                     address.clone(),
                 )
             })
@@ -5842,16 +5853,16 @@ fn what_a_block_read_costs_hit_against_miss() {
     assert!(addresses.len() >= 8, "need several pages to cycle through: {}", addresses.len());
     let small_cache = &small.cache;
     let small_blocks = &small.block_store;
-    for (routing_bucket, address) in &addresses {
-        let _ = super::read_block_shared(small_cache, small_blocks, 1, address, None, *routing_bucket);
+    for (routing_bucket, key, address) in &addresses {
+        let _ = super::read_block_shared(small_cache, small_blocks, 1, address, crate::engine::hashing::PageIdentity::of(1, "string", key, None), *routing_bucket);
     }
 
     let mut miss_allocs = 0u64;
     let mut miss_bytes = 0u64;
     for round in 0..ROUNDS {
-        let (routing_bucket, address) = &addresses[round as usize % addresses.len()];
+        let (routing_bucket, key, address) = &addresses[round as usize % addresses.len()];
         let probe = crate::alloc_probe::Probe::start();
-        let got = super::read_block_shared(small_cache, small_blocks, 1, address, None, *routing_bucket);
+        let got = super::read_block_shared(small_cache, small_blocks, 1, address, crate::engine::hashing::PageIdentity::of(1, "string", key, None), *routing_bucket);
         let counts = probe.stop();
         assert!(got.is_some(), "the page must read back on the miss path");
         miss_allocs += counts.allocs;
@@ -5863,9 +5874,9 @@ fn what_a_block_read_costs_hit_against_miss() {
     let mut owning_allocs = 0u64;
     let mut owning_bytes = 0u64;
     for round in 0..ROUNDS {
-        let (routing_bucket, address) = &addresses[round as usize % addresses.len()];
+        let (routing_bucket, key, address) = &addresses[round as usize % addresses.len()];
         let probe = crate::alloc_probe::Probe::start();
-        let got = super::read_block_bytes(small_cache, small_blocks, 1, address, None, *routing_bucket);
+        let got = super::read_block_bytes(small_cache, small_blocks, 1, address, crate::engine::hashing::PageIdentity::of(1, "string", key, None), *routing_bucket);
         let counts = probe.stop();
         assert!(got.is_some(), "the page must read back");
         owning_allocs += counts.allocs;
@@ -5989,12 +6000,12 @@ fn what_the_two_halves_of_a_node_fetch_cost() {
     let block_store = &engine.block_store;
 
     // Warm: the first read of a page touches one-off structures.
-    let warm = super::read_block_bytes(cache, block_store, 1, &address, Some(super::constants::CONTEXT_NODE_FIELD), routing_bucket)
+    let warm = super::read_block_bytes(cache, block_store, 1, &address, crate::engine::hashing::PageIdentity::of(1, "hash", &object_key, Some(super::constants::CONTEXT_NODE_FIELD)), routing_bucket)
         .expect("the page reads back");
     assert!(!warm.is_empty(), "an empty page would make every number below meaningless");
 
     let probe = crate::alloc_probe::Probe::start();
-    let bytes = super::read_block_bytes(cache, block_store, 1, &address, Some(super::constants::CONTEXT_NODE_FIELD), routing_bucket)
+    let bytes = super::read_block_bytes(cache, block_store, 1, &address, crate::engine::hashing::PageIdentity::of(1, "hash", &object_key, Some(super::constants::CONTEXT_NODE_FIELD)), routing_bucket)
         .expect("the page reads back");
     let read_allocs = probe.stop().allocs;
 

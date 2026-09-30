@@ -4243,9 +4243,12 @@ mod tests {
 
     /// An object id that is the hash of the row's own fields is not written, and comes back.
     ///
-    /// It is `stable_block_object_id` of the shard, the model, the key and the component -- and a
-    /// row carries the last three while the record carries the shard. Nine bytes restating a
-    /// hash of fields sitting beside it.
+    /// It is `stable_block_object_id` of the shard, the model and the key -- and a row carries the
+    /// last two while the record carries the shard. Nine bytes restating a hash of fields sitting
+    /// beside it.
+    ///
+    /// The COMPONENT was a term of that hash until #2019 and is not one now. The row still carries
+    /// it as its own field; what it no longer does is contribute to this id.
     #[test]
     fn a_row_does_not_write_the_object_id_it_can_derive() {
         let shard_id: ShardId = 7;

@@ -9,6 +9,7 @@ use matrixcache::{CacheKey, MultiLayerCache};
 
 use super::constants::{FEATURE_BLOCK_BINARY_MAGIC, FEATURE_BLOCK_MAGIC};
 use super::state::{PackedFeatureBlock, PackedFeatureBlockDecode};
+use super::hashing::PageIdentity;
 use super::{append_value, read_block_bytes, read_block_bytes_cold, stable_block_object_id};
 use crate::storage_config::context_block_target_bytes;
 pub(super) fn sorted_feature_points(mut points: Vec<FeaturePoint>) -> Vec<FeaturePoint> {
@@ -499,11 +500,14 @@ pub(super) fn read_feature_point(
     shard_id: ShardId,
     timestamp_ms: u64,
     address: &BlockAddress,
+    // WHICH PAGE, stated by the caller. A packed series page holds many points and is not an
+    // element of its object, so the element half is `None` -- but the OBJECT half cannot be
+    // recovered here: this function is handed an address and a timestamp, and neither names a key.
+    // See [`PageIdentity`] for why it is the terms rather than an id that cross.
+    identity: PageIdentity<'_>,
     routing_bucket: Option<u32>,
 ) -> Option<FeaturePoint> {
-    // `None` for the reason the append uses `None`: a packed series page holds many points
-    // and is not an element of its object.
-    let bytes = read_block_bytes(cache, block_store, shard_id, address, None, routing_bucket)?;
+    let bytes = read_block_bytes(cache, block_store, shard_id, address, identity, routing_bucket)?;
     match decode_feature_block_strict(&bytes) {
         PackedFeatureBlockDecode::Packed(points) => points
             .into_iter()
@@ -540,6 +544,11 @@ pub(super) fn read_feature_point_cached(
     shard_id: ShardId,
     timestamp_ms: u64,
     address: &BlockAddress,
+    // WHICH PAGE, stated by the caller. A packed series page holds many points and is not an
+    // element of its object, so the element half is `None` -- but the OBJECT half cannot be
+    // recovered here: this function is handed an address and a timestamp, and neither names a key.
+    // See [`PageIdentity`] for why it is the terms rather than an id that cross.
+    identity: PageIdentity<'_>,
     packed_block_cache: &mut HashMap<BlockAddress, Option<Vec<FeaturePoint>>>,
     routing_bucket: Option<u32>,
 ) -> Option<FeaturePoint> {
@@ -554,9 +563,7 @@ pub(super) fn read_feature_point_cached(
             .cloned();
     }
 
-    // `None` for the reason the append uses `None`: a packed series page holds many points
-    // and is not an element of its object.
-    let bytes = read_block_bytes(cache, block_store, shard_id, address, None, routing_bucket)?;
+    let bytes = read_block_bytes(cache, block_store, shard_id, address, identity, routing_bucket)?;
     match decode_feature_block_strict(&bytes) {
         PackedFeatureBlockDecode::Packed(points) => {
             let selected = points

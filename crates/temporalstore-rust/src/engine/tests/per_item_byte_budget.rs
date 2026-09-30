@@ -2629,7 +2629,7 @@ fn what_each_shape_of_the_object_index_would_cost_in_width() {
     //
     // The eight-byte form of this shape is a single word that holds either an object id or a
     // pointer, told apart by a bit the id does not use. This engine's object id is
-    // `stable_block_object_id`, a 64-bit FNV-1a over `shard:kind:key:component`, and it reserves
+    // `stable_block_object_id`, a 64-bit FNV-1a over `shard:kind:key`, and it reserves
     // nothing: the assertion below walks real keys and shows the ids reaching both ends of the
     // range, so there is no bit a tag could take without losing ids.
     let mut low_bit_set = 0usize;

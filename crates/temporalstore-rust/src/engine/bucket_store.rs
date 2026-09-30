@@ -9,6 +9,7 @@ use crate::block_store::{BlockStore, BlockAddress};
 use crate::types::ShardId;
 use matrixcache::MultiLayerCache;
 
+use super::hashing::PageIdentity;
 use super::read_block_bytes;
 use super::state::{
     object_component_lookup_key, object_block_lookup_key, ShardState, BucketLayoutState,
@@ -288,10 +289,10 @@ pub(super) fn read_bucket_index_value(
             block_store,
             shard_id,
             &address,
-            // The component this address was looked up BY, two lines up. Anything else here
-            // would resolve a record and then look inside it for a page that is not the one
-            // `bucket_index_block_address` just named.
-            component,
+            // THE SAME THREE TERMS `bucket_index_block_address` was just asked, two lines up.
+            // Anything else here would resolve a record and then look inside it for a page that is
+            // not the one that lookup named.
+            PageIdentity::of(shard_id, model_id, object_key, component),
             Some(crate::engine::hashing::block_routing_bucket(
                 object_key,
                 start_routing_bucket,

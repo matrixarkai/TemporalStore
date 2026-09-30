@@ -15,6 +15,7 @@ use crate::types::{
 use matrixcache::MultiLayerCache;
 
 use super::packed_pages::{read_feature_point, read_feature_point_cached, read_feature_point_cold};
+use super::hashing::PageIdentity;
 use super::{read_block_bytes, stable_object_hash, ShardState};
 /// `prefix` then two decimal parts, joined by colons, in one allocation.
 ///
@@ -366,10 +367,21 @@ pub(super) fn read_context_value<T: ContextWire>(
     shard_id: ShardId,
     timeline_key: u64,
     address: &BlockAddress,
+    // Which page, stated by the caller: the timeline series this record sits in. The kind differs
+    // per caller -- a child ref, a summary and a compression event are three kinds over three maps
+    // -- and neither the address nor the timeline key names it.
+    identity: PageIdentity<'_>,
     routing_bucket: Option<u32>,
 ) -> Option<T> {
-    let point =
-        read_feature_point(cache, block_store, shard_id, timeline_key, address, routing_bucket)?;
+    let point = read_feature_point(
+        cache,
+        block_store,
+        shard_id,
+        timeline_key,
+        address,
+        identity,
+        routing_bucket,
+    )?;
     context_from_bytes(&point.value)
 }
 
@@ -388,6 +400,8 @@ pub(super) fn read_context_value_cached<T: ContextWire>(
     shard_id: ShardId,
     timeline_key: u64,
     address: &BlockAddress,
+    // As `read_context_value` above.
+    identity: PageIdentity<'_>,
     packed_block_cache: &mut HashMap<BlockAddress, Option<Vec<FeaturePoint>>>,
     routing_bucket: Option<u32>,
 ) -> Option<T> {
@@ -397,6 +411,7 @@ pub(super) fn read_context_value_cached<T: ContextWire>(
         shard_id,
         timeline_key,
         address,
+        identity,
         packed_block_cache,
         routing_bucket,
     )?;
@@ -822,6 +837,7 @@ pub(super) fn load_context_children(
                         shard_id,
                         *timeline_key,
                         address,
+                        PageIdentity::of(shard_id, "context_child", object_key, None),
                         routing_bucket,
                     )
                 })
@@ -867,20 +883,34 @@ pub(super) fn load_context_node_vector(
         start_routing_bucket,
         end_routing_bucket,
     ));
+    // EACH ARM NAMES ITS OWN OBJECT. The comment that stood at this read said both arms resolve
+    // `hashes[key][CONTEXT_NODE_FIELD]`, and the second one does not: it resolves a whole
+    // `context_node` page, which `model_map_block_address` spells `("context_node", None)`. The
+    // identity cannot be built without a kind, so the two arms had to separate -- see
+    // `execute_on_shard::load_context_node` for what the single spelling cost on the in-log path.
     shard
         .hashes
         .get(&object_key)
         .and_then(|fields| fields.get(CONTEXT_NODE_FIELD))
-        .or_else(|| shard.context_nodes.get(&object_key))
-        .and_then(|address| {
+        .map(|address| {
+            (
+                address,
+                PageIdentity::of(shard_id, "hash", &object_key, Some(super::constants::CONTEXT_NODE_FIELD)),
+            )
+        })
+        .or_else(|| {
+            shard
+                .context_nodes
+                .get(&object_key)
+                .map(|address| (address, PageIdentity::of(shard_id, "context_node", &object_key, None)))
+        })
+        .and_then(|(address, identity)| {
             super::read_block_shared(
                 cache,
                 block_store,
                 shard_id,
                 address,
-                // Both readers here resolve `hashes[key][CONTEXT_NODE_FIELD]`, so both name
-                // that field. A context node is a hash FIELD, not a whole object.
-                Some(super::constants::CONTEXT_NODE_FIELD),
+                identity,
                 routing_bucket,
             )
                 .and_then(|bytes| crate::types::decode_context_node_vector(&bytes))
@@ -905,12 +935,24 @@ pub(super) fn load_context_node(
         start_routing_bucket,
         end_routing_bucket,
     ));
+    // Each arm names its own object, as in `load_context_node_vector` above.
     shard
         .hashes
         .get(&object_key)
         .and_then(|fields| fields.get(CONTEXT_NODE_FIELD))
-        .or_else(|| shard.context_nodes.get(&object_key))
-        .and_then(|address| {
+        .map(|address| {
+            (
+                address,
+                PageIdentity::of(shard_id, "hash", &object_key, Some(super::constants::CONTEXT_NODE_FIELD)),
+            )
+        })
+        .or_else(|| {
+            shard
+                .context_nodes
+                .get(&object_key)
+                .map(|address| (address, PageIdentity::of(shard_id, "context_node", &object_key, None)))
+        })
+        .and_then(|(address, identity)| {
             // Shared, not copied: the bytes are parsed here and dropped, so owning them costs a
             // page-sized memcpy and an allocation for nothing.
             super::read_block_shared(
@@ -918,9 +960,7 @@ pub(super) fn load_context_node(
                 block_store,
                 shard_id,
                 address,
-                // Both readers here resolve `hashes[key][CONTEXT_NODE_FIELD]`, so both name
-                // that field. A context node is a hash FIELD, not a whole object.
-                Some(super::constants::CONTEXT_NODE_FIELD),
+                identity,
                 routing_bucket,
             )
                 .and_then(|bytes| context_from_bytes::<ContextNode>(&bytes))
@@ -951,6 +991,7 @@ pub(super) fn load_context_summaries(
                         shard_id,
                         *timeline_key,
                         address,
+                        PageIdentity::of(shard_id, "context_summary", object_key, None),
                         routing_bucket,
                     )
                 })
@@ -995,6 +1036,7 @@ pub(super) fn load_newest_context_summary(
                         shard_id,
                         *timeline_key,
                         address,
+                        PageIdentity::of(shard_id, "context_summary", object_key, None),
                         routing_bucket,
                     )
                 })
@@ -1044,6 +1086,7 @@ pub(super) fn load_context_compression_events(
                     shard_id,
                     *timeline_key,
                     address,
+                    PageIdentity::of(shard_id, "context_compression", &object_key, None),
                     routing_bucket,
                 )
                 .filter(|event| {

@@ -444,6 +444,47 @@ pub struct BlockAddress {
 /// BlockAddress)` "makes the caller say it, and the compiler name any caller that cannot". An
 /// `Option<u64>` threaded to the same sites would compile with `None` and lose a page quietly.
 ///
+/// THAT CONSTRAINT IS NOW SATISFIED, AND IT IS WHAT THIS PARAGRAPH USED TO BE WAITING FOR.
+/// `engine::hashing::PageIdentity` is that identity: `read_block_bytes` and `read_block_shared` take
+/// one by value instead of recovering an object from `address.object_id()` with `and_then`, and the
+/// type has NO constructor that accepts an id. `PageIdentity::of` takes the shard, the kind and the
+/// key and derives it, so a caller cannot pass a stale id, an id from somewhere else, or none at all
+/// -- there is no value of that shape to pass. The read path no longer reads this field.
+///
+/// WHAT THE COMPILER NAMED WHEN THE TYPE WENT IN, which is the measurement of the doctrine rather
+/// than a restatement of it: four production sites had no key in hand at all. `FastPathRead::Hash`
+/// carried `fields` and a bucket derived FROM the key and then dropped the key;
+/// `compact_block_addresses` took `Item = (u32, &mut BlockAddress)`, so thirteen relocation arms
+/// each holding a key could not pass one; `packed_pages::read_feature_point`,
+/// `read_feature_point_cached`, `product_model::read_sequence_row` and `context::read_context_value`
+/// took an address and a timestamp and nothing that named an object. Every one of them had a caller
+/// that did hold the key, which is why the threading terminates.
+///
+/// AND IT FOUND SEVEN READS THAT NAMED THE WRONG ELEMENT. A context node is resolved
+/// `hashes[key][CONTEXT_NODE_FIELD]` OR, for pages written before that move, `context_nodes[key]`
+/// -- and all seven sites named `Some(CONTEXT_NODE_FIELD)` for BOTH arms, with a comment asserting
+/// they were the same lookup. `storage_bucket_internals::model_map_block_address` is the authority
+/// and spells the second arm `("context_node", None)`. Under the old shape only the element was
+/// wrong, because the object came off the address, so the in-log fallback built the page key
+/// `(id, Some("meta"))` for a page registered as `(id, None)` and missed it -- MISSING for a
+/// durably acknowledged write, on exactly the path this whole entry is about. The identity cannot be
+/// built without naming a kind, so the arms had to separate and the element came right with them.
+///
+/// WHAT IS LEFT BEFORE THE FIELD CAN GO, stated so the next change does not have to re-derive it.
+/// Shedding `object_id` is ONE change and not two: it is a whole eight-byte field in the
+/// eight-aligned group, so the group becomes 8, the tail stays 4 + 2 + 1 = 7 and rounds to 8, and
+/// the struct is 16. That is this file's own rule read correctly -- "a narrowing of ONE field cannot
+/// [pay]" is about narrowing, and shedding eight bytes from the aligned group IS a whole step. What
+/// it costs is the STORED shape: `generation` is `block_id.or(object_id)`, so for a WAL-resident page
+/// -- where the block id is absent -- the generation IS the object id, and `state::block_index_handle`
+/// hashes it while `state::block_index_written_key` renders it into the ref key already on disk.
+/// Every such ref moves, which needs `engine::SHARD_INDEX_FORMAT_VERSION` at 4; #2019 spent 3 on a
+/// same-typed reinterpretation and this is a different one. The `oi` slot can STAY on the wire while
+/// the in-memory field goes -- `BlockAddressWire` is a separate struct and the index log packs it
+/// POSITIONALLY, so retiring the slot would shorten that array and refuse every existing row -- and
+/// keeping it is also what lets `TryFrom` go on cross-checking an old `g` against the value the
+/// writer recorded.
+///
 /// AND IT MOVES EVERY REF ON DISK, because `generation` is `block_id.or(object_id)` and
 /// `state::block_index_handle` hashes the generation while `state::block_index_written_key` renders
 /// it into the stored ref key. For a WAL-resident page the block id is absent, so the generation IS

@@ -518,7 +518,8 @@ impl TemporalEngine {
             &self.block_store,
             shard_id,
             &address,
-            component,
+            // The same three terms `bucket_index_block_address` was just asked, above.
+            PageIdentity::of(shard_id, model_id, object_key, component),
             Some(routing_bucket),
         )
     }
@@ -2048,8 +2049,10 @@ impl TemporalEngine {
                 &self.block_store,
                 shard_id,
                 &address,
-                // This loop walks `shard.strings`, whose pages ARE their whole object.
-                None,
+                // This loop walks `shard.strings`, whose pages ARE their whole object. The same
+                // identity `object_id` above was derived from, now stated as one value rather than
+                // computed once for the filter and again inside the read.
+                PageIdentity::of(shard_id, "string", &key, None),
                 Some(routing_bucket),
             ) else {
                 continue;

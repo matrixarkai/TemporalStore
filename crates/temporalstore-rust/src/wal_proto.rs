@@ -445,9 +445,12 @@ fn numeric_component_text(timestamp_ms: Option<u64>, entry_id: Option<u64>) -> O
 
 /// The object id an item has to write, or absent when the rest of the item already says it.
 ///
-/// An object id is `stable_block_object_id` of the shard, the kind, the key and the component --
-/// and an item carries the last three while the record carries the shard. So the nine bytes a
-/// `fixed64` takes are nine bytes restating a hash of the fields sitting beside it.
+/// An object id is `stable_block_object_id` of the shard, the kind and the key -- and an item
+/// carries the last two while the record carries the shard. So the nine bytes a `fixed64` takes are
+/// nine bytes restating a hash of the fields sitting beside it.
+///
+/// The component was a fourth term until #2019. It is still a field of the item; it is no longer a
+/// term of this id.
 ///
 /// Dropped only when the derivation AGREES with what the item holds. An id that came from
 /// anywhere else is written out, so being wrong here costs bytes rather than correctness -- the

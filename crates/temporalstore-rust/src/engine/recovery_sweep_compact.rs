@@ -1508,10 +1508,13 @@ fn expiry_scan_budget(limit: usize) -> usize {
         // consistent partial state instead of leaving the volatile index half-advanced but
         // unpersisted -- see the `if let Err(err)` handler after this block for why.
         let relocation_result: Result<(), Status> = (|| {
-        // EVERY ARM NOW PAIRS AN ADDRESS WITH ITS KEY'S BUCKET, and the arms that iterated
-        // `values_mut()` iterate `iter_mut()` to get it. Nothing new is computed per PAGE: a bucket
-        // is one FNV-1a over the key, and the keyed arms compute it once per key for however many
-        // pages that key owns.
+        // EVERY ARM PAIRS AN ADDRESS WITH ITS KEY'S BUCKET *AND* WITH THE KEY, and the arms that
+        // iterated `values_mut()` iterate `iter_mut()` to get both. Nothing new is computed per
+        // PAGE: a bucket is one FNV-1a over the key, and the keyed arms compute it once per key for
+        // however many pages that key owns. The key is LENT rather than copied -- `Cow::Borrowed`
+        // everywhere but the entity arm, which composes its key and so owns it -- and it is the same
+        // string the bucket beside it was derived from, which is the property that matters: a read
+        // that named a different string would look for a page in a bucket nothing filed it under.
         let bucket_of = |key: &str| {
             block_routing_bucket(key, start_routing_bucket, end_routing_bucket)
         };
@@ -1523,22 +1526,30 @@ fn expiry_scan_budget(limit: usize) -> usize {
             shard
                 .strings
                 .iter_mut()
-                .map(|(key, address)| (bucket_of(key), address)),
+                .map(|(key, address)| (bucket_of(key), std::borrow::Cow::Borrowed(key.as_str()), address)),
             &mut rewrite_stats,
         )?;
         for (key, fields) in shard.hashes.iter_mut() {
             let routing_bucket = bucket_of(key);
+            // Borrowed once per KEY and cloned per page, which for `Cow::Borrowed` is a
+            // pointer copy and not a string copy.
+            let object_key = std::borrow::Cow::Borrowed(key.as_str());
             compact_block_addresses(
                 &self.block_store,
                 &self.cache,
                 shard_id,
                 "hash",
-                fields.values_mut().map(|address| (routing_bucket, address)),
+                fields
+                    .values_mut()
+                    .map(move |address| (routing_bucket, object_key.clone(), address)),
                 &mut rewrite_stats,
             )?;
         }
         for (key, members) in shard.zsets.iter_mut() {
             let routing_bucket = bucket_of(key);
+            // Borrowed once per KEY and cloned per page, which for `Cow::Borrowed` is a
+            // pointer copy and not a string copy.
+            let object_key = std::borrow::Cow::Borrowed(key.as_str());
             compact_block_addresses(
                 &self.block_store,
                 &self.cache,
@@ -1546,12 +1557,15 @@ fn expiry_scan_budget(limit: usize) -> usize {
                 "zset",
                 members
                     .values_mut()
-                    .map(|entry| (routing_bucket, &mut entry.1)),
+                    .map(move |entry| (routing_bucket, object_key.clone(), &mut entry.1)),
                 &mut rewrite_stats,
             )?;
         }
         for (key, elements) in shard.lists.iter_mut() {
             let routing_bucket = bucket_of(key);
+            // Borrowed once per KEY and cloned per page, which for `Cow::Borrowed` is a
+            // pointer copy and not a string copy.
+            let object_key = std::borrow::Cow::Borrowed(key.as_str());
             compact_block_addresses(
                 &self.block_store,
                 &self.cache,
@@ -1559,18 +1573,23 @@ fn expiry_scan_budget(limit: usize) -> usize {
                 "list",
                 elements
                     .values_mut()
-                    .map(|address| (routing_bucket, address)),
+                    .map(move |address| (routing_bucket, object_key.clone(), address)),
                 &mut rewrite_stats,
             )?;
         }
         for (key, members) in shard.sets.iter_mut() {
             let routing_bucket = bucket_of(key);
+            // Borrowed once per KEY and cloned per page, which for `Cow::Borrowed` is a
+            // pointer copy and not a string copy.
+            let object_key = std::borrow::Cow::Borrowed(key.as_str());
             compact_block_addresses(
                 &self.block_store,
                 &self.cache,
                 shard_id,
                 "set",
-                members.values_mut().map(|address| (routing_bucket, address)),
+                members
+                    .values_mut()
+                    .map(move |address| (routing_bucket, object_key.clone(), address)),
                 &mut rewrite_stats,
             )?;
         }
@@ -1581,6 +1600,7 @@ fn expiry_scan_budget(limit: usize) -> usize {
                 &self.cache,
                 shard_id,
                 "feature",
+                key.as_str(),
                 series,
                 &mut rewrite_stats,
                 routing_bucket,
@@ -1594,7 +1614,7 @@ fn expiry_scan_budget(limit: usize) -> usize {
             shard
                 .control_state_blocks
                 .iter_mut()
-                .map(|(key, address)| (bucket_of(key), address)),
+                .map(|(key, address)| (bucket_of(key), std::borrow::Cow::Borrowed(key.as_str()), address)),
             &mut rewrite_stats,
         )?;
         compact_block_addresses(
@@ -1605,7 +1625,7 @@ fn expiry_scan_budget(limit: usize) -> usize {
             shard
                 .context_nodes
                 .iter_mut()
-                .map(|(key, address)| (bucket_of(key), address)),
+                .map(|(key, address)| (bucket_of(key), std::borrow::Cow::Borrowed(key.as_str()), address)),
             &mut rewrite_stats,
         )?;
         for (key, series) in shard.context_events.iter_mut() {
@@ -1615,6 +1635,7 @@ fn expiry_scan_budget(limit: usize) -> usize {
                 &self.cache,
                 shard_id,
                 "context_event",
+                key.as_str(),
                 series,
                 &mut rewrite_stats,
                 routing_bucket,
@@ -1627,6 +1648,7 @@ fn expiry_scan_budget(limit: usize) -> usize {
                 &self.cache,
                 shard_id,
                 "context_index",
+                key.as_str(),
                 series,
                 &mut rewrite_stats,
                 routing_bucket,
@@ -1639,6 +1661,7 @@ fn expiry_scan_budget(limit: usize) -> usize {
                 &self.cache,
                 shard_id,
                 "context_audit",
+                key.as_str(),
                 series,
                 &mut rewrite_stats,
                 routing_bucket,
@@ -1651,6 +1674,7 @@ fn expiry_scan_budget(limit: usize) -> usize {
                 &self.cache,
                 shard_id,
                 "context_child",
+                key.as_str(),
                 series,
                 &mut rewrite_stats,
                 routing_bucket,
@@ -1663,6 +1687,7 @@ fn expiry_scan_budget(limit: usize) -> usize {
                 &self.cache,
                 shard_id,
                 "context_summary",
+                key.as_str(),
                 series,
                 &mut rewrite_stats,
                 routing_bucket,
@@ -1675,6 +1700,7 @@ fn expiry_scan_budget(limit: usize) -> usize {
                 &self.cache,
                 shard_id,
                 "context_compression",
+                key.as_str(),
                 series,
                 &mut rewrite_stats,
                 routing_bucket,
@@ -1692,12 +1718,20 @@ fn expiry_scan_budget(limit: usize) -> usize {
             "context_entity",
             shard.context_entities.iter_mut().flat_map(|(key, series)| {
                 series.iter_mut().map(move |(entity_hash, address)| {
+                    // COMPOSED ONCE AND USED TWICE, which is the point of hoisting it into a
+                    // binding: the bucket is derived from this string and the identity names it, and
+                    // if the two ever came from different spellings the read would look for the page
+                    // in a bucket nothing filed it under. The `format!` is not new -- this arm has
+                    // always built it to derive the bucket -- it is simply no longer thrown away,
+                    // which is what `Cow::Owned` carries out of here.
+                    let entity_key = format!("{key}:{entity_hash}");
                     (
                         block_routing_bucket(
-                            &format!("{key}:{entity_hash}"),
+                            &entity_key,
                             start_routing_bucket,
                             end_routing_bucket,
                         ),
+                        std::borrow::Cow::Owned(entity_key),
                         address,
                     )
                 })

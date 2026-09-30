@@ -667,6 +667,10 @@ fn read_block_bytes_for_compaction(
     block_store: &BlockStore,
     shard_id: ShardId,
     address: &BlockAddress,
+    // WHICH PAGE, which this function could not say and now must. The element stays `None` for the
+    // reason spelled out below; what changed is that the OBJECT is stated from the key rather than
+    // recovered from the address, so a relocation cannot read a page it cannot name.
+    identity: PageIdentity<'_>,
     routing_bucket: Option<u32>,
 ) -> Option<Vec<u8>> {
     #[cfg(test)]
@@ -696,31 +700,49 @@ fn read_block_bytes_for_compaction(
     // it and the address is left alone -- so it is a missed relocation and never wrong bytes.
     // Whole-object pages, which is every `string` and `control_state`, are unaffected: `None`
     // is their actual component.
-    read_block_bytes(cache, block_store, shard_id, address, None, routing_bucket)
+    read_block_bytes(cache, block_store, shard_id, address, identity, routing_bucket)
 }
 
-/// THE BUCKET COMES IN BESIDE EACH ADDRESS, because compaction reads and re-writes pages and both
-/// halves are keyed by it.
+/// THE BUCKET AND THE KEY COME IN BESIDE EACH ADDRESS, because compaction reads and re-writes
+/// pages and the read is keyed by both.
 ///
-/// It used to come off the address. A compaction round walks a model map and every entry in that
-/// map belongs to one object key, so the caller has the bucket already -- what it did not have was
-/// a reason to say so. `Item = (u32, &mut BlockAddress)` makes the caller say it, and the compiler
-/// name any caller that cannot.
+/// The bucket used to come off the address and the key was never carried at all. A compaction round
+/// walks a model map and every entry in that map belongs to one object key, so the caller has both
+/// already -- what it did not have was a reason to say so. `Item = (u32, &str, &mut BlockAddress)`
+/// makes the caller say them, and the compiler name any caller that cannot.
+///
+/// THE KEY IS THE ADDITION, and it is the same doctrine one term further. The relocation read needs
+/// a [`PageIdentity`], the identity is `(shard, kind, key)`, and `model_id` beside this parameter is
+/// only two of those three. Every arm in `recovery_sweep_compact` was ALREADY deriving its bucket
+/// from the key it is iterating, so no arm had to find one it did not have.
+///
+/// A `Cow` AND NOT A `&str`, FOR ONE ARM. Twelve of the thirteen arms iterate a map whose key IS the
+/// object key and can lend it for the length of the walk. The ENTITY arm cannot: a page there is
+/// filed under `context_entity_key(..)`, the collection key with the entity hash appended, which is
+/// COMPOSED per entity and so is a temporary no borrow can outlive. `Cow` lets that arm hand over
+/// the string it already builds -- it has always built one, to derive the bucket -- instead of
+/// forcing every arm to allocate, or forcing that arm to collect the whole walk into a `Vec` first.
 pub(super) fn compact_block_addresses<'a>(
     block_store: &BlockStore,
     cache: &MultiLayerCache,
     shard_id: ShardId,
     model_id: &str,
-    addresses: impl IntoIterator<Item = (u32, &'a mut BlockAddress)>,
+    addresses: impl IntoIterator<Item = (u32, std::borrow::Cow<'a, str>, &'a mut BlockAddress)>,
     rewrite_stats: &mut CompactionRewriteStats,
 ) -> Result<(), Status> {
-    for (routing_bucket, address) in addresses {
+    for (routing_bucket, object_key, address) in addresses {
         if !rewrite_stats.should_relocate(address) {
             continue;
         }
         let cold_block = !block_memory_resident(cache, shard_id, address, Some(routing_bucket));
-        let bytes =
-            read_block_bytes_for_compaction(cache, block_store, shard_id, address, Some(routing_bucket))
+        let bytes = read_block_bytes_for_compaction(
+            cache,
+            block_store,
+            shard_id,
+            address,
+            PageIdentity::of(shard_id, model_id, object_key.as_ref(), None),
+            Some(routing_bucket),
+        )
             .ok_or_else(|| {
                 Status::error(
                     "page_compaction_failed",
@@ -762,6 +784,10 @@ pub(super) fn compact_feature_block_addresses(
     cache: &MultiLayerCache,
     shard_id: ShardId,
     model_id: &str,
+    // The object these series pages belong to. One series is one object, so this is one value for
+    // the whole call rather than one per address -- which is why it is a parameter here and a term
+    // of the iterator item in `compact_block_addresses`.
+    object_key: &str,
     series: &mut BTreeMap<u64, BlockAddress>,
     rewrite_stats: &mut CompactionRewriteStats,
     routing_bucket: u32,
@@ -778,6 +804,7 @@ pub(super) fn compact_feature_block_addresses(
             block_store,
             shard_id,
             &old_address,
+            PageIdentity::of(shard_id, model_id, object_key, None),
             Some(routing_bucket),
         )
             .ok_or_else(|| {

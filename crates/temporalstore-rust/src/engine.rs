@@ -1501,6 +1501,7 @@ impl TemporalEngine {
                     }
                     let (start_routing_bucket, end_routing_bucket) = shard.routing_range();
                     FastPathRead::Hash {
+                        key: key.as_str(),
                         fields: shard
                             .hashes
                             .get(key)
@@ -1548,8 +1549,8 @@ impl TemporalEngine {
                                 &self.block_store,
                                 request.shard_id,
                                 address,
-                                // A string page IS its whole object.
-                                None,
+                                // A string page IS its whole object, so the element is `None`.
+                                PageIdentity::of(request.shard_id, "string", key, None),
                                 Some(routing_bucket),
                             )
                         }),
@@ -1557,6 +1558,7 @@ impl TemporalEngine {
                 ),
             }),
             FastPathRead::Hash {
+                key,
                 fields,
                 routing_bucket,
             } => {
@@ -1568,7 +1570,7 @@ impl TemporalEngine {
                             &self.block_store,
                             request.shard_id,
                             address,
-                            Some(field.as_str()),
+                            PageIdentity::of(request.shard_id, "hash", key, Some(field.as_str())),
                             Some(routing_bucket),
                         )
                         .map(|value| (field.clone(), value))
@@ -2445,6 +2447,15 @@ enum FastPathRead<'a> {
         routing_bucket: u32,
     },
     Hash {
+        /// THE OBJECT KEY, which this variant did not carry and the read below now needs.
+        ///
+        /// The bucket beside it was ALREADY derived from this key while the guard was held, so the
+        /// key was in hand at plan time and was simply not carried past it. A page's identity is
+        /// `(shard, kind, key)` and the field names only the ELEMENT, so `fields` alone cannot say
+        /// which object these pages belong to -- a `string` and a `hash` may share a key, and it is
+        /// the pair that tells their pages apart. Borrowed, as `String`'s is: the plan is consumed
+        /// inside the same call that built it.
+        key: &'a str,
         fields: Vec<(String, BlockAddress)>,
         routing_bucket: u32,
     },
@@ -5646,12 +5657,22 @@ fn invalidate_records_all_batched<K: AsRef<str>>(
 /// `None` is accepted and means "no bucket to key by", which is what a caller with no object key in
 /// hand passes -- a slab walk, a report over raw addresses. It was reachable before this change too,
 /// for an address that carried no bucket.
-/// `component` says WHICH ELEMENT of the object this address names, and it is not optional
-/// information dressed as an `Option`: `None` means the page IS its whole object -- a string,
-/// a control state -- and `Some` names the element, exactly as `BlockIndex::component` beside
-/// this address already does. The in-log fallback below needs it because a record carries many
-/// pages and picks one out of itself by identity; handed only the object id it answers with the
-/// FIRST page of that object, which is another element's bytes rather than a miss.
+/// `identity` NAMES THE PAGE, AND THE CALLER HAS TO BE ABLE TO NAME IT.
+///
+/// It used to be `component: Option<&str>` beside an object recovered from `address.object_id()`
+/// with `and_then`, and that was the one `Option` on this path that could lose data rather than
+/// weaken a cache key. The in-log fallbacks below are what serve a page whose only durable copy is
+/// its WAL record; a caller that could not name the object got `None` from the `and_then` and the
+/// read fell through to MISSING for a durably acknowledged write. See [`PageIdentity`] for why the
+/// type takes the shard, the kind and the key rather than an id: there is no value to pass that
+/// could be absent, stale, or from somewhere else.
+///
+/// THE IDENTITY IS DERIVED, NOT READ OFF THE ADDRESS, and the two agree.
+/// `engine::tests::address_footprint::the_object_id_on_a_live_page_entry_is_the_hash_of_fields_beside_it`
+/// walks every live page entry at two corpus sizes and compares the stored id to
+/// `stable_block_object_id(shard, kind, key)`: 2,524 of 2,524 and 20,632 of 20,632 agree, none
+/// differ, none absent. That measurement is what makes taking the derived value here a no-op rather
+/// than a change of behaviour, and it is why this function no longer consults the field at all.
 ///
 /// THIS FUNCTION ANSWERS WITH THE PAGE'S WHOLE PAYLOAD, which since `container_pages` is not
 /// necessarily one element's value. `read_block_bytes` wraps it and does the selection; everything
@@ -5662,7 +5683,7 @@ fn read_block_frame_bytes(
     block_store: &BlockStore,
     shard_id: ShardId,
     address: &BlockAddress,
-    component: Option<&str>,
+    identity: PageIdentity<'_>,
     routing_bucket: Option<u32>,
 ) -> Option<Vec<u8>> {
     let cache_key = CacheKey::page_with_slot(
@@ -5697,10 +5718,12 @@ fn read_block_frame_bytes(
         // been all along. Read it back by the log id the write registered. Tried after the
         // spill redirect because a spilled copy is a direct block-store read, while this one
         // parses a log record.
-        if let Some(bytes) = address
-            .object_id()
-            .and_then(|object_id| block_in_wal::read_block(block_store, shard_id, object_id, component))
-        {
+        if let Some(bytes) = block_in_wal::read_block(
+            block_store,
+            shard_id,
+            identity.object_id(),
+            identity.component(),
+        ) {
             let _ = cache.put(cache_key, bytes.clone());
             return Some(bytes);
         }
@@ -5724,10 +5747,12 @@ fn read_block_frame_bytes(
     //
     // Ordered after the block-store read, not before it: the durable copy is the common case and
     // a direct read, while this one resolves a log id and parses a record.
-    if let Some(bytes) = address
-        .object_id()
-        .and_then(|object_id| block_in_wal::read_block(block_store, shard_id, object_id, component))
-    {
+    if let Some(bytes) = block_in_wal::read_block(
+        block_store,
+        shard_id,
+        identity.object_id(),
+        identity.component(),
+    ) {
         let _ = cache.put(cache_key, bytes.clone());
         return Some(bytes);
     }
@@ -5753,12 +5778,19 @@ fn read_block_frame_bytes(
 /// than an error. A CORRUPT frame answers `None` too and is counted, because the alternative --
 /// handing the framing bytes back as a value -- is the failure mode this whole module exists to make
 /// impossible, and it is exactly #2016's shape: an unreadable name becoming a real one.
+/// ONE VALUE CARRIES BOTH HALVES, WHICH IS WHY THE SELECTION BELOW CANNOT DISAGREE WITH THE READ.
+///
+/// This door asks the frame reader for a page and then picks one element out of it. Those are two
+/// questions about the same page -- which object, and which element of it -- and they were two
+/// parameters that happened to be spelled once. A [`PageIdentity`] is the pair: the element the
+/// frame reader resolves a WAL record by is `identity.component()`, and so is the element selected
+/// out of the bytes, because there is only one place either can come from.
 fn read_block_bytes(
     cache: &MultiLayerCache,
     block_store: &BlockStore,
     shard_id: ShardId,
     address: &BlockAddress,
-    component: Option<&str>,
+    identity: PageIdentity<'_>,
     routing_bucket: Option<u32>,
 ) -> Option<Vec<u8>> {
     let bytes = read_block_frame_bytes(
@@ -5766,10 +5798,10 @@ fn read_block_bytes(
         block_store,
         shard_id,
         address,
-        component,
+        identity,
         routing_bucket,
     )?;
-    let Some(component) = component else {
+    let Some(component) = identity.component() else {
         return Some(bytes);
     };
     match container_pages::select_container_element(&bytes, component) {
@@ -5825,7 +5857,7 @@ fn read_block_shared(
     block_store: &BlockStore,
     shard_id: ShardId,
     address: &BlockAddress,
-    component: Option<&str>,
+    identity: PageIdentity<'_>,
     routing_bucket: Option<u32>,
 ) -> Option<std::sync::Arc<[u8]>> {
     let cache_key = CacheKey::page_with_slot(
@@ -5844,7 +5876,7 @@ fn read_block_shared(
         // store read. Returning the hit unselected is the one way the two doors can disagree, and
         // it would disagree only when the page is warm: a cold read would answer correctly and a
         // second read of the same element would answer with framing bytes.
-        let Some(component) = component else {
+        let Some(component) = identity.component() else {
             return Some(bytes);
         };
         return match container_pages::select_container_element(&bytes, component) {
@@ -5860,7 +5892,7 @@ fn read_block_shared(
     // Every path below writes to the cache and hands back what it wrote, so going through
     // `read_block_bytes` keeps the spill redirect, the in-log read and the block-store read in one
     // place rather than duplicating three fallbacks that must not drift apart.
-    read_block_bytes(cache, block_store, shard_id, address, component, routing_bucket)
+    read_block_bytes(cache, block_store, shard_id, address, identity, routing_bucket)
         .map(std::sync::Arc::from)
 }
 

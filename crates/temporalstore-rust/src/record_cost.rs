@@ -1639,8 +1639,9 @@ fn a_narrower_record_field_would_save_nothing_because_the_encoding_is_value_leng
     );
 
     // THE ONE FIELD A NARROWING WOULD BREAK OUTRIGHT. `object_id` is produced by
-    // `stable_block_object_id`, an FNV-1a 64-bit hash of (shard, kind, key, component), so it
-    // uses the whole range by construction. Narrowing it to `u32` is not a tighter field, it is
+    // `stable_block_object_id`, an FNV-1a 64-bit hash of (shard, kind, key), so it uses the whole
+    // range by construction. The component was a fourth term until #2019; dropping it changed what
+    // the number MEANS -- an object rather than one of its pages -- and not its range. Narrowing it to `u32` is not a tighter field, it is
     // a hash collision between two different objects -- and the index entry for one of them then
     // replays onto the other.
     let a = crate::engine::hashing::stable_block_object_id(7, "string", "tenant/1/a");

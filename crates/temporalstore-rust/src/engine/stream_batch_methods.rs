@@ -842,6 +842,19 @@ impl TemporalEngine {
                     PublishTarget::Hash { field, .. } => Some(field),
                 }
             }
+
+            /// The MODEL KIND, which is the third term of the object's identity.
+            ///
+            /// Named here rather than at the read because the two variants ARE the two kinds, so a
+            /// `match` at the call site would be this function written out again. The kind is not
+            /// recoverable from the key or the component: a `string` and a `hash` may share a key,
+            /// and it is the kind that tells their pages apart.
+            fn kind(&self) -> &'static str {
+                match self {
+                    PublishTarget::String { .. } => "string",
+                    PublishTarget::Hash { .. } => "hash",
+                }
+            }
         }
 
         let selected_keys = selected_keys
@@ -927,7 +940,7 @@ impl TemporalEngine {
                 &self.block_store,
                 shard_id,
                 &address,
-                target.component(),
+                PageIdentity::of(shard_id, target.kind(), target.object_key(), target.component()),
                 Some(routing_bucket),
             ) {
                 publish_records.push((

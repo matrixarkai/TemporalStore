@@ -66,6 +66,56 @@ pub(super) fn routing_bucket_derivations() -> (u64, u64) {
     )
 }
 
+/// THE SAME TWO NUMBERS FOR THE OBJECT IDENTITY, WHICH IS THE OTHER HASH A READ PAYS FOR.
+///
+/// A read already walks its key once to place it in a bucket, and the counters above are what that
+/// costs. Deriving the object identity rather than reading it off the page entry walks the SAME key
+/// a second time, and these are what THAT costs -- so the pair of them is the whole price of the
+/// entry no longer carrying the id, stated as a count of passes and a count of bytes.
+///
+/// A COUNT AND NOT A TIMING, for the reason the routing-bucket counters state and this tree has
+/// measured: an instrument on this path read 485x idle against 11x busy off identical code. A count
+/// does not move with whatever is building next door.
+///
+/// `#[cfg(test)]` for the same reason as well. Two relaxed atomics per derivation would cost more
+/// than one FNV-1a pass over a short borrowed string, which is itself the answer these report.
+#[cfg(test)]
+pub(super) static OBJECT_ID_DERIVATIONS: std::sync::atomic::AtomicU64 =
+    std::sync::atomic::AtomicU64::new(0);
+/// The bytes the identity hash was walked over, summed. One xor and one multiply a byte, so this
+/// is the instruction count up to a constant -- the same accounting as `ROUTING_BUCKET_KEY_BYTES`.
+///
+/// COUNTED OVER KIND AND KEY BOTH, because both are terms of the hash. The routing bucket walks the
+/// key alone, so these two byte totals are NOT comparable as a ratio without saying so, and the
+/// probe that reads them prints each with its own denominator.
+#[cfg(test)]
+pub(super) static OBJECT_ID_KEY_BYTES: std::sync::atomic::AtomicU64 =
+    std::sync::atomic::AtomicU64::new(0);
+
+#[cfg(test)]
+fn note_object_id_derivation(kind: &str, key: &str) {
+    OBJECT_ID_DERIVATIONS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    OBJECT_ID_KEY_BYTES.fetch_add((kind.len() + key.len()) as u64, std::sync::atomic::Ordering::Relaxed);
+}
+
+#[cfg(not(test))]
+#[inline(always)]
+fn note_object_id_derivation(_kind: &str, _key: &str) {}
+
+#[cfg(test)]
+pub(super) fn reset_object_id_derivations() {
+    OBJECT_ID_DERIVATIONS.store(0, std::sync::atomic::Ordering::Relaxed);
+    OBJECT_ID_KEY_BYTES.store(0, std::sync::atomic::Ordering::Relaxed);
+}
+
+#[cfg(test)]
+pub(super) fn object_id_derivations() -> (u64, u64) {
+    (
+        OBJECT_ID_DERIVATIONS.load(std::sync::atomic::Ordering::Relaxed),
+        OBJECT_ID_KEY_BYTES.load(std::sync::atomic::Ordering::Relaxed),
+    )
+}
+
 const FNV1A64_OFFSET_BASIS: u64 = 0xcbf2_9ce4_8422_2325;
 const FNV1A64_PRIME: u64 = 0x0000_0100_0000_01b3;
 
@@ -123,6 +173,7 @@ pub(super) fn stable_object_hash_update_u64_decimal(hash: &mut u64, mut value: u
 /// registry key is `(u64, Option<Arc<str>>)` since #2013, and `StagedBlock` carries it. What
 /// changes is only what the ID means -- the object, not the page.
 pub(crate) fn stable_block_object_id(shard_id: ShardId, kind: &str, key: &str) -> u64 {
+    note_object_id_derivation(kind, key);
     let mut hash = FNV1A64_OFFSET_BASIS;
     stable_object_hash_update_u64_decimal(&mut hash, shard_id as u64);
     stable_object_hash_update(&mut hash, b":");
@@ -130,6 +181,68 @@ pub(crate) fn stable_block_object_id(shard_id: ShardId, kind: &str, key: &str) -
     stable_object_hash_update(&mut hash, b":");
     stable_object_hash_update(&mut hash, key.as_bytes());
     hash
+}
+
+/// WHICH PAGE A READ WANTS, STATED BY THE CALLER AND NOT READ OFF THE ADDRESS.
+///
+/// THIS TYPE EXISTS TO MAKE "I CANNOT SAY" A BUILD FAILURE. `engine::read_block_bytes` used to take
+/// the element alone and recover the object from `address.object_id()`, an `Option` it consumed with
+/// `and_then`. That shape is safe for the routing bucket, where an absent value only weakens a cache
+/// key, and it is NOT safe here: `block_in_wal::read_block` serves a page whose only durable copy is
+/// its WAL record, so a reader that cannot name the object does not read a stale page -- it reads
+/// MISSING for a durably acknowledged write, which is the exact hole `block_in_wal` exists to close.
+/// An `Option<u64>` threaded to the same sites compiles with `None` and loses a page in silence.
+///
+/// SO THERE IS NO CONSTRUCTOR THAT TAKES AN ID. [`PageIdentity::of`] takes the TERMS -- the shard,
+/// the kind and the key -- and derives the identity here. A caller cannot pass an id it computed
+/// somewhere else, cannot pass a stale one it found on an address, and cannot pass none at all: the
+/// compiler names every site that has no key in hand. That is the same doctrine
+/// `compaction::compact_block_addresses` states for the routing bucket, where
+/// `Item = (u32, &mut BlockAddress)` "makes the caller say it, and the compiler name any caller
+/// that cannot" -- one level stricter, because the terms rather than the answer are what crosses.
+///
+/// THE ELEMENT IS PART OF THE IDENTITY, NOT AN OPTION BESIDE IT. `None` means the page IS its whole
+/// object -- a string, a control state -- and `Some` names the element within it, exactly as
+/// `BlockIndex::component` beside the address does. One WAL record carries many pages and picks one
+/// out of itself by identity, so a read handed only the object answers with the FIRST page of that
+/// object: another element's bytes rather than a miss. Keeping the two halves in one value is what
+/// stops a site passing the object and forgetting the element.
+///
+/// AND THE COMPONENT IS NOT A TERM OF THE HASH, which is the part that moved under #2019. The
+/// object id is `(shard, kind, key)` and names the OBJECT; the component names the element and is
+/// carried beside the id rather than folded into it. Both fields are here for that reason: they
+/// answer two different questions and a single number cannot answer both.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) struct PageIdentity<'a> {
+    object_id: u64,
+    component: Option<&'a str>,
+}
+
+impl<'a> PageIdentity<'a> {
+    /// THE ONLY CONSTRUCTOR, AND IT TAKES THE TERMS RATHER THAN THE ANSWER.
+    ///
+    /// Deriving here rather than accepting a `u64` is the whole point of the type: a caller that
+    /// holds the key can always produce an identity, and a caller that does not cannot produce one
+    /// at all. There is deliberately no `from_object_id`, for the reason
+    /// [`BlockAddress::from_parts`] has no `generation` parameter -- a constructor that accepted a
+    /// precomputed value would invite a caller to pass one that disagrees with the terms, which is
+    /// the single thing a derivation cannot honour.
+    pub(super) fn of(shard_id: ShardId, kind: &str, key: &str, component: Option<&'a str>) -> Self {
+        Self {
+            object_id: stable_block_object_id(shard_id, kind, key),
+            component,
+        }
+    }
+
+    /// The object this page belongs to.
+    pub(super) fn object_id(self) -> u64 {
+        self.object_id
+    }
+
+    /// Which element of that object, or `None` when the page is the whole of it.
+    pub(super) fn component(self) -> Option<&'a str> {
+        self.component
+    }
 }
 
 pub(super) fn block_routing_bucket(key: &str, start_routing_bucket: u32, end_routing_bucket: u32) -> u32 {

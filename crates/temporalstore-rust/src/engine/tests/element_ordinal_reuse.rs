@@ -2066,13 +2066,26 @@ fn the_component_ordering_property_is_consumed_by_no_reader() {
         );
     }
     // And the component is used for exactly one thing: naming the page to read. Asserted by
-    // POSITION rather than by presence -- it has to be the argument immediately before the
-    // routing bucket, which is the slot `read_block_bytes` reads it from.
+    // POSITION rather than by presence -- it has to be the ELEMENT term of the identity in the
+    // argument immediately before the routing bucket, which is the slot `read_block_bytes` reads
+    // the page's name from.
+    //
+    // RETARGETED A SECOND TIME, for the same reason as the first and worth stating so the next move
+    // is not read as drift. The arm first asserted `filter_map(|(_, address)| {` -- that SetMembers
+    // THREW THE COMPONENT AWAY -- as a proxy for "member order is not component order". That proxy
+    // died when a carried page began needing to say which element it is. The replacement asserted
+    // the bare `member.as_deref(),` in the component slot, and that died when the slot stopped
+    // being a component and became a whole page IDENTITY: an object and an element together, so
+    // that a read cannot name one and forget the other. The PROPERTY has not moved through either
+    // change. Member order is still the order `bucket_index_component_block_addresses` walked in.
     assert!(
-        set_arm.contains("member.as_deref(),\n                            Some(block_routing_bucket("),
-        "the component no longer reaches `read_block_bytes` as the page's element. Either it has \
-         gone back to being discarded -- in which case a carried set page is served the first page \
-         of its key -- or it is being used for something else, which this arm cannot see"
+        set_arm.contains(
+            "PageIdentity::of(shard_id, \"set\", &key, member.as_deref()),\n                            Some(block_routing_bucket("
+        ),
+        "the component no longer reaches `read_block_bytes` as the element half of the page's \
+         identity. Either it has gone back to being discarded -- in which case a carried set page \
+         is served the first page of its key -- or it is being used for something else, which this \
+         arm cannot see"
     );
 
     // And driven: a reload puts a list back IN ORDER even though the reconcile re-keys rather than

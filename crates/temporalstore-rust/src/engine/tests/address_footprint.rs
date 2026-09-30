@@ -2887,3 +2887,291 @@ fn the_derivation_census_reports_a_differing_id_when_one_exists() {
         "the derivation is not stable across two calls with identical terms"
     );
 }
+
+
+// =================================================================================================
+// WHAT THE RECOMPUTATION COSTS, AND THE CONTROL THAT SAYS IT IS THE SAME NUMBER
+//
+// The read path takes a `PageIdentity` and derives the object id from the terms rather than reading
+// `address.object_id()`. Two questions follow and neither is answerable by reading the code: what
+// that derivation COSTS, and whether the value it produces is the one the field held.
+// =================================================================================================
+
+/// WHAT DERIVING THE IDENTITY COSTS AT THE READ PATH, IN COUNTS.
+///
+/// NOT A TIMING, and this tree has the receipt: an instrument on this path read 485x idle against
+/// 11x busy off identical code, and three sibling gates are usually running on this box. A count of
+/// hash passes and a count of bytes walked do not move with what is building next door.
+///
+/// THE COMPARISON THAT MAKES THE NUMBER MEAN SOMETHING is the bucket derivation beside it. A read
+/// ALREADY walks its key once, to place the page in a routing bucket for the cache key -- that cost
+/// was accepted when the bucket stopped being a field. The identity walks the same key a second
+/// time. So the question is not "what does one FNV-1a pass cost" in the abstract; it is whether this
+/// read now does one pass or two, and the two counters answer it side by side.
+///
+/// THE BYTE TOTALS ARE NOT A RATIO. The bucket hash walks the KEY; the identity hash walks the kind
+/// AND the key. Both are printed with their own denominator rather than divided into each other.
+#[test]
+#[ignore = "seeds a shard and reads process-wide counters; run by name"]
+fn what_deriving_the_page_identity_costs_at_the_read_path() {
+    const RECORDS: usize = 2_000;
+    let dir = tempfile::tempdir().expect("tempdir");
+    let engine = new_engine(dir.path());
+    for index in 0..RECORDS {
+        let response = engine.execute(ExecuteRequest {
+            shard_id: 1,
+            command: Command::StringSet {
+                key: format!("ident-{index:06}"),
+                value: vec![b'v'; 64],
+            },
+        });
+        assert!(response.status.ok, "write {index}: {:?}", response.status);
+    }
+
+    // BOTH COUNTERS FROM ZERO. They are process-wide, which is why this probe is `#[ignore]`d like
+    // every other process-wide probe in this module.
+    crate::engine::hashing::reset_routing_bucket_derivations();
+    crate::engine::hashing::reset_object_id_derivations();
+    let mut read = 0usize;
+    for index in 0..RECORDS {
+        let response = engine.execute(ExecuteRequest {
+            shard_id: 1,
+            command: Command::StringGet {
+                key: format!("ident-{index:06}"),
+            },
+        });
+        if response.status.ok {
+            read += 1;
+        }
+    }
+    let (bucket_passes, bucket_bytes) = crate::engine::hashing::routing_bucket_derivations();
+    let (identity_passes, identity_bytes) = crate::engine::hashing::object_id_derivations();
+
+    // NON-VACUITY FIRST. A probe over zero answered reads reports two zeros, which reads exactly
+    // like "the derivation is free" -- the direction that flatters the change.
+    assert_eq!(read, RECORDS, "{read} of {RECORDS} reads answered");
+    assert!(
+        bucket_passes > 0,
+        "the read path derived no routing bucket at all, so there is nothing to compare the \
+         identity against and neither number below is about a read"
+    );
+    assert!(
+        identity_passes > 0,
+        "the read path derived no identity at all. Either these reads are not going through \
+         `read_block_bytes`, or the identity is being built somewhere this counter cannot see -- \
+         and in both cases the cost printed below is not the cost of the change"
+    );
+
+    println!("--- what a read pays to name its own page, over {read} reads ---");
+    println!(
+        "  routing-bucket hash passes: {bucket_passes} ({:.2} a read), key bytes walked: \
+         {bucket_bytes} ({:.2} a read)",
+        bucket_passes as f64 / read as f64,
+        bucket_bytes as f64 / read as f64,
+    );
+    println!(
+        "  identity hash passes:       {identity_passes} ({:.2} a read), kind+key bytes walked: \
+         {identity_bytes} ({:.2} a read)",
+        identity_passes as f64 / read as f64,
+        identity_bytes as f64 / read as f64,
+    );
+
+    // THE SHAPE OF THE ANSWER, asserted rather than left to the printout: the identity is derived at
+    // most once per read on this path. More than that would mean a caller building one per candidate
+    // inside a loop it could have hoisted out of, which is the mistake this assertion exists to
+    // catch -- and it is a mistake the printout alone would not make obvious.
+    assert!(
+        identity_passes <= read as u64,
+        "{identity_passes} identity derivations over {read} reads is more than one a read: some \
+         caller is building an identity per candidate rather than per page"
+    );
+    // And the bytes it walks are the terms it says it walks: a key of this fixture is 12 bytes and
+    // the kind is "string", so a pass is 18 bytes. Asserted as a floor rather than an equality,
+    // because a read may derive for a page this loop did not ask for.
+    assert!(
+        identity_bytes >= identity_passes * 8,
+        "{identity_bytes} bytes over {identity_passes} passes is under 8 bytes a term-set, which is \
+         shorter than any kind-and-key this fixture writes"
+    );
+}
+
+/// THE CONTROL AT 0.00%: the identity a read DERIVES is the id the field HELD.
+///
+/// The census above establishes that over the stored field and the derivation as two expressions.
+/// This asserts it over the thing that actually changed -- `PageIdentity::of`, the constructor the
+/// read path now calls -- so that a future change to the constructor, the term order, or the hash
+/// cannot agree with the census while disagreeing with the read path.
+///
+/// ROWS ASSERTED BEFORE THE VERDICT. A control over zero rows reports success, and a 0.00% over an
+/// empty walk is the most flattering number in this file.
+#[test]
+#[ignore = "seeds a shard; run by name"]
+fn the_identity_a_read_builds_is_the_id_the_address_held() {
+    for (label, strings_n, series_keys, series_points) in [
+        ("8k", 2_000, 12, 500),
+        ("80k", 20_000, 120, 500),
+    ] {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let engine = new_engine(dir.path());
+        let (strings, points) = seed(&engine, strings_n, series_keys, series_points);
+        // Containers too, so the population includes component-bearing pages. Without them the
+        // element half of the identity is `None` on every row and the walk never exercises the
+        // shape this change acts on.
+        let mut commands = Vec::new();
+        for k in 0..HASH_KEYS {
+            for f in 0..HASH_FIELDS {
+                commands.push(Command::HashSet {
+                    key: format!("h{k}"),
+                    field: format!("f{f}"),
+                    value: vec![b'h'; 24],
+                });
+            }
+        }
+        let response = engine.batch_execute(crate::types::BatchExecuteRequest {
+            shard_id: 1,
+            commands,
+        });
+        assert!(response.status.ok, "hash seed must ack: {:?}", response.status);
+
+        let mut rows = 0usize;
+        let mut with_component = 0usize;
+        let mut agree = 0usize;
+        let mut differ = 0usize;
+        let mut absent = 0usize;
+        {
+            let shards = engine.shards.read().expect("engine lock poisoned");
+            let shard = shards.get(&1).expect("shard is loaded");
+            for bucket in shard.bucket_index.bucket_map.values() {
+                for (_, page) in bucket.block_index.iter() {
+                    rows += 1;
+                    if page.component.is_some() {
+                        with_component += 1;
+                    }
+                    // THE CONSTRUCTOR THE READ PATH CALLS, with the terms a read has in hand.
+                    let identity = crate::engine::hashing::PageIdentity::of(
+                        1,
+                        page.model_id.as_str(),
+                        &page.object_key,
+                        page.component.as_deref(),
+                    );
+                    match page.address.object_id() {
+                        Some(stored) if stored == identity.object_id() => agree += 1,
+                        Some(_) => differ += 1,
+                        None => absent += 1,
+                    }
+                }
+            }
+        }
+
+        let pct = |n: usize| if rows == 0 { 0.0 } else { 100.0 * n as f64 / rows as f64 };
+        println!(
+            "[{label}] rows={rows} agree={agree} ({:.2}%) differ={differ} ({:.2}%) \
+             absent={absent} ({:.2}%) with_component={with_component}",
+            pct(agree),
+            pct(differ),
+            pct(absent),
+        );
+
+        // ROWS, AND THE COMPONENT-BEARING SUBSET, BOTH DERIVED FROM THE FIXTURE.
+        let expected_rows = strings_n + HASH_KEYS * HASH_FIELDS + series_keys;
+        assert_eq!(
+            expected_rows, rows,
+            "[{label}] expected {expected_rows} page entries -- one per string ({strings_n}), one \
+             per hash field ({}) and one per series ({series_keys}) -- and walked {rows}. \
+             {points} points were seeded and are PACKED into the series pages, so the record count \
+             is not this denominator",
+            HASH_KEYS * HASH_FIELDS,
+        );
+        assert!(
+            strings > 0 && points > 0,
+            "[{label}] the seed wrote strings={strings} points={points}"
+        );
+        assert_eq!(
+            HASH_KEYS * HASH_FIELDS,
+            with_component,
+            "[{label}] the fixture must produce exactly {} component-bearing rows, got \
+             {with_component} -- a walk whose rows all carry `None` never exercises the element \
+             half of the identity at all",
+            HASH_KEYS * HASH_FIELDS,
+        );
+
+        // THE VERDICT.
+        assert_eq!(
+            0, differ,
+            "[{label}] {differ} of {rows} page entries hold an object id that `PageIdentity::of` \
+             does not reproduce. Each one is a page the read path would now resolve under a \
+             different identity than the field named"
+        );
+        assert_eq!(
+            rows,
+            agree + absent,
+            "[{label}] every row must either agree or carry no id at all"
+        );
+    }
+}
+
+/// THE IDENTITY CANNOT BE BUILT FROM AN ID, WHICH IS THE WHOLE OF WHY IT IS A TYPE.
+///
+/// An `Option<u64>` threaded to the read sites would compile with `None` and lose a page in silence;
+/// a bare `u64` would compile with a stale one. Both hazards come back the moment a constructor
+/// accepts the ANSWER instead of the TERMS, and that is a one-line change someone will make for a
+/// caller that "already has the id". So it is asserted, over the source text, at NAME level.
+///
+/// SCOPED TO THE IMPL BLOCK, with its length asserted first. A `contains` over a whole file scores
+/// every claim below as a pass the moment the slice comes back empty.
+///
+/// rust-internal: reads this crate's own source text, no product behaviour
+#[test]
+fn the_page_identity_has_no_constructor_that_takes_an_id() {
+    const HASHING: &str = include_str!("../hashing.rs");
+    assert!(
+        HASHING.len() > 3_000,
+        "hashing.rs read back as {} bytes, so every assertion below is over nothing",
+        HASHING.len()
+    );
+
+    let start = HASHING
+        .find("impl<'a> PageIdentity<'a> {")
+        .expect("the identity's impl block is still spelled `impl<'a> PageIdentity<'a>`");
+    let rest = &HASHING[start..];
+    let end = rest
+        .find("\n}\n")
+        .expect("the identity's impl block still ends at column zero");
+    let block = &rest[..end];
+    assert!(
+        block.len() > 400,
+        "DENOMINATOR: the impl block read back as {} bytes; a short slice passes every claim below",
+        block.len()
+    );
+
+    // EXACTLY ONE constructor, counted rather than assumed absent.
+    let constructors = block.matches("-> Self").count();
+    assert_eq!(
+        1, constructors,
+        "the identity has {constructors} constructors, not one. Every one of them is a way to build \
+         an identity, and this test can only vouch for the one that takes the terms"
+    );
+    assert!(
+        block.contains("pub(super) fn of(shard_id: ShardId, kind: &str, key: &str, component: Option<&'a str>) -> Self"),
+        "the one constructor is no longer `of(shard, kind, key, component)`. If it now takes an id, \
+         a caller can pass a stale one and the compiler cannot say so -- which is the entire reason \
+         this type exists rather than a bare `u64`"
+    );
+
+    // AND NO OTHER DOOR. `From`/`TryFrom`/`new` would each be a second constructor that the count
+    // above cannot see if it is written outside this impl block.
+    for door in ["fn from_object_id", "impl From<u64> for PageIdentity", "fn new(", "fn with_id"] {
+        assert!(
+            !HASHING.contains(door),
+            "hashing.rs now contains {door:?}: an identity that can be built from a value rather \
+             than from the terms is an identity a caller can get wrong"
+        );
+    }
+
+    // The field is private, so nothing outside this module can construct the struct literally.
+    assert!(
+        HASHING.contains("pub(super) struct PageIdentity<'a> {\n    object_id: u64,"),
+        "PageIdentity's object_id is no longer a private field. A `pub` field is a constructor \
+         with no name on it"
+    );
+}
