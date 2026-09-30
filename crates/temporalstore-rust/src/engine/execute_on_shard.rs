@@ -4,17 +4,17 @@
 //! Standalone per-shard command execution extracted from engine.rs.
 use super::*;
 
-/// Put aside an outcome that no page backs: a deletion, a deadline, or state that lives only
+/// Put aside an outcome that no block backs: a deletion, a deadline, or state that lives only
 /// in the index snapshot.
 ///
-/// The page path stages its outcome inside `upsert_bucket_index_block`, because that is where a
-/// page outcome is produced. These have no such moment, so they say it here.
+/// The block path stages its outcome inside `upsert_bucket_index_block`, because that is where a
+/// block outcome is produced. These have no such moment, so they say it here.
 #[allow(clippy::too_many_arguments)]
-/// Record a page or a value that belongs to one COMPONENT of an object.
+/// Record a block or a value that belongs to one COMPONENT of an object.
 ///
 /// `stage_meta_outcome` states something about the object as a whole -- it is gone, its deadline
-/// is this. This states what one part of it became: which page backs it, or the bytes for state no
-/// page backs at all.
+/// is this. This states what one part of it became: which block backs it, or the bytes for state no
+/// block backs at all.
 #[allow(clippy::too_many_arguments)]
 fn stage_component_outcome(
     shard_id: ShardId,
@@ -80,13 +80,13 @@ fn load_context_node(
     ));
     // EACH ARM NAMES ITS OWN OBJECT, which is what the identity forced this lookup to say.
     //
-    // The two arms are not two places to find one page: a CURRENT node is the `CONTEXT_NODE_FIELD`
-    // field of a `hash`, and a pre-hashes node is a whole `context_node` page --
+    // The two arms are not two places to find one block: a CURRENT node is the `CONTEXT_NODE_FIELD`
+    // field of a `hash`, and a pre-hashes node is a whole `context_node` block --
     // `model_map_block_address` spells the second as `("context_node", None)` and is the authority
     // on it. One identity for both is wrong for whichever arm it does not describe, and the comment
     // that used to sit at the read asserted they were the same. Under the old shape only the
-    // ELEMENT was wrong, because the object came off the address: the in-log fallback built the page
-    // key `(id, Some("meta"))` for a page registered as `(id, None)` and missed it, which reads as
+    // ELEMENT was wrong, because the object came off the address: the in-log fallback built the block
+    // key `(id, Some("meta"))` for a block registered as `(id, None)` and missed it, which reads as
     // MISSING for a durably acknowledged write on that path. The identity cannot be built without
     // naming a kind, so the arms had to separate.
     shard
@@ -101,7 +101,7 @@ fn load_context_node(
                 .map(|address| (address, PageIdentity::of(shard_id, "context_node", object_key, None)))
         })
         .and_then(|(address, identity)| {
-            // Owning, not shared: the summary upsert calls this while writing, where the page
+            // Owning, not shared: the summary upsert calls this while writing, where the block
             // is as likely to be a miss as a hit -- and on a miss the shared read wraps an owned
             // buffer in a fresh Arc, which copies a second time. The query commands, which are
             // hit-heavy, do share.
@@ -117,14 +117,14 @@ fn load_context_node(
         })
 }
 
-/// Persist a node record: the one producer of a node page.
+/// Persist a node record: the one producer of a node block.
 ///
 /// Three commands now write a node -- the upsert, the embedding attach, and the summary upsert
-/// keeping the node's copy of its summary vector current -- and each needs the page appended,
+/// keeping the node's copy of its summary vector current -- and each needs the block appended,
 /// the outcome staged, the hash field pointed at the new address and the record invalidated, in
 /// that order. Held apart, the third copy is where one of those four steps goes missing.
 ///
-/// Returns whether a page was written, which is what the caller records as `mutated`.
+/// Returns whether a block was written, which is what the caller records as `mutated`.
 #[allow(clippy::too_many_arguments)]
 fn write_context_node(
     cache: &MultiLayerCache,
@@ -140,11 +140,11 @@ fn write_context_node(
     let object_id = stable_block_object_id(shard_id, "hash", object_key);
     let routing_bucket = block_routing_bucket(object_key, start_routing_bucket, end_routing_bucket);
     let mut wrote = false;
-    // FRAMED AS A HASH PAGE, because that is what it is. The outcome below records it under
-    // `context_node` for a reason of its own -- it is never filed in the page index -- but the page
+    // FRAMED AS A HASH BLOCK, because that is what it is. The outcome below records it under
+    // `context_node` for a reason of its own -- it is never filed in the block index -- but the block
     // itself lands in `shard.hashes` under `CONTEXT_NODE_FIELD` and is read back through the hash
     // door with that field as its component. Leaving this one site unframed would leave the node
-    // the single hash element a later load could not recover from its page, which is the element
+    // the single hash element a later load could not recover from its block, which is the element
     // #2016 already recorded as the one whose absence reads as the node not existing at all.
     let page = crate::engine::container_pages::single_element_page(
         "hash",
@@ -163,7 +163,7 @@ fn write_context_node(
         Some(routing_bucket),
         async_storage,
     ) {
-        // Its own kind, deliberately: this writes a hash page and -- unlike HashSet --
+        // Its own kind, deliberately: this writes a hash block and -- unlike HashSet --
         // never registers it in the bucket index, so recording it as a "hash" would have
         // a rebuild add an entry the write never made.
         stage_component_outcome(
@@ -252,7 +252,7 @@ pub(crate) fn execute_on_shard(
         | Command::ContextResourceBlobFetch { .. }
         | Command::ContextResourceBlobSweep { .. } => CommandResponse::Empty,
         Command::CommonDelete { key } => {
-            // An outcome with no page: the object is gone. Their log item states the same thing
+            // An outcome with no block: the object is gone. Their log item states the same thing
             // with `object_deleted`, and replay applies it without re-running a delete.
             stage_meta_outcome(
                 shard_id,
@@ -396,7 +396,7 @@ pub(crate) fn execute_on_shard(
                 shard_id,
                 &value,
                 Some(object_id),
-                // A string page IS its whole object: the `None` the object id above carries.
+                // A string block IS its whole object: the `None` the object id above carries.
                 None,
                 Some(routing_bucket),
                 async_storage,
@@ -427,7 +427,7 @@ pub(crate) fn execute_on_shard(
                 shard_id,
                 &value,
                 Some(object_id),
-                // A string page IS its whole object.
+                // A string block IS its whole object.
                 None,
                 Some(routing_bucket),
                 async_storage,
@@ -444,7 +444,7 @@ pub(crate) fn execute_on_shard(
                 shard.strings.insert(key.clone(), address);
                 let expires_at = resolve_now_ms().saturating_add(ttl_ms);
                 crate::engine::set_expiry(shard, key.clone(), expires_at);
-                // This write sets a value AND a deadline. Recording only the page passes a probe
+                // This write sets a value AND a deadline. Recording only the block passes a probe
                 // that asks whether the record said anything, and produces a recovered key that
                 // never expires -- so the deadline is recorded too, already resolved, exactly as
                 // CommonExpire records its own.
@@ -478,7 +478,7 @@ pub(crate) fn execute_on_shard(
                     block_store,
                     shard_id,
                     address,
-                    // `shard.strings`: a whole-object page, so the element is `None` and the
+                    // `shard.strings`: a whole-object block, so the element is `None` and the
                     // object is the key itself.
                     PageIdentity::of(shard_id, "string", &key, None),
                     Some(block_routing_bucket(
@@ -504,7 +504,7 @@ pub(crate) fn execute_on_shard(
                     shard_id,
                     &value,
                     Some(object_id),
-                    // A string page IS its whole object.
+                    // A string block IS its whole object.
                     None,
                     Some(routing_bucket),
                     async_storage,
@@ -523,7 +523,7 @@ pub(crate) fn execute_on_shard(
                         let expires_at = resolve_now_ms().saturating_add(ttl_ms);
                         crate::engine::set_expiry(shard, key.clone(), expires_at);
                         // A conditional write that refreshes a deadline records the refreshed
-                        // one. Recording only the page leaves a replay installing the value over
+                        // one. Recording only the block leaves a replay installing the value over
                         // a LAPSED deadline from an earlier record, and the key reads as expired
                         // even though the leader kept it alive.
                         stage_meta_outcome(
@@ -625,7 +625,7 @@ pub(crate) fn execute_on_shard(
             let object_id = stable_block_object_id(shard_id, "hash", &key);
             let routing_bucket =
                 block_routing_bucket(&key, start_routing_bucket, end_routing_bucket);
-            // WHICH page of this object this element is. Computed BEFORE the append, because
+            // WHICH block of this object this element is. Computed BEFORE the append, because
             // the append stamps the ordinal into the record header AND onto the address it
             // returns from the same value -- assigning it afterwards would leave the two
             // disagreeing, which `decode_block_record` refuses as a page id mismatch.
@@ -636,7 +636,7 @@ pub(crate) fn execute_on_shard(
                 &key,
                 &field,
             );
-            // The page STATES which field it is, rather than leaving that to the entry that names
+            // The block STATES which field it is, rather than leaving that to the entry that names
             // it. Same value, one frame around it -- see `container_pages`.
             let page = crate::engine::container_pages::single_element_page("hash", &field, &value);
             if let Ok(address) = append_value_of_object(
@@ -645,9 +645,9 @@ pub(crate) fn execute_on_shard(
                 shard_id,
                 &page,
                 Some(object_id),
-                // The element this page holds -- the SAME expression that derived the ordinal
-                // above and the object id beside it. All three name one page, and since the frame
-                // above it is also the key INSIDE the page.
+                // The element this block holds -- the SAME expression that derived the ordinal
+                // above and the object id beside it. All three name one block, and since the frame
+                // above it is also the key INSIDE the block.
                 Some(field.as_str()),
                 Some(routing_bucket),
                 async_storage,
@@ -738,7 +738,7 @@ pub(crate) fn execute_on_shard(
             let mut applied = Vec::with_capacity(entries.len());
             for (field, value) in entries {
                 let object_id = stable_block_object_id(shard_id, "hash", &key);
-                // WHICH page of this object this element is. Computed BEFORE the append, because
+                // WHICH block of this object this element is. Computed BEFORE the append, because
                 // the append stamps the ordinal into the record header AND onto the address it
                 // returns from the same value -- assigning it afterwards would leave the two
                 // disagreeing, which `decode_block_record` refuses as a page id mismatch.
@@ -749,7 +749,7 @@ pub(crate) fn execute_on_shard(
                     &key,
                     &field,
                 );
-                // The page STATES which field it is -- see `container_pages`. Built per entry
+                // The block STATES which field it is -- see `container_pages`. Built per entry
                 // because the frame carries the field, so one frame cannot stand for two.
                 let page =
                     crate::engine::container_pages::single_element_page("hash", &field, &value);
@@ -759,8 +759,8 @@ pub(crate) fn execute_on_shard(
                     shard_id,
                     &page,
                     Some(object_id),
-                    // The element this page holds -- the SAME expression that derived the ordinal
-                    // above and the object id beside it. All three name one page.
+                    // The element this block holds -- the SAME expression that derived the ordinal
+                    // above and the object id beside it. All three name one block.
                     Some(field.as_str()),
                     Some(routing_bucket),
                     async_storage,
@@ -808,7 +808,7 @@ pub(crate) fn execute_on_shard(
             let value = current.saturating_add(increment);
             let routing_bucket =
                 block_routing_bucket(&key, start_routing_bucket, end_routing_bucket);
-            // WHICH page of this object this element is. Computed BEFORE the append, because
+            // WHICH block of this object this element is. Computed BEFORE the append, because
             // the append stamps the ordinal into the record header AND onto the address it
             // returns from the same value -- assigning it afterwards would leave the two
             // disagreeing, which `decode_block_record` refuses as a page id mismatch.
@@ -819,7 +819,7 @@ pub(crate) fn execute_on_shard(
                 &key,
                 &field,
             );
-            // The page STATES which field it is -- see `container_pages`.
+            // The block STATES which field it is -- see `container_pages`.
             let page = crate::engine::container_pages::single_element_page(
                 "hash",
                 &field,
@@ -831,8 +831,8 @@ pub(crate) fn execute_on_shard(
                 shard_id,
                 &page,
                 Some(stable_block_object_id(shard_id, "hash", &key)),
-                // The element this page holds -- the same expression that derived the ordinal
-                // above, and now also the key INSIDE the page. The object id beside it no longer
+                // The element this block holds -- the same expression that derived the ordinal
+                // above, and now also the key INSIDE the block. The object id beside it no longer
                 // names the element: #2019 made it the object's, so the ordinal, the component and
                 // the frame are the three things that say which element this is.
                 Some(field.as_str()),
@@ -937,9 +937,9 @@ pub(crate) fn execute_on_shard(
             let object_id = stable_block_object_id(shard_id, "set", &key);
             let routing_bucket =
                 block_routing_bucket(&key, start_routing_bucket, end_routing_bucket);
-            // WHICH page of this object this element is. Computed BEFORE the append because the
-            // append stamps it into the record header, and read off the page index -- which is
-            // where the element's own previous page, if it has one, already states its position.
+            // WHICH block of this object this element is. Computed BEFORE the append because the
+            // append stamps it into the record header, and read off the block index -- which is
+            // where the element's own previous block, if it has one, already states its position.
             let block_ordinal = crate::engine::state::container_page_ordinal(
                 &shard.bucket_index,
                 routing_bucket,
@@ -947,7 +947,7 @@ pub(crate) fn execute_on_shard(
                 &key,
                 &member_component,
             );
-            // The page STATES which member it is -- see `container_pages`. For a set the element
+            // The block STATES which member it is -- see `container_pages`. For a set the element
             // key IS the member and so is the value, which the frame stores once: #2017 measured
             // that redundancy and this is the stage that stops paying it twice.
             let page = crate::engine::container_pages::single_element_page(
@@ -961,8 +961,8 @@ pub(crate) fn execute_on_shard(
                 shard_id,
                 &page,
                 Some(object_id),
-                // The element this page holds -- the SAME expression that derived the ordinal
-                // above and the object id beside it. All three name one page.
+                // The element this block holds -- the SAME expression that derived the ordinal
+                // above and the object id beside it. All three name one block.
                 Some(member_component.as_str()),
                 Some(routing_bucket),
                 async_storage,
@@ -1010,7 +1010,7 @@ pub(crate) fn execute_on_shard(
             let object_id = stable_block_object_id(shard_id, "zset", &key);
             let routing_bucket =
                 block_routing_bucket(&key, start_routing_bucket, end_routing_bucket);
-            // WHICH page of this object this element is. Computed BEFORE the append, because
+            // WHICH block of this object this element is. Computed BEFORE the append, because
             // the append stamps the ordinal into the record header AND onto the address it
             // returns from the same value -- assigning it afterwards would leave the two
             // disagreeing, which `decode_block_record` refuses as a page id mismatch.
@@ -1021,7 +1021,7 @@ pub(crate) fn execute_on_shard(
                 &key,
                 &component,
             );
-            // The page STATES which element it is -- see `container_pages`. A zset's element key is
+            // The block STATES which element it is -- see `container_pages`. A zset's element key is
             // its biased score followed by its member, and the value IS that member, so the frame
             // stores the member once and says where inside the key it starts.
             let page =
@@ -1032,8 +1032,8 @@ pub(crate) fn execute_on_shard(
                 shard_id,
                 &page,
                 Some(object_id),
-                // The element this page holds -- the SAME expression that derived the ordinal
-                // above and the object id beside it. All three name one page.
+                // The element this block holds -- the SAME expression that derived the ordinal
+                // above and the object id beside it. All three name one block.
                 Some(component.as_str()),
                 Some(routing_bucket),
                 async_storage,
@@ -1177,7 +1177,7 @@ pub(crate) fn execute_on_shard(
             remove_if_expired(shard, &key);
             let now = resolve_now_ms();
             let floor = now.saturating_sub(window_ms);
-            // No page backs a seen-set; it lives in the index snapshot. So the outcome carries
+            // No block backs a seen-set; it lives in the index snapshot. So the outcome carries
             // the member and the moment, which is everything an apply needs.
             stage_meta_outcome(
                 shard_id,
@@ -1347,7 +1347,7 @@ pub(crate) fn execute_on_shard(
             let object_id = stable_block_object_id(shard_id, "zset", &key);
             let routing_bucket =
                 block_routing_bucket(&key, start_routing_bucket, end_routing_bucket);
-            // WHICH page of this object this element is. Computed BEFORE the append, because
+            // WHICH block of this object this element is. Computed BEFORE the append, because
             // the append stamps the ordinal into the record header AND onto the address it
             // returns from the same value -- assigning it afterwards would leave the two
             // disagreeing, which `decode_block_record` refuses as a page id mismatch.
@@ -1358,7 +1358,7 @@ pub(crate) fn execute_on_shard(
                 &key,
                 &component,
             );
-            // The page STATES which element it is -- see `container_pages`.
+            // The block STATES which element it is -- see `container_pages`.
             let page =
                 crate::engine::container_pages::single_element_page("zset", &component, &member);
             if let Ok(address) = append_value_of_object(
@@ -1367,8 +1367,8 @@ pub(crate) fn execute_on_shard(
                 shard_id,
                 &page,
                 Some(object_id),
-                // The element this page holds -- the SAME expression that derived the ordinal
-                // above and the object id beside it. All three name one page.
+                // The element this block holds -- the SAME expression that derived the ordinal
+                // above and the object id beside it. All three name one block.
                 Some(component.as_str()),
                 Some(routing_bucket),
                 async_storage,
@@ -1478,7 +1478,7 @@ pub(crate) fn execute_on_shard(
             let object_id = stable_block_object_id(shard_id, "list", &key);
             let routing_bucket =
                 block_routing_bucket(&key, start_routing_bucket, end_routing_bucket);
-            // WHICH page of this object this element is. Computed BEFORE the append, because
+            // WHICH block of this object this element is. Computed BEFORE the append, because
             // the append stamps the ordinal into the record header AND onto the address it
             // returns from the same value -- assigning it afterwards would leave the two
             // disagreeing, which `decode_block_record` refuses as a page id mismatch.
@@ -1489,7 +1489,7 @@ pub(crate) fn execute_on_shard(
                 &key,
                 &component,
             );
-            // The page STATES which element it is -- see `container_pages`. A list's element key is
+            // The block STATES which element it is -- see `container_pages`. A list's element key is
             // its biased sequence word, which is eight bytes and is NOT the value beside it, so
             // this is the one container kind whose frame carries both in full.
             let page =
@@ -1500,8 +1500,8 @@ pub(crate) fn execute_on_shard(
                 shard_id,
                 &page,
                 Some(object_id),
-                // The element this page holds -- the SAME expression that derived the ordinal
-                // above and the object id beside it. All three name one page.
+                // The element this block holds -- the SAME expression that derived the ordinal
+                // above and the object id beside it. All three name one block.
                 Some(component.as_str()),
                 Some(routing_bucket),
                 async_storage,
@@ -1581,7 +1581,7 @@ pub(crate) fn execute_on_shard(
             }
             // The length comes from the map itself -- `ListLen` below takes the same number the
             // same way. Copying every address to obtain it, and to index a slice of it, meant a
-            // ten-entry page of a four-thousand-entry list copied four thousand addresses.
+            // ten-entry block of a four-thousand-entry list copied four thousand addresses.
             let list = shard.lists.get(&key);
             let length = list.map_or(0, |list| list.len()) as i64;
             let resolve = |index: i64| -> i64 {
@@ -1598,8 +1598,8 @@ pub(crate) fn execute_on_shard(
             } else {
                 // A BTreeMap iterates in key order, which is the list's order -- the same order the
                 // materialised Vec had. Only the requested span is READ: `read_block_bytes` runs
-                // `wanted` times, not `length` times, which is what stopped a ten-entry page of a
-                // four-thousand-entry list from touching four thousand pages.
+                // `wanted` times, not `length` times, which is what stopped a ten-entry block of a
+                // four-thousand-entry list from touching four thousand blocks.
                 //
                 // `skip(from)` still ADVANCES the iterator `from` times, so reaching a late offset
                 // walks the nodes before it -- cheap per step and allocating nothing, but not
@@ -1720,8 +1720,8 @@ pub(crate) fn execute_on_shard(
             let mut published: Vec<BlockAddress> = Vec::new();
             let mut replaced_any = false;
             // feature_append_chunks_and_persists_timestamped_kv_blocks: append each
-            // timestamped feature point through the page-backed KV layout, then
-            // publish the resulting page addresses into the bucket index below.
+            // timestamped feature point through the block-backed KV layout, then
+            // publish the resulting block addresses into the bucket index below.
             if let Ok(addresses) = append_timestamped_kv_blocks(
                 cache,
                 block_store,
@@ -1735,7 +1735,7 @@ pub(crate) fn execute_on_shard(
                 crate::engine::state::next_block_index_for_object(&shard.bucket_index, routing_bucket, "feature", &key),
             ) {
                 for (timestamp_ms, address) in addresses {
-                    // A replaced timestamp supersedes a page, and a superseded page must be
+                    // A replaced timestamp supersedes a block, and a superseded block must be
                     // dropped rather than joined -- so record it and take the restating path.
                     if series.insert(timestamp_ms, address.clone()).is_some() {
                         replaced_any = true;
@@ -1765,7 +1765,7 @@ pub(crate) fn execute_on_shard(
                     mutated,
                 );
             } else {
-                // A pure append. Publishing only the new pages leaves the index in the same
+                // A pure append. Publishing only the new blocks leaves the index in the same
                 // state, and stops an append costing the length of the series it joins:
                 // restating every address measured 4.07 MB for one point on a 3,200-point series.
                 sync_bucket_index_object_blocks_with_mode(
@@ -1881,8 +1881,8 @@ pub(crate) fn execute_on_shard(
                             let mut page_cache = HashMap::new();
                             // feature_append_keeps_oversized_single_timestamped_value_readable:
                             // range queries rehydrate each timestamp through the packed
-                            // page reader, so a large single timestamped value remains
-                            // readable when it occupies its own page.
+                            // block reader, so a large single timestamped value remains
+                            // readable when it occupies its own block.
                             series
                                 .range(crate::engine::timestamp_range_bounds(start_ms, end_ms))
                                 // Default read bound follows feature_max_size so raising the
@@ -2354,13 +2354,13 @@ pub(crate) fn execute_on_shard(
                 // helper is invisible to every sweep for the life of the shard the moment any
                 // other key holds one, and the key is retained forever.
                 crate::engine::set_expiry(shard, key.clone(), expires_at);
-                // And recorded, already resolved. This arm writes a control-state page, the page
+                // And recorded, already resolved. This arm writes a control-state block, the block
                 // write stages an outcome, and a record carrying outcomes is INSTALLED rather
                 // than re-executed on replay -- so a deadline that is not in the record is not in
-                // the shard after recovery. Measured before this existed: the page came back and
+                // the shard after recovery. Measured before this existed: the block came back and
                 // the deadline came back as None.
                 //
-                // AFTER the page, not before. Replay installs a deadline only onto a key that
+                // AFTER the block, not before. Replay installs a deadline only onto a key that
                 // already exists, and outcomes install in the order they were staged; staged
                 // first, this deadline meets a shard that has not seen the key yet and is
                 // dropped in silence. Both correct siblings here stage their component first.
@@ -2647,8 +2647,8 @@ pub(crate) fn execute_on_shard(
                 // `key` is the family-prefixed key by this point, which is the key both the
                 // record and the sweep have to name. Same two requirements as every other
                 // deadline in this file: through `set_expiry` so the deadline-ordered mirror the
-                // sweep reads learns about it, and staged -- after the page -- so it survives a
-                // replay that installs this record's page outcome instead of re-running the
+                // sweep reads learns about it, and staged -- after the block -- so it survives a
+                // replay that installs this record's block outcome instead of re-running the
                 // command.
                 let expires_at = now.saturating_add(ttl_ms);
                 crate::engine::set_expiry(shard, key.clone(), expires_at);
@@ -2943,7 +2943,7 @@ pub(crate) fn execute_on_shard(
                         .and_then(|fields| fields.get(CONTEXT_NODE_FIELD))
                         .map(|address| (address, PageIdentity::of(shard_id, "hash", &object_key, Some(CONTEXT_NODE_FIELD))))
                         .or_else(|| {
-                                // THE PRE-HASHES ARM IS A WHOLE `context_node` PAGE, not the `meta` field of a
+                                // THE PRE-HASHES ARM IS A WHOLE `context_node` BLOCK, not the `meta` field of a
                                 // hash. `model_map_block_address` spells it `("context_node", None)` and is the
                                 // authority; one element named for both arms is wrong for whichever arm it does
                                 // not describe, and this chain named the field for both.
@@ -3046,7 +3046,7 @@ pub(crate) fn execute_on_shard(
                 .and_then(|fields| fields.get(CONTEXT_NODE_FIELD))
                 .map(|address| (address, PageIdentity::of(shard_id, "hash", &object_key, Some(CONTEXT_NODE_FIELD))))
                 .or_else(|| {
-                        // THE PRE-HASHES ARM IS A WHOLE `context_node` PAGE, not the `meta` field of a
+                        // THE PRE-HASHES ARM IS A WHOLE `context_node` BLOCK, not the `meta` field of a
                         // hash. `model_map_block_address` spells it `("context_node", None)` and is the
                         // authority; one element named for both arms is wrong for whichever arm it does
                         // not describe, and this chain named the field for both.
@@ -3098,7 +3098,7 @@ pub(crate) fn execute_on_shard(
                         .and_then(|fields| fields.get(CONTEXT_NODE_FIELD))
                         .map(|address| (address, PageIdentity::of(shard_id, "hash", &object_key, Some(CONTEXT_NODE_FIELD))))
                         .or_else(|| {
-                                // THE PRE-HASHES ARM IS A WHOLE `context_node` PAGE, not the `meta` field of a
+                                // THE PRE-HASHES ARM IS A WHOLE `context_node` BLOCK, not the `meta` field of a
                                 // hash. `model_map_block_address` spells it `("context_node", None)` and is the
                                 // authority; one element named for both arms is wrong for whichever arm it does
                                 // not describe, and this chain named the field for both.
@@ -3138,7 +3138,7 @@ pub(crate) fn execute_on_shard(
             normalize_context_event_storage_keys(node_hash, &mut event);
             // CONTEXT_TIMELINE_FANOUT is applied inside context_timeline_key so
             // multiple ContextEvent writes at the same millisecond map to stable,
-            // timestamp-keyed pages instead of overwriting one another.
+            // timestamp-keyed blocks instead of overwriting one another.
             // context_models_match_keys_timeline_blocks_and_filters keeps this
             // key shape aligned with the context event timeline contract.
             let timeline_key = context_timeline_key(event.primary_time_ms(), event.event_id_hash);
@@ -3151,7 +3151,7 @@ pub(crate) fn execute_on_shard(
                 let value = context_bytes(&*event);
                 let routing_bucket =
                     block_routing_bucket(&object_key, start_routing_bucket, end_routing_bucket);
-                // The PAGE stays timestamp-keyed: pages pack by time, and the load path recovers
+                // The BLOCK stays timestamp-keyed: blocks pack by time, and the load path recovers
                 // the timeline key from the packed point. Only the index key changes.
                 if let Ok(addresses) = append_timestamped_kv_blocks_keyed(
                     cache,
@@ -3212,7 +3212,7 @@ pub(crate) fn execute_on_shard(
             normalize_context_event_storage_keys(node_hash, &mut event);
             let primary_time_ms = event.primary_time_ms();
             // Extracted events use the same CONTEXT_TIMELINE_FANOUT timeline as
-            // raw context events so index refs, filters, and event pages share the
+            // raw context events so index refs, filters, and event blocks share the
             // wire-compatible timestamp key discipline.
             let event_timeline_key = context_timeline_key(primary_time_ms, event.event_id_hash);
             let event_id_hash = event.event_id_hash;
@@ -3221,7 +3221,7 @@ pub(crate) fn execute_on_shard(
                 .entry(event_object_key.clone())
                 .or_default();
             // Same key discipline as ContextWriteEvent since the event rekey: the primary map
-            // is keyed by EVENT ID (idempotence tests the id), the page stays timestamp-keyed,
+            // is keyed by EVENT ID (idempotence tests the id), the block stays timestamp-keyed,
             // and the time index maps the stored timeline key back to the id. This arm was
             // missed by the rekey -- it kept inserting timeline keys into the id-keyed map and
             // never fed the time index, so every extracted event was invisible to time-ranged
@@ -3650,8 +3650,8 @@ pub(crate) fn execute_on_shard(
         } => {
             // In-memory, coalesced summary-dirty tracking. Repeated marks for the same
             // node update a single hashmap entry instead of appending a new persisted
-            // page, so dirty records are bounded by distinct dirty nodes, not by events.
-            // The map is ephemeral (never written to the page store) and may be lost on
+            // block, so dirty records are bounded by distinct dirty nodes, not by events.
+            // The map is ephemeral (never written to the block store) and may be lost on
             // restart; the async summary worker re-marks on the next event.
             let object_key = context_dirty_key(tenant_hash, node_hash);
             let entry = shard
@@ -3717,7 +3717,7 @@ pub(crate) fn execute_on_shard(
             // node once it has been successfully embedded); otherwise repeated marks
             // for the same node coalesce into a single entry so dirty records stay
             // bounded by distinct dirty nodes, not by events. The map is ephemeral
-            // (never written to the page store) and re-derived after restart.
+            // (never written to the block store) and re-derived after restart.
             let object_key = context_embedding_dirty_key(tenant_hash, node_hash);
             if clear {
                 shard.context_embedding_dirty_index.remove(&object_key);
@@ -3815,7 +3815,7 @@ pub(crate) fn execute_on_shard(
             tenant_hash,
             entity,
         } => {
-            // The PAGE is still addressed per entity -- the object id must stay unique per
+            // The BLOCK is still addressed per entity -- the object id must stay unique per
             // entity or two entities of one node would overwrite each other's bytes. Only the
             // INDEX changes shape: the node's collection key owns a BTreeMap keyed by entity
             // hash, so the entity's own key no longer occupies a map slot of its own.
@@ -3835,7 +3835,7 @@ pub(crate) fn execute_on_shard(
                 &bytes,
                 Some(object_id),
                 // `None`, matching the object id derived from ("context_entity", &object_key, None):
-                // the entity's own key IS the object key, so its page is a whole object.
+                // the entity's own key IS the object key, so its block is a whole object.
                 None,
                 Some(routing_bucket),
                 async_storage,
@@ -3873,11 +3873,11 @@ pub(crate) fn execute_on_shard(
             let collection_key = context_entity_collection_key(tenant_hash, node_hash);
             let object_key = collection_key.clone();
             mutated |= drop_if_expired(cache, shard_id, shard, &collection_key);
-            // THE PAGE'S OWN KEY IS THE PER-ENTITY KEY, not the collection key this map is keyed
-            // by: `ContextUpsertEntity` files the page under `context_entity_key(..)` and derives
+            // THE BLOCK'S OWN KEY IS THE PER-ENTITY KEY, not the collection key this map is keyed
+            // by: `ContextUpsertEntity` files the block under `context_entity_key(..)` and derives
             // its routing bucket from that, so a read has to name the same string or it looks in
             // the cache under a key nothing ever wrote. The index groups entities by node; the
-            // PAGE is still per entity, and that split is exactly what this line has to respect.
+            // BLOCK is still per entity, and that split is exactly what this line has to respect.
             let entity = shard
                 .context_entities
                 .get(&collection_key)
@@ -3890,7 +3890,7 @@ pub(crate) fn execute_on_shard(
                         address,
                         // THE PER-ENTITY KEY, not the collection key this map is keyed by -- the
                         // same string the bucket below is derived from, and the one
-                        // `ContextUpsertEntity` files the page under. Filed with `None`.
+                        // `ContextUpsertEntity` files the block under. Filed with `None`.
                         PageIdentity::of(
                             shard_id,
                             "context_entity",
@@ -3916,10 +3916,10 @@ pub(crate) fn execute_on_shard(
             let object_key = context_entity_collection_key(tenant_hash, node_hash);
             mutated |= drop_if_expired(cache, shard_id, shard, &object_key);
             let series = shard.context_entities.get(&object_key);
-            // TAKES THE ENTITY HASH, because the page's routing bucket comes from the per-entity
+            // TAKES THE ENTITY HASH, because the block's routing bucket comes from the per-entity
             // key and this map is keyed by the node's collection key. The "every entity" arm below
             // therefore iterates `iter()` rather than `values()`: the hash it was discarding is
-            // what names the page.
+            // what names the block.
             let read_entity = |entity_hash: u64, address: &BlockAddress| {
                 read_block_bytes(
                     cache,
@@ -4134,9 +4134,9 @@ pub(crate) fn execute_on_shard(
                     if node.summary_vector_valid_from_ms <= summary.valid_from_ms {
                         let mut updated = node.clone();
                         // Stored form, not the value as computed. The node being compared
-                        // against came off a page, and both stored vector forms round, so a raw
+                        // against came off a block, and both stored vector forms round, so a raw
                         // vector differs from its own round trip -- which would call every
-                        // ingest a change and append a second node page for each one.
+                        // ingest a change and append a second node block for each one.
                         updated.summary_vector = context_vector_as_stored(&summary.vector);
                         updated.summary_vector_valid_from_ms = summary.valid_from_ms;
                         // The encoder stamp travels with the vector, or the copy becomes the one
@@ -4415,7 +4415,7 @@ pub(crate) fn execute_on_shard(
                 .and_then(|fields| fields.get(CONTEXT_NODE_FIELD))
                 .map(|address| (address, PageIdentity::of(shard_id, "hash", &node_key, Some(CONTEXT_NODE_FIELD))))
                 .or_else(|| {
-                        // THE PRE-HASHES ARM IS A WHOLE `context_node` PAGE, not the `meta` field of a
+                        // THE PRE-HASHES ARM IS A WHOLE `context_node` BLOCK, not the `meta` field of a
                         // hash. `model_map_block_address` spells it `("context_node", None)` and is the
                         // authority; one element named for both arms is wrong for whichever arm it does
                         // not describe, and this chain named the field for both.

@@ -93,7 +93,7 @@ pub enum BlockStoreError {
 /// Which optional parts an address carries.
 ///
 /// Five `Option`s cost 72 bytes to wrap values of 8, 8, 4, 8 and 8. A `u64` has no spare bit
-/// pattern to mean "absent", so each one pays a whole extra word for its tag, and every page in
+/// pattern to mean "absent", so each one pays a whole extra word for its tag, and every block in
 /// the index holds an address for the life of the shard.
 ///
 /// A sentinel would be cheaper and is NOT available here: `0` is a legitimate `stored_slab_id` and a
@@ -214,7 +214,7 @@ struct BlockAddressWire {
     /// is read. Its VALUE is cross-checked against `block_id.or(object_id)` just below, and its
     /// PRESENCE becomes `ADDRESS_HAS_GENERATION` -- so a reader that stopped declaring this field
     /// would not lose a nil, it would load every address with no generation at all and move every
-    /// page handle it resolves through. On the named encoding that happens SILENTLY. Retiring
+    /// block handle it resolves through. On the named encoding that happens SILENTLY. Retiring
     /// this slot therefore needs the served-index version stamp to refuse the old shape first,
     /// which is a separate change; retiring the other two did not.
     #[serde(
@@ -271,7 +271,7 @@ impl TryFrom<BlockAddressWire> for BlockAddress {
         //
         // Those are two different things and it matters which is which. A stored `g` of 7 beside a
         // `block_id` of 4 is a disagreement: the writer recorded a generation this binary cannot
-        // reproduce, and deriving 4 instead would recompute the page handle. That is refused.
+        // reproduce, and deriving 4 instead would recompute the block handle. That is refused.
         //
         // A `g` that is not there at all is not a disagreement -- it is an index written before
         // the field existed. The OLDEST spelling this tree still loads is exactly that shape:
@@ -313,7 +313,7 @@ impl From<BlockAddress> for BlockAddressWire {
             object_id: address.object_id(),
             // `routing_bucket` and `sha256` used to be written here as nil, because the slots
             // were kept. Both slots are gone, so there is nothing to write: the bucket is the
-            // container's answer and the page envelope carries the digest that verifies the bytes.
+            // container's answer and the block envelope carries the digest that verifies the bytes.
             generation: address.generation(),
         }
     }
@@ -322,7 +322,7 @@ impl From<BlockAddress> for BlockAddressWire {
 /// A BYTE BUDGET, NOT A DEFAULT WIDTH.
 ///
 /// There are two of these per stored record -- one in the model map a read resolves through, one
-/// inside the page-index entry -- and both live for the life of the shard, so this is the most
+/// inside the block-index entry -- and both live for the life of the shard, so this is the most
 /// numerous structure in the engine. `engine::tests::per_item_byte_budget` counts them at two
 /// corpus sizes and ranks every per-item structure by `size_of` x count; this one heads the list
 /// at both.
@@ -347,8 +347,8 @@ impl From<BlockAddress> for BlockAddressWire {
 ///
 /// `generation` used to sit here as a seventh field. It is now DERIVED -- see [`BlockAddress::generation`].
 ///
-/// `routing_bucket` used to sit here as a sixth. IT IS NOW THE CONTAINER'S ANSWER, not the page's.
-/// A page's bucket is `start + FNV-1a-64(object_key) % width`, and since the routing range a store
+/// `routing_bucket` used to sit here as a sixth. IT IS NOW THE CONTAINER'S ANSWER, not the block's.
+/// A block's bucket is `start + FNV-1a-64(object_key) % width`, and since the routing range a store
 /// was built under is STAMPED beside its index -- a disagreeing range is refused before the decode,
 /// and an unstamped store has its built range honoured and stamped -- that expression evaluated on
 /// load is the same number the writer stamped. So the field was a cache of a pure function of the
@@ -417,16 +417,16 @@ pub struct BlockAddress {
 /// AND THE FIELD IS A CACHE OF A PURE FUNCTION OF FIELDS THE ENTRY ALREADY HOLDS, which is what
 /// decides it. `BlockIndex` carries `object_key`, `model_id` and `component` beside this address
 /// and `ShardState` carries the shard, so `stable_block_object_id(shard, kind, key)` is
-/// computable wherever a page entry is. Measured by
+/// computable wherever a block entry is. Measured by
 /// `engine::tests::address_footprint::the_object_id_on_a_live_page_entry_is_the_hash_of_fields_beside_it`
-/// over every live page entry at two corpus sizes: the stored id equalled that derivation on 2,524
+/// over every live block entry at two corpus sizes: the stored id equalled that derivation on 2,524
 /// of 2,524 entries and on 20,632 of 20,632, and differed on NONE. #1974 established the derivation
 /// at about thirty sites, `index_log` already STRIPS a derivable id from the row it writes
 /// (`a_row_does_not_write_the_object_id_it_can_derive`), and the read sites already carry
 /// `unwrap_or_else(|| stable_block_object_id(..))`. The in-memory field is the last copy.
 ///
 /// WHAT ACTUALLY PINS IT, and it is NOT the registry's key. The claim here used to be that
-/// `engine::block_in_wal::read_block` resolves a durably-acked page through a registry keyed
+/// `engine::block_in_wal::read_block` resolves a durably-acked block through a registry keyed
 /// `(store, shard, object_id)` "with no bucket in it", and that a per-bucket ordinal cannot address
 /// that registry. The second half is true and the first half is not the constraint: that registry is
 /// live-path state that is NEVER PERSISTED -- a reload replays the WAL and `register_at` refills it
@@ -435,14 +435,14 @@ pub struct BlockAddress {
 /// bucket is in hand. The field does not need an ordinal; it needs to be RECOMPUTED.
 ///
 /// THE REAL CONSTRAINT IS THAT AN OMISSION AT A READ SITE IS SILENT. `read_block` is what serves a
-/// page whose only durable copy is its WAL record, so a reader that cannot supply the identity does
-/// not read a stale page -- it reads MISSING for a durably acknowledged write, which is the exact
+/// block whose only durable copy is its WAL record, so a reader that cannot supply the identity does
+/// not read a stale block -- it reads MISSING for a durably acknowledged write, which is the exact
 /// hole `block_in_wal` exists to close. The routing bucket could be threaded as an `Option` because
 /// an absent bucket only weakens a cache key; an absent identity loses data on read. So the field
 /// can leave only behind an identity the COMPILER demands at every one of those sites -- the
 /// doctrine `compaction::compact_block_addresses` already states, where `Item = (u32, &mut
 /// BlockAddress)` "makes the caller say it, and the compiler name any caller that cannot". An
-/// `Option<u64>` threaded to the same sites would compile with `None` and lose a page quietly.
+/// `Option<u64>` threaded to the same sites would compile with `None` and lose a block quietly.
 ///
 /// THAT CONSTRAINT IS NOW SATISFIED, AND IT IS WHAT THIS PARAGRAPH USED TO BE WAITING FOR.
 /// `engine::hashing::PageIdentity` is that identity: `read_block_bytes` and `read_block_shared` take
@@ -461,12 +461,12 @@ pub struct BlockAddress {
 /// that did hold the key, which is why the threading terminates.
 ///
 /// AND IT FOUND SEVEN READS THAT NAMED THE WRONG ELEMENT. A context node is resolved
-/// `hashes[key][CONTEXT_NODE_FIELD]` OR, for pages written before that move, `context_nodes[key]`
+/// `hashes[key][CONTEXT_NODE_FIELD]` OR, for blocks written before that move, `context_nodes[key]`
 /// -- and all seven sites named `Some(CONTEXT_NODE_FIELD)` for BOTH arms, with a comment asserting
 /// they were the same lookup. `storage_bucket_internals::model_map_block_address` is the authority
 /// and spells the second arm `("context_node", None)`. Under the old shape only the element was
-/// wrong, because the object came off the address, so the in-log fallback built the page key
-/// `(id, Some("meta"))` for a page registered as `(id, None)` and missed it -- MISSING for a
+/// wrong, because the object came off the address, so the in-log fallback built the block key
+/// `(id, Some("meta"))` for a block registered as `(id, None)` and missed it -- MISSING for a
 /// durably acknowledged write, on exactly the path this whole entry is about. The identity cannot be
 /// built without naming a kind, so the arms had to separate and the element came right with them.
 ///
@@ -475,7 +475,7 @@ pub struct BlockAddress {
 /// eight-aligned group, so the group becomes 8, the tail stays 4 + 2 + 1 = 7 and rounds to 8, and
 /// the struct is 16. That is this file's own rule read correctly -- "a narrowing of ONE field cannot
 /// [pay]" is about narrowing, and shedding eight bytes from the aligned group IS a whole step. What
-/// it costs is the STORED shape: `generation` is `block_id.or(object_id)`, so for a WAL-resident page
+/// it costs is the STORED shape: `generation` is `block_id.or(object_id)`, so for a WAL-resident block
 /// -- where the block id is absent -- the generation IS the object id, and `state::block_index_handle`
 /// hashes it while `state::block_index_written_key` renders it into the ref key already on disk.
 /// Every such ref moves, which needs `engine::SHARD_INDEX_FORMAT_VERSION` at 4; #2019 spent 3 on a
@@ -487,7 +487,7 @@ pub struct BlockAddress {
 ///
 /// AND IT MOVES EVERY REF ON DISK, because `generation` is `block_id.or(object_id)` and
 /// `state::block_index_handle` hashes the generation while `state::block_index_written_key` renders
-/// it into the stored ref key. For a WAL-resident page the block id is absent, so the generation IS
+/// it into the stored ref key. For a WAL-resident block the block id is absent, so the generation IS
 /// the object id and both the handle and the written key move with it.
 const _: () = assert!(std::mem::size_of::<BlockAddress>() == 24);
 
@@ -580,7 +580,7 @@ pub struct BlockAddressOutOfRange {
     pub block_slab_id: u64,
     pub offset: u64,
     /// Set only when it is the BLOCK ID that does not fit, so the message can say which half of
-    /// the structure refused rather than blaming the address word for a page ordinal.
+    /// the structure refused rather than blaming the address word for a block ordinal.
     pub block_id: Option<u64>,
 }
 
@@ -631,9 +631,9 @@ const fn narrow(value: u64) -> u32 {
 ///
 /// `narrow` above can saturate because `u32::MAX` is four times the largest length the encoder
 /// accepts, so a saturated length reads as broken. `u16::MAX` IS the largest block id the encoder
-/// accepts, so saturating there produces a perfectly legal block id for a DIFFERENT page of the
+/// accepts, so saturating there produces a perfectly legal block id for a DIFFERENT block of the
 /// same object -- and `decode_block_record`'s block-id arm, the one cross-check on a read that can
-/// actually fire, would confirm it against that page's own record. So this panics, for the same
+/// actually fire, would confirm it against that block's own record. So this panics, for the same
 /// reason [`BlockAddress::from_parts`] panics on an out-of-range address word.
 const fn narrow_block_id(value: u64) -> u16 {
     if value > MAX_ADDRESSABLE_BLOCK_ID {
@@ -651,7 +651,7 @@ impl BlockAddress {
     ///
     /// There is deliberately no digest parameter: the index does not hold one, and a parameter the
     /// constructor discarded would invite a caller to pass a freshly computed digest believing it
-    /// was kept. The page envelope carries the digest that a read verifies against.
+    /// was kept. The block envelope carries the digest that a read verifies against.
     ///
     /// There is deliberately no `generation` parameter either, and for the SAME reason. It was one
     /// until the field came out, and every one of the six production callers passed exactly
@@ -662,7 +662,7 @@ impl BlockAddress {
     /// A generation is therefore PRESENT here exactly when an identity is present to derive it
     /// from, which is what all six of those callers already did.
     /// There is deliberately no `routing_bucket` parameter, and for the THIRD instance of the same
-    /// reason. The bucket a page is filed under is `start + FNV-1a-64(object_key) % width` over the
+    /// reason. The bucket a block is filed under is `start + FNV-1a-64(object_key) % width` over the
     /// range the store is stamped with, so a constructor that accepted one and discarded it would
     /// invite a caller to pass a bucket believing it was kept. Removing the parameter makes the
     /// compiler name every site instead, which is how the six readers that were ALREADY deriving it
@@ -684,7 +684,7 @@ impl BlockAddress {
     ///
     /// Every caller holding a slab id or an offset that is not bounded by construction comes
     /// through here and handles the refusal: the two block-store appends (an offset recovered
-    /// from a slab file that a previous configuration grew past the cap), the hot-page mint (a
+    /// from a slab file that a previous configuration grew past the cap), the hot-block mint (a
     /// process-wide counter), and the record decoder (a physical offset inside a slab file this
     /// binary did not write).
     ///
@@ -761,8 +761,8 @@ impl BlockAddress {
         // `encode_block_record` will accept -- so a saturated length is a value no writer could
         // have produced and reads as broken. A block id has no such headroom: the encoder's
         // ceiling IS `u16::MAX`, so saturating there would hand a too-large block id the address
-        // of the LARGEST LEGAL PAGE of the same object, which `decode_block_record`'s block-id arm
-        // would then happily confirm against that page's own record. That is the address-word
+        // of the LARGEST LEGAL BLOCK of the same object, which `decode_block_record`'s block-id arm
+        // would then happily confirm against that block's own record. That is the address-word
         // hazard one level down, so it takes the address word's answer: refuse.
         if block_id.is_some_and(|value| value > MAX_ADDRESSABLE_BLOCK_ID) {
             return Err(BlockAddressOutOfRange {
@@ -859,7 +859,7 @@ impl BlockAddress {
     ///
     /// Same doctrine as [`BlockAddress::from_parts`]: every caller's value is bounded by
     /// construction -- the record decoder's comes off the wire as a `u16` already -- and a
-    /// truncated block id names a different page of the same object. See
+    /// truncated block id names a different block of the same object. See
     /// [`BlockAddress::try_from_wire_parts`] for why this one cannot saturate.
     pub fn set_block_id(&mut self, value: Option<u64>) {
         self.block_id = narrow_block_id(value.unwrap_or_default());
@@ -950,7 +950,7 @@ pub struct BlockStoreStats {
 /// Lazy read-through source for slabs that live only in shared storage after a
 /// metadata-only (index + address map) recovery on the shared-filesystem backend.
 /// On a local slab miss the block store asks the source for exactly that slab's
-/// bytes, caches them locally, then serves the read, so old pages are read lazily
+/// bytes, caches them locally, then serves the read, so old blocks are read lazily
 /// by address rather than eagerly installed at recovery time. Implementations
 /// resolve a slab id to its shared object and return its verified bytes, or `None`
 /// when the slab is not part of the recovered checkpoint.
@@ -968,9 +968,9 @@ pub struct BlockStoreOptions {
     pub compression_level: i32,
 }
 
-/// The payload is BORROWED. A caller already holds the encoded page -- it keeps it for the
+/// The payload is BORROWED. A caller already holds the encoded block -- it keeps it for the
 /// cache put, or it holds the buffer it published from -- so owning it here forced every
-/// caller to hand over a clone of a page that is several times its own payload.
+/// caller to hand over a clone of a block that is several times its own payload.
 /// A block to append: its bytes, the object it belongs to, that object's routing bucket, and
 /// which block of that object it is.
 ///
@@ -1042,7 +1042,7 @@ pub struct BlockStoreGcReport {
     pub retained_live_bytes_physical_bytes: u64,
 }
 
-/// Live pages on ONE slab, as the INDEX counts them.
+/// Live blocks on ONE slab, as the INDEX counts them.
 ///
 /// The block store cannot derive this. It sees appends, and it sees whole slabs arrive and leave;
 /// an index entry that stopped pointing at an offset reaches it nowhere. So this arrives from the
@@ -1051,8 +1051,8 @@ pub struct BlockStoreGcReport {
 pub struct BlockStoreSlabLive {
     #[serde(alias = "live_page_refs")]
     pub live_block_refs: u64,
-    /// Sum of the lengths of the live pages on the slab. LOGICAL bytes -- the same quantity the
-    /// slab descriptor's `logical_bytes` totals over every page ever appended to it, which is why
+    /// Sum of the lengths of the live blocks on the slab. LOGICAL bytes -- the same quantity the
+    /// slab descriptor's `logical_bytes` totals over every block ever appended to it, which is why
     /// that, and not the file size, is the denominator of the fraction below.
     pub live_bytes: u64,
 }
@@ -1060,7 +1060,7 @@ pub struct BlockStoreSlabLive {
 /// How much of one slab is still live, for every slab the store holds.
 ///
 /// The read side of the published tally, and the answer to "is `utility_basis_points` uniformly
-/// zero". It is, for GC CANDIDATES, and necessarily so -- a candidate is a slab no live page
+/// zero". It is, for GC CANDIDATES, and necessarily so -- a candidate is a slab no live block
 /// points at. Across the whole store it is not, and this is where that shows.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct BlockStoreSlabLiveFraction {
@@ -1075,7 +1075,7 @@ pub struct BlockStoreSlabLiveFraction {
     pub live_bytes: u64,
     /// `live_bytes * 10_000 / logical_bytes`, or 0 when the slab has no logical bytes.
     pub live_basis_points: u64,
-    /// `10_000 - live_basis_points`. What the page-GC garbage floor compares against.
+    /// `10_000 - live_basis_points`. What the block-GC garbage floor compares against.
     pub garbage_basis_points: u64,
 }
 
@@ -1147,25 +1147,25 @@ impl BlockStoreGcPolicy {
     /// this whole slab collectable" (always yes, by construction) instead of "how much of this
     /// slab is still live".
     ///
-    /// It now sums the LIVE PAGE BYTES on the slab itself, taken from the per-slab tally the index
+    /// It now sums the LIVE BLOCK BYTES on the slab itself, taken from the per-slab tally the index
     /// maintains on its own mutation path and publishes through
     /// `BlockStore::publish_live_block_bytes`. The denominator moved with it, from the file
     /// size to the slab descriptor's `logical_bytes` -- the total ever appended there -- because a
-    /// live page is counted at its logical length. `a_published_live_tally_makes_used_bytes_mean_
+    /// live block is counted at its logical length. `a_published_live_tally_makes_used_bytes_mean_
     /// live_page_bytes` shows the floor excluding a 90%-live slab, which is the first time this
     /// knob has excluded anything.
     ///
     /// WHAT DID NOT CHANGE. In a running store the floor still excludes none of the COLLECTOR's
     /// candidates, and `can_the_block_gc_garbage_floor_bind` still asserts that. The reason has
-    /// moved, and the new one is the useful one: a collector candidate is a slab that no live page
+    /// moved, and the new one is the useful one: a collector candidate is a slab that no live block
     /// points at -- `is_live` is checked before candidacy and again before removal -- so its
     /// maintained live bytes are genuinely zero. The floor is now measured against a real figure
     /// that is really zero, rather than against an artefact of two filters contradicting each
     /// other.
     ///
     /// So the remaining obstacle is the CANDIDATE PREDICATE, not the accounting: nothing offers
-    /// this floor a partially-live slab, because a slab with one live page is not a candidate at
-    /// all. That is the same all-or-nothing rule that lets one live page pin a whole slab, and
+    /// this floor a partially-live slab, because a slab with one live block is not a candidate at
+    /// all. That is the same all-or-nothing rule that lets one live block pin a whole slab, and
     /// widening it means relocating the survivors first -- a compaction decision with its own
     /// measurement, not a change to this constructor.
     ///
@@ -1405,7 +1405,7 @@ pub struct BlockStoreSlabDescriptor {
     pub readable_prefix_physical_bytes: u64,
     /// The file mtime this descriptor was last verified against.
     ///
-    /// Every open re-reads and re-hashes every page record in every slab; on a 1.4 GB store that is
+    /// Every open re-reads and re-hashes every block record in every slab; on a 1.4 GB store that is
     /// ~30 s of CPU, and it is the same work every time for slabs nobody has touched. Recording the
     /// identity the descriptor was verified against makes "has this file changed" answerable from
     /// metadata instead of by decoding the slab again.
@@ -1422,7 +1422,7 @@ pub struct BlockStoreSlabDescriptor {
 }
 
 /// One per slab. Six `Option`s of eight bytes each is 96 of its 168 bytes, which is the shape
-/// `BlockAddress` replaced with a presence byte -- worth it there at one per stored page, not
+/// `BlockAddress` replaced with a presence byte -- worth it there at one per stored block, not
 /// worth a wire change here at one per gigabyte.
 const _: () = assert!(std::mem::size_of::<BlockStoreSlabDescriptor>() == 168);
 
@@ -1773,10 +1773,10 @@ struct BlockStoreInner {
     /// another's on a shared atomic.
     open_file_bytes_read: u64,
     open_file_reads: u64,
-    /// Per-slab live page tallies, PUBLISHED by the index that maintains them.
+    /// Per-slab live block tallies, PUBLISHED by the index that maintains them.
     ///
     /// `None` until an index has published once, and the difference matters: an empty map means
-    /// "an index looked and found no live pages anywhere", while `None` means "nobody has told
+    /// "an index looked and found no live blocks anywhere", while `None` means "nobody has told
     /// this store anything" -- and only the second may fall back to the older neighbour-sum
     /// figure.
     ///
@@ -1913,8 +1913,8 @@ impl BlockStore {
                 true,
             )
         };
-        // Loaded BEFORE the page-id scan on purpose: the manifest already records `last_page_id`
-        // per slab, and reading it turns a walk over every page record header -- 90% of a
+        // Loaded BEFORE the block-id scan on purpose: the manifest already records `last_page_id`
+        // per slab, and reading it turns a walk over every block record header -- 90% of a
         // steady-state open's reads -- into a few MB. Any slab the manifest cannot prove unchanged
         // is still walked, and the active slab always is.
         // Nothing allocates from a store-wide block counter any more: a block id is an index
@@ -1939,8 +1939,8 @@ impl BlockStore {
         // Fence a torn tail on the ACTIVE slab. After a crash mid-append the raw file length
         // includes uncommitted/partial bytes past the last intact record; reconcile computed
         // the intact `readable_prefix`. Resuming appends at raw EOF would embed the torn record
-        // permanently mid-slab and, via the early-halting page-id scan, regress next_page_id ->
-        // page-id/generation reuse -> stale reads. Mirror the resume-at-committed-length:
+        // permanently mid-slab and, via the early-halting block-id scan, regress next_page_id ->
+        // block-id/generation reuse -> stale reads. Mirror the resume-at-committed-length:
         // physically truncate the active slab to its readable prefix and resume there.
         let active_readable_prefix = slabs
             .get(&block_slab_id)
@@ -2020,7 +2020,7 @@ impl BlockStore {
             .is_some()
     }
 
-    /// The next free page id this store would assign on the next append. Recorded in a
+    /// The next free block id this store would assign on the next append. Recorded in a
     /// shared checkpoint so a lazy restore can advance the fresh owner's counter past it.
     pub fn next_block_id(&self) -> u64 {
         self.inner
@@ -2029,10 +2029,10 @@ impl BlockStore {
             .next_block_id
     }
 
-    /// Reserve the slab-id (and page-id) range consumed by a lazily-restored checkpoint
+    /// Reserve the slab-id (and block-id) range consumed by a lazily-restored checkpoint
     /// so replayed/new appends land in a FRESH slab beyond it, never overwriting a slab
     /// that is still served on-demand from shared storage. Matches the recovery behaviour
-    /// model where old pages stay addressable in shared storage while new writes roll
+    /// model where old blocks stay addressable in shared storage while new writes roll
     /// forward. Called right after attaching the shared read-through on a fresh owner.
     pub fn reserve_lazy_checkpoint_range(
         &self,
@@ -2323,7 +2323,7 @@ impl BlockStore {
     /// read a directory and a timestamp; it took no live set and re-read no index. Everything it
     /// knew about whether a slab was still needed was decided in an earlier round, by the
     /// collector that quarantined it, against the state of the store at THAT moment. Between the
-    /// two, a dump manifest can be written whose embedded index installs pages in a slab that was
+    /// two, a dump manifest can be written whose embedded index installs blocks in a slab that was
     /// unreferenced when the collector looked -- and the purge would unlink it without ever
     /// asking.
     ///
@@ -2844,14 +2844,14 @@ pub(crate) fn block_wal_only_sync() -> bool {
     block_wal_single_barrier()
 }
 
-/// The single-barrier default also defers the per-write data-page fdatasync -- the last non-WAL
+/// The single-barrier default also defers the per-write data-block fdatasync -- the last non-WAL
 /// synchronous barrier. This is safe ONLY because the default also switches recovery to base-only
 /// replay: reload trusts only the durable dump checkpoint (whose `flush_shard_index` fsyncs every
-/// page BEFORE advancing the watermark) and re-derives every post-watermark page by replaying the
-/// WAL tail exactly once. A page that was written but never fsync'd is therefore rebuilt from its
-/// WAL command, never left as a dangling reference. The deferred page still becomes durable at the
+/// block BEFORE advancing the watermark) and re-derives every post-watermark block by replaying the
+/// WAL tail exactly once. A block that was written but never fsync'd is therefore rebuilt from its
+/// WAL command, never left as a dangling reference. The deferred block still becomes durable at the
 /// next dump (`sync_durable` fsyncs the active slab; a rolled slab is fsync'd at roll). Restored to
-/// a synchronous per-write data-page fdatasync (with delta-fold recovery) only under the
+/// a synchronous per-write data-block fdatasync (with delta-fold recovery) only under the
 /// TS_WAL_LEGACY_RECOVERY escape hatch.
 pub(crate) fn block_wal_single_barrier() -> bool {
     // One reader for the hatch, in `engine`. This parsed it itself, as did index_log, and the
@@ -2873,7 +2873,7 @@ pub(crate) fn block_wal_single_barrier() -> bool {
 ///
 /// This path has no barrier per write. `defer_data_sync` is
 /// `bulk_relaxed_durability() || block_wal_single_barrier()`, and the second is true unless legacy
-/// recovery is turned back on -- so by default the per-write page fdatasync is already deferred
+/// recovery is turned back on -- so by default the per-write block fdatasync is already deferred
 /// (see the note on `block_wal_only_sync`). Preallocating would remove a cost that is not being
 /// paid.
 ///
@@ -2882,7 +2882,7 @@ pub(crate) fn block_wal_single_barrier() -> bool {
 /// against the writes going through them. Reusing already-allocated blocks is the other half of the
 /// preallocation argument, and it lapses for the same reason.
 ///
-/// What WOULD change the answer: making page writes synchronous again (turning
+/// What WOULD change the answer: making block writes synchronous again (turning
 /// `TS_WAL_LEGACY_RECOVERY` on, or anything else that stops deferring that fdatasync). Then this
 /// path starts paying per barrier for a file that grows per write, and both are worth revisiting
 /// together -- with the group-size table above as the guide to how much is there.
@@ -3093,8 +3093,8 @@ mod address_size_tests {
             packed < optional,
             "packing should shrink the address: {packed} vs {optional}"
         );
-        // Guards the win rather than merely observing it: every page in the index holds one of
-        // these for the life of the shard, so a regression here is a per-page regression.
+        // Guards the win rather than merely observing it: every block in the index holds one of
+        // these for the life of the shard, so a regression here is a per-block regression.
         assert!(packed <= 104, "address grew to {packed} bytes");
     }
 
@@ -3174,16 +3174,16 @@ mod address_size_tests {
     /// `BLOCK_RECORD_LENGTH_MASK` and above `u16::MAX` respectively. `length` SATURATES, because
     /// `u32::MAX` is four times the largest length that can reach it and so reads as broken;
     /// `block_id` is CHECKED, because `u16::MAX` IS the largest block id that can reach it and a
-    /// saturated one would name a real page. `object_id` is a full FNV-1a hash and uses its range:
+    /// saturated one would name a real block. `object_id` is a full FNV-1a hash and uses its range:
     /// measured at 18,403,644,112,878,577,117 on a seeded shard, which needs all 64 bits -- and it
     /// is the only field between this structure and 16 bytes. `address` is two 32-bit halves whose
     /// bounds are the capped slab target and the reserved sentinel ids -- see
     /// [`make_block_address_word`].
     ///
     /// `routing_bucket` used to be listed here at 4 bytes, measured at 4,294,692,422 -- all 32
-    /// bits, under the whole-keyspace routing range. It is not a field any more: a page's bucket is
+    /// bits, under the whole-keyspace routing range. It is not a field any more: a block's bucket is
     /// `block_routing_bucket(object_key, ..)` over the range the store is stamped with, so the
-    /// container a page is read through answers it. See the note on [`BlockAddress`].
+    /// container a block is read through answers it. See the note on [`BlockAddress`].
     #[test]
     fn every_byte_of_a_block_address_is_accounted_for() {
         use std::mem::{align_of, offset_of, size_of};
@@ -4194,7 +4194,7 @@ const RETIRED_NAMES: &[&str] = &[
         );
         // And the digest is accepted and dropped rather than rejected: an index written before the
         // address stopped carrying one still loads, which is the whole point of keeping the alias.
-        // The page envelope holds the digest that verifies the bytes.
+        // The block envelope holds the digest that verifies the bytes.
     }
 
     #[test]
@@ -4312,8 +4312,8 @@ const RETIRED_NAMES: &[&str] = &[
     #[test]
     fn a_gc_round_that_reclaimed_nothing_does_not_rewrite_the_manifest() {
         // The sibling test above keeps the full manifest re-serialize off the APPEND path. The
-        // page-GC path had no such guard and rewrote it unconditionally, once per round, on a
-        // stage the periodic loop runs whenever page pressure holds.
+        // block-GC path had no such guard and rewrote it unconditionally, once per round, on a
+        // stage the periodic loop runs whenever block pressure holds.
         //
         // It is not a cheap write: it serialises every slab, fsyncs the temp file, renames it and
         // fsyncs the parent directory -- two fsyncs. A round that reclaimed nothing rewrites it
@@ -4678,7 +4678,7 @@ const RETIRED_NAMES: &[&str] = &[
         assert_eq!(store.read(&next).unwrap(), b"after-restore");
     }
 
-    /// What the page envelope actually carries, and therefore what removing the index copy costs.
+    /// What the block envelope actually carries, and therefore what removing the index copy costs.
     ///
     /// Written before assuming: a v7 record stores a CRC32C in its checksum field, not a SHA-256
     /// (v6 and earlier stored the full digest). So dropping  from the address does NOT
@@ -4731,7 +4731,7 @@ const RETIRED_NAMES: &[&str] = &[
         let dir = tempfile::tempdir().unwrap();
         let store = BlockStore::new(dir.path());
         let address = store.append(b"verified-page").unwrap();
-        // The address no longer carries a digest. The page does, and a read still verifies
+        // The address no longer carries a digest. The block does, and a read still verifies
         // against it -- corrupting the slab below must still be caught.
         assert_eq!(store.read(&address).unwrap(), b"verified-page");
 
@@ -5449,7 +5449,7 @@ const RETIRED_NAMES: &[&str] = &[
 
         /// A record written by the streaming encoder must still decode, and vice versa.
     ///
-    /// The page-record encoder used to build a zstd compressor per call; it now holds one per
+    /// The block-record encoder used to build a zstd compressor per call; it now holds one per
     /// thread, which removed about 80% of what a write allocates. The two APIs frame a stream
     /// differently, so the STORED BYTES changed -- and a stored-byte change is only safe if a
     /// record written by either build reads on either.
@@ -5960,7 +5960,7 @@ const RETIRED_NAMES: &[&str] = &[
     /// The destroy re-checks liveness, and a slab that comes back live is UN-QUARANTINED.
     ///
     /// The shape the re-check exists for: the collector quarantines a slab nothing references,
-    /// and only afterwards does something -- a dump manifest whose embedded index installs pages
+    /// and only afterwards does something -- a dump manifest whose embedded index installs blocks
     /// in it -- start needing it again. The purge that runs next is the irreversible step, and
     /// before this it consulted only a directory listing and a timestamp.
     ///
@@ -6652,7 +6652,7 @@ const RETIRED_NAMES: &[&str] = &[
     /// candidates is physical size, descending. The order the comment above the sort describes is
     /// therefore not the order that happens.
     ///
-    /// NOTHING IS PUBLISHED HERE, AND THAT IS THE POINT. `used_bytes` now means live page bytes
+    /// NOTHING IS PUBLISHED HERE, AND THAT IS THE POINT. `used_bytes` now means live block bytes
     /// on the slab whenever an index has published a tally, and
     /// `a_published_live_tally_makes_used_bytes_mean_live_block_bytes` shows that ordering coming
     /// out highest-garbage first. This store has no publisher, so it exercises the unpublished
@@ -6691,7 +6691,7 @@ const RETIRED_NAMES: &[&str] = &[
             "four slabs are below the retention floor and collectable"
         );
         // THE PREMISE, restated where the consequence is drawn, so this test fails on its own
-        // terms if used bytes ever start meaning live page bytes.
+        // terms if used bytes ever start meaning live block bytes.
         assert!(
             candidates
                 .iter()
@@ -6815,7 +6815,7 @@ const RETIRED_NAMES: &[&str] = &[
     /// `a_gc_round_that_reclaimed_nothing_does_not_rewrite_the_manifest` -- and the reasoning it
     /// records applies word for word here: the manifest write "serialises every slab, fsyncs the
     /// temp file, renames it and fsyncs the parent directory", on a stage the periodic loop runs
-    /// whenever page pressure holds. The purge runs in the SAME round as the collector, from
+    /// whenever block pressure holds. The purge runs in the SAME round as the collector, from
     /// `apply_storage_lifecycle`, and had no such guard: it synced both directories and rewrote the
     /// manifest on every round, including the rounds where every quarantined slab was still inside
     /// its grace window and the round therefore touched nothing at all -- which is what a purge
@@ -7086,7 +7086,7 @@ const RETIRED_NAMES: &[&str] = &[
         assert_eq!(store.slab_ids().unwrap(), vec![2, 3]);
     }
 
-    /// A PUBLISHED LIVE TALLY MAKES `used_bytes` MEAN LIVE PAGE BYTES, AND THE FLOOR THEN BINDS.
+    /// A PUBLISHED LIVE TALLY MAKES `used_bytes` MEAN LIVE BLOCK BYTES, AND THE FLOOR THEN BINDS.
     ///
     /// The arithmetic on its own, with the tally supplied directly rather than earned by a
     /// workload, because the question here is whether the MACHINERY works: given a slab that is
@@ -7101,7 +7101,7 @@ const RETIRED_NAMES: &[&str] = &[
     /// WHAT THIS DOES NOT SAY. It does not say the floor starts excluding slabs in a running
     /// store. `can_the_block_gc_garbage_floor_bind` is where that is measured, and the answer
     /// there is still no -- for a reason that lives in the CANDIDATE PREDICATE and not in this
-    /// arithmetic: a collector candidate is a slab that no live page points at, so its maintained
+    /// arithmetic: a collector candidate is a slab that no live block points at, so its maintained
     /// live bytes are genuinely zero. The two tests answer different halves of the same question,
     /// and both are needed: this one that the knob is real, that one that nothing in a running
     /// store currently presents it with a partially-live candidate.
@@ -8901,7 +8901,7 @@ mod shorter_struct_against_an_existing_row {
     ///
     /// This is the measurement the follow-up rests on. An index written before that removal would
     /// load with no generation on any address -- not an error, not a nil to notice, simply absent
-    /// -- and `BlockAddress::generation` would answer `None` for every page, moving every handle
+    /// -- and `BlockAddress::generation` would answer `None` for every block, moving every handle
     /// it resolves through. `engine::SHARD_INDEX_FORMAT_VERSION` is what converts that silent
     /// misread into a refusal the caller answers by replaying the WAL.
     #[test]

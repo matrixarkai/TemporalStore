@@ -339,8 +339,8 @@ impl TemporalEngine {
         let index_dir = index_dir.into();
         let wal_store = LocalWriteAheadLogStore::new(index_dir.join("wals"));
         let index_log_store = LocalIndexLogStore::new(index_dir.join("indexlogs"));
-        // Install the durable read-by-address fallback for log-backed hot pages: an eviction
-        // handler spills an evicted hot page to a real slab (freeing DRAM + preventing the acked
+        // Install the durable read-by-address fallback for log-backed hot blocks: an eviction
+        // handler spills an evicted hot block to a real slab (freeing DRAM + preventing the acked
         // write from reading back as missing). Idempotent + a no-op when disabled.
         hot_page_spill::install_spill_handler(&cache, &block_store);
         Self {
@@ -365,7 +365,7 @@ impl TemporalEngine {
             warm_cache_under_shard_guard: Arc::new(std::sync::atomic::AtomicBool::new(false)),
             expiry_index_flush_whole: Arc::new(std::sync::atomic::AtomicBool::new(false)),
             // Sampled by default. The exhaustive alternative calls `bucket_storage_summaries`,
-            // which reads EVERY live page in the shard to rank every bucket, and then keeps at
+            // which reads EVERY live block in the shard to rank every bucket, and then keeps at
             // most `eviction_batch_limit` of them -- so the cost of choosing grew with the store
             // while the work done stayed fixed. The sampler walks a bounded window from a cursor
             // (`samples * batch_limit * scan_turns`) and resumes where it stopped, so a store
@@ -381,7 +381,7 @@ impl TemporalEngine {
         }
     }
 
-    /// Stop this engine's cache spilling evicted hot pages to a real slab, so a read has to come
+    /// Stop this engine's cache spilling evicted hot blocks to a real slab, so a read has to come
     /// from the log-resident path.
     ///
     /// Five tests want this, and `TS_HOT_PAGE_SPILL=0` was how they asked. Four could not work:
@@ -421,7 +421,7 @@ impl TemporalEngine {
             .store(true, std::sync::atomic::Ordering::Relaxed);
     }
 
-    /// Rank every bucket by reading every live page, instead of sampling a window.
+    /// Rank every bucket by reading every live block, instead of sampling a window.
     ///
     /// No longer the default. Kept because the measurement that justifies the default needs
     /// something to measure against: a test that cannot produce the exhaustive scan cannot show
@@ -448,7 +448,7 @@ impl TemporalEngine {
             .store(true, std::sync::atomic::Ordering::Relaxed);
     }
 
-    /// Read the warm-up's pages while the shard-table read guard is still held, the way it was
+    /// Read the warm-up's blocks while the shard-table read guard is still held, the way it was
     /// done before the reads were moved out. Scoped to this engine.
     ///
     /// Kept for the same reason: a guard asserting zero reads under the lock is vacuous unless
@@ -480,13 +480,13 @@ impl TemporalEngine {
             .store(false, std::sync::atomic::Ordering::Relaxed);
     }
 
-    /// The RAW PAGE an element's index entry names, before any element is selected out of it.
+    /// The RAW BLOCK an element's index entry names, before any element is selected out of it.
     ///
-    /// The one hook a guard needs to assert that a write actually FRAMED its page. Without it the
-    /// end-to-end test is vacuous in the one direction that matters: an unframed page reads back
+    /// The one hook a guard needs to assert that a write actually FRAMED its block. Without it the
+    /// end-to-end test is vacuous in the one direction that matters: an unframed block reads back
     /// correctly -- that is the whole compatibility design -- so a write path that quietly stopped
     /// framing would pass every value comparison in the suite and be found only by a later stage
-    /// that could no longer rebuild an element from its page.
+    /// that could no longer rebuild an element from its block.
     ///
     /// Goes through `read_block_frame_bytes` and not `read_block_bytes`, deliberately: the latter
     /// is the door that selects, and asking it would hand back the element's value with the frame
@@ -524,16 +524,16 @@ impl TemporalEngine {
         )
     }
 
-    /// Install a hash field whose page carries NO element frame, the way every page written before
+    /// Install a hash field whose block carries NO element frame, the way every block written before
     /// `container_pages` existed does.
     ///
     /// The one thing a compatibility test needs and cannot otherwise have: bytes in a slab with no
-    /// magic in front of them, named by a page index entry and by the resident map, so the product's
+    /// magic in front of them, named by a block index entry and by the resident map, so the product's
     /// own read path resolves them. Everything here is what `Command::HashSet` does, minus the frame
     /// -- the same object id expression, the same routing bucket, the same two registrations -- so
     /// what it installs is the old shape rather than an approximation of it.
     ///
-    /// Returns whether the page was written, so a fixture cannot pass by having installed nothing.
+    /// Returns whether the block was written, so a fixture cannot pass by having installed nothing.
     #[cfg(test)]
     pub(crate) fn install_unframed_hash_page_for_test(
         &self,
@@ -709,7 +709,7 @@ impl TemporalEngine {
     ///     which is a different change from moving the shipped default; and
     ///   * a fixture that wants the production shape should say so, because at the whole keyspace
     ///     EVERY KEY LANDS ALONE IN ITS OWN BUCKET BY CONSTRUCTION -- the modulus is 4.29 billion.
-    ///     #1959 measured "almost every bucket holds exactly one page" off a fixture on this
+    ///     #1959 measured "almost every bucket holds exactly one block" off a fixture on this
     ///     function and read it as a property of the workload.
     ///
     /// SO IF YOU ARE MEASURING ANYTHING PER BUCKET, DO NOT USE THIS. Call `load_shard_with` and
@@ -745,13 +745,13 @@ impl TemporalEngine {
 
         // THE ROUTING RANGE IS SETTLED HERE, BEFORE ANY DECODE, and it is the one place it can be.
         //
-        // A page's bucket is the key's hash modulo the RANGE WIDTH, so a store written on one range
-        // holds its pages under buckets another range never computes -- and nothing re-files them,
+        // A block's bucket is the key's hash modulo the RANGE WIDTH, so a store written on one range
+        // holds its blocks under buckets another range never computes -- and nothing re-files them,
         // because the write path stamps an explicit bucket onto every address. Measured: 2,000 of
-        // 2,000 pages of a store written on the whole keyspace come back filed ABOVE the end of a
-        // shard reopened on `0..1023`, every record still readable and every page outside the
+        // 2,000 blocks of a store written on the whole keyspace come back filed ABOVE the end of a
+        // shard reopened on `0..1023`, every record still readable and every block outside the
         // dump's bucket selection, eviction's victim sampling, the reclaim floor and the release
-        // pass. After the decode those pages are already in the wrong buckets in memory, which is
+        // pass. After the decode those blocks are already in the wrong buckets in memory, which is
         // why this runs first and why a mismatch is a REFUSAL rather than a warning.
         //
         // See `engine/routing_range_stamp.rs` for the three cases and why the pre-stamp store is
@@ -819,16 +819,16 @@ impl TemporalEngine {
         #[cfg(test)]
         restore_phase_probe::begin();
         let (loaded, replay_watermark) = if wal_single_barrier() {
-            // SINGLE-BARRIER RECOVERY TRUST (base-only). The data-page + delta fdatasyncs are
+            // SINGLE-BARRIER RECOVERY TRUST (base-only). The data-block + delta fdatasyncs are
             // deferred, so neither the served-index delta nor the anchor it advances can be
-            // trusted -- they may reference pages that were never fsync'd. Recover ONLY from
+            // trusted -- they may reference blocks that were never fsync'd. Recover ONLY from
             // durable checkpoints:
             //  * the base index snapshot, materialized durably (fsync) at the last dump/unload --
-            //    flush_shard_index fsyncs every page BEFORE advancing its watermark, so every page
+            //    flush_shard_index fsyncs every block BEFORE advancing its watermark, so every block
             //    at/below the base watermark is on disk; and
             //  * the latest durable dump manifest, if newer than the base file.
-            // Then replay the WAL tail from that durable watermark, re-deriving every page written
-            // after it (a lost un-synced page is rebuilt, never left dangling) and, via the
+            // Then replay the WAL tail from that durable watermark, re-deriving every block written
+            // after it (a lost un-synced block is rebuilt, never left dangling) and, via the
             // config-log, re-applying config-driven eviction at the exact frontier. The delta is
             // deliberately NOT folded (load_index_base_only), so each tail record is applied
             // EXACTLY ONCE -- no double-apply of non-idempotent commands (counters, appends).
@@ -874,10 +874,10 @@ impl TemporalEngine {
                             // to the same pair. Three of the maps
                             // `collect_model_live_block_entries` walks are `skip_serializing`, so a
                             // manifest index decodes with them EMPTY while its `bucket_map` --
-                            // which does serialize -- still names every page they owned.
+                            // which does serialize -- still names every block they owned.
                             // `rebuild_bucket_block_ownership` clears `bucket_map` and repopulates
                             // it FROM the model maps, so on its own here it deleted exactly the
-                            // pages only the index still knew about, and this restored state is
+                            // blocks only the index still knew about, and this restored state is
                             // what becomes the shard.
                             //
                             // Measured before this line existed, on the DEFAULT recovery arm: a
@@ -896,7 +896,7 @@ impl TemporalEngine {
                             // keeps it: `restored` is a DECODED MANIFEST INDEX, a whole-shard image
                             // carrying explicit routing buckets from whatever range wrote it, and
                             // `rebuild_bucket_block_ownership` FILTERS on the range it is given. A
-                            // load that narrows the range would silently drop every page the
+                            // load that narrows the range would silently drop every block the
                             // manifest holds outside it rather than re-file it. The promote below
                             // this match passes `request`'s range and should: it runs over this
                             // shard's own live model maps, not over a foreign image.
@@ -959,9 +959,9 @@ impl TemporalEngine {
         LAST_REPLAY_WATERMARK.store(replay_watermark, std::sync::atomic::Ordering::SeqCst);
         // MANIFEST-CONFORMANCE FOLD recovery (gate on only): seed the slab catalog from the folded
         // slab-catalog anchor recovered from the index-log. This is applied AFTER the block
-        // store already reconciled its catalog from the durable pages on open, so it only
+        // store already reconciled its catalog from the durable blocks on open, so it only
         // RESTORES the catalog fields a pure disk scan cannot infer (exact lifecycle state,
-        // creation/update timestamps, logical byte count, page-id range) and installs slabs for
+        // creation/update timestamps, logical byte count, block-id range) and installs slabs for
         // reclaimed slabs with no live file. It never deletes a reconciled slab and never lowers
         // physical bytes below the slab's real size, so it cannot lose durable state -- it is a
         // metadata refinement over the lossless disk-derived catalog, making the per-write
@@ -1033,9 +1033,9 @@ impl TemporalEngine {
             .or_default();
         // Replay any WAL records not yet reflected in the loaded index, rebuilding
         // in-memory state the way startup load replays the wal. Without
-        // this an async_storage write (WAL entry recorded, page/index deferred to the
+        // this an async_storage write (WAL entry recorded, block/index deferred to the
         // dump) is silently lost on restart if the crash beats the dump.
-        // Hand the resolver the log ids the index has been carrying. Without this a page whose
+        // Hand the resolver the log ids the index has been carrying. Without this a block whose
         // only durable copy is a WAL record stays unreadable by address after a reload -- the
         // served index points at a synthetic address and the resolver's table starts empty.
         self.rehydrate_wal_resident_blocks(request.shard_id);
@@ -1076,9 +1076,9 @@ impl TemporalEngine {
             info.recovering = false;
         }
         // Disk->memory promotion on a normal restart is folded directly into
-        // load_index()/reconcile above (gated by this engine's `eager_cache_warm`): the pages
+        // load_index()/reconcile above (gated by this engine's `eager_cache_warm`): the blocks
         // reconcile reads to rebuild the secondary views are promoted into the cache
-        // tier in the same pass, so we avoid a second warm pass re-reading every page
+        // tier in the same pass, so we avoid a second warm pass re-reading every block
         // under the mutex-serialized block store. No-op on a fresh/empty shard.
         #[cfg(test)]
         restore_phase_probe::mark("open_for_serving");
@@ -1153,11 +1153,11 @@ impl TemporalEngine {
     /// A deterministic rendering of the state outcomes are supposed to reproduce.
     ///
     /// Deliberately not the serialized index: that carries bookkeeping -- the applied watermark,
-    /// the log-resident page map -- which legitimately differs between a shard that ran the
+    /// the log-resident block map -- which legitimately differs between a shard that ran the
     /// commands and one that installed their results. Comparing the maps themselves says
     /// whether the DATA matches, and a mismatch prints as a readable diff rather than as two
     /// blobs of unequal bytes.
-    /// The live page entries the bucket index holds, rendered deterministically.
+    /// The live block entries the bucket index holds, rendered deterministically.
     ///
     /// The typed maps are not the whole shard. The bucket index is durable state that the read
     /// path consults, so a rebuild that gets the maps right and this wrong is still wrong -- and
@@ -1420,8 +1420,8 @@ impl TemporalEngine {
                         shard_id,
                         &page.bytes,
                         Some(item.object_id),
-                        // Taken off the carried page rather than re-derived: this arm is
-                        // installing the page the record carried, so the element it is
+                        // Taken off the carried block rather than re-derived: this arm is
+                        // installing the block the record carried, so the element it is
                         // installing is the one the record says it is.
                         page.component.as_deref(),
                         Some(item.routing_bucket),
@@ -1465,7 +1465,7 @@ impl TemporalEngine {
             // gone. `list_recovery` and `zset_recovery` fail on main for exactly that, and the
             // string, hash and set equivalents were untested.
             //
-            // `meta` is what says this is not a page upsert. It is written on every such outcome
+            // `meta` is what says this is not a block upsert. It is written on every such outcome
             // and it round-trips as `meta_log`; nothing read it until now.
             //
             // Each removal mirrors the write path it undoes: the same component decoding as the
@@ -1552,7 +1552,7 @@ impl TemporalEngine {
                 }
                 true
             }
-            // State no page backs: the member and the moment it was seen.
+            // State no block backs: the member and the moment it was seen.
             "seen" => {
                 let (Some(member), Some(seen_at)) = (item.value.clone(), item.ttl) else {
                     return false;
@@ -1704,7 +1704,7 @@ impl TemporalEngine {
                     .insert(member, (biased, address));
                 true
             }
-            // Every timestamped series is the same shape: stored key -> page, with the key in
+            // Every timestamped series is the same shape: stored key -> block, with the key in
             // the component. One arm covers all of them, so a new kind is a line in the map
             // below rather than another branch that can be forgotten here.
             //
@@ -1737,11 +1737,11 @@ impl TemporalEngine {
                 if !item.deleted && item.address.is_none() {
                     return false;
                 }
-                // Mutate the series, then hand the SURVIVING pages to the same index sync the
-                // write path uses. Registering the page directly here instead looked equivalent
-                // and was not: the write path registers a timestamped page with no component,
+                // Mutate the series, then hand the SURVIVING blocks to the same index sync the
+                // write path uses. Registering the block directly here instead looked equivalent
+                // and was not: the write path registers a timestamped block with no component,
                 // one entry per address, so imitating it with a component produced a bucket
-                // index that disagreed about every page while the typed maps matched exactly.
+                // index that disagreed about every block while the typed maps matched exactly.
                 let live_addresses = {
                     let Some(series) = timestamped_series_mut(shard, &item.kind) else {
                         return false;
@@ -1771,7 +1771,7 @@ impl TemporalEngine {
                 );
                 true
             }
-            // context_event: the page is timestamp-keyed but the index entry is keyed by the
+            // context_event: the block is timestamp-keyed but the index entry is keyed by the
             // event id, so the component carries both -- sixteen hex digits of the timeline key,
             // then sixteen of the id. Two maps have to move together: the primary, and the time
             // index that every windowed read goes through. Installing only the primary leaves a
@@ -1832,12 +1832,12 @@ impl TemporalEngine {
                 );
                 true
             }
-            // A context node's page. Its own kind because the write registers no bucket-index
-            // entry for it, unlike every other hash page -- so installing it as a "hash" would
+            // A context node's block. Its own kind because the write registers no bucket-index
+            // entry for it, unlike every other hash block -- so installing it as a "hash" would
             // add an entry the write never made.
             // An entity, under its node's collection. Like the node above, the write registers
             // no bucket-index entry for it, so neither does this.
-            // The whole counter series, serialized to one page. The write registers it in the
+            // The whole counter series, serialized to one block. The write registers it in the
             // bucket index through the same upsert the string kind uses, so this does too.
             "control_state" => {
                 let Some(address) = item.resolved_address() else {
@@ -1959,18 +1959,18 @@ impl TemporalEngine {
             .and_then(|shard| shard.strings.get(key).cloned())
     }
 
-    /// Write every in-process-only page into the block store, so the index can travel.
+    /// Write every in-process-only block into the block store, so the index can travel.
     ///
-    /// A synthetic address names a page inside a WAL record or in memory. It resolves here and
+    /// A synthetic address names a block inside a WAL record or in memory. It resolves here and
     /// nowhere else, so an index carrying one is not portable: a checkpoint uploads the slabs the
     /// block store HAS, and a synthetic slab is not among them.
     ///
     /// Called before a checkpoint exports the index. Returns how many were materialised, so a
     /// caller can tell the difference between "none needed it" and "it did not run".
-    /// Move the OLDEST log-resident pages into the block store, keeping the most recent
+    /// Move the OLDEST log-resident blocks into the block store, keeping the most recent
     /// `keep` where they are. Returns how many moved.
     ///
-    /// A page whose only durable copy is inside a WAL record costs twice. It holds a registration,
+    /// A block whose only durable copy is inside a WAL record costs twice. It holds a registration,
     /// which is memory, and that registration pins `min_registered_sequence` -- reclaim may not
     /// truncate below the lowest one, so a registry that only grows is a log that can never be
     /// reclaimed no matter what the retention policy says. Measured on an ingest of distinct keys,
@@ -1984,9 +1984,9 @@ impl TemporalEngine {
         if ordered.len() <= keep {
             return 0;
         }
-        // The element term is dropped here on purpose, and it costs nothing today: the only pages
-        // this stage can materialise are `shard.strings`, whose component is `None`, so a page key
-        // and its object id are the same number for every page that reaches
+        // The element term is dropped here on purpose, and it costs nothing today: the only blocks
+        // this stage can materialise are `shard.strings`, whose component is `None`, so a block key
+        // and its object id are the same number for every block that reaches
         // `materialize_resident_blocks_where` below. A container element still has no path out of
         // the log through this stage -- that was true before this change and is unchanged by it.
         let retiring: std::collections::HashSet<u64> = ordered[..ordered.len() - keep]
@@ -2006,7 +2006,7 @@ impl TemporalEngine {
         shard_id: ShardId,
         wanted: impl Fn(u64) -> bool,
     ) -> usize {
-        // The range is read under the same guard as the addresses, so a page is read and
+        // The range is read under the same guard as the addresses, so a block is read and
         // rewritten under the bucket the shard is actually loaded on.
         let (addresses, start_routing_bucket, end_routing_bucket): (
             Vec<(String, crate::block_store::BlockAddress)>,
@@ -2049,7 +2049,7 @@ impl TemporalEngine {
                 &self.block_store,
                 shard_id,
                 &address,
-                // This loop walks `shard.strings`, whose pages ARE their whole object. The same
+                // This loop walks `shard.strings`, whose blocks ARE their whole object. The same
                 // identity `object_id` above was derived from, now stated as one value rather than
                 // computed once for the filter and again inside the read.
                 PageIdentity::of(shard_id, "string", &key, None),
@@ -2086,17 +2086,17 @@ impl TemporalEngine {
                     // resolve through its record any more.
                     //
                     // `None` is the kind, not a default: this loop walks `shard.strings` and
-                    // re-files under `"string"` with `None` four lines up, so the page it is
-                    // retiring is a whole-object page and its folded key is the object id itself.
+                    // re-files under `"string"` with `None` four lines up, so the block it is
+                    // retiring is a whole-object block and its folded key is the object id itself.
                     shard
                         .wal_resident_blocks
                         .remove(&super::block_in_wal::wal_resident_key(object_id, None));
                 }
             }
             // Retire the registration too. It is what pins the WAL retention floor, and a floor
-            // held by a page that is now in the block store stops reclaim for no reason.
+            // held by a block that is now in the block store stops reclaim for no reason.
             // `None` for the same reason the removal above passes it: this loop retires string
-            // pages, which ARE their whole object.
+            // blocks, which ARE their whole object.
             super::block_in_wal::deregister(&self.block_store, shard_id, object_id, None);
             moved += 1;
         }
@@ -2145,7 +2145,7 @@ impl TemporalEngine {
         count
     }
 
-    /// How many WAL-resident page locations this shard's index is carrying.
+    /// How many WAL-resident block locations this shard's index is carrying.
     ///
     /// The point of the map is that it is part of the index rather than process state, so a
     /// test needs to be able to look at it to say anything about that.
@@ -2158,23 +2158,23 @@ impl TemporalEngine {
             .unwrap_or(0)
     }
 
-    /// Re-register every WAL-resident page the index knows about.
+    /// Re-register every WAL-resident block the index knows about.
     ///
-    /// The append path learns a page's log id by writing the record; a reload learns it by
+    /// The append path learns a block's log id by writing the record; a reload learns it by
     /// reading the index. Both end up in the same table, which is why no read path had to
     /// change for this to work.
     /// The component comes from the INDEX ENTRY, not from the map.
     ///
-    /// A registration names a page, and a page is an object plus an element. The persisted map
+    /// A registration names a block, and a block is an object plus an element. The persisted map
     /// carries only the folded key (see `block_in_wal::wal_resident_key`), so the element has to
     /// be read back from the place that has always held it: `BlockIndex::component`, sitting on
-    /// the same page entry as the address whose object id this is. Walking the index rather than
+    /// the same block entry as the address whose object id this is. Walking the index rather than
     /// re-reading each record keeps this a pure in-memory pass over state the load has already
     /// built -- no extra log I/O on the load path.
     ///
     /// Registering with the wrong element would be worse than registering nothing: the entry would
-    /// resolve a record and then fail to find its page inside it, which is a miss with the cost of
-    /// a record read. So a page whose folded key is not in the map is skipped, and only an exact
+    /// resolve a record and then fail to find its block inside it, which is a miss with the cost of
+    /// a record read. So a block whose folded key is not in the map is skipped, and only an exact
     /// match registers.
     pub(super) fn rehydrate_wal_resident_blocks(&self, shard_id: ShardId) {
         let shards = self.shards.read().expect("engine lock poisoned");
@@ -2417,9 +2417,9 @@ impl TemporalEngine {
                         .insert(shard_id, config_log[config_cursor].config.clone());
                     config_cursor += 1;
                 }
-                // A page whose only durable copy is INSIDE this record is addressable only if
+                // A block whose only durable copy is INSIDE this record is addressable only if
                 // something says where it lives. The write path registered exactly that when it
-                // appended; replay registered nothing, so recovery installed outcomes naming pages
+                // appended; replay registered nothing, so recovery installed outcomes naming blocks
                 // the successor could not resolve -- and a read for one of them answered None. Not
                 // an error, not an empty shard: a durably acknowledged write reported as absent,
                 // which is the quietest way a store can lose data. Registering here, where the log
@@ -2438,9 +2438,9 @@ impl TemporalEngine {
                         // rehydrates it instead of rediscovering that it cannot.
                         wal_resident_updates.extend(record.staged_blocks.iter().map(|page| {
                             (
-                                // The record says which element each page is, so replay files one
-                                // entry PER PAGE. Keyed on the object alone, a record carrying
-                                // several elements of one key would file one entry and the pages
+                                // The record says which element each block is, so replay files one
+                                // entry PER BLOCK. Keyed on the object alone, a record carrying
+                                // several elements of one key would file one entry and the blocks
                                 // that lost would be unreachable after the next reload.
                                 super::block_in_wal::wal_resident_key(
                                     page.object_id,
@@ -2646,7 +2646,7 @@ impl TemporalEngine {
                 // its floor from each bucket's `first_dirty_wal_sequence` and from the durable
                 // dump manifests. So a failed persist leaves the older anchor on disk with every
                 // record it covers still in the WAL, and the next load simply replays from that
-                // older anchor and re-derives the same pages. Replaying more than necessary is
+                // older anchor and re-derives the same blocks. Replaying more than necessary is
                 // the safe direction here; the tail is applied exactly once from whatever anchor
                 // is found.
                 //
@@ -2717,8 +2717,8 @@ impl TemporalEngine {
             .write()
             .expect("admission lock poisoned")
             .remove(&AdmissionScope::Shard(request.shard_id));
-        // Drop this shard's hot-page spill redirects: on the next load the WAL replay re-derives
-        // the hot pages (and re-spills them as needed), so the live-path redirect map stays
+        // Drop this shard's hot-block spill redirects: on the next load the WAL replay re-derives
+        // the hot blocks (and re-spills them as needed), so the live-path redirect map stays
         // bounded across load/unload cycles.
         hot_page_spill::clear_shard(request.shard_id);
         // Drop this shard's WAL-resident registrations too: they name records in a log this
