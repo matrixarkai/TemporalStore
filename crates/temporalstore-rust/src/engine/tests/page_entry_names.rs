@@ -1605,9 +1605,17 @@ fn a_store_stamped_with_the_wrong_struct_version_is_refused_before_it_is_decoded
     );
     // --- AND THE REFUSAL IS COUNTED APART FROM AN ABSENCE, which is the whole reason the counters
     //     exist: `load_index_inner` answers `Ok(None)` for stale, undecodable and absent alike, so
-    //     without them a stamp bump is invisible from outside. ---
+    //     without them a stamp bump is invisible from outside.
+    //
+    //     THE DESTRUCTURING ORDER BELOW IS (accepted, stale, absent, decode) AND IS NOT ARBITRARY.
+    //     `persistence::index_load_path_counts` returns (accepted, refused_stale, absent,
+    //     undecodable). An earlier version of this block read a counter of my own that returned the
+    //     SAME four u64s in a different order, and swapping one accessor for the other compiles
+    //     either way -- so getting it wrong would leave `stale_n` holding ACCEPTED, which is
+    //     non-zero here for unrelated reasons, and every assertion would pass while measuring
+    //     nothing. Bind by position against that signature, not by the order that reads nicely. ---
     {
-        use crate::engine::{index_load_stamp_counts, reset_index_load_stamp_counts};
+        use crate::engine::persistence::{index_load_path_counts, reset_index_load_path_counts};
         let dir = tempfile::tempdir().expect("tempdir");
         let engine = crate::engine::TemporalEngine::with_local_dirs(
             1024,
@@ -1617,9 +1625,9 @@ fn a_store_stamped_with_the_wrong_struct_version_is_refused_before_it_is_decoded
         );
 
         // ABSENT: no base index has ever been written for this shard.
-        reset_index_load_stamp_counts();
+        reset_index_load_path_counts();
         engine.load_shard(7);
-        let (stale_n, decode_n, absent_n, accepted_n) = index_load_stamp_counts();
+        let (accepted_n, stale_n, absent_n, decode_n) = index_load_path_counts();
         println!(
             "  absent index -> stale {stale_n}, decode {decode_n}, absent {absent_n}, accepted {accepted_n}"
         );
@@ -1654,7 +1662,7 @@ fn a_store_stamped_with_the_wrong_struct_version_is_refused_before_it_is_decoded
         restored.index_format_version = SHARD_INDEX_FORMAT_VERSION - 1;
         std::fs::write(&path, crate::engine::encode_index_bytes(&restored)).expect("write");
 
-        reset_index_load_stamp_counts();
+        reset_index_load_path_counts();
         let reloaded = crate::engine::TemporalEngine::with_local_dirs(
             1024,
             dir.path().join("cache"),
@@ -1662,7 +1670,7 @@ fn a_store_stamped_with_the_wrong_struct_version_is_refused_before_it_is_decoded
             dir.path().join("indexes"),
         );
         reloaded.load_shard(7);
-        let (stale_n, decode_n, absent_n, accepted_n) = index_load_stamp_counts();
+        let (accepted_n, stale_n, absent_n, decode_n) = index_load_path_counts();
         println!(
             "  stale stamp  -> stale {stale_n}, decode {decode_n}, absent {absent_n}, accepted {accepted_n}"
         );

@@ -14074,7 +14074,6 @@ fn which_parts_of_a_block_address_restate_their_surroundings() {
 
     let mut pages = 0usize;
     let mut routing_matches_bucket = 0usize;
-    let mut object_id_matches_entry = 0usize;
     for (bucket_key, bucket) in shard.bucket_index.bucket_map.iter() {
         for page in bucket.block_index.values() {
             pages += 1;
@@ -14100,7 +14099,7 @@ fn which_parts_of_a_block_address_restate_their_surroundings() {
   {pages} pages
 
     the key's derived bucket == the bucket it is filed in  {routing_matches_bucket:>6}  {:>5.1}%   (0 B, derived)
-    address.object_id        == the entry's own object_id  {object_id_matches_entry:>6}  {:>5.1}%   (8 B)
+    address.object_id        -- RETIRED WITH THE FIELD, not measured as 0 of {pages}
     the digest is no longer held here at all -- it lives in the page envelope,
     which is where a read already verifies against it
 
@@ -14108,7 +14107,6 @@ fn which_parts_of_a_block_address_restate_their_surroundings() {
     (the routing bucket is already recovered -- it is not a field any more)
 ",
         pct(routing_matches_bucket),
-        pct(object_id_matches_entry),
         8,
     );
 
@@ -14119,11 +14117,12 @@ fn which_parts_of_a_block_address_restate_their_surroundings() {
         "address.routing_slot agrees with its bucket on {routing_matches_bucket} of {pages} pages \
          -- a partial match means some page is filed somewhere its own address does not name"
     );
-    assert!(
-        object_id_matches_entry == 0 || object_id_matches_entry == pages,
-        "address.object_id() agrees with the entry on {object_id_matches_entry} of {pages} pages \
-         -- a partial match means an entry and its address disagree about which object it is"
-    );
+    // THE SECOND ASSERTION IS GONE RATHER THAN LEFT TO PASS. It read
+    // `object_id_matches_entry == 0 || == pages` over a counter whose increment had already been
+    // removed with the field, so it was 0 on every run and the disjunction's first arm made it
+    // unfailable -- while the row above it printed 0.0%, which a reader would take to mean the ids
+    // never agree. They agree by construction now: there is one source for them. An assertion that
+    // cannot fail is indistinguishable from one that passes, so it does not get to stay.
 }
 
 /// Does maintaining the index during a context ingest give the same index as rebuilding it?

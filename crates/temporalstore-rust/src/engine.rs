@@ -5131,7 +5131,6 @@ fn mark_bucket_index_block_deleted_recording(
     {
         crate::engine::storage_bucket_internals::insert_container_tombstone_entry(
             shard,
-            shard_id,
             model_id,
             key,
             component,

@@ -1850,10 +1850,12 @@ pub(super) fn collect_bucket_index_live_block_entries(shard: &ShardState) -> Vec
 
 /// The identity a released block is compared by, so a release can prove it is reversible.
 ///
-/// `object_id` is deliberately NOT part of it: the bucket index stamps one into the address it
-/// files (`upsert_bucket_index_block_with` calls `set_object_id`), and the model map's copy of the
-/// same block may not carry it. Comparing on it would refuse every release for a difference that
-/// reload reproduces on its own.
+/// `object_id` is not part of it, and no longer COULD be: an address does not carry one. The reason
+/// it was excluded while it did is worth keeping, because it is why removing the field was safe
+/// here -- the bucket index stamped an id into the address it filed while the model map's copy of
+/// the same block did not, so comparing on it would have refused every release over a difference
+/// reload reproduces on its own. Two stored copies that could disagree became one derivation that
+/// cannot, which is the same conclusion arrived at for free.
 type ReleasedBlockIdentity = (String, String, Option<String>, u64, u64, u64, Option<u64>, Option<u64>);
 
 fn released_block_identity(
@@ -3500,19 +3502,18 @@ pub(super) fn upsert_bucket_index_block(
 /// `page_compaction_owner_mismatch` on any container that had had a removal). Both were driven.
 pub(super) fn insert_container_tombstone_entry(
     shard: &mut ShardState,
-    shard_id: ShardId,
     kind: &str,
     object_key: &str,
     component: &str,
     address: BlockAddress,
     routing_bucket: u32,
 ) {
-    let object_id = stable_block_object_id(shard_id, kind, object_key);
-    let mut address = address;
-    // The same one line the upsert path spends for the same reason: an address that arrived without
-    // an object id would otherwise lose the fallback identity computed for it, and `object_id()` on
-    // the entry reads straight through to this field.
-    address.set_object_id(Some(object_id));
+    // THE ADDRESS NO LONGER CARRIES AN IDENTITY TO STAMP. This stood here as
+    // `address.set_object_id(Some(stable_block_object_id(shard_id, kind, object_key)))`, so that
+    // `object_id()` on the entry could read straight through to the field. The entry derives it
+    // now, from `model_id` and `object_key` -- which on this path are `kind` and `object_key`, the
+    // same two terms that fed the stamp -- so the value is unchanged by construction and the shard
+    // is no longer needed here to produce it.
     let page = BlockIndex {
         object_key: std::sync::Arc::from(object_key),
         model_id: stored_model_kind(kind),
@@ -4175,7 +4176,10 @@ pub mod layout_by_caller {
 /// corpus to 5,723 -> 9,631 (1.68x). A width pin could not have found that and neither could a
 /// compile; the scaling control did.
 ///
-/// A caller that genuinely has no shard uses [`reclassify_bucket_layout`] instead, which says so.
+/// A caller that genuinely has no shard uses [`classify_bucket_layout_in_place`] instead, which
+/// takes `object_index` as already correct. That function is also what the write path uses to skip
+/// this rescan, so the two reasons for not rebuilding -- cannot, and need not -- share one
+/// implementation; a second name for the identical body was briefly added here and removed again.
 pub(super) fn update_bucket_layout(shard_id: ShardId, bucket: &mut BucketNode) {
     note_site(&bucket_visit_sites::LAYOUT, bucket.block_index.len());
     // Tests only: this takes a lock, and `update_bucket_layout` is on a write path. It exists
@@ -4196,17 +4200,6 @@ pub(super) fn update_bucket_layout(shard_id: ShardId, bucket: &mut BucketNode) {
         bucket.object_index.clear();
     }
     bucket.layout = classify_bucket_layout(bucket.object_index.object_count(), bucket.block_index.len());
-}
-
-/// Classify the layout from the set the bucket already holds, WITHOUT rebuilding it.
-///
-/// For the three callers that have no shard to derive a page's object id with. Naming it rather than
-/// passing a bool is deliberate: the call site states which of the two things it is doing, so a site
-/// that cannot rebuild cannot look like one that chose not to. `object_index` is left exactly as the
-/// mutation sites maintained it -- a block insert adds its id, a removal drops it once no live block
-/// carries it -- so declining to rescan is not the same as losing the pruning.
-pub(super) fn reclassify_bucket_layout(bucket: &mut BucketNode) {
-    bucket.layout = classify_bucket_layout(bucket.object_index.len(), bucket.block_index.len());
 }
 
 /// Note that a bucket's derived runtime flags may be stale.
@@ -4280,7 +4273,7 @@ fn refresh_one_bucket_runtime_flags(
     }
     match (rebuild_object_index, shard_id) {
         (true, Some(shard_id)) => update_bucket_layout(shard_id, bucket),
-        _ => reclassify_bucket_layout(bucket),
+        _ => classify_bucket_layout_in_place(bucket),
     }
 }
 
@@ -4423,7 +4416,7 @@ pub(super) fn clear_published_object_dirty_state(shard: &mut ShardState, object_
             bucket.set_dirty(any_page_dirty);
             match shard_id {
                 Some(shard_id) => update_bucket_layout(shard_id, bucket),
-                None => reclassify_bucket_layout(bucket),
+                None => classify_bucket_layout_in_place(bucket),
             }
         }
     }
@@ -4564,7 +4557,11 @@ pub(super) fn rebuild_bucket_first_index(
             .block_index
             .insert(tombstone, &mut bucket_index.block_slab_live);
         refiled += 1;
-        update_bucket_layout(bucket);
+        // THE SHARD COMES FROM THE CALLER. `rebuild_bucket_first_index` takes `shard_id`, and this
+        // is a RECONSTRUCT path -- `object_index` is being rebuilt from block entries, where no
+        // mutation site maintained it -- so this is one of the sites that must keep the full
+        // rescan rather than reclassify what it already holds.
+        update_bucket_layout(shard_id, bucket);
     }
     note_tombstones_refiled(refiled);
     bucket_index.rebuild_object_block_lookup();
@@ -5296,7 +5293,7 @@ pub(super) fn reconcile_secondary_views_from_bucket_index(
     for bucket in shard.bucket_index.bucket_map.values_mut() {
         match shard_id {
             Some(shard_id) => update_bucket_layout(shard_id, bucket),
-            None => reclassify_bucket_layout(bucket),
+            None => classify_bucket_layout_in_place(bucket),
         }
     }
 

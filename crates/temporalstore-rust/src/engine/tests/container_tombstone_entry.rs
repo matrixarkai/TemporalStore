@@ -601,7 +601,7 @@ fn a_keys_last_element_still_files_its_object_id() {
     assert!(
         after_last,
         "THE OBJECT ID WAS NOT FILED AT THE KEY'S LAST ELEMENT. The retained tombstone entries \
-         answered the `any(|page| page.object_id() == id)` filter, so the object never reads as \
+         answered the `any(|page| page.object_id(shard_id) == id)` filter, so the object never reads as \
          deleted -- and `object_manager::runtime_report` asks that index per page."
     );
 }

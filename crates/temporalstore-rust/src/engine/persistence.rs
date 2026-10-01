@@ -303,7 +303,7 @@ impl TemporalEngine {
                     //
                     // COUNTED, because all three outcomes below return the same `Ok(None)` and a
                     // caller cannot tell a refusal from an absence. See
-                    // `engine::index_load_stamp_counts`.
+                    // `index_load_path_counts` just above.
                     if shard.index_format_version < super::SHARD_INDEX_FORMAT_VERSION {
                         note_index_load(IndexLoadPath::RefusedStaleStamp);
                         return Ok(None);
