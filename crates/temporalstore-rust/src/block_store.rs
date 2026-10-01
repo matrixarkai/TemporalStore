@@ -528,6 +528,10 @@ const _: () = {
 /// AND THE TWO NARROWINGS ARE ASSERTED SEPARATELY FROM THE TOTAL, because the whole point of the
 /// entry above is that each is worth nothing alone. A reconstruction that only adds up to 24
 /// cannot tell a reader which of the two paid for the step; these two say that NEITHER did.
+///
+/// THE FIGURES BELOW ARE THE 32 -> 24 STEP AND ARE HISTORY, not the current width. The group is
+/// spelled `2 * 8` because the address still carried an `object_id` then; it carries none now and
+/// the total is 16, which is what the two assertions above this comment pin.
 const _: () = {
     let group = 2 * 8; // address, object_id -- untouched by either narrowing
     // THE BLOCK ID NARROWED ALONE, bucket still held: payload 8+8+4+2+4+1 = 27, tail 11 -> 16.
@@ -4760,16 +4764,22 @@ const RETIRED_NAMES: &[&str] = &[
             4,
             "the field is the checksum and nothing else: no padding, no marker"
         );
-        // Two u64, one u32, one u16 and the presence byte: 23 bytes of field in 24. It was 64
+        // ONE u64, one u32, one u16 and the presence byte: 15 bytes of field in 16. It was 64
         // while the grouping id was a seventh field; it is the slab's own id, so it is read off the
         // address instead of stored. It was 56 while `length` and `block_id` were 64-bit fields
         // holding values the block-record encoder refuses above 2^30 and above `u16::MAX`
-        // respectively, 48 while `generation` was stored rather than derived from
-        // `block_id.or(object_id)`, 40 while the slab id and the offset were two 64-bit fields
-        // rather than two halves of one word, and 32 while the routing bucket was a field rather
-        // than the container's answer -- see the note on `BlockAddress` and
-        // `per_item_byte_budget`.
-        assert_eq!(std::mem::size_of::<BlockAddress>(), 24);
+        // respectively, 48 while `generation` was stored rather than derived, 40 while the slab id
+        // and the offset were two 64-bit fields rather than two halves of one word, 32 while the
+        // routing bucket was a field rather than the container's answer, and 24 while the address
+        // carried an `object_id` of its own. The entry derives that id from its shard, kind and
+        // key now, so the address names a block and claims no identity at all -- and `generation`,
+        // which was `block_id.or(object_id)`, is the block id alone.
+        //
+        // THIS PIN IS WHY THE SWEEP THAT MOVED THE OTHERS WAS INCOMPLETE. It lives in a test about
+        // the checksum field, not in a footprint test, so a scan of the footprint files did not
+        // reach it; and `cargo check` cannot see a width pin written as `assert_eq!` in a test
+        // body. It is recorded here because the next width change will look in the same places.
+        assert_eq!(std::mem::size_of::<BlockAddress>(), 16);
     }
 
     #[test]
