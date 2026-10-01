@@ -1,39 +1,39 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright 2026 MatrixArkAI
 
-//! WHETHER THE PAGE INDEX'S INLINE SINGLE-PAGE ARM STILL PAID FOR ITSELF AT THE SHIPPED ROUTING
+//! WHETHER THE BLOCK INDEX'S INLINE SINGLE-BLOCK ARM STILL PAID FOR ITSELF AT THE SHIPPED ROUTING
 //! RANGE. IT DID NOT, AND THE ANSWER IS TO BOX IT RATHER THAN TO REMOVE IT.
 //!
 //! `BlockIndexMap` was `Empty | One(u64, BlockIndex) | Many(Vec<(u64, BlockIndex)>)`. The `One` arm
-//! held a WHOLE PAGE ENTRY INLINE, so the enum was `8 + size_of::<BlockIndex>()` and that width
+//! held a WHOLE BLOCK ENTRY INLINE, so the enum was `8 + size_of::<BlockIndex>()` and that width
 //! was paid by EVERY `BucketNode` in the `BucketMap` -- by every bucket, whether or not that
-//! bucket held exactly one page.
+//! bucket held exactly one block.
 //!
 //! THE CONCLUSION IN ONE LINE, AND IT IS NOT THE ONE THIS MODULE WAS OPENED TO ARGUE. Four shapes
 //! were priced and the boxed arm is the only one that wins at BOTH routing ranges. Dropping the arm
 //! recovers the identical width -- measured, both are 24 bytes -- but replaces the inline entry with
 //! a one-entry LIST whose first block is a whole growth step, and on the whole-keyspace range, where
-//! every bucket holds exactly one page, that costs 482.0 B a bucket against boxing's 178.3 and the
+//! every bucket holds exactly one block, that costs 482.0 B a bucket against boxing's 178.3 and the
 //! inline entry's own 284.2. Dropping is therefore a REGRESSION of 197.9 B a bucket against doing
-//! nothing, on a range that stores built before #1973 still run. Boxing keeps the single-page arm's
+//! nothing, on a range that stores built before #1973 still run. Boxing keeps the single-block arm's
 //! short-circuit on the read path as well: it never enters `find_page`, so examined entries do not
 //! move at all.
 //!
 //! #1964 kept the arm on an explicit measurement: dropping it would save bytes on every bucket and
-//! pay bytes on every single-page one, and it "loses at every occupancy including the default
+//! pay bytes on every single-block one, and it "loses at every occupancy including the default
 //! range's 100%". THE 100% WAS THE PREMISE, AND IT WAS A PROPERTY OF A DEFAULT THAT HAS SINCE
 //! CHANGED. #1964 measured while `load_shard` defaulted `end_routing_bucket` to `u32::MAX`, which
 //! divides 4.29 billion buckets among a few thousand keys and puts every key in a bucket of its
 //! own BY CONSTRUCTION. #1973 changed the shipped default to 1023. At 1,024 buckets the same
-//! routed workload fills them, and a single-page bucket stops being universal.
+//! routed workload fills them, and a single-block bucket stops being universal.
 //!
 //! SO THE POPULATION INVERTED, AND #1964's ARITHMETIC IS AN ARITHMETIC OVER THAT POPULATION. This
 //! module re-derives both of its numbers on THIS tree -- not carried from its body, because every
 //! term in them has moved since: `Many` became a `Vec` rather than a `BTreeMap` in that same
-//! change, the address narrowed twice after it, and the entry narrowed again when a page's kind
+//! change, the address narrowed twice after it, and the entry narrowed again when a block's kind
 //! became one byte.
 //!
-//! WHAT IS MEASURED, AND ON ONE INSTRUMENT. The counting allocator over a population of page
+//! WHAT IS MEASURED, AND ON ONE INSTRUMENT. The counting allocator over a population of block
 //! indexes built from REAL entries cloned out of a seeded store, reporting BOTH columns:
 //! `ALLOC_BYTES` charges what the caller asked for, `ALLOC_CHUNK_BYTES` reads `malloc_usable_size`
 //! and is where a new allocation's true cost appears. The chunk column decides. The inline half --
@@ -45,15 +45,15 @@
 //! block EXACTLY rather than a whole growth step. All four are priced here, on the same instrument,
 //! at the same distribution -- `keep`, `drop`, `drop1` and `box`. The exact-first-block variant is
 //! the one that looks like the synthesis and is not: it matches boxing on bytes and costs an extra
-//! reallocation on every bucket that reaches two pages, which at the shipped range is almost all of
+//! reallocation on every bucket that reaches two blocks, which at the shipped range is almost all of
 //! them (2,519 allocations against 1,545 at 4,000 records).
 //!
-//! THE OCCUPANCY IS REPORTED AS A HISTOGRAM WITH ITS DENOMINATOR. A mean of 1.98 pages a bucket in
+//! THE OCCUPANCY IS REPORTED AS A HISTOGRAM WITH ITS DENOMINATOR. A mean of 1.98 blocks a bucket in
 //! this engine contained no bucket holding two, and a mean of 1.001 was two populations added
 //! together. Every row below carries the count it was taken over.
 //!
-//! WHY THE CENSUS COUNTS PAGES HELD AND NOT DISCRIMINANTS. Which arm a bucket WOULD be in is a
-//! property of how many pages it holds, and that is what prices a shape that does not exist yet.
+//! WHY THE CENSUS COUNTS BLOCKS HELD AND NOT DISCRIMINANTS. Which arm a bucket WOULD be in is a
+//! property of how many blocks it holds, and that is what prices a shape that does not exist yet.
 //! Counting the live discriminant instead would make this module unable to price any shape but the
 //! one currently compiled -- which is the position #1964 argued from.
 #![allow(clippy::all)]
@@ -121,7 +121,7 @@ fn run_batch(engine: &TemporalEngine, commands: Vec<Command>) {
     }
 }
 
-/// ROUTED KEYS: plain strings, one page each. The shape #1964 priced its trade against.
+/// ROUTED KEYS: plain strings, one block each. The shape #1964 priced its trade against.
 fn seed_routed(engine: &TemporalEngine, count: usize) -> Vec<String> {
     let keys: Vec<String> = (0..count).map(|i| format!("arm-{i:06}")).collect();
     run_batch(
@@ -136,7 +136,7 @@ fn seed_routed(engine: &TemporalEngine, count: usize) -> Vec<String> {
     keys
 }
 
-/// CONTAINER KEYS: hashes of `members` fields. Every field is its own page under ONE object key,
+/// CONTAINER KEYS: hashes of `members` fields. Every field is its own block under ONE object key,
 /// so they share one routing bucket AT EVERY RANGE. The control's workload.
 fn seed_container(engine: &TemporalEngine, keys: usize, members: usize) {
     let mut commands = Vec::with_capacity(keys * members);
@@ -156,10 +156,10 @@ fn seed_container(engine: &TemporalEngine, keys: usize, members: usize) {
 // THE OCCUPANCY, AS A HISTOGRAM WITH ITS DENOMINATOR.
 // =============================================================================================
 
-/// How many pages each bucket holds, as bucket COUNTS, plus the denominator read independently.
+/// How many blocks each bucket holds, as bucket COUNTS, plus the denominator read independently.
 #[derive(Debug, Default, Clone)]
 struct ArmCensus {
-    /// Buckets keyed by how many pages that bucket holds. Zero-page buckets included.
+    /// Buckets keyed by how many blocks that bucket holds. Zero-block buckets included.
     held: BTreeMap<usize, usize>,
     /// `bucket_map.len()`, read WITHOUT the walk below, so the totals check is a real check.
     declared_buckets: usize,
@@ -174,7 +174,7 @@ impl ArmCensus {
         self.held.iter().map(|(held, count)| held * count).sum()
     }
 
-    /// Buckets that WOULD sit in each arm: (zero pages, exactly one page, two or more).
+    /// Buckets that WOULD sit in each arm: (zero blocks, exactly one block, two or more).
     ///
     /// The per-arm sample counts, which is the denominator every per-arm figure is taken over.
     fn arm_samples(&self) -> (usize, usize, usize) {
@@ -197,7 +197,7 @@ impl ArmCensus {
         self.held.keys().copied().next_back().unwrap_or_default()
     }
 
-    /// The pages-held value at a percentile of the BUCKET population, by count. Not interpolated
+    /// The blocks-held value at a percentile of the BUCKET population, by count. Not interpolated
     /// and not a mean: the value the nth bucket actually holds.
     fn percentile(&self, fraction: f64) -> usize {
         let buckets = self.buckets();
@@ -287,9 +287,9 @@ fn arm_census(engine: &TemporalEngine) -> ArmCensus {
     census
 }
 
-/// One real page entry, cloned out of a seeded store. The shapes below hold REAL entries rather
+/// One real block entry, cloned out of a seeded store. The shapes below hold REAL entries rather
 /// than synthesised ones, so their widths and their `Arc` sharing are the engine's.
-/// A page entry built from field values rather than cloned out of a store.
+/// A block entry built from field values rather than cloned out of a store.
 ///
 /// Only for the two width/emptiness checks that must not need an engine to run -- every BYTE figure
 /// in this module is taken over entries the engine itself filed, because a synthesised entry could
@@ -321,7 +321,7 @@ fn one_real_page(engine: &TemporalEngine) -> BlockIndex {
 // THE THREE SHAPES, AS MIRRORS. ONE OF THEM MUST BE THE LIVE DECLARATION.
 // =============================================================================================
 
-/// The page index AS #1964 LEFT IT: the whole entry inline for the single-page case.
+/// The block index AS #1964 LEFT IT: the whole entry inline for the single-block case.
 #[allow(dead_code)]
 enum ShapeKeep {
     Empty,
@@ -329,15 +329,15 @@ enum ShapeKeep {
     Many(Vec<(u64, BlockIndex)>),
 }
 
-/// The single-page arm DROPPED ALTOGETHER: an empty `Vec` allocates nothing, so `Empty` stays a
-/// named arm and a bucket holding one page holds a one-entry LIST.
+/// The single-block arm DROPPED ALTOGETHER: an empty `Vec` allocates nothing, so `Empty` stays a
+/// named arm and a bucket holding one block holds a one-entry LIST.
 #[allow(dead_code)]
 enum ShapeDrop {
     Empty,
     Many(Vec<(u64, BlockIndex)>),
 }
 
-/// The arm KEPT BUT BOXED -- THE SHAPE THAT SHIPPED. The single-page case still has an arm of its
+/// The arm KEPT BUT BOXED -- THE SHAPE THAT SHIPPED. The single-block case still has an arm of its
 /// own and that arm costs a POINTER rather than an entry. TWO ARMS AND A BOX, which is neither of the
 /// others: it recovers the same width dropping does and pays a DIFFERENT allocation for it.
 #[allow(dead_code)]
@@ -375,12 +375,12 @@ impl ShapeCost {
     }
 }
 
-/// Grow a page list ONE ENTRY AT A TIME, reserving in exactly the steps `reserve_one_more` takes.
+/// Grow a block list ONE ENTRY AT A TIME, reserving in exactly the steps `reserve_one_more` takes.
 ///
 /// GROWN AND NOT PRE-SIZED, BECAUSE THE REALLOCATIONS ARE PART OF THE PRICE. A list built with
 /// `Vec::with_capacity(final)` costs ONE allocation; the same list grown from empty costs one per
 /// growth step, and every intermediate buffer is charged and freed on the way. At the shipped
-/// routing range the p50 bucket holds 39 pages, so that is ten allocations rather than one, and a
+/// routing range the p50 bucket holds 39 blocks, so that is ten allocations rather than one, and a
 /// comparison between shapes that differ at the FIRST step has to charge the rest of the ladder
 /// identically or the difference it reports is an artefact of the pre-sizing.
 ///
@@ -423,7 +423,7 @@ fn measure<T>(inline_width: usize, buckets: usize, build: impl FnOnce() -> T) ->
     }
 }
 
-/// Build one page index per bucket, in each shape, over the REAL measured distribution.
+/// Build one block index per bucket, in each shape, over the REAL measured distribution.
 ///
 /// The spine is a `BTreeMap<u32, Shape>` -- the container the real `bucket_map` is -- so the
 /// per-slot amortisation this comparison turns on is the engine's own and not a model of it.
@@ -477,7 +477,7 @@ fn priced_population(census: &ArmCensus, page: &BlockIndex) -> Vec<(&'static str
     // the first block EXACTLY rather than a whole growth step. A single-page bucket then pays one
     // entry instead of four, which is what the boxed arm's advantage over dropping consists of --
     // without a third arm to maintain. What it costs is one extra reallocation on the way up, paid
-    // by every bucket that reaches two pages, which at the shipped range is almost all of them.
+    // by every bucket that reaches two blocks, which at the shipped range is almost all of them.
     let dropped_exact = measure(std::mem::size_of::<ShapeDrop>(), buckets, || {
         let mut map: BTreeMap<u32, ShapeDrop> = BTreeMap::new();
         for (at, held) in plan.iter().enumerate() {
@@ -554,7 +554,7 @@ fn compare_shapes(label: &str, rows: &[(&'static str, ShapeCost)]) {
         // AND THE MULTIPLE-OF-16 CLAUSE IS NOT ASSERTED ON A SUM. It is a property of one chunk
         // taken from a size class, and two things break it here: a total is a sum of many chunks,
         // and a large enough request is served by `mmap` rather than from the heap, where the usable
-        // size is page-derived and NOT 16-aligned -- a planted mebibyte reads 1,052,664, which is 8
+        // size is block-derived and NOT 16-aligned -- a planted mebibyte reads 1,052,664, which is 8
         // modulo 16. `the_instrument_used_here_recovers_a_planted_allocation_exactly` asserts the
         // clause where it holds, on a single small allocation, and records why it does not hold here.
         if cost.allocs > 0 {
@@ -675,7 +675,7 @@ fn the_shape_that_shipped_is_the_live_declaration_and_boxing_recovers_what_dropp
 /// because a single percentage cannot say whether it came from one population or two.
 ///
 /// THE ANTI-CONSTANT ASSERTION. The narrow arm is asserted to reach a bucket holding more than one
-/// page at both corpus sizes. A fixture that only ever produced one page per bucket could not tell
+/// block at both corpus sizes. A fixture that only ever produced one block per bucket could not tell
 /// a correct census from a constant answering one.
 ///
 /// rust-internal: reads the engine's own bucket index, no product behaviour
@@ -728,7 +728,7 @@ fn the_arm_histogram_at_both_routing_ranges_carries_its_denominator_on_every_row
         census.report(&label);
     }
 
-    // THE PREMISE, ASSERTED. The wide range is universally single-page; the shipped default is
+    // THE PREMISE, ASSERTED. The wide range is universally single-block; the shipped default is
     // not, and that is the whole reason this module exists.
     for records in [SMALL, LARGE] {
         let wide = &observed[&(records, WIDE_END)];
@@ -785,12 +785,12 @@ fn the_arm_histogram_at_both_routing_ranges_carries_its_denominator_on_every_row
 /// #1964's SAVE AND ITS PAY, BOTH RE-DERIVED ON THIS TREE, AT BOTH RANGES, IN BOTH COLUMNS.
 ///
 /// #1964's merged body reads: "dropping it would save 160.9 B on every bucket through `BucketMap`
-/// and pay 112.0 B on every single-page one, so it loses at every occupancy including the default
+/// and pay 112.0 B on every single-block one, so it loses at every occupancy including the default
 /// range's 100%."
 ///
 /// NEITHER FIGURE IS REUSED HERE. Every term in them has moved: `Many` became a `Vec` rather than a
 /// `BTreeMap` in that same change, the address narrowed twice after it, and the entry narrowed
-/// again when a page's kind became one byte. A number carried from an older tree is the single most
+/// again when a block's kind became one byte. A number carried from an older tree is the single most
 /// repeated error in this campaign.
 ///
 /// HOW EACH IS DERIVED, and the two are not the same kind of measurement.
@@ -800,10 +800,10 @@ fn the_arm_histogram_at_both_routing_ranges_carries_its_denominator_on_every_row
 ///     the bucket count. It carries the inline width AND the heap, and the `BTreeMap` spine's own
 ///     per-slot amortisation is inside it because the spine is the container the real `bucket_map`
 ///     is.
-///   * THE PAY is per SINGLE-PAGE BUCKET and it is the allocation a single-page list costs that an
+///   * THE PAY is per SINGLE-BLOCK BUCKET and it is the allocation a single-block list costs that an
 ///     inline entry did not: measured directly, one bucket at a time, at the shipped growth step.
 ///
-/// rust-internal: measures the engine's own page index, no product behaviour
+/// rust-internal: measures the engine's own block index, no product behaviour
 #[cfg(feature = "alloc-probe")]
 #[test]
 #[ignore = "the counting allocator is process-wide; run by name"]
@@ -850,7 +850,7 @@ fn the_two_numbers_that_kept_the_inline_arm_re_derived_on_this_tree() {
             // THE SAVE, both columns, per bucket.
             let save_chunk = keep.total_chunk_per_bucket() - dropped.total_chunk_per_bucket();
             let save_request = keep.total_request_per_bucket() - dropped.total_request_per_bucket();
-            // THE PAY, per single-page bucket, measured on its own.
+            // THE PAY, per single-block bucket, measured on its own.
             let single = census.single_page_buckets();
             let pay = pay_per_single_page_bucket(&page);
 
@@ -883,7 +883,7 @@ fn the_two_numbers_that_kept_the_inline_arm_re_derived_on_this_tree() {
             );
 
             // THE NET FOR DROPPING, which is the only thing that would have decided it: the save on
-            // every bucket against the pay on the single-page ones. Both terms measured above.
+            // every bucket against the pay on the single-block ones. Both terms measured above.
             let net_chunk =
                 save_chunk * census.buckets() as f64 - pay.chunk_bytes as f64 * single as f64;
             println!(
@@ -943,7 +943,7 @@ fn the_two_numbers_that_kept_the_inline_arm_re_derived_on_this_tree() {
     );
 }
 
-/// What ONE single-page bucket's page list costs that an inline entry did not: one allocation, at
+/// What ONE single-block bucket's block list costs that an inline entry did not: one allocation, at
 /// the shipped growth step, measured on its own rather than divided out of a population.
 #[cfg(feature = "alloc-probe")]
 fn pay_per_single_page_bucket(page: &BlockIndex) -> ShapeCost {
@@ -954,12 +954,12 @@ fn pay_per_single_page_bucket(page: &BlockIndex) -> ShapeCost {
 // 3. THE ALLOCATION COUNT -- THE HALF THAT DOES NOT AUTOMATICALLY INVERT
 // =============================================================================================
 
-/// WHAT #1964 SAID KEEPS THE INLINE ENTRY: "one allocation per single-page bucket on the write path."
+/// WHAT #1964 SAID KEEPS THE INLINE ENTRY: "one allocation per single-block bucket on the write path."
 ///
 /// THAT IS A COUNT, NOT BYTES, and it is the half of #1964's case that does NOT invert when the
-/// population does -- a single-page bucket costs the same one allocation whatever share of the
+/// population does -- a single-block bucket costs the same one allocation whatever share of the
 /// population it is. What inverts is HOW MANY BUCKETS PAY IT. So the cost is not the allocation; it
-/// is the allocation times the single-page share, and this test measures both factors at both ranges
+/// is the allocation times the single-block share, and this test measures both factors at both ranges
 /// rather than asserting their product.
 ///
 /// THE ALLOCATION IS REAL AND IT IS STILL PAID. Boxing the entry does not avoid it -- a box is an
@@ -967,7 +967,7 @@ fn pay_per_single_page_bucket(page: &BlockIndex) -> ShapeCost {
 /// case that survives its premise intact. What boxing buys is the SIZE of that allocation: one entry
 /// rather than a list's first block of four. Both are measured, one beside the other.
 ///
-/// rust-internal: measures the engine's own page index, no product behaviour
+/// rust-internal: measures the engine's own block index, no product behaviour
 #[cfg(feature = "alloc-probe")]
 #[test]
 #[ignore = "the counting allocator is process-wide; run by name"]
@@ -1064,10 +1064,10 @@ fn a_single_page_bucket_costs_exactly_one_allocation_whether_it_is_boxed_or_list
 /// THE READ PATH IS UNCHANGED IN EXAMINED ENTRIES, AND THAT IS A CONSEQUENCE OF BOXING RATHER THAN
 /// DROPPING THE ARM.
 ///
-/// The single-page arm answers a lookup with ONE COMPARISON and one pointer load, and never enters
+/// The single-block arm answers a lookup with ONE COMPARISON and one pointer load, and never enters
 /// `find_page` -- boxing the entry did not change that, because the arm still exists. So
 /// `PAGE_LOOKUP_ENTRIES_EXAMINED`, the counter inside `find_page` that every list lookup goes
-/// through, reads exactly what it read before this change: a single-page bucket contributes nothing
+/// through, reads exactly what it read before this change: a single-block bucket contributes nothing
 /// to it.
 ///
 /// HAD THE ARM BEEN DROPPED INSTEAD, every one of those lookups would have become a bisection over a
@@ -1111,7 +1111,7 @@ fn the_read_path_examines_no_entry_for_a_single_page_bucket_and_one_if_the_arm_w
         );
 
         // THE WHOLE-KEYSPACE ARM IS THE ONE THAT SAYS SO, AND IT SAYS ZERO. Every bucket there
-        // holds exactly one page, so every lookup takes the single-page arm and NONE reaches
+        // holds exactly one block, so every lookup takes the single-block arm and NONE reaches
         // `find_page`. A non-zero reading would mean the arm had stopped short-circuiting -- which
         // is precisely what dropping it would have done.
         if end_routing_bucket == WIDE_END {
@@ -1159,9 +1159,9 @@ fn the_read_path_examines_no_entry_for_a_single_page_bucket_and_one_if_the_arm_w
 /// THE CONTROL ON THE EXPLANATION, AND IT MUST COME OUT AT ZERO.
 ///
 /// The mechanism claimed here is specific: the ROUTING RANGE decides how many object keys share a
-/// bucket, and that is what moved the single-page share. It follows that a workload whose pages
+/// bucket, and that is what moved the single-block share. It follows that a workload whose blocks
 /// already share ONE bucket at EVERY range cannot move -- routing takes the object key and never
-/// sees the component, so a container's fields are many pages under one key and one bucket at any
+/// sees the component, so a container's fields are many blocks under one key and one bucket at any
 /// width. If the occupancy moved for such a store, the explanation above would be describing
 /// something other than the range.
 ///
@@ -1219,18 +1219,18 @@ fn a_container_store_is_the_control_where_the_range_predicts_no_change() {
 /// WHETHER `Empty` IS LOAD-BEARING FOR RELEASE AND RELOAD, OR MERELY AN OPTIMISATION.
 ///
 /// A RELEASED bucket is documented as `meta_loaded: true, loading: false, in_memory: false` with an
-/// EMPTY page index and its object index intact, so the question is fair: `Empty` might be the
+/// EMPTY block index and its object index intact, so the question is fair: `Empty` might be the
 /// state that lifecycle is written in rather than a way to save a word.
 ///
 /// IT IS NEITHER, AND THE ANSWER IS THE SAME EITHER WAY. `release_bucket_blocks` ASSIGNS the empty
 /// state and `reload_released_bucket` fills it back through `insert_released`; what distinguishes a
 /// released bucket from one that legitimately holds nothing is `released_buckets` plus the retained
 /// `object_index`, which `release_bucket_blocks` says in as many words. So `Empty` is an alias for
-/// "no pages" and nothing reads it as a release marker -- and it costs NOTHING to keep, because an
+/// "no blocks" and nothing reads it as a release marker -- and it costs NOTHING to keep, because an
 /// empty `Vec` allocates nothing and the arm rides free in the vector pointer's niche. It is kept
 /// for the name, not for the byte.
 ///
-/// THE ROUND TRIP IS WHAT THIS ASSERTS, not the discriminant: release then reload, and the pages
+/// THE ROUND TRIP IS WHAT THIS ASSERTS, not the discriminant: release then reload, and the blocks
 /// come back.
 ///
 /// rust-internal: exercises the engine's own release/reload pair, no product behaviour
@@ -1248,14 +1248,14 @@ fn the_empty_arm_is_an_alias_for_no_pages_and_costs_nothing_to_keep() {
         std::mem::size_of::<Vec<(u64, BlockIndex)>>()
     );
 
-    // An empty page index allocates nothing, which is the other half of "free".
+    // An empty block index allocates nothing, which is the other half of "free".
     let empty = BlockIndexMap::default();
     assert!(empty.is_empty(), "a default page index must hold no pages");
     assert_eq!(0, empty.len(), "a default page index must be length zero");
 
-    // AND "NO PAGES" MUST NOT DEPEND ON WHICH SPELLING OF IT YOU ARE HOLDING.
+    // AND "NO BLOCKS" MUST NOT DEPEND ON WHICH SPELLING OF IT YOU ARE HOLDING.
     //
-    // `Empty` and `Many(vec![])` are both "no pages". `shrink` normalises the second into the first
+    // `Empty` and `Many(vec![])` are both "no blocks". `shrink` normalises the second into the first
     // on every path that can empty a list, so today the two cannot both exist -- which is exactly
     // why a predicate that read the DISCRIMINANT would pass every test in this tree. A mutation run
     // confirmed it: replacing `self.len() == 0` with `matches!(self, Empty)` SURVIVED, because
@@ -1307,7 +1307,7 @@ fn the_empty_arm_is_an_alias_for_no_pages_and_costs_nothing_to_keep() {
     //
     // `eviction_dump_before_evict` ships FALSE, and a bucket that has been written and not dumped is
     // DIRTY -- which `release_bucket_blocks` refuses, correctly, because the model maps carry no
-    // per-page dirty bit for a reload to restore. Calling the release directly on a freshly seeded
+    // per-block dirty bit for a reload to restore. Calling the release directly on a freshly seeded
     // store therefore releases NOTHING, and every assertion below would have compared zero against
     // zero and passed. So the round is driven with the dump ON, and the release count is ASSERTED
     // non-zero before anything is concluded from it.
@@ -1436,7 +1436,7 @@ fn the_shape_comparator_refuses_to_compare_when_a_shape_is_missing() {
 /// #1969's CORRECTED CHUNK RULE IS A FLOOR, AND ITS MULTIPLE-OF-16 CLAUSE HAS A DOMAIN. A small
 /// request is served from a size class, so the served size is 16-aligned and strictly above the
 /// request -- a 104-byte request read 128. A LARGE request is served by `mmap` instead, where the
-/// usable size is derived from the page size minus glibc's bookkeeping and is NOT 16-aligned: a
+/// usable size is derived from the block size minus glibc's bookkeeping and is NOT 16-aligned: a
 /// planted mebibyte reads 1,052,664, which is 8 modulo 16. Both are asserted here, each in its own
 /// domain, so the clause is pinned where it holds and recorded where it does not. Asserting it on
 /// the large one would have been a guard encoding a belief the allocator does not share.
@@ -1509,7 +1509,7 @@ fn the_instrument_used_here_recovers_a_planted_allocation_exactly() {
 // WHERE A NARROWER ENTRY LANDS ONCE THE ENTRY IS NO LONGER IN THE NODE
 // =============================================================================================
 
-/// The page entry's ADDRESS as it was before it shed its routing bucket and narrowed its block id.
+/// The block entry's ADDRESS as it was before it shed its routing bucket and narrowed its block id.
 ///
 /// Field for field the declaration this engine had: the packed slab word, the object id, the length,
 /// a 32-bit block id, the routing bucket, and the presence byte -- 29 bytes of payload in 32. A
@@ -1526,7 +1526,7 @@ struct MirrorWideAddress {
     present: u8,
 }
 
-/// The page entry as it was, which is the live entry with the wide address in it.
+/// The block entry as it was, which is the live entry with the wide address in it.
 #[allow(dead_code)]
 #[derive(Clone)]
 struct MirrorWideEntry {
@@ -1539,7 +1539,7 @@ struct MirrorWideEntry {
     log_backed: bool,
 }
 
-/// The SHIPPED page-index shape, generic over the entry so both widths go through one builder.
+/// The SHIPPED block-index shape, generic over the entry so both widths go through one builder.
 ///
 /// Generic on purpose: a second hand-written builder for the wide entry could differ from this one in
 /// the growth ladder or in whether the single arm boxes, and either difference would be reported as a
@@ -1586,7 +1586,7 @@ fn mirror_population<E: Clone>(plan: &[usize], page: &E) -> BTreeMap<u32, Mirror
     spine
 }
 
-/// The plan -- one entry per bucket, holding that bucket's page count -- built OUTSIDE every probe
+/// The plan -- one entry per bucket, holding that bucket's block count -- built OUTSIDE every probe
 /// span so building it is charged to neither shape.
 #[cfg(feature = "alloc-probe")]
 fn census_plan(census: &ArmCensus) -> Vec<usize> {
@@ -1599,22 +1599,22 @@ fn census_plan(census: &ArmCensus) -> Vec<usize> {
 
 /// WHAT THE NARROWER ENTRY IS WORTH ON THE HEAP, NOW THAT THE ENTRY IS NOT IN THE NODE.
 ///
-/// #1975 moved the single page out of `BucketNode` and behind a pointer, and its own note says the
-/// node is 88 and the page index 24 REGARDLESS of entry width. That is correct and it changes what
+/// #1975 moved the single block out of `BucketNode` and behind a pointer, and its own note says the
+/// node is 88 and the block index 24 REGARDLESS of entry width. That is correct and it changes what
 /// this change is worth measuring: before it, eight bytes off the entry was eight bytes off every
 /// node in the bucket map and `size_of` said so. After it, the entry lives in an ALLOCATION -- boxed
-/// for a single-page bucket, inside a `Vec` for every other -- and an allocation is served from a
+/// for a single-block bucket, inside a `Vec` for every other -- and an allocation is served from a
 /// size CLASS, so eight bytes off the request can round away completely.
 ///
 /// IT ROUNDS AWAY IN ONE ARM AND LANDS WHOLE IN THE OTHER, and that is the finding. glibc serves a
 /// request from `max(32, round_up(request + 8, 16))`: a boxed entry asks for 64 now and asked for 72
-/// before, and both land in the 80-byte class, so a single-page bucket saves NOTHING on the chunk
+/// before, and both land in the 80-byte class, so a single-block bucket saves NOTHING on the chunk
 /// column. A list of n entries asks for n x 72 now against n x 80 before, and at the shipped range
-/// p50 is 39 pages a bucket, so the eight bytes land n times over with only the list's own rounding
+/// p50 is 39 blocks a bucket, so the eight bytes land n times over with only the list's own rounding
 /// taken off. Which arm dominates is a property of the routing range, and both are measured.
 ///
 /// BOTH COLUMNS, BOTH RANGES, BOTH CORPUS SIZES, and the ARM-WISE split as well as the total --
-/// because a total over a population that is 100% single-page at one range and 0.000% at the other
+/// because a total over a population that is 100% single-block at one range and 0.000% at the other
 /// would report the same mechanism as two different results without saying why.
 ///
 /// rust-internal: measures the engine's own declarations through the counting allocator
@@ -1701,7 +1701,7 @@ fn what_the_narrower_entry_is_worth_on_the_heap_now_that_it_is_behind_a_pointer(
             mirror_population(&plan, &wide_page)
         });
 
-        // AND THE SINGLE-PAGE ARM ON ITS OWN, which is where the rounding is predicted to eat it.
+        // AND THE SINGLE-BLOCK ARM ON ITS OWN, which is where the rounding is predicted to eat it.
         let single_plan: Vec<usize> = std::iter::repeat(1).take(one_arms.max(1)).collect();
         let one_now = measure(0, one_arms.max(1), || mirror_population(&single_plan, &page));
         let one_before = measure(0, one_arms.max(1), || {
@@ -1776,10 +1776,10 @@ fn what_the_narrower_entry_is_worth_on_the_heap_now_that_it_is_behind_a_pointer(
         }
 
         // THE REQUEST COLUMN SAVES EIGHT BYTES AN ENTRY SLOT, EVERYWHERE -- and the slot count is
-        // not the page count.
+        // not the block count.
         //
         // A list grown in whole steps of four ends at a capacity of `ceil(n / 4) * 4`, so the
-        // allocator is asked for slots and not for pages: this population holds `pages` entries in
+        // allocator is asked for slots and not for blocks: this population holds `pages` entries in
         // rather more slots than that, and a narrower entry saves eight bytes on every one. Written
         // as `pages` first, this assertion read 32,000 against a measured 42,864 and the measurement
         // was right. The slot count is derived from the SAME plan both populations were built from,

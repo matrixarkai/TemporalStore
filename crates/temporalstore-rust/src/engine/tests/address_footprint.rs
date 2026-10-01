@@ -13,9 +13,9 @@
 //! `page_id.or(object_id)` on every live address this census walked and was made derived. It was
 //! 40 until the slab id and the offset merged into one 64-bit word, the slab in the high half and
 //! the offset in the low. It was 32 until `routing_bucket` -- a THIRD optional field, and 4 bytes
-//! of the optional payload -- stopped being held at all: a page's bucket is
+//! of the optional payload -- stopped being held at all: a block's bucket is
 //! `block_routing_bucket(object_key, ..)` over the range the store is STAMPED with, so the
-//! container a page is read through answers it and the page does not have to carry it.
+//! container a block is read through answers it and the block does not have to carry it.
 //!
 //! So the obvious question is whether to pack what is left. The answer turns on a single number:
 //! how many live addresses actually carry NONE of the two optional fields. If most carry none, the
@@ -31,7 +31,7 @@
 //! Nothing bounds the objects in a routing bucket at 256, so an eight-bit identity is not on offer
 //! -- but `the_object_id_on_a_live_page_entry_is_the_hash_of_fields_beside_it` measures the other
 //! shape the arithmetic allows, the field GONE, and finds the stored id is
-//! `stable_block_object_id(shard, kind, key)` on 2,524 of 2,524 live page entries and on
+//! `stable_block_object_id(shard, kind, key)` on 2,524 of 2,524 live block entries and on
 //! 20,632 of 20,632, differing on none. So the question the width turns on is not how narrow an
 //! identity can be. It is what a read site that cannot recompute one would do, and `block_store`'s
 //! note on `BlockAddress` carries that answer: read MISSING for an acked write, silently.
@@ -239,7 +239,7 @@ impl AddressCensus {
 /// Walk every map on a shard that holds a `BlockAddress`, including the bucket index.
 ///
 /// The bucket index matters and is easy to miss: `BlockIndex` carries its own `BlockAddress`, so
-/// every page addressed by a model map is addressed a SECOND time here. A census that read only
+/// every block addressed by a model map is addressed a SECOND time here. A census that read only
 /// the model maps would under-count the population by about half.
 fn census(engine: &TemporalEngine, shard_id: ShardId) -> AddressCensus {
     let shards = engine.shards.read().expect("engine lock poisoned");
@@ -506,7 +506,7 @@ fn a_btree_entry_costs_more_than_the_address_it_holds() {
 
     // THE BLOCK ID IS MASKED TO SIXTEEN BITS, and that is not cosmetic. `try_from_parts` REFUSES a
     // block id wider than `u16::MAX` rather than truncating it -- a truncated block id names a
-    // different page of the same object -- so this fixture's synthetic `i` panicked at 65,536 of its
+    // different block of the same object -- so this fixture's synthetic `i` panicked at 65,536 of its
     // 400,000 entries the moment the field narrowed. Masking keeps the footprint identical (the field
     // is a fixed width whatever value it holds) and keeps every value legal, which is what the
     // refusal is for. `the_container_shapes_priced_against_the_population_each_one_pays_in` carries
@@ -661,7 +661,7 @@ fn the_census_reads_every_map_that_holds_an_address() {
     let c = census(&engine, 1);
 
     let named: Vec<&str> = c.per_map.iter().map(|(n, _)| *n).collect();
-    // Sixteen model maps PLUS the bucket index, which holds a second address per page.
+    // Sixteen model maps PLUS the bucket index, which holds a second address per block.
     assert_eq!(
         17,
         named.len(),
@@ -705,7 +705,7 @@ fn the_census_reads_every_map_that_holds_an_address() {
 /// REFUSE a tampered address, and the inert ones must ACCEPT one. An arm that stopped firing would
 /// flip a count, not fall silent.
 ///
-/// NOT ignored. It writes ONE page into a tempdir and asserts three halves separately, in
+/// NOT ignored. It writes ONE block into a tempdir and asserts three halves separately, in
 /// hundredths of a second -- no seeding, no RSS reading, no timing, so nothing about it ever
 /// needed a run-by-name budget. It was parked with the measurement probes around it and stayed
 /// there, which left the claim it carries -- that of the address cross-checks on the read path
@@ -728,8 +728,8 @@ fn only_one_of_the_two_address_cross_checks_on_a_read_can_fire() {
     let object_id = 0x0123_4567_89ab_cdefu64;
     let routing_bucket = 4_155_475_953u32;
 
-    // The page under test is block THREE of its object, not block zero. Stripping the optional
-    // field leaves the address carrying None, and if the page it names were block zero then an
+    // The block under test is block THREE of its object, not block zero. Stripping the optional
+    // field leaves the address carrying None, and if the block it names were block zero then an
     // implementation that DEFAULTED the absent field to 0 rather than skipping the check would
     // compare 0 against 0 and read through -- indistinguishable from the presence-gated behaviour
     // the last assertion claims to pin. A non-zero ordinal is what lets that half tell them apart.
@@ -1003,10 +1003,10 @@ fn an_address_is_twenty_four_bytes_and_ten_of_them_are_optional() {
 /// Every live address, grouped by the physical location it names and by its exact value.
 ///
 /// INTERNING'S PREMISE, stated as something that can be false. A handle table only pays if the
-/// same descriptor is STORED more than once -- if the bucket index's address for a page and the
-/// model map's address for that same page are equal. They are both built on the write path from
+/// same descriptor is STORED more than once -- if the bucket index's address for a block and the
+/// model map's address for that same block are equal. They are both built on the write path from
 /// the same parts, so they look like they must be. They are not obliged to be: the two are
-/// written by different call sites, and a page rewritten in place keeps one entry in the bucket
+/// written by different call sites, and a block rewritten in place keeps one entry in the bucket
 /// index while every point that landed in it keeps whatever it was given.
 ///
 /// So this counts MATCHING against DIFFERING with a denominator, and when they differ it says
@@ -1075,7 +1075,7 @@ fn differing_fields(a: &BlockAddress, b: &BlockAddress) -> Vec<&'static str> {
     // name this function can never report, which reads like coverage and is not.
     //
     // No `routing_bucket` row either, and for the same reason one step further along: it is not a
-    // field at all. Where a page is filed is the key of the bucket map holding it, which two
+    // field at all. Where a block is filed is the key of the bucket map holding it, which two
     // addresses cannot disagree about because neither of them carries it.
     out
 }
@@ -1390,7 +1390,7 @@ impl PricedSeries {
 ///
 ///   LONG: 200 series of 1,000 entries. This is the feature workload, where the node is full and
 ///   `One` buys nothing -- so the only lever left is the WIDTH of the value, priced here as a
-///   per-series page table: `BTreeMap<u64, u32>` beside a `Vec<BlockAddress>` the series owns.
+///   per-series block table: `BTreeMap<u64, u32>` beside a `Vec<BlockAddress>` the series owns.
 ///
 /// The `Vec` arm is the POSITIVE CONTROL for the harness, as in the sibling probe: if it cannot
 /// see a container with a known footprint, no number below means anything.
@@ -1457,7 +1457,7 @@ fn the_container_shapes_priced_against_the_population_each_one_pays_in() {
         .map(|s| {
             let mut map = BTreeMap::new();
             for t in 0..LONG_POINTS as u64 {
-                // The real shape: MANY consecutive timestamps naming ONE page. A feature series
+                // The real shape: MANY consecutive timestamps naming ONE block. A feature series
                 // coalesces, so the same address value is stored for a run of points.
                 map.insert(t, address(s * 16 + t / 500));
             }
@@ -1471,7 +1471,7 @@ fn the_container_shapes_priced_against_the_population_each_one_pays_in() {
         "denominator: every long BTreeMap arm really holds {LONG_POINTS} entries"
     );
 
-    // The per-series page table: the series owns its addresses, the map holds an index into them.
+    // The per-series block table: the series owns its addresses, the map holds an index into them.
     // NOTE the lifetime: the table is owned BY the series, so an index cannot outlive the table
     // that gives it meaning -- there is no shard-wide handle here and nothing to free separately.
     let long_table_before = resident_bytes();
@@ -1595,7 +1595,7 @@ fn the_feature_workload_has_no_short_series_for_the_one_shape_to_help() {
     );
 }
 
-/// THE FREE GUARD over the decision above: the bucket index holds ONE page inline, and the
+/// THE FREE GUARD over the decision above: the bucket index holds ONE block inline, and the
 /// timestamped series maps do not.
 ///
 /// WHY THIS IS THE THING TO PIN. The MEASUREMENT probes in this module are `#[ignore]`d -- they
@@ -1609,7 +1609,7 @@ fn the_feature_workload_has_no_short_series_for_the_one_shape_to_help() {
 ///      for eleven entries whether one is filed in it or eleven are.
 ///
 ///      THIS USED TO BE PINNED AS "WIDER INLINE THAN THE MAP IT REPLACES", and that clause is no
-///      longer true or needed. The single-page arm held its whole entry inline, so the enum was
+///      longer true or needed. The single-block arm held its whole entry inline, so the enum was
 ///      wider than a `BTreeMap` and the guard watched that width. The entry is behind a pointer now
 ///      and the enum is exactly a container header, so the SAVING no longer comes from the width at
 ///      all: it comes from the ALLOCATION SIZE, one entry against a node sized for eleven. The
@@ -1623,7 +1623,7 @@ fn the_feature_workload_has_no_short_series_for_the_one_shape_to_help() {
 ///      below is a compile-time proof of that: if any one of the six is narrowed and the others
 ///      are not, this stops compiling rather than passing on a stale assumption.
 ///
-/// MUTATION. Widening the page index past a container header -- putting an entry back inline --
+/// MUTATION. Widening the block index past a container header -- putting an entry back inline --
 /// fires the first assert. Changing any one of the six map types fires the second as a compile error
 /// rather than a failure.
 #[test]
@@ -1631,7 +1631,7 @@ fn the_bucket_index_holds_one_page_out_of_line_and_the_series_maps_hold_none() {
     use crate::engine::state::{BlockIndex, BlockIndexMap};
 
     // (1) The split shape is no wider than the CONTAINER HEADER it has to carry anyway, and a
-    // single page costs one allocation of the entry rather than a node sized for eleven.
+    // single block costs one allocation of the entry rather than a node sized for eleven.
     let split = std::mem::size_of::<BlockIndexMap>();
     let map = std::mem::size_of::<BTreeMap<u64, BlockAddress>>();
     let page = std::mem::size_of::<BlockIndex>();
@@ -2021,17 +2021,17 @@ fn the_capacity_ceilings_each_narrowing_would_impose() {
 // THE BUCKET IS AN ARGUMENT NOW: what that costs, and what it stops being able to go wrong
 // =============================================================================================
 
-/// THE WARM PAGE IS FOUND UNDER THE KEY THE OTHER SIDE WROTE.
+/// THE WARM BLOCK IS FOUND UNDER THE KEY THE OTHER SIDE WROTE.
 ///
-/// `CacheKey::page_with_slot` is built by SEVERAL paths and read by one, and its slot is the page's
+/// `CacheKey::page_with_slot` is built by SEVERAL paths and read by one, and its slot is the block's
 /// routing bucket. While the bucket was a field of the `BlockAddress` every one of those paths read
 /// it off the same struct and could not disagree. It is an ARGUMENT now, so they agree only because
 /// each names it the same way -- `block_routing_bucket(object_key, start, end)` over the range the
 /// shard is stamped with.
 ///
 /// A DISAGREEMENT HERE IS SILENT. The read would miss, go to the block store, answer correctly, and
-/// put the page back under its own key: every test still green, every read paying an I/O it should
-/// not, and the cache holding two copies of every page. So the agreement is DRIVEN rather than
+/// put the block back under its own key: every test still green, every read paying an I/O it should
+/// not, and the cache holding two copies of every block. So the agreement is DRIVEN rather than
 /// reasoned about.
 ///
 /// TWO ARMS, because they are two different pairs of paths:
@@ -2045,13 +2045,13 @@ fn the_capacity_ceilings_each_narrowing_would_impose() {
 /// THE SECOND ARM USES A FEATURE SERIES, AND IT HAS TO. The reconcile walk warms the cache only for
 /// the kinds it rebuilds a secondary VIEW for -- features, control state and the context series --
 /// and `insert_timestamped_secondary_view` is one of the sites this change had to thread the bucket
-/// through. A plain string page is not warmed by that walk at all: a cold read of one goes to the
+/// through. A plain string block is not warmed by that walk at all: a cold read of one goes to the
 /// block store on this tree today (`part4`'s tier probe measured one store read per warm read and
 /// says so in as many words), so an arm written over strings would assert a property the engine does
 /// not have and fail for a reason that has nothing to do with the key.
 ///
 /// WITH THE WRONG BUCKET AS THE CONTROL. A test that only asserted "the read hits" would pass on a
-/// cache that hit for any key at all, so the same page is also looked up under a DIFFERENT bucket and
+/// cache that hit for any key at all, so the same block is also looked up under a DIFFERENT bucket and
 /// that lookup must MISS.
 ///
 /// rust-internal: reads the engine's own cache keys, no product behaviour
@@ -2099,8 +2099,8 @@ fn the_warm_page_is_found_under_the_key_the_other_side_wrote() {
              shard state alone"
         );
 
-        // AND THE ENGINE'S OWN ACCESSOR NAMES THE SAME PAGE, which is what every other test in this
-        // tree reaches for when it wants "the key this page is cached under".
+        // AND THE ENGINE'S OWN ACCESSOR NAMES THE SAME BLOCK, which is what every other test in this
+        // tree reaches for when it wants "the key this block is cached under".
         let (address, start, end) = {
             let shards = engine.shards.read().expect("engine lock poisoned");
             let shard = shards.get(&1).expect("shard is loaded");
@@ -2128,7 +2128,7 @@ fn the_warm_page_is_found_under_the_key_the_other_side_wrote() {
              keys neither of which names anything"
         );
 
-        // THE CONTROL: the same page under a DIFFERENT bucket must not be found.
+        // THE CONTROL: the same block under a DIFFERENT bucket must not be found.
         let wrong = matrixcache::CacheKey::page_with_slot(
             1,
             address.block_slab_id(),
@@ -2221,7 +2221,7 @@ fn the_warm_page_is_found_under_the_key_the_other_side_wrote() {
 ///
 /// Two numbers, one instrument each, over the SAME workload:
 ///
-///   * `ROUTING_BUCKET_KEY_BYTES` -- the bytes FNV-1a walks to derive a page's bucket. The hash is
+///   * `ROUTING_BUCKET_KEY_BYTES` -- the bytes FNV-1a walks to derive a block's bucket. The hash is
 ///     one xor and one multiply per byte, so the byte total is the work up to a constant.
 ///   * `OBJECT_INDEX_ENTRIES_EXAMINED` -- the entries a membership question in a bucket's own object
 ///     list touches. That list is `ObjectIndex`: `One` inline, `Many` a sorted `Vec` bisected, so the
@@ -2359,9 +2359,9 @@ fn what_consulting_the_object_index_costs_against_computing_the_hash() {
 /// HOW MANY OBJECTS A BUCKET HOLDS, AS PERCENTILES AND A MAX, AT BOTH RANGES.
 ///
 /// THE NUMBER ITEM 2 TURNS ON, and the reason it is measured rather than assumed. #1973 measured
-/// PAGES per bucket at the operator's range (p50 39, MAX 50 at 40,000 records); OBJECTS per bucket is
+/// BLOCKS per bucket at the operator's range (p50 39, MAX 50 at 40,000 records); OBJECTS per bucket is
 /// a different distribution. It USED to be the larger of the two, because the object identity
-/// folded the COMPONENT in -- a hash field was its own object rather than another page of one --
+/// folded the COMPONENT in -- a hash field was its own object rather than another block of one --
 /// so one key with many components contributed many objects to one bucket. The component has
 /// since left the identity, so a key contributes exactly ONE object however many elements it
 /// holds, and this distribution collapses onto the KEY count. That makes an eight-bit ordinal
@@ -2533,11 +2533,11 @@ fn how_many_objects_a_bucket_holds_as_percentiles_and_max() {
 /// FOUND WHILE ASKING WHETHER A PER-BUCKET ORDINAL COULD BE READ BACK, and it is a defect in its own
 /// right whether or not anything is ever narrowed. `object_manager::runtime_report` walks every
 /// bucket of a shard into ONE `BTreeMap<u64, ObjectRuntimeState>` keyed by object id, and records
-/// `routing_bucket` with `or_insert_with` -- so the second bucket's pages are folded into the first
+/// `routing_bucket` with `or_insert_with` -- so the second bucket's blocks are folded into the first
 /// bucket's entry and the report names a bucket that holds only some of them.
 ///
 /// `reused_object_ids` does not catch it: that counts ids with more than one BLOCK REF, which is the
-/// ordinary multi-page object. There is no term in the report for the same id in two buckets.
+/// ordinary multi-block object. There is no term in the report for the same id in two buckets.
 ///
 /// NOT `#[allow(dead_code)]` EITHER, though it is marked so: `storage_reporting.rs` calls it, which
 /// `native_persistence_workflow` reaches through `object_manager_runtime_report`.
@@ -2551,7 +2551,7 @@ fn two_buckets_holding_one_object_id_are_reported_as_one_object() {
     let object_id = 0x0123_4567_89ab_cdefu64;
 
     // The same object id filed in two different buckets. Reachable without any tampering: the
-    // routing range is the MODULUS, so a store re-ranged between writes files one key's pages under
+    // routing range is the MODULUS, so a store re-ranged between writes files one key's blocks under
     // two buckets, and `bucket_map` holds both.
     for (routing_bucket, offset) in [(11u32, 0u64), (2_222u32, 4_096u64)] {
         let mut bucket = BucketNode {
@@ -2622,7 +2622,7 @@ fn two_buckets_holding_one_object_id_are_reported_as_one_object() {
     );
 
     // AND THE REPORT HAS NO TERM THAT NOTICES. `reused_object_ids` counts an id with more than one
-    // BLOCK REF, which every multi-page object has, so it cannot be the detector for this.
+    // BLOCK REF, which every multi-block object has, so it cannot be the detector for this.
     assert_eq!(
         1, report.reused_object_ids,
         "`reused_object_ids` counts ids with more than one block ref. It reads 1 here -- and it \
@@ -2641,13 +2641,13 @@ fn two_buckets_holding_one_object_id_are_reported_as_one_object() {
 // recompute.
 //
 // `BlockIndex` holds `object_key`, `model_id` and `component`, and `ShardState` holds the shard, so
-// `stable_block_object_id(shard, kind, key)` is computable at every page entry. #1974
+// `stable_block_object_id(shard, kind, key)` is computable at every block entry. #1974
 // established that derivation at about thirty sites, `index_log` already STRIPS a derivable id from
 // the row it writes (`a_row_does_not_write_the_object_id_it_can_derive`), and the entry's own
 // `object_id()` doc says the write path puts the computed id into the address. So the claim is that
 // the in-memory field is the last copy of a value three other layers already derive.
 //
-// This census is the measurement of that claim over live page entries, at two corpus sizes. It is
+// This census is the measurement of that claim over live block entries, at two corpus sizes. It is
 // the same shape as the census that retired `generation`: the field is a copy on every live
 // address, or it is not.
 // =================================================================================================
@@ -2655,11 +2655,11 @@ fn two_buckets_holding_one_object_id_are_reported_as_one_object() {
 /// What a walk of the bucket index found about the stored id against the derived one.
 #[derive(Default, Debug)]
 struct DerivationCensus {
-    /// Live page entries walked. The denominator of every row below.
+    /// Live block entries walked. The denominator of every row below.
     entries: usize,
     /// The stored id is present and equals `stable_block_object_id(shard, kind, key)`.
     agree: usize,
-    /// The stored id is present and DIFFERS from the derivation. Every one of these is a page the
+    /// The stored id is present and DIFFERS from the derivation. Every one of these is a block the
     /// field could not be removed from.
     differ: usize,
     /// No stored id at all. These are already answered by the fallback the read sites carry.
@@ -2668,7 +2668,7 @@ struct DerivationCensus {
     /// still a field of the entry, and a census whose entries all carry `None` would not
     /// exercise the container population this change acts on at all.
     with_component: usize,
-    /// Distinct derived ids, so a fixture that gave every page the same identity cannot report
+    /// Distinct derived ids, so a fixture that gave every block the same identity cannot report
     /// agreement as a property of the derivation.
     distinct_derived: std::collections::HashSet<u64>,
 }
@@ -2698,7 +2698,7 @@ impl DerivationCensus {
     }
 }
 
-/// Walk every page entry in the bucket index and compare the stored id to the derived one.
+/// Walk every block entry in the bucket index and compare the stored id to the derived one.
 fn derivation_census(engine: &TemporalEngine, shard_id: ShardId) -> DerivationCensus {
     let shards = engine.shards.read().expect("engine lock poisoned");
     let shard = shards.get(&shard_id).expect("shard is loaded");
@@ -2732,9 +2732,9 @@ const HASH_FIELDS: usize = 8;
 
 /// THE MEASUREMENT THE FLOOR TURNS ON, at two corpus sizes.
 ///
-/// If the stored id equals the derivation on every live page entry, the field is a cache and the
+/// If the stored id equals the derivation on every live block entry, the field is a cache and the
 /// address can shed it -- payload 15, tail 7, and the struct is 16. If it differs on any entry,
-/// that entry is a page whose identity is not recoverable from what sits beside it, and the floor
+/// that entry is a block whose identity is not recoverable from what sits beside it, and the floor
 /// is 24 for the reason the file states.
 #[test]
 #[ignore]
@@ -2771,12 +2771,12 @@ fn the_object_id_on_a_live_page_entry_is_the_hash_of_fields_beside_it() {
         // NON-VACUITY, asserted before any verdict is read off the counts.
         //
         // THE DENOMINATOR IS NOT THE RECORD COUNT, and the first version of this assertion said it
-        // was. A feature series holds ONE page per key, not one per point -- the points are packed
-        // into it -- so `points` seeded records produce `series_keys` page entries. The first run
+        // was. A feature series holds ONE block per key, not one per point -- the points are packed
+        // into it -- so `points` seeded records produce `series_keys` block entries. The first run
         // reported 2,524 entries against 8,000 seeded records and the assertion fired, which is the
-        // only reason this is written down rather than assumed: the population is one page per
-        // string, one per hash FIELD (a field is its own PAGE, which this change does not touch
-        // -- what changed is only which OBJECT that page belongs to), and one per series.
+        // only reason this is written down rather than assumed: the population is one block per
+        // string, one per hash FIELD (a field is its own BLOCK, which this change does not touch
+        // -- what changed is only which OBJECT that block belongs to), and one per series.
         let expected_pages = strings_n + HASH_KEYS * HASH_FIELDS + series_keys;
         assert_eq!(
             expected_pages, c.entries,
@@ -2803,7 +2803,7 @@ fn the_object_id_on_a_live_page_entry_is_the_hash_of_fields_beside_it() {
         );
         // DISTINCT DERIVED IDS, AS AN EXACT COUNT RATHER THAN "more than half the entries".
         //
-        // That threshold was chosen when one page was one object, and it survives this change
+        // That threshold was chosen when one block was one object, and it survives this change
         // only because the container arm is small next to the rest of the fixture. It would go
         // on passing while the derivation collapsed much further than intended, so it is
         // replaced by the number the mechanism predicts: one id per string, ONE PER HASH KEY
@@ -2823,7 +2823,7 @@ fn the_object_id_on_a_live_page_entry_is_the_hash_of_fields_beside_it() {
             strings_n + HASH_KEYS * HASH_FIELDS + series_keys
         );
 
-        // THE VERDICT. A control at 0.00%: no live page entry stores an id the fields beside it do
+        // THE VERDICT. A control at 0.00%: no live block entry stores an id the fields beside it do
         // not reproduce.
         assert_eq!(
             0, c.differ,
@@ -2875,7 +2875,7 @@ fn the_derivation_census_reports_a_differing_id_when_one_exists() {
         );
     }
     // AND THE TERM THAT LEFT. There is no component argument to perturb any more, which is the
-    // statement; what remains assertable is that the id a page of ANY element of this key derives
+    // statement; what remains assertable is that the id a block of ANY element of this key derives
     // is the same number. The census above reads `page.component` per entry and no longer passes
     // it here, so if the component were still reaching the hash those entries would differ.
     println!(
@@ -2904,7 +2904,7 @@ fn the_derivation_census_reports_a_differing_id_when_one_exists() {
 /// hash passes and a count of bytes walked do not move with what is building next door.
 ///
 /// THE COMPARISON THAT MAKES THE NUMBER MEAN SOMETHING is the bucket derivation beside it. A read
-/// ALREADY walks its key once, to place the page in a routing bucket for the cache key -- that cost
+/// ALREADY walks its key once, to place the block in a routing bucket for the cache key -- that cost
 /// was accepted when the bucket stopped being a field. The identity walks the same key a second
 /// time. So the question is not "what does one FNV-1a pass cost" in the abstract; it is whether this
 /// read now does one pass or two, and the two counters answer it side by side.
@@ -2987,7 +2987,7 @@ fn what_deriving_the_page_identity_costs_at_the_read_path() {
     );
     // And the bytes it walks are the terms it says it walks: a key of this fixture is 12 bytes and
     // the kind is "string", so a pass is 18 bytes. Asserted as a floor rather than an equality,
-    // because a read may derive for a page this loop did not ask for.
+    // because a read may derive for a block this loop did not ask for.
     assert!(
         identity_bytes >= identity_passes * 8,
         "{identity_bytes} bytes over {identity_passes} passes is under 8 bytes a term-set, which is \
@@ -3014,7 +3014,7 @@ fn the_identity_a_read_builds_is_the_id_the_address_held() {
         let dir = tempfile::tempdir().expect("tempdir");
         let engine = new_engine(dir.path());
         let (strings, points) = seed(&engine, strings_n, series_keys, series_points);
-        // Containers too, so the population includes component-bearing pages. Without them the
+        // Containers too, so the population includes component-bearing blocks. Without them the
         // element half of the identity is `None` on every row and the walk never exercises the
         // shape this change acts on.
         let mut commands = Vec::new();
@@ -3112,7 +3112,7 @@ fn the_identity_a_read_builds_is_the_id_the_address_held() {
 
 /// THE IDENTITY CANNOT BE BUILT FROM AN ID, WHICH IS THE WHOLE OF WHY IT IS A TYPE.
 ///
-/// An `Option<u64>` threaded to the read sites would compile with `None` and lose a page in silence;
+/// An `Option<u64>` threaded to the read sites would compile with `None` and lose a block in silence;
 /// a bare `u64` would compile with a stale one. Both hazards come back the moment a constructor
 /// accepts the ANSWER instead of the TERMS, and that is a one-line change someone will make for a
 /// caller that "already has the id". So it is asserted, over the source text, at NAME level.
