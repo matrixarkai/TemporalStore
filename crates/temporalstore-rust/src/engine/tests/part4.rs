@@ -17772,6 +17772,19 @@ fn what_a_message_write_costs_in_bytes_as_history_grows() {
         }
         println!("  {kind:20}  {small:10}  {large:13}   {ratio:6.2}x   {small_held} -> {large_held}");
     }
+    // THIS FLAT CONTROL IS A SINGLE-POINT RATIO AND IT PASSES BY WHERE ITS FILLS FALL.
+    //
+    // A served-index log piece rolls roughly once per 450 appends, costs about 2,100-2,550
+    // allocations, and no row of the per-op ledger mentions it -- so whether the REPS-wide window
+    // at a given fill contains one decides this ratio, and that depends on bytes-per-append. 200
+    // and 1600 are both roll-free on this tree, which is why this reads 1.00x. A change that moves
+    // bytes-per-append moves which fills roll: the sibling
+    // `what_the_string_family_costs_against_the_store` read 1.67x for a change that writes a
+    // SMALLER record, purely because its 3200 sample caught a roll.
+    //
+    // That sibling now samples several large fills, discards any whose window rolled, and refuses
+    // if none survives. This one is left as it is because it is green and reworking a passing test
+    // is not this change's business -- but if it ever moves, look at the roll before the ratio.
     assert!(flat < 1.5, "the flat control reported {flat:.2}x");
     assert!(
         scaling > 3.0,
@@ -17876,7 +17889,7 @@ fn what_a_bigger_read_cache_buys() {
 #[cfg(feature = "alloc-probe")]
 fn what_the_string_family_costs_against_the_store() {
     const REPS: usize = 20;
-    let cost = |kind: &str, fill: usize| -> (u64, u64) {
+    let cost = |kind: &str, fill: usize| -> (u64, u64, bool) {
         let dir = tempfile::tempdir().unwrap();
         let engine = TemporalEngine::with_local_dirs(
             8 * 1024 * 1024,
@@ -17924,6 +17937,23 @@ fn what_the_string_family_costs_against_the_store() {
                 other => panic!("unknown {other}"),
             }
         };
+        // HOW MANY SERVED-INDEX LOG PIECES EXIST, so a roll inside the window can be seen.
+        // A roll costs about 2,100-2,550 allocations and 78-135 KB, once per roughly 450
+        // appends, and no row of the per-op ledger mentions it -- so a twenty-operation window
+        // either contains one or does not, and the ratio below swings by more than the bound.
+        let pieces = |engine: &TemporalEngine| -> usize {
+            let root = engine.index_dir.join("indexlogs");
+            std::fs::read_dir(&root)
+                .map(|rd| {
+                    rd.flatten()
+                        .filter(|e| {
+                            e.file_name().to_string_lossy().starts_with("shard-1.indexlog")
+                        })
+                        .count()
+                })
+                .unwrap_or(0)
+        };
+        let pieces_before = pieces(&engine);
         let probe = crate::alloc_probe::Probe::start();
         let mut ok = 0u64;
         for i in 0..REPS {
@@ -17931,11 +17961,11 @@ fn what_the_string_family_costs_against_the_store() {
             assert!(out.status.ok, "{kind} refused: {:?}", out.status);
             ok += 1;
         }
-        (probe.stop().alloc_bytes / REPS as u64, ok)
+        let bytes = probe.stop().alloc_bytes / REPS as u64;
+        (bytes, ok, pieces(&engine) > pieces_before)
     };
 
-    println!("  command          declares?   bytes @200   bytes @3200    ratio");
-    let mut flat = 0.0f64;
+    println!("  command          declares?   bytes @200   bytes @3200    ratio   rolled?");
     let mut scaling = 0.0f64;
     for (kind, declares) in [
         ("SetAdd", "yes"),
@@ -17944,19 +17974,67 @@ fn what_the_string_family_costs_against_the_store() {
         ("StringGet", "n/a"),
         ("StringDelete", "no"),
     ] {
-        let (small, sa) = cost(kind, 200);
-        let (large, la) = cost(kind, 3200);
+        let (small, sa, small_rolled) = cost(kind, 200);
+        let (large, la, large_rolled) = cost(kind, 3200);
         assert!(small > 0, "{kind}: measured zero bytes");
         assert!(sa == REPS as u64 && la == REPS as u64, "{kind}: not every op answered");
         let ratio = large as f64 / small as f64;
-        match kind {
-            "SetAdd" => flat = ratio,
-            "FeatureAppend" => scaling = ratio,
-            _ => {}
+        if kind == "FeatureAppend" {
+            scaling = ratio;
         }
-        println!("  {kind:14}  {declares:9}   {small:10}  {large:12}   {ratio:6.2}x");
+        println!(
+            "  {kind:14}  {declares:9}   {small:10}  {large:12}   {ratio:6.2}x   {}",
+            match (small_rolled, large_rolled) {
+                (false, false) => "no",
+                (true, false) => "at 200",
+                (false, true) => "at 3200",
+                (true, true) => "both",
+            }
+        );
     }
-    assert!(flat < 1.5, "the flat control reported {flat:.2}x");
+
+    // --- THE FLAT CONTROL, SAMPLED RATHER THAN TAKEN AT ONE POINT ---
+    //
+    // The bound stays at 1.5x. What changes is that one sample cannot decide it. A log piece
+    // rolls about once per 450 appends; whether the twenty-operation window at a given fill
+    // contains one depends on bytes-per-append, so two shapes of this engine cross the boundary
+    // at different member counts and a single fill reports a roll for one of them and not the
+    // other. That is how this assertion read 1.67x for a change that writes a SMALLER record.
+    //
+    // So: several large fills, roll-containing samples DISCARDED, and the claim asserted on what
+    // survives. Refusing when nothing survives is the floor -- excluding every sample would hide
+    // the growth this control exists to detect.
+    let (small, _, _) = cost("SetAdd", 200);
+    assert!(small > 0, "the flat control measured zero bytes at the small fill");
+    let mut survivors: Vec<(usize, f64)> = Vec::new();
+    let mut rolled_at: Vec<usize> = Vec::new();
+    for fill in [3200usize, 3400, 3600] {
+        let (large, la, rolled) = cost("SetAdd", fill);
+        assert!(la == REPS as u64, "the flat control did not answer every op at {fill}");
+        let ratio = large as f64 / small as f64;
+        println!(
+            "  flat control @{fill:>5}: {large:>8} B/op against {small} at 200 = {ratio:5.2}x{}",
+            if rolled { "   (a piece ROLLED in this window -- discarded)" } else { "" }
+        );
+        if rolled { rolled_at.push(fill); } else { survivors.push((fill, ratio)); }
+    }
+    assert!(
+        !survivors.is_empty(),
+        "every large sample contained a log-piece roll ({rolled_at:?}), so the flat control has \
+         nothing roll-free to assert on. That is not a pass: a roll in every window means the \
+         period has fallen to the window size and this measurement can no longer separate a \
+         per-operation cost from a periodic one"
+    );
+    let worst = survivors.iter().map(|(_, r)| *r).fold(0.0f64, f64::max);
+    println!(
+        "  flat control: {} roll-free sample(s) of 3, worst {worst:.2}x; rolled at {rolled_at:?}",
+        survivors.len()
+    );
+    assert!(
+        worst < 1.5,
+        "the flat control reported {worst:.2}x on a roll-free window, so this IS growth with the \
+         store and not a log roll landing in the sample: {survivors:?}"
+    );
     assert!(scaling > 3.0, "the scaling control reported {scaling:.2}x -- probe cannot see growth");
     println!("  A string is one page per key, so declaring or not should not matter here.");
 }
