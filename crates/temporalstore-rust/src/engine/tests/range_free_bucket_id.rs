@@ -512,15 +512,21 @@ fn removing_the_routing_bucket_recovers_no_bytes_alone_and_eight_in_combination(
 
     println!("\n=== what recovering the duplicated bucket id would free ===");
 
-    // --- BlockAddress, LIVE: the merged slab word, the object id, a 32-bit length, a 16-bit block
-    // --- id and the presence byte -- 23 bytes of payload in 24. This is the drift check, so it has
-    // --- to describe the declaration as it stands.
-    const ADDRESS_PAYLOAD: usize = 8 + 8 + 4 + 2 + 1;
+    // --- BlockAddress, LIVE: the merged slab word, a 32-bit length, a 16-bit block id and the
+    // --- presence byte -- 15 bytes of payload in 16. This is the drift check, so it has to
+    // --- describe the declaration as it stands.
+    // ---
+    // --- THE OBJECT ID LEFT THIS LIST, and this assertion is the reason the removal could not be
+    // --- done by scanning for width pins: it names no literal width. It pairs a hand-listed field
+    // --- SUM with `size_of`, so a sweep looking for a stale 24 beside `size_of::<BlockAddress>()`
+    // --- passes straight over it and `cargo check` cannot see it either. It failed on the first
+    // --- run of the suite, which is the only thing that could have found it.
+    const ADDRESS_PAYLOAD: usize = 8 + 4 + 2 + 1;
     let address_width = size_of::<BlockAddress>();
     let address_align = align_of::<BlockAddress>();
     assert_eq!(
-        23, ADDRESS_PAYLOAD,
-        "the derived address payload is {ADDRESS_PAYLOAD}, not the 23 bytes \
+        15, ADDRESS_PAYLOAD,
+        "the derived address payload is {ADDRESS_PAYLOAD}, not the 15 bytes \
          `every_byte_of_a_block_address_is_accounted_for` measures"
     );
     assert_eq!(
@@ -534,6 +540,15 @@ fn removing_the_routing_bucket_recovers_no_bytes_alone_and_eight_in_combination(
     // --- 32, carrying a four-byte routing bucket and a 32-bit block id.
     const ADDRESS_PAYLOAD_BEFORE: usize = 8 + 8 + 4 + 4 + 4 + 1;
     const WIDTH_BEFORE: usize = 32;
+    /// What the pair below PRODUCED, which is not the width today.
+    ///
+    /// These three counterfactuals are about the 32 -> 24 step and they were anchored to
+    /// `size_of::<BlockAddress>()`, which was 24 when they were written. A third step has landed
+    /// since -- the object id left the address, 24 -> 16 -- and two of the assertions below broke
+    /// on it. They were not wrong; they were pinned to a value that moves. So the era's result is
+    /// named here and the counterfactuals are compared against THAT, with one assertion at the end
+    /// connecting this era to the live width so the arithmetic still reaches the present.
+    const WIDTH_AFTER_THE_PAIR: usize = 24;
     assert_eq!(29, ADDRESS_PAYLOAD_BEFORE, "the shape this module measured was 29 bytes of payload");
     assert_eq!(
         ADDRESS_PAYLOAD_BEFORE.div_ceil(address_align) * address_align,
@@ -576,15 +591,31 @@ fn removing_the_routing_bucket_recovers_no_bytes_alone_and_eight_in_combination(
         "narrowing the block id ALONE must not change the width either, for the same reason"
     );
     assert_eq!(
-        address_width,
+        WIDTH_AFTER_THE_PAIR,
         round(without_both),
-        "the two TOGETHER must reconstruct the live width; if they do not, the eight bytes this \
-         address actually shed are not the eight this arithmetic describes"
+        "the two TOGETHER must reconstruct the width that step produced; if they do not, the eight \
+         bytes the address shed at that step are not the eight this arithmetic describes"
     );
     assert_eq!(
         8,
-        WIDTH_BEFORE - address_width,
+        WIDTH_BEFORE - WIDTH_AFTER_THE_PAIR,
         "the pair is worth a whole eight-byte step, and each half of it is worth zero"
+    );
+    // AND THE ARITHMETIC REACHES THE PRESENT, which is what stops the block above from becoming a
+    // museum piece that no longer describes this type. One further step has landed since: the
+    // object id left the address, which is another whole word and the only kind of change that
+    // moves this number. Asserted against the compiler's width rather than restated, so a fourth
+    // step fails here instead of leaving the chain looking complete.
+    assert_eq!(
+        16, address_width,
+        "the live address width is {address_width}; the chain below describes 32 -> 24 -> 16 and a \
+         further step has to be added to it rather than silently widening this number"
+    );
+    assert_eq!(
+        8,
+        WIDTH_AFTER_THE_PAIR - address_width,
+        "the object id leaving is worth a whole eight-byte step too, which is why the pair above \
+         and this one are each a word and not a fraction of one"
     );
 
     // --- BucketNode: 80 bytes of eight-aligned field and a 6-byte tail rounded to 8. Four out of

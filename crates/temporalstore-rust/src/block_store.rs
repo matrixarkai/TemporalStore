@@ -4259,8 +4259,29 @@ const RETIRED_NAMES: &[&str] = &[
             Some(122110326161599232),
         );
         let encoded = serde_json::to_string(&address).unwrap();
-        // Not vacuous: the values must still be there before the size claim means anything.
-        assert!(encoded.contains("122110326161599232"));
+        println!("ENCODED = {encoded} ({} bytes)", encoded.len());
+        // Not vacuous: the values that ARE still carried must be there before the size claim
+        // means anything.
+        assert!(encoded.contains("\"l\":126"), "the length must be written: {encoded}");
+        assert!(encoded.contains("\"pi\":9"), "the block id must be written: {encoded}");
+        // AND THE ID HANDED TO `from_parts` MUST NOT REACH THE WIRE. The parameter is inert: an
+        // address carries no identity, and the entry derives it. This assertion used to be the
+        // opposite -- `assert!(encoded.contains("122110326161599232"))` -- and it is inverted
+        // rather than deleted, because "the id is not written" is the claim this change makes and
+        // something has to hold it.
+        assert!(
+            !encoded.contains("122110326161599232"),
+            "the id handed to from_parts reached the wire, so the address is still storing one: \
+             {encoded}"
+        );
+        // THE SLOT ITSELF STAYS, WRITTEN EMPTY, and that is not the same as being retired: the
+        // index log packs this struct POSITIONALLY, so dropping a field shortens the array and
+        // refuses every row already on disk. `"oi":null` is the stored shape now, and the served
+        // index's version stamp is what pays for the value moving.
+        assert!(
+            encoded.contains("\"oi\":null"),
+            "the identity slot must still be present and empty: {encoded}"
+        );
         // The routing bucket used to be checked here as `545210715`, then as `"rs":null` once the
         // address stopped holding one and the slot was written empty. The slot is retired now, so
         // neither it nor the digest appears at all.
@@ -4284,10 +4305,12 @@ const RETIRED_NAMES: &[&str] = &[
         // `shorter_struct_against_an_existing_row` measures the difference: a positional row
         // longer than the struct decoding it is refused by LENGTH rather than reinterpreted.
         assert_eq!(
-            62,
+            48,
             encoded.len(),
-            "the compact address width moved with the two retired slots; if this is not 62, say \
-             what it is and why rather than widening the bound: {encoded}"
+            "the compact address width moved again when the identity slot started being written \
+             empty: an 18-digit id spelled `\"oi\":122110326161599232` is 23 bytes and `\"oi\":null` \
+             is 9, so 62 becomes 48. If this is not 48, say what it is and why rather than \
+             widening the bound: {encoded}"
         );
         // And it round-trips through its own new form.
         let back: BlockAddress = serde_json::from_str(&encoded).unwrap();

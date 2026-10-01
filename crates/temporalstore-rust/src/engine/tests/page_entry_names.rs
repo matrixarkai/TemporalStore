@@ -766,13 +766,13 @@ fn capture_the_stored_spelling_of_a_page_entry() {
 // and the offset are the only part of the stored spelling this change moves.
 // ---------------------------------------------------------------------------------------------
 
-const PAGE_ENTRY_PLAIN: &str = r#"{"object_key":"k","model_id":"string","address":{"a":4294967298,"l":3,"pi":4,"oi":42,"g":4},"dirty":false,"deleted":false,"log_backed":true}"#;
+const PAGE_ENTRY_PLAIN: &str = r#"{"object_key":"k","model_id":"string","address":{"a":4294967298,"l":3,"pi":4,"oi":null,"g":4},"dirty":false,"deleted":false,"log_backed":true}"#;
 
-const PAGE_ENTRY_WITH_COMPONENT: &str = r#"{"object_key":"k","model_id":"string","component":"f0","address":{"a":4294967298,"l":3,"pi":4,"oi":42,"g":4},"dirty":false,"deleted":false,"log_backed":true}"#;
+const PAGE_ENTRY_WITH_COMPONENT: &str = r#"{"object_key":"k","model_id":"string","component":"f0","address":{"a":4294967298,"l":3,"pi":4,"oi":null,"g":4},"dirty":false,"deleted":false,"log_backed":true}"#;
 
-const PAGE_ENTRY_ALL_FLAGS: &str = r#"{"object_key":"k","model_id":"string","address":{"a":4294967298,"l":3,"pi":4,"oi":42,"g":4},"dirty":true,"deleted":true,"log_backed":true}"#;
+const PAGE_ENTRY_ALL_FLAGS: &str = r#"{"object_key":"k","model_id":"string","address":{"a":4294967298,"l":3,"pi":4,"oi":null,"g":4},"dirty":true,"deleted":true,"log_backed":true}"#;
 
-const PAGE_ENTRY_OVER_WIDE: &str = r#"{"object_key":"k","model_id":"string","address":{"a":4294967298,"l":4294967295,"pi":4,"oi":42,"g":4},"dirty":false,"deleted":false,"log_backed":true}"#;
+const PAGE_ENTRY_OVER_WIDE: &str = r#"{"object_key":"k","model_id":"string","address":{"a":4294967298,"l":4294967295,"pi":4,"oi":null,"g":4},"dirty":false,"deleted":false,"log_backed":true}"#;
 
 /// A whole shard index written at `15583789e`: one bucket holding six pages -- five of one object
 /// (four plain, one carrying a component and a different kind) and one of a SECOND object in the
@@ -782,6 +782,13 @@ const PAGE_ENTRY_OVER_WIDE: &str = r#"{"object_key":"k","model_id":"string","add
 /// held open and written nil. It was `"rs":null,` while the slot was still declared.
 /// See `an_index_written_before_this_change_loads_page_for_page_and_writes_back_the_same_bytes`.
 const STORED_ROUTING_BUCKET: &str = r#""rs":7,"#;
+/// The identity slot as an OLD row spells it, and as this binary writes it back.
+///
+/// The slot is not retired -- the index log packs the address POSITIONALLY, so dropping a field
+/// shortens the array and refuses every existing row. It is written EMPTY instead, which is a
+/// change to the stored bytes and is what `SHARD_INDEX_FORMAT_VERSION` 6 pays for.
+const STORED_OBJECT_ID: &str = r#""oi":42,"#;
+const EMPTIED_OBJECT_ID: &str = r#""oi":null,"#;
 const EMPTY_ROUTING_BUCKET: &str = r#""#;
 
 const OLD_STORE_INDEX: &str = r#"{"bucket_map":{"7":{"routing_slot":7,"layout":"MultiObject","dirty":false,"deleted":false,"meta_loaded":true,"loading":false,"in_memory":true,"ttl_ms":null,"dirty_generation":3,"last_dump_sequence":11,"object_index":[42],"deleted_object_index":[],"page_index":{"hash:k:f0:1:9:3:4:4":{"object_key":"k","model_id":"hash","component":"f0","address":{"a":4294967305,"l":3,"pi":4,"oi":42,"rs":7,"g":4},"dirty":true,"deleted":false,"log_backed":false},"string:k::1:0:3:4:4":{"object_key":"k","model_id":"string","address":{"a":4294967296,"l":3,"pi":4,"oi":42,"rs":7,"g":4},"dirty":false,"deleted":false,"log_backed":true},"string:k::1:1:3:4:4":{"object_key":"k","model_id":"string","address":{"a":4294967297,"l":3,"pi":4,"oi":42,"rs":7,"g":4},"dirty":false,"deleted":false,"log_backed":true},"string:k::1:2:3:4:4":{"object_key":"k","model_id":"string","address":{"a":4294967298,"l":3,"pi":4,"oi":42,"rs":7,"g":4},"dirty":false,"deleted":false,"log_backed":true},"string:k::1:3:3:4:4":{"object_key":"k","model_id":"string","address":{"a":4294967299,"l":3,"pi":4,"oi":42,"rs":7,"g":4},"dirty":false,"deleted":false,"log_backed":true},"string:other::2:1:5:4:4":{"object_key":"other","model_id":"string","address":{"a":8589934593,"l":5,"pi":4,"oi":42,"rs":7,"g":4},"dirty":false,"deleted":false,"log_backed":true}}}}}"#;
@@ -859,8 +866,27 @@ pub(super) fn page_fixture(
 /// WITH ITS OWN CONTROL. Two entries that both serialized to nothing would pass an equality test
 /// against each other, so the shapes are asserted to differ from one another and each spelling is
 /// asserted longer than 100 bytes. A comparison that cannot report a difference is vacuous.
+/// AND IT DID MOVE, IN EXACTLY ONE SLOT. This test was called
+/// `the_stored_spelling_of_a_page_entry_did_not_move` and it is renamed rather than re-goldened,
+/// because a test whose NAME asserts the opposite of what it checks is worse than a stale golden:
+/// the name is what a future reader greps for.
+///
+/// WHAT MOVED: `"oi":42` became `"oi":null`. `BlockAddressWire::object_id` carries `rename`,
+/// `alias` and `default` but NO `skip_serializing_if`, so an address that no longer holds an id
+/// writes the slot as a null instead of dropping it.
+///
+/// WHY IT IS WRITTEN RATHER THAN RETIRED: the index log packs this struct POSITIONALLY --
+/// `encode_index_payload_into` uses a plain `rmp_serde::Serializer`, so a field is a position and
+/// not a name -- so retiring the slot would shorten the array and refuse every row already on
+/// disk. Keeping it empty is also what lets the decode go on cross-checking an old `g` against
+/// `block_id.or(object_id)`, which `an_old_store_whose_generation_disagrees_is_refused_before_the_decode`
+/// drives.
+///
+/// AND THE VALUE MOVING IS WHAT THE VERSION STAMP PAYS FOR. `SHARD_INDEX_FORMAT_VERSION` goes to 6
+/// with this change; the four goldens below are the tripwire that makes someone come and check
+/// that the stamp moved with them.
 #[test]
-fn the_stored_spelling_of_a_page_entry_did_not_move() {
+fn the_stored_spelling_of_a_page_entry_moved_in_exactly_one_slot() {
     let plain = serde_json::to_string(&page_fixture(None, 3, (false, false, true)))
         .expect("a page entry serializes");
     let with_component = serde_json::to_string(&page_fixture(Some("f0"), 3, (false, false, true)))
@@ -875,7 +901,11 @@ fn the_stored_spelling_of_a_page_entry_did_not_move() {
     println!("ALL_FLAGS      = {all_flags}");
     println!("OVER_WIDE      = {over_wide}");
 
-    assert_eq!(PAGE_ENTRY_PLAIN, plain, "the stored spelling of a page entry moved");
+    assert_eq!(
+        PAGE_ENTRY_PLAIN, plain,
+        "the stored spelling of a page entry moved AGAIN, beyond the one slot this change moved it \
+         in; if that is intended, the version stamp has to move with it"
+    );
     assert_eq!(
         PAGE_ENTRY_WITH_COMPONENT, with_component,
         "the stored spelling of a page entry WITH a component moved"
@@ -1071,6 +1101,28 @@ fn an_index_written_before_this_change_loads_page_for_page_and_writes_back_the_s
          canonicalisation below is not reporting what happens to one"
     );
     let canonical = without_the_removed_key.replace(STORED_ROUTING_BUCKET, EMPTY_ROUTING_BUCKET);
+    // AND THE RETIRED IDENTITY SLOT IS WRITTEN BACK EMPTY, which is the second content change this
+    // binary makes to a stored row. The slot STAYS -- the log packs positionally -- so what the
+    // writer emits is `"oi":null` where the old row carried the id. Canonicalised here for the same
+    // reason the routing bucket is: the expectation has to be what THIS binary writes, and the
+    // replacement is asserted to have fired so it cannot quietly match nothing.
+    let stored_object_id_count = canonical.matches(STORED_OBJECT_ID).count();
+    assert_eq!(
+        6, stored_object_id_count,
+        "the fixture must carry a stored object id on each of its six page entries, or the \
+         canonicalisation below is not reporting what happens to one"
+    );
+    let canonical = canonical.replace(STORED_OBJECT_ID, EMPTIED_OBJECT_ID);
+    assert_eq!(
+        0,
+        canonical.matches(STORED_OBJECT_ID).count(),
+        "every stored object id must be emptied in the expectation, not left as it was"
+    );
+    assert_eq!(
+        6,
+        canonical.matches(EMPTIED_OBJECT_ID).count(),
+        "and each one must be emptied to the null the writer actually emits"
+    );
     assert_ne!(
         without_the_removed_key, canonical,
         "the stored fixture does not contain {STORED_ROUTING_BUCKET}, so the expectation below \
@@ -1804,5 +1856,250 @@ fn an_omitted_page_handle_restores_to_a_different_key_under_the_new_generation_r
         written_under_the_old_rule.ends_with(&format!(":{OBJECT_ID}")),
         "the old derivation's generation term is supposed to be the object id: \
          {written_under_the_old_rule}"
+    );
+}
+
+
+/// THE DERIVATION CHANGE IS NOT A MIGRATION, AND THIS IS THE DRIVEN PROOF RATHER THAN THE ARGUMENT.
+///
+/// `an_omitted_page_handle_restores_to_a_different_key_under_the_new_generation_rule` above proves
+/// the two derivations DIFFER. That is necessary and it is not sufficient, and on its own it reads
+/// like a migration hazard: a pre-shed writer omitted a page's composite handle because it matched
+/// the old derivation, the stamp refuses the base snapshot and routes load into the replay path,
+/// and the replay path rebuilds that handle from the NEW derivation. If the rebuilt handle were the
+/// name the page is filed and looked up under, every WAL-resident page in such a record would be
+/// filed under a name nothing ever wrote -- a durably acknowledged write reading MISSING, on
+/// exactly the path the stamp sends load down.
+///
+/// IT IS NOT, AND THE REASON IS STRUCTURAL. `fold_delta_block_items` is the only thing that turns
+/// index-log items into pages, and it never reads `block_ref_key`. It builds a `BlockIndex` from
+/// the item's own fields and hands it to `BlockIndexMap::insert`, which ALLOCATES the handle; the
+/// map is keyed by that allocated slot. The record's spelling is rebuilt on the way in and
+/// recomputed again on the way out, and in between nothing consults it. So a changed derivation
+/// cannot misfile a page through this path -- not because the rebuild agrees, but because the
+/// rebuild is not used.
+///
+/// TWO FIXTURES, AND THE SECOND IS THE SHARPER ONE. The first has its handle OMITTED, which is
+/// what a pre-shed writer left. The second carries a handle that is not any derivation of
+/// anything. If a page whose handle is outright wrong is still filed and still named, then no
+/// change to the derivation can break serving here, which is a stronger statement than "this
+/// particular change happens to be safe".
+///
+/// AND THE FOLD IS DRIVEN EXPLICITLY, because the default load path does not reach it:
+/// `index_log_replay_reach::the_default_load_path_does_not_fold_the_index_log_and_the_checked_one_does`
+/// measures that `load_shard` calls `load_index_base_only` and never folds, and that the fold is
+/// reached from the `TS_WAL_LEGACY_RECOVERY` arm and from `install_latest_manifest_if_newer_on_load`
+/// through `load_index_checked`. That is a second, independent layer of why this is not a
+/// migration -- but it is the weaker one, since an operator can flip that flag, so this test drives
+/// the FOLDING arm and makes the claim there.
+#[test]
+fn a_record_whose_page_handle_was_omitted_still_names_its_page_after_the_fold() {
+    use crate::block_store::BlockAddress;
+    use crate::index_log::{IndexItem, IndexItemKind};
+
+    const SHARD: ShardId = 1;
+    const SLAB: u64 = 3;
+    const OFFSET: u64 = 4_096;
+    const LENGTH: u64 = 512;
+    const OBJECT_ID: u64 = 0x0123_4567_89AB_CDEF;
+    const KEY: &str = "k";
+    const KIND: &str = "string";
+    const WRONG_KEY: &str = "wrongkey";
+    const NOT_A_DERIVATION: &str = "this-is-not-any-derivation-of-anything";
+
+    let dir = tempfile::tempdir().expect("tempdir");
+    let engine = TemporalEngine::with_local_dirs(
+        1 << 20,
+        dir.path().join("cache"),
+        dir.path().join("pages"),
+        dir.path().join("indexes"),
+    );
+    engine.load_shard(SHARD);
+
+    // WAL-RESIDENT: no block id. The only shape whose generation term moves under this change, and
+    // the shape every container member takes -- `log_backed` is `address.block_id().is_none()`.
+    let address = BlockAddress::from_parts(SLAB, OFFSET, LENGTH, None, Some(OBJECT_ID));
+    assert!(
+        address.block_id().is_none(),
+        "the fixture must be WAL-resident or the generation term does not move"
+    );
+    assert_eq!(
+        None,
+        address.generation(),
+        "a WAL-resident address carries no generation under this change; if it does, the hazard \
+         under test is not the live one"
+    );
+
+    // DENOMINATOR ONE: the two derivations must differ, or there is nothing to be safe from.
+    let old_rule = crate::index_log::block_ref_key_from_parts(
+        KIND, KEY, None, SLAB, OFFSET, LENGTH, 0, OBJECT_ID,
+    );
+    let new_rule =
+        crate::index_log::block_ref_key_from_parts(KIND, KEY, None, SLAB, OFFSET, LENGTH, 0, 0);
+    assert_ne!(
+        old_rule, new_rule,
+        "the pre-shed and post-shed derivations agree, so this test is about nothing: {old_rule}"
+    );
+
+    let routing_bucket = crate::engine::hashing::block_routing_bucket(KEY, 0, u32::MAX);
+    let wrong_routing_bucket =
+        crate::engine::hashing::block_routing_bucket(WRONG_KEY, 0, u32::MAX);
+
+    // FIXTURE ONE: the handle OMITTED, which is what a pre-shed writer left on disk.
+    let omitted = IndexItem {
+        kind: IndexItemKind::Page,
+        routing_bucket,
+        block_ref_key: String::new(),
+        object_key: KEY.to_string(),
+        model_id: KIND.to_string(),
+        component: None,
+        object_id: OBJECT_ID,
+        block_id: 0,
+        address: Some(address.clone()),
+        size: LENGTH,
+        in_log: true,
+        deleted: false,
+    };
+    // FIXTURE TWO: a handle that is not any derivation of anything.
+    let nonsense = IndexItem {
+        kind: IndexItemKind::Page,
+        routing_bucket: wrong_routing_bucket,
+        block_ref_key: NOT_A_DERIVATION.to_string(),
+        object_key: WRONG_KEY.to_string(),
+        model_id: KIND.to_string(),
+        component: None,
+        object_id: OBJECT_ID,
+        block_id: 0,
+        address: Some(address.clone()),
+        size: LENGTH,
+        in_log: true,
+        deleted: false,
+    };
+    engine
+        .index_log_store()
+        .append_delta(SHARD, vec![omitted, nonsense], Vec::new(), Some(1), None, false, true)
+        .expect("the delta record must append");
+
+    // DENOMINATOR TWO: the omitted handle must really be ABSENT from the bytes on disk, and a
+    // non-derivable handle must really be PRESENT -- otherwise the two fixtures are
+    // indistinguishable and "omitted" is a word rather than a fact.
+    let log_root = engine.index_dir.join("indexlogs");
+    let mut raw = Vec::new();
+    for entry in std::fs::read_dir(&log_root)
+        .expect("the index-log directory exists")
+        .flatten()
+    {
+        if entry
+            .file_name()
+            .to_string_lossy()
+            .starts_with(&format!("shard-{SHARD}.indexlog"))
+        {
+            raw.extend(std::fs::read(entry.path()).expect("an index-log piece reads"));
+        }
+    }
+    assert!(
+        raw.len() > 100,
+        "the index log is {} bytes; a search over nothing cannot report an absence",
+        raw.len()
+    );
+    let text = String::from_utf8_lossy(&raw);
+    assert!(
+        text.contains(NOT_A_DERIVATION),
+        "a handle that is NOT the derivation must survive into the log, or this log does not carry \
+         handles at all and the absence below says nothing"
+    );
+    assert!(
+        !text.contains(&old_rule),
+        "the log still carries the pre-shed handle {old_rule}, so nothing was omitted"
+    );
+
+    // AND NOW THE FOLD, on the arm that actually folds.
+    let folded = engine
+        .load_index_checked(SHARD, false)
+        .expect("the checked load must not refuse this log")
+        .expect("the checked load must return a shard state");
+
+    let pages: Vec<&crate::engine::state::BlockIndex> = folded
+        .bucket_index
+        .bucket_map
+        .values()
+        .flat_map(|bucket| bucket.block_index.values())
+        .collect();
+    println!("=== after the fold: {} page(s) ===", pages.len());
+    for page in &pages {
+        println!(
+            "  key={:?} kind={} slab={} off={} len={} log_backed={}",
+            page.object_key,
+            page.model_id.as_str(),
+            page.address.block_slab_id(),
+            page.address.offset(),
+            page.address.length(),
+            page.log_backed
+        );
+    }
+
+    let omitted_page = pages
+        .iter()
+        .find(|page| page.object_key.as_ref() == KEY)
+        .unwrap_or_else(|| {
+            panic!(
+                "THE OMITTED-HANDLE PAGE IS MISSING AFTER THE FOLD. If this ever fires, the \
+                 rebuilt composite handle HAS become the name the page is filed under, and this \
+                 change needs a migration for records already on disk -- a stamp cannot cover it, \
+                 because the stamp is what routes load down this path. {} page(s) came back.",
+                pages.len()
+            )
+        });
+    let nonsense_page = pages
+        .iter()
+        .find(|page| page.object_key.as_ref() == WRONG_KEY)
+        .expect(
+            "the page whose stored handle is not any derivation is missing, so the stored handle \
+             IS consulted somewhere on this path",
+        );
+
+    // The page has to come back INTACT, not merely present: a page filed under the right name
+    // carrying the wrong address would satisfy a presence check and still serve the wrong bytes.
+    for (label, page) in [("omitted", omitted_page), ("nonsense", nonsense_page)] {
+        assert_eq!(SLAB, page.address.block_slab_id(), "{label}: slab moved");
+        assert_eq!(OFFSET, page.address.offset(), "{label}: offset moved");
+        assert_eq!(LENGTH, page.address.length(), "{label}: length moved");
+        assert!(
+            page.log_backed,
+            "{label}: the page must come back WAL-resident, which is the shape the hazard is about"
+        );
+        assert!(!page.deleted, "{label}: the page must not come back deleted");
+    }
+
+    // And the object is named by the bucket that holds it, which is what a per-object read
+    // resolves through -- present-but-unindexed would read as missing just the same.
+    //
+    // BY THE DERIVED ID, NOT THE ONE THE RECORD CARRIED. The first version of this assertion asked
+    // for `OBJECT_ID`, the arbitrary value written into the fixture, and it failed -- correctly.
+    // After the fold, `update_bucket_layout` rebuilds each bucket's live object set from the pages
+    // themselves (`page.object_id(shard_id)`), so the derivation wins and a stale or invented id in
+    // a stored record cannot survive the load. That is this change's whole premise arriving on the
+    // recovery path, and it is worth asserting in both directions.
+    let named = folded
+        .bucket_index
+        .bucket_map
+        .get(&routing_bucket)
+        .expect("the routing bucket the omitted record named must exist after the fold");
+    let derived_id = crate::engine::hashing::stable_block_object_id(SHARD, KIND, KEY);
+    assert!(
+        named.object_index.contains(&derived_id),
+        "the bucket's object index does not name the page by its DERIVED id, so a per-object read \
+         would not reach the page even though the page is filed"
+    );
+    assert_ne!(
+        derived_id, OBJECT_ID,
+        "control: the fixture's invented id must differ from the derivation, or the next assertion \
+         cannot tell the two apart"
+    );
+    assert!(
+        !named.object_index.contains(&OBJECT_ID),
+        "the arbitrary id the record carried survived into the bucket's object index; the fold is \
+         supposed to re-derive that set from each page's own terms, so a stored id cannot be \
+         authoritative any more"
     );
 }

@@ -3641,9 +3641,23 @@ pub(super) struct BlockIndex {
 /// rounding the flags sit in. Packing the three flags would reclaim nothing and would move the
 /// stored index, which spells each one as its own key.
 ///
-/// WHAT DID NOT MOVE IS THE WIRE. The spelling is still written and read as the string it always
-/// was; only the in-memory width changed. `the_stored_spelling_of_a_page_entry_did_not_move` and
-/// `core_index_loads_legacy_bucket_page_field_names` are the guards on that.
+/// AND THE WIRE DID MOVE, IN EXACTLY ONE SLOT. This paragraph said "WHAT DID NOT MOVE IS THE WIRE
+/// -- the spelling is still written and read as the string it always was; only the in-memory width
+/// changed", and named `the_stored_spelling_of_a_page_entry_did_not_move` as its guard. That guard
+/// is what failed on the first suite run after this change, which is how the claim was caught: it
+/// had no wrong word in it and it was no longer true.
+///
+/// `"oi":42` is written `"oi":null` now. `BlockAddressWire::object_id` carries `rename`, `alias`
+/// and `default` but no `skip_serializing_if`, so an address holding no id emits the slot as a null
+/// rather than dropping it. The slot STAYS because the index log packs the address POSITIONALLY --
+/// retiring it would shorten the array and refuse every row already on disk -- and because the
+/// decode still cross-checks an old `g` against `block_id.or(object_id)` through it.
+///
+/// So the stored form moved, `SHARD_INDEX_FORMAT_VERSION` goes to 6 to pay for it, and the guards
+/// are `the_stored_spelling_of_a_page_entry_moved_in_exactly_one_slot` (the four goldens),
+/// `an_index_written_before_this_change_loads_page_for_page_and_writes_back_the_same_bytes` (the
+/// old-row round trip) and `core_index_loads_legacy_bucket_page_field_names` (that the old names
+/// still read).
 const _: () = assert!(std::mem::size_of::<BlockIndex>() == 56);
 
 impl BlockIndex {
