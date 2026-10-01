@@ -47,11 +47,15 @@
 //! this map at all, they resolve through `bucket_index_component_block_addresses`, which sorts its
 //! own result -- and making the order defined can only remove a source of run-to-run difference.
 //!
-//! THE WIRE FORMAT IS UNCHANGED, BY CONSTRUCTION AND BY TEST. `hashes` is `skip_serializing`, so
-//! nothing writes it; but an index written before that attribute existed can still carry it, and
-//! `#[serde(default)]` means a reader must cope either way. This type therefore deserializes from
-//! and serializes to exactly the MAP shape the `HashMap` used, through `serde(from/into)`, so no
-//! snapshot, manifest or index-log encoding moves a byte.
+//! THE WIRE FORMAT IS UNCHANGED, BY CONSTRUCTION AND BY TEST, AND THAT IS WHY `hashes` COULD BECOME
+//! DURABLE WITHOUT A FORMAT STAMP. This type deserializes from and serializes to exactly the MAP
+//! shape the `HashMap` used, through `serde(from/into)`, so no snapshot, manifest or index-log
+//! encoding moves a byte. `hashes` is written now rather than skipped; because the shape it writes
+//! is the shape the field always had, an index written by an older binary still decodes here -- the
+//! field is absent, `#[serde(default)]` supplies an empty map, and the reconcile's merge fills it
+//! from the bucket index exactly as it did before -- and an index written here still decodes in an
+//! older binary, which ignores the field and rebuilds it from the index as it always did. So
+//! `SHARD_INDEX_FORMAT_VERSION` does not move: there is no encoding a reader could misread.
 
 use std::collections::HashMap;
 
@@ -204,6 +208,18 @@ impl super::ElementMap for HashFieldMap {
 
     fn insert_element(&mut self, element: String, value: BlockAddress) {
         self.insert(element, value);
+    }
+
+    /// THE RECONCILE'S MERGE, where the DERIVED address must survive a durable one that disagrees.
+    ///
+    /// `contains_key` and then `insert` rather than one operation, because the entries are a sorted
+    /// vector and not a table: there is no `entry` API to hand back an occupied slot. Both halves
+    /// binary-search, so this is two log n probes and not a scan, and the second runs only on the
+    /// absent path where an insert was going to shift the tail anyway.
+    fn insert_element_if_absent(&mut self, element: String, value: BlockAddress) {
+        if !self.contains_key(element.as_str()) {
+            self.insert(element, value);
+        }
     }
 }
 

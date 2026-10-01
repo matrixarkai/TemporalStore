@@ -1588,3 +1588,105 @@ fn the_hash_field_map_wire_shape_is_still_the_table_shape() {
         "a decoded container cannot find the fields it decoded"
     );
 }
+
+
+// =================================================================================================
+// 5. WHAT MAKING `hashes` DURABLE COSTS THE COMPRESSED CHECKPOINT
+// =================================================================================================
+
+/// THE COMPRESSED CHECKPOINT DELTA OF A DURABLE HASH MAP, MEASURED THROUGH THE PRODUCTION ENCODER.
+///
+/// `hashes` used to be `#[serde(default, skip_serializing)]` and the only recorded reason was
+/// "Rebuildable from the durable bucket/page index on load". The one number anywhere near it --
+/// "tens of MB larger" -- is a comment on `object_block_lookup`, a DIFFERENT field, and says nothing
+/// about this one. So the cost is measured here rather than inherited.
+///
+/// MEASURED ON THE REAL ENCODER, NOT A PROXY. `serialize_index_stamped` is what the two production
+/// snapshot sites call, and it emits the `TSIDX` container whose payload codec is zstd -- so the
+/// length it returns IS the compressed checkpoint size. The arms differ in one thing: whether
+/// `shard.hashes` is populated when it is called. The "without" arm is byte-for-byte what main
+/// wrote, because main skipped the field.
+///
+/// THE CORPUS IS THE ONE THIS MODULE ALREADY MEASURES AT: 40,000 one-field hashes plus 40 hashes of
+/// 100 fields, which is 40,040 keys carrying 44,000 fields. One field is the p99 of the measured
+/// fields-per-hash histogram and is every context node in a store; the wide arm is the
+/// Redis-compatible surface. Both are present because a single occupancy cannot show the shape.
+///
+/// rust-internal: measures this crate's own encoder, no product behaviour
+#[test]
+fn what_a_durable_hash_map_costs_the_compressed_checkpoint() {
+    use crate::engine::serialize_index_stamped;
+
+    const NARROW_HASHES: usize = 40_000;
+    const WIDE_HASHES: usize = 40;
+    const WIDE_FIELDS: usize = 100;
+
+    let mut shard = ShardState::default();
+    // The context-node shape: one field per hash, under one constant name.
+    for i in 0..NARROW_HASHES {
+        shard
+            .hashes
+            .entry(format!("ctx:node:{i}"))
+            .or_default()
+            .insert(
+                "meta".to_string(),
+                BlockAddress::from_parts(1, (i as u64) * 512, 384, None, None),
+            );
+    }
+    // The wide arm, with field names that are not all one string.
+    for h in 0..WIDE_HASHES {
+        let entry = shard.hashes.entry(format!("wide:hash:{h}")).or_default();
+        for f in 0..WIDE_FIELDS {
+            entry.insert(
+                format!("field-{h}-{f}"),
+                BlockAddress::from_parts(2, ((h * WIDE_FIELDS + f) as u64) * 512, 384, None, None),
+            );
+        }
+    }
+
+    let keys = shard.hashes.len();
+    let fields: usize = shard.hashes.values().map(|m| m.len()).sum();
+    assert_eq!(
+        NARROW_HASHES + WIDE_HASHES,
+        keys,
+        "the fixture did not build the corpus it reports"
+    );
+    assert_eq!(
+        NARROW_HASHES + WIDE_HASHES * WIDE_FIELDS,
+        fields,
+        "the fixture did not build the field population it reports"
+    );
+
+    let with_bytes = serialize_index_stamped(&mut shard).len();
+    // What main wrote: the same shard with the field skipped.
+    let held = std::mem::take(&mut shard.hashes);
+    let without_bytes = serialize_index_stamped(&mut shard).len();
+    shard.hashes = held;
+
+    assert!(
+        with_bytes > without_bytes,
+        "the durable arm ({with_bytes} B) is not larger than the skipped arm ({without_bytes} B), \
+         so this measurement is not measuring the field at all"
+    );
+    let delta = with_bytes - without_bytes;
+    let per_field = delta as f64 / fields as f64;
+
+    println!(
+        "compressed checkpoint: with hashes {with_bytes} B, without {without_bytes} B, \
+         delta {delta} B over {keys} keys / {fields} fields"
+    );
+    println!(
+        "  = {per_field:.2} compressed B per hash field, against {} B per field RESIDENT",
+        std::mem::size_of::<(String, BlockAddress)>()
+    );
+
+    // THE BAR, STATED AS A BAR RATHER THAN AS WHATEVER CAME OUT. A durable map is affordable if the
+    // per-field compressed cost is a small multiple of nothing -- it is pure addition to the image,
+    // so the only question is the scale. Sixteen bytes per field would put a 44,000-field store at
+    // under a megabyte, which is the order the two context maps were refused at 19-310x OVER.
+    assert!(
+        per_field < 16.0,
+        "a durable hash field costs {per_field:.2} compressed bytes, which is not a rounding error \
+         on the checkpoint -- at that rate this change is a refutation, not an improvement"
+    );
+}

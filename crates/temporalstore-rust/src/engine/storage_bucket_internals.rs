@@ -1726,7 +1726,15 @@ pub(super) fn rebuild_unserialized_model_maps_from_bucket_index(shard: &mut Shar
     // for why this is a skip and not a default; counted so it is not silent, the way
     // `reconcile_secondary_views_from_bucket_index` counts the same thing for the other three.
     let mut unreadable_names = 0usize;
-    for entry in collect_bucket_index_live_block_entries(shard) {
+    // THE SAME LIVE-ADDRESS SET THE RECONCILE BUILDS, and built from the same walk the derived view
+    // below is built from, so the filter can only ever remove what the derived view also lacks.
+    let walked = collect_bucket_index_live_block_entries(shard);
+    let live_pages_by_address: std::collections::HashSet<super::LiveBlockKey> = walked
+        .iter()
+        .filter(|entry| !entry.deleted)
+        .map(|entry| super::live_page_key(&entry.address))
+        .collect();
+    for entry in walked {
         if entry.deleted || entry.kind.as_str() != "hash" {
             continue;
         }
@@ -1735,11 +1743,12 @@ pub(super) fn rebuild_unserialized_model_maps_from_bucket_index(shard: &mut Shar
         // collides with a genuine empty-named field and takes its address. An absent name names
         // nothing.
         //
-        // AND THIS ARM HAS NO DURABLE MAP BEHIND IT, which is what makes the default worse here than
-        // at the three arms where it was already corrected. Those say "the durable map below still
-        // holds the element, so skipping loses it from the derived view and not from the store";
-        // `hashes` is `skip_serializing` (`state.rs`), so nothing is written and there is no map to
-        // outrank a wrong answer. A phantom field here is the only answer the shard has.
+        // AND THIS ARM NOW HAS A DURABLE MAP BEHIND IT, which is what changed. It used to say what
+        // the other three arms could not: `hashes` was `skip_serializing`, so nothing was written,
+        // there was no map to outrank a wrong answer, and a phantom field was the only answer the
+        // shard had. `hashes` carries `#[serde(default)]` now, so this arm says exactly what the
+        // other three say -- "the durable map still holds the element, so skipping loses it from the
+        // derived view and not from the store" -- and the merge below is what makes that true.
         //
         // The name is not recoverable from anywhere else, so inventing one is the only alternative
         // to skipping. For a hash the component IS the field name, decoded by nothing (#2009), and
@@ -1765,8 +1774,25 @@ pub(super) fn rebuild_unserialized_model_maps_from_bucket_index(shard: &mut Shar
              were skipped rather than defaulted to the empty field name"
         );
     }
-    if !hashes.is_empty() {
-        shard.hashes = hashes;
+    // MERGED, NOT ASSIGNED, AND THE `is_empty` GATE WENT WITH THE ASSIGNMENT. While `hashes` was
+    // `skip_serializing` there was nothing in `shard.hashes` to protect, so overwriting it whenever
+    // the index said anything was harmless and the gate only avoided clearing it to empty. It is
+    // durable now, so a wholesale assignment here would discard exactly the elements this function's
+    // own header warns about discarding -- a field whose block the index cannot NAME is a field the
+    // durable map is now the only record of. The merge keeps it; the live-address filter still drops
+    // a durable element whose page the settled index does not hold.
+    let mut resurrections_refused = 0usize;
+    let persisted = std::mem::take(&mut shard.hashes);
+    shard.hashes = fill_absent_elements(
+        hashes,
+        persisted,
+        &live_pages_by_address,
+        &mut resurrections_refused,
+    );
+    if resurrections_refused > 0 {
+        eprintln!(
+            "rebuild_unserialized_model_maps: {resurrections_refused} persisted hash field(s) named              a page the bucket index does not hold and were not restored"
+        );
     }
 }
 
@@ -1883,10 +1909,12 @@ fn released_block_identity_owned(
 /// of a kind before a bucket holding it can lose its block entries, and both are properties of the
 /// kind rather than of the bucket:
 ///
-///   1. ITS MAP MUST SURVIVE SERIALIZATION. `hashes`, `context_events` and `context_indexes` are
+///   1. ITS MAP MUST SURVIVE SERIALIZATION. `context_events` and `context_indexes` are
 ///      `skip_serializing` on `ShardState` and are rebuilt FROM the bucket index on load, so a
 ///      released bucket of one of those kinds would have nothing to rebuild from the moment the
-///      index was written and read back.
+///      index was written and read back. `hashes` WAS in that list and is not any more -- it is
+///      durable now -- so this term no longer holds it out. Term 2 does, and it is the only thing
+///      holding it out, which is worth knowing before anyone reads this list as settled.
 ///   2. A READ MUST STILL RESOLVE IT. `bucket_index_block_address` -- the slow read path -- looks
 ///      an address up THROUGH the bucket index, so a released block has to be findable in its model
 ///      map by `(kind, object_key, component)` alone. `model_map_block_address` is that lookup, and
@@ -4628,16 +4656,22 @@ fn reconcile_timestamped_series_membership(
 /// under a live key. `record_exists_exact` reads `contains_key` on these maps, so that was a key
 /// EXISTS answered 1 for and every listing answered empty for, arriving by reload rather than by
 /// `SetRemove`. The entry is created only where an element survives.
-fn fill_absent_elements<K, E, V>(
-    mut derived: std::collections::HashMap<K, std::collections::BTreeMap<E, V>>,
-    persisted: std::collections::HashMap<K, std::collections::BTreeMap<E, V>>,
+fn fill_absent_elements<K, M>(
+    mut derived: std::collections::HashMap<K, M>,
+    persisted: std::collections::HashMap<K, M>,
     live: &std::collections::HashSet<super::LiveBlockKey>,
     resurrections_refused: &mut usize,
-) -> std::collections::HashMap<K, std::collections::BTreeMap<E, V>>
+) -> std::collections::HashMap<K, M>
 where
     K: std::hash::Hash + Eq + Clone,
-    E: Ord,
-    V: super::CarriedValue,
+    M: super::ElementMap
+        + IntoIterator<
+            Item = (
+                <M as super::ElementMap>::Element,
+                <M as super::ElementMap>::Value,
+            ),
+        >,
+    <M as super::ElementMap>::Value: super::CarriedValue,
 {
     for (key, elements) in persisted {
         for (element, value) in elements {
@@ -4645,12 +4679,14 @@ where
                 *resurrections_refused += 1;
                 continue;
             }
-            // `or_insert` and not `insert`: the derived value wins where it exists.
+            // `insert_element_if_absent` and NOT `insert_element`: the derived value wins where it
+            // exists. The two merges over `ElementMap` want opposite things from a collision -- see
+            // the trait -- and this is the one that must not let the older durable map overwrite a
+            // newer derived address.
             derived
                 .entry(key.clone())
                 .or_default()
-                .entry(element)
-                .or_insert(value);
+                .insert_element_if_absent(element, value);
         }
     }
     derived
@@ -4705,7 +4741,6 @@ pub(super) fn reconcile_secondary_views_from_bucket_index(
     let (start_routing_bucket, end_routing_bucket) = shard.routing_range();
 
     let mut saw_strings = false;
-    let mut saw_hashes = false;
     // No `saw_sets` / `saw_lists` / `saw_zsets`: those three merges are unconditional now. See the
     // note at the merges for why the flags were not a protection for these arms -- each was set
     // before its own decode, so it only ever said "the index mentions this kind".
@@ -4724,12 +4759,16 @@ pub(super) fn reconcile_secondary_views_from_bucket_index(
     // the empty member, sequence zero, or the empty field name -- and take a genuine element's
     // address.
     //
-    // Four and not three: the `hash` arm was the last one still defaulting, and it is the one arm
-    // with no durable map behind it to outrank the phantom it produced.
+    // Four and not three: the `hash` arm was the last one still defaulting. It was also, until
+    // `hashes` became durable, the one arm with no durable map behind it to outrank the phantom it
+    // produced -- which is why the skip mattered more here than anywhere else, and why it matters
+    // less now: the merge below restores the field the name could not spell.
     let mut unreadable_names = 0usize;
     // Scores the DURABLE map supplied because the name's disagreed, and scores taken from the name
     // because the durable map did not hold the member. Both are printed, because "the durable map
-    // won" and "there was no durable map to win" are different states with the same outcome.
+    // won" and "the durable map did not hold this element" are different states with the same
+    // outcome. (All four kinds have a durable map now, so the second no longer ever means "there
+    // was no map at all" -- it means the map was silent about this element.)
     let mut outranked_scores = 0usize;
     let mut derived_scores = 0usize;
 
@@ -4788,7 +4827,6 @@ pub(super) fn reconcile_secondary_views_from_bucket_index(
                 // hash this code could use.
                 match entry.component {
                     Some(field) => {
-                        saw_hashes = true;
                         hashes
                             .entry(entry.object_key.to_string())
                             .or_default()
@@ -5062,9 +5100,6 @@ pub(super) fn reconcile_secondary_views_from_bucket_index(
     if saw_strings {
         shard.strings = strings;
     }
-    if saw_hashes {
-        shard.hashes = hashes;
-    }
     // MERGED, NOT ASSIGNED, for the three kinds whose element identity is spelled into a component
     // name. These three used to read `shard.zsets = zsets;` and so on, which throws a DURABLE map
     // away in favour of a view rebuilt by parsing those names: a store written with one score came
@@ -5085,9 +5120,11 @@ pub(super) fn reconcile_secondary_views_from_bucket_index(
     // UNCONDITIONAL, WHERE THESE THREE USED TO BE GATED ON `saw_lists` / `saw_zsets` / `saw_sets`,
     // and that is part of the change rather than tidying.
     //
-    // Each flag is set at the TOP of its arm, BEFORE the component decode -- unlike `saw_hashes`,
-    // which #2016 moved INSIDE its match for a reason that applies to an arm with no durable map
-    // behind it. So `saw_sets == false` does not mean "no set entry decoded"; it means the settled
+    // Each flag is set at the TOP of its arm, BEFORE the component decode. `saw_hashes` -- which
+    // #2016 moved INSIDE its match, for a reason that applied to an arm with no durable map behind
+    // it -- is GONE entirely now that the hash arm merges like the others, so that contrast is
+    // history rather than a live difference. So `saw_sets == false` does not mean "no set entry
+    // decoded"; it means the settled
     // block index holds NO SET BLOCK AT ALL. Skipping the merge there left the deserialized persisted
     // map standing WHOLE, unfiltered: a store whose every set block was removed after its last base
     // index write reloaded with a full resident map and an empty block index, which is the
@@ -5119,6 +5156,23 @@ pub(super) fn reconcile_secondary_views_from_bucket_index(
         let persisted = std::mem::take(&mut shard.sets);
         shard.sets = fill_absent_elements(
             sets,
+            persisted,
+            &live_pages_by_address,
+            &mut resurrections_refused,
+        );
+    }
+    // THE FOURTH KIND, AND THE REASON IT WAS THE ODD ONE OUT IS GONE. `hashes` is durable now
+    // (`state.rs` carries `#[serde(default)]`, not `skip_serializing`), so there is a persisted map
+    // to outrank a name this code could not read -- which is the whole consolation the other three
+    // arms had and this one did not. The `saw_hashes` gate went with it: that flag existed ONLY to
+    // stop a wholesale assignment of a derived-empty map over a live one, and a merge cannot do
+    // that. Leaving the flag would have reproduced, for `hashes`, exactly the hole the note above
+    // describes for the other three -- a skipped merge leaves the deserialized persisted map
+    // standing WHOLE and unfiltered.
+    {
+        let persisted = std::mem::take(&mut shard.hashes);
+        shard.hashes = fill_absent_elements(
+            hashes,
             persisted,
             &live_pages_by_address,
             &mut resurrections_refused,
@@ -5959,8 +6013,11 @@ mod release_refusal_guards {
 
     /// TERM: `released_model_kind_is_addressable`. A `hash` block is derivable by the model walk
     /// -- so the map-agreement term is SATISFIED here, and the kind term is the only thing left
-    /// to refuse on. `hashes` is `skip_serializing` and is rebuilt FROM the bucket index on
-    /// load, so a released bucket holding one would have nothing to rebuild from.
+    /// to refuse on. A hash is still refused, but the REASON narrowed: `hashes` is durable now, so
+    /// precondition 1 (its map must survive serialization) no longer excludes it. Precondition 2
+    /// does: a hash is read WHOLE through `bucket_index_component_block_addresses` and
+    /// `model_map_block_address` offers no point lookup for it, so a released hash bucket would
+    /// answer `HashGetAll` and the length with nothing.
     #[test]
     fn an_unaddressable_kind_is_refused_and_the_refusal_names_the_kind_term() {
         let mut shard = ShardState::default();

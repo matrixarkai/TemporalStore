@@ -3648,6 +3648,18 @@ trait ElementMap: Default {
     type Element: serde::de::DeserializeOwned;
     type Value: serde::de::DeserializeOwned;
     fn insert_element(&mut self, element: Self::Element, value: Self::Value);
+
+    /// INSERT ONLY WHERE THE ELEMENT IS ABSENT, which is a SECOND operation and not a variant of
+    /// the first, because the two merges want opposite things from a collision.
+    ///
+    /// `merge_container_elements` folds the delta's carried elements and wants the carry to WIN --
+    /// it is the newer statement. `fill_absent_elements` merges the PERSISTED map, which is the
+    /// OLDER of its two inputs, and its whole rule is that the DERIVED view decides which elements
+    /// exist and which block backs each; the durable map only supplies what the derived view could
+    /// not produce. Reusing `insert_element` there would let the older map overwrite the newer
+    /// derived address -- the exact inversion `durable_outranks_derived` exists to catch -- so the
+    /// distinction is in the trait rather than in a caller remembering which way round it goes.
+    fn insert_element_if_absent(&mut self, element: Self::Element, value: Self::Value);
 }
 
 impl<E, V> ElementMap for std::collections::BTreeMap<E, V>
@@ -3660,6 +3672,10 @@ where
     fn insert_element(&mut self, element: E, value: V) {
         self.insert(element, value);
     }
+
+    fn insert_element_if_absent(&mut self, element: E, value: V) {
+        self.entry(element).or_insert(value);
+    }
 }
 
 impl<V> ElementMap for std::collections::HashMap<String, V>
@@ -3670,6 +3686,10 @@ where
     type Value = V;
     fn insert_element(&mut self, element: String, value: V) {
         self.insert(element, value);
+    }
+
+    fn insert_element_if_absent(&mut self, element: String, value: V) {
+        self.entry(element).or_insert(value);
     }
 }
 

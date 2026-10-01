@@ -102,12 +102,24 @@
 //! # WHAT WOULD ACTUALLY UNBLOCK IT, NAMED PRECISELY
 //!
 //! One prerequisite, not a family of them: `shard.hashes` would have to become DURABLE -- the
-//! `skip_serializing` on `engine/state.rs:133` removed -- and `HashGetAll`/`HashLen` moved onto that
-//! map instead of onto `bucket_index_component_block_addresses`. That is a stored-format change of
-//! its own, and it is a MOVE rather than a duplication: the field names it would start writing are
-//! the same characters the component writes today through `block_index_written_key`. It was not done
-//! here because it is a second format break landing beside a sibling's, and the campaign takes one
-//! bump at a time.
+//! `skip_serializing` on `engine/state.rs` removed -- and `HashGetAll`/`HashLen` moved onto that
+//! map instead of onto `bucket_index_component_block_addresses`. That is a MOVE rather than a
+//! duplication: the field names it would start writing are the same characters the component writes
+//! today through `block_index_written_key`.
+//!
+//! THE FIRST HALF IS DONE AND THE SECOND HALF IS NOT, which is the whole state of it. `hashes` is
+//! `#[serde(default)]` now and the reconcile MERGES it per element through `fill_absent_elements`
+//! like the other three, so the map is a durable record of every hash field name. `HashGetAll` and
+//! `HashLen` still answer from `bucket_index_component_block_addresses`, and moving them is the
+//! remaining step -- deliberately not taken in the same change, because #1989 is the recorded
+//! incident for moving the length answer onto a map before the map is complete, and
+//! `length_answer_and_listing_agree` pins the two answers to each other in the meantime.
+//!
+//! SO THE STOP CONDITION HAS MOVED RATHER THAN LIFTED. What still holds the component on the entry
+//! is not durability any more: it is that `block_index_handle` HASHES the component, and the
+//! component is the only field in that hash distinguishing two elements of ONE folded page. Drop it
+//! without making the entry per-page and two elements collide on one slot. See the report on #1976
+//! for the enumerated remainder.
 //!
 //! NO PRODUCTION CODE CHANGES IN THIS MODULE. Three tests, each driving a fact rather than quoting
 //! one.
@@ -415,15 +427,22 @@ fn a_swapped_hash_component_no_longer_renames_the_field_because_the_page_contrad
 // 2. THE STRUCTURAL REASON. THE SHARD INDEX WRITES NO HASH FIELD MAP.
 // =================================================================================================
 
-/// THE THREE SPELLED KINDS HAVE A DURABLE MAP IN THE WRITTEN SHARD INDEX AND THE HASH DOES NOT.
+/// ALL FOUR CONTAINER KINDS NOW HAVE A DURABLE MAP IN THE WRITTEN SHARD INDEX.
 ///
-/// Read off the SERIALIZER rather than off the attribute, because `#[serde(skip_serializing)]` is
-/// the kind of claim a doc comment can carry after the attribute has moved. An EMPTY `ShardState`
-/// is enough and is the strongest form of the test: `sets`, `zsets` and `lists` are emitted even
-/// when empty, so their presence here is not an artefact of seeding, and `hashes` is absent for the
-/// one reason that it is never written at all.
+/// RETARGETED, NOT DELETED, and the previous shape of this test is why it had to be. It asserted
+/// that `hashes` was ABSENT from the written index, and its own failure message said what to do if
+/// that ever stopped being true: "if that is deliberate then the stop condition in this module is
+/// stale and removing the component becomes reachable -- re-read the header". It is deliberate now,
+/// so the guard is retargeted at the invariant the change ESTABLISHES -- four durable maps, not
+/// three -- rather than deleted along with the condition it was watching. A guard whose subject the
+/// fix deletes still has a job.
+///
+/// Read off the SERIALIZER rather than off the attribute, because `#[serde(default)]` is the kind of
+/// claim a doc comment can carry after the attribute has moved. An EMPTY `ShardState` is enough and
+/// is the strongest form of the test: all four are emitted even when empty, so their presence here
+/// is not an artefact of seeding.
 #[test]
-fn the_shard_index_writes_no_hash_field_map_and_writes_the_other_three() {
+fn the_shard_index_writes_a_durable_map_for_all_four_container_kinds() {
     let value = serde_json::to_value(&ShardState::default())
         .expect("an empty shard state serializes");
     let object = value
@@ -438,21 +457,16 @@ fn the_shard_index_writes_no_hash_field_map_and_writes_the_other_three() {
         object.len()
     );
 
-    for durable in ["sets", "zsets", "lists"] {
+    for durable in ["sets", "zsets", "lists", "hashes"] {
         assert!(
             object.contains_key(durable),
             "`{durable}` is not in the written shard index, so this kind has no durable map and \
              the table in this module's header is wrong"
         );
     }
-    assert!(
-        !object.contains_key("hashes"),
-        "`hashes` IS written to the shard index now. If that is deliberate then the stop condition \
-         in this module is stale and removing the component becomes reachable -- re-read the header"
-    );
 
     println!(
-        "written shard-index fields={}, sets/zsets/lists present, hashes ABSENT",
+        "written shard-index fields={}, all four of sets/zsets/lists/hashes PRESENT",
         object.len()
     );
 }

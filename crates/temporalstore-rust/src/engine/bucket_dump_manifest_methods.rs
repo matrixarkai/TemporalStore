@@ -667,11 +667,14 @@ impl TemporalEngine {
         }
         let mut restored = crate::engine::decode_index_bytes(&manifest.index_bytes)
             .map_err(|err| Status::error("slot_dump_invalid_index", err.to_string()))?;
-        // `hashes` is `skip_serializing`, so a freshly deserialized index never carries it.
-        // Without this the model-maps lifecycle below sees no hash objects while the
-        // bucket-index derivation does, and every shard holding a hash key is rejected.
-        // Only the unserialized maps are rebuilt: the serialized ones must stay exactly as
-        // decoded, or the cross-check would repair the very tampering it exists to catch.
+        // `hashes` IS carried by a freshly deserialized index now, so this call no longer supplies
+        // a map that was absent -- it MERGES the bucket-index derivation into the decoded one. That
+        // is still needed, and for the original reason read the other way round: an index can hold a
+        // hash field whose page entry names no field, and the derivation can hold a field written
+        // after the decoded map was. Taking either side wholesale loses the other's elements. The
+        // other serialized maps are still left exactly as decoded, or the cross-check would repair
+        // the very tampering it exists to catch. The function NAME is historical: `hashes` is no
+        // longer unserialized.
         rebuild_unserialized_model_maps_from_bucket_index(&mut restored);
         let restored = restored;
         let manifest_buckets = manifest.bucket_ids.iter().copied().collect::<BTreeSet<_>>();

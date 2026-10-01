@@ -132,7 +132,7 @@ pub(super) struct ShardState {
     //
     // The wire shape is unchanged: `HashFieldMap` serializes to and from the same MAP the
     // `HashMap` did, so an index written before this field became `skip_serializing` still decodes.
-    #[serde(default, skip_serializing)]
+    #[serde(default)]
     pub(super) hashes: HashMap<String, HashFieldMap>,
     #[serde(default, with = "super::set_index_serde")]
     pub(super) sets: HashMap<String, BTreeMap<Vec<u8>, BlockAddress>>,
@@ -2883,10 +2883,12 @@ pub(super) struct BucketNode {
     ///     "which model entries are this bucket's" needs no hash fallback to answer;
     ///   * the block set must be EQUAL to what the model maps derive for the bucket right now,
     ///     which is what makes the release reversible rather than hopeful; and
-    ///   * no block may belong to `hashes`, `context_events` or `context_indexes`. Those three
-    ///     maps are `skip_serializing` on `ShardState` and are rebuilt FROM the bucket index on
-    ///     load, so a released bucket of one of those kinds would have nothing left to rebuild
-    ///     from once the index was written and read back.
+    ///   * no block may belong to `hashes`, `context_events` or `context_indexes`. For
+    ///     `context_events` and `context_indexes` the reason is that they are `skip_serializing`
+    ///     on `ShardState` and are rebuilt FROM the bucket index on load, so a released bucket of
+    ///     one of those kinds would have nothing left to rebuild from once the index was written
+    ///     and read back. `hashes` is DURABLE now and is held out by the other precondition
+    ///     instead: it is read whole, and `model_map_block_address` has no point lookup for it.
     ///
     /// `loading` is held across the re-derivation, which is the state a concurrent caller would
     /// have to queue behind if reload ever became asynchronous; today the shard write lock covers
