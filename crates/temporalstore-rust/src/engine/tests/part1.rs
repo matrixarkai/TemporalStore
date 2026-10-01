@@ -8,9 +8,9 @@ use super::*;
 // shared-corpus: dynamic_event_replication_mode_selection
 /// Is the per-object memory permanent, or does a storage cycle give some of it back?
 ///
-/// A write that carries its page leaves an entry in two side maps -- the log-resident registry and
-/// the shard's resident-page map -- and both are released when the storage manager materialises
-/// that page into the block store. The memory probe beside this one never runs a cycle, so it
+/// A write that carries its block leaves an entry in two side maps -- the log-resident registry and
+/// the shard's resident-block map -- and both are released when the storage manager materialises
+/// that block into the block store. The memory probe beside this one never runs a cycle, so it
 /// measures a store that has been written to and never maintained. That is a real state, but it is
 /// the WORST one, and reporting it as "what an object costs" would overstate the steady state.
 ///
@@ -120,12 +120,12 @@ fn does_a_storage_cycle_give_the_memory_back() {
 
 /// What a stored object costs in memory, and whether the cost follows the value or the object.
 ///
-/// A page header in the design this follows spells its ids as 32-bit integers; ours holds `u64`s
+/// A block header in the design this follows spells its ids as 32-bit integers; ours holds `u64`s
 /// and `String`s per item, and an address is 64 bytes on its own. Whether that is what the memory
 /// goes on is a question, not an assumption, so this asks it the only way that answers: hold the
 /// object count fixed and vary the value size.
 ///
-/// A cost that tracks the VALUE is data being retained -- caches, buffers, the pages themselves.
+/// A cost that tracks the VALUE is data being retained -- caches, buffers, the blocks themselves.
 /// A cost that is flat in the value size is per-object structure: keys, addresses, map nodes. The
 /// two want completely different fixes, and the number alone cannot tell them apart.
 ///
@@ -136,9 +136,9 @@ fn does_a_storage_cycle_give_the_memory_back() {
 ///        value 1,024 B      272 B per object
 ///
 /// Flat, so it is structure and not data -- which the tiny cache above already implies and this
-/// confirms. Two hundred and seventy-two bytes to hold a fourteen-byte key and where its page
+/// confirms. Two hundred and seventy-two bytes to hold a fourteen-byte key and where its block
 /// lives: the key as a `String`, a `BlockAddress` that is 64 bytes on its own, a map entry for
-/// each, and an entry in each of the two side maps a carried page needs.
+/// each, and an entry in each of the two side maps a carried block needs.
 ///
 /// The sizes are deliberately measured in more than one POSITION, and that is not fussiness. Run
 /// in one order, the first size reads about 1,233 bytes per object and every later one reads 272 --
@@ -269,9 +269,9 @@ fn what_a_dump_costs_as_the_shard_grows() {
 ///
 /// Measured here, debug build, so a floor rather than a ceiling:
 ///
-///        1,000 objects        413 ms       413 us per page ref
-///        5,000 objects      1,876 ms       375 us per page ref
-///       20,000 objects     19,664 ms       983 us per page ref
+///        1,000 objects        413 ms       413 us per block ref
+///        5,000 objects      1,876 ms       375 us per block ref
+///       20,000 objects     19,664 ms       983 us per block ref
 ///
 /// Twenty seconds at twenty thousand objects, and the per-ref cost RISES with the shard -- 2.6x
 /// between five and twenty thousand -- so it is worse than linear in the thing it is unbounded in.
@@ -566,8 +566,8 @@ fn context_models_match_keys_timeline_blocks_and_filters() {
     // Entities are grouped by node in shard state now, so the object key a command reports has
     // to be the key that state is stored under -- every key-driven mechanism in engine.rs
     // (key-state capture/apply, tombstone removal, membership) looks it up directly. The
-    // per-entity key "ctx:entity:11:42:7001" still exists where it must: as the page object id,
-    // so two entities of one node cannot share a page, and as the persisted entry key, which is
+    // per-entity key "ctx:entity:11:42:7001" still exists where it must: as the block object id,
+    // so two entities of one node cannot share a block, and as the persisted entry key, which is
     // what keeps the on-disk format identical across this change.
     assert!(matches!(
         entity_upsert.response,
@@ -1579,7 +1579,7 @@ fn block_compaction_rewrites_live_addresses_and_allows_old_slab_gc() {
             string_address.object_id(),
             Some(stable_block_object_id(1, "string", "k"))
         );
-        // WHERE THE PAGE IS FILED, not what the address claims -- the address carries no bucket.
+        // WHERE THE BLOCK IS FILED, not what the address claims -- the address carries no bucket.
         // The bucket map's key is the container's answer, and it has to be the key's own bucket.
         assert_eq!(
             shard
@@ -2325,10 +2325,10 @@ fn crash_recovery_report_covers_wal_index_block_and_slab_manifest() {
     recovered.load_shard(1);
     let report = recovered.storage_recovery_report(1);
 
-    // Base-only single-barrier recovery re-derives page layout from WAL replay (the out-of-band
+    // Base-only single-barrier recovery re-derives block layout from WAL replay (the out-of-band
     // roll_slab() is not a WAL command), so the detailed physical report -- slab ids, slab
     // descriptors, per-slab density -- differs from the delta-fold path. It still recovers every
-    // acked write (asserted by the reads below) with all live pages readable and integral.
+    // acked write (asserted by the reads below) with all live blocks readable and integral.
     if crate::engine::wal_single_barrier() {
         assert!(report.all_live_blocks_readable);
         assert!(report.slab_integrity.integrity_ok);
@@ -2491,11 +2491,11 @@ fn crash_recovery_report_marks_stale_slab_density_after_overwrite() {
     assert_eq!(slab.live_object_count, 1);
     assert_eq!(slab.live_routing_bucket_count, 1);
     if !crate::engine::wal_single_barrier() {
-        // Default path: the delta fold reconstructs exactly the two physical pages (stale old +
+        // Default path: the delta fold reconstructs exactly the two physical blocks (stale old +
         // live new) -> 50% live density. Base-only single-barrier recovery replays the two writes
-        // on top of the pages that happened to survive a clean in-process reload, so the slab
-        // physically holds extra stale pages (same single live object, reclaimed by GC). On a real
-        // power cut the un-synced pages are gone and replay rebuilds them cleanly. Physical density
+        // on top of the blocks that happened to survive a clean in-process reload, so the slab
+        // physically holds extra stale blocks (same single live object, reclaimed by GC). On a real
+        // power cut the un-synced blocks are gone and replay rebuilds them cleanly. Physical density
         // is therefore not asserted under the flag.
         assert_eq!(slab.block_count, 2);
         assert_eq!(slab.stale_block_estimate, 1);
@@ -2652,11 +2652,11 @@ fn crash_recovery_rebuilds_missing_slab_manifest_from_block_stream() {
     assert_eq!(report.wal_records, 2);
     assert!(report.all_live_blocks_readable);
     assert!(report.slab_summary.live_physical_bytes > 0);
-    // The slab manifest was rebuilt (from the page stream on the default path; from WAL-replayed
-    // pages under the single barrier). Recovery of both acked writes is asserted by the reads below.
+    // The slab manifest was rebuilt (from the block stream on the default path; from WAL-replayed
+    // blocks under the single barrier). Recovery of both acked writes is asserted by the reads below.
     assert!(block_dir.join("block_extent_manifest.json").exists());
     if !crate::engine::wal_single_barrier() {
-        // Default path: the delta fold reconstructs the exact on-disk page layout at the original
+        // Default path: the delta fold reconstructs the exact on-disk block layout at the original
         // addresses, so the sealed(slab 0)+active(slab 1) split from the out-of-band roll_slab()
         // survives. Base-only single-barrier recovery re-derives layout by replaying the WAL (the
         // roll_slab() is not a WAL command, so both writes replay into the active slab) -- a
@@ -3701,7 +3701,7 @@ fn binary_index_payload_round_trips_and_refuses_a_shape_it_cannot_read() {
         assert_eq!(decoded.strings.get(key), Some(address), "address changed for {key}");
     }
     // `hashes` is deliberately NOT in the payload: it carries `#[serde(default,
-    // skip_serializing)]` because it is rebuildable from the durable bucket/page index on load,
+    // skip_serializing)]` because it is rebuildable from the durable bucket/block index on load,
     // and duplicating it in every checkpoint is what that attribute exists to avoid. So the
     // round-trip must drop it, and this asserts the drop rather than the impossible equality it
     // asserted before -- which is why this test was failing on main.
@@ -3866,7 +3866,7 @@ fn what_reading_one_summary_actually_costs() {
         // Cold walk over every address, which is what a batch read actually does: 120 distinct
         // extents rather than one warm one. Warming a single address measures the best case and
         // would report it as the cost.
-        // Each page paired with the bucket its own key routes to, derived OUTSIDE the probe for the
+        // Each block paired with the bucket its own key routes to, derived OUTSIDE the probe for the
         // reason given at the first probe in this test: the derivation allocates nothing, so it
         // cannot move an allocation count, and hoisting it keeps the numbers comparable with the
         // runs taken before the bucket became an argument.
@@ -3962,13 +3962,13 @@ fn what_reading_one_summary_actually_costs() {
 }
 
 
-/// How many distinct pages do the nodes a retrieve scores actually span?
+/// How many distinct blocks do the nodes a retrieve scores actually span?
 ///
 /// The node fetch is now nearly all of a retrieve's per-candidate cost, and with the discarded
-/// text measured at 1 allocation of 16 it is essentially one page read per candidate. Clustering
-/// the nodes a traversal co-selects would only help if they currently sit on DIFFERENT pages.
+/// text measured at 1 allocation of 16 it is essentially one block read per candidate. Clustering
+/// the nodes a traversal co-selects would only help if they currently sit on DIFFERENT blocks.
 ///
-/// candidates-per-extent is the ceiling: 1.0 means every candidate costs its own page read and
+/// candidates-per-extent is the ceiling: 1.0 means every candidate costs its own block read and
 /// clustering could remove nearly all of them; a high number means they already share and there is
 /// nothing here worth a storage-layout change.
 ///
@@ -4239,7 +4239,7 @@ fn does_the_per_ingest_reconstruct_change_anything() {
         ContextModelProviderConfig, ContextSourceKind,
     };
 
-    /// (routing bucket, pages, live object ids, tombstoned ids, layout, deleted, in_memory)
+    /// (routing bucket, blocks, live object ids, tombstoned ids, layout, deleted, in_memory)
     type Shape = (u32, usize, usize, usize, String, bool, bool);
 
     fn snapshot(engine: &TemporalEngine) -> Vec<Shape> {
@@ -4378,7 +4378,7 @@ fn does_the_per_ingest_reconstruct_change_anything() {
 ///
 /// The shape comparison said a reconstruct changes nothing, but it compared counts after a bare
 /// node write. Removing a call that keeps a durable index correct deserves the strong form: every
-/// page entry's identity, address and flags, captured after a COMPLETE ingest rather than one
+/// block entry's identity, address and flags, captured after a COMPLETE ingest rather than one
 /// write.
 ///
 ///   cargo test -p temporalstore-rust --lib deep_compare_the_index_a_reconstruct_produces -- --ignored --nocapture --test-threads=1
@@ -4390,7 +4390,7 @@ fn deep_compare_the_index_a_reconstruct_produces() {
         ContextModelProviderConfig, ContextSourceKind,
     };
 
-    /// Every field of every page entry, ordered, so two indexes compare exactly.
+    /// Every field of every block entry, ordered, so two indexes compare exactly.
     fn deep(engine: &TemporalEngine) -> Vec<String> {
         let shards = engine.shards.read().expect("engine lock poisoned");
         let shard = shards.get(&1).expect("loaded shard");
@@ -4667,7 +4667,7 @@ fn which_write_primitive_grows_with_the_store() {
 /// at ~197. The append primitives underneath both are flat, no rebuild fires, and every counted
 /// bucket walk is flat -- so the cost is in the maintenance that succeeds, not in the write and not
 /// in a fallback. The two arms differ in which branch of `sync_context_blocks_for_object` they take:
-/// a node's page is filed under `shard.hashes` and goes through `upsert_bucket_index_block_with`, a
+/// a node's block is filed under `shard.hashes` and goes through `upsert_bucket_index_block_with`, a
 /// summary is a timestamped series and goes through `sync_bucket_index_object_blocks`.
 ///
 /// Calling maintenance directly, on the same grown stores, one key of each kind, decides it.
@@ -4809,13 +4809,13 @@ fn what_post_write_maintenance_costs_per_key_kind() {
 }
 
 
-/// The incrementally maintained object->page lookup must equal a rebuilt one.
+/// The incrementally maintained object->block lookup must equal a rebuilt one.
 ///
-/// `sync_bucket_index_object_blocks` used to end by rebuilding the shard's entire object->page
-/// lookup, which made every timestamped-series write O(pages in the shard) -- 10,457 allocations for
+/// `sync_bucket_index_object_blocks` used to end by rebuilding the shard's entire object->block
+/// lookup, which made every timestamped-series write O(blocks in the shard) -- 10,457 allocations for
 /// one summary write at 320 memories against 27 for a node write, which never reaches that path.
 /// The rebuild is now confined to establishing an empty lookup, and the steady state applies only
-/// the pages a write touched.
+/// the blocks a write touched.
 ///
 /// A rebuild is self-correcting: it cleared the lookup and refilled it from the buckets, so it
 /// repaired any drift for free. Incremental maintenance does not, so the equivalence has to be
@@ -5196,7 +5196,7 @@ fn what_a_records_kind_costs_resident() {
 /// A node keeps 1.302 kB of live memory per record and RSS grows 1.586 kB
 /// (`how_much_of_rss_per_record_is_live`), which is what limits a node to roughly 20M records on
 /// a 32 GB box. Notably that is LESS than the 1,536-byte vector each record carries, so the
-/// payload is not what is retained -- it goes to a page and the page is not held. What stays is
+/// payload is not what is retained -- it goes to a block and the block is not held. What stays is
 /// index structure, and this attributes it by writing the same corpus with one thing removed at
 /// a time.
 ///
@@ -5386,7 +5386,7 @@ fn how_much_of_rss_per_record_is_live() {
 
 /// Is a put expensive because it STORES, or because it EVICTS?
 ///
-/// Storing a 1 KB page measured 51 allocations and 43.6 KB
+/// Storing a 1 KB block measured 51 allocations and 43.6 KB
 /// (`what_the_block_cache_costs_per_call`), which is a 43x amplification and too large to be the
 /// copy. That measurement used a cache too small to hold the working set, so every put also
 /// evicted. This separates the two: the same put into a cache with room to spare cannot be
@@ -5450,7 +5450,7 @@ fn is_a_put_expensive_to_store_or_to_evict() {
 
     println!();
     println!("  cache size                              allocs     bytes   (per 1 KB put)");
-    // 200 pages of 1 KB need ~200 KB; 64 MB has room for all of them, 8 KB for none.
+    // 200 blocks of 1 KB need ~200 KB; 64 MB has room for all of them, 8 KB for none.
     let (roomy_allocs, roomy_bytes) = measure(64 * 1024 * 1024, "64 MB (room to spare, no eviction)");
     let (tight_allocs, tight_bytes) = measure(8 * 1024, "8 KB (evicts on every put)");
 
@@ -5543,12 +5543,12 @@ fn does_a_miss_pay_for_empty_tiers() {
     assert!(memory_only > 0, "measured nothing");
 }
 
-/// What the CACHE costs, split into the three calls a page-read miss makes.
+/// What the CACHE costs, split into the three calls a block-read miss makes.
 ///
 /// A miss spends ~60 allocations and ~86 KB inside the cache against 13 allocations and 1.5 KB
-/// actually reading the page (`where_a_block_read_miss_allocates`). That is the read path's real
+/// actually reading the block (`where_a_block_read_miss_allocates`). That is the read path's real
 /// memory cost, and 60 is too many to guess at: this splits it into building the key, the lookup
-/// that misses, and the put that stores the page.
+/// that misses, and the put that stores the block.
 ///
 /// Keys and buffers are built BEFORE the measured window -- `put` takes both by value, and
 /// counting their construction would attribute the caller's work to the cache.
@@ -5600,7 +5600,7 @@ fn what_the_block_cache_costs_per_call() {
         miss_bytes += counts.alloc_bytes;
     }
 
-    // --- storing a page -------------------------------------------------------------------
+    // --- storing a block -------------------------------------------------------------------
     let mut pending: Vec<(CacheKey, Vec<u8>)> = (0..ROUNDS)
         .map(|round| {
             (
@@ -5637,9 +5637,9 @@ fn what_the_block_cache_costs_per_call() {
     assert!(key_allocs + miss_allocs + put_allocs > 0, "measured nothing");
 }
 
-/// Where the 38 allocations of a page-read MISS actually go.
+/// Where the 38 allocations of a block-read MISS actually go.
 ///
-/// A hit costs 2 allocations and 92 bytes; a miss costs 38 and 141 KB for a 1 KB page
+/// A hit costs 2 allocations and 92 bytes; a miss costs 38 and 141 KB for a 1 KB block
 /// (`what_a_block_read_costs_hit_against_miss`). On a corpus larger than the cache essentially
 /// every read misses, so the miss path is the one a deployment runs. This splits it into the
 /// three things it does -- the failed cache lookup, the block-store read, and the put that
@@ -5742,12 +5742,12 @@ fn where_a_block_read_miss_allocates() {
             "the whole miss cannot cost less than the read it contains");
 }
 
-/// What a page read costs on a HIT against a MISS.
+/// What a block read costs on a HIT against a MISS.
 ///
-/// `read_block_shared` exists so the node fetch does not own a copy of the page, and on a cache
+/// `read_block_shared` exists so the node fetch does not own a copy of the block, and on a cache
 /// hit that is exactly what happens: `get_shared` hands back an `Arc<[u8]>`. Its miss path is
 /// `read_block_bytes(..).map(Arc::from)`, and `Arc::<[u8]>::from(Vec<u8>)` allocates a second
-/// buffer and copies the page into it before dropping the Vec -- so a miss pays MORE than the
+/// buffer and copies the block into it before dropping the Vec -- so a miss pays MORE than the
 /// owning read it delegates to, and the saving applies to hits only.
 ///
 /// Whether that matters depends on the hit rate. A soak reading uniformly over 276k records
@@ -5822,7 +5822,7 @@ fn what_a_block_read_costs_hit_against_miss() {
     }
 
     // Misses the way they actually happen: a cache too small to hold the working set, read
-    // round-robin so each page has been evicted by the time it comes round again. Clearing the
+    // round-robin so each block has been evicted by the time it comes round again. Clearing the
     // whole cache instead would fold the cost of rebuilding its internals into the read.
     let small = TemporalEngine::with_local_dirs(
         8 * 1024,
@@ -5912,7 +5912,7 @@ fn what_a_block_read_costs_hit_against_miss() {
 
 
 
-/// Reading the page, or decoding it: which half of a node fetch costs the 15 allocations?
+/// Reading the block, or decoding it: which half of a node fetch costs the 15 allocations?
 ///
 /// Retrieve is 16.4 allocations per candidate and the node fetch is 15.0 of them -- the largest
 /// remaining cost on any indicator once ingest went flat. `load_context_node` is a map lookup, then
@@ -5999,7 +5999,7 @@ fn what_the_two_halves_of_a_node_fetch_cost() {
     let cache = &engine.cache;
     let block_store = &engine.block_store;
 
-    // Warm: the first read of a page touches one-off structures.
+    // Warm: the first read of a block touches one-off structures.
     let warm = super::read_block_bytes(cache, block_store, 1, &address, crate::engine::hashing::PageIdentity::of(1, "hash", &object_key, Some(super::constants::CONTEXT_NODE_FIELD)), routing_bucket)
         .expect("the page reads back");
     assert!(!warm.is_empty(), "an empty page would make every number below meaningless");
@@ -6139,7 +6139,7 @@ fn how_much_resident_memory_is_the_allocator_holding() {
     let baseline = resident_kb();
     assert!(baseline > 0, "could not read VmRSS, so every number below would be fiction");
 
-    // The shapes a decode produces, at a size worth measuring: byte buffers off pages, the strings
+    // The shapes a decode produces, at a size worth measuring: byte buffers off blocks, the strings
     // a record carries, and the float vectors. Held all at once, then dropped all at once.
     {
         let mut held: Vec<(Vec<u8>, String, Vec<f32>)> = Vec::with_capacity(20_000);
@@ -7529,7 +7529,7 @@ fn is_the_per_record_cost_really_per_record() {
 /// (`is_the_per_record_cost_really_per_record`), and only 184 of those are the map entry the
 /// record lands in. The other ~842 are not in `ShardState`'s other maps
 /// (`where_a_record_is_kept`), and the WAL and index-log in-memory state is keyed per SHARD rather
-/// than per record, so neither can hold a per-record cost. That leaves the page store.
+/// than per record, so neither can hold a per-record cost. That leaves the block store.
 ///
 /// Counts at two corpus sizes, so a structure is judged by whether it GROWS rather than by
 /// whether it is non-empty.
@@ -7817,7 +7817,7 @@ fn where_a_record_is_kept_everywhere() {
 /// What a bounded routing-slot range would save a one-box node.
 ///
 /// A record is kept in seven places (`where_a_record_is_kept_everywhere`), and four of them --
-/// the slot map, slot recency, the object index and the page index -- hold one entry per record
+/// the slot map, slot recency, the object index and the block index -- hold one entry per record
 /// only because each record gets its own routing slot. That happens when a shard has the default
 /// full-u32 slot range, which is what a node with no meta server to assign it one inherits: the
 /// live one-box soak node reports routing_slot_count 4,294,967,295 and a dirty slot count equal
@@ -7839,10 +7839,10 @@ fn where_a_record_is_kept_everywhere() {
 /// per-bucket figure several times the truth. Measured 2026-09-11 the rows fit
 /// `fixed + 760 B x buckets` closely, while the smallest row alone reads 2,486 B.
 ///
-/// The single-OBJECT case is held inline by `ObjectIndex::One`. The single-PAGE case is not any
-/// more: the page index's single-page arm was BOXED once the shipped routing range stopped making
-/// single-page buckets the common case, so a bucket holding one page now takes one small allocation
-/// for its page list. What remains in the per-bucket figure is the node itself plus that one list.
+/// The single-OBJECT case is held inline by `ObjectIndex::One`. The single-BLOCK case is not any
+/// more: the block index's single-block arm was BOXED once the shipped routing range stopped making
+/// single-block buckets the common case, so a bucket holding one block now takes one small allocation
+/// for its block list. What remains in the per-bucket figure is the node itself plus that one list.
 #[test]
 #[ignore]
 #[cfg(feature = "alloc-probe")]
@@ -7993,14 +7993,14 @@ saved {:>7.2} ms per round",
 
 /// Building the WAL reclaim plan must not get dearer for every dump manifest that is retained.
 ///
-/// `bucket_generation_fingerprints_by_bucket` walks every live page in the shard. The plan used
+/// `bucket_generation_fingerprints_by_bucket` walks every live block in the shard. The plan used
 /// to call it once per retained manifest, EAGERLY, before knowing whether any bucket would consult
 /// them -- so the plan's cost scaled with how many manifests happened to be retained, a quantity
 /// that has nothing to do with what the round was asked to do.
 ///
 /// The fingerprints are now computed on first use, and a manifest that carries no summary for a
 /// bucket is skipped before it is fingerprinted at all. This pins that: quadrupling the manifest
-/// count must not multiply the live-page scan volume.
+/// count must not multiply the live-block scan volume.
 #[test]
 fn fingerprinting_does_not_scale_with_the_manifest_count() {
     let scan_volume_for = |manifest_count: usize| -> (u64, usize) {
@@ -8068,15 +8068,15 @@ fn fingerprinting_does_not_scale_with_the_manifest_count() {
 
 /// The object-lifecycle snapshot walks the shard ONCE, not three times.
 ///
-/// It derives three things from the live-page set -- page ownership validation, the object
+/// It derives three things from the live-block set -- block ownership validation, the object
 /// lifecycle report, and the per-slab live-ref counts -- and used to call
-/// `collect_live_block_entries` separately for each. That materializes every live page in the
+/// `collect_live_block_entries` separately for each. That materializes every live block in the
 /// shard into a fresh Vec, so the call cost 3x the shard, measured by `what_each_plan_call_walks`
 /// as the largest single piece of `apply_storage_lifecycle` (itself 12x).
 ///
 /// All three read the SAME `&ShardState` under ONE read lock with nothing mutating between them,
 /// so one walk can serve all three. This pins that. It is deliberately an exact equality rather
-/// than a bound: the number should be the live page count, and a second walk creeping back in is
+/// than a bound: the number should be the live block count, and a second walk creeping back in is
 /// exactly what this exists to catch.
 #[test]
 fn the_object_lifecycle_snapshot_walks_the_shard_once() {
@@ -8106,7 +8106,7 @@ fn the_object_lifecycle_snapshot_walks_the_shard_once() {
         .iter()
         .map(|summary| summary.block_ref_count as u64)
         .sum();
-    // Denominator: with no live pages every walk count is 0 and the equality below would hold
+    // Denominator: with no live blocks every walk count is 0 and the equality below would hold
     // for a shard that stored nothing.
     assert!(live_blocks > 0, "fixture stored no live pages, so this measures nothing");
 
@@ -8234,11 +8234,11 @@ fn what_apply_storage_lifecycle_walks() {
     }
 }
 
-/// A compaction round's preamble shares one walk between its live-page consumers.
+/// A compaction round's preamble shares one walk between its live-block consumers.
 ///
 /// Before any budget is consulted, the stage builds several whole-shard reports under the shard
 /// WRITE lock, so every read and write on the shard queues behind them. Three of those reports
-/// take the same live-page set -- ownership validation, the compaction utility report, and the
+/// take the same live-block set -- ownership validation, the compaction utility report, and the
 /// object lifecycle report -- and each used to call `collect_live_block_entries` for its own copy.
 ///
 /// Measured at 4,000 objects, one round walked 9.0x the shard when each report walked for itself.
@@ -8536,7 +8536,7 @@ two tallies have come apart",
     }
 }
 
-/// A shard whose live pages are all OUT of cache, so a warm-up has something to read.
+/// A shard whose live blocks are all OUT of cache, so a warm-up has something to read.
 #[cfg(test)]
 fn cold_shard_for_warmup_measurement(dir: &std::path::Path, records: usize) -> TemporalEngine {
     let engine = TemporalEngine::with_local_dirs(
@@ -8556,7 +8556,7 @@ fn cold_shard_for_warmup_measurement(dir: &std::path::Path, records: usize) -> T
         });
         assert!(response.status.ok, "write {index}: {:?}", response.status);
     }
-    // Without this every page is already resident and the warm-up reads NOTHING -- the arms
+    // Without this every block is already resident and the warm-up reads NOTHING -- the arms
     // below would both report zero reads and agree for the wrong reason.
     let _ = engine.cache.invalidate_shard(1);
     engine
@@ -8574,11 +8574,11 @@ fn measured_cache_warmup(
     )
 }
 
-/// The cache warm-up reads its pages AFTER the shard-table read guard drops.
+/// The cache warm-up reads its blocks AFTER the shard-table read guard drops.
 ///
 /// A read guard is the easy one to leave in place, because it admits other readers and so does
 /// not look like exclusion. It is: it excludes every WRITER on the shard for as long as it is
-/// held, and this stage held it across one block-store read and one cache insert per live page,
+/// held, and this stage held it across one block-store read and one cache insert per live block,
 /// with no per-round budget anywhere in it. The work under the guard scaled with the STORE while
 /// the round that calls it is bounded, which is the same shape #1620 found on the write side.
 ///
@@ -8587,7 +8587,7 @@ fn measured_cache_warmup(
 ///     produce a non-zero number inside the region, or the zero below is a broken counter rather
 ///     than a shortened hold.
 ///   * SHIPPED -- the addresses are chosen under the guard, the reads happen after it drops.
-/// Both arms must warm the same pages, which is what stops this from being satisfied by a
+/// Both arms must warm the same blocks, which is what stops this from being satisfied by a
 /// warm-up that did nothing.
 #[test]
 fn the_cache_warmup_reads_blocks_after_the_shard_guard_drops() {
@@ -8613,7 +8613,7 @@ fn the_cache_warmup_reads_blocks_after_the_shard_guard_drops() {
         shipped.block_reads_under_guard, shipped.block_reads_total,
     );
 
-    // DENOMINATORS FIRST. A warm-up that warmed nothing, or that found every page already
+    // DENOMINATORS FIRST. A warm-up that warmed nothing, or that found every block already
     // cached, satisfies "no read under the guard" by never reaching a read.
     assert!(
         control_warmed > 0 && shipped_warmed > 0,
@@ -8669,7 +8669,7 @@ region",
 /// files -- so the next person to read the two side by side will see an obvious omission. It is
 /// not one. A relocation is recorded in no log: compaction does not advance
 /// `applied_wal_sequence` and emits no WAL record, so the durable index is the ONLY place the new
-/// page addresses exist. Drop the guard before writing it and `storage_lifecycle_plan` can, in
+/// block addresses exist. Drop the guard before writing it and `storage_lifecycle_plan` can, in
 /// that window, derive stale slabs from the volatile index -- which already excludes the slabs the
 /// round just vacated -- and reclaim them while the durable index still names them. A crash there
 /// loses data with no replay to recover it, which is exactly the failure the partial-failure
@@ -8745,8 +8745,8 @@ opens is unrecoverable durable loss",
 /// the fix that worked there (#1586: one walk shared by three consumers of the same immutable
 /// `&ShardState`) is only worth attempting here if these pieces are walking the same way.
 ///
-/// Each row resets the live-page counter, makes ONE call, and reports what it materialized as a
-/// multiple of the shard's live page count. All of these take `&ShardState` and mutate nothing,
+/// Each row resets the live-block counter, makes ONE call, and reports what it materialized as a
+/// multiple of the shard's live block count. All of these take `&ShardState` and mutate nothing,
 /// so they can be measured in any order under a single read lock.
 #[test]
 #[ignore]
@@ -8828,7 +8828,7 @@ fn what_the_compaction_preamble_walks() {
 
     // Split that 2.0x between its two callees rather than inferring which one walks. It calls
     // exactly these two, and `object_manager::runtime_report` iterates `bucket_index.bucket_map`
-    // directly rather than the live-page set -- so it SHOULD contribute nothing here, and if it
+    // directly rather than the live-block set -- so it SHOULD contribute nothing here, and if it
     // does the assumption is wrong. These two rows are not added to the total above; they are a
     // breakdown OF it.
     crate::engine::reset_live_block_scan_entries();
@@ -8886,7 +8886,7 @@ fn what_the_compaction_preamble_walks() {
 /// "COMMAND BATCHING" IS THE WRONG AXIS FOR THIS LOG, and an earlier note used it anyway.
 ///
 /// A record here states its RESULTS, not the operation that produced them: `outcomes` carry an
-/// address and, where no page backs the state, the bytes themselves, plus a `meta` flag. The
+/// address and, where no block backs the state, the bytes themselves, plus a `meta` flag. The
 /// `command` field is an `Option` and is ABSENT by default -- `TS_WAL_DATA_ONLY` is on -- so
 /// "batch N commands into one record" describes a log this is not.
 ///
@@ -9040,9 +9040,9 @@ before the dump.",
     );
 }
 
-/// A RATCHET on how many times one call may walk the shard's live pages.
+/// A RATCHET on how many times one call may walk the shard's live blocks.
 ///
-/// The rule this enforces: within one call, a given consumer group scans the live-page set ONCE.
+/// The rule this enforces: within one call, a given consumer group scans the live-block set ONCE.
 /// Where a group already shares a walk, adding a consumer must reuse the slice rather than add a
 /// scan; where a walk is irreducible, this test records WHY so the number is not filed down by
 /// someone who has not read the reason.
@@ -9089,7 +9089,7 @@ before the dump.",
 /// THE SEVENTH IS GONE, AND IT WAS THE ONE NAMED AS THE REMAINING CANDIDATE:
 /// `collect_live_block_addresses` via `storage_reclaim_slab_reports`. That function builds the
 /// per-slab live/stale tally the reclaim planner reads, and it read `live_page_refs` and
-/// `live_physical_bytes` by materializing every live page in the shard. Both are now maintained on
+/// `live_physical_bytes` by materializing every live block in the shard. Both are now maintained on
 /// the index's own mutation path and read in O(slabs). The walk is not shared, deferred or
 /// sampled -- it is not performed. See `the_maintained_slab_live_tally_matches_the_walk` for the
 /// drift check that holds the maintained figure to the walk it replaced.
@@ -9125,7 +9125,7 @@ fn one_call_walks_the_live_blocks_a_known_number_of_times() {
         .iter()
         .map(|summary| summary.block_ref_count as u64)
         .sum();
-    // Denominator: with no live pages every walk materializes nothing and any multiple holds.
+    // Denominator: with no live blocks every walk materializes nothing and any multiple holds.
     assert!(live_blocks > 0, "fixture stored no live pages, so this measures nothing");
 
     crate::engine::reset_live_block_scan_entries();
@@ -9172,7 +9172,7 @@ and the doc above says why; do not file the constant down without reading it."
 /// This prints that tally for one call, which names the four directly instead of inferring them.
 ///
 /// Read it as "file:line -> entries materialized". A line appearing with N times the shard's live
-/// page count was entered N times.
+/// block count was entered N times.
 #[test]
 #[ignore]
 fn who_walks_the_shard() {
@@ -9246,15 +9246,15 @@ fn who_walks_the_shard() {
 ///
 ///   cargo test --release -p temporalstore-rust --lib what_each_plan_call_walks -- --ignored --nocapture
 ///
-/// `which_stages_walk_every_live_block` attributes a round's 35x live-page walk to two stages --
+/// `which_stages_walk_every_live_block` attributes a round's 35x live-block walk to two stages --
 /// `reclaim_index` 18x and `reclaim_wal` 16x -- but not to the CALLS inside them. An earlier
 /// attempt to explain reclaim_wal's 16x as per-manifest fingerprinting was arithmetic on an
 /// assumed manifest count, and measurement refuted it: making that fingerprinting lazy left the
 /// stage figure completely unchanged, because the fixture holds almost no manifests.
 ///
 /// So this measures the pieces directly rather than inferring them. Each entry resets the
-/// live-page counter, makes ONE call, and reports what that call materialized, as a multiple of
-/// the shard's live page count.
+/// live-block counter, makes ONE call, and reports what that call materialized, as a multiple of
+/// the shard's live block count.
 ///
 /// Read-only calls come first. `create_bucket_dump_manifest` and `apply_storage_lifecycle`
 /// MUTATE (they dump, write manifests and clear dirty state), so they are measured last and in
@@ -9320,7 +9320,7 @@ fn what_each_plan_call_walks() {
     // Split that 2.0x across the three calls it makes. `bucket_storage_summaries` is measured
     // above at 1.0x, so ONE of the other two carries the second walk -- and neither is an obvious
     // candidate: `live_block_slab_ids` walks the model maps (which this counter cannot see) and
-    // `storage_reclaim_slab_reports` is documented as a header walk of the page store. Measured
+    // `storage_reclaim_slab_reports` is documented as a header walk of the block store. Measured
     // rather than reasoned about, because reasoning about this counter has been wrong before:
     // `object_manager_runtime_report`'s second walk turned out to be a bare expression at the end
     // of the function that every grep had missed.
@@ -9717,7 +9717,7 @@ fn what_each_home_costs() {
 
 /// Would specialising `ObjectBlockRefs::by_component` for the one-component case pay?
 ///
-/// The object page lookup costs 238 B/record (`what_each_home_costs`), second only to the slot
+/// The object block lookup costs 238 B/record (`what_each_home_costs`), second only to the slot
 /// map, and unlike the slot map it does not shrink when the slot range is bounded -- it is keyed
 /// per object either way. Its inner `refs` already collapses to an inline `One` variant, and the
 /// outer `by_component` is still a `Vec` that in practice holds exactly one element: a heap
@@ -10157,20 +10157,20 @@ fn what_a_thousand_records_hides() {
 ///
 ///   cargo test -p temporalstore-rust --lib emptied_buckets_are_dropped_without_walking_the_map -- --nocapture
 /// A bounded compaction round stops at its budget, RESUMES onto the same slab, and the rounds
-/// together still move every page.
+/// together still move every block.
 ///
 /// The resume is what makes bounding work at all. A round rolls a fresh slab and relocates onto
 /// it; rolling AGAIN while a round is unfinished would re-move everything the last round moved,
-/// because those pages would no longer be on the newest slab. A budget without a resume shuffles
-/// the same pages and the tail never moves.
+/// because those blocks would no longer be on the newest slab. A budget without a resume shuffles
+/// the same blocks and the tail never moves.
 ///
 /// Note what "finished" means here, because it is not what it first appears: compaction relocates
-/// every live page BY DESIGN, so a completed compaction is followed by another that moves them
+/// every live block BY DESIGN, so a completed compaction is followed by another that moves them
 /// all again. A round is finished when it left nothing behind for want of budget, which is what
 /// `pages_left_by_budget` reports.
 ///
 /// Two controls. Every value must still read after EACH round -- a partial compaction that loses
-/// a page is the risk bounding introduces -- and the unbounded round must finish in ONE, which is
+/// a block is the risk bounding introduces -- and the unbounded round must finish in ONE, which is
 /// what keeps the default behaviour of every store small enough for the real budget.
 #[test]
 fn a_bounded_compaction_round_resumes_instead_of_rolling_again() {
@@ -10705,7 +10705,7 @@ fn a_disabled_or_dry_run_prepare_stage_rolls_nothing() {
     );
 }
 
-/// Walks of the shard's live-page set per maintenance round, on a SETTLED shard and on the same
+/// Walks of the shard's live-block set per maintenance round, on a SETTLED shard and on the same
 /// shard with ONE dirty bucket. Set from measurement by
 /// `an_idle_round_does_not_walk_the_live_blocks_to_populate_a_report`, which prints the per-site
 /// breakdown when either moves.
@@ -10713,7 +10713,7 @@ fn a_disabled_or_dry_run_prepare_stage_rolls_nothing() {
 /// BOTH FELL BY ONE, and it is the same walk in each: `collect_live_block_addresses` via
 /// `storage_reclaim_slab_reports`. That function builds the per-slab live/stale tally the reclaim
 /// planner reads, and it filled `live_page_refs` and `live_physical_bytes` by materialising every
-/// live page in the shard. Both are now maintained on the index's own mutation path and read in
+/// live block in the shard. Both are now maintained on the index's own mutation path and read in
 /// O(slabs), so the walk is not shared or deferred -- it is not performed. It fell on BOTH halves
 /// because that report is taken whether or not the round has work, which is exactly why the idle
 /// half is measured separately.
@@ -10730,10 +10730,10 @@ struct RoundWalkMeasurement {
     dirty_breakdown: String,
 }
 
-/// An IDLE round must not walk the shard's live pages to populate a report field.
+/// An IDLE round must not walk the shard's live blocks to populate a report field.
 ///
 /// `storage_lifecycle_plan` opened with `bucket_storage_summaries`, which materialises every live
-/// page in the shard. Until #1709 that walk was load-bearing for dump selection. It is not any
+/// block in the shard. Until #1709 that walk was load-bearing for dump selection. It is not any
 /// more: `dirty_object_count` on a summary is populated from exactly one place --
 /// `shard.dirty_objects.bucket_counts()` -- so "no bucket has a dirty object" and "the dirty index
 /// is empty" are the SAME predicate, and the second is answered without touching the live set.
@@ -10941,26 +10941,26 @@ zero would mean nothing"
 
 /// A compaction round that fails PARTWAY must keep its resume anchor.
 ///
-/// A round rolls a fresh slab and relocates live pages onto it, and `compaction_rounds` records
+/// A round rolls a fresh slab and relocates live blocks onto it, and `compaction_rounds` records
 /// which slab it is filling so the next round CONTINUES onto that slab instead of rolling again.
 /// Rolling again while a round is unfinished re-moves everything the unfinished round moved --
-/// the pages it relocated are no longer on the newest slab -- so the rounds shuffle instead of
+/// the blocks it relocated are no longer on the newest slab -- so the rounds shuffle instead of
 /// progressing.
 ///
 /// The anchor used to be written only on the success path. The partial-failure handler returned
-/// before reaching it, so a round that rolled a slab, moved some pages and then failed recorded
-/// nothing: the next round read no anchor, rolled a SECOND slab, and re-moved every page the
+/// before reaching it, so a round that rolled a slab, moved some blocks and then failed recorded
+/// nothing: the next round read no anchor, rolled a SECOND slab, and re-moved every block the
 /// failed round had already moved. Repeated work and one extra slab per failure, not data loss,
 /// which is why it went unnoticed.
 ///
 /// The only way a round fails partway in production is the block read returning `None` -- a torn
-/// or missing page -- so this drives `fail_compaction_block_read_after_for_test`, the `cfg(test)`
+/// or missing block -- so this drives `fail_compaction_block_read_after_for_test`, the `cfg(test)`
 /// seam in front of that read. Without the seam this behaviour has no trigger and cannot be
 /// characterized at all.
 ///
 /// Two numbers, asserted SEPARATELY, because they fail for different reasons: the slab count says
-/// whether a second slab was rolled, and the relocated-page count says whether already-moved
-/// pages were moved again. A fix that addressed only one of them would pass the other.
+/// whether a second slab was rolled, and the relocated-block count says whether already-moved
+/// blocks were moved again. A fix that addressed only one of them would pass the other.
 #[test]
 fn a_compaction_round_that_fails_partway_keeps_its_resume_anchor() {
     const RECORDS: usize = 32;
@@ -10986,8 +10986,8 @@ fn a_compaction_round_that_fails_partway_keeps_its_resume_anchor() {
     }
 
     // THE DENOMINATOR. Every count below is a share of this, and a fixture that stored too few
-    // live pages to fail partway would make the whole test vacuous -- the round would either
-    // finish or fail on its first page, and neither exercises resuming.
+    // live blocks to fail partway would make the whole test vacuous -- the round would either
+    // finish or fail on its first block, and neither exercises resuming.
     let live_blocks: usize = engine
         .bucket_storage_summaries(1)
         .iter()
@@ -11006,7 +11006,7 @@ fn a_compaction_round_that_fails_partway_keeps_its_resume_anchor() {
         .expect("slab ids readable")
         .len();
 
-    // ROUND ONE: roll a slab, move `RELOCATIONS_BEFORE_FAILURE` pages, then fail the next read.
+    // ROUND ONE: roll a slab, move `RELOCATIONS_BEFORE_FAILURE` blocks, then fail the next read.
     crate::engine::compaction::fail_compaction_block_read_after_for_test(Some(
         RELOCATIONS_BEFORE_FAILURE,
     ));
