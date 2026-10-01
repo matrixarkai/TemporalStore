@@ -209,7 +209,7 @@ fn objects_by_bucket(engine: &TemporalEngine) -> BTreeMap<u32, usize> {
         .bucket_index
         .bucket_map
         .iter()
-        .map(|(routing_bucket, bucket)| (*routing_bucket, bucket.object_index.len()))
+        .map(|(routing_bucket, bucket)| (*routing_bucket, bucket.object_index.object_count()))
         .collect()
 }
 
@@ -1856,7 +1856,7 @@ fn releasing_a_mixed_batch_releases_exactly_the_clean_buckets_and_leaves_the_res
                 .get(&routing_bucket)
                 .expect("candidate bucket present");
             blocks.insert(routing_bucket, bucket.block_index.len());
-            objects.insert(routing_bucket, bucket.object_index.len());
+            objects.insert(routing_bucket, bucket.object_index.object_count());
             let pages_clean = bucket
                 .block_index
                 .values()
@@ -1986,13 +1986,13 @@ fn releasing_a_mixed_batch_releases_exactly_the_clean_buckets_and_leaves_the_res
             );
             let before = objects_before[routing_bucket];
             assert_eq!(
-                bucket.object_index.len(),
+                bucket.object_index.object_count(),
                 before,
                 "bucket {routing_bucket} was released and its object index went from {before} to \
                  {}. A release KEEPS the object index -- it is what distinguishes a released \
                  bucket from one that holds nothing -- and the model maps do not record it, so \
                  nothing else in this file would see it go",
-                bucket.object_index.len()
+                bucket.object_index.object_count()
             );
         }
     }

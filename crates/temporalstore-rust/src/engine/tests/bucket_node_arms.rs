@@ -351,7 +351,7 @@ fn arm_histogram(engine: &TemporalEngine) -> ArmHistogram {
     }
     for node in shard.bucket_index.bucket_map.values() {
         let pages = node.block_index.len();
-        let objects = node.object_index.len();
+        let objects = node.object_index.object_count();
         *hist
             .arms
             .entry(arm_name(classify_bucket_layout(objects, pages)))
@@ -901,7 +901,7 @@ struct LiveNodeMirror {
 /// Rebuild one live node in the tagged shape, arm chosen by the engine's OWN classifier.
 fn retag(node: &BucketNode) -> TaggedNode {
     let pages = node.block_index.len();
-    let objects = node.object_index.len();
+    let objects = node.object_index.object_count();
     let simple = matches!(
         classify_bucket_layout(objects, pages),
         BucketLayoutState::SingleBlockObject

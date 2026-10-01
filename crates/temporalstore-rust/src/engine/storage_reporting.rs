@@ -282,7 +282,7 @@ pub(super) fn bucket_storage_summaries(
         // object_index.len() is the bucket's total object count, not its dirty count;
         // assigning it to dirty_object_count double-counted (the dirty_objects loop
         // below is the authoritative per-key dirty tally).
-        summary.object_count = bucket.object_index.len() as u64;
+        summary.object_count = bucket.object_index.object_count() as u64;
         summary.dirty_generation = bucket.dirty_generation;
     }
     // ONE ITERATION PER DIRTY BUCKET, where this was one per dirty OBJECT.
@@ -470,7 +470,7 @@ pub(super) fn storage_physical_index_report(
         bucket.loading = runtime_bucket.loading();
         bucket.in_memory = runtime_bucket.in_memory();
         bucket.ttl_ms = runtime_bucket.ttl_ms.ms();
-        bucket.object_count = runtime_bucket.object_index.len() as u64;
+        bucket.object_count = runtime_bucket.object_index.object_count() as u64;
         bucket.block_ref_count = runtime_bucket.block_index.len() as u64;
         bucket.dirty_generation = runtime_bucket.dirty_generation;
         // `last_dump_sequence` IS NOT OVERWRITTEN FROM THE NODE HERE, and that is the whole of
@@ -664,11 +664,11 @@ pub(super) fn object_manager_runtime_report_from_entries(
         {
             state.object_count = state
                 .object_count
-                .saturating_add(bucket.object_index.len() as u64);
+                .saturating_add(bucket.object_index.object_count() as u64);
         } else {
             report.layout_states.push(BucketLayoutStateCount {
                 state: bucket_layout_name(bucket.layout).to_string(),
-                object_count: bucket.object_index.len() as u64,
+                object_count: bucket.object_index.object_count() as u64,
             });
         }
         if bucket.meta_loaded() {

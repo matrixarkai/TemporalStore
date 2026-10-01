@@ -1841,7 +1841,7 @@ impl TemporalEngine {
                 let cache_disk_bytes = cache.map(|cache| cache.disk_bytes).unwrap_or_default();
                 Some(StorageEvictionVictim {
                     routing_bucket,
-                    object_count: bucket.object_index.len() as u64,
+                    object_count: bucket.object_index.object_count() as u64,
                     logical_bytes,
                     physical_bytes,
                     cache_memory_bytes,

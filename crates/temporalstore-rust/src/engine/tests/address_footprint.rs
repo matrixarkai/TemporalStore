@@ -1835,7 +1835,7 @@ fn the_capacity_ceilings_each_narrowing_would_impose() {
     let mut longest: Vec<(u64, String)> = Vec::new();
 
     for bucket in shard.bucket_index.bucket_map.values() {
-        max_objects_in_a_bucket = max_objects_in_a_bucket.max(bucket.object_index.len());
+        max_objects_in_a_bucket = max_objects_in_a_bucket.max(bucket.object_index.object_count());
         let mut blocks_here = 0usize;
         for (_, page) in bucket.block_index.iter() {
             blocks_here += 1;
@@ -2299,7 +2299,7 @@ fn what_consulting_the_object_index_costs_against_computing_the_hash() {
                 .bucket_index
                 .bucket_map
                 .values()
-                .map(|bucket| bucket.object_index.len())
+                .map(|bucket| bucket.object_index.object_count())
                 .max()
                 .unwrap_or(0);
             (max, shard.bucket_index.bucket_map.len())
@@ -2423,7 +2423,7 @@ fn how_many_objects_a_bucket_holds_as_percentiles_and_max() {
                 .bucket_index
                 .bucket_map
                 .values()
-                .map(|bucket| bucket.object_index.len())
+                .map(|bucket| bucket.object_index.object_count())
                 .filter(|count| *count > 0)
                 .collect()
         };

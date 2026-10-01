@@ -249,7 +249,7 @@ fn population(engine: &TemporalEngine) -> Population {
     }
     for node in shard.bucket_index.bucket_map.values() {
         let pages = node.block_index.len();
-        let objects = node.object_index.len();
+        let objects = node.object_index.object_count();
         let slot = out
             .arms
             .entry(arm_name(classify_bucket_layout(objects, pages)))
@@ -791,7 +791,7 @@ fn the_object_list_this_bucket_stores_is_now_one_row_per_key_which_is_the_list_t
                 .bucket_index
                 .bucket_map
                 .values()
-                .map(|node| node.object_index.len())
+                .map(|node| node.object_index.object_count())
                 .sum()
         };
         let pop = population(&engine);

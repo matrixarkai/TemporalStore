@@ -47,23 +47,41 @@
 //!      sample matching the corpus would hold no visible container effect to measure the ceiling on.
 //!      The fixture's own histogram is printed with its sample count so the two are not confused.
 //!
-//!   3. THE ORDINAL IS NOT STABLE, AND THIS LEG IS NEW. Step 2 falls as a DEPENDENT of 1b -- it
-//!      needs a map 1b would have built. That leaves unexamined whether the ordinal would work even
-//!      if the map existed, and it would not. `ObjectIndex::Many` is a SORTED RUN: `insert` places a
-//!      new id at its bisection position, so filing an unrelated key whose id sorts below an
-//!      existing one shifts every later ordinal; `remove` closes the hole the same way; and `shrink`
-//!      collapses the arm to `One` at length one, so ordinal 1 stops existing. An ordinal stored in a
-//!      page entry is therefore invalidated by an ORDINARY INSERT -- the most common operation this
-//!      engine performs, with no delete anywhere near it -- and every entry past the insertion point
-//!      silently names a different object. Stable slots would need an append-only list with
-//!      tombstones, which costs the bisection `ObjectIndex::contains` answers membership by, on the
-//!      one door every membership question goes through. Driven on twenty-five elements, because with
-//!      one the first insert is also the last.
+//!   3. THE ORDINAL WAS NOT STABLE, AND THAT LEG IS NOW SETTLED THE OTHER WAY. It read: step 2
+//!      falls as a DEPENDENT of 1b, which leaves unexamined whether the ordinal would work even if
+//!      the map existed, and it would not -- `ObjectIndex::Many` was a SORTED RUN, so `insert` placed
+//!      a new id at its bisection position and shifted every later ordinal, `remove` closed the hole
+//!      the same way, and `shrink` collapsed the arm to `One` at length one so ordinal 1 stopped
+//!      existing. An ordinal was therefore invalidated by an ORDINARY INSERT, the most common
+//!      operation this engine performs.
+//!
+//!      THAT IS NO LONGER TRUE. `ObjectIndex::Many` IS A SLOT ARRAY WITH PLACEHOLDERS: `insert` takes
+//!      the first free slot and otherwise appends, `remove` leaves a placeholder, nothing closes a
+//!      hole, and the collapse to `One` survives only where it cannot renumber anything.
+//!      `a_slot_into_the_object_list_survives_the_three_mutations_that_invalidated_an_ordinal` drives
+//!      the same three mutations against the same watched position, and every one of them now leaves
+//!      it naming the same object.
+//!
+//!      WHAT IT COST, both measured below rather than conceded. THE BISECTION:
+//!      `ObjectIndex::contains` is a WALK now, because slot order is not id order -- and at the run
+//!      lengths this store holds, p50 1 and MAX 2, a walk and a bisection are the same number, so the
+//!      cost is zero at the shipped distribution and a divergence only on long container lists. THE
+//!      BYTES: the placeholders cost nothing that persists -- the array is bounded by the bucket's own
+//!      high water mark, 1.000 slots an object at two widths across four churn shapes -- but a SLOT is
+//!      an `Option<u64>` at 16 bytes against the run element's 8, because object ids are full-range
+//!      FNV-1a hashes and `u64::MAX` is a legitimate one, so no value can be reserved to mean free.
+//!
+//!      AND IT REOPENS NOTHING ON ITS OWN. Stability was one of three reasons. Legs 1, 2 and 4 are
+//!      untouched: the entry still saves sixteen bytes and no more, the routed arm's ceiling is still
+//!      zero, and -- the one that decides it -- the list still holds BARE IDS while 24 of 41
+//!      production readers want the CHARACTERS. A stable slot resolves to an id the address already
+//!      answers for nothing. So this is a precondition that now holds, not a verdict that has moved.
 //!
 //! WHAT THE LIST HOLDS, WHICH IS WHY 1b NEEDED A MAP AT ALL. `ObjectIndex` is
-//! `Empty | One(u64) | Many(Box<Vec<u64>>)` -- bare ids, sorted, no characters. An ordinal into it
-//! resolves to an id the entry can ALREADY answer for nothing, out of its address. The readers that
-//! matter want the characters, and the list has never held any.
+//! `Empty | One(u64) | Many(Box<ObjectSlots>)` -- bare ids in stable slots, no characters. An ordinal
+//! into it resolves to an id the entry can ALREADY answer for nothing, out of its address. The readers
+//! that matter want the characters, and the list has never held any. Making the slot stable did not
+//! change that, which is why it changes no verdict by itself.
 //!
 //! THE READER COUNT HAS MOVED SINCE #1986 AND THE MOVEMENT IS REAL, not a counting error. #1986
 //! recorded 47 production lines, twelve of them class 2. Walked at `7b049cb06`, the tree holds 41
@@ -76,10 +94,18 @@
 //! or `blocks_mut_unaccounted` closures where the node is MUTABLY borrowed. Those counts are stated
 //! as a dated measurement, not as a list this module maintains.
 //!
-//! NO PRODUCT CODE MOVES HERE, so `SHARD_INDEX_FORMAT_VERSION` stays at 3. The bump to 4 would have
-//! been the first thing step 1b needed -- the entry's stored shape moves -- and #2019's own bump
-//! records the shape of the hazard: an old index decodes CLEANLY because both sides of the
-//! generation check come off the wire, and the disagreement appears later, on a recovery path.
+//! PRODUCT CODE DOES MOVE NOW -- `ObjectIndex` itself -- AND `SHARD_INDEX_FORMAT_VERSION` STILL DOES
+//! NOT. What is stored is the IDS and not the slots: the Serialize impl writes them ascending, which
+//! is the order the sorted run wrote and so the order already on disk, and a load re-files them
+//! through `insert`, which hands slots out afresh. So a slot is a RESIDENT fact and no stamp is owed.
+//! `nothing_persists_a_slot_so_the_written_bytes_do_not_move` drives both halves.
+//!
+//! THE STAMP IS WHAT THE NEXT STEP WOULD NEED, not this one. A page entry naming its object by slot
+//! makes the slot DURABLE, and that is the change that takes the next value above
+//! `SHARD_INDEX_FORMAT_VERSION` -- never a reserved one, because `persistence.rs` compares with `<`
+//! and so ACCEPTS a lower stamp and misreads it rather than refusing it. #2019's own bump records the
+//! shape of the hazard: an old index decodes CLEANLY because both sides of the generation check come
+//! off the wire, and the disagreement appears later, on a recovery path.
 #![allow(clippy::all)]
 use super::*;
 use std::collections::BTreeSet;
@@ -479,124 +505,207 @@ fn the_object_list_holds_ids_and_the_entry_already_answers_the_id_without_one() 
 }
 
 // =================================================================================================
-// 3. THE NEW LEG: THE ORDINAL IS INVALIDATED BY AN ORDINARY INSERT, EVEN IF THE MAP EXISTED.
+// =================================================================================================
+// 3. THIS LEG IS SETTLED THE OTHER WAY NOW: THE LIST IS A SLOT ARRAY AND A SLOT IS STABLE.
+//    WHAT IT COST IS MEASURED IN SECTIONS 5 AND 6. THE OTHER LEGS ARE UNAFFECTED.
 // =================================================================================================
 
-/// AN ORDINAL INTO A SORTED RUN IS INVALIDATED BY AN INSERT, NOT ONLY BY A DELETE.
+/// A SLOT INTO THE OBJECT LIST SURVIVES ALL THREE MUTATIONS THAT INVALIDATED AN ORDINAL.
 ///
-/// The proposal's own risk note asks whether the slot is stable across DELETES. It is not, but
-/// that is the lesser half: `ObjectIndex::insert` puts a new id at its BISECTION POSITION, so
-/// filing an unrelated key whose id sorts below an existing one shifts every later ordinal. An
-/// insert is the most common thing this engine does.
+/// WHAT THIS TEST USED TO SAY, because the record matters more than the verdict. It was
+/// `an_ordinal_into_the_object_list_is_invalidated_by_an_ordinary_insert_not_only_a_delete`, and on
+/// twenty-five ids it drove three separate losses against `ObjectIndex::Many` as a SORTED RUN:
+/// `insert` placed a new id at its bisection position, so filing one unrelated SMALLER id took
+/// position 12 from id 1300 to id 1200; `remove` closed the hole and took it to 1400; and `shrink`
+/// collapsed the arm to `One` at length one, so position 1 stopped existing altogether. Its failure
+/// message named the condition under which it would stop holding -- "if the list has stopped being a
+/// sorted run, this module's third reason no longer holds" -- and that is what has happened.
 ///
-/// Driven on TWENTY-FIVE elements, not one: with a single element the first insert is also the
-/// last and neither shift can be observed. Each of the three mutations is checked separately --
-/// insert below, remove below, and the `shrink` collapse -- because any one of them alone would be
-/// enough to lose data and a fixture that only exercised deletes would have reported the insert as
-/// safe.
+/// `ObjectIndex::Many` IS NOW A SLOT ARRAY WITH PLACEHOLDERS. `insert` takes the first free slot and
+/// otherwise appends, `remove` leaves a placeholder, and the collapse to `One` survives only where it
+/// cannot renumber anything. So the SAME three mutations are driven here against the SAME watched
+/// position, and every one of them must now leave it naming the same object.
+///
+/// DRIVEN THROUGH `id_at` AND NOT THROUGH `iter`. That distinction is the test: `iter` skips
+/// placeholders, so a list read as a sequence still appears to shift when a hole opens below the
+/// watched element -- which is exactly how a compacting implementation would pass a sequence-based
+/// check while losing the slot. `id_at(12)` asks the question a stored slot would ask.
+///
+/// STILL TWENTY-FIVE ELEMENTS, and still each mutation separately: with one element the first insert
+/// is also the last, and a fixture that only exercised deletes would report the insert as safe.
+///
+/// WHAT THIS DOES NOT REOPEN, which is the rest of the module. Legs 1, 2 and 4 are untouched: the
+/// entry still saves sixteen bytes and no more, the list still holds bare ids while 24 of 41
+/// production readers want the CHARACTERS, and the routed arm's ceiling is still zero. Stability was
+/// one of three reasons and it is the only one this change removes.
 ///
 /// rust-internal: drives this crate's own `ObjectIndex`, no product surface
 #[test]
-fn an_ordinal_into_the_object_list_is_invalidated_by_an_ordinary_insert_not_only_a_delete() {
+fn a_slot_into_the_object_list_survives_the_three_mutations_that_invalidated_an_ordinal() {
     const ELEMENTS: usize = 25;
 
-    // Ids spaced so there is always room to insert strictly below an existing one.
+    // Ids spaced so there is always room to insert strictly below an existing one -- the shape that
+    // moved an ordinal with no delete anywhere near it.
     let seeded: Vec<u64> = (1..=ELEMENTS as u64).map(|i| i * 100).collect();
     let mut list = ObjectIndex::default();
     for id in &seeded {
         assert!(list.insert(*id), "the seed must file {id}");
     }
     assert_eq!(
-        list.len(),
+        list.object_count(),
         ELEMENTS,
         "the fixture holds {} rows, not {ELEMENTS}, so nothing below is being observed",
-        list.len()
+        list.object_count()
     );
     assert!(
         ELEMENTS > 1,
         "a one-element fixture cannot observe a shift: the first insert would also be the last"
     );
+    assert!(
+        matches!(list, ObjectIndex::Many(_)),
+        "the fixture never reached the multi-entry arm, so it is testing the inline id"
+    );
 
-    let ordinals_of = |list: &ObjectIndex| -> Vec<u64> { list.iter().copied().collect() };
+    // The watched slot. Not the first and not the last, so a shift at either end is visible.
+    let watched_slot = 12usize;
+    let watched_id = list
+        .id_at(watched_slot)
+        .expect("the fixture must hold a live id in the watched slot");
+    assert_eq!(
+        list.slot_of(&watched_id),
+        Some(watched_slot),
+        "`slot_of` and `id_at` disagree on the fixture, so neither can witness stability"
+    );
 
-    let before = ordinals_of(&list);
-    // The entry we imagine having stored an ordinal in. Not the first and not the last, so a shift
-    // at either end is visible.
-    let watched_ordinal = 12usize;
-    let watched_id_before = before[watched_ordinal];
+    println!("\n=== a slot's stability across the three mutations that moved an ordinal ===");
+    println!("  rows {ELEMENTS}, watching slot {watched_slot}");
+    println!("  before            : slot {watched_slot} -> id {watched_id}");
 
-    println!("\n=== an ordinal's stability across the three mutations ===");
-    println!("  rows {ELEMENTS}, watching ordinal {watched_ordinal}");
-    println!("  before          : ordinal {watched_ordinal} -> id {watched_id_before}");
-
-    // (a) INSERT BELOW. An unrelated key, no delete anywhere.
+    // (a) INSERT BELOW. An unrelated key whose id sorts below everything held, no delete anywhere.
+    // This is the mutation that made the route unsafe, and it is the most common thing the engine
+    // does.
     let mut inserted = list.clone();
     assert!(inserted.insert(1), "the fixture must file the low id");
-    let after_insert = ordinals_of(&inserted);
-    let watched_id_after_insert = after_insert[watched_ordinal];
+    let after_insert = inserted.id_at(watched_slot);
     println!(
-        "  after insert(1) : ordinal {watched_ordinal} -> id {watched_id_after_insert}  \
-         (rows {})",
-        after_insert.len()
-    );
-    assert_ne!(
-        watched_id_before, watched_id_after_insert,
-        "inserting an id BELOW the watched one left ordinal {watched_ordinal} naming the same \
-         object. If the list has stopped being a sorted run, this module's third reason no longer \
-         holds and the route may be reopenable"
+        "  after insert(1)   : slot {watched_slot} -> id {after_insert:?}  (rows {}, slots {})",
+        inserted.object_count(),
+        inserted.slot_count()
     );
     assert_eq!(
-        watched_id_after_insert, watched_id_before - 100,
-        "the shift is not the one-slot shift an ordered insert produces"
+        after_insert,
+        Some(watched_id),
+        "inserting an id BELOW the watched one moved slot {watched_slot} off id {watched_id}. The \
+         slot array is not append-or-refill, so an insert still renumbers and the route is unsafe \
+         again"
+    );
+    assert_eq!(
+        inserted.slot_of(&1),
+        Some(ELEMENTS),
+        "the new id did not land in the first slot past the end, so it took a slot something else \
+         was in"
     );
 
-    // (b) REMOVE BELOW, which is the half the proposal already suspected.
+    // (b) REMOVE BELOW, which is the half the original proposal already suspected.
     let mut removed = list.clone();
     assert!(removed.remove(&100), "the fixture must remove the low id");
-    let after_remove = ordinals_of(&removed);
-    let watched_id_after_remove = after_remove[watched_ordinal];
+    let after_remove = removed.id_at(watched_slot);
     println!(
-        "  after remove(100): ordinal {watched_ordinal} -> id {watched_id_after_remove}  \
-         (rows {})",
-        after_remove.len()
+        "  after remove(100) : slot {watched_slot} -> id {after_remove:?}  (rows {}, slots {})",
+        removed.object_count(),
+        removed.slot_count()
     );
-    assert_ne!(
-        watched_id_before, watched_id_after_remove,
-        "removing an id BELOW the watched one left ordinal {watched_ordinal} unchanged"
+    assert_eq!(
+        after_remove,
+        Some(watched_id),
+        "removing an id BELOW the watched one moved slot {watched_slot}: the hole was CLOSED rather \
+         than left as a placeholder"
+    );
+    assert_eq!(
+        removed.id_at(0),
+        None,
+        "slot 0 did not become a placeholder, so the array compacted"
+    );
+    assert_eq!(
+        removed.slot_count(),
+        ELEMENTS,
+        "the array shortened after a removal from the MIDDLE of it, which it can only do by moving \
+         something"
+    );
+    // And the hole is what the next insert takes, which is what bounds the array.
+    let mut refilled = removed.clone();
+    assert!(refilled.insert(7), "a fresh id must file into the hole");
+    assert_eq!(
+        refilled.slot_of(&7),
+        Some(0),
+        "the fresh id did not take the free slot, so holes are never reused and the array grows \
+         with churn"
+    );
+    assert_eq!(
+        refilled.slot_count(),
+        ELEMENTS,
+        "refilling a hole lengthened the array"
+    );
+    assert_eq!(
+        refilled.id_at(watched_slot),
+        Some(watched_id),
+        "refilling a hole moved the watched slot"
     );
 
-    // (c) THE ARM COLLAPSE. `shrink` takes `Many` to `One` at length one, so ordinal 1 ceases to
-    // exist rather than merely moving -- a stored ordinal of 1 then indexes nothing.
+    // (c) THE ARM COLLAPSE, which is what retired position 1 outright. Two ids, remove the FIRST:
+    // the survivor is in slot 1, so collapsing to `One` would renumber it to slot 0 and leave a
+    // stored 1 dangling.
     let mut collapsing = ObjectIndex::default();
     assert!(collapsing.insert(100));
     assert!(collapsing.insert(200));
-    assert_eq!(collapsing.len(), 2, "the collapse fixture must hold two");
-    let two_wide = ordinals_of(&collapsing);
-    assert_eq!(two_wide.len(), 2);
+    assert_eq!(collapsing.object_count(), 2, "the collapse fixture must hold two");
+    assert_eq!(collapsing.slot_of(&200), Some(1), "the second id must be in slot 1");
     assert!(collapsing.remove(&100), "remove the first of two");
-    let one_wide = ordinals_of(&collapsing);
     println!(
-        "  arm collapse    : 2 rows {two_wide:?} -> {} rows {one_wide:?}",
-        one_wide.len()
-    );
-    assert_eq!(
-        one_wide.len(),
-        1,
-        "the arm did not collapse, so this leg is not being observed"
-    );
-    assert_eq!(
-        one_wide[0], 200,
-        "the surviving row is not the one that should have survived"
+        "  arm collapse      : removed slot 0 of 2 -> rows {}, slots {}, slot0 {:?}, slot1 {:?}",
+        collapsing.object_count(),
+        collapsing.slot_count(),
+        collapsing.id_at(0),
+        collapsing.id_at(1)
     );
     assert!(
-        one_wide.get(1).is_none(),
-        "ordinal 1 still resolves after the collapse, so a stored 1 would not dangle"
+        matches!(collapsing, ObjectIndex::Many(_)),
+        "the arm collapsed to `One` with a live id in slot 1. That is the collapse that retired \
+         ordinal 1, and it renumbers the survivor to slot 0"
+    );
+    assert_eq!(collapsing.id_at(0), None, "slot 0 must be a placeholder");
+    assert_eq!(collapsing.id_at(1), Some(200), "slot 1 must still name 200");
+    assert_eq!(collapsing.object_count(), 1, "one id must be left");
+
+    // (c') AND THE COLLAPSE THAT IS STILL ALLOWED, because it renumbers nothing: remove the SECOND
+    // of two, and the survivor is already in slot 0 with no slot above it. The two cases differ by
+    // exactly the thing being preserved, which is why both are driven.
+    let mut collapsible = ObjectIndex::default();
+    assert!(collapsible.insert(100));
+    assert!(collapsible.insert(200));
+    assert!(collapsible.remove(&200), "remove the second of two");
+    assert!(
+        matches!(collapsible, ObjectIndex::One(100)),
+        "removing the LAST slot of two must give the allocation back: the survivor is in slot 0 \
+         with nothing above it, so `One` and the array are indistinguishable through `id_at`. It is \
+         {collapsible:?}"
+    );
+    assert_eq!(collapsible.id_at(0), Some(100), "slot 0 must still name 100");
+    assert_eq!(collapsible.id_at(1), None, "there must be no slot 1");
+    assert_eq!(collapsible.slot_count(), 1, "the array must be one slot long");
+
+    // (d) EMPTYING gives everything back, which is safe because no live slot remains to preserve.
+    let mut emptying = collapsing.clone();
+    assert!(emptying.remove(&200), "remove the last id");
+    assert!(
+        matches!(emptying, ObjectIndex::Empty),
+        "an emptied index must cost nothing again; it is {emptying:?}"
     );
 
     println!(
-        "  VERDICT: an ordinal is invalidated by an INSERT of an unrelated key, by a REMOVE, and \
-         by the arm collapse. Stable slots need an append-only list with tombstones, which costs \
-         the bisection `ObjectIndex::contains` is built on."
+        "  VERDICT: slot {watched_slot} names id {watched_id} before and after an insert below, a \
+         remove below, a refill of the hole, and the arm collapse. The three mutations that \
+         invalidated an ordinal no longer do. What it cost is sections 5 and 6."
     );
 }
 
@@ -778,25 +887,31 @@ fn the_row_collapse_does_not_reopen_the_route_because_the_routed_arm_did_not_mov
 // 5. THE JOIN, PRICED IN PROBES RATHER THAN IN TIME.
 // =================================================================================================
 
-/// WHAT A READER OF THE NAME WOULD PAY, COUNTED IN EXAMINED ENTRIES.
+/// WHAT A READER OF THE NAME WOULD PAY, COUNTED IN EXAMINED ENTRIES -- AND WHAT THE SLOT ARRAY COST.
 ///
 /// A timing instrument is useless here -- on this box it has read 485x idle against 11x busy off
 /// identical code -- so the join is priced in the engine's own probe counters instead.
 ///
-/// `ObjectIndex::contains` charges `floor(log2(n)) + 1` examined entries for a bisection over the
-/// sorted run, and that is the FLOOR a stable-slot design would have to beat: an append-only list
-/// with tombstones cannot bisect, so its membership answer becomes a walk of the whole run. Both
-/// numbers are printed against the run lengths this store actually holds.
+/// THIS TEST HAS CHANGED SIDES AND THE NUMBER IT ASSERTS IS NOW THE WALK. It used to read
+/// `..._is_logarithmic_today_and_linear_with_stable_slots`, pinning the measured count to
+/// `floor(log2(n)) + 1` and asserting only that a walk could not be cheaper. The slot array landed,
+/// so the walk is what the product does: `ObjectIndex::contains` reads slots in order, placeholders
+/// included, because slot order is not id order. Both models are still printed, and the bisection is
+/// now the thing that was GIVEN UP rather than the thing that is.
 ///
-/// AND AT THESE RUN LENGTHS THE TWO COINCIDE, which is reported rather than hidden: the measured
-/// runs are p50 1 and MAX 2, and `floor(log2(n)) + 1 == n` for n of 1 and 2. So this module
-/// establishes the join's SIZE today and the DIRECTION a stable-slot design moves it, and does NOT
-/// establish that the move is large -- that would need a store whose buckets hold long object
-/// lists, which the shipped routing range does not produce. The inequality is what is asserted.
+/// AND AT THESE RUN LENGTHS THE TWO COINCIDE, which is reported rather than hidden: the measured runs
+/// are p50 1 and MAX 2, and `floor(log2(n)) + 1 == n` for n of 1 and 2. So this module establishes
+/// that the change costs NOTHING MEASURABLE at the distribution the shipped routing range produces,
+/// and that the direction on a store whose buckets hold long object lists is a walk. It does NOT
+/// establish that the walk is expensive -- that would need such a store. The inequality is asserted;
+/// the equality at this distribution is asserted too, because it is the result.
+///
+/// PLACEHOLDERS ARE CHARGED. `locate` counts every slot it reads, so an array carrying holes pays for
+/// them here. That is deliberate: it is the one place the waste measured in section 6 could hide.
 ///
 /// rust-internal: reads this crate's own probe counters, no product surface
 #[test]
-fn the_join_a_name_reader_would_pay_is_logarithmic_today_and_linear_with_stable_slots() {
+fn the_join_a_name_reader_would_pay_is_a_walk_now_and_was_logarithmic_as_a_sorted_run() {
     use crate::engine::state::{
         entries_a_bisection_examines, object_index_entries_examined,
         reset_object_index_entries_examined,
@@ -808,15 +923,19 @@ fn the_join_a_name_reader_would_pay_is_logarithmic_today_and_linear_with_stable_
     seed_hash_containers(&engine);
     seed_routed_strings(&engine);
 
-    // The run lengths the object lists actually hold, off the buckets.
+    // The run lengths the object lists actually hold, off the buckets -- and the SLOT counts beside
+    // them, which are what the walk reads. On a store that has only been written to they are equal;
+    // the two are collected separately so a divergence would show rather than be assumed away.
     let mut run_lengths: Vec<usize> = Vec::new();
+    let mut slot_counts: Vec<usize> = Vec::new();
     {
         let shards = engine.shards.read().expect("engine lock poisoned");
         let shard = shards.get(&1).expect("shard 1 is loaded");
         for bucket in shard.bucket_index.bucket_map.values() {
-            let len = bucket.object_index.len();
+            let len = bucket.object_index.object_count();
             if len > 0 {
                 run_lengths.push(len);
+                slot_counts.push(bucket.object_index.slot_count());
             }
         }
     }
@@ -825,6 +944,7 @@ fn the_join_a_name_reader_would_pay_is_logarithmic_today_and_linear_with_stable_
         "DENOMINATOR: no bucket holds an object list, so no join is being priced"
     );
     run_lengths.sort();
+    slot_counts.sort();
 
     // One membership question per bucket, charged through the product's own door.
     reset_object_index_entries_examined();
@@ -845,9 +965,10 @@ fn the_join_a_name_reader_would_pay_is_logarithmic_today_and_linear_with_stable_
     };
     let examined = object_index_entries_examined();
 
-    // What a stable-slot, append-only list would cost for the same questions: no bisection, so the
-    // whole run.
-    let linear: usize = run_lengths.iter().sum();
+    // The two models. The walk reads slots until it finds the id; asking for the FIRST id a bucket
+    // holds means it stops at the first live slot, which on an array with no holes is slot 0 -- so
+    // the walk's own worst case is the whole array and is printed beside it.
+    let walk_worst: usize = slot_counts.iter().sum();
     let bisecting: u64 = run_lengths
         .iter()
         .map(|len| entries_a_bisection_examines(*len))
@@ -856,19 +977,26 @@ fn the_join_a_name_reader_would_pay_is_logarithmic_today_and_linear_with_stable_
     println!("\n=== the join, in examined entries ===");
     println!("  buckets with a list : {}", run_lengths.len());
     println!(
-        "  run length          : p50={} p90={} p99={} MAX={}",
+        "  objects in a bucket : p50={} p90={} p99={} MAX={}",
         percentile(&run_lengths, 50.0),
         percentile(&run_lengths, 90.0),
         percentile(&run_lengths, 99.0),
         run_lengths.last().copied().unwrap_or(0)
     );
-    println!("  membership questions asked : {probed}");
-    println!("  entries examined, measured : {examined}");
-    println!("  entries a bisection predicts: {bisecting}");
-    println!("  entries an append-only walk would examine: {linear}");
-    if linear as u64 == examined {
+    println!(
+        "  slots in a bucket   : p50={} p90={} p99={} MAX={}",
+        percentile(&slot_counts, 50.0),
+        percentile(&slot_counts, 90.0),
+        percentile(&slot_counts, 99.0),
+        slot_counts.last().copied().unwrap_or(0)
+    );
+    println!("  membership questions asked   : {probed}");
+    println!("  entries examined, measured   : {examined}");
+    println!("  what a bisection would charge : {bisecting}");
+    println!("  the walk's worst case (all slots): {walk_worst}");
+    if bisecting == examined {
         println!(
-            "  NOTE: at these run lengths (MAX {}) a bisection and a walk COINCIDE, so the \
+            "  NOTE: at these run lengths (MAX {}) the walk and a bisection COINCIDE, so the \
              divergence is asserted below as an inequality and is NOT demonstrated by this \
              fixture. floor(log2(n))+1 == n for n in 1..=2, which is where this store sits.",
             run_lengths.last().copied().unwrap_or(0)
@@ -877,22 +1005,594 @@ fn the_join_a_name_reader_would_pay_is_logarithmic_today_and_linear_with_stable_
 
     assert!(
         probed > 0 && examined > 0,
-        "DENOMINATOR: {probed} questions and {examined} entries examined. A run that charged \
+        "DENOMINATOR: {probed} questions and {examined} entries examined. A list that charged \
          nothing would report the join as free"
     );
     assert_eq!(
-        examined, bisecting,
-        "the measured examined count {examined} is not the {bisecting} a bisection predicts over \
-         these run lengths, so the probe and the model disagree and neither can price the join"
+        run_lengths.len(),
+        slot_counts.len(),
+        "a bucket was counted in one sample and not the other, so the two models divide by \
+         different denominators"
     );
     assert!(
-        linear as u64 >= examined,
-        "an append-only walk examines {linear} entries against the bisection's {examined}, which \
-         cannot be cheaper"
+        walk_worst as u64 >= examined,
+        "the walk examined {examined} entries against its own worst case of {walk_worst}, which it \
+         cannot exceed"
+    );
+    // A WALK IS BOUNDED AT BOTH ENDS AND A BISECTION IS NOT, which is the whole difference and is
+    // why this is an interval rather than an equality. The question asked above is a bucket's own
+    // FIRST id, so the walk stops at the first live slot -- its BEST case, one entry a bucket. A
+    // bisection charges `floor(log2(n)) + 1` wherever the id is. So the measured walk can come out
+    // CHEAPER than the model, and here it does: it is the low end of the interval, not a
+    // disagreement between the probe and the model.
+    assert!(
+        examined <= walk_worst as u64,
+        "the walk examined more than every slot it could have read"
+    );
+    assert!(
+        examined >= run_lengths.len() as u64,
+        "the walk examined {examined} entries for {} buckets, fewer than one apiece, so some \
+         membership question did not go through the door that charges",
+        run_lengths.len()
+    );
+    assert!(
+        bisecting <= walk_worst as u64,
+        "a bisection is modelled above the walk's own worst case over the same lists, which it \
+         cannot be: {bisecting} against {walk_worst}"
     );
     println!(
-        "  VERDICT: the join is {examined} examined entries today. Stable slots cost the \
-         bisection and take the same questions to {linear} -- against a prize capped at the \
-         container arm's share of pages."
+        "  VERDICT: the walk examined {examined} entries for {probed} questions against the \
+         {bisecting} a bisection would charge and its own worst case of {walk_worst}. At this \
+         distribution -- every list one or two objects long -- the walk's best case is CHEAPER than \
+         the bisection it replaced and its worst case EQUALS it, so this change costs nothing \
+         measurable on the membership door. The divergence needs a store whose buckets hold long \
+         object lists, which the shipped routing range does not produce."
+    );
+}
+
+// =================================================================================================
+// 6. WHAT THE SLOT ARRAY IS AND WHAT IT COSTS. THE WIDTH, THE PLACEHOLDER WASTE AT TWO CORPUS
+//    SIZES, AND THE BYTES -- EACH WITH ITS DENOMINATOR.
+// =================================================================================================
+
+/// The slot array, mirrored. Never constructed -- only its layout is read -- so the fields are dead
+/// by design, exactly as the entry mirrors above are.
+#[allow(dead_code)]
+struct MirrorObjectSlots {
+    slots: Vec<Option<u64>>,
+    valid: usize,
+}
+
+/// The enum, mirrored as the tag and payload a `repr(Rust)` enum lays out: the discriminant rounded
+/// up to the payload's alignment, then the payload. `offset_of!` on this is how the payload's offset
+/// is MEASURED rather than asserted, since `offset_of!` cannot name an enum variant's field.
+#[allow(dead_code)]
+struct MirrorTagAndPayload {
+    tag: u64,
+    payload: Box<MirrorObjectSlots>,
+}
+
+/// WHAT `ObjectIndex` BECAME, MEASURED WITH `offset_of!` AND ASSERTED AS ARITHMETIC.
+///
+/// NOT PINNED TO A LITERAL. A literal 16 passes for the wrong reason the moment an arm widens into
+/// padding that was already there, and three literal pins in this campaign under-reached for exactly
+/// that. The identity asserted is the one a `repr(Rust)` layout actually obeys -- the aligned fields
+/// plus the tail rounded up -- through the same `reconstruct` helper the entry rows above use, so
+/// there is one model of the layout in this module and not two.
+///
+/// THE MIRRORS ARE PROVED FAITHFUL BEFORE THEY ARE READ. Each is asserted equal in width to the
+/// product type it mirrors, because a mirror that had drifted would report a clean layout for a
+/// struct nobody uses.
+///
+/// AND THE ANSWER IS THAT IT DID NOT MOVE: a tag and one pointer, sixteen bytes, which is what it was
+/// as a sorted run. The slot array is behind the same box. What moved is on the heap, and
+/// `what_a_slot_array_costs_under_churn` is where that is measured.
+///
+/// rust-internal: reads this crate's own type layout, no product behaviour
+#[test]
+fn the_object_index_is_a_tag_and_one_pointer() {
+    use crate::engine::state::ObjectSlots;
+    use std::mem::{align_of, offset_of, size_of};
+
+    let word = size_of::<usize>();
+    assert_eq!(8, word, "this arithmetic is written for a 64-bit word");
+
+    // --- the mirrors are faithful ---
+    assert_eq!(
+        size_of::<ObjectSlots>(),
+        size_of::<MirrorObjectSlots>(),
+        "the slot-array mirror has drifted from the product struct, so its offsets describe nothing"
+    );
+    assert_eq!(
+        size_of::<ObjectIndex>(),
+        size_of::<MirrorTagAndPayload>(),
+        "the enum mirror has drifted: a tag and a boxed payload is not what `ObjectIndex` lays out"
+    );
+    assert_eq!(
+        align_of::<ObjectIndex>(),
+        size_of::<u64>(),
+        "the mirror's tag is a `u64` because the enum aligns to eight; it no longer does"
+    );
+
+    // --- the two offsets, MEASURED, and the arithmetic they satisfy ---
+    //
+    // THE ORDER IS NOT ASSERTED, because `repr(Rust)` is free to choose it and here it chose to put
+    // the box first: `tag` measures at 8 and `payload` at 0. Asserting "the discriminant is first"
+    // was asserting a compiler choice, which is a literal pin wearing a measurement's clothes. What
+    // the layout does owe is that the two fields TILE the width exactly -- distinct offsets, each a
+    // multiple of the alignment, and the last one ending at `size_of` -- and that is checked below
+    // and again through `reconstruct`.
+    let tag_at = offset_of!(MirrorTagAndPayload, tag);
+    let payload_at = offset_of!(MirrorTagAndPayload, payload);
+    assert_ne!(tag_at, payload_at, "two fields cannot share one offset");
+    let word_offsets = {
+        let mut both = [tag_at, payload_at];
+        both.sort_unstable();
+        both
+    };
+    assert_eq!(
+        [0, align_of::<ObjectIndex>()],
+        word_offsets,
+        "the two words do not sit at 0 and the alignment, so something is padded that should not be"
+    );
+
+    // --- the arithmetic, through this module's own reconstruction of a `repr(Rust)` width ---
+    let enum_fields = [
+        ("tag", tag_at, align_of::<ObjectIndex>()),
+        ("payload", payload_at, size_of::<Box<ObjectSlots>>()),
+    ];
+    let slots_fields = [
+        ("slots", offset_of!(MirrorObjectSlots, slots), size_of::<Vec<Option<u64>>>()),
+        ("valid", offset_of!(MirrorObjectSlots, valid), size_of::<usize>()),
+    ];
+
+    println!("\n=== what `ObjectIndex` became ===");
+    for (name, at, width) in enum_fields {
+        println!("  ObjectIndex.{name:<10} offset {at:>3}  width {width:>3}");
+    }
+    println!(
+        "  size_of::<ObjectIndex>()        = {} ; reconstructed = {}",
+        size_of::<ObjectIndex>(),
+        reconstruct(&enum_fields, word)
+    );
+    for (name, at, width) in slots_fields {
+        println!("  ObjectSlots.{name:<10} offset {at:>3}  width {width:>3}");
+    }
+    println!(
+        "  size_of::<ObjectSlots>()        = {} ; reconstructed = {}",
+        size_of::<ObjectSlots>(),
+        reconstruct(&slots_fields, word)
+    );
+    println!("  size_of::<Option<u64>>()        = {} (a slot)", size_of::<Option<u64>>());
+    println!("  size_of::<u64>()                = {} (a sorted-run element)", size_of::<u64>());
+
+    assert_eq!(
+        reconstruct(&enum_fields, word),
+        size_of::<ObjectIndex>(),
+        "the enum's width is not its aligned fields plus its tail rounded up, so the field list \
+         above does not describe it"
+    );
+    assert_eq!(
+        reconstruct(&slots_fields, word),
+        size_of::<ObjectSlots>(),
+        "the slot array's width is not its aligned fields plus its tail rounded up"
+    );
+    let (covered, slack) = account(&enum_fields, size_of::<ObjectIndex>());
+    assert_eq!(
+        0,
+        slack,
+        "{covered} of {} bytes are accounted for and {slack} are not, so something in the enum is \
+         unexplained",
+        size_of::<ObjectIndex>()
+    );
+
+    // The thing a page entry would store, priced here so the two numbers sit together. Both widths
+    // land the entry on the same place -- see
+    // `a_u16_ordinal_would_take_the_entry_from_sixty_four_to_forty_eight_and_a_u8_adds_nothing` --
+    // so a ceiling on slots per bucket buys nothing and must be chosen for the array's own reasons.
+    println!(
+        "  a stored slot would be {} or {} bytes; the entry lands on the same width either way",
+        size_of::<u8>(),
+        size_of::<u16>()
+    );
+    assert_eq!(
+        size_of::<ObjectIndex>(),
+        align_of::<ObjectIndex>() + size_of::<Box<ObjectSlots>>(),
+        "a tag and one pointer is no longer what this costs"
+    );
+}
+
+/// One churn run's outcome: the longest the array got, the most objects held at once, and the worst
+/// instantaneous ratio of the two.
+struct ChurnResult {
+    peak_slots: usize,
+    peak_objects: usize,
+    worst_transient: f64,
+}
+
+/// Fold one observation into a running churn result.
+fn observe_churn(result: &mut ChurnResult, index: &ObjectIndex) {
+    result.peak_slots = result.peak_slots.max(index.slot_count());
+    result.peak_objects = result.peak_objects.max(index.object_count());
+    if index.object_count() > 0 {
+        let ratio = index.slot_count() as f64 / index.object_count() as f64;
+        if ratio > result.worst_transient {
+            result.worst_transient = ratio;
+        }
+    }
+}
+
+/// Drive one churn shape at one width and report what the array did.
+fn churn_shape(width: usize, cycles: usize, shape: &str) -> ChurnResult {
+    let mut index = ObjectIndex::default();
+    let mut live: Vec<u64> = (0..width as u64).map(|i| 1_000_000 + i * 97).collect();
+    for id in &live {
+        assert!(index.insert(*id), "the seed must file {id}");
+    }
+    let mut result = ChurnResult {
+        peak_slots: index.slot_count(),
+        peak_objects: index.object_count(),
+        worst_transient: 1.0,
+    };
+    let mut next_id = 9_000_000u64;
+
+    for cycle in 0..cycles {
+        match shape {
+            // A hole opens in the middle and the next insert must take it.
+            "remove-then-add" => {
+                let at = cycle % live.len();
+                let victim = live[at];
+                assert!(index.remove(&victim), "{shape}: {victim} must be held");
+                observe_churn(&mut result, &index);
+                next_id += 1;
+                assert!(index.insert(next_id), "{shape}: the fresh id must file");
+                live[at] = next_id;
+            }
+            // The array grows by one slot and then has to give it back.
+            "add-then-remove" => {
+                next_id += 1;
+                assert!(index.insert(next_id), "{shape}: the fresh id must file");
+                observe_churn(&mut result, &index);
+                assert!(index.remove(&next_id), "{shape}: the fresh id must come back out");
+            }
+            // Many holes at once, then many refills.
+            "batch" => {
+                let half = live.len() / 2;
+                assert!(half > 0, "{shape}: width {width} is too small to halve");
+                for at in 0..half {
+                    assert!(index.remove(&live[at]), "{shape}: {} must be held", live[at]);
+                }
+                observe_churn(&mut result, &index);
+                for at in 0..half {
+                    next_id += 1;
+                    assert!(index.insert(next_id), "{shape}: the fresh id must file");
+                    live[at] = next_id;
+                }
+            }
+            // ALWAYS THE FRONT, so no tail is ever trimmable and only refill can bound it.
+            "front-only" => {
+                let victim = live[0];
+                assert!(index.remove(&victim), "{shape}: {victim} must be held");
+                observe_churn(&mut result, &index);
+                next_id += 1;
+                assert!(index.insert(next_id), "{shape}: the fresh id must file");
+                live.remove(0);
+                live.push(next_id);
+            }
+            other => panic!("unknown churn shape {other}"),
+        }
+        observe_churn(&mut result, &index);
+    }
+
+    assert_eq!(
+        index.object_count(),
+        width,
+        "{shape} at width {width}: the fixture ended holding {} objects, not {width}, so the ratio \
+         it reports has a moving denominator",
+        index.object_count()
+    );
+    result
+}
+
+/// WHAT THE PLACEHOLDERS COST UNDER CHURN, AT TWO CORPUS SIZES, WITH DENOMINATORS.
+///
+/// THE FAILURE THIS HAS TO RULE OUT. An array that never compacts grows with the number of
+/// OPERATIONS rather than with the number of objects, if nothing refills a hole. That is not a
+/// hypothetical: an earlier change in this campaign did exactly it by accident and a per-element
+/// allocation-scaling control caught it at 1.68x. So every shape is run at TWO widths whose cycle
+/// counts differ by 8x, and the number asserted is the BOUND rather than an observation.
+///
+/// THE BOUND: the array is never longer than the most objects the bucket has held AT ONCE. That
+/// follows from the two rules -- a hole is refilled before the array grows, and a tail of holes is
+/// given back -- and it is what makes the waste bounded instead of monotonic. Reported as
+/// `peak slots / peak objects`, which must be 1.000 at both widths; a cost scaling with operations
+/// would make it rise, and rise FURTHER on the arm that runs more of them.
+///
+/// AND THE TRANSIENT, REPORTED AND NOT ASSERTED EQUAL ACROSS WIDTHS, because it cannot be: a shape
+/// that opens one hole in `n` slots is `n/(n-1)` by arithmetic, which is 1.143 at width 8 and 1.016 at
+/// width 64. Asserting those equal would be asserting arithmetic. What is asserted is that the
+/// transient never exceeds the one the shape's own hole count implies, and that it does not persist.
+///
+/// FOUR CHURN SHAPES, because they stress different rules. Remove-then-add refills a hole;
+/// add-then-remove grows and gives back; a batch of removes followed by a batch of adds opens half the
+/// array at once; and the adversarial shape removes from the FRONT every time while the back stays
+/// live, which is the one that can never trim a tail.
+///
+/// AND THE BYTES, stated as arithmetic rather than claimed. A sorted run was a `Box<Vec<u64>>`: a
+/// 24-byte vector plus eight bytes an id. The slot array is a `Box<ObjectSlots>`: 32 bytes plus
+/// SIXTEEN bytes a slot, because a slot is an `Option<u64>` and object ids span the whole of `u64`, so
+/// no value can be reserved to mean free. What a reserved value WOULD buy is printed beside it, since
+/// that is the one lever on this number and it should be a decision rather than an omission.
+///
+/// rust-internal: drives this crate's own `ObjectIndex`, no product surface
+#[test]
+fn what_a_slot_array_costs_under_churn() {
+    use std::mem::size_of;
+
+    // The two corpus sizes: how many objects one bucket holds at once.
+    const WIDTHS: [usize; 2] = [8, 64];
+    const CYCLES_PER_OBJECT: usize = 40;
+    const SHAPES: [&str; 4] = ["remove-then-add", "add-then-remove", "batch", "front-only"];
+
+    println!("\n=== what the placeholders cost under churn ===");
+    println!(
+        "  {:<16} {:>6} {:>8} {:>8} {:>7} {:>11} {:>11}",
+        "shape", "width", "cycles", "pk slots", "pk objs", "bound", "transient"
+    );
+
+    let mut bound_per_width: Vec<(usize, f64)> = Vec::new();
+    let mut worst_transient_overall = 1.0f64;
+    for width in WIDTHS {
+        let cycles = width * CYCLES_PER_OBJECT;
+        assert!(
+            cycles >= width,
+            "DENOMINATOR: {cycles} cycles at width {width} is not enough churn to open a hole"
+        );
+        let mut bound_here = 0.0f64;
+        for shape in SHAPES {
+            let result = churn_shape(width, cycles, shape);
+            let bound = result.peak_slots as f64 / result.peak_objects as f64;
+            println!(
+                "  {shape:<16} {width:>6} {cycles:>8} {:>8} {:>7} {bound:>11.3} {:>11.3}",
+                result.peak_slots, result.peak_objects, result.worst_transient
+            );
+            // THE BOUND, per shape: never longer than the high water mark of the object count.
+            assert!(
+                result.peak_slots <= result.peak_objects,
+                "{shape} at width {width}: the array reached {} slots against a high water mark of \
+                 {} objects over {cycles} cycles. It is growing with OPERATIONS, which is the \
+                 failure this shape exists to avoid",
+                result.peak_slots,
+                result.peak_objects
+            );
+            // THE TRANSIENT never exceeds what the shape's own hole count implies. `batch` opens
+            // half the array, so 2.0; the others open one slot.
+            let implied = if shape == "batch" {
+                2.0
+            } else {
+                width as f64 / (width as f64 - 1.0)
+            };
+            assert!(
+                result.worst_transient <= implied + 1e-9,
+                "{shape} at width {width}: the worst instantaneous ratio was {:.3} against the \
+                 {implied:.3} its own hole count implies, so holes are accumulating",
+                result.worst_transient
+            );
+            bound_here = bound_here.max(bound);
+            worst_transient_overall = worst_transient_overall.max(result.worst_transient);
+        }
+        bound_per_width.push((width, bound_here));
+    }
+
+    for (width, bound) in &bound_per_width {
+        println!("  width {width:>3}: worst bound {bound:.3} slots an object");
+    }
+    println!("  worst TRANSIENT across every shape and width: {worst_transient_overall:.3}");
+
+    // THE SCALING ARM. The wider arm runs 8x the cycles of the narrow one. If the waste were a
+    // function of operations rather than of the corpus, the bound would not agree between them.
+    let (narrow, narrow_bound) = bound_per_width[0];
+    let (wide, wide_bound) = bound_per_width[1];
+    assert!(
+        (narrow_bound - 1.0).abs() < 1e-9 && (wide_bound - 1.0).abs() < 1e-9,
+        "the bound is {narrow_bound:.3} at width {narrow} and {wide_bound:.3} at width {wide}; \
+         either is above 1.000, so the array outgrew the objects it holds"
+    );
+    assert!(
+        (narrow_bound - wide_bound).abs() < 1e-9,
+        "the bound is {narrow_bound:.3} at width {narrow} and {wide_bound:.3} at width {wide}. The \
+         wider arm runs {CYCLES_PER_OBJECT}x its width in cycles, so a bound that differs between \
+         them is a cost scaling with churn and not with the corpus"
+    );
+
+    // --- THE BYTES, as arithmetic. ---
+    let run_header = size_of::<Vec<u64>>();
+    let slots_header = size_of::<crate::engine::state::ObjectSlots>();
+    let run_element = size_of::<u64>();
+    let slot_element = size_of::<Option<u64>>();
+    println!("\n=== the heap a bucket's object list holds, by object count ===");
+    println!("  sorted run : {run_header} + {run_element} an id    (Box<Vec<u64>>)");
+    println!("  slot array : {slots_header} + {slot_element} a slot  (Box<ObjectSlots>)");
+    println!(
+        "  with a reserved id value a slot would be {run_element}, so {slots_header} + \
+         {run_element} a slot"
+    );
+    println!(
+        "  {:>8} {:>12} {:>12} {:>8} {:>16} {:>8}",
+        "objects", "run bytes", "slot bytes", "ratio", "reserved id", "ratio"
+    );
+    for objects in [1usize, 2, 5, 8, 25, 64] {
+        let run = run_header + run_element * objects;
+        let slots = slots_header + slot_element * objects;
+        let reserved = slots_header + run_element * objects;
+        println!(
+            "  {objects:>8} {run:>12} {slots:>12} {:>8.3} {reserved:>16} {:>8.3}",
+            slots as f64 / run as f64,
+            reserved as f64 / run as f64
+        );
+    }
+    assert_eq!(
+        slot_element,
+        2 * run_element,
+        "a slot is {slot_element} bytes against the run element's {run_element}. If the `Option` has \
+         found a niche the table above is pricing a cost nobody pays; if it is wider still, the \
+         table is understating it"
+    );
+
+    // --- AND A HOLE IS CHARGED BY THE WALK, which is the half no store-shaped fixture can show. ---
+    //
+    // WHY THIS BLOCK EXISTS. `the_join_a_name_reader_would_pay` prices the membership door off a
+    // seeded store, and a store that has only been WRITTEN to has no holes at all -- its slot count
+    // and its object count are the same distribution, p50 1 and MAX 2. So that row cannot tell a walk
+    // that charges placeholders from one that skips them: both answer the same number on it. A mutant
+    // that stopped charging them SURVIVED the whole module for exactly that reason, which is the
+    // second reading of a surviving mutant -- the guard did not watch what was changed -- and not a
+    // weak assertion. This is the fixture that watches it.
+    //
+    // The claim being pinned is that `locate` charges every SLOT it reads and not every id it finds,
+    // because a placeholder is a word the walk has to read past. An instrument that reported only
+    // live entries would hide the one cost holes actually have.
+    {
+        use crate::engine::state::{object_index_entries_examined, reset_object_index_entries_examined};
+
+        let mut holed = ObjectIndex::default();
+        for id in [11u64, 22, 33] {
+            assert!(holed.insert(id), "the fixture must file {id}");
+        }
+        assert_eq!(holed.slot_of(&33), Some(2), "33 must be in slot 2");
+        assert!(holed.remove(&11), "11 must come out of slot 0");
+        assert_eq!(holed.id_at(0), None, "slot 0 must be a placeholder");
+        assert_eq!(holed.slot_count(), 3, "the array must still be three slots long");
+        assert_eq!(holed.object_count(), 2, "and hold two objects");
+
+        // The id in the LAST slot, so the walk crosses the placeholder to reach it.
+        reset_object_index_entries_examined();
+        assert!(holed.contains(&33), "33 is held");
+        let over_a_hole = object_index_entries_examined();
+
+        // The same question on an array of the same OBJECT count with no hole in it.
+        let dense: ObjectIndex = [22u64, 33].into_iter().collect();
+        assert_eq!(dense.slot_count(), 2, "the control must have no placeholder");
+        assert_eq!(dense.object_count(), 2, "and the same object count as the holed one");
+        reset_object_index_entries_examined();
+        assert!(dense.contains(&33), "33 is held in the control too");
+        let dense_cost = object_index_entries_examined();
+
+        println!("\n=== what a hole costs the walk ===");
+        println!("  3 slots / 2 objects, reaching the last slot : {over_a_hole} entries examined");
+        println!("  2 slots / 2 objects, reaching the last slot : {dense_cost} entries examined");
+
+        // A FLOOR AND NOT AN EQUALITY, because the counter is one process-wide atomic and these
+        // tests run in parallel: another thread asking a membership question between the reset and
+        // the read can only ADD to the count. So the assertion is written in the direction
+        // contention cannot fake. A walk that charged only LIVE entries would read 2 here and fail
+        // this floor; one that charges slots reads 3.
+        assert!(
+            over_a_hole >= 3,
+            "a walk across a placeholder to slot 2 charged {over_a_hole} entries, below the 3 slots \
+             it had to read. The probe is counting live ids rather than SLOTS, so a bucket carrying \
+             holes reports the same cost as one carrying none and the waste is invisible exactly \
+             where it is paid"
+        );
+        assert!(
+            dense_cost >= 2,
+            "the dense control charged {dense_cost} for the two slots it read"
+        );
+    }
+
+    println!(
+        "  VERDICT: the array is bounded by the bucket's own high water mark -- 1.000 slots an \
+         object at both widths across four churn shapes, with a transient of at most \
+         {worst_transient_overall:.3} while holes are open -- so the PLACEHOLDERS cost nothing that \
+         persists. What the change costs on the heap is the SLOT WIDTH and not the holes: 16 bytes \
+         against 8, which a reserved id value would recover and which object ids being full-range \
+         hashes is what forbids. A hole costs the WALK one entry while it is open, charged."
+    );
+}
+
+/// NOTHING PERSISTS A SLOT, SO NOTHING ON DISK MOVES AND NO STAMP IS TAKEN.
+///
+/// WHY THIS HAS TO BE DRIVEN RATHER THAN REASONED. `ObjectIndex` is serialized -- it is a field of
+/// `BucketNode`, which is the stored index -- and its Serialize impl used to write `self.iter()`,
+/// which was the sorted run's order. A slot array iterates in SLOT order, so taking the container's
+/// word for the order would have moved the bytes of every bucket holding two or more objects: 46.6%
+/// of them. The impl sorts instead, and this is where that is checked.
+///
+/// WHAT IS STORED IS THE IDS AND NOT THE SLOTS, which is why the stamp does not move at all. A load
+/// re-files what it reads through `insert`, so slots are handed out afresh on every load and a slot is
+/// a RESIDENT fact. That is also the limit of this change: a page entry naming its object by slot
+/// would make the slot durable, and THAT is what would need the next value above
+/// `SHARD_INDEX_FORMAT_VERSION`.
+///
+/// rust-internal: drives this crate's own serde impls, no external surface
+#[test]
+fn nothing_persists_a_slot_so_the_written_bytes_do_not_move() {
+    // Filed in an order whose slot order is NOT ascending, which is the only order that can catch a
+    // Serialize impl taking slot order for id order.
+    let filed = [900u64, 5, 700, 1, 800, 0, u64::MAX, 400];
+    let index: ObjectIndex = filed.into_iter().collect();
+    assert!(
+        matches!(index, ObjectIndex::Many(_)),
+        "the fixture must reach the slot-array arm"
+    );
+
+    let slot_order: Vec<u64> = index.iter().copied().collect();
+    let mut ascending = filed.to_vec();
+    ascending.sort_unstable();
+
+    println!("\n=== what the slot array writes ===");
+    println!("  filed in     : {filed:?}");
+    println!("  slot order   : {slot_order:?}");
+    println!("  written      : {}", serde_json::to_string(&index).expect("serializes"));
+
+    assert_ne!(
+        slot_order, ascending,
+        "the fixture's slot order is already ascending, so a Serialize impl that wrote slot order \
+         would pass this test for the wrong reason"
+    );
+    assert_eq!(
+        serde_json::to_value(&index).expect("serializes"),
+        serde_json::to_value(&ascending).expect("serializes"),
+        "the written sequence is not the ascending one a sorted run wrote, so this change moves \
+         bytes already on disk and owes a format stamp"
+    );
+
+    // And the round trip is the identity on the SET, which is all the wire carries.
+    let written = serde_json::to_string(&index).expect("serializes");
+    let loaded: ObjectIndex = serde_json::from_str(&written).expect("loads");
+    assert_eq!(loaded.sorted_ids(), index.sorted_ids(), "a round trip lost or gained an id");
+    assert_eq!(
+        loaded.object_count(),
+        index.object_count(),
+        "a round trip changed the object count"
+    );
+    // The slots a load hands out are fresh, and ascending because that is what is written. Stated
+    // rather than left implicit, because it is the fact that makes a slot resident-only.
+    assert_eq!(
+        loaded.id_at(0),
+        Some(0u64),
+        "a loaded bucket does not file the smallest id first, so the slot a load hands out is not \
+         derivable from the wire and the claim that nothing persists a slot needs re-examining"
+    );
+
+    // `u64::MAX` IS A LEGITIMATE OBJECT ID, which is why a slot is an `Option` and not a reserved
+    // value. Driven, because the whole eight-bytes-a-slot cost rests on it.
+    assert!(
+        index.contains(&u64::MAX),
+        "`u64::MAX` is not held, so the fixture is not showing that no value can be reserved"
+    );
+    assert!(
+        index.contains(&0),
+        "`0` is not held either, so neither end of the range is shown to be in use"
+    );
+    let mut narrow = ObjectIndex::default();
+    assert!(narrow.insert(u64::MAX));
+    assert!(narrow.insert(0));
+    assert_eq!(narrow.slot_of(&u64::MAX), Some(0), "`u64::MAX` must take a slot like any id");
+    assert!(narrow.remove(&u64::MAX), "`u64::MAX` must be removable");
+    assert_eq!(
+        narrow.id_at(1),
+        Some(0),
+        "removing `u64::MAX` from slot 0 moved the id in slot 1, so the placeholder was not left"
     );
 }

@@ -2209,8 +2209,8 @@ fn occupancy_of(shard: &crate::engine::state::ShardState) -> (Occupancy, Occupan
     let mut live = Occupancy::default();
     let mut tombstones = Occupancy::default();
     for bucket in shard.bucket_index.bucket_map.values() {
-        live.observe(bucket.object_index.len());
-        tombstones.observe(bucket.deleted_object_index.len());
+        live.observe(bucket.object_index.object_count());
+        tombstones.observe(bucket.deleted_object_index.object_count());
     }
     (live, tombstones)
 }
@@ -3092,16 +3092,27 @@ fn entries(index: &ObjectIndex) -> Vec<u64> {
     index.iter().copied().collect()
 }
 
-/// THE SORTED RUN IS SORTED AND DEDUPLICATED AFTER EVERY MUTATION.
+/// THE SLOT ARRAY IS DEDUPLICATED AFTER EVERY MUTATION, AND WHAT IT WRITES IS STILL ASCENDING.
 ///
-/// Those two are not decoration: the stored spelling is the iteration order, so a run that lost
-/// its order would move the bytes on disk, and `contains` answers by bisection, so a run that
-/// lost its order would start answering "absent" for ids it holds. A duplicate would inflate
-/// `len`, which is what `classify_bucket_layout` and the object count both read.
+/// WHAT THIS TEST USED TO SAY. It was
+/// `the_sorted_run_stays_sorted_and_deduplicated_through_every_mutation`, and it asserted that
+/// ITERATION was strictly ascending -- because the arm was a sorted run, the stored spelling was the
+/// iteration order, and `contains` answered by bisection. Two of those three have moved: the arm is a
+/// SLOT ARRAY, so iteration is in slot order, and `contains` is a walk. The third has not: the stored
+/// spelling is still ascending, because the Serialize impl sorts rather than taking the container's
+/// order, and that is what keeps the bytes on disk where they were.
+///
+/// SO THE CLAIM SPLITS IN TWO AND BOTH HALVES ARE DRIVEN HERE. The SET is unchanged -- same ids, no
+/// duplicates, same membership answers, compared element by element against the container the arm used
+/// to be. The ORDER claim moves to the WIRE: `serde_json` of the index must be the ascending sequence,
+/// whatever slots the ids are in.
+///
+/// AND THE FIXTURE IS CHOSEN SO SLOT ORDER IS NOT ASCENDING, which is the only way either half can
+/// fail visibly: every id but the first belongs BEFORE something already filed, so an implementation
+/// that wrote slot order would write them backwards and an implementation that compacted would
+/// renumber on every remove.
 #[test]
-fn the_sorted_run_stays_sorted_and_deduplicated_through_every_mutation() {
-    // Inserted in an order chosen so an implementation that appends rather than placing would
-    // pass `len` and fail here: every id but the first belongs BEFORE something already held.
+fn the_slot_array_stays_deduplicated_and_what_it_writes_is_still_ascending() {
     let inserted = [900u64, 5, 700, 1, 800, 0, u64::MAX, 400];
     let mut index = ObjectIndex::default();
     let mut control = BTreeSet::new();
@@ -3116,16 +3127,48 @@ fn the_sorted_run_stays_sorted_and_deduplicated_through_every_mutation() {
         );
         assert_eq!(
             control.iter().copied().collect::<Vec<u64>>(),
-            entries(&index),
-            "step {step}: after inserting {id} the run and the control hold different entries"
+            index.sorted_ids(),
+            "step {step}: after inserting {id} the array and the control hold different entries"
         );
-        // Sorted, stated directly rather than inferred from the comparison above.
-        let held = entries(&index);
+        // The WIRE is ascending, stated directly rather than inferred from the comparison above.
+        let written: Vec<u64> =
+            serde_json::from_str(&serde_json::to_string(&index).expect("serializes"))
+                .expect("a sequence of ids");
         assert!(
-            held.windows(2).all(|pair| pair[0] < pair[1]),
-            "step {step}: the run is not strictly ascending: {held:?}"
+            written.windows(2).all(|pair| pair[0] < pair[1]),
+            "step {step}: what the index writes is not strictly ascending: {written:?}"
         );
+        assert_eq!(
+            control.iter().copied().collect::<Vec<u64>>(),
+            written,
+            "step {step}: what the index writes is not what it holds"
+        );
+        // And the slot an id is in is the slot it was given. Every id filed so far keeps its
+        // position, which an append-or-refill array guarantees and a sorted run did not.
+        for (expected_slot, filed) in inserted[..=step].iter().enumerate() {
+            assert_eq!(
+                index.slot_of(filed),
+                Some(expected_slot),
+                "step {step}: id {filed} moved off slot {expected_slot}, so an insert renumbered it"
+            );
+        }
     }
+
+    // SLOT ORDER IS NOT ASCENDING on this fixture, which is what makes the two halves above
+    // distinguishable. Asserted, because a fixture that happened to file in order would pass a
+    // slot-order Serialize impl.
+    let slot_order: Vec<u64> = entries(&index);
+    assert_eq!(
+        inserted.to_vec(),
+        slot_order,
+        "the ids are not in the slots they were filed into, so nothing above observes stability"
+    );
+    assert_ne!(
+        slot_order,
+        index.sorted_ids(),
+        "the fixture's slot order is already ascending, so a Serialize impl that wrote slot order \
+         would pass this test for the wrong reason"
+    );
 
     // Re-inserting every id must change nothing and must answer false.
     for id in &inserted {
@@ -3133,20 +3176,38 @@ fn the_sorted_run_stays_sorted_and_deduplicated_through_every_mutation() {
     }
     assert_eq!(
         control.iter().copied().collect::<Vec<u64>>(),
-        entries(&index),
+        index.sorted_ids(),
         "re-inserting every held id changed the set"
     );
-    assert_eq!(inserted.len(), index.len(), "a duplicate reached the run");
+    assert_eq!(inserted.len(), index.object_count(), "a duplicate reached the array");
+    assert_eq!(
+        inserted.len(),
+        index.slot_count(),
+        "re-inserting a held id took a new slot, so the array grows on a no-op"
+    );
 
-    // Removing, in a different order, and an id that was never held.
+    // Removing, in a different order, and an id that was never held. The slot a REMOVAL leaves is a
+    // placeholder, so every id above it keeps its position -- the half a sorted run got wrong.
     assert!(!index.remove(&123_456), "removing an absent id reported a removal");
+    let highest = index.slot_of(&400).expect("400 is filed");
     for id in [700u64, 0, u64::MAX, 900] {
+        let slot_of_victim = index.slot_of(&id).expect("the victim is filed");
         assert!(index.remove(&id), "removing held id {id} reported nothing");
         control.remove(&id);
         assert_eq!(
             control.iter().copied().collect::<Vec<u64>>(),
-            entries(&index),
-            "after removing {id} the run and the control disagree"
+            index.sorted_ids(),
+            "after removing {id} the array and the control disagree"
+        );
+        assert_eq!(
+            index.id_at(slot_of_victim),
+            None,
+            "the slot {id} was in did not become a placeholder, so the array compacted"
+        );
+        assert_eq!(
+            index.slot_of(&400),
+            Some(highest),
+            "removing {id} moved id 400 off slot {highest}: the hole was closed rather than left"
         );
     }
 
@@ -3159,11 +3220,21 @@ fn the_sorted_run_stays_sorted_and_deduplicated_through_every_mutation() {
 
 /// THE TRANSITION, DRIVEN IN BOTH DIRECTIONS.
 ///
-/// One object becomes many and many becomes one again, and at every step the whole set is
-/// compared element by element against the control. The shrink direction is the one that can lose
-/// an entry silently: it replaces the run with an inline id, and an implementation that took the
-/// wrong one -- the first rather than the only, or the last rather than the first -- keeps the
-/// count right and the contents wrong.
+/// One object becomes many and many becomes one again, and at every step the whole set is compared
+/// element by element against the control. Compared as a SET, through `sorted_ids`: the arm is a slot
+/// array now, so its iteration order is the order ids were FILED and not an ordering of ids, and a
+/// comparison against a search tree's order would be comparing two different questions.
+///
+/// THE SHRINK DIRECTION IS THE ONE THAT CAN LOSE AN ENTRY SILENTLY, and it has a second hazard now.
+/// It used to be only "which id survives" -- an implementation taking the first rather than the only
+/// keeps the count right and the contents wrong. The slot array adds "does the survivor keep its
+/// slot", and the two cases below differ by exactly that: removing the LAST of two leaves the survivor
+/// in slot 0 with nothing above it, so giving the allocation back renumbers nothing and is allowed;
+/// removing the FIRST of two leaves the survivor in slot 1, so giving it back would renumber the
+/// survivor to slot 0 and retire slot 1. That is the collapse #2023 drove as "the collapse retired
+/// ordinal 1", and it is the one that no longer happens. Both are driven, because an implementation
+/// that refused BOTH collapses would keep a box for the rest of a bucket's life and an implementation
+/// that allowed both would lose the slot.
 #[test]
 fn an_object_set_survives_growing_past_one_and_shrinking_back() {
     // Chosen so "keep the first" and "keep the last" give different answers at every shrink.
@@ -3173,7 +3244,8 @@ fn an_object_set_survives_growing_past_one_and_shrinking_back() {
     let mut control: BTreeSet<u64> = BTreeSet::new();
 
     assert!(index.is_empty(), "a fresh index must be empty");
-    assert_eq!(0, index.len(), "a fresh index must hold nothing");
+    assert_eq!(0, index.object_count(), "a fresh index must hold nothing");
+    assert_eq!(0, index.slot_count(), "a fresh index must have no slots either");
 
     // --- GROW: Empty -> One -> Many. ---
     index.insert(ids[0]);
@@ -3182,7 +3254,12 @@ fn an_object_set_survives_growing_past_one_and_shrinking_back() {
         matches!(index, ObjectIndex::One(held) if held == ids[0]),
         "one id must be held inline"
     );
-    assert_eq!(control_set(&ids[..1]).into_iter().collect::<Vec<u64>>(), entries(&index));
+    assert_eq!(control_set(&ids[..1]).into_iter().collect::<Vec<u64>>(), index.sorted_ids());
+    assert_eq!(
+        index.slot_of(&ids[0]),
+        Some(0),
+        "the inline id must answer slot 0, or `One` and a one-slot array are distinguishable"
+    );
 
     for (at, id) in ids.iter().enumerate().skip(1) {
         index.insert(*id);
@@ -3193,28 +3270,53 @@ fn an_object_set_survives_growing_past_one_and_shrinking_back() {
         );
         assert_eq!(
             control.iter().copied().collect::<Vec<u64>>(),
-            entries(&index),
+            index.sorted_ids(),
             "growing to {} ids lost or gained an entry",
             at + 1
+        );
+        assert_eq!(
+            index.slot_of(id),
+            Some(at),
+            "id {id} did not append into slot {at}, so growing renumbers"
         );
         for held in &control {
             assert!(index.contains(held), "the index stopped finding {held} after growing");
         }
     }
+    assert_eq!(
+        ids.len(),
+        index.slot_count(),
+        "growing by appends left {} slots for {} ids",
+        index.slot_count(),
+        ids.len()
+    );
 
-    // --- SHRINK: Many -> One -> Empty, removing back down. ---
+    // --- SHRINK: Many -> One -> Empty, removing back down from the TOP. Every victim is the last
+    // slot, so every removal trims a tail and nothing is left holding a placeholder -- which is what
+    // makes the array end at `Empty` rather than at an array of holes.
     for id in ids.iter().rev() {
         index.remove(id);
         control.remove(id);
         assert_eq!(
             control.iter().copied().collect::<Vec<u64>>(),
-            entries(&index),
+            index.sorted_ids(),
             "shrinking past {id} lost or kept the wrong entry"
         );
         for held in &control {
             assert!(index.contains(held), "the index stopped finding {held} after shrinking");
+            assert!(
+                index.slot_of(held).is_some(),
+                "{held} is contained but has no slot, so the two readers disagree"
+            );
         }
-        assert_eq!(control.len(), index.len(), "the count disagrees with the control");
+        assert_eq!(control.len(), index.object_count(), "the count disagrees with the control");
+        assert_eq!(
+            control.len(),
+            index.slot_count(),
+            "removing from the TOP left {} slots for {} ids, so a tail of placeholders was kept",
+            index.slot_count(),
+            control.len()
+        );
     }
 
     assert!(index.is_empty(), "removing every id must leave the index empty");
@@ -3224,23 +3326,38 @@ fn an_object_set_survives_growing_past_one_and_shrinking_back() {
          that briefly held two objects keeps an allocation for the rest of its life"
     );
 
-    // --- And the single case is reached on the way down, with the RIGHT id in it. ---
+    // --- THE TWO COLLAPSES, which differ by whether anything would be renumbered. ---
     //
-    // Driven separately, because the loop above passes straight through it. The id left behind is
-    // the one the control holds, which is what an implementation that took the wrong end of the
-    // run would get wrong while keeping the count right.
+    // (i) REMOVE THE LAST OF TWO. The survivor is in slot 0 with no slot above it, so `One` and the
+    // array are indistinguishable through `slot_of`/`id_at` and the allocation goes back.
     let mut two: ObjectIndex = [500u64, 100].into_iter().collect();
-    assert!(two.remove(&500), "removing the larger of two must report a removal");
-    assert!(
-        matches!(two, ObjectIndex::One(100)),
-        "after shrinking to one the remaining id must be 100, held inline; it is {two:?}"
-    );
-    let mut two: ObjectIndex = [500u64, 100].into_iter().collect();
-    assert!(two.remove(&100), "removing the smaller of two must report a removal");
+    assert_eq!(two.slot_of(&500), Some(0), "500 was filed first and must hold slot 0");
+    assert_eq!(two.slot_of(&100), Some(1), "100 was filed second and must hold slot 1");
+    assert!(two.remove(&100), "removing the id in the last slot must report a removal");
     assert!(
         matches!(two, ObjectIndex::One(500)),
         "after shrinking to one the remaining id must be 500, held inline; it is {two:?}"
     );
+    assert_eq!(two.id_at(0), Some(500), "slot 0 must still name 500");
+    assert_eq!(two.id_at(1), None, "there must be no slot 1");
+
+    // (ii) REMOVE THE FIRST OF TWO. The survivor is in slot 1, so the arm must STAY, placeholder and
+    // all. This is the case the old `shrink` collapsed, retiring slot 1 and renumbering the survivor.
+    let mut two: ObjectIndex = [500u64, 100].into_iter().collect();
+    assert!(two.remove(&500), "removing the id in slot 0 must report a removal");
+    assert!(
+        matches!(two, ObjectIndex::Many(_)),
+        "the arm collapsed with a live id in slot 1: that renumbers the survivor to slot 0 and \
+         retires slot 1. It is {two:?}"
+    );
+    assert_eq!(two.object_count(), 1, "one id must be left");
+    assert_eq!(two.slot_count(), 2, "the placeholder must still occupy slot 0");
+    assert_eq!(two.id_at(0), None, "slot 0 must be a placeholder");
+    assert_eq!(two.id_at(1), Some(100), "slot 1 must still name 100");
+    assert_eq!(two.sorted_ids(), vec![100u64], "the survivor is not the right id");
+    // And removing the survivor gives everything back, because no live slot is left to preserve.
+    assert!(two.remove(&100), "removing the survivor must report a removal");
+    assert!(matches!(two, ObjectIndex::Empty), "an emptied array must cost nothing; it is {two:?}");
 }
 
 /// THE TOMBSTONE SIDE HAS EXACTLY ONE SPELLING FOR "NOTHING", AND GIVES THE ALLOCATION BACK.
@@ -3253,7 +3370,7 @@ fn an_object_set_survives_growing_past_one_and_shrinking_back() {
 fn the_tombstone_index_gives_its_allocation_back_when_it_empties() {
     let mut tombstones = DeletedObjectIndex::default();
     assert!(tombstones.is_empty(), "a fresh tombstone index holds nothing");
-    assert_eq!(0, tombstones.len());
+    assert_eq!(0, tombstones.object_count());
     assert!(!tombstones.contains(&7), "a fresh index cannot contain anything");
     assert!(!tombstones.remove(&7), "removing from a fresh index reports nothing");
     assert_eq!(
@@ -3263,8 +3380,11 @@ fn the_tombstone_index_gives_its_allocation_back_when_it_empties() {
     );
 
     tombstones.extend([9u64, 4, 9]);
-    assert_eq!(vec![4u64, 9], tombstones.iter().copied().collect::<Vec<u64>>());
-    assert_eq!(2, tombstones.len(), "the repeated id must have collapsed");
+    // SORTED, not iterated: the arm is a slot array, so `iter` yields the order the ids were filed
+    // (9 then 4) while `sorted_ids` -- which is what the Serialize impl writes -- is ascending.
+    assert_eq!(vec![9u64, 4], tombstones.iter().copied().collect::<Vec<u64>>());
+    assert_eq!(vec![4u64, 9], tombstones.sorted_ids());
+    assert_eq!(2, tombstones.object_count(), "the repeated id must have collapsed");
     assert!(tombstones.contains(&9) && tombstones.contains(&4));
     assert_ne!(
         DeletedObjectIndex::default(),
@@ -3290,9 +3410,21 @@ fn the_tombstone_index_gives_its_allocation_back_when_it_empties() {
     assert_eq!(DeletedObjectIndex::default(), loaded, "an empty sequence must load as nothing");
     let loaded: DeletedObjectIndex = serde_json::from_str("[5,5,2]").expect("loads");
     assert_eq!(
-        vec![2u64, 5],
+        vec![5u64, 2],
         loaded.iter().copied().collect::<Vec<u64>>(),
-        "a loaded sequence must arrive ordered and deduplicated, as the tree form did"
+        "a loaded sequence arrives in the slots the WIRE order hands out: it is re-filed through \
+         `insert`, so 5 takes slot 0 and 2 takes slot 1"
+    );
+    assert_eq!(
+        vec![2u64, 5],
+        loaded.sorted_ids(),
+        "a loaded sequence must still be DEDUPLICATED, and sortable back to what the tree form \
+         iterated"
+    );
+    assert_eq!(
+        "[2,5]",
+        serde_json::to_string(&loaded).expect("serializes"),
+        "and must WRITE ascending whatever slots it loaded into, or a reload would move the bytes"
     );
 }
 
@@ -3424,10 +3556,10 @@ fn the_stored_spelling_of_the_object_side_did_not_move() {
             loaded.deleted_object_index.iter().copied().collect::<Vec<u64>>(),
             "{name}: the tombstone set did not come back element for element"
         );
-        assert_eq!(control_live.len(), loaded.object_index.len(), "{name}: live count moved");
+        assert_eq!(control_live.len(), loaded.object_index.object_count(), "{name}: live count moved");
         assert_eq!(
             control_dead.len(),
-            loaded.deleted_object_index.len(),
+            loaded.deleted_object_index.object_count(),
             "{name}: tombstone count moved"
         );
         for id in &control_live {
@@ -3472,5 +3604,5 @@ fn the_stored_spelling_of_the_object_side_did_not_move() {
         "a spelling with an id removed compared EQUAL to the full one; the element-by-element \
          comparison above cannot report a difference and proves nothing"
     );
-    assert_eq!(4, short.object_index.len(), "the injected spelling must hold one id fewer");
+    assert_eq!(4, short.object_index.object_count(), "the injected spelling must hold one id fewer");
 }

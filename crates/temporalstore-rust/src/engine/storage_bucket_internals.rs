@@ -2313,7 +2313,7 @@ pub(super) fn release_bucket_blocks(
         bucket.set_in_memory(false);
         // `object_index` is deliberately kept: it is what keeps the bucket countable and is the
         // only thing distinguishing a released bucket from one that legitimately holds nothing.
-        bucket.layout = classify_bucket_layout(bucket.object_index.len(), 0);
+        bucket.layout = classify_bucket_layout(bucket.object_index.object_count(), 0);
         shard.bucket_index.released_buckets.insert(routing_bucket);
         outcome.released_buckets.push(routing_bucket);
         outcome.released_blocks = outcome.released_blocks.saturating_add(block_count);
@@ -4102,7 +4102,7 @@ pub(super) fn bucket_layout_name(layout: BucketLayoutState) -> &'static str {
 /// inserts, superseding overwrites, expiries and deletes. Reconstruct paths, which build
 /// `bucket_map` from block entries where nothing maintained the set, keep the full rebuild.
 fn classify_bucket_layout_in_place(bucket: &mut BucketNode) {
-    bucket.layout = classify_bucket_layout(bucket.object_index.len(), bucket.block_index.len());
+    bucket.layout = classify_bucket_layout(bucket.object_index.object_count(), bucket.block_index.len());
 }
 
 /// Blocks visited by `update_bucket_layout`, attributed to the CALL SITE that asked for it.
@@ -4170,7 +4170,7 @@ pub(super) fn update_bucket_layout(bucket: &mut BucketNode) {
     } else if !bucket.block_index.is_empty() {
         bucket.object_index.clear();
     }
-    bucket.layout = classify_bucket_layout(bucket.object_index.len(), bucket.block_index.len());
+    bucket.layout = classify_bucket_layout(bucket.object_index.object_count(), bucket.block_index.len());
 }
 
 /// Note that a bucket's derived runtime flags may be stale.
@@ -4240,7 +4240,7 @@ fn refresh_one_bucket_runtime_flags(
         update_bucket_layout(bucket);
     } else {
         bucket.layout =
-            classify_bucket_layout(bucket.object_index.len(), bucket.block_index.len());
+            classify_bucket_layout(bucket.object_index.object_count(), bucket.block_index.len());
     }
 }
 
@@ -5899,7 +5899,7 @@ mod release_refusal_guards {
         assert!(bucket.block_index.is_empty(), "the block index was not cleared");
         assert!(!bucket.in_memory(), "a released bucket must not read as resident");
         assert_eq!(
-            bucket.object_index.len(),
+            bucket.object_index.object_count(),
             1,
             "object_index is what keeps a released bucket countable and must survive",
         );

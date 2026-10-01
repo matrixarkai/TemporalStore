@@ -6778,12 +6778,12 @@ fn a_bucket_holding_one_object_holds_no_node() {
     assert!(index.insert(7));
     assert!(matches!(index, ObjectIndex::One(7)), "one id is held inline");
     assert!(!index.insert(7), "the same id twice is one entry");
-    assert_eq!(index.len(), 1);
+    assert_eq!(index.object_count(), 1);
     assert!(index.contains(&7));
 
     assert!(index.insert(9));
     assert!(matches!(index, ObjectIndex::Many(_)), "two ids need a set");
-    assert_eq!(index.len(), 2);
+    assert_eq!(index.object_count(), 2);
 
     assert!(index.remove(&9));
     assert!(
@@ -6795,15 +6795,20 @@ fn a_bucket_holding_one_object_holds_no_node() {
     assert!(index.is_empty(), "and to nothing at all");
     assert!(!index.remove(&7), "removing what is not there changes nothing");
 
-    // The order it iterates and writes is the order the set had.
+    // WHAT IT ITERATES AND WHAT IT WRITES ARE NOW TWO ORDERS, and the split is the change. The
+    // multi arm is a SLOT ARRAY, so `iter` yields the order the ids were FILED -- a slot has to mean
+    // the same object for as long as the object is in the bucket, which it cannot if an insert
+    // reorders. What is still ASCENDING is the written form, because that is the order already on
+    // disk and the Serialize impl sorts to keep it there.
     let mut many = ObjectIndex::default();
     many.extend([5u64, 1, 3]);
     let ids: Vec<u64> = many.iter().copied().collect();
-    assert_eq!(ids, vec![1, 3, 5], "ids come out sorted, as the set gave them");
+    assert_eq!(ids, vec![5, 1, 3], "ids come out in the slots they were filed into");
+    assert_eq!(many.sorted_ids(), vec![1, 3, 5], "and sorted on request");
     assert_eq!(
         serde_json::to_string(&many).expect("serializes"),
         "[1,3,5]",
-        "and are written as the same sequence"
+        "and are WRITTEN ascending, which is the sequence already on disk"
     );
 
     // A single id writes the same shape, and reads back inline rather than as a set.
@@ -7210,14 +7215,36 @@ fn an_object_index_costs_a_word_and_a_pointer() {
     let mut index = ObjectIndex::default();
     assert!(index.is_empty());
     assert!(index.insert(7));
-    assert_eq!(index.len(), 1);
+    assert_eq!(index.object_count(), 1);
     assert!(index.contains(&7));
     assert!(index.insert(9));
-    assert_eq!(index.len(), 2);
+    assert_eq!(index.object_count(), 2);
     assert_eq!(index.iter().copied().collect::<Vec<_>>(), vec![7, 9]);
-    // Back down to one id, the set is given up rather than kept for the bucket's life.
+    // BACK DOWN TO ONE ID, AND WHETHER THE ALLOCATION GOES BACK NOW DEPENDS ON WHICH SLOT IS LEFT.
+    //
+    // 7 is in slot 0 and 9 in slot 1. Removing 7 leaves the survivor in SLOT 1, and collapsing to
+    // `One` would renumber it to slot 0 and retire slot 1 -- which is the collapse #2023 drove as
+    // "the collapse retired ordinal 1". So the arm STAYS, placeholder and all.
     assert!(index.remove(&7));
-    assert!(matches!(index, ObjectIndex::One(9)), "one id is held inline again");
+    assert!(
+        matches!(index, ObjectIndex::Many(_)),
+        "the arm collapsed with a live id in slot 1, renumbering the survivor"
+    );
+    assert_eq!(index.object_count(), 1, "one id is left");
+    assert_eq!(index.id_at(0), None, "slot 0 is a placeholder");
+    assert_eq!(index.id_at(1), Some(9), "slot 1 still names 9");
+
+    // AND THE OTHER DIRECTION DOES GIVE IT BACK, because nothing is renumbered: removing the id in
+    // the LAST slot leaves the survivor in slot 0 with nothing above it, so `One` and a one-slot
+    // array are indistinguishable through `id_at`.
+    let mut other = ObjectIndex::default();
+    assert!(other.insert(7));
+    assert!(other.insert(9));
+    assert!(other.remove(&9));
+    assert!(
+        matches!(other, ObjectIndex::One(7)),
+        "an arm whose survivor is in slot 0 must give the allocation back; it is {other:?}"
+    );
 }
 
 /// An object with one component holds it inline, and goes back to inline when it can.
@@ -7871,7 +7898,7 @@ fn per_record_structure_census() {
         .bucket_index
         .bucket_map
         .values()
-        .map(|bucket| bucket.object_index.len())
+        .map(|bucket| bucket.object_index.object_count())
         .sum();
     // The map is keyed by object now, so its length is the object count and the per-component
     // map it used to be compared against is gone. Both numbers are still reported, because the
@@ -8292,10 +8319,15 @@ fn bucket_object_index_already_matches_a_from_scratch_recompute() {
         } else {
             recomputed.into()
         };
-        if bucket.object_index != expected {
+        // THE SET, not the slots. `ObjectIndex::Many` is a slot array, so `==` also compares
+        // which slot each id sits in -- and the ids collected ascending above take different slots
+        // from the ids this bucket filed as it was written. The claim under test is that the stored
+        // SET equals a rebuild, which is what `sorted_ids` compares.
+        if bucket.object_index.sorted_ids() != expected.sorted_ids() {
             mismatches.push(format!(
                 "  bucket {routing_bucket}: stored {:?} != recomputed {:?}",
-                bucket.object_index, expected
+                bucket.object_index.sorted_ids(),
+                expected.sorted_ids()
             ));
         }
     }
@@ -13648,8 +13680,9 @@ fn the_maintained_object_index_matches_a_full_rebuild() {
             .map(|page| page.object_id())
             .collect();
         checked += 1;
-        live_total += rebuilt.len();
-        if bucket.object_index != rebuilt {
+        live_total += rebuilt.object_count();
+        // THE SET, not the slots -- see the note in `object_index_is_maintained_incrementally`.
+        if bucket.object_index.sorted_ids() != rebuilt.sorted_ids() {
             let held: Vec<u64> = bucket.object_index.difference(&rebuilt).copied().collect();
             let missing: Vec<u64> = rebuilt.difference(&bucket.object_index).copied().collect();
             divergent.push((*routing_bucket, held, missing));

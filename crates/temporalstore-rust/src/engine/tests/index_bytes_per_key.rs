@@ -137,8 +137,8 @@ fn every_inline_shape_collapses_back_on_a_fill_and_drain() {
         for id in 0..FILL {
             index.insert(id);
         }
-        if index.len() != FILL as usize {
-            failures.push(format!("ObjectIndex filled to {} entries, not {FILL}", index.len()));
+        if index.object_count() != FILL as usize {
+            failures.push(format!("ObjectIndex filled to {} entries, not {FILL}", index.object_count()));
         }
         // Drained from the TOP, so the last survivor is id 0 -- not the id a collapse would leave
         // if it simply kept whichever entry it reached first.
@@ -852,7 +852,7 @@ fn what_a_live_key_costs_in_the_index_at_two_corpus_sizes() {
         let mut objects_per_bucket = Occupancy::default();
         for bucket in shard.bucket_index.bucket_map.values() {
             pages_per_bucket.observe(bucket.block_index.len());
-            objects_per_bucket.observe(bucket.object_index.len());
+            objects_per_bucket.observe(bucket.object_index.object_count());
         }
         pages_per_bucket.report("pages per bucket");
         objects_per_bucket.report("objects per bucket");

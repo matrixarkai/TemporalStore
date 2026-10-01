@@ -4253,8 +4253,8 @@ fn does_the_per_ingest_reconstruct_change_anything() {
                 (
                     *routing_bucket,
                     bucket.block_index.len(),
-                    bucket.object_index.len(),
-                    bucket.deleted_object_index.len(),
+                    bucket.object_index.object_count(),
+                    bucket.deleted_object_index.object_count(),
                     format!("{:?}", bucket.layout),
                     bucket.deleted(),
                     bucket.in_memory(),
@@ -7715,8 +7715,8 @@ fn where_a_record_is_kept_everywhere() {
     // The bucket index keeps its own per-object maps, one set per bucket, so they have to be
     // summed across buckets rather than read off a single length.
     let buckets = &shard.bucket_index.bucket_map;
-    let object_index: usize = buckets.values().map(|b| b.object_index.len()).sum();
-    let deleted_object_index: usize = buckets.values().map(|b| b.deleted_object_index.len()).sum();
+    let object_index: usize = buckets.values().map(|b| b.object_index.object_count()).sum();
+    let deleted_object_index: usize = buckets.values().map(|b| b.deleted_object_index.object_count()).sum();
     let block_index: usize = buckets.values().map(|b| b.block_index.len()).sum();
 
     let rows: Vec<(&str, usize)> = vec![
@@ -9487,7 +9487,7 @@ fn what_a_bounded_bucket_range_saves() {
         let shards = engine.shards.read().expect("engine lock poisoned");
         let shard = shards.get(&1).expect("loaded shard");
         let buckets = &shard.bucket_index.bucket_map;
-        let objects: usize = buckets.values().map(|b| b.object_index.len()).sum();
+        let objects: usize = buckets.values().map(|b| b.object_index.object_count()).sum();
         let pages: usize = buckets.values().map(|b| b.block_index.len()).sum();
         (buckets.len(), shard.bucket_recency.len(), objects, pages, live)
     };

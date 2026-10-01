@@ -2845,7 +2845,7 @@ fn released_multi_object_buckets_are_not_counted_as_empty_buckets() {
             BucketNode {
                 routing_bucket: *routing_bucket,
                 flags: BucketFlags::default().with(BucketFlags::META_LOADED, true),
-                layout: classify_bucket_layout(object_index.len(), 0),
+                layout: classify_bucket_layout(object_index.object_count(), 0),
                 object_index,
                 ..BucketNode::default()
             },

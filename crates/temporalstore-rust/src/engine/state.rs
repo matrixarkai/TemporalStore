@@ -528,43 +528,186 @@ pub(super) type BucketMap = BTreeMap<u32, BucketNode>;
 /// eight bytes of id, once per bucket and so once per key.
 ///
 /// The shape `BlockIndexMap` and `BlockRefs` already use here, for the same reason.
+///
+/// THE RARE ARM IS A SLOT ARRAY AND NOT A SORTED RUN, so a slot number names the same object
+/// for as long as that object is in the bucket. See [`ObjectSlots`] for the three rules that
+/// make that true, the bound they give, and what they cost. The tiering above it is unchanged.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub(super) enum ObjectIndex {
     #[default]
     Empty,
     One(u64),
-    /// Several ids, held as a SORTED RUN behind one pointer.
+    /// Several ids, held as a SLOT ARRAY behind one pointer.
     ///
     /// Boxed because an enum is as wide as its widest arm: held inline the collection made every
     /// `ObjectIndex` wider than a word whether or not it held anything, and a `BucketNode`
     /// carries two of them. Behind a box the enum is 16, and the box is only allocated by the
     /// buckets that actually hold more than one object.
     ///
-    /// A RUN AND NOT A TREE, because this arm is not rare. The measured occupancy is 46.6% of
+    /// AN ARRAY AND NOT A TREE, because this arm is not rare. The measured occupancy is 46.6% of
     /// buckets holding two or more -- a collection key files one object id PER MEMBER into the
     /// one bucket its key routes to, while a string or a series files one -- so what this arm
     /// costs is paid by nearly half the store. A search tree charges a fixed 128 bytes for it: 24
     /// for the collection and 104 for a node sized to hold eleven ids whether it holds two or
-    /// eleven. A run charges 24 plus eight bytes an id, which at the measured distribution is 64.
+    /// eleven.
     ///
-    /// Sorted, which is what lets it answer `contains` by bisection and iterate in the order the
-    /// tree did -- the stored spelling is that order, so it is not free to change. Ordered and
-    /// deduplicated are invariants of this arm, established by `insert` and preserved by
-    /// `remove`; `the_sorted_run_stays_sorted_and_deduplicated_through_every_mutation` drives
-    /// them.
-    Many(Box<Vec<u64>>),
+    /// NOT SORTED, AND THAT IS THE CHANGE. It was a sorted run, which cannot be indexed: `insert`
+    /// placed a new id at its bisection position, so every later position silently repointed. See
+    /// [`ObjectSlots`] for the three rules that replace it, the bound they give, and the two things
+    /// they cost -- the bisection `contains` used to answer by, and eight bytes a slot.
+    Many(Box<ObjectSlots>),
 }
 
 /// A pointer-wide arm plus its tag, once per bucket.
 ///
 /// It used to be twice: the tombstone side held the same enum for a case it is in 2.32% of
 /// the time, and is now `DeletedObjectIndex` below, at eight.
-const _: () = assert!(std::mem::size_of::<ObjectIndex>() == 16);
+/// ARITHMETIC AND NOT A LITERAL: the discriminant rounded up to the payload's alignment, plus
+/// the payload. A literal 16 passes for the wrong reason the moment an arm widens into padding
+/// that was already there, which is how three pins in this campaign under-reached.
+/// `the_object_index_is_a_tag_and_one_pointer` measures the same identity with `offset_of!`.
+const _: () = assert!(
+    std::mem::size_of::<ObjectIndex>()
+        == std::mem::align_of::<ObjectIndex>() + std::mem::size_of::<Box<ObjectSlots>>()
+);
+
+/// THE IDS OF A BUCKET HOLDING MORE THAN ONE OBJECT, AS A SLOT ARRAY: slot `i` names the same
+/// object for as long as that object is in the bucket.
+///
+/// WHY NOT A SORTED RUN, which is what this was. A sorted run cannot be indexed, and #2023 drove
+/// exactly that on twenty-five ids: position 12 named id 1300, inserting one unrelated SMALLER id
+/// made the same position name 1200, a removal made it 1400, and `shrink` collapsing the arm to
+/// `One` retired position 1 outright. Nothing in the store stored such a position, so nothing was
+/// broken -- but nothing could, and that is what closed the route of naming an object by its
+/// position instead of by sixteen bytes of `Arc<str>` on every page entry.
+///
+/// WHAT MAKES A SLOT STABLE, and it is three rules rather than one:
+///
+///   * `insert` takes the FIRST FREE SLOT, else appends. It never moves an id already filed, so no
+///     insert can repoint a slot another id is in. This is the rule the sorted run broke.
+///   * `remove` leaves a PLACEHOLDER. The slot keeps its position and `valid` falls; the array
+///     never closes a hole, because closing one is exactly what renumbers every id above it.
+///   * `valid` is tracked SEPARATELY from `slots.len()`. They are different numbers the moment a
+///     placeholder exists, so every reader has to say which it wants: `ObjectIndex::object_count`
+///     or `ObjectIndex::slot_count`, and there is no `len` to read by accident.
+///
+/// AND ONE THING THAT IS GIVEN BACK, which renumbers nothing. A removal that leaves free slots at
+/// the END pops them, and the arm collapses to `One` only when a single id is left IN SLOT ZERO with
+/// no slot above it. Both are index-preserving by inspection rather than by argument: a live id's
+/// slot is never renumbered, and the positions dropped held no id for anyone to be naming.
+///
+/// SO THE ARRAY IS BOUNDED BY ITS OWN HIGH WATER MARK AND NOT BY CHURN. A bucket that has held at
+/// most `n` objects at once is at most `n` slots long however many times it has been added to and
+/// deleted from: a hole is refilled before the array grows, and a tail of holes is not kept. An
+/// array that gave nothing back would instead grow with the number of OPERATIONS, which is the
+/// failure this shape has to be shown to avoid rather than assumed to.
+///
+/// WHAT IT COSTS, both of which are measured and neither of which is nothing:
+///
+///   * THE BISECTION. `contains` was `binary_search` over a sorted run -- `floor(log2(n)) + 1`
+///     entries examined on the one door every membership question goes through. A slot array is in
+///     slot order, so the walk is linear in the SLOTS, placeholders included. At the run lengths
+///     this store actually holds the two coincide (`floor(log2(n)) + 1 == n` for n of 1 and 2);
+///     they diverge on the long lists a container bucket produces.
+///   * EIGHT BYTES A SLOT. A slot is `Option<u64>` and not a `u64` with a reserved value, because
+///     object ids are FNV-1a hashes over the shard, kind and key
+///     (`hashing::stable_block_object_id`) and so span the whole of `u64`: any value picked to mean
+///     free is a value some key hashes to, and the collision would read as a missing object rather
+///     than as an error. `Option<u64>` has no niche, so a slot is 16 bytes where the run's element
+///     was 8. `what_a_slot_array_costs_under_churn` prints what a reserved value would buy.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) struct ObjectSlots {
+    /// Slot `i` holds the id filed there, or `None` for a placeholder.
+    slots: Vec<Option<u64>>,
+    /// How many slots hold an id. NOT `slots.len()`, which counts placeholders too.
+    ///
+    /// `usize` and not the `u8` a 255-slot ceiling would allow: boxed, this struct is 32 bytes with
+    /// either -- a `Vec` is 24 and the tail rounds to 8 -- so the narrow one buys no byte and costs
+    /// a truncation to reason about. A ceiling here would also be a ceiling on a bucket, and a
+    /// bucket fills with the corpus.
+    valid: usize,
+}
+
+impl ObjectSlots {
+    /// Two ids, in the slots they keep.
+    fn pair(first: u64, second: u64) -> Self {
+        ObjectSlots { slots: vec![Some(first), Some(second)], valid: 2 }
+    }
+
+    fn valid(&self) -> usize {
+        self.valid
+    }
+
+    fn slot_count(&self) -> usize {
+        self.slots.len()
+    }
+
+    /// A LINEAR WALK, charging what it actually looked at.
+    ///
+    /// Placeholders are counted: they are words the walk reads, so a bucket whose array has grown
+    /// holes pays for them here, and the probe counter shows the waste instead of hiding it behind
+    /// a valid count.
+    fn locate(&self, id: &u64) -> (Option<usize>, u64) {
+        let mut examined = 0u64;
+        for (at, slot) in self.slots.iter().enumerate() {
+            examined += 1;
+            if slot.as_ref() == Some(id) {
+                return (Some(at), examined);
+            }
+        }
+        (None, examined)
+    }
+
+    fn id_at(&self, slot: usize) -> Option<u64> {
+        self.slots.get(slot).copied().flatten()
+    }
+
+    /// FIRST FREE SLOT, ELSE APPEND -- and nothing already filed moves.
+    fn insert(&mut self, id: u64) -> bool {
+        if self.locate(&id).0.is_some() {
+            return false;
+        }
+        match self.slots.iter().position(Option::is_none) {
+            Some(free) => self.slots[free] = Some(id),
+            None => self.slots.push(Some(id)),
+        }
+        self.valid += 1;
+        true
+    }
+
+    /// A PLACEHOLDER, NOT A CLOSED HOLE. The slot keeps its position.
+    fn remove(&mut self, id: &u64) -> bool {
+        let Some(at) = self.locate(id).0 else {
+            return false;
+        };
+        self.slots[at] = None;
+        self.valid -= 1;
+        self.drop_trailing_placeholders();
+        true
+    }
+
+    /// Free slots at the END are given back, which renumbers nothing: every position dropped held
+    /// no id, and every id still filed is below the new length. This is what keeps the array bounded
+    /// by the bucket high water mark instead of by its churn.
+    fn drop_trailing_placeholders(&mut self) {
+        while self.slots.last().is_some_and(Option::is_none) {
+            self.slots.pop();
+        }
+    }
+
+    fn iter(&self) -> std::slice::Iter<'_, Option<u64>> {
+        self.slots.iter()
+    }
+
+    fn into_ids(self) -> Vec<u64> {
+        self.slots.into_iter().flatten().collect()
+    }
+}
 
 pub(super) enum ObjectIndexIter<'a> {
     Empty,
     One(std::iter::Once<&'a u64>),
-    Many(std::slice::Iter<'a, u64>),
+    Many(std::slice::Iter<'a, Option<u64>>),
 }
 
 impl<'a> Iterator for ObjectIndexIter<'a> {
@@ -573,17 +716,61 @@ impl<'a> Iterator for ObjectIndexIter<'a> {
         match self {
             ObjectIndexIter::Empty => None,
             ObjectIndexIter::One(once) => once.next(),
-            ObjectIndexIter::Many(iter) => iter.next(),
+            // Placeholders are skipped: a hole is not an object, and `object_count` is what
+            // says how many this will yield.
+            ObjectIndexIter::Many(slots) => slots.find_map(|slot| slot.as_ref()),
         }
     }
 }
 
 impl ObjectIndex {
-    pub(super) fn len(&self) -> usize {
+    /// HOW MANY OBJECTS THIS HOLDS -- which is not how long the slot array is.
+    ///
+    /// Named rather than spelt `len`, and the rename is half the change. A `len` on a slot array is
+    /// ambiguous between the count and the array, and the two differ the moment a placeholder
+    /// exists; renaming it made the COMPILER name every reader of the old number, instead of leaving
+    /// each one to be guessed at from a grep over a field name five structs share. See `slot_count`
+    /// for the other number.
+    pub(super) fn object_count(&self) -> usize {
         match self {
             ObjectIndex::Empty => 0,
             ObjectIndex::One(_) => 1,
-            ObjectIndex::Many(run) => run.len(),
+            ObjectIndex::Many(slots) => slots.valid(),
+        }
+    }
+
+    /// HOW LONG THE SLOT ARRAY IS, placeholders included.
+    ///
+    /// Never an object count. It is the bound on a slot number, and the number
+    /// `what_a_slot_array_costs_under_churn` divides by `object_count` to report the waste.
+    pub(super) fn slot_count(&self) -> usize {
+        match self {
+            ObjectIndex::Empty => 0,
+            ObjectIndex::One(_) => 1,
+            ObjectIndex::Many(slots) => slots.slot_count(),
+        }
+    }
+
+    /// The slot an id is filed in, stable for as long as the id is in the bucket.
+    ///
+    /// The observable surface of the whole change: without it the three rules hold but nothing can
+    /// read them, and a test driving them would be asserting about a private field. A page entry
+    /// naming its object by slot -- the step this one is the precondition for -- consumes this and
+    /// `id_at` and nothing else.
+    pub(super) fn slot_of(&self, id: &u64) -> Option<usize> {
+        match self {
+            ObjectIndex::Empty => None,
+            ObjectIndex::One(held) => (held == id).then_some(0),
+            ObjectIndex::Many(slots) => slots.locate(id).0,
+        }
+    }
+
+    /// The id a slot holds: `None` for a placeholder, and `None` past the end of the array.
+    pub(super) fn id_at(&self, slot: usize) -> Option<u64> {
+        match self {
+            ObjectIndex::Empty => None,
+            ObjectIndex::One(held) => (slot == 0).then_some(*held),
+            ObjectIndex::Many(slots) => slots.id_at(slot),
         }
     }
 
@@ -591,8 +778,12 @@ impl ObjectIndex {
         matches!(self, ObjectIndex::Empty)
     }
 
-    /// By bisection over the sorted run, so the answer costs a handful of comparisons over one
-    /// contiguous span rather than a walk through a tree node.
+    /// By a WALK over the slot array, because slot order is not id order.
+    ///
+    /// This is what the slot array costs on the one door every membership question goes through.
+    /// The run answered by bisection -- `floor(log2(n)) + 1` entries -- and the walk charges the
+    /// slots it reads, placeholders included. `the_join_a_name_reader_would_pay` prints both models
+    /// against the run lengths this store holds, where for n of 1 and 2 they are the same number.
     pub(super) fn contains(&self, id: &u64) -> bool {
         match self {
             ObjectIndex::Empty => {
@@ -603,12 +794,12 @@ impl ObjectIndex {
                 note_object_index_entries_examined(1);
                 held == id
             }
-            ObjectIndex::Many(run) => {
-                // A BISECTION, so the entries examined are logarithmic in the list -- which is the
-                // number an ordinal proposal has to be priced against. Charged here rather than at
-                // the callers because this is the one door every membership question goes through.
-                note_object_index_entries_examined(entries_a_bisection_examines(run.len()));
-                run.binary_search(id).is_ok()
+            ObjectIndex::Many(slots) => {
+                // Charged here rather than at the callers because this is the one door every
+                // membership question goes through.
+                let (found, examined) = slots.locate(id);
+                note_object_index_entries_examined(examined);
+                found.is_some()
             }
         }
     }
@@ -623,20 +814,13 @@ impl ObjectIndex {
                 if *held == id {
                     return false;
                 }
-                let first = *held;
-                let run = if first < id { vec![first, id] } else { vec![id, first] };
-                *self = ObjectIndex::Many(Box::new(run));
+                // The id already here KEEPS SLOT ZERO. The sorted run put the smaller of the two
+                // first, which is what made slot zero name a different object after an insert of
+                // something smaller than what was already filed.
+                *self = ObjectIndex::Many(Box::new(ObjectSlots::pair(*held, id)));
                 true
             }
-            // `binary_search` answers where the id belongs when it is absent, so the ordered
-            // insert is the same lookup the membership test already did.
-            ObjectIndex::Many(run) => match run.binary_search(&id) {
-                Ok(_) => false,
-                Err(at) => {
-                    run.insert(at, id);
-                    true
-                }
-            },
+            ObjectIndex::Many(slots) => slots.insert(id),
         }
     }
 
@@ -650,37 +834,51 @@ impl ObjectIndex {
                 *self = ObjectIndex::Empty;
                 true
             }
-            ObjectIndex::Many(run) => {
-                let removed = match run.binary_search(id) {
-                    Ok(at) => {
-                        run.remove(at);
-                        true
-                    }
-                    Err(_) => false,
-                };
-                self.shrink();
+            ObjectIndex::Many(slots) => {
+                let removed = slots.remove(id);
+                self.settle();
                 removed
             }
         }
     }
 
-    /// Give up the set once it no longer earns one, so a bucket that briefly held two objects
-    /// does not keep a node for the rest of its life.
-    fn shrink(&mut self) {
-        let len = match self {
-            ObjectIndex::Many(run) => run.len(),
+    /// Give up the array when it no longer names anything -- WITHOUT RENUMBERING A LIVE SLOT.
+    ///
+    /// THIS IS THE COLLAPSE THAT USED TO RETIRE A SLOT. It was `shrink`, and on reaching one id it
+    /// rewrote `Many` to `One(that id)` whichever slot the id was in. A bucket holding
+    /// `[placeholder, id]` became `One(id)`: a holder of slot 1 was left naming nothing, and a
+    /// holder of slot 0 -- which had held a different object -- was left naming this one. #2023
+    /// drove it as "the collapse retired ordinal 1", and it is the third of the three mutations that
+    /// closed the route.
+    ///
+    /// WHAT IT DOES NOW. Exactly two collapses survive, and both are index-preserving by inspection
+    /// rather than by argument:
+    ///
+    ///   * NO IDS LEFT -> `Empty`. There is no live slot to preserve, so there is nothing anyone can
+    ///     be naming. `drop_trailing_placeholders` has already emptied the array by then, which is
+    ///     why this is the only shape `valid == 0` can be in.
+    ///   * ONE ID LEFT, IN SLOT ZERO, WITH NO SLOT ABOVE IT -> `One(id)`. Slot 0 names that id in
+    ///     both shapes, and no other slot exists in either, so `slot_of` and `id_at` cannot tell the
+    ///     two apart. That indistinguishability is what the test drives.
+    ///
+    /// A single id in slot 1, or in slot 0 with a placeholder above it, STAYS `Many`. That is
+    /// precisely the case the old collapse got wrong, and it is the case a bucket is in whenever the
+    /// object deleted is not the one filed first.
+    fn settle(&mut self) {
+        let (valid, slot_count) = match self {
+            ObjectIndex::Many(slots) => (slots.valid(), slots.slot_count()),
             _ => return,
         };
-        match len {
-            0 => *self = ObjectIndex::Empty,
-            1 => {
-                let run = match std::mem::replace(self, ObjectIndex::Empty) {
-                    ObjectIndex::Many(run) => run,
-                    _ => unreachable!("just matched Many"),
-                };
-                *self = ObjectIndex::One(*run.first().expect("length is one"));
-            }
-            _ => {}
+        if valid == 0 {
+            *self = ObjectIndex::Empty;
+            return;
+        }
+        if valid == 1 && slot_count == 1 {
+            let id = match self {
+                ObjectIndex::Many(slots) => slots.id_at(0).expect("one valid id in one slot"),
+                _ => unreachable!("just matched Many"),
+            };
+            *self = ObjectIndex::One(id);
         }
     }
 
@@ -692,8 +890,20 @@ impl ObjectIndex {
         match self {
             ObjectIndex::Empty => ObjectIndexIter::Empty,
             ObjectIndex::One(id) => ObjectIndexIter::One(std::iter::once(id)),
-            ObjectIndex::Many(run) => ObjectIndexIter::Many(run.iter()),
+            ObjectIndex::Many(slots) => ObjectIndexIter::Many(slots.iter()),
         }
+    }
+
+    /// The ids this holds, ASCENDING, whatever slots they are in.
+    ///
+    /// `iter` yields SLOT ORDER, which is an order over slots and not over ids. Exactly one reader
+    /// wants them sorted -- the Serialize impl, so that the bytes already on disk do not move -- and
+    /// it says so here instead of relying on the container to be a sorted run, which it no longer
+    /// is.
+    pub(super) fn sorted_ids(&self) -> Vec<u64> {
+        let mut ids: Vec<u64> = self.iter().copied().collect();
+        ids.sort_unstable();
+        ids
     }
 
     /// The ids this holds that `other` does not.
@@ -720,7 +930,7 @@ impl IntoIterator for ObjectIndex {
         match self {
             ObjectIndex::Empty => Vec::new().into_iter(),
             ObjectIndex::One(id) => vec![id].into_iter(),
-            ObjectIndex::Many(run) => (*run).into_iter(),
+            ObjectIndex::Many(slots) => (*slots).into_ids().into_iter(),
         }
     }
 }
@@ -757,16 +967,40 @@ impl FromIterator<u64> for ObjectIndex {
 
 impl Serialize for ObjectIndex {
     /// The same sequence of ids it has always written, in the same order.
+    ///
+    /// ASCENDING, which is the order a sorted run wrote and so the order already on disk. The slot
+    /// array iterates in SLOT order, so the multi arm SORTS rather than taking the container's word
+    /// for it -- which keeps every written byte where it was, and is why this change moves no stored
+    /// shape and takes no new `SHARD_INDEX_FORMAT_VERSION`. Placeholders are not written: a hole is
+    /// not an id, and a reload re-files what is written through `insert`, which hands out slots
+    /// afresh.
+    ///
+    /// AND THE TWO COMMON ARMS DO NOT ALLOCATE TO SAY SO. A shard index is written on every dump,
+    /// once per bucket and twice counting the tombstone side, and `Empty` and `One` are what most
+    /// buckets are in -- sorting through a `Vec` there would have added an allocation per bucket per
+    /// dump to a path that had none. Only the arm whose order can actually differ from ascending pays
+    /// for being put in ascending order.
     fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
     where
         S: serde::Serializer,
     {
         use serde::ser::SerializeSeq;
-        let mut seq = serializer.serialize_seq(Some(self.len()))?;
-        for id in self.iter() {
-            seq.serialize_element(&id)?;
+        match self {
+            ObjectIndex::Empty => serializer.serialize_seq(Some(0))?.end(),
+            ObjectIndex::One(id) => {
+                let mut seq = serializer.serialize_seq(Some(1))?;
+                seq.serialize_element(id)?;
+                seq.end()
+            }
+            ObjectIndex::Many(_) => {
+                let ids = self.sorted_ids();
+                let mut seq = serializer.serialize_seq(Some(ids.len()))?;
+                for id in &ids {
+                    seq.serialize_element(id)?;
+                }
+                seq.end()
+            }
         }
-        seq.end()
     }
 }
 
@@ -818,8 +1052,8 @@ pub(super) struct DeletedObjectIndex(Option<Box<ObjectIndex>>);
 const _: () = assert!(std::mem::size_of::<DeletedObjectIndex>() == 8);
 
 impl DeletedObjectIndex {
-    pub(super) fn len(&self) -> usize {
-        self.0.as_ref().map_or(0, |index| index.len())
+    pub(super) fn object_count(&self) -> usize {
+        self.0.as_ref().map_or(0, |index| index.object_count())
     }
 
     pub(super) fn is_empty(&self) -> bool {
@@ -854,6 +1088,12 @@ impl DeletedObjectIndex {
             None => ObjectIndexIter::Empty,
             Some(index) => index.iter(),
         }
+    }
+
+    /// The ids this holds, ASCENDING. See [`ObjectIndex::sorted_ids`]: `iter` is in slot order, and
+    /// the Serialize impl is the one reader that needs the other.
+    pub(super) fn sorted_ids(&self) -> Vec<u64> {
+        self.0.as_ref().map_or_else(Vec::new, |index| index.sorted_ids())
     }
 }
 
@@ -908,12 +1148,21 @@ impl Serialize for DeletedObjectIndex {
     where
         S: serde::Serializer,
     {
-        use serde::ser::SerializeSeq;
-        let mut seq = serializer.serialize_seq(Some(self.len()))?;
-        for id in self.iter() {
-            seq.serialize_element(&id)?;
+        // ASCENDING, and allocation-free on the arms that hold nothing or one id -- through the
+        // live side's own Serialize impl, where both rules live. This field is serialized, so writing
+        // it in slot order would move bytes already on disk for no gain, and it holds a single id on
+        // 97.68% of the buckets that carry one at all, so an allocation here would be an allocation
+        // on almost all of them.
+        //
+        // DELEGATED RATHER THAN COPIED: two impls that agreed today would be two impls to keep
+        // agreeing, and "carrying nothing" has exactly one spelling precisely so it cannot drift.
+        match &self.0 {
+            None => {
+                use serde::ser::SerializeSeq;
+                serializer.serialize_seq(Some(0))?.end()
+            }
+            Some(index) => index.serialize(serializer),
         }
-        seq.end()
     }
 }
 

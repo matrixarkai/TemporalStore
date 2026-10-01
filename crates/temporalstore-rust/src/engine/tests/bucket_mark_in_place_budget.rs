@@ -200,7 +200,7 @@ fn tombstones_by_bucket(engine: &TemporalEngine) -> std::collections::BTreeMap<u
         .bucket_index
         .bucket_map
         .iter()
-        .map(|(routing_bucket, bucket)| (*routing_bucket, bucket.deleted_object_index.len()))
+        .map(|(routing_bucket, bucket)| (*routing_bucket, bucket.deleted_object_index.object_count()))
         .collect()
 }
 
