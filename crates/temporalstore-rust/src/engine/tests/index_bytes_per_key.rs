@@ -1366,3 +1366,195 @@ fn what_a_live_key_costs_on_the_shipped_routing_range() {
         );
     }
 }
+
+
+/// WHAT A DUMP FOLLOWED BY A RELEASE ACTUALLY RECOVERS, ON THE SHIPPED ROUTING RANGE.
+///
+/// `what_a_live_key_costs_on_the_shipped_routing_range` measured a bare release and recovered
+/// NOTHING: 0 of 1,024 buckets, 1,024 refused. That is not "releasing does not work" -- a release
+/// requires every block clean and undeleted, and a freshly seeded store is entirely dirty, so every
+/// candidate is refused on the dirty term alone. `apply_storage_eviction` carries `dump_before_evict`
+/// for exactly this: it writes a dump manifest for the dirty victim buckets first, which is what lets
+/// the release term pass.
+///
+/// So this drives the PRODUCTION sequence rather than a hand-rolled one -- threshold 0 so the
+/// pressure gate cannot early-return, no batch limit, dump on, delete-drop OFF because that mode
+/// shrinks the index by destroying data and would make any recovery figure meaningless.
+///
+/// WHY THE NUMBER MATTERS MORE THAN THE ENTRY WIDTH. The derived bucket index is 44% of per-key
+/// resident cost on this range, against the index entry's 16%. If a dump-then-release recovers the
+/// bulk of that, the lever is a TRIGGER rather than a width -- and the trigger ships off
+/// (`enable_evict: false`). The three rows nobody could predict are `bucket_map`, which holds the
+/// block lists a release empties, and `object_block_lookup` and `dirty_objects`, which are 19% and
+/// 16% and may be structurally pinned.
+///
+/// READS MUST STILL ANSWER, and that is asserted rather than printed. A release that recovers memory
+/// and breaks a read is not a win, and the whole claim about releasing is that the node stays
+/// routable and the next read loads its pages back from the model maps.
+///
+/// rust-internal: measures this crate's own resident structures, no product behaviour
+#[test]
+#[cfg(feature = "alloc-probe")]
+#[ignore = "seeds 80,000 records then dumps and releases under the counting allocator; run by name"]
+fn what_a_dump_then_release_recovers_on_the_shipped_routing_range() {
+    const SHIPPED_END: u32 = 1023;
+
+    let dir = tempfile::tempdir().expect("tempdir");
+    let engine = probe_engine_on(dir.path(), SHIPPED_END);
+    probe_seed(&engine, 40_000, 40, 1_000);
+
+    let probe_keys: Vec<String> = (0..16).map(|i| format!("s{i}")).collect();
+    let readable = |engine: &TemporalEngine| -> usize {
+        probe_keys
+            .iter()
+            .filter(|key| {
+                matches!(
+                    engine
+                        .execute(ExecuteRequest {
+                            shard_id: 1,
+                            command: Command::StringGet { key: (*key).clone() },
+                        })
+                        .response,
+                    crate::types::CommandResponse::Bytes { value: Some(_) }
+                )
+            })
+            .count()
+    };
+
+    // A snapshot of every row the release could plausibly move, plus the denominators.
+    let snapshot = |engine: &TemporalEngine| -> (u64, u64, u64, u64, usize, usize, usize, usize) {
+        let shards = engine.shards.read().expect("engine lock poisoned");
+        let shard = shards.get(&1).expect("shard is loaded");
+        (
+            deep_heap_bytes(&shard.bucket_index.bucket_map),
+            deep_heap_bytes(&shard.bucket_index.object_block_lookup),
+            deep_heap_bytes(&shard.dirty_objects),
+            deep_heap_bytes(shard),
+            shard.strings.len() + shard.features.len(),
+            shard.bucket_index.bucket_map.values().count(),
+            shard
+                .bucket_index
+                .bucket_map
+                .values()
+                .map(|b| b.block_index.len())
+                .sum(),
+            shard.bucket_index.released_buckets.len(),
+        )
+    };
+
+    let (bm0, lk0, dr0, whole0, keys, buckets0, pages0, released0) = snapshot(&engine);
+    let resident0 = engine.bucket_index_resident_bytes(1);
+    let read0 = readable(&engine);
+
+    // --- DENOMINATORS, asserted, because every figure below divides by one of them. ---
+    assert_eq!(40_040, keys, "denominator: the fixture did not seed the corpus it reports");
+    assert!(
+        buckets0 > 0 && buckets0 <= (SHIPPED_END as usize + 1),
+        "denominator: {buckets0} buckets is not a 0..{SHIPPED_END} population"
+    );
+    assert!(buckets0 < keys, "denominator: one bucket per key means this is the LEGACY range");
+    assert!(pages0 > 0, "denominator: no pages means no block lists to release");
+    assert_eq!(0, released0, "denominator: the fixture starts with nothing released");
+    assert_eq!(
+        probe_keys.len(),
+        read0,
+        "the fixture cannot read its own keys BEFORE the sequence, so a read afterwards proves nothing"
+    );
+    println!(
+        "=== before: {keys} keys, {buckets0} buckets, {pages0} pages, {released0} released ==="
+    );
+    println!(
+        "  bucket_map {bm0} B ({:.1} B/key), object_block_lookup {lk0} B ({:.1} B/key), \
+         dirty_objects {dr0} B ({:.1} B/key), whole {whole0} B ({:.1} B/key)",
+        bm0 as f64 / keys as f64,
+        lk0 as f64 / keys as f64,
+        dr0 as f64 / keys as f64,
+        whole0 as f64 / keys as f64
+    );
+
+    // --- THE PRODUCTION SEQUENCE: dump the dirty victims, then release them. ---
+    let _report = engine.apply_storage_eviction(1, 0, 0, true, false);
+
+    let (bm1, lk1, dr1, whole1, keys1, buckets1, pages1, released1) = snapshot(&engine);
+    let resident1 = engine.bucket_index_resident_bytes(1);
+    let read1 = readable(&engine);
+
+    println!("=== after dump+release: {buckets1} buckets, {pages1} pages, {released1} released ===");
+    let row = |name: &str, before: u64, after: u64| {
+        println!(
+            "  {name:<28} {before:>10} -> {after:>10} B   recovered {:>10} B  {:>8.1} B/key  {:>6.1}%",
+            before.saturating_sub(after),
+            before.saturating_sub(after) as f64 / keys as f64,
+            if before == 0 { 0.0 } else { 100.0 * before.saturating_sub(after) as f64 / before as f64 }
+        );
+    };
+    row("bucket_map", bm0, bm1);
+    row("object_block_lookup", lk0, lk1);
+    row("dirty_objects", dr0, dr1);
+    row("whole ShardState", whole0, whole1);
+    println!(
+        "  modelled resident {resident0} -> {resident1} B (pages * size_of::<BlockIndex>(), a MODEL)"
+    );
+    println!(
+        "  pages {pages0} -> {pages1}, buckets {buckets0} -> {buckets1}, keys {keys} -> {keys1}"
+    );
+    println!("  reads: {read0} of {} before, {read1} after", probe_keys.len());
+
+    // --- THE CORRECTNESS GATE, WHICH IS NOT NEGOTIABLE. ---
+    assert_eq!(
+        probe_keys.len(),
+        read1,
+        "a dump-then-release made {} of {} keys unreadable. Releasing is only free if the node stays \
+         routable and the next read loads its pages back from the model maps -- this is the failure \
+         that would make any recovery figure above worthless",
+        probe_keys.len() - read1,
+        probe_keys.len()
+    );
+    // And no key may vanish: a release moves memory, never membership.
+    assert_eq!(keys, keys1, "the key count moved across a release, which is data loss, not reclaim");
+
+    // --- THE NON-VACUITY FLOOR, AND IT IS THE ASSERTION THIS TEST WAS MISSING. ---
+    //
+    // Every assertion above is satisfied by a release that did NOTHING. That is not a hypothetical:
+    // it is exactly what `what_a_live_key_costs_on_the_shipped_routing_range` measures when it calls
+    // a BARE release -- 0 of 1,024 buckets, 1,024 refused, 0 bytes recovered, and reads still 16 of
+    // 16 because nothing moved. So without a floor this fixture passes while measuring the opposite
+    // of what it claims, and it would keep passing if `dump_before_evict` silently stopped cleaning
+    // the victims.
+    //
+    // Stated as FLOORS rather than equalities, because the refusal count depends on how many buckets
+    // hold a kind `released_model_kind_is_addressable` excludes, and that moves with the corpus.
+    assert!(
+        released1 > 0,
+        "nothing was released, so every figure above is the bare-release case this test exists to \
+         distinguish from -- check that the dump actually cleaned the victims"
+    );
+    assert!(
+        released1 * 100 >= buckets1 * 90,
+        "only {released1} of {buckets1} buckets released ({:.1}%). The refusals should be the buckets \
+         holding a kind the release excludes -- `feature` here -- which is a small minority of this \
+         corpus. A large refusal share means a precondition other than the kind term is failing",
+        100.0 * released1 as f64 / buckets1 as f64
+    );
+    assert!(
+        pages1 < pages0,
+        "the page count did not fall ({pages0} -> {pages1}), so no block list was emptied"
+    );
+    // The headline figure, floored well below what it measures so a regression is visible but noise
+    // is not. Measured 55.7% of the whole ShardState clone at 80,000 records.
+    let recovered = whole0.saturating_sub(whole1);
+    assert!(
+        recovered * 4 >= whole0,
+        "a dump-then-release recovered {recovered} B of {whole0} ({:.1}%), which is below the floor \
+         this measurement is quoted at. Either the release stopped emptying block lists or the dump \
+         stopped cleaning the buckets it dumps",
+        100.0 * recovered as f64 / whole0 as f64
+    );
+    // The buckets must all SURVIVE as nodes: a release empties a block list and keeps the node
+    // routable, so losing a node is a different operation wearing this one's name.
+    assert_eq!(
+        buckets0, buckets1,
+        "the bucket count moved across a release ({buckets0} -> {buckets1}); a release keeps every \
+         node routable and only empties its block list"
+    );
+}
