@@ -709,16 +709,6 @@ fn is_zero_u64(value: &u64) -> bool {
 /// A key that does NOT parse as a number still goes out as text, so nothing depends on the write
 /// path's stringification being reversible.
 impl IndexItem {
-    /// Drop from the address what the item already states, so it is not written twice.
-    ///
-    /// A page item carries `object_id` and `routing_bucket`, and the address it points at carries
-    /// both again. For a page belonging to one object they are the same value. Measured, the pair
-    /// is 18 bytes of a 142-byte item -- 12.7%. The WAL side already strips exactly this on its way
-    /// to protobuf; `item_to_proto` calls it "a full varint on every item whose page belongs to one
-    /// object".
-    ///
-    /// Only what MATCHES is dropped. An address that carries a different object id keeps it, and
-    /// `restore_address_repeats` puts back only what is absent, so the pair round-trips.
     /// Drop the composite key when the record already carries every part of it.
     ///
     /// `page_ref_key` is `block_ref_key_from_parts` of this item's own model, object key,
@@ -847,6 +837,16 @@ impl IndexItem {
         )
     }
 
+    /// Drop from the address what the item already states, so it is not written twice.
+    ///
+    /// A page item carries `object_id` and `routing_bucket`, and the address it points at carries
+    /// both again. For a page belonging to one object they are the same value. Measured, the pair
+    /// is 18 bytes of a 142-byte item -- 12.7%. The WAL side already strips exactly this on its way
+    /// to protobuf; `item_to_proto` calls it "a full varint on every item whose page belongs to one
+    /// object".
+    ///
+    /// Only what MATCHES is dropped. An address that carries a different object id keeps it, and
+    /// `restore_address_repeats` puts back only what is absent, so the pair round-trips.
     fn strip_address_repeats(&mut self) {
         let object_id = self.object_id;
         if let Some(address) = self.address.as_mut() {
