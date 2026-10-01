@@ -1,17 +1,17 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright 2026 MatrixArkAI
 
-//! WHAT DECIDES HOW MANY PAGES LAND IN ONE ROUTING BUCKET.
+//! WHAT DECIDES HOW MANY BLOCKS LAND IN ONE ROUTING BUCKET.
 //!
-//! #1959 measured the pages a bucket holds and found two populations: a store of routed keys is
-//! 99.900% single-page, a store of container keys holds a hundred pages a bucket and has no
-//! single-page bucket at all. It read the first as a property of the WORKLOAD -- "keys that route
-//! one to a bucket" -- and priced the page index's shapes against it.
+//! #1959 measured the blocks a bucket holds and found two populations: a store of routed keys is
+//! 99.900% single-block, a store of container keys holds a hundred blocks a bucket and has no
+//! single-block bucket at all. It read the first as a property of the WORKLOAD -- "keys that route
+//! one to a bucket" -- and priced the block index's shapes against it.
 //!
 //! IT IS NOT A PROPERTY OF THE WORKLOAD. IT IS A PROPERTY OF THE ROUTING RANGE, AND THE RANGE IS A
 //! DEPLOYMENT SETTING THIS ENGINE ALREADY SHIPS.
 //!
-//! A page's bucket is `block_routing_bucket(object_key, start, end)`:
+//! A block's bucket is `block_routing_bucket(object_key, start, end)`:
 //!
 //! ```text
 //! start + (FNV-1a-64(object_key) % (end - start + 1))
@@ -29,7 +29,7 @@
 //!
 //! AND THE CONTAINER STORE IS NOT A DIFFERENT ROUTING CALL, A DIFFERENT RANGE OR A DIFFERENT KEY
 //! SHAPE. It is the same call on the same range. Routing takes the OBJECT KEY and never sees the
-//! component; the page HANDLE is `state::block_index_handle`, which hashes the component, and does.
+//! component; the block HANDLE is `state::block_index_handle`, which hashes the component, and does.
 //! So a hash's hundred fields are a hundred distinct handles under one object key, and one object
 //! key is one bucket at any range.
 //! `routing_never_sees_the_component_which_is_why_a_containers_pages_share_one_bucket` asserts
@@ -41,18 +41,18 @@
 //! "about 45% less resident memory at no cost on disk" and names no cost at all. There are three,
 //! and all three are measured here.
 //!
-//!   1. THE BUCKET MAP ITSELF CAN MOVE THE WRONG WAY. `BlockIndexMap::One` holds its page inline
+//!   1. THE BUCKET MAP ITSELF CAN MOVE THE WRONG WAY. `BlockIndexMap::One` holds its block inline
 //!      and allocates nothing; `Many` is a `BTreeMap` whose node is sized for ELEVEN entries
-//!      whether or not it fills them. Filling a bucket trades one node per PAGE for one node per
+//!      whether or not it fills them. Filling a bucket trades one node per BLOCK for one node per
 //!      BUCKET plus a map node, so below a fill of about eleven the trade is a loss. Measured: at
-//!      3.91 pages a bucket the narrow range costs +25.4% bytes a page AND +425% allocations a
-//!      page; at 39.06 pages a bucket bytes fall 36.0% while allocations are still +121%. The two
+//!      3.91 blocks a bucket the narrow range costs +25.4% bytes a block AND +425% allocations a
+//!      block; at 39.06 blocks a bucket bytes fall 36.0% while allocations are still +121%. The two
 //!      instruments disagree in SIGN at the large corpus, which is why both are reported.
 //!   2. THE DIRTY SET AND THE DUMP UNIT COARSEN BY THE BUCKET'S KEY COUNT. A dump of one bucket
 //!      drains one key on the whole keyspace and eight at 4,000 records on 0..1023.
 //!   3. NARROWING A POPULATED STORE IS SILENT. A reopened range is consulted only for an address
 //!      carrying no bucket of its own, and the live write path stamps one at `append_value`. So
-//!      nothing is re-filed: every page stays where the OLD range put it, every record still
+//!      nothing is re-filed: every block stays where the OLD range put it, every record still
 //!      reads, and on a narrowed shard all of them sit above the shard's own end -- outside every
 //!      per-bucket sweep the engine runs. Widening is safe only because the wide range contains
 //!      the narrow one.
@@ -123,7 +123,7 @@ fn run_batch(engine: &TemporalEngine, commands: Vec<Command>) {
     }
 }
 
-/// ROUTED KEYS: plain strings, one page each. The shape #1958 and #1959 both measured.
+/// ROUTED KEYS: plain strings, one block each. The shape #1958 and #1959 both measured.
 pub(super) fn seed_routed(engine: &TemporalEngine, count: usize) -> Vec<String> {
     let keys: Vec<String> = (0..count).map(|i| format!("fill-{i:06}")).collect();
     run_batch(
@@ -138,7 +138,7 @@ pub(super) fn seed_routed(engine: &TemporalEngine, count: usize) -> Vec<String> 
     keys
 }
 
-/// CONTAINER KEYS: `keys` hashes of `members` fields each. Every field is its own page.
+/// CONTAINER KEYS: `keys` hashes of `members` fields each. Every field is its own block.
 pub(super) fn seed_container(engine: &TemporalEngine, keys: usize, members: usize) -> Vec<String> {
     let container_keys: Vec<String> = (0..keys).map(|k| format!("bag-{k:06}")).collect();
     let mut commands = Vec::with_capacity(keys * members);
@@ -177,7 +177,7 @@ fn read_back(engine: &TemporalEngine, keys: &[String]) -> usize {
 // THE DISTRIBUTION, as counts.
 // ---------------------------------------------------------------------------------------------
 
-/// Pages held per routing bucket, as bucket COUNTS keyed by the number of pages held.
+/// Blocks held per routing bucket, as bucket COUNTS keyed by the number of blocks held.
 ///
 /// A histogram and not a mean: #1959's mean of 1.98 contained not one bucket holding two.
 #[derive(Debug, Default, Clone)]
@@ -194,7 +194,7 @@ impl BlocksPerBucket {
         self.counts.iter().map(|(held, count)| held * count).sum()
     }
 
-    /// Buckets holding strictly more than one page -- the anti-constant case.
+    /// Buckets holding strictly more than one block -- the anti-constant case.
     fn multi_page(&self) -> usize {
         self.counts
             .iter()
@@ -223,7 +223,7 @@ impl BlocksPerBucket {
         self.counts.get(&1).copied().unwrap_or_default() as f64 / buckets as f64
     }
 
-    /// Print as counts, collapsing the long tail into ranges so a 40-page-deep histogram stays
+    /// Print as counts, collapsing the long tail into ranges so a 40-block-deep histogram stays
     /// readable without ever reporting a mean in place of a count.
     fn report(&self, label: &str) {
         println!(
@@ -259,7 +259,7 @@ fn pages_per_bucket(engine: &TemporalEngine) -> BlocksPerBucket {
     hist
 }
 
-/// Every bucket that holds a page, with the OBJECT KEYS it holds, deduplicated and sorted. The
+/// Every bucket that holds a block, with the OBJECT KEYS it holds, deduplicated and sorted. The
 /// element-by-element picture a count cannot give.
 fn bucket_key_sets(engine: &TemporalEngine) -> BTreeMap<u32, BTreeSet<String>> {
     let shards = engine.shards.read().expect("engine lock poisoned");
@@ -279,7 +279,7 @@ fn bucket_key_sets(engine: &TemporalEngine) -> BTreeMap<u32, BTreeSet<String>> {
     contents
 }
 
-/// Every bucket with the PAGE HANDLES it holds -- the map's own keys, which are object ids and
+/// Every bucket with the BLOCK HANDLES it holds -- the map's own keys, which are object ids and
 /// therefore distinguish a container's components. A key set cannot see a lost component; this
 /// can.
 fn bucket_handle_sets(engine: &TemporalEngine) -> BTreeMap<u32, BTreeSet<u64>> {
@@ -303,13 +303,13 @@ fn flatten<T: Ord + Clone>(contents: &BTreeMap<u32, BTreeSet<T>>) -> BTreeSet<T>
 /// How many buckets sit in each arm of `BlockIndexMap`: (Empty, One, Many).
 ///
 /// THE ARM IS STILL THE FOOTPRINT, AND WHAT THE `One` ARM COSTS HAS CHANGED. It used to hold its
-/// page INLINE and allocate nothing, so `One` was free on the heap and expensive in every node --
-/// the width of a whole entry, paid by every bucket in the map whether or not it held one page. The
+/// block INLINE and allocate nothing, so `One` was free on the heap and expensive in every node --
+/// the width of a whole entry, paid by every bucket in the map whether or not it held one block. The
 /// arm now holds a POINTER: eight bytes in the node plus one allocation sized for the entry.
 ///
 /// SO THE COLUMNS STILL SAY WHAT THEY SAID, WITH ONE TERM CHANGED. Filling a bucket still moves it
 /// from `One` to `Many` and still buys list capacity -- but it no longer buys the bucket's FIRST
-/// allocation, because the single page already had one. `inline_arm_trade.rs` is the measurement.
+/// allocation, because the single block already had one. `inline_arm_trade.rs` is the measurement.
 fn block_index_arms(engine: &TemporalEngine) -> (usize, usize, usize) {
     let shards = engine.shards.read().expect("engine lock poisoned");
     let shard = shards.get(&1).expect("shard is loaded");
@@ -334,17 +334,17 @@ fn total<T>(contents: &BTreeMap<u32, BTreeSet<T>>) -> usize {
 
 /// THE HISTOGRAM AT BOTH RANGES, AT TWO CORPUS SIZES.
 ///
-/// #1959 reported "a store of keys that route one to a bucket is 99.900% single-page" and read it
+/// #1959 reported "a store of keys that route one to a bucket is 99.900% single-block" and read it
 /// as a fact about routed workloads. Its fixture is on `engine.load_shard(1)` -- the whole
 /// keyspace -- where every key lands alone BY CONSTRUCTION and no workload can do otherwise. The
 /// same seed on the documented production range fills the bucket.
 ///
 /// THE ANTI-CONSTANT ASSERTION. The narrow arm is asserted to reach a bucket holding more than one
-/// page at both sizes. A fixture that only ever produced one page per bucket could not tell a
+/// block at both sizes. A fixture that only ever produced one block per bucket could not tell a
 /// correct `BlockIndexMap` from a constant answering `One`.
 ///
 /// THE STORE PATH LENGTH is held constant across arms and asserted equal. It moves allocation
-/// bytes at about six bytes a character; bucket and page COUNTS are immune to it, which is why
+/// bytes at about six bytes a character; bucket and block COUNTS are immune to it, which is why
 /// the counts carry the claim here and the allocator figures are taken separately.
 ///
 /// rust-internal: reads the engine's own bucket index, no product behaviour
@@ -370,7 +370,7 @@ fn the_pages_a_bucket_holds_are_decided_by_the_routing_range() {
             hist.report(&format!("{records} routed keys on {width}"));
 
             // DENOMINATOR: every key really is in the index. A run that wrote nothing would
-            // report a clean single-page histogram of zero buckets.
+            // report a clean single-block histogram of zero buckets.
             assert_eq!(
                 hist.pages(),
                 keys.len(),
@@ -446,7 +446,7 @@ fn the_pages_a_bucket_holds_are_decided_by_the_routing_range() {
     }
 
     // FLAT ACROSS A TENFOLD CORPUS on the wide range -- a property of the range -- and TENFOLD on
-    // the narrow one, because there the bucket count is pinned and the pages are not.
+    // the narrow one, because there the bucket count is pinned and the blocks are not.
     let wide_small = observed.get(&(SMALL, WIDE_END)).expect("wide small");
     let wide_large = observed.get(&(LARGE, WIDE_END)).expect("wide large");
     let narrow_small = observed.get(&(SMALL, NARROW_END)).expect("narrow small");
@@ -471,7 +471,7 @@ fn the_pages_a_bucket_holds_are_decided_by_the_routing_range() {
 // 2. THE MECHANISM: ROUTING TAKES THE KEY, THE HANDLE TAKES THE COMPONENT
 // =============================================================================================
 
-/// WHY A CONTAINER STORE PUTS A HUNDRED PAGES IN ONE BUCKET, read off the two functions.
+/// WHY A CONTAINER STORE PUTS A HUNDRED BLOCKS IN ONE BUCKET, read off the two functions.
 ///
 /// #1959 left this as an observation -- "they all route to their container key's one bucket". It
 /// is not a different routing call, a different range or a different key shape. It is the SAME
@@ -479,16 +479,16 @@ fn the_pages_a_bucket_holds_are_decided_by_the_routing_range() {
 /// things:
 ///
 ///   * `block_routing_bucket(object_key, start, end)` takes the OBJECT KEY and nothing else;
-///   * `state::block_index_handle(page)` -- the page's handle, and the key of `BlockIndexMap` --
+///   * `state::block_index_handle(page)` -- the block's handle, and the key of `BlockIndexMap` --
 ///     hashes `page.component` as a term of its own, which is what keeps a container's fields
 ///     from overwriting each other in one entry.
 ///
 /// `stable_block_object_id(shard, kind, key)` is a THIRD thing and takes neither: since the
-/// component left it, a hash's hundred fields are ONE object id, a hundred distinct page handles,
+/// component left it, a hash's hundred fields are ONE object id, a hundred distinct block handles,
 /// and one bucket at ANY range. Narrowing the range cannot split a container; widening it cannot
 /// spread one. The seeded arm below holds the handle count -- `total(&handles)` over
 /// `bucket_handle_sets` is asserted at `CONTAINERS * MEMBERS` -- so the collapse asserted in the
-/// synthetic arm is a collapse of the IDENTITY and provably not of the pages.
+/// synthetic arm is a collapse of the IDENTITY and provably not of the blocks.
 ///
 /// Asserted three ways: against the functions directly, against a seeded container store, and
 /// with the routed store as the partner that says the SAME call gives the other answer.
@@ -557,7 +557,7 @@ fn routing_never_sees_the_component_which_is_why_a_containers_pages_share_one_bu
             CONTAINERS * MEMBERS
         );
 
-        // EVERY CONTAINER'S PAGES ARE WHERE ITS KEY ROUTES, element by element.
+        // EVERY CONTAINER'S BLOCKS ARE WHERE ITS KEY ROUTES, element by element.
         for key in &keys {
             let home = block_routing_bucket(key, 0, end_routing_bucket);
             let held = contents
@@ -571,7 +571,7 @@ fn routing_never_sees_the_component_which_is_why_a_containers_pages_share_one_bu
             );
         }
 
-        // AND NO CONTAINER IS SPLIT. Each key's pages are in exactly one bucket.
+        // AND NO CONTAINER IS SPLIT. Each key's blocks are in exactly one bucket.
         let mut buckets_per_key: BTreeMap<&String, usize> = BTreeMap::new();
         for held in contents.values() {
             for key in held {
@@ -599,7 +599,7 @@ fn routing_never_sees_the_component_which_is_why_a_containers_pages_share_one_bu
             buckets_per_key.len()
         );
 
-        // NO SINGLE-PAGE BUCKET, at either width. This is what says the range is not the lever
+        // NO SINGLE-BLOCK BUCKET, at either width. This is what says the range is not the lever
         // for this population -- only the member count is.
         assert_eq!(
             hist.counts.get(&1).copied().unwrap_or_default(),
@@ -618,23 +618,23 @@ fn routing_never_sees_the_component_which_is_why_a_containers_pages_share_one_bu
 }
 
 // =============================================================================================
-// 3. THE STRONG FORM: THE SAME PAGES, BUCKET FOR BUCKET, ACROSS THE TWO RANGES
+// 3. THE STRONG FORM: THE SAME BLOCKS, BUCKET FOR BUCKET, ACROSS THE TWO RANGES
 // =============================================================================================
 
-/// THE PER-BUCKET PAGE SET COMPARED ELEMENT BY ELEMENT AGAINST WHAT ROUTING SAYS IT SHOULD BE.
+/// THE PER-BUCKET BLOCK SET COMPARED ELEMENT BY ELEMENT AGAINST WHAT ROUTING SAYS IT SHOULD BE.
 ///
 /// Coarser buckets are silent in one direction and finer ones in the other: a reader that scopes
-/// by bucket may see pages it should not, and a page filed under a bucket nothing summarises is
+/// by bucket may see blocks it should not, and a block filed under a bucket nothing summarises is
 /// INVISIBLE. #1949 measured an actuator that chose four victims, dropped no objects and dropped
-/// four buckets, because filing and summarising disagreed. A count of pages cannot see either.
+/// four buckets, because filing and summarising disagreed. A count of blocks cannot see either.
 ///
 /// So this asserts the set, not the size, three ways at each width:
 ///
 ///   1. the union of every bucket's key set equals the full written key set -- nothing lost;
 ///   2. each bucket's key set equals EXACTLY the keys routing says belong there -- nothing
 ///      misfiled, in either direction; and
-///   3. the page HANDLE sets are identical across the two widths -- the narrow store holds the
-///      same pages as the wide one, regrouped and not rewritten.
+///   3. the block HANDLE sets are identical across the two widths -- the narrow store holds the
+///      same blocks as the wide one, regrouped and not rewritten.
 ///
 /// rust-internal: reads the engine's own bucket index, no product behaviour
 #[test]
@@ -713,9 +713,9 @@ fn the_narrow_range_holds_the_same_pages_the_wide_one_does_bucket_for_bucket() {
         key_sets.insert(end_routing_bucket, contents);
     }
 
-    // 3. THE SAME PAGES, REGROUPED. The handle is `state::block_index_handle(page)`, which
-    // hashes the page's own fields and carries no bucket, so an identical handle set is what
-    // says the narrow store holds the same pages and not merely the same number of them.
+    // 3. THE SAME BLOCKS, REGROUPED. The handle is `state::block_index_handle(page)`, which
+    // hashes the block's own fields and carries no bucket, so an identical handle set is what
+    // says the narrow store holds the same blocks and not merely the same number of them.
     let wide = handle_sets.get(&WIDE_END).expect("wide handles");
     let narrow = handle_sets.get(&NARROW_END).expect("narrow handles");
     assert_eq!(
@@ -752,14 +752,14 @@ fn the_narrow_range_holds_the_same_pages_the_wide_one_does_bucket_for_bucket() {
 /// range on a populated store remaps keys to different slots" -- a warning with no measurement
 /// behind it. This drives it, in both directions, because the two are not symmetrical:
 ///
-///   * WIDENING (0..1023 then the whole keyspace) moves a page from a bucket the shard holds to
+///   * WIDENING (0..1023 then the whole keyspace) moves a block from a bucket the shard holds to
 ///     one it also holds, since the wide range contains the narrow one; and
-///   * NARROWING (the whole keyspace then 0..1023) moves a page from a bucket OUTSIDE the new
-///     range to one inside it, and `rebuild_bucket_block_ownership` drops a page whose address
+///   * NARROWING (the whole keyspace then 0..1023) moves a block from a bucket OUTSIDE the new
+///     range to one inside it, and `rebuild_bucket_block_ownership` drops a block whose address
 ///     carries an explicit bucket outside the range rather than re-filing it.
 ///
 /// Both are asserted at three levels, because "the records are readable" would hold even if every
-/// page had been orphaned into a bucket nothing will ever open: every record readable, every page
+/// block had been orphaned into a bucket nothing will ever open: every record readable, every block
 /// present handle for handle, and every occupied bucket inside the new range.
 ///
 /// rust-internal: drives the engine's own restart, no product behaviour
@@ -807,7 +807,7 @@ fn a_store_reopened_on_the_other_range_keeps_every_page_in_both_directions() {
              to a SCOPED reader and still reachable by the full walk; unreadable is active loss"
         );
 
-        // PART TWO: every page present, handle for handle. A count would pass while a page was
+        // PART TWO: every block present, handle for handle. A count would pass while a block was
         // swapped for a duplicate of another.
         let after = bucket_handle_sets(&engine);
         let handles_after = flatten(&after);
@@ -827,13 +827,13 @@ fn a_store_reopened_on_the_other_range_keeps_every_page_in_both_directions() {
         //
         //   * WIDENING cannot file anything out of range. The wide range CONTAINS the narrow one,
         //     so every explicit bucket a 0..1023 shard stamped is still inside 0..u32::MAX.
-        //   * NARROWING leaves EVERY page filed above the new end. The live write path stamps
+        //   * NARROWING leaves EVERY block filed above the new end. The live write path stamps
         //     `block_routing_bucket(key, start, end)` onto the address at `append_value`, so a
         //     store written on the whole keyspace carries an explicit nine-figure bucket on every
-        //     page; `rebuild_bucket_first_index` files a page under its address's own bucket and
-        //     filters nothing, so the pages come back where the OLD range put them.
+        //     block; `rebuild_bucket_first_index` files a block under its address's own bucket and
+        //     filters nothing, so the blocks come back where the OLD range put them.
         //
-        // The pages are readable and present -- parts one and two above say so -- and that is
+        // The blocks are readable and present -- parts one and two above say so -- and that is
         // exactly what makes this quiet. They are simply outside every per-bucket sweep the shard
         // runs: the dump's bucket selection, eviction's victim sampling, the reclaim floor and the
         // release pass all enumerate `bucket_map` against the shard's own range.
@@ -872,7 +872,7 @@ fn a_store_reopened_on_the_other_range_keeps_every_page_in_both_directions() {
             );
         } else {
             // THE MEASURED HAZARD, asserted element by element rather than as "some". If a later
-            // change ever teaches the load to RE-FILE a page whose explicit bucket is outside the
+            // change ever teaches the load to RE-FILE a block whose explicit bucket is outside the
             // new range, this assertion goes red -- and that is the signal to drop the "set this
             // before the first ingest" warning from `docs/runtime_tuning.md`, which is the only
             // thing standing between an operator and this state today.
@@ -895,14 +895,14 @@ fn a_store_reopened_on_the_other_range_keeps_every_page_in_both_directions() {
         }
 
         // AND THE MECHANISM BEHIND BOTH DIRECTIONS, asserted rather than described: REOPENING ON
-        // A DIFFERENT RANGE DOES NOT MOVE A PAGE AT ALL.
+        // A DIFFERENT RANGE DOES NOT MOVE A BLOCK AT ALL.
         //
         // The range is not a filter applied to a stored placement -- it is an argument to the
         // placement function, and only for an address that carries NO bucket of its own. The live
         // write path stamps one at `append_value`, so on a populated store every address already
         // has its answer and the reopened range is never consulted. The bucket count is therefore
         // identical across the restart in BOTH directions, and that single fact explains the
-        // asymmetry above: narrowing strands pages above the new end because nothing re-files
+        // asymmetry above: narrowing strands blocks above the new end because nothing re-files
         // them, and widening is safe only because the wide range happens to contain the narrow
         // one -- not because anything moved.
         assert_eq!(
@@ -943,7 +943,7 @@ fn a_store_reopened_on_the_other_range_keeps_every_page_in_both_directions() {
 }
 
 // =============================================================================================
-// 5. WHAT THE FILL IS WORTH, PER PAGE, ON ONE INSTRUMENT
+// 5. WHAT THE FILL IS WORTH, PER BLOCK, ON ONE INSTRUMENT
 // =============================================================================================
 
 /// What one `clone()` of a value charges the allocator, in bytes and in CALLS.
@@ -992,10 +992,10 @@ fn the_clone_instrument_used_here_recovers_a_planted_megabyte_exactly() {
     );
 }
 
-/// BYTES AND ALLOCATIONS PER PAGE, AT BOTH RANGES, AT TWO CORPUS SIZES.
+/// BYTES AND ALLOCATIONS PER BLOCK, AT BOTH RANGES, AT TWO CORPUS SIZES.
 ///
-/// PER PAGE and not per bucket, because the point #1959 established is that the node's 200 bytes
-/// are expensive only because there is one node per page. Fill the bucket and the node amortises
+/// PER BLOCK and not per bucket, because the point #1959 established is that the node's 200 bytes
+/// are expensive only because there is one node per block. Fill the bucket and the node amortises
 /// -- BUT NOT FOR FREE, AND NOT ALWAYS FOR A WIN. This test was first written as
 /// `narrowing_the_routing_range_lowers_the_bytes_and_the_allocations_a_page_pays` and the
 /// measurement refuted its own name at the small corpus, which is why it now names the TRADE
@@ -1010,10 +1010,10 @@ fn the_clone_instrument_used_here_recovers_a_planted_megabyte_exactly() {
 /// two can disagree in magnitude AND IN SIGN.
 ///
 /// AND THE SIGN IS NOT OBVIOUS HERE, WHICH IS THE POINT OF THE ARM COLUMNS. `BlockIndexMap::One`
-/// holds its page INLINE and allocates nothing; `Many` is a `BTreeMap` whose node is sized for
+/// holds its block INLINE and allocates nothing; `Many` is a `BTreeMap` whose node is sized for
 /// eleven entries whether or not it fills them. Filling a bucket moves it from the arm that
 /// allocates nothing onto the arm that allocates a node, so a fill too SMALL to amortise that node
-/// makes the page index cost MORE per page, not less. The arm distribution is reported at every
+/// makes the block index cost MORE per block, not less. The arm distribution is reported at every
 /// arm so that a reader can see which way each size went and why, rather than being handed a
 /// ratio.
 ///
@@ -1119,7 +1119,7 @@ fn filling_a_bucket_trades_a_node_a_page_for_a_map_node_a_bucket_and_the_fill_de
             wide.buckets
         );
 
-        // THE ARMS MOVED, or the per-page figures are two readings of the same shape.
+        // THE ARMS MOVED, or the per-block figures are two readings of the same shape.
         assert_eq!(
             wide.arms.2, 0,
             "on the whole keyspace {} buckets are already on the `Many` arm at {records} records; \
@@ -1133,7 +1133,7 @@ fn filling_a_bucket_trades_a_node_a_page_for_a_map_node_a_bucket_and_the_fill_de
              fill did not happen and the per-page figures below compare two single-page stores"
         );
 
-        // NEITHER DIRECTION IS ASSERTED. The fill trades one node per PAGE for one node per
+        // NEITHER DIRECTION IS ASSERTED. The fill trades one node per BLOCK for one node per
         // BUCKET plus a `BTreeMap` node per filled bucket, and which of those is larger depends
         // on the fill -- so the sign is reported, with the arm counts that explain it.
         println!(
@@ -1215,7 +1215,7 @@ impl Arm {
 ///   * `DirtyKeySet` holds one key inline and promotes to a boxed `BTreeSet` beyond that, so the
 ///     narrow range moves almost every dirty bucket into the `Many` arm -- the arm whose node is
 ///     sized for eleven.
-///   * `refresh_one_bucket_runtime_flags` sets `bucket.dirty` as an OR over every page, so one
+///   * `refresh_one_bucket_runtime_flags` sets `bucket.dirty` as an OR over every block, so one
 ///     dirty key marks the whole group and a dump of that bucket writes every key in it.
 ///
 /// Measured rather than argued: the drain is run and what it drops is counted, at both widths.
@@ -1332,7 +1332,7 @@ fn filling_a_bucket_coarsens_the_dirty_set_by_exactly_the_keys_it_holds() {
 /// (`TS_SHARD_END_ROUTING_BUCKET`, documented at 1023, defaulted to `u32::MAX`), and this
 /// module's own header records that narrowing a populated store re-files nothing.
 ///
-/// This turns that prose into an assertion. A page filed on one range sits where THAT range put
+/// This turns that prose into an assertion. A block filed on one range sits where THAT range put
 /// it for the rest of its life, so a bucket recomputed from the key and the range in force names
 /// a bucket that does not hold the object -- and on a narrowed shard cannot even be a bucket the
 /// shard holds. `BlockLookupRef::routing_bucket` records where a block ACTUALLY is, which is the
@@ -1738,14 +1738,14 @@ fn a_walk_of_the_flat_list_answers_in_handle_order_not_component_order() {
 /// argued about.
 ///
 /// THE VERDICT HAS TWO INDEPENDENT SIDES, AND THAT IS ASSERTED RATHER THAN CAVEATED. This walk is over
-/// `bucket_map`, so one side is the key the walk just read -- where the INDEX filed the page -- and the
+/// `bucket_map`, so one side is the key the walk just read -- where the INDEX filed the block -- and the
 /// other is what `block_routing_bucket` computes from the object key. Neither side is the address.
 ///
 /// It used to also count blocks "carrying no bucket of their own", as a caveat that a block claiming
 /// nothing cannot disagree. That caveat was about comparing the ADDRESS's claim against the key, which is
 /// a comparison this test does not make, and no address carries a bucket any more -- so the count would be
 /// the whole population and would read as a refutation of a verdict it does not bear on. The two sides are
-/// asserted instead: every page in this walk has a filing, because the filing is the map key.
+/// asserted instead: every block in this walk has a filing, because the filing is the map key.
 ///
 /// rust-internal: reads the engine's own placement function, no product behaviour
 #[test]

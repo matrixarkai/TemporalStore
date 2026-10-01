@@ -19,10 +19,10 @@
 //!
 //! # THE CROSSOVER THE SWEEP IS LOOKING FOR
 //!
-//! `BlockIndexMap::One` holds its page inline and allocates nothing; `Many` is a flat sorted
-//! `Vec`. Filling a bucket trades one bucket node per PAGE for one bucket node plus one vector
+//! `BlockIndexMap::One` holds its block inline and allocates nothing; `Many` is a flat sorted
+//! `Vec`. Filling a bucket trades one bucket node per BLOCK for one bucket node plus one vector
 //! per BUCKET, so there is a fill below which the trade is a loss. That crossover is a property
-//! of PAGES PER BUCKET, and pages per bucket is
+//! of BLOCKS PER BUCKET, and blocks per bucket is
 //!
 //! ```text
 //!     records x pages-per-record / bucket-count
@@ -36,7 +36,7 @@
 //!
 //! # NEVER A MEAN
 //!
-//! #1959 published a mean of 1.98 pages a bucket for a store containing NOT ONE bucket holding
+//! #1959 published a mean of 1.98 blocks a bucket for a store containing NOT ONE bucket holding
 //! two. Every distribution here is reported as a histogram with p50, p90, p99 and MAX over a
 //! stated denominator, and the mean is printed only beside them.
 //!
@@ -59,7 +59,7 @@
 //! The mechanism claimed is that the RANGE WIDTH is the modulus, so narrowing it groups keys.
 //! `narrowing_the_range_changes_nothing_for_a_store_whose_pages_share_one_object_key` is the
 //! workload where that mechanism predicts NO effect: routing takes the object key and never the
-//! component, so a single key's many component pages sit in one bucket at every range. If the
+//! component, so a single key's many component blocks sit in one bucket at every range. If the
 //! sweep's effect showed up there too, the explanation would be wrong.
 
 #![allow(clippy::all)]
@@ -127,7 +127,7 @@ fn run_batch(engine: &TemporalEngine, commands: Vec<Command>) {
     }
 }
 
-/// ROUTED KEYS: plain strings, one page each -- the shape every figure below is over.
+/// ROUTED KEYS: plain strings, one block each -- the shape every figure below is over.
 fn seed_routed(engine: &TemporalEngine, count: usize) -> Vec<String> {
     let keys: Vec<String> = (0..count).map(|i| format!("fill-{i:06}")).collect();
     run_batch(
@@ -164,11 +164,11 @@ fn read_back(engine: &TemporalEngine, keys: &[String]) -> usize {
 // THE DISTRIBUTION: a histogram with percentiles and a MAX, over a stated denominator.
 // ---------------------------------------------------------------------------------------------
 
-/// Pages held per routing bucket, as bucket COUNTS keyed by pages held.
+/// Blocks held per routing bucket, as bucket COUNTS keyed by blocks held.
 ///
-/// NEVER REPORTED AS A MEAN ALONE. #1959's mean of 1.98 pages a bucket described a store holding
-/// no bucket with two pages in it. The percentiles below are taken over the BUCKET population --
-/// `p50` is the pages held by the median occupied bucket -- and the denominator is printed with
+/// NEVER REPORTED AS A MEAN ALONE. #1959's mean of 1.98 blocks a bucket described a store holding
+/// no bucket with two blocks in it. The percentiles below are taken over the BUCKET population --
+/// `p50` is the blocks held by the median occupied bucket -- and the denominator is printed with
 /// every row so that a percentile over four buckets cannot read as one over four thousand.
 #[derive(Debug, Default, Clone)]
 struct BlocksPerBucket {
@@ -200,9 +200,9 @@ impl BlocksPerBucket {
         self.counts.keys().copied().next().unwrap_or_default()
     }
 
-    /// The pages held by the bucket at `fraction` of the way through the bucket population,
-    /// ordered by pages held. A count off the histogram, not an interpolation: every value it can
-    /// return is a page count some bucket actually holds.
+    /// The blocks held by the bucket at `fraction` of the way through the bucket population,
+    /// ordered by blocks held. A count off the histogram, not an interpolation: every value it can
+    /// return is a block count some bucket actually holds.
     fn percentile(&self, fraction: f64) -> usize {
         let buckets = self.buckets();
         if buckets == 0 {
@@ -227,7 +227,7 @@ impl BlocksPerBucket {
             .sum()
     }
 
-    /// Every row, no collapsing. `bucket_fill.rs`'s reporter prints a row only when the page count
+    /// Every row, no collapsing. `bucket_fill.rs`'s reporter prints a row only when the block count
     /// is at most eight, a multiple of eight, or the widest -- which at a fill of 39 hides most of
     /// the distribution and makes the printed rows fail to sum to the denominator. A histogram
     /// whose rows do not add up is not one, so this prints every row and ASSERTS the sum.
@@ -290,7 +290,7 @@ fn pages_per_bucket(engine: &TemporalEngine) -> BlocksPerBucket {
 
 /// How many buckets sit in each arm of `BlockIndexMap`: (Empty, One, Many).
 ///
-/// The `One` arm holds its page behind a POINTER rather than inline, so it costs eight bytes in the
+/// The `One` arm holds its block behind a POINTER rather than inline, so it costs eight bytes in the
 /// node plus one allocation instead of the width of a whole entry. `inline_arm_trade.rs` is the
 /// measurement that moved it, and this range is the reason it moved.
 fn block_index_arms(engine: &TemporalEngine) -> (usize, usize, usize) {
@@ -314,7 +314,7 @@ fn store_path_length(dir: &std::path::Path) -> usize {
 }
 
 // =============================================================================================
-// 1. THE SWEEP: PAGES PER BUCKET AT EVERY CANDIDATE, AT TWO CORPUS SIZES
+// 1. THE SWEEP: BLOCKS PER BUCKET AT EVERY CANDIDATE, AT TWO CORPUS SIZES
 // =============================================================================================
 
 /// THE RANGE SWEEP AS A HISTOGRAM WITH PERCENTILES AND A MAX, AT TWO CORPUS SIZES.
@@ -330,7 +330,7 @@ fn store_path_length(dir: &std::path::Path) -> usize {
 /// it is not a measurement, and the `Many`-arm count says whether the fill happened at all.
 ///
 /// THE STORE PATH LENGTH is asserted equal across arms: it moves allocation bytes at about six
-/// bytes a character, and while page and bucket COUNTS are immune to it, the allocator table in
+/// bytes a character, and while block and bucket COUNTS are immune to it, the allocator table in
 /// section 3 is not and shares this fixture's shape.
 ///
 /// rust-internal: reads the engine's own bucket index, no product behaviour
@@ -395,7 +395,7 @@ fn the_pages_a_bucket_holds_at_every_candidate_range_as_percentiles_and_max() {
             .report(&format!("0..1023 at {records} records"));
     }
 
-    // THE SHIPPED DEFAULT IS ONE PAGE A BUCKET AT BOTH SIZES, by construction and at every
+    // THE SHIPPED DEFAULT IS ONE BLOCK A BUCKET AT BOTH SIZES, by construction and at every
     // percentile. Asserted because it is the premise of the whole campaign.
     for records in [SMALL, LARGE] {
         let wide = observed.get(&(records, WIDE_END)).expect("the wide arm ran");
@@ -416,7 +416,7 @@ fn the_pages_a_bucket_holds_at_every_candidate_range_as_percentiles_and_max() {
     }
 
     // EVERY CANDIDATE REACHED THE ARM IT IS BEING READ AS MEASURING. A candidate whose buckets are
-    // all still single-page measures the shipped default under a different name.
+    // all still single-block measures the shipped default under a different name.
     for records in [SMALL, LARGE] {
         for candidate in CANDIDATES {
             let hist = observed
@@ -448,8 +448,8 @@ fn the_pages_a_bucket_holds_at_every_candidate_range_as_percentiles_and_max() {
 
 /// THE FILL A CANDIDATE PRODUCES MOVES WITH THE CORPUS, WHICH IS WHY NO FIXED DEFAULT IS RIGHT.
 ///
-/// THIS IS THE FINDING. The crossover the container shapes have is a property of PAGES PER
-/// BUCKET, and pages per bucket is `records x pages-per-record / bucket-count`. A shipped default
+/// THIS IS THE FINDING. The crossover the container shapes have is a property of BLOCKS PER
+/// BUCKET, and blocks per bucket is `records x pages-per-record / bucket-count`. A shipped default
 /// fixes the denominator and nothing else, so the fill it lands at is set by the corpus -- which
 /// the engine does not know when it loads a shard. The same candidate is therefore below the
 /// crossover at one corpus size and above it at another, and this asserts that it genuinely is
@@ -487,7 +487,7 @@ fn the_fill_a_candidate_range_produces_moves_with_the_corpus_not_only_with_the_r
 
     // THE MEAN REPORTED ABOVE IS OVER OCCUPIED BUCKETS, and that matters here. Below saturation a
     // hash leaves buckets empty, so ten times the records lands in more DISTINCT buckets as well
-    // as more pages each, and the occupied-bucket mean moves by LESS than the corpus ratio. The
+    // as more blocks each, and the occupied-bucket mean moves by LESS than the corpus ratio. The
     // strict prediction therefore holds only where both arms are saturated -- every bucket in the
     // range occupied -- and where they are not, the occupancy is printed and the weaker bound is
     // used. Measured: 0..4095 goes 1.452 -> 9.766 (6.72x, not 10x) precisely because its small arm
@@ -548,7 +548,7 @@ fn the_fill_a_candidate_range_produces_moves_with_the_corpus_not_only_with_the_r
 
     // AND THE CONSEQUENCE, STATED AS THE ASSERTION A DEFAULT DECISION RESTS ON: at the two sizes
     // measured, no single candidate sits in the same regime. The crossover between `One` and a
-    // filled `Many` is around eleven pages; a candidate below it at 4,000 records is above it at
+    // filled `Many` is around eleven blocks; a candidate below it at 4,000 records is above it at
     // 40,000 and the reverse.
     let straddlers: Vec<u32> = CANDIDATES
         .into_iter()
@@ -576,7 +576,7 @@ fn the_fill_a_candidate_range_produces_moves_with_the_corpus_not_only_with_the_r
 // 2. THE READ PATH, COUNTED
 // =============================================================================================
 
-/// WHAT MORE PAGES A BUCKET COSTS THE READ PATH, AS ENTRIES EXAMINED PER LOOKUP.
+/// WHAT MORE BLOCKS A BUCKET COSTS THE READ PATH, AS ENTRIES EXAMINED PER LOOKUP.
 ///
 /// COUNTED, NOT TIMED. A timing-ratio instrument in this campaign read 485x idle against 11x busy
 /// off identical code. `PAGE_LOOKUP_ENTRIES_EXAMINED` is incremented inside `find_page` -- the one
@@ -703,7 +703,7 @@ fn the_read_path_entries_examined_a_lookup_grow_with_the_fill_a_candidate_produc
 ///     shapes this module measures.
 ///
 /// A LARGE PLANT IS DELIBERATELY NOT USED. A megabyte request is served through `mmap` with its
-/// own page rounding rather than from a heap chunk, so its chunk reading is larger than
+/// own block rounding rather than from a heap chunk, so its chunk reading is larger than
 /// `documented_glibc_chunk` predicts and an exact assertion over it would be an assertion about
 /// the mapping granularity instead of about the instrument. Measured at 1 MiB: request 1,048,576 B
 /// against chunk 1,052,664 B.
@@ -802,7 +802,7 @@ impl Arm {
 
 /// BOTH BYTE COLUMNS AND THE ALLOCATION COUNT, PER RECORD, AT EVERY CANDIDATE, AT TWO SIZES.
 ///
-/// PER RECORD and not per page, so the column is the one an operator sizing a box reads. The page
+/// PER RECORD and not per block, so the column is the one an operator sizing a box reads. The block
 /// count is asserted equal to the record count in the fixture, so the two differ only by a name.
 ///
 /// BOTH COLUMNS, BECAUSE THEY CAN DISAGREE IN SIGN. `alloc_bytes` charges `layout.size()`;
@@ -970,7 +970,7 @@ fn both_byte_columns_and_the_allocations_a_record_at_every_candidate_range() {
 }
 
 // =============================================================================================
-// 4. WHAT MORE PAGES A BUCKET COSTS THE WRITE PATH AND THE RELEASE UNIT
+// 4. WHAT MORE BLOCKS A BUCKET COSTS THE WRITE PATH AND THE RELEASE UNIT
 // =============================================================================================
 
 /// THE DUMP UNIT, THE DIRTY DRAIN AND THE RELEASE UNIT ALL COARSEN BY THE BUCKET'S FILL.
@@ -981,12 +981,12 @@ fn both_byte_columns_and_the_allocations_a_record_at_every_candidate_range() {
 ///   * `DirtyObjectIndex::drain_buckets` is what a dump runs once its manifest is durable, and it
 ///     drops every dirty key of the named bucket -- so a dump of one bucket writes the bucket's
 ///     whole key group;
-///   * `refresh_one_bucket_runtime_flags` ORs `bucket.dirty` over every page, so one dirty key
+///   * `refresh_one_bucket_runtime_flags` ORs `bucket.dirty` over every block, so one dirty key
 ///     marks the group; and
-///   * `release_bucket_blocks` frees a whole bucket's pages at once, so the bucket is also the
+///   * `release_bucket_blocks` frees a whole bucket's blocks at once, so the bucket is also the
 ///     granularity at which memory can be given back.
 ///
-/// Measured at every candidate: the keys a one-bucket drain drops, and the pages a one-bucket
+/// Measured at every candidate: the keys a one-bucket drain drops, and the blocks a one-bucket
 /// release frees. Both are counts of what the engine's own functions did, not derivations from the
 /// fill.
 ///
@@ -1046,15 +1046,15 @@ fn the_dump_drain_and_the_release_unit_coarsen_by_the_pages_a_bucket_holds() {
         // THE RELEASE UNIT, on a store RELOADED so the pass is not refused.
         //
         // `release_bucket_blocks` refuses a dirty bucket, and it is right to: the model maps carry
-        // no per-page dirty bit, so a reload could not restore what a release of a dirty bucket
+        // no per-block dirty bit, so a reload could not restore what a release of a dirty bucket
         // dropped. A freshly written store is entirely dirty, so without clearing it every release
-        // here is refused and frees zero pages -- identically at every range, which would read as
+        // here is refused and frees zero blocks -- identically at every range, which would read as
         // the release unit being range-independent.
         //
         // NEITHER `flush_shard_index` NOR `dump_index_catalog` CLEARS IT. Both were tried and both
         // left one `bucket_dirty` refusal: `refresh_one_bucket_runtime_flags` sets the flag as
         // `bucket.dirty() | any_page_dirty`, an OR that never clears. What does clear it is the
-        // clear-dirty-on-load contract in `persistence.rs` -- a reloaded page comes back
+        // clear-dirty-on-load contract in `persistence.rs` -- a reloaded block comes back
         // `dirty = false` -- so the store is written, flushed, dropped and reopened.
         let pages_released = {
             let dir = tempfile::tempdir().expect("tempdir");
@@ -1112,7 +1112,7 @@ fn the_dump_drain_and_the_release_unit_coarsen_by_the_pages_a_bucket_holds() {
         );
     }
 
-    // THE SHIPPED DEFAULT IS THE FINEST UNIT THERE IS: one key, one page.
+    // THE SHIPPED DEFAULT IS THE FINEST UNIT THERE IS: one key, one block.
     let (wide_drained, wide_released, _, wide_max) =
         *observed.get(&WIDE_END).expect("the wide arm ran");
     assert_eq!(
@@ -1170,12 +1170,12 @@ fn the_dump_drain_and_the_release_unit_coarsen_by_the_pages_a_bucket_holds() {
 ///
 /// Everything above is attributed to one mechanism: the range width is the MODULUS, so narrowing
 /// it maps more object keys onto one bucket. That explanation makes a falsifiable prediction in
-/// the other direction -- a store whose pages all share ONE OBJECT KEY cannot be regrouped by any
+/// the other direction -- a store whose blocks all share ONE OBJECT KEY cannot be regrouped by any
 /// range, because `block_routing_bucket` takes the object key and never the component while the
-/// page handle `stable_block_object_id(shard, kind, key)` takes both. One key is one
+/// block handle `stable_block_object_id(shard, kind, key)` takes both. One key is one
 /// bucket at every range.
 ///
-/// So this seeds a single container key with many component pages and sweeps the same five ranges
+/// So this seeds a single container key with many component blocks and sweeps the same five ranges
 /// over it. If the byte and fill figures moved here too, the mechanism named above would not be
 /// the mechanism and the sweep would be measuring something else.
 ///
@@ -1220,7 +1220,7 @@ fn narrowing_the_range_changes_nothing_for_a_store_whose_pages_share_one_object_
         observed.insert(end_routing_bucket, (hist.buckets(), hist.pages(), hist.max()));
     }
 
-    // NON-VACUITY FIRST: the fixture has to have written pages, or "no effect" is the effect of
+    // NON-VACUITY FIRST: the fixture has to have written blocks, or "no effect" is the effect of
     // an empty store.
     let (_, wide_pages, wide_max) = *observed.get(&WIDE_END).expect("the wide arm ran");
     assert!(
@@ -1284,7 +1284,7 @@ fn try_load_on(engine: &TemporalEngine, end_routing_bucket: u32) -> crate::types
         .status
 }
 
-/// Every bucket that holds a page, with the page HANDLES it holds. A key set cannot see a lost
+/// Every bucket that holds a block, with the block HANDLES it holds. A key set cannot see a lost
 /// component; this can.
 fn bucket_handle_sets(engine: &TemporalEngine) -> BTreeMap<u32, BTreeSet<u64>> {
     let shards = engine.shards.read().expect("engine lock poisoned");
@@ -1304,8 +1304,8 @@ fn bucket_handle_sets(engine: &TemporalEngine) -> BTreeMap<u32, BTreeSet<u64>> {
 ///
 /// THIS IS THE ASSERTION THE DEFAULT MOVE RESTS ON. Measured on the build before the stamp existed:
 /// a store of 2,000 routed keys written on the whole keyspace and reopened on `0..1023` came back
-/// with 2,000 of 2,000 pages filed in buckets ABOVE the shard's own end -- every record readable,
-/// and every page outside the dump's bucket selection, eviction's victim sampling, the reclaim floor
+/// with 2,000 of 2,000 blocks filed in buckets ABOVE the shard's own end -- every record readable,
+/// and every block outside the dump's bucket selection, eviction's victim sampling, the reclaim floor
 /// and the release pass. Nothing failed, nothing logged, and a per-bucket sweep simply never saw the
 /// data again.
 ///
@@ -1416,7 +1416,7 @@ fn a_store_built_on_the_old_default_is_refused_under_the_new_default() {
 ///
 /// The partner of the refusal above, and the arm that says the new default is a working
 /// configuration rather than one the refusal merely protects. Asserted at three levels: every
-/// record readable, every page present HANDLE FOR HANDLE, and every occupied bucket INSIDE the
+/// record readable, every block present HANDLE FOR HANDLE, and every occupied bucket INSIDE the
 /// range -- the third because "the records are readable" held even in the silent-stranding state
 /// this change exists to remove.
 ///
@@ -1626,7 +1626,7 @@ fn a_fresh_store_is_stamped_with_the_range_it_is_created_on() {
 /// exercises -- but an intended divergence and a forgotten one look identical in the source, so it
 /// is asserted with the reason attached.
 ///
-/// #1959 measured "almost every bucket holds exactly one page" off a fixture on the convenience
+/// #1959 measured "almost every bucket holds exactly one block" off a fixture on the convenience
 /// load and read it as a property of the workload. At the whole keyspace the modulus is 4.29
 /// billion and no workload can do otherwise, which is why this is worth a guard rather than a
 /// comment.
@@ -1668,7 +1668,7 @@ fn the_convenience_load_is_deliberately_not_the_production_default() {
 /// that stopped being reachable would simply stop being tested. This drives
 /// `decide_routing_range` directly over all four, including the one the engine tests cannot
 /// easily produce -- a stamp present, disagreeing, over a store with NO on-disk state -- and
-/// asserts the ORDER of the cases: a disagreeing stamp refuses whether or not there are pages.
+/// asserts the ORDER of the cases: a disagreeing stamp refuses whether or not there are blocks.
 ///
 /// rust-internal: drives the engine's own decision function, no product behaviour
 #[test]
@@ -1787,7 +1787,7 @@ fn the_routing_range_decision_covers_its_four_cases_in_the_right_order() {
     );
 
     // CASE 2: a stamp that disagrees -- REFUSE. Both directions, because narrowing and widening
-    // are not the same hazard and neither is safe: widening leaves pages inside the new range but
+    // are not the same hazard and neither is safe: widening leaves blocks inside the new range but
     // routes every new write to a different bucket than a re-read would compute from the key.
     for (requested_start, requested_end) in [(0, 255), (0, LEGACY_END_ROUTING_BUCKET), (1, 1023)] {
         match decide_routing_range(&index_dir, 1, requested_start, requested_end) {
@@ -1805,7 +1805,7 @@ fn the_routing_range_decision_covers_its_four_cases_in_the_right_order() {
         }
     }
 
-    // AND A DISAGREEING STAMP REFUSES EVEN WITH NO PAGES ON DISK -- the order of the cases, which
+    // AND A DISAGREEING STAMP REFUSES EVEN WITH NO BLOCKS ON DISK -- the order of the cases, which
     // the engine tests above cannot show. If the on-disk-state check ran first, an empty store
     // would silently adopt whatever it was asked for and lose its claim on the range.
     std::fs::remove_file(index_dir.join("shard-1.index.json")).expect("removable");
@@ -1830,7 +1830,7 @@ fn the_routing_range_decision_covers_its_four_cases_in_the_right_order() {
 /// THE ADDRESSES A RECORD IS RESIDENT IN, COUNTED, AT BOTH RANGES -- AND WHAT EIGHT BYTES OFF EACH
 /// IS WORTH.
 ///
-/// `BlockAddress` went 32 bytes to 24: `routing_bucket` stopped being a field (a page's bucket is
+/// `BlockAddress` went 32 bytes to 24: `routing_bucket` stopped being a field (a block's bucket is
 /// `block_routing_bucket(object_key, ..)` over the range the store is stamped with) and `block_id`
 /// narrowed from 32 bits to 16. NEITHER is worth anything alone -- 29 - 4 = 25 and 29 - 2 = 27, both
 /// of which round back to 32 -- and together they shed six and cross to 24.
@@ -2032,13 +2032,13 @@ fn what_the_narrower_address_is_worth_a_record_at_both_ranges_and_in_both_column
     }
 }
 
-/// THE CONTROL ON THE EXPLANATION: A COMMAND THAT NAMES NO PAGE DERIVES NO BUCKET.
+/// THE CONTROL ON THE EXPLANATION: A COMMAND THAT NAMES NO BLOCK DERIVES NO BUCKET.
 ///
-/// The mechanism this change introduces on the serving path is one FNV-1a pass per page read, to
+/// The mechanism this change introduces on the serving path is one FNV-1a pass per block read, to
 /// derive the bucket the read used to find stamped on the address. The claim is that it is paid PER
-/// PAGE NAMED -- so a command that names no page must pay exactly none, and that zero is the control.
-/// `Command::LeaderEstablish` on a store holding NO pages is such a workload: it carries no key,
-/// there is no page for `execute`'s housekeeping to reach either, and the counter over a run of them
+/// BLOCK NAMED -- so a command that names no block must pay exactly none, and that zero is the control.
+/// `Command::LeaderEstablish` on a store holding NO blocks is such a workload: it carries no key,
+/// there is no block for `execute`'s housekeeping to reach either, and the counter over a run of them
 /// has to read 0 -- 0.00% of what the read arm pays. It can fail, and it did: run against the SEEDED
 /// engine the same arm measured 1.00 an op over 11 key bytes, which is this module's own key length,
 /// because `execute` does per-op work over keys the store already holds. The arm now has its own

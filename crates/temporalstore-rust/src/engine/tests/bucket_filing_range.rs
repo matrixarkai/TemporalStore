@@ -1,9 +1,9 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright 2026 MatrixArkAI
 
-//! WHERE A PAGE IS FILED, AFTER THE ARGUMENT IS RECONCILED.
+//! WHERE A BLOCK IS FILED, AFTER THE ARGUMENT IS RECONCILED.
 //!
-//! mx#1942 established by construction that where a page is FILED is decided by an argument, and
+//! mx#1942 established by construction that where a block is FILED is decided by an argument, and
 //! held the nine production call sites that passed `0, u32::MAX` as a LIST -- deliberately
 //! shipping no engine change. This file is the engine change, and what had to be true before it
 //! could be made.
@@ -14,32 +14,32 @@
 //! passing the shard's range was safe:
 //!
 //! * `rebuild_bucket_first_index` used the range ONLY as the fallback placement for an address that
-//!   carried no routing bucket of its own. Narrowing it moved unrouted pages; it could drop nothing.
+//!   carried no routing bucket of its own. Narrowing it moved unrouted blocks; it could drop nothing.
 //! * `rebuild_bucket_block_ownership` did the same AND THEN FILTERED -- `if routing_bucket < start
-//!   || routing_bucket > end { continue; }` -- so a page whose address carried an EXPLICIT bucket
+//!   || routing_bucket > end { continue; }` -- so a block whose address carried an EXPLICIT bucket
 //!   outside the range was dropped from the index entirely.
 //! * `promote_model_maps_to_bucket_index_authority` delegates to ownership, so it inherited the
 //!   filter.
 //!
-//! A `BlockAddress` NO LONGER CARRIES A ROUTING BUCKET. A page's bucket is
+//! A `BlockAddress` NO LONGER CARRIES A ROUTING BUCKET. A block's bucket is
 //! `start + FNV-1a-64(object_key) % (end - start + 1)` over the range the shard is stamped with, so
 //! every rebuild derives it and every derived bucket is inside the range it was derived on
 //! (`engine::hashing::derived_bucket_range` drives that, with a control). Both filters are therefore
 //! gone, and the hazard they created is gone with them: there is no state in which a rebuild can
-//! drop a page for being out of range, because there is no bucket that came from anywhere else.
+//! drop a block for being out of range, because there is no bucket that came from anywhere else.
 //!
-//! So the distinction this file was built on -- a ROUTED page, placed by its own address, against an
-//! UNROUTED one, placed by the argument -- has collapsed into one case. Every page is placed by the
+//! So the distinction this file was built on -- a ROUTED block, placed by its own address, against an
+//! UNROUTED one, placed by the argument -- has collapsed into one case. Every block is placed by the
 //! argument, and the tests below measure that rather than the difference between two populations
 //! that no longer exist. `neither_rebuild_can_drop_a_page_because_every_bucket_is_derived_in_range`
 //! is what used to be the asymmetry measurement, inverted.
 //!
 //! # MIGRATION, DRIVEN RATHER THAN ARGUED
 //!
-//! Pages already filed under the whole range exist in any store written before this.
+//! Blocks already filed under the whole range exist in any store written before this.
 //! `a_store_filed_under_the_whole_range_reads_back_whole_after_the_change` writes such a store,
-//! restarts on it, and asserts what comes back: every record readable, every page present, and --
-//! the load-bearing observation -- every page filed INSIDE the shard's own range, because the
+//! restarts on it, and asserts what comes back: every record readable, every block present, and --
+//! the load-bearing observation -- every block filed INSIDE the shard's own range, because the
 //! rebuild the load runs derives the placement rather than reading it off an address. No migration
 //! step is needed, and that is a measurement here, not a hope.
 
@@ -156,11 +156,11 @@ fn as_an_older_build_wrote_it(address: &BlockAddress) -> BlockAddress {
         .expect("the engine's decoder still accepts an index that carries the retired `rs` key")
 }
 
-/// Round-trip every string page through the wire with `rs` removed, asserting the identity per page.
+/// Round-trip every string block through the wire with `rs` removed, asserting the identity per block.
 ///
 /// It used to STRIP the routing bucket, which was the state the range-argument tests needed. There is
-/// nothing to strip, so what is left is the per-page assertion that the key is inert -- and a fixture
-/// that still covers every page, which is what the callers assert on.
+/// nothing to strip, so what is left is the per-block assertion that the key is inert -- and a fixture
+/// that still covers every block, which is what the callers assert on.
 fn round_trip_every_page_through_the_wire(
     shard: &mut crate::engine::state::ShardState,
 ) -> usize {
@@ -234,7 +234,7 @@ fn an_older_index_decodes_to_exactly_the_same_address() {
     );
 }
 
-/// Every bucket that holds at least one page, with the object keys it holds, sorted. The element
+/// Every bucket that holds at least one block, with the object keys it holds, sorted. The element
 /// by element picture a count cannot give.
 fn bucket_contents(shard: &crate::engine::state::ShardState) -> BTreeMap<u32, Vec<String>> {
     let mut contents: BTreeMap<u32, Vec<String>> = BTreeMap::new();
@@ -258,24 +258,24 @@ fn page_total(contents: &BTreeMap<u32, Vec<String>>) -> usize {
 }
 
 // =============================================================================================
-// 1. The asymmetry: which rebuild can DROP a page, and which cannot
+// 1. The asymmetry: which rebuild can DROP a block, and which cannot
 // =============================================================================================
 
-/// NEITHER REBUILD CAN DROP A PAGE, AND THAT IS WHAT REMOVING THE DROP FILTERS REST ON.
+/// NEITHER REBUILD CAN DROP A BLOCK, AND THAT IS WHAT REMOVING THE DROP FILTERS REST ON.
 ///
 /// This is the inversion of what stood here. `rebuild_bucket_block_ownership` used to FILTER on the
-/// range -- `if routing_bucket < start || routing_bucket > end { continue; }` -- and a page whose
+/// range -- `if routing_bucket < start || routing_bucket > end { continue; }` -- and a block whose
 /// address carried an EXPLICIT bucket outside the range was dropped from the index entirely. That
 /// was the losing direction of mx#1974 and the reason its argument change needed bounding.
 ///
 /// An address carries no bucket. Both rebuilds DERIVE it as
 /// `block_routing_bucket(object_key, start, end)`, which is inside `start..=end` by construction, so
-/// a state in which either rebuild drops a page cannot be built -- and the fixture that used to
+/// a state in which either rebuild drops a block cannot be built -- and the fixture that used to
 /// build it (`set_routing_bucket(Some(900_000))`) cannot be written.
 ///
-/// So what is measured is the claim that replaced it: both rebuilds keep every page, at BOTH ranges,
+/// So what is measured is the claim that replaced it: both rebuilds keep every block, at BOTH ranges,
 /// and both file it where the shard's own range puts it. The element-by-element comparison against a
-/// witness built outside the index is the control -- two rebuilds that both kept 400 pages and put
+/// witness built outside the index is the control -- two rebuilds that both kept 400 blocks and put
 /// them in different buckets would read as agreement on a count.
 ///
 /// rust-internal: reads the engine's own rebuilds, no product behaviour
@@ -364,7 +364,7 @@ fn neither_rebuild_can_drop_a_page_because_every_bucket_is_derived_in_range() {
         );
     }
 
-    // AND THE TWO RANGES REALLY DID PUT THE PAGES SOMEWHERE DIFFERENT. Without this the four
+    // AND THE TWO RANGES REALLY DID PUT THE BLOCKS SOMEWHERE DIFFERENT. Without this the four
     // comparisons above could all hold on a fixture where the range decided nothing, and the test
     // would be asserting that two identical things are identical.
     assert_ne!(
@@ -375,11 +375,11 @@ fn neither_rebuild_can_drop_a_page_because_every_bucket_is_derived_in_range() {
     );
 }
 
-/// EVERY PAGE THE LIVE WRITE PATH FILES LANDS INSIDE THE SHARD'S OWN RANGE, WITH A DENOMINATOR.
+/// EVERY BLOCK THE LIVE WRITE PATH FILES LANDS INSIDE THE SHARD'S OWN RANGE, WITH A DENOMINATOR.
 ///
-/// This used to be two halves, because a page could be placed in two ways: by an explicit bucket
+/// This used to be two halves, because a block could be placed in two ways: by an explicit bucket
 /// stamped onto its address, or by the range as a fallback. One case remains -- the range -- so what
-/// is asserted is the FILING, read off the keys of the bucket map, which is where a page now is.
+/// is asserted is the FILING, read off the keys of the bucket map, which is where a block now is.
 ///
 /// Both widths, separately. On the wide shard every key has a bucket of its own by construction and
 /// the assertion cannot fail; it is carried anyway as the control that says the narrow arm's
@@ -449,10 +449,10 @@ fn every_page_the_live_write_path_files_lands_inside_the_shards_range() {
 }
 
 // =============================================================================================
-// 2. The direction: a page is filed where the shard's own range puts it
+// 2. The direction: a block is filed where the shard's own range puts it
 // =============================================================================================
 
-/// THE PRODUCTION FLUSH NOW FILES EVERY PAGE INSIDE THE SHARD'S OWN RANGE, ELEMENT BY ELEMENT.
+/// THE PRODUCTION FLUSH NOW FILES EVERY BLOCK INSIDE THE SHARD'S OWN RANGE, ELEMENT BY ELEMENT.
 ///
 /// Driven through `flush_shard_index`, which is `persistence.rs`'s own entry point and carries two
 /// of the nine call sites, rather than by calling the rebuild directly -- so what is measured is
@@ -460,7 +460,7 @@ fn every_page_the_live_write_path_files_lands_inside_the_shards_range() {
 ///
 /// THE ASSERTION IS SET EQUALITY AGAINST A WITNESS COMPUTED OUTSIDE THE INDEX: the fixture's own
 /// key list, hashed with the shard's own range. A count would pass for two sets wrong by the same
-/// amount, and the failure that matters here is one page under a bucket nothing summarises.
+/// amount, and the failure that matters here is one block under a bucket nothing summarises.
 ///
 /// Both widths, separately. On the wide shard the two placements are the same expression, so that
 /// arm cannot fail -- it is carried anyway as the control that says the narrow arm's agreement is
@@ -556,16 +556,16 @@ fn the_production_flush_files_every_page_where_the_shards_own_range_puts_it() {
     }
 }
 
-/// NO PAGE CHANGES BUCKET EXCEPT THE ONES THIS CHANGE INTENDS TO MOVE.
+/// NO BLOCK CHANGES BUCKET EXCEPT THE ONES THIS CHANGE INTENDS TO MOVE.
 ///
 /// The strong form mx#1942's measurement did not need and this change does: a full listing of what
-/// each bucket holds, compared element by element against a control, so a page that quietly moved
+/// each bucket holds, compared element by element against a control, so a block that quietly moved
 /// somewhere neither arm intended is a failure rather than a matching count.
 ///
 /// THE CONTROL IS THE SAME RANGE TWICE. There is no "routed" population left to compare against:
-/// every page is placed by the argument. So the control that says the comparison can express
+/// every block is placed by the argument. So the control that says the comparison can express
 /// sameness is a rebuild at the SAME range run twice -- which must be identical -- and the subject is
-/// two DIFFERENT ranges, which must differ on every page. Two directions, because an arm that moved
+/// two DIFFERENT ranges, which must differ on every block. Two directions, because an arm that moved
 /// nothing and an arm that moved everything both read as "a number changed".
 ///
 /// rust-internal: reads the engine's own rebuild, no product behaviour
@@ -592,7 +592,7 @@ fn every_page_changes_bucket_with_the_range_because_the_range_decides_every_plac
         contents
     }
 
-    /// Every (key -> bucket) pair, so two arms can be compared page by page rather than bucket by
+    /// Every (key -> bucket) pair, so two arms can be compared block by block rather than bucket by
     /// bucket.
     fn placement(contents: &BTreeMap<u32, Vec<String>>) -> BTreeMap<String, u32> {
         let mut placed = BTreeMap::new();
@@ -654,7 +654,7 @@ fn every_page_changes_bucket_with_the_range_because_the_range_decides_every_plac
         outside_after.len()
     );
 
-    // EVERY page moves, and that is the intended set: the two placement functions differ on every
+    // EVERY block moves, and that is the intended set: the two placement functions differ on every
     // key whose hash exceeds the narrow bucket count, which is every key at a 64-bit hash.
     assert_eq!(
         moved.len(),
@@ -673,13 +673,13 @@ fn every_page_changes_bucket_with_the_range_because_the_range_decides_every_plac
     );
 }
 
-/// THE OWNERSHIP REPORT NAMES A PAGE FILED WHERE ITS KEY DOES NOT ROUTE.
+/// THE OWNERSHIP REPORT NAMES A BLOCK FILED WHERE ITS KEY DOES NOT ROUTE.
 ///
-/// `validate_bucket_ownership_index_from_entries` compares each live page's bucket against
-/// `block_routing_bucket(object_key, start, end)`. It used to read the page's bucket off the ADDRESS,
+/// `validate_bucket_ownership_index_from_entries` compares each live block's bucket against
+/// `block_routing_bucket(object_key, start, end)`. It used to read the block's bucket off the ADDRESS,
 /// which the filing site had just written with that same expression -- so the comparison was between
 /// a value and a copy of itself, and only an address carrying NONE could make it fire. It now reads
-/// the bucket the INDEX has the page under, which is an independent answer.
+/// the bucket the INDEX has the block under, which is an independent answer.
 ///
 /// SO THE CHECK CAN FAIL, AND THIS IS IT FAILING. Without a guard the change would have replaced one
 /// unfireable comparison with another and nothing would have said so.
@@ -761,22 +761,22 @@ fn the_ownership_report_names_a_page_filed_where_its_key_does_not_route() {
 // 3. The refutation: a manifest is a WHOLE-SHARD image and must be installed whole
 // =============================================================================================
 
-/// INSTALLING A MANIFEST ON A NARROWER SHARD MUST NOT DROP THE PAGES THAT FALL OUTSIDE IT.
+/// INSTALLING A MANIFEST ON A NARROWER SHARD MUST NOT DROP THE BLOCKS THAT FALL OUTSIDE IT.
 ///
 /// This is the site this change tried to reconcile and had to put back, so the reason is recorded
 /// as a measurement rather than as a comment.
 ///
 /// `install_bucket_dump_manifest` rebuilds ownership over `decode_index_bytes(&manifest
 /// .index_bytes)` -- a WHOLE-SHARD image, written by whatever routing range the SOURCE shard ran
-/// on, whose pages already carry explicit routing buckets from that range.
+/// on, whose blocks already carry explicit routing buckets from that range.
 /// `rebuild_bucket_block_ownership` used to FILTER on the range as well as place by it, so passing
-/// the INSTALLING shard's range deleted every page whose source bucket fell outside it and the record
+/// the INSTALLING shard's range deleted every block whose source bucket fell outside it and the record
 /// was simply gone. That filter is gone -- a derived bucket cannot be out of range -- so this test
-/// now measures the property rather than the workaround: the install RE-DERIVES each page's bucket on
-/// the target's range and keeps every page.
+/// now measures the property rather than the workaround: the install RE-DERIVES each block's bucket on
+/// the target's range and keeps every block.
 ///
 /// The denominator is asserted before the verdict, and it is the whole point: the fixture is only
-/// meaningful if the source's pages really do route outside the target's range. On a source loaded
+/// meaningful if the source's blocks really do route outside the target's range. On a source loaded
 /// `0..u32::MAX` and a target loaded `0..1023` they do, for essentially every key -- and that is
 /// computed from the KEYS rather than read off an address, because an address no longer has an
 /// opinion about it.
@@ -793,13 +793,13 @@ fn a_manifest_installed_on_a_narrower_shard_keeps_every_page() {
     load_on(&source, WIDE_END);
     let keys = seed(&source, RECORDS);
 
-    // DENOMINATOR ONE: the source's pages carry explicit buckets, and they are outside the range
+    // DENOMINATOR ONE: the source's blocks carry explicit buckets, and they are outside the range
     // the target will be loaded with. Without this the install below cannot drop anything and a
     // pass says nothing.
     let outside_the_target: usize = {
         let shards = source.shards.read().expect("engine lock poisoned");
         let shard = shards.get(&1).expect("shard 1");
-        // Read off the bucket map -- where the pages ARE on the source -- rather than off an
+        // Read off the bucket map -- where the blocks ARE on the source -- rather than off an
         // address, which carries no bucket to read.
         shard
             .bucket_index
@@ -835,7 +835,7 @@ fn a_manifest_installed_on_a_narrower_shard_keeps_every_page() {
     let target = TemporalEngine::with_local_dirs(
         64 * 1024 * 1024,
         target_dir.path().join("cache"),
-        // The pages live where the source wrote them; only the index is restored.
+        // The blocks live where the source wrote them; only the index is restored.
         source_dir.path().join("pages"),
         target_dir.path().join("indexes"),
     );
@@ -844,7 +844,7 @@ fn a_manifest_installed_on_a_narrower_shard_keeps_every_page() {
         .install_bucket_dump_manifest(&manifest)
         .expect("the manifest installs on the narrower shard");
 
-    // DENOMINATOR TWO: the install put pages in the index at all.
+    // DENOMINATOR TWO: the install put blocks in the index at all.
     let installed = {
         let shards = target.shards.read().expect("engine lock poisoned");
         let shard = shards.get(&1).expect("shard 1");
@@ -875,16 +875,16 @@ fn a_manifest_installed_on_a_narrower_shard_keeps_every_page() {
 
 /// A STORE FILED UNDER THE WHOLE RANGE READS BACK WHOLE AFTER THE CHANGE, DRIVEN.
 ///
-/// Changing the argument fixes new writes; it does not move pages already filed. So: write a store
-/// the way the engine wrote one BEFORE this change -- pages in the older-build state, reconstructed
+/// Changing the argument fixes new writes; it does not move blocks already filed. So: write a store
+/// the way the engine wrote one BEFORE this change -- blocks in the older-build state, reconstructed
 /// on `0, u32::MAX`, persisted -- then restart on it and assert what comes back, rather than
 /// arguing about it.
 ///
 /// THE ANSWER IS THAT NOTHING HAS TO BE MIGRATED, and the reason is specific: the whole-range
-/// reconstruct files a page under a bucket the shard does not hold but does NOT write that bucket
+/// reconstruct files a block under a bucket the shard does not hold but does NOT write that bucket
 /// onto the address. The addresses come back still unrouted, so the next rebuild -- which the load
 /// runs anyway -- re-files them under the shard's own range on its own. Asserted in three parts,
-/// because "the records are readable" would hold even if every page had been orphaned into a
+/// because "the records are readable" would hold even if every block had been orphaned into a
 /// bucket nothing will ever open.
 ///
 /// rust-internal: drives the engine's own restart, no product behaviour
@@ -955,7 +955,7 @@ fn a_store_filed_under_the_whole_range_reads_back_whole_after_the_change() {
         let shard = shards.get(&1).expect("shard 1");
         let entries = collect_live_block_entries(shard);
 
-        // PART TWO: no page was orphaned or duplicated by the reload.
+        // PART TWO: no block was orphaned or duplicated by the reload.
         assert_eq!(
             entries.len(),
             keys.len(),
@@ -965,11 +965,11 @@ fn a_store_filed_under_the_whole_range_reads_back_whole_after_the_change() {
             entries.len()
         );
 
-        // PART THREE -- THE LOAD-BEARING ONE. Every page came back filed INSIDE the shard's own
+        // PART THREE -- THE LOAD-BEARING ONE. Every block came back filed INSIDE the shard's own
         // range, which is WHY no migration step is needed: the bucket the old argument chose was
         // never written onto the address, so the rebuild the load runs derives the placement from
         // the range the shard is stamped with. This used to be asserted as "the addresses are still
-        // unrouted"; an address cannot be routed now, so the statement moves to where the pages
+        // unrouted"; an address cannot be routed now, so the statement moves to where the blocks
         // actually are -- the keys of the bucket map.
         let outside: Vec<u32> = {
             let shards = engine.shards.read().expect("engine lock poisoned");

@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright 2026 MatrixArkAI
 
-//! WOULD A BUCKET THAT HOLDS ONE PAGE BE CHEAPER AS ONE TAGGED WORD?
+//! WOULD A BUCKET THAT HOLDS ONE BLOCK BE CHEAPER AS ONE TAGGED WORD?
 //!
 //! THE PROPOSAL. `BucketNode` is the widest per-item structure in the engine and there is one
 //! per routing bucket. #1958 took it 208 -> 200, #1961 took it 200 -> 192, #1966 took it
@@ -19,14 +19,14 @@
 //! now measured, at the corpus sizes and the routing ranges below.
 //!
 //!   * GONE, THEN BACK, AND BIGGER: THE READ COST. This module declined the shape partly because
-//!     "a tagged simple arm touches 2.0000 lines to reach a page's address against the live arm's
+//!     "a tagged simple arm touches 2.0000 lines to reach a block's address against the live arm's
 //!     1.5200 -- +0.4800 a read". That became +0.0000 when the address moved to 72 bytes into the
 //!     node: past a whole cache line, so the node and the address it resolves through could not
 //!     share a line at any alignment, inline or not, and both arms read 2.0000. IT IS **+0.6167**
 //!     NOW, measured over 4,000 buckets: live 1.3833 against the tagged arm's 2.0000, with the
 //!     live arm keeping both in ONE line for 2,467 of 4,000. The address sits 24 bytes into the
 //!     node again -- the flag packing took four bytes off the tail ahead of it and the address
-//!     merge took eight out of the inline page entry -- so a node that starts early enough in its
+//!     merge took eight out of the inline block entry -- so a node that starts early enough in its
 //!     line keeps both. The guard states the offset it depends on and REFUSES an offset past a
 //!     line rather than carrying a number whose mechanism has moved; it refused the opposite
 //!     direction before, and it is what caught this. WHAT THE COUNT CANNOT SEE IS STATED WITH IT:
@@ -34,7 +34,7 @@
 //!     the live arm's second line is inside the node's own allocation and the tagged arm's is in a
 //!     separate one. The unmeasured remainder can only run against the tagged shape.
 //!   * MOVED: THE PUBLISHED TABLE. The four cells here were measured before #1966, which took
-//!     eight bytes out of the address inside the inline page entry. The assertions were retargeted
+//!     eight bytes out of the address inside the inline block entry. The assertions were retargeted
 //!     then; the numbers in this comment were not. Three of the four allocation ratios still
 //!     reproduce exactly and one does not, and both byte columns at the configured range moved.
 //!   * SETTLED, AND IT IS THE ONE THAT DECIDES IT: THE NODE NARROWS AND THE KEY DOES NOT. A
@@ -93,28 +93,28 @@
 //! THE PREMISE IS ALSO WRONG, AND THAT MATTERS SEPARATELY FROM THE PRICE. The proposal says the
 //! node "carries the whole general case for every key". It does not. Every one of the three
 //! container members is ALREADY a biased `Empty`/`One`/`Many` shape whose general arm is the
-//! only one that allocates: `BlockIndexMap` holds its single page inline, `ObjectIndex` holds
+//! only one that allocates: `BlockIndexMap` holds its single block inline, `ObjectIndex` holds
 //! its single id inline, `DeletedObjectIndex` is one nullable pointer that is null in the case
 //! it is almost always in. A simple bucket allocates NOTHING for the general case today, so
 //! there is no general case for a tagged word to take out of it. What the word moves out of
 //! line is the simple bucket's OWN data -- and since that data is already a line away from the
 //! node, moving it costs no read and saves no resident byte.
 //!
-//! AND THAT DATA DOES NOT FIT IN A WORD -- THOUGH THE ADDRESS INSIDE IT NOW DOES. A page's
+//! AND THAT DATA DOES NOT FIT IN A WORD -- THOUGH THE ADDRESS INSIDE IT NOW DOES. A block's
 //! slab id and offset are one 64-bit word here as well, but a `BlockAddress` is 32 bytes around
 //! it: an identity, a length, a block id, a routing bucket and a presence byte all sit beside the
-//! word, and the page entry around THAT carries three shared names, for 88. #1962 established
-//! that those three names are per-object and per-page facts that cannot be hoisted to the bucket:
-//! hoisting them "would have passed every test at the default range and lost pages silently at the
+//! word, and the block entry around THAT carries three shared names, for 88. #1962 established
+//! that those three names are per-object and per-block facts that cannot be hoisted to the bucket:
+//! hoisting them "would have passed every test at the default range and lost blocks silently at the
 //! cluster range". So the simple arm cannot be a word here, and the most it can be is a pointer to
 //! 104 bytes in a chunk of AT LEAST 112 bytes -- which is the shape this module prices and
 //! declines.
 //!
 //! WHAT WOULD CHANGE THE ANSWER, STATED SO THE NEXT REVISIT DOES NOT START FROM NOTHING. Not a
-//! narrower node: the node is not what costs. The per-key figure moves only if the PAGE ENTRY
+//! narrower node: the node is not what costs. The per-key figure moves only if the BLOCK ENTRY
 //! gets smaller, and the entry is 88 bytes of which 48 are three `Arc<str>` names. Those are
-//! per-page facts and must stay per-page -- #1962 is not in dispute -- but a per-page NAME HANDLE
-//! is still a per-page fact, and four bytes rather than sixteen. That is a different change with a
+//! per-block facts and must stay per-block -- #1962 is not in dispute -- but a per-block NAME HANDLE
+//! is still a per-block fact, and four bytes rather than sixteen. That is a different change with a
 //! different risk, and it is the one with the arithmetic behind it.
 //!
 //! THE MEASUREMENT DOES NOT DEPEND ON THE DECLINE BEING RIGHT. Every figure is printed with its
@@ -193,7 +193,7 @@ fn run_batch(engine: &TemporalEngine, commands: Vec<Command>) {
     }
 }
 
-/// ROUTED KEYS: plain strings, one page each.
+/// ROUTED KEYS: plain strings, one block each.
 fn seed_routed(engine: &TemporalEngine, count: usize) -> Vec<String> {
     let keys: Vec<String> = (0..count).map(|i| format!("arm-{i:06}")).collect();
     run_batch(
@@ -208,7 +208,7 @@ fn seed_routed(engine: &TemporalEngine, count: usize) -> Vec<String> {
     keys
 }
 
-/// CONTAINER KEYS: hashes of `members` fields each. Every field is its own page, and every one
+/// CONTAINER KEYS: hashes of `members` fields each. Every field is its own block, and every one
 /// of them routes to the container key's single bucket.
 fn seed_container(engine: &TemporalEngine, keys: usize, members: usize) -> Vec<String> {
     let container_keys: Vec<String> = (0..keys).map(|k| format!("sack-{k:06}")).collect();
@@ -230,13 +230,13 @@ fn seed_container(engine: &TemporalEngine, keys: usize, members: usize) -> Vec<S
 // THE HISTOGRAM
 // =============================================================================================
 
-/// The five layout arms with a bucket count each, plus the per-bucket page counts the
+/// The five layout arms with a bucket count each, plus the per-bucket block counts the
 /// percentiles and the maximum are taken over.
 #[derive(Debug, Default, Clone)]
 struct ArmHistogram {
     /// Bucket counts keyed by the arm `classify_bucket_layout` puts them in.
     arms: BTreeMap<&'static str, usize>,
-    /// Pages held, one entry per OCCUPIED bucket, so a percentile is over buckets that exist.
+    /// Blocks held, one entry per OCCUPIED bucket, so a percentile is over buckets that exist.
     pages: Vec<usize>,
     /// Objects held, one entry per occupied bucket.
     objects: Vec<usize>,
@@ -280,7 +280,7 @@ impl ArmHistogram {
     }
 
     /// The fraction of OCCUPIED buckets in one arm. Empty buckets are excluded from the
-    /// denominator deliberately: a released bucket holds no pages and would dilute every arm.
+    /// denominator deliberately: a released bucket holds no blocks and would dilute every arm.
     fn occupied_fraction(&self, arm: &str) -> f64 {
         let occupied = self.occupied();
         if occupied == 0 {
@@ -289,7 +289,7 @@ impl ArmHistogram {
         self.count(arm) as f64 / occupied as f64
     }
 
-    /// The two arms a tagged word would hold inline: one object with one page, and one object
+    /// The two arms a tagged word would hold inline: one object with one block, and one object
     /// with none. Together, the fraction of buckets the proposal would actually help.
     fn simple_fraction(&self) -> f64 {
         self.occupied_fraction("single_page_object") + self.occupied_fraction("single_object_no_page")
@@ -377,10 +377,10 @@ fn assert_every_claimed_arm_has_samples(claimed: &[&str], reached: &ArmHistogram
 
 /// THE ARM DISTRIBUTION, AT TWO CORPUS SIZES AND AT BOTH ROUTING RANGES.
 ///
-/// COUNTS, PERCENTILES AND A MAXIMUM -- never a mean. #1959 published a mean of 1.98 pages a
+/// COUNTS, PERCENTILES AND A MAXIMUM -- never a mean. #1959 published a mean of 1.98 blocks a
 /// bucket over a store that contained not one bucket holding two, and priced a shape against it.
 ///
-/// THE TWO RANGES ARE THE WHOLE POINT. A page's bucket is
+/// THE TWO RANGES ARE THE WHOLE POINT. A block's bucket is
 /// `block_routing_bucket(object_key, start, end)`, whose modulus is the RANGE WIDTH, so the
 /// engine's default of `0..u32::MAX` puts every key in a bucket of its own BY CONSTRUCTION and
 /// no workload can do otherwise. `docs/runtime_tuning.md` tells an operator to set
@@ -389,7 +389,7 @@ fn assert_every_claimed_arm_has_samples(claimed: &[&str], reached: &ArmHistogram
 /// deployment.
 ///
 /// THE CONTAINER WORKLOAD IS HERE BECAUSE IT IS THE ONE THE RANGE CANNOT SPLIT. Routing takes the
-/// object key and never the component, so a hash's hundred fields are a hundred pages under one
+/// object key and never the component, so a hash's hundred fields are a hundred blocks under one
 /// key and therefore in one bucket at ANY range. It is the arm distribution a narrow range
 /// cannot reach and a wide range cannot escape, and it is where the maximum comes from.
 ///
@@ -431,7 +431,7 @@ fn the_arm_a_bucket_node_lands_in_is_decided_by_the_routing_range_not_by_the_wor
     }
 
     // THE WORKLOAD THE RANGE CANNOT SPLIT, at both sizes, on the wide range -- where a
-    // single-page reading would otherwise be automatic.
+    // single-block reading would otherwise be automatic.
     let mut container: BTreeMap<usize, ArmHistogram> = BTreeMap::new();
     for (keys, members) in [(SMALL / 100, 100), (LARGE / 100, 100)] {
         let dir = tempfile::tempdir().expect("tempdir");
@@ -521,7 +521,7 @@ fn the_arm_a_bucket_node_lands_in_is_decided_by_the_routing_range_not_by_the_wor
     // CHANGE SHOWING UP IN THE CLASSIFIER.
     //
     // This test asserted `multi_object` and said why: a hash's hundred fields looked like one
-    // object with a hundred pages and were not, because the object id took the COMPONENT, so a
+    // object with a hundred blocks and were not, because the object id took the COMPONENT, so a
     // hundred fields were a hundred distinct ids filed under one routing key and `object_index`
     // held a hundred rows.
     //
@@ -550,10 +550,10 @@ fn the_arm_a_bucket_node_lands_in_is_decided_by_the_routing_range_not_by_the_wor
     // are reachable in principle and neither changes the pricing:
     //
     //   * `single_object_no_page` is a RELEASED bucket -- `release_bucket_blocks` empties the
-    //     page index and keeps `object_index` -- which holds no page in either representation
+    //     block index and keeps `object_index` -- which holds no block in either representation
     //     and so cannot decide between them;
     //   * `multi_object` is what a container used to reach and no longer does, because its
-    //     pages now share one object id -- the routed corpora reach it on the narrow range,
+    //     blocks now share one object id -- the routed corpora reach it on the narrow range,
     //     so it is named here only for the wide-range container stores.
     let mut never_reached: Vec<&str> = Vec::new();
     for arm in EVERY_ARM {
@@ -618,13 +618,13 @@ fn the_arm_a_bucket_node_lands_in_is_decided_by_the_routing_range_not_by_the_wor
 /// only one that allocates, and this asserts it from the arms themselves rather than from the
 /// declaration's comments:
 ///
-///   * `BlockIndexMap::One` holds its page BEHIND A POINTER -- no map and no node, but one
+///   * `BlockIndexMap::One` holds its block BEHIND A POINTER -- no map and no node, but one
 ///     allocation, which is the one member of the three whose simple spelling is not free;
 ///   * `ObjectIndex::One` holds its single id INLINE, and only `Many` takes a box;
 ///   * `DeletedObjectIndex` is one nullable pointer, null in the case it is almost always in.
 ///
 /// So there is no general-case container for a tagged word to take out of a simple node. What it
-/// would move out of line is the simple bucket's OWN page entry -- and that entry is ALREADY out of
+/// would move out of line is the simple bucket's OWN block entry -- and that entry is ALREADY out of
 /// line, which is the next test's subject and the reason the proposal has less left to take.
 ///
 /// rust-internal: reads the engine's own declarations, no product behaviour
@@ -645,16 +645,16 @@ fn a_simple_bucket_holds_no_general_case_to_take_away() {
     );
 
     // The three members sum to 48 of the node's 88 -- the bytes the proposal would replace with one
-    // word. It was 136 of 192, then 128 of 184 when the address inside the inline page entry shed
+    // word. It was 136 of 192, then 128 of 184 when the address inside the inline block entry shed
     // its derived generation, 128 of 176 when the five flags became five bits (the node moved and
     // the members did not -- the flags are not in them), 120 of 168 when that address merged its
-    // slab id and its offset into one word, 104 of 144 when the page entry's model spelling stopped
-    // being a sixteen-byte fat pointer to a string from a closed set, and 48 of 88 when the page
+    // slab id and its offset into one word, 104 of 144 when the block entry's model spelling stopped
+    // being a sixteen-byte fat pointer to a string from a closed set, and 48 of 88 when the block
     // index stopped holding that entry inline at all. So of the five steps, FOUR took the same bytes
     // off the members AND off the node, and one took eight off the node alone. What the proposal
     // would replace is unchanged in kind and smaller in size every time, which is the direction that
     // makes the proposal worse rather than better -- and the fifth step is the largest of them by
-    // far, because the page index gave up 56 bytes at once.
+    // far, because the block index gave up 56 bytes at once.
     let members = size_of::<BlockIndexMap>() + size_of::<ObjectIndex>() + size_of::<DeletedObjectIndex>();
     assert_eq!(
         48, members,
@@ -665,10 +665,10 @@ fn a_simple_bucket_holds_no_general_case_to_take_away() {
         "the members cannot be wider than the node that holds them"
     );
 
-    // AND THE SIMPLE SPELLING OF EACH IS THE ONE THAT DOES NOT ALLOCATE -- EXCEPT THE PAGE INDEX,
-    // WHICH NO LONGER HAS ONE. Its inline single-page arm was dropped: the arm's width was paid by
-    // every bucket in the map and at the shipped routing range almost none holds exactly one page.
-    // So a single page costs one allocation here, deliberately, and the object and tombstone
+    // AND THE SIMPLE SPELLING OF EACH IS THE ONE THAT DOES NOT ALLOCATE -- EXCEPT THE BLOCK INDEX,
+    // WHICH NO LONGER HAS ONE. Its inline single-block arm was dropped: the arm's width was paid by
+    // every bucket in the map and at the shipped routing range almost none holds exactly one block.
+    // So a single block costs one allocation here, deliberately, and the object and tombstone
     // indexes are the two members whose simple spelling is still free.
     let simple_page = BlockIndexMap::Many(vec![(7, page_fixture())]);
     assert_eq!(1, simple_page.len(), "a one-entry page list holds exactly one page");
@@ -765,7 +765,7 @@ fn tag(raw: usize, kind: usize) -> usize {
     raw | kind
 }
 
-/// The simple arm's payload, out of line: one object, one page.
+/// The simple arm's payload, out of line: one object, one block.
 struct SimpleLayout {
     object_id: u64,
     handle: u64,
@@ -819,7 +819,7 @@ impl TaggedLayout {
         Some(unsafe { &*((self.0 & !KIND_MASK) as *const GeneralLayout) })
     }
 
-    /// The page entry a read has to reach, whichever arm holds it.
+    /// The block entry a read has to reach, whichever arm holds it.
     fn page(&self, handle: u64) -> Option<&BlockIndex> {
         if let Some(simple) = self.as_simple() {
             return (simple.handle == handle).then_some(&simple.page);
@@ -1027,7 +1027,7 @@ fn the_tagged_node_is_fifty_six_bytes_and_every_arm_reconstructs() {
     // 48, and it has not moved while the live node has gone 168 -> 160 -> 144 -> 88: this mirror
     // carries the node's HEADER only, and the header lost a whole word when `last_dump_sequence`
     // left it. (56 was itself 64 until the five flags became one byte and a ten-byte tail became
-    // six.) Every change to the page ENTRY takes bytes off the LIVE node and off this mirror's boxed
+    // six.) Every change to the block ENTRY takes bytes off the LIVE node and off this mirror's boxed
     // payload alike, because the payload holds that entry -- the address merge took eight from each,
     // and the model spelling took sixteen from each.
     //
@@ -1457,7 +1457,7 @@ fn what_the_tagged_node_actually_costs_the_allocator() {
 // WHAT IT COSTS A READ
 // =============================================================================================
 
-/// How many distinct 64-byte lines a read has to touch to get from the node to the page's
+/// How many distinct 64-byte lines a read has to touch to get from the node to the block's
 /// address. Measured from the ADDRESSES THEMSELVES at run time, not asserted.
 fn lines_touched(node_address: usize, address_address: usize) -> usize {
     if node_address / 64 == address_address / 64 {
@@ -1470,7 +1470,7 @@ fn lines_touched(node_address: usize, address_address: usize) -> usize {
 /// THE READ PATH, COUNTED -- AND WHAT IT COSTS IS NOW NOTHING.
 ///
 /// THIS GUARD WAS RED ON MAIN BEFORE THIS CHANGE, AND IT WAS RED FOR A REASON WORTH HAVING. It
-/// asserted the live inline arm touches 1.5200 lines to reach a page's address, in a band chosen
+/// asserted the live inline arm touches 1.5200 lines to reach a block's address, in a band chosen
 /// so that 2.00 -- the tagged arm's figure -- could not pass it. On `06828b8a0` the live arm
 /// touches 2.0000, the band refuses it, and the test fails. It is `#[ignore]`d, so nothing ran it.
 ///
@@ -1480,12 +1480,12 @@ fn lines_touched(node_address: usize, address_address: usize) -> usize {
 /// address at offset D therefore shares the node's line only when D is under 64 AND the node
 /// happens to start early enough. THE OFFSET IS PRINTED BELOW. At 1.5200 it was under 64 and the
 /// B-tree slot decided each case; #1966 took eight bytes out of the address that sits inside the
-/// inline page entry, the fields after it moved, and the offset is now past 64 -- where no
+/// inline block entry, the fields after it moved, and the offset is now past 64 -- where no
 /// alignment can help and the answer is 2.0000 for every bucket without exception.
 ///
 /// AND THAT REMOVES THE THIRD REASON THIS MODULE GIVES FOR DECLINING THE TAGGED SHAPE. The
 /// module's own summary lists it: "AND IT IS PAID FOR ON THE READ. A tagged simple arm touches
-/// 2.0000 lines to reach a page's address against the live arm's 1.5200 -- +0.4800 a read".
+/// 2.0000 lines to reach a block's address against the live arm's 1.5200 -- +0.4800 a read".
 /// Both arms touch 2.0000 now. The read cost of the indirection is +0.0000, measured, and the
 /// decline has to rest on the other two reasons or not at all. It does: see
 /// `the_hundred_and_twenty_bytes_a_tagged_key_saves_are_not_bytes_a_tagged_key_stops_holding`
@@ -1683,9 +1683,9 @@ fn a_tagged_simple_arm_adds_a_line_to_every_page_read_and_the_general_arm_shows_
     //
     // An equal COUNT would not be a proof of equal cost, and an unequal one is not a measure of
     // the difference either. Inline, the second line -- when there is one -- is inside the SAME
-    // allocation as the first: adjacent, on the same page, and very likely already fetched.
+    // allocation as the first: adjacent, on the same block, and very likely already fetched.
     // Behind a pointer it is wherever the allocator put it, which
-    // is a different line, possibly a different page, and a separate entry in the translation
+    // is a different line, possibly a different block, and a separate entry in the translation
     // buffer. This instrument counts distinct 64-byte lines and is blind to that difference.
     //
     // IT IS REPORTED RATHER THAN ASSERTED because the honest form of it is a measurement this
@@ -1791,9 +1791,9 @@ fn clone_counts_chunked<T: Clone>(value: &T) -> (u64, u64, u64) {
 /// served from rather than the width that was asked for.
 ///
 /// THE COUNT IS NOT A CONSTANT, WHICH IS WHY IT IS NO LONGER IN THIS TEST'S NAME. The node has
-/// since gone 184 -> 176 (the address inside the inline page entry merged its slab id and its
+/// since gone 184 -> 176 (the address inside the inline block entry merged its slab id and its
 /// offset into one word) and the boxed payload went 112 -> 104 with it. The saving the sentence
-/// claims is therefore 112 bytes now, not 120, and it will move again the next time the page entry
+/// claims is therefore 112 bytes now, not 120, and it will move again the next time the block entry
 /// does. What does NOT move is the direction, which is the whole content of this test: the payload
 /// shrank by the same eight bytes as the node, so the chunk it is served from shrank by one
 /// rounding step too, and the pair still does not come in under the inline width.
@@ -1862,11 +1862,11 @@ fn the_bytes_a_tagged_key_saves_are_not_bytes_a_tagged_key_stops_holding() {
     // node does instead of going stale beside it. It was 120 when the node was 184, and 112 when the
     // node was 160.
     //
-    // 40 SINCE mx#1975 TOOK THE NODE TO 88 by moving the single page entry behind a pointer. The
+    // 40 SINCE mx#1975 TOOK THE NODE TO 88 by moving the single block entry behind a pointer. The
     // derivation moved and this PIN did not, so the guard has been red under `--features alloc-probe`
     // since that merge -- red on a surface no default gate compiles, which is the whole reason a
     // width assertion needs its own sweep: it COMPILES whatever the width is. `TaggedNode` holds no
-    // page entry and no address, so neither term here moves with an address narrowing; this pin is
+    // block entry and no address, so neither term here moves with an address narrowing; this pin is
     // paid down rather than introduced.
     let claimed_saving = inline - size_of::<TaggedNode>();
     assert_eq!(
@@ -1908,7 +1908,7 @@ fn the_bytes_a_tagged_key_saves_are_not_bytes_a_tagged_key_stops_holding() {
 
 /// THE FOUR CELLS AGAIN, WITH THE COLUMN #1965 COULD ONLY QUOTE AS A FORMULA.
 ///
-/// WHY THE REQUEST COLUMN IS NOT ENOUGH. The live shape holds its page entry inline, so the only
+/// WHY THE REQUEST COLUMN IS NOT ENOUGH. The live shape holds its block entry inline, so the only
 /// thing it asks the allocator for is B-tree nodes: few, large, and barely rounded. The tagged
 /// shape asks for one payload per occupied bucket on top -- 104 bytes at this node width, served
 /// from a chunk of at least 112 bytes. The rounding lands entirely on the side that is being compared
@@ -2190,13 +2190,13 @@ fn the_tagged_shape_priced_on_chunks_instead_of_requests() {
 ///
 /// THE SECOND HALF IS THE DISTRIBUTION, AND IT IS MEASURED AT BOTH RANGES. A mean of one is the
 /// kind of figure this campaign has been wrong about before: #1959 published a mean of 1.98
-/// pages a bucket over a store containing not one bucket that held two. So this reports counts
+/// blocks a bucket over a store containing not one bucket that held two. So this reports counts
 /// per arm, percentiles and a MAXIMUM, with the per-arm sample count printed, and it reports them
 /// for the workload that can reach `Many` as well as the one that cannot.
 ///
 /// THE ROUTING RANGE IS NOT THE VARIABLE HERE, AND THE MEASUREMENT SHOWS WHY. The object lookup
 /// is keyed by (kind, object key) and its component list is a per-OBJECT fact, so the routing
-/// range -- which decides which BUCKET a page lands in -- cannot move it. Both ranges are
+/// range -- which decides which BUCKET a block lands in -- cannot move it. Both ranges are
 /// measured anyway rather than argued, because that is the premise #1962 caught being true at
 /// one range and false at the other.
 ///
