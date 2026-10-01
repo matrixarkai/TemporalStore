@@ -86,8 +86,11 @@
 //! written before this module has no magic, [`decode_container_page`] answers `NotFramed`, and the
 //! read funnel hands the bytes back exactly as it always did. That is the same trade
 //! `encode_feature_block` already makes with `TSFPB1\n` against the JSON pages that came before it,
-//! and it is why `SHARD_INDEX_FORMAT_VERSION` stays at 2 here: the SHARD INDEX does not change
-//! shape in this stage at all, and the page payload is self-describing rather than versioned.
+//! and it is why this stage does not move `SHARD_INDEX_FORMAT_VERSION` at all: the SHARD INDEX
+//! does not change shape here, and the page payload is self-describing rather than versioned.
+//! The stamp stood at 2 when this was written and is 5 now, moved by later stages; this stage
+//! is not one of them, and the number above is the one it had then rather than the one to read
+//! off the constant today.
 //!
 //! A payload that legitimately begins with these seven bytes would be mistaken for a frame. That is
 //! the same exposure the two feature magics carry, on the same kind of bytes, and it is noted here
