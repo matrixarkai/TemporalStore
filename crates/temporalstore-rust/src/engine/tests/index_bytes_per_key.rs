@@ -1077,3 +1077,292 @@ fn probe_seed(engine: &TemporalEngine, strings_n: usize, series_keys: usize, ser
         }
     }
 }
+
+
+// =================================================================================================
+// THE SAME MEASUREMENT ON THE SHIPPED ROUTING RANGE
+// =================================================================================================
+
+/// A probe engine loaded on an EXPLICIT routing range, rather than on the bare default.
+///
+/// `probe_engine` calls `load_shard`, which inherits the whole-u32 keyspace -- and on that range
+/// every key gets a bucket of its own BY CONSTRUCTION, so every per-bucket cost is charged to
+/// exactly one key. That is the LEGACY range. #1973 made 0..1023 the shipped default, where keys
+/// share nodes and the per-bucket costs amortise. The two ranges are different regimes, not
+/// different fixtures, which is why this exists beside the other loader rather than replacing it.
+#[cfg(feature = "alloc-probe")]
+fn probe_engine_on(dir: &std::path::Path, end_routing_bucket: u32) -> Arc<TemporalEngine> {
+    let engine = Arc::new(TemporalEngine::with_local_dirs(
+        64 * 1024 * 1024,
+        dir.join("cache"),
+        dir.join("pages"),
+        dir.join("indexes"),
+    ));
+    let response = engine.load_shard_with(crate::control::LoadShardRequest {
+        shard_id: 1,
+        table_name: "index-bytes-per-key-shipped".to_string(),
+        shard_uri: "local://index-bytes-per-key-shipped/1".to_string(),
+        start_routing_bucket: 0,
+        end_routing_bucket,
+        readonly: false,
+        load_version: 1,
+        local_node_id: Some(1),
+    });
+    assert!(
+        response.status.ok,
+        "the fixture could not load shard 1 on 0..{end_routing_bucket}: {:?}",
+        response.status
+    );
+    engine
+}
+
+/// WHAT A LIVE KEY COSTS ON THE SHIPPED ROUTING RANGE, AND WHETHER THE ENTRY IS THE DOMINANT TERM.
+///
+/// The sibling test above measures the LEGACY whole-u32 range. On it, 40,040 keys produced 40,040
+/// buckets -- 40,000 of them in the single-block arm -- so every per-bucket cost divided by one key
+/// and the derived bucket index came out at 53.2% of 614.1 B/key. That is not the range a
+/// meta-server-managed shard runs on. This is the same measurement on 0..1023, so the two can be
+/// read row for row.
+///
+/// WHY THE SHARES SHOULD MOVE, stated as the prediction this test can falsify: the per-bucket terms
+/// -- the node, its one block list, the object index row, the recency row -- amortise across the
+/// keys that share a bucket, while the per-BLOCK entry does not. So the entry's share should RISE
+/// and everything per-bucket should fall. How far is the question; the ratio of keys to buckets is
+/// not a constant anyone should quote from a mean, which is why the distribution is printed.
+///
+/// THE DISTRIBUTION, NOT THE MEAN. A routing hash is not uniform, and "~39 keys a bucket" is a
+/// quotient, not an observation. `Occupancy` prints containers, entries, mean, largest and a nine
+/// band histogram, so a skew shows up as a tail rather than hiding inside an average.
+///
+/// AND WHAT A RELEASE RECOVERS, measured on this range rather than bounded from the structure.
+/// `release_bucket_blocks` empties a bucket's block list and keeps the node routable, so its
+/// ceiling is the block-list share -- which on this range is shared across the keys in the bucket.
+/// Reads must still answer afterwards, and that is asserted rather than assumed: the whole claim
+/// about release is that it costs nothing a reader can see.
+///
+/// rust-internal: measures this crate's own resident structures, no product behaviour
+#[test]
+#[cfg(feature = "alloc-probe")]
+#[ignore = "seeds 8,000 then 80,000 records under the counting allocator; run by name"]
+fn what_a_live_key_costs_on_the_shipped_routing_range() {
+    /// The end bucket `docs/runtime_tuning.md` tells an operator to set, and the shipped default
+    /// since #1973.
+    const SHIPPED_END: u32 = 1023;
+
+    let mut totals: Vec<(&'static str, f64, f64)> = Vec::new();
+
+    for (label, strings_n, series_keys, series_points) in [
+        ("8,000 records", 4_000usize, 4usize, 1_000usize),
+        ("80,000 records", 40_000usize, 40usize, 1_000usize),
+    ] {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let engine = probe_engine_on(dir.path(), SHIPPED_END);
+        probe_seed(&engine, strings_n, series_keys, series_points);
+
+        let (total, per_key, per_address, live_keys, buckets) = {
+            let shards = engine.shards.read().expect("engine lock poisoned");
+            let shard = shards.get(&1).expect("shard is loaded");
+
+            // --- Denominators FIRST, asserted, because a zero divides into anything. ---
+            let string_keys = shard.strings.len();
+            let series_map_keys = shard.features.len();
+            let live_keys = string_keys + series_map_keys;
+            let feature_points: usize = shard.features.values().map(|s| s.len()).sum();
+            let live_addresses = string_keys + feature_points;
+            let bucket_count = shard.bucket_index.bucket_map.values().count();
+            let bucket_pages: usize = shard
+                .bucket_index
+                .bucket_map
+                .values()
+                .map(|b| b.block_index.len())
+                .sum();
+            assert_eq!(strings_n, string_keys, "denominator: the string map holds every key seeded");
+            assert_eq!(
+                series_keys, series_map_keys,
+                "denominator: the feature map holds every series seeded"
+            );
+            assert!(bucket_pages > 0, "denominator: the bucket index must hold pages");
+            assert!(
+                bucket_count > 0 && bucket_count <= (SHIPPED_END as usize + 1),
+                "denominator: {bucket_count} buckets is not a 0..{SHIPPED_END} population -- the \\
+                 fixture did not load on the shipped range, and every share below is the other \\
+                 regime's"
+            );
+            // THE WHOLE POINT OF THIS FIXTURE, asserted so it cannot silently become its sibling.
+            assert!(
+                bucket_count < live_keys,
+                "{bucket_count} buckets for {live_keys} keys means one bucket per key, which is the \\
+                 LEGACY range -- this test would be measuring exactly what the sibling measures"
+            );
+
+            // --- The same rows, computed by the same helpers, so the two ranges compare. ---
+            let strings_bytes = deep_heap_bytes(&shard.strings);
+            let features_bytes = deep_heap_bytes(&shard.features);
+            let bucket_map_bytes = deep_heap_bytes(&shard.bucket_index.bucket_map);
+            let lookup_bytes = deep_heap_bytes(&shard.bucket_index.object_block_lookup);
+            let core_rest_bytes = deep_heap_bytes(&shard.bucket_index)
+                .saturating_sub(bucket_map_bytes)
+                .saturating_sub(lookup_bytes);
+            let dirty_bytes = deep_heap_bytes(&shard.dirty_objects);
+            let recency_bytes = deep_heap_bytes(&shard.bucket_recency);
+            let expiry_bytes = deep_heap_bytes(&shard.expires_at_ms)
+                + deep_heap_bytes(&shard.expiry_by_deadline);
+            let whole_bytes = deep_heap_bytes(shard);
+            let (arc_bytes, arc_count) = arc_payload_bytes(&shard.bucket_index);
+            let (dirty_arc_bytes, dirty_arc_count, _shared) = dirty_arc_payload_bytes(shard);
+            let total = whole_bytes + arc_bytes + dirty_arc_bytes;
+
+            println!(
+                "=== {label} on 0..{SHIPPED_END}: {live_keys} live keys, {live_addresses} live \\
+                 addresses, {bucket_count} buckets, {bucket_pages} pages ==="
+            );
+            println!(
+                "  distinct shared strings: bucket index {arc_count}, dirty index {dirty_arc_count}"
+            );
+            let rows: [(&str, u64); 11] = [
+                ("strings HashMap<String, BlockAddress>", strings_bytes),
+                ("features HashMap<String, BTreeMap<..>>", features_bytes),
+                ("bucket_index.bucket_map", bucket_map_bytes),
+                ("bucket_index.object_block_lookup", lookup_bytes),
+                ("bucket_index, the rest of CoreIndex", core_rest_bytes),
+                ("dirty_objects DirtyObjectIndex", dirty_bytes),
+                ("bucket_recency HashMap<u32, u64>", recency_bytes),
+                ("expiry indexes (both)", expiry_bytes),
+                ("bucket-index Arc<str> payloads (once each)", arc_bytes),
+                ("dirty-index Arc<str> payloads (once each)", dirty_arc_bytes),
+                ("whole ShardState clone (superset of the above)", whole_bytes),
+            ];
+            for (name, bytes) in rows {
+                println!(
+                    "    {name:<46} {bytes:>12} B   {:>9.1} B/key   {:>5.1}% of total",
+                    bytes as f64 / live_keys as f64,
+                    100.0 * bytes as f64 / total as f64
+                );
+            }
+            println!(
+                "    {:<46} {total:>12} B   {:>9.1} B/key   {:>9.1} B/address",
+                "TOTAL live heap the shard index holds",
+                total as f64 / live_keys as f64,
+                total as f64 / live_addresses as f64
+            );
+
+            // --- THE DISTRIBUTION, because the mean is a quotient and not an observation. ---
+            let mut pages_per_bucket = Occupancy::default();
+            let mut objects_per_bucket = Occupancy::default();
+            for bucket in shard.bucket_index.bucket_map.values() {
+                pages_per_bucket.observe(bucket.block_index.len());
+                objects_per_bucket.observe(bucket.object_index.object_count());
+            }
+            println!("  what a bucket actually holds on this range:");
+            pages_per_bucket.report("pages per bucket");
+            objects_per_bucket.report("objects per bucket");
+
+            (
+                total,
+                total as f64 / live_keys as f64,
+                total as f64 / live_addresses as f64,
+                live_keys,
+                bucket_count,
+            )
+        };
+        let _ = total;
+        totals.push((label, per_key, per_address));
+
+        // --- WHAT A RELEASE RECOVERS, on this range, with reads still answering. ---
+        let probe_keys: Vec<String> = (0..live_keys.min(16)).map(|i| format!("s{i}")).collect();
+        let readable_before = probe_keys
+            .iter()
+            .filter(|key| {
+                matches!(
+                    engine
+                        .execute(ExecuteRequest {
+                            shard_id: 1,
+                            command: Command::StringGet { key: (*key).clone() },
+                        })
+                        .response,
+                    crate::types::CommandResponse::Bytes { value: Some(_) }
+                )
+            })
+            .count();
+        assert_eq!(
+            probe_keys.len(),
+            readable_before,
+            "the fixture cannot read its own keys BEFORE a release, so a read that works after one \\
+             would prove nothing"
+        );
+
+        let bucket_map_before = {
+            let shards = engine.shards.read().expect("engine lock poisoned");
+            deep_heap_bytes(&shards.get(&1).expect("shard").bucket_index.bucket_map)
+        };
+        let resident_before = engine.bucket_index_resident_bytes(1);
+        let (released_buckets, released_pages, refused) =
+            engine.release_all_releasable_bucket_index_blocks(1);
+        let bucket_map_after = {
+            let shards = engine.shards.read().expect("engine lock poisoned");
+            deep_heap_bytes(&shards.get(&1).expect("shard").bucket_index.bucket_map)
+        };
+        let resident_after = engine.bucket_index_resident_bytes(1);
+
+        let readable_after = probe_keys
+            .iter()
+            .filter(|key| {
+                matches!(
+                    engine
+                        .execute(ExecuteRequest {
+                            shard_id: 1,
+                            command: Command::StringGet { key: (*key).clone() },
+                        })
+                        .response,
+                    crate::types::CommandResponse::Bytes { value: Some(_) }
+                )
+            })
+            .count();
+
+        println!(
+            "  RELEASE on {label}: {released_buckets} of {buckets} buckets released, \\
+             {released_pages} pages, {refused} refused"
+        );
+        println!(
+            "    bucket_map heap  {bucket_map_before} -> {bucket_map_after} B  \
+             (recovered {} B, {:.1} B/key, {:.1}% of it)",
+            bucket_map_before.saturating_sub(bucket_map_after),
+            bucket_map_before.saturating_sub(bucket_map_after) as f64 / live_keys as f64,
+            if bucket_map_before == 0 {
+                0.0
+            } else {
+                100.0 * bucket_map_before.saturating_sub(bucket_map_after) as f64
+                    / bucket_map_before as f64
+            }
+        );
+        println!(
+            "    modelled resident {resident_before} -> {resident_after} B (this one is \
+             pages * size_of::<BlockIndex>(), a MODEL, printed beside the measured figure on purpose)"
+        );
+        println!(
+            "    reads after release: {readable_after} of {} still answer",
+            probe_keys.len()
+        );
+        // THE CLAIM ABOUT RELEASE IS THAT A READER CANNOT SEE IT. Asserted, not assumed.
+        assert_eq!(
+            probe_keys.len(),
+            readable_after,
+            "a release made {} of {} keys unreadable -- releasing is only free if the next read \\
+             loads the pages back from the model maps",
+            probe_keys.len() - readable_after,
+            probe_keys.len()
+        );
+    }
+
+    println!("=== bytes per live key on 0..1023, two corpus sizes ===");
+    for (label, per_key, per_address) in &totals {
+        println!("  {label:<16} {per_key:>8.1} B/key   {per_address:>8.1} B/address");
+    }
+    if totals.len() == 2 {
+        println!(
+            "  ratio across a 10x corpus: {:.3} per key, {:.3} per address",
+            totals[1].1 / totals[0].1,
+            totals[1].2 / totals[0].2
+        );
+    }
+}
