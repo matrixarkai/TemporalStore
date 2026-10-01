@@ -730,28 +730,48 @@ impl IndexItem {
     /// Cleared only on an exact match. Anything the derivation does not reproduce is written as
     /// it stands, so a key that is not the composite -- the numeric handle form, for one --
     /// survives untouched.
-    /// # A FORMAT STAMP CANNOT PROTECT A CHANGE TO THIS DERIVATION. IT ROUTES LOAD INTO IT.
+    /// # WHAT A FORMAT STAMP DOES AND DOES NOT PROTECT HERE, AND A CORRECTION TO THIS COMMENT
     ///
-    /// Written down here because it is the only place a reader will look, and because the opposite
-    /// is the natural assumption: that a stored-shape change is made safe by bumping
-    /// `SHARD_INDEX_FORMAT_VERSION`.
+    /// Written down because the natural assumption is that a stored-shape change is made safe by
+    /// bumping `SHARD_INDEX_FORMAT_VERSION`, and because the first version of this comment got the
+    /// consequence WRONG in a way that read as rigorous. Both halves are kept, because the error is
+    /// the more useful half.
     ///
-    /// A stamp protects a change to how bytes are LAID OUT. It cannot protect a change to how an
-    /// OMITTED value is RECONSTRUCTED, because the fallback IS the reconstructor.
-    /// `persistence.rs` refuses an index whose stamp is below the constant and falls back to
-    /// replay -- and replay is exactly where `restore_block_ref_key_repeat` rebuilds the key this
-    /// function omitted, from these same eight parts. So a bump does not shield an already-stripped
-    /// record from a changed derivation; it sends every such record down the path that rebuilds it
-    /// wrongly.
+    /// THE SHAPE OF THE HAZARD, which is real. A stamp protects a change to how bytes are LAID OUT.
+    /// It cannot protect a change to how an OMITTED value is RECONSTRUCTED, because the fallback is
+    /// the reconstructor: `persistence.rs` refuses an index whose stamp is below the constant and
+    /// falls back to replay, and replay is where `restore_block_ref_key_repeat` rebuilds the key this
+    /// function omitted, from these same eight parts. A bump sends such a record down that path
+    /// rather than shielding it from it.
     ///
-    /// CONCRETELY, FOR THE CHANGE THAT KEEPS BEING PROPOSED: `component` is the third part here.
-    /// Remove it from `block_ref_key_from_parts` and every record already on disk whose key was
-    /// cleared by this function rebuilds a DIFFERENT key on replay, resolving a durably acknowledged
-    /// write to MISSING. That needs a migration for already-stripped records, and no stamp buys one.
+    /// THE PRECONDITION THAT WAS MISSING, AND IT IS THE WHOLE POINT. That only bites WHEN SOMETHING
+    /// DOWNSTREAM READS THE RECONSTRUCTION. Here nothing does. `fold_delta_block_items` is the only
+    /// thing that turns index-log items into pages, and it never mentions `block_ref_key`: it builds a
+    /// `BlockIndex` from the item's own fields and hands it to `BlockIndexMap::insert`, which
+    /// ALLOCATES the handle the map is keyed by. `persistence.rs` does not mention the field at all.
+    /// Driven: a record whose handle was OMITTED, and a record carrying a handle that is no derivation
+    /// of anything, BOTH load and serve -- filed, WAL-resident, slab, offset and length intact.
     ///
-    /// The general rule, for any field in this derivation: a stored field OMITTED because it is
-    /// derivable is not stored at all -- it is a PROMISE ABOUT THE DERIVATION. Before changing any
-    /// input to it, check what has been omitted on the strength of it, not just what reads it.
+    /// SO THE CLAIM THIS COMMENT USED TO MAKE IS FALSE: that removing `component` would make every
+    /// already-stripped record rebuild a different key and resolve a durably acknowledged write to
+    /// MISSING, needing a migration no stamp could buy. It reasoned from "the field is an input to a
+    /// derivation whose output is stored" to "changing it corrupts stored data", and never asked
+    /// whether anything reads the output. Every step was true; the conclusion was not.
+    ///
+    /// `component` IS still blocked, for a different and stronger reason -- so do not read the
+    /// correction as an opening. Unlike `block_ref_key` it is carried into memory and participates in
+    /// MATCHING: `fold_delta_block_items` sets it on the `BlockIndex`, the upsert retain compares
+    /// `page.component.as_deref() == item.component.as_deref()`, and
+    /// `mark_bucket_index_block_deleted_recording` resolves through it. It is the only discriminator
+    /// between two elements of ONE folded page, which share model id, object key AND address, so
+    /// dropping it collapses them onto one slot. It cannot go until the entry stops being per-element.
+    ///
+    /// THE RULE, in the order the questions have to be asked. For a stored field omitted because it is
+    /// derivable: find WHO READS THE RECONSTRUCTION first. If something does, the omission is a
+    /// promise about the derivation, and changing any input needs a migration for the records that
+    /// already relied on it. If nothing does, the stored field is dead weight and the derivation is
+    /// free to change. Asking those two questions the other way round is what produced the error
+    /// above.
     fn strip_block_ref_key_repeat(&mut self) {
         let Some(address) = self.address.as_ref() else {
             return;
