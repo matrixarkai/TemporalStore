@@ -1075,7 +1075,7 @@ pub struct BlockStoreSlabLiveFraction {
     pub live_bytes: u64,
     /// `live_bytes * 10_000 / logical_bytes`, or 0 when the slab has no logical bytes.
     pub live_basis_points: u64,
-    /// `10_000 - live_basis_points`. What the block-GC garbage floor compares against.
+    /// `10_000 - live_basis_points`. What the page-GC garbage floor compares against.
     pub garbage_basis_points: u64,
 }
 
@@ -4312,7 +4312,7 @@ const RETIRED_NAMES: &[&str] = &[
     #[test]
     fn a_gc_round_that_reclaimed_nothing_does_not_rewrite_the_manifest() {
         // The sibling test above keeps the full manifest re-serialize off the APPEND path. The
-        // block-GC path had no such guard and rewrote it unconditionally, once per round, on a
+        // page-GC path had no such guard and rewrote it unconditionally, once per round, on a
         // stage the periodic loop runs whenever block pressure holds.
         //
         // It is not a cheap write: it serialises every slab, fsyncs the temp file, renames it and
