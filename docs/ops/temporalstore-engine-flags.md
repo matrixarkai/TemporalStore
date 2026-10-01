@@ -65,7 +65,7 @@ Anything else is blank, and a blank means go and look.
 | numbers whose default this could read off the source | 70 |
 | **defaulting on, and set by nothing** | 7 |
 | offered on the portal | 27 |
-| **that nothing in this repository sets** | 175 |
+| **that nothing in this repository sets** | 173 |
 | documented as keeping an older path alive | 3 |
 | reaching more than two files | 15 |
 | whose doc comment is really about another flag | 38 |
@@ -228,7 +228,7 @@ Sizes, ceilings and intervals. The tuning a deployment actually reaches for.
 | flag | default | set by | files | keeps an older path |
 |---|---|---|---|---|
 | `TS_RAFT_HEARTBEAT_INTERVAL_MS` | 100 | harness, script | 3 | — |
-| `TS_BLOCK_STORE_COMPRESSION_MIN_BYTES` | 256 | nothing | 2 | — |
+| `TS_BLOCK_STORE_COMPRESSION_MIN_BYTES` | 256 | config | 2 | — |
 | `TS_PAGE_STORE_COMPRESSION_MIN_BYTES` | 256 | config, test | 2 | — |
 | `TS_PROXY_CONTEXT_IO_TIMEOUT_MS` | 30000 | nothing | 2 | — |
 | `TS_RAFT_MAX_CATCHUP_ENTRIES_PER_HEARTBEAT` | 256 | nothing | 2 | — |
@@ -397,8 +397,8 @@ Everything else that changes what the engine does.
 | `TS_RAFT_RPC_RETRIES` | 2 | harness, script | 3 | — |
 | `MATRIXARK_BULK_INGEST_REPLAY_FROM_SEQUENCE` | — | config, test | 2 | — |
 | `TEMPORALSTORE_RUST_CODEX_HOOK_ROOT` | — | launch | 2 | — |
-| `TS_BLOCK_STORE_COMPRESSION_ENABLED` | — | launch | 2 | — |
-| `TS_BLOCK_STORE_COMPRESSION_LEVEL` | — | nothing | 2 | — |
+| `TS_BLOCK_STORE_COMPRESSION_ENABLED` | — | config, launch | 2 | — |
+| `TS_BLOCK_STORE_COMPRESSION_LEVEL` | — | config | 2 | — |
 | `TS_PAGE_STORE_COMPRESSION_ENABLED` | — | config, test | 2 | — |
 | `TS_PAGE_STORE_COMPRESSION_LEVEL` | — | config, test | 2 | — |
 | `MATRIXARK_ENGINE_COMPACT_SERVING_REFS` | on | nothing | 1 | — |
