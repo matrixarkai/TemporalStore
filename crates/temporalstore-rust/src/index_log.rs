@@ -2216,14 +2216,6 @@ impl LocalIndexLogStore {
         if bulk_ingest_mode() || !indexlog_enabled() {
             return Ok(0);
         }
-        // s8112-count: TEMPORARY. Is the index-log-delta regression item COUNT or item SIZE?
-        if std::env::var("S8112_COUNT").is_ok() {
-            eprintln!(
-                "[s8112-count] shard={shard_id} items={} key_states={}",
-                items.len(),
-                key_states.len()
-            );
-        }
         let mut inner = self.inner.lock().expect("index log lock poisoned");
         inner.ensure_root()?;
         let last_sequence = match inner.last_sequence_by_shard.get(&shard_id).copied() {
