@@ -730,6 +730,28 @@ impl IndexItem {
     /// Cleared only on an exact match. Anything the derivation does not reproduce is written as
     /// it stands, so a key that is not the composite -- the numeric handle form, for one --
     /// survives untouched.
+    /// # A FORMAT STAMP CANNOT PROTECT A CHANGE TO THIS DERIVATION. IT ROUTES LOAD INTO IT.
+    ///
+    /// Written down here because it is the only place a reader will look, and because the opposite
+    /// is the natural assumption: that a stored-shape change is made safe by bumping
+    /// `SHARD_INDEX_FORMAT_VERSION`.
+    ///
+    /// A stamp protects a change to how bytes are LAID OUT. It cannot protect a change to how an
+    /// OMITTED value is RECONSTRUCTED, because the fallback IS the reconstructor.
+    /// `persistence.rs` refuses an index whose stamp is below the constant and falls back to
+    /// replay -- and replay is exactly where `restore_block_ref_key_repeat` rebuilds the key this
+    /// function omitted, from these same eight parts. So a bump does not shield an already-stripped
+    /// record from a changed derivation; it sends every such record down the path that rebuilds it
+    /// wrongly.
+    ///
+    /// CONCRETELY, FOR THE CHANGE THAT KEEPS BEING PROPOSED: `component` is the third part here.
+    /// Remove it from `block_ref_key_from_parts` and every record already on disk whose key was
+    /// cleared by this function rebuilds a DIFFERENT key on replay, resolving a durably acknowledged
+    /// write to MISSING. That needs a migration for already-stripped records, and no stamp buys one.
+    ///
+    /// The general rule, for any field in this derivation: a stored field OMITTED because it is
+    /// derivable is not stored at all -- it is a PROMISE ABOUT THE DERIVATION. Before changing any
+    /// input to it, check what has been omitted on the strength of it, not just what reads it.
     fn strip_block_ref_key_repeat(&mut self) {
         let Some(address) = self.address.as_ref() else {
             return;
