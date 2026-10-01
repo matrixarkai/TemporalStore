@@ -1914,6 +1914,84 @@ fn prometheus_metrics_include_records_cache_block_and_wal() {
     assert!(metrics.contains("temporalstore_partition_routing_buckets{shard_id=\"1\"} 4294967295"));
 }
 
+/// The exported label beside a `..._bucket_...` metric must be spelled `bucket`.
+///
+/// It was spelled `slot` while all four metric names already said bucket, so a query written from
+/// the metric name -- `temporalstore_storage_bucket_bytes{bucket="3"}` -- returned nothing, and had
+/// to be written `{slot="3"}`, which nothing in the name suggested.
+///
+/// Pinned here because NOTHING pinned it before, which is how it drifted: the gateway reads only
+/// the `kind` label, the shipped dashboard selects by metric name with no label filter, and the
+/// assertions in the test above match on `shard_id`, which is the FIRST label. So neither the
+/// original drift nor its correction could fail a test.
+#[test]
+fn the_bucket_metrics_emit_a_bucket_label_and_never_a_slot_one() {
+    let engine = TemporalEngine::default();
+    engine.load_shard(1);
+    engine.execute(ExecuteRequest {
+        shard_id: 1,
+        command: Command::StringSet {
+            key: "k".to_string(),
+            value: b"v".to_vec(),
+        },
+    });
+    let _ = engine.execute(ExecuteRequest {
+        shard_id: 1,
+        command: Command::StringGet {
+            key: "k".to_string(),
+        },
+    });
+    engine.block_store().roll_slab().unwrap();
+    let metrics = engine.prometheus_metrics();
+
+    // Every series whose NAME says bucket carries a label KEY that says bucket.
+    for name in [
+        "temporalstore_storage_bucket_block_refs",
+        "temporalstore_storage_bucket_bytes",
+        "temporalstore_storage_bucket_dirty_objects",
+    ] {
+        let needle = format!("{name}{{shard_id=\"1\",bucket=\"");
+        assert!(
+            metrics.contains(&needle),
+            "{name} must spell its routing-bucket label `bucket`; emitted:\n{}",
+            metrics
+                .lines()
+                .filter(|line| line.starts_with(name))
+                .collect::<Vec<_>>()
+                .join("\n")
+        );
+    }
+
+    // The control, and it is what makes the three assertions above mean anything: `bucket` being
+    // present would not prove `slot` had gone, because both could be emitted. Deliberately global
+    // rather than per-series -- no exported metric may spell a routing bucket `slot`.
+    assert!(
+        !metrics.contains("slot=\""),
+        "the exported surface still spells a label `slot`:\n{}",
+        metrics
+            .lines()
+            .filter(|line| line.contains("slot=\""))
+            .collect::<Vec<_>>()
+            .join("\n")
+    );
+
+    // And the value is still read from the routing bucket rather than from whatever was nearest:
+    // a rename that kept the key and changed the source would satisfy everything above.
+    let line = metrics
+        .lines()
+        .find(|line| line.starts_with("temporalstore_storage_bucket_block_refs"))
+        .expect("the block-refs series is emitted");
+    let value = line
+        .split("bucket=\"")
+        .nth(1)
+        .and_then(|rest| rest.split('"').next())
+        .expect("the bucket label carries a value");
+    assert!(
+        value.parse::<u32>().is_ok(),
+        "the bucket label must carry a routing bucket number, got {value:?} in {line:?}"
+    );
+}
+
 #[test]
 fn bucket_storage_summaries_track_live_refs_dirty_buckets_and_manifest_sequence() {
     let dir = tempfile::tempdir().unwrap();

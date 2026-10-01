@@ -68,7 +68,7 @@ mean the proxy has taken a backend out of rotation.
 
 ## storage_cache
 
-Object and page lifecycle, slot occupancy, and cache pressure.
+Object and page lifecycle, bucket occupancy, and cache pressure.
 
 `temporalstore_object_manager_objects` and `_page_refs` are the working-set size;
 `temporalstore_storage_bucket_bytes` is what that costs on disk. Cache miss pressure is the metric

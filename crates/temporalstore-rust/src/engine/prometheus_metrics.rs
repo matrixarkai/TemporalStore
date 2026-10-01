@@ -456,7 +456,7 @@ impl TemporalEngine {
                     "temporalstore_storage_bucket_block_refs",
                     &[
                         ("shard_id", stats.shard_id.to_string()),
-                        ("slot", summary.routing_bucket.to_string()),
+                        ("bucket", summary.routing_bucket.to_string()),
                     ],
                     summary.block_ref_count,
                 );
@@ -469,7 +469,7 @@ impl TemporalEngine {
                         "temporalstore_storage_bucket_bytes",
                         &[
                             ("shard_id", stats.shard_id.to_string()),
-                            ("slot", summary.routing_bucket.to_string()),
+                            ("bucket", summary.routing_bucket.to_string()),
                             ("kind", kind.to_string()),
                         ],
                         value,
@@ -480,7 +480,7 @@ impl TemporalEngine {
                     "temporalstore_storage_bucket_dirty_objects",
                     &[
                         ("shard_id", stats.shard_id.to_string()),
-                        ("slot", summary.routing_bucket.to_string()),
+                        ("bucket", summary.routing_bucket.to_string()),
                     ],
                     summary.dirty_object_count,
                 );
