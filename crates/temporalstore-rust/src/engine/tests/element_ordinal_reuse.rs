@@ -1524,10 +1524,18 @@ fn the_width_an_element_ordinal_would_take_and_the_ceiling_that_implies() {
          about"
     );
 
-    // What the entry would become. The entry is 64 bytes holding 60 of field, so the arithmetic is
+    // What the entry would become. The entry is 56 bytes holding 52 of field, so the arithmetic is
     // the claim and the rounding is where it lands.
+    //
+    // 52 IN 56, NOT 60 IN 64. The object id left the address this entry holds inline, taking a
+    // whole word out of both numbers. `state.rs` carries the same accounting on `BlockIndex`
+    // itself, and the assertion below ties this hand-written sum to the compiler's width so the two
+    // cannot drift apart silently -- which is exactly what happened to the 60: it went on
+    // describing a structure the engine no longer had, and printed "entry now 56 B holding 60 of
+    // field", a field sum LARGER than the type, without anything failing until the width assert
+    // below was reached.
     let entry_now = std::mem::size_of::<crate::engine::state::BlockIndex>();
-    let field_bytes_now = 60usize;
+    let field_bytes_now = 52usize;
     let field_bytes_with_u16 = field_bytes_now - component_width + u16_ordinal;
     let field_bytes_with_u32 = field_bytes_now - component_width + u32_ordinal;
 
@@ -1539,9 +1547,23 @@ fn the_width_an_element_ordinal_would_take_and_the_ceiling_that_implies() {
     );
 
     assert_eq!(
-        entry_now, 64,
-        "the page entry is {entry_now} bytes, not the 64 this arithmetic is written against; \
+        entry_now, 56,
+        "the page entry is {entry_now} bytes, not the 56 this arithmetic is written against; \
          re-derive the field sum before trusting the two numbers above"
+    );
+    // AND THE FIELD SUM CANNOT EXCEED THE TYPE, which is the check whose absence let the stale 60
+    // print beside a 56-byte entry. The slack is the padding the three flags sit in; asserting it
+    // exactly means a field moving in or out fails here rather than being absorbed.
+    assert!(
+        field_bytes_now <= entry_now,
+        "the field sum {field_bytes_now} is larger than the {entry_now}-byte entry that holds it, \
+         so the arithmetic below is describing a structure this engine does not have"
+    );
+    assert_eq!(
+        4,
+        entry_now - field_bytes_now,
+        "the entry's slack is {} bytes, not the four the flags sit in; re-derive the field sum",
+        entry_now - field_bytes_now
     );
     assert!(
         field_bytes_with_u16 < field_bytes_now,

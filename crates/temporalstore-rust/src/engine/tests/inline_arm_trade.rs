@@ -1617,6 +1617,29 @@ fn census_plan(census: &ArmCensus) -> Vec<usize> {
 /// because a total over a population that is 100% single-block at one range and 0.000% at the other
 /// would report the same mechanism as two different results without saying why.
 ///
+/// # THE SIZE-CLASS CONCLUSION ABOVE PREDATES THE OBJECT ID LEAVING THE ADDRESS, AND IS STALE
+///
+/// Everything above was measured when the live entry was 64 bytes and `MirrorWideEntry` was its
+/// immediate predecessor at 72, one step apart. The object id has since left the address: the live
+/// entry is 56, the mirror is two steps back rather than one, and the difference is SIXTEEN bytes.
+///
+/// That breaks the coincidence the finding rests on. The rule this test derives is
+/// `max(32, round_up(request + 8, 16))`, and 64 and 72 both land in the 80-byte class -- which is
+/// why a boxed single-block bucket saved nothing. 56 asks for 80 and 72 asks for 96, so they no
+/// longer share a class and the "saves NOTHING on the chunk column" half of the finding cannot be
+/// assumed to survive.
+///
+/// IT IS NOT RE-GOLDENED HERE, because it has not been re-measured and writing a new number in
+/// would be inventing one. The assertions below are restated to what the types actually say, so the
+/// test runs and reports honestly; the narrative above is marked stale and the arm-wise columns it
+/// prints are the measurement a reader should take, not the prose.
+///
+/// AND THE DEFAULT SUITE CANNOT REACH THIS TEST. It is behind `cfg(feature = "alloc-probe")` as
+/// well as `#[ignore]`, so a plain `cargo test --lib` does not compile it in -- `--ignored` then
+/// selects nothing and reports "0 passed; 0 failed", which is indistinguishable from a pass. That
+/// is how its 64 survived a full green suite run. 43 files carry alloc-probe-gated items and the
+/// feature adds 167 tests; a width change has to run that arm too.
+///
 /// rust-internal: measures the engine's own declarations through the counting allocator
 #[cfg(feature = "alloc-probe")]
 #[test]
@@ -1626,7 +1649,7 @@ fn what_the_narrower_entry_is_worth_on_the_heap_now_that_it_is_behind_a_pointer(
     // former width every byte below is a comparison with a shape this engine never had.
     let narrow = size_of::<BlockIndex>();
     let wide = size_of::<MirrorWideEntry>();
-    assert_eq!(64, narrow, "the live page entry is {narrow} B, not 64");
+    assert_eq!(56, narrow, "the live page entry is {narrow} B, not 56");
     assert_eq!(
         72, wide,
         "the mirror of the former entry is {wide} B, not 72; it is not the shape this change replaced"
@@ -1637,11 +1660,35 @@ fn what_the_narrower_entry_is_worth_on_the_heap_now_that_it_is_behind_a_pointer(
         "the mirror of the former address is {} B, not 32",
         size_of::<MirrorWideAddress>()
     );
+    // SIXTEEN, ACROSS TWO STEPS, and that is the whole reason the narrative above is marked stale.
+    // The mirror is the entry as it stood before the ADDRESS narrowed; one step took the routing
+    // bucket and the block id's upper half, and a second took the object id. Asserted exactly, so a
+    // third step fails here rather than widening quietly.
     assert_eq!(
-        8,
+        16,
         wide - narrow,
-        "the two shapes differ by {} B, and this whole measurement is about eight",
+        "the two shapes differ by {} B; the mirror is two steps back from the live entry and the \
+         narrative above is written against one step of eight",
         wide - narrow
+    );
+    // AND THE TWO NO LONGER SHARE AN ALLOCATION CLASS, which is the half of the finding above that
+    // this change breaks. Stated as a comparison of the derived classes rather than as literals, so
+    // it reports the mechanism and not a number someone has to maintain.
+    let class_of = |request: usize| if request + 8 < 32 { 32 } else { (request + 8 + 15) / 16 * 16 };
+    // THE PER-SLOT DELTA, DERIVED. Every figure below was the literal 8, the step this test was
+    // written for, and that literal is what went stale when a second step landed. It comes off the
+    // two types now, so the next step cannot leave the arithmetic describing the wrong one.
+    let per_slot = (wide - narrow) as u64;
+    // AND WHETHER THE SAVING SURVIVES THE ALLOCATION CLASS, asked of the rule rather than assumed.
+    // It did not when 64 and 72 both landed in the 80-byte class; it does now. Both arms of this are
+    // asserted below, so the test is right whichever way a future width change puts them.
+    let shares_a_class = class_of(narrow) == class_of(wide);
+    assert_ne!(
+        class_of(narrow),
+        class_of(wide),
+        "the live entry and the mirror land in the same {} B class, so the narrative above is \
+         current after all and this note should be removed rather than left as a warning",
+        class_of(narrow)
     );
 
     // The size class the two boxed requests land in, DERIVED from the rule rather than asserted as a
@@ -1801,18 +1848,18 @@ fn what_the_narrower_entry_is_worth_on_the_heap_now_that_it_is_behind_a_pointer(
         );
         if slots > 0 {
             assert_eq!(
-                8 * slots,
+                per_slot * slots,
                 before.request_bytes - now.request_bytes,
                 "{label} @ {records}: the request column saved {} B over {slots} entry slots \
-                 ({pages} pages), not 8 a slot. Either the mirror is not the former shape or the \
-                 two populations were not built to the same growth ladder",
+                 ({pages} pages), not {per_slot} a slot. Either the mirror is not the former shape \
+                 or the two populations were not built to the same growth ladder",
                 before.request_bytes - now.request_bytes
             );
             println!(
-                "    the request column saves 8 B on every one of {slots} entry slots holding \
-                 {pages} pages = {} B, all of it real; what the chunk column keeps of it is the \
-                 line above",
-                8 * slots
+                "    the request column saves {per_slot} B on every one of {slots} entry slots \
+                 holding {pages} pages = {} B, all of it real; what the chunk column keeps of it is \
+                 the line above",
+                per_slot * slots
             );
         }
 
@@ -1829,20 +1876,41 @@ fn what_the_narrower_entry_is_worth_on_the_heap_now_that_it_is_behind_a_pointer(
             let kept = (one_before.chunk_bytes as f64 - one_now.chunk_bytes as f64)
                 / one_arms as f64;
             println!(
-                "    the boxed arm keeps {kept:+.2} B a bucket of the 8.00 the request column saved, \
-                 over {one_arms} buckets -- both widths ask for the {} B class",
-                class(wide)
+                "    the boxed arm keeps {kept:+.2} B a bucket of the {per_slot}.00 the request \
+                 column saved, over {one_arms} buckets -- {} B class now against {} B before, \
+                 {}",
+                class_of(narrow),
+                class_of(wide),
+                if shares_a_class { "the same class" } else { "DIFFERENT classes" }
             );
-            assert!(
-                kept < 1.0,
-                "{label} @ {records}: the boxed single-page arm kept {kept:.2} B a bucket of the \
-                 eight, over {one_arms} buckets ({} B before, {} B now). Both widths ask for the \
-                 same size class, so keeping a whole byte of them would mean the class rule stated \
-                 above is not the one this allocator uses -- and the whole-population figure would \
-                 then be a different mechanism than the one claimed",
-                one_before.chunk_bytes,
-                one_now.chunk_bytes
-            );
+            // BOTH DIRECTIONS, FROM THE CLASS RULE. The original form of this asserted only
+            // `kept < 1.0`, on the premise that the two widths share a class -- true when the step
+            // was 8, false now that it is 16. Asserting the premise's consequence in each branch is
+            // what stops the test from quietly describing a coincidence that has lapsed.
+            if shares_a_class {
+                assert!(
+                    kept < 1.0,
+                    "{label} @ {records}: the two widths share the {} B class, so the boxed arm must \
+                     round the saving away -- it kept {kept:.2} B a bucket ({} B before, {} B now), \
+                     which would mean the class rule derived above is not the one this allocator \
+                     uses",
+                    class_of(narrow),
+                    one_before.chunk_bytes,
+                    one_now.chunk_bytes
+                );
+            } else {
+                assert!(
+                    kept > 0.0,
+                    "{label} @ {records}: the two widths land in DIFFERENT classes ({} B against \
+                     {} B), so the boxed arm has to keep some of the saving -- it kept {kept:.2} B a \
+                     bucket ({} B before, {} B now). A difference of classes that buys nothing would \
+                     mean the chunk column is not reading the class the request landed in",
+                    class_of(narrow),
+                    class_of(wide),
+                    one_before.chunk_bytes,
+                    one_now.chunk_bytes
+                );
+            }
         } else {
             println!(
                 "    no single-page bucket at this range and size, so the arm that rounds the \
