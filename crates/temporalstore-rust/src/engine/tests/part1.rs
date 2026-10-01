@@ -3700,19 +3700,43 @@ fn binary_index_payload_round_trips_and_refuses_a_shape_it_cannot_read() {
     for (key, address) in &shard.strings {
         assert_eq!(decoded.strings.get(key), Some(address), "address changed for {key}");
     }
-    // `hashes` is deliberately NOT in the payload: it carries `#[serde(default,
-    // skip_serializing)]` because it is rebuildable from the durable bucket/block index on load,
-    // and duplicating it in every checkpoint is what that attribute exists to avoid. So the
-    // round-trip must drop it, and this asserts the drop rather than the impossible equality it
-    // asserted before -- which is why this test was failing on main.
-    assert!(
-        decoded.hashes.is_empty(),
-        "hashes must not ride the checkpoint; it is rebuilt on load, got {:?}",
-        decoded.hashes
+    // `hashes` RIDES THE PAYLOAD NOW, and this assertion is back to the exact round-trip it
+    // originally made. The history is the point: it asserted equality, was weakened to assert the
+    // DROP when `hashes` became `#[serde(default, skip_serializing)]`, and the drop is what stopped
+    // being true when the field became durable again. So the guard is retargeted a second time, in
+    // the direction that makes it stronger rather than weaker -- equality over the field map, not
+    // merely that something arrived.
+    //
+    // Exact, per field, for the reason the `strings` loop above is exact: a durable image has to
+    // come back as the SAME state and not a plausible one, and a length check alone would pass an
+    // image whose addresses had all moved.
+    assert_eq!(
+        decoded.hashes.len(),
+        shard.hashes.len(),
+        "the decoded image holds a different number of hash keys"
     );
+    for (key, fields) in &shard.hashes {
+        let got = decoded
+            .hashes
+            .get(key)
+            .unwrap_or_else(|| panic!("hash key {key} did not survive the round trip"));
+        assert_eq!(
+            got.len(),
+            fields.len(),
+            "hash key {key} came back with a different field count"
+        );
+        for (field, address) in fields.iter() {
+            assert_eq!(
+                got.get(field),
+                Some(address),
+                "hash field {key}/{field} changed across the round trip"
+            );
+        }
+    }
+    // THE DENOMINATOR. Every assertion above is satisfied by two empty maps.
     assert!(
         !shard.hashes.is_empty(),
-        "the shard under test must actually have hashes, or the assertion above proves nothing"
+        "the shard under test must actually have hashes, or the assertions above prove nothing"
     );
     assert_eq!(decoded.applied_wal_sequence, shard.applied_wal_sequence);
     assert_eq!(decoded.index_format_version, shard.index_format_version);
