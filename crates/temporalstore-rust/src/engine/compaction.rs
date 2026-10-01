@@ -819,12 +819,12 @@ pub(super) fn compact_container_pages_batched<'a>(
     routing_bucket: u32,
     elements: impl IntoIterator<Item = ContainerElementRef<'a>>,
     rewrite_stats: &mut CompactionRewriteStats,
-) -> Result<(), Status> {
+) -> Result<ContainerBatchRound, Status> {
     let Some(spelling) = super::container_pages::ElementKeySpelling::for_kind(model_id) else {
         // Not a kind whose pages name an element, so there is nothing to batch by. Never reached
         // from the arms below, which are the four container kinds; stated rather than asserted
         // because a fifth kind added to those arms should degrade to doing nothing, not panic.
-        return Ok(());
+        return Ok(ContainerBatchRound::default());
     };
     let target_bytes = container_batch_target_bytes();
 
@@ -837,6 +837,16 @@ pub(super) fn compact_container_pages_batched<'a>(
     let mut cold_in_batch = false;
     let mut batches = 0usize;
     let mut pages_folded = 0usize;
+    // THE DISTINCT SOURCE PAGES THIS ROUND TOOK ELEMENTS OFF, which is what the tombstone rule
+    // compares against the container's page count. `pages_folded` below cannot answer it: that is
+    // `destinations.len()` summed, one per ELEMENT, and #2027's whole purpose is that several
+    // elements share one page -- so it over-counts exactly where folding worked, and
+    // `may_drop_tombstones`' doc comment carries the resurrection that over-count causes.
+    //
+    // Recorded at the position rather than the address because the address is REPOINTED by
+    // `flush_container_batch` a few lines later; `append_position` is the pair that identifies the
+    // page it used to be, and it is the same ordering key the fold itself sorts on.
+    let mut source_pages: BTreeSet<(u64, u64)> = BTreeSet::new();
 
     // The object id every element of this object already carries. #2019 made it the OBJECT's rather
     // than one of its elements, which is what lets one page stand for several elements at all: a
@@ -876,6 +886,11 @@ pub(super) fn compact_container_pages_batched<'a>(
             )
         })?;
         let cold = !block_memory_resident(cache, shard_id, element.address, Some(routing_bucket));
+        // AFTER THE READ SUCCEEDED, so a page this round could not read is not counted as one it
+        // rewrote. The read failure propagates as an error two lines above and ends the round, but the
+        // tally is built for a caller that acts on it, and a count that included an unread page would
+        // claim a total rewrite that did not happen.
+        source_pages.insert(super::container_membership::append_position(element.address));
         if object_id.is_none() {
             object_id = element.address.object_id();
         }
@@ -931,7 +946,54 @@ pub(super) fn compact_container_pages_batched<'a>(
         batches += 1;
     }
     note_container_batch_round(batches, pages_folded);
-    Ok(())
+    Ok(ContainerBatchRound {
+        batches,
+        live_pages_rewritten: source_pages.len(),
+    })
+}
+
+/// What one container's batching round did, for the caller that decides about its tombstones.
+///
+/// RETURNED RATHER THAN COUNTED INTO A STATIC. `note_container_batch_round`'s two atomics are
+/// shard-wide totals a guard reads afterwards; a per-container decision cannot be made from a running
+/// total, and reading the atomics around each call would race every other shard compacting at the
+/// same time.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub(super) struct ContainerBatchRound {
+    /// Batches sealed for this container. The tombstone rule declines anything but exactly one.
+    pub(super) batches: usize,
+    /// DISTINCT source pages the round took elements off. Not an element count -- see `source_pages`.
+    pub(super) live_pages_rewritten: usize,
+}
+
+/// One container page's WHOLE bytes, for the fold that reads a page as a log of its items.
+///
+/// `None` FOR THE COMPONENT, AND THAT IS THE POINT. The element-wise reader beside this one names the
+/// component and so gets one item's value; `container_membership::derive_membership` needs the FRAME --
+/// every item on the page and each one's `deleted` flag -- because what it folds is the page's whole
+/// statement about membership, not one element's value. Naming a component here would hand back a
+/// value and the fold would see no frame at all, which it would count as `unframed` and refuse.
+///
+/// The bucket is derived by the CALLER from the object key over the shard's routing range, which is
+/// how the read path builds it; taking it from where a block is filed would differ for a block filed
+/// under a stale range and the miss would be a silent cold read.
+pub(super) fn read_container_page_for_fold(
+    cache: &MultiLayerCache,
+    block_store: &BlockStore,
+    shard_id: ShardId,
+    model_id: &str,
+    object_key: &str,
+    address: &BlockAddress,
+    routing_bucket: u32,
+) -> Option<Vec<u8>> {
+    read_block_bytes_for_compaction(
+        cache,
+        block_store,
+        shard_id,
+        address,
+        PageIdentity::of(shard_id, model_id, object_key, None),
+        Some(routing_bucket),
+    )
 }
 
 /// One element's VALUE out of the page its index entry names.

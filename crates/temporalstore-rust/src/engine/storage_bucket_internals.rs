@@ -3565,6 +3565,203 @@ pub(super) fn insert_container_tombstone_entry(
     shard.buckets_pending_flag_refresh.insert(routing_bucket);
 }
 
+/// Every page one container's index entries point at, split by whether the entry is a tombstone.
+///
+/// POSITIONS AS THE KEY, so the same page named by several entries counts ONCE. A folded page is named
+/// by one entry per element it absorbed -- that is what #2027 did -- so counting entries would say a
+/// container of one page had five, and the tombstone rule compares that count against what a round
+/// rewrote. `derive_membership` deduplicates for the same reason and on the same key.
+#[derive(Debug, Default, Clone)]
+pub(super) struct ContainerPageCensus {
+    /// Distinct pages the LIVE entries point at, with an address to read each by.
+    pub(super) live_pages: BTreeMap<(u64, u64), BlockAddress>,
+    /// Distinct pages the TOMBSTONE entries point at, with an address to read each by.
+    pub(super) tombstone_pages: BTreeMap<(u64, u64), BlockAddress>,
+    /// The components the tombstone entries name -- the ones a collection would drop.
+    pub(super) tombstone_components: Vec<String>,
+    /// The buckets those tombstone entries are filed under, which is where a sweep has to look.
+    pub(super) tombstone_buckets: BTreeSet<u32>,
+}
+
+impl ContainerPageCensus {
+    /// Every page of the container, live and tombstone, deduplicated across the two.
+    ///
+    /// A UNION AND NOT A SUM. A sum would double-count a position that somehow appeared on both
+    /// sides, and the rule's denominator must not be inflated: an inflated denominator makes
+    /// `pages_being_rewritten == pages_in_container` unreachable, which merely declines, but the same
+    /// arithmetic error with the terms the other way round is a resurrection. Union both ways.
+    pub(super) fn total_pages(&self) -> usize {
+        self.live_pages
+            .keys()
+            .chain(self.tombstone_pages.keys())
+            .collect::<BTreeSet<_>>()
+            .len()
+    }
+}
+
+/// The containers that have at least one tombstone entry, and every page each of them resolves to.
+///
+/// # WHY THIS WALK AND NOT `bucket_map` DIRECTLY
+///
+/// Through `collect_bucket_index_live_block_entries`, whose doc comment states the property this
+/// needs: "what this returns is what the bucket index WOULD say if nothing were released". A RELEASED
+/// bucket holds no block entries while its elements are still live, so a walk of `bucket_map` alone
+/// UNDER-COUNTS a container's pages -- and an under-counted denominator is not a safe error here. The
+/// round's rewritten count comes from the resident maps, which DO include a released bucket's
+/// elements, so both sides would be short by the same page and
+/// `pages_being_rewritten == pages_in_container` could hold while that page SURVIVES naming an element
+/// live. That is the resurrection, arrived at through an accounting shortcut.
+///
+/// # ONLY THE CONTAINERS THAT HAVE A TOMBSTONE
+///
+/// Keyed on the containers a collection could possibly act on, which on any store without pending
+/// removals is NONE -- so the common round allocates one empty map and reads no pages. That bounds
+/// what this change costs a store it cannot help, and it bounds the behaviour change to containers
+/// that actually hold a removal.
+pub(super) fn census_containers_with_tombstones(
+    shard: &ShardState,
+) -> BTreeMap<(StoredModelKind, Arc<str>), ContainerPageCensus> {
+    let entries = collect_bucket_index_live_block_entries(shard);
+    // PASS ONE NAMES THE SUBJECTS. A container with no tombstone is not censused at all, so the
+    // second pass cannot be the thing that decides which containers are in scope -- it would then be
+    // deciding from the same data that answers the question, which is how a denominator goes missing.
+    let mut subjects: BTreeSet<(StoredModelKind, Arc<str>)> = BTreeSet::new();
+    for entry in &entries {
+        if entry.deleted
+            && super::container_pages::ElementKeySpelling::for_kind(entry.kind.as_str()).is_some()
+        {
+            subjects.insert((entry.kind, entry.object_key.clone()));
+        }
+    }
+    if subjects.is_empty() {
+        return BTreeMap::new();
+    }
+    let mut census: BTreeMap<(StoredModelKind, Arc<str>), ContainerPageCensus> = BTreeMap::new();
+    for entry in &entries {
+        let subject = (entry.kind, entry.object_key.clone());
+        if !subjects.contains(&subject) {
+            continue;
+        }
+        let slot = census.entry(subject).or_default();
+        let position = super::container_membership::append_position(&entry.address);
+        if entry.deleted {
+            slot.tombstone_pages
+                .insert(position, entry.address.clone());
+            if let Some(component) = entry.component.as_deref() {
+                slot.tombstone_components.push(component.to_string());
+            }
+            if let Some(bucket) = entry.filed_bucket() {
+                slot.tombstone_buckets.insert(bucket);
+            }
+        } else {
+            slot.live_pages.insert(position, entry.address.clone());
+        }
+    }
+    census
+}
+
+/// Drop one container's tombstone entries, which makes their pages unreachable.
+///
+/// # THE CALLER HAS ALREADY DECIDED
+///
+/// `container_membership::tombstones_collectable` is the gate and it is asked BEFORE this runs. This
+/// function performs the drop and nothing else -- it re-decides nothing, so there is exactly one place
+/// the rule lives. Returns how many entries went, which is what the counter and the guard read.
+///
+/// # THE SWEEP SHAPE IS `upsert_bucket_index_block_inner`'S, DELIBERATELY
+///
+/// That function already removes a tombstone for a component -- it is how a re-add clears one -- and
+/// its predicate and its accounting are the ones this copies: match on
+/// `deleted && object_key && model_id && component`, and go through `BlockIndexMap::retain` with
+/// `block_slab_live` so each dropped entry is DISCHARGED from the live tally as it goes. Writing the
+/// removal any other way is what `BlockIndexMap::retain`'s own doc warns about: an address changed or
+/// dropped outside it leaves the slab counted live, and the reclaim path may then purge a slab the
+/// durable index still names.
+///
+/// A TOMBSTONE IS NEVER IN `object_block_lookup`, so there is nothing to unfile there --
+/// `insert_object_block_lookup` returns early on a deleted page, which the re-add sweep relies on too.
+///
+/// # WHAT THIS DELIBERATELY DOES NOT DO, AND WHY THAT IS SAFE HERE
+///
+/// `upsert_bucket_index_block_inner`'s branches follow their `retain` with
+/// `bucket.object_index.remove(&object_id)` when no page in the bucket names that object any more. This
+/// does not, and the reason is the CALLER'S ORDERING rather than the question not arising: the
+/// collection runs immediately before `rebuild_bucket_block_ownership`, which does `bucket_map.clear()`
+/// and rebuilds every bucket's `object_index` from scratch, so a stale entry left here cannot outlive
+/// the statement that follows it. Doing it here as well would need `shard_id` threaded in purely to
+/// recompute `stable_block_object_id` for a value that is about to be discarded.
+///
+/// THAT MAKES THIS FUNCTION ORDER-DEPENDENT, which is the cost of the choice and is stated so a future
+/// caller does not acquire it by accident. A second caller that does NOT rebuild afterwards has to
+/// clear the object index itself.
+pub(super) fn drop_container_tombstone_entries(
+    shard: &mut ShardState,
+    kind: StoredModelKind,
+    object_key: &str,
+    components: &[String],
+    buckets: &BTreeSet<u32>,
+) -> usize {
+    let mut dropped = 0usize;
+    for routing_bucket in buckets {
+        let Some(bucket) = shard.bucket_index.bucket_map.get_mut(routing_bucket) else {
+            continue;
+        };
+        let before = bucket.block_index.len();
+        bucket
+            .block_index
+            .retain(&mut shard.bucket_index.block_slab_live, |_, page| {
+                !(page.deleted
+                    && page.model_id == kind
+                    && &*page.object_key == object_key
+                    && page
+                        .component
+                        .as_deref()
+                        .is_some_and(|component| components.iter().any(|c| c == component)))
+            });
+        dropped += before.saturating_sub(bucket.block_index.len());
+        bucket.set_dirty(true);
+        bucket.dirty_generation = bucket.dirty_generation.saturating_add(1);
+        classify_bucket_layout_in_place(bucket);
+        shard.buckets_pending_flag_refresh.insert(*routing_bucket);
+    }
+    note_container_tombstones_collected(dropped);
+    dropped
+}
+
+static CONTAINER_TOMBSTONES_COLLECTED: std::sync::atomic::AtomicU64 =
+    std::sync::atomic::AtomicU64::new(0);
+static CONTAINER_TOMBSTONE_COLLECTIONS_DECLINED: std::sync::atomic::AtomicU64 =
+    std::sync::atomic::AtomicU64::new(0);
+
+fn note_container_tombstones_collected(entries: usize) {
+    CONTAINER_TOMBSTONES_COLLECTED.fetch_add(entries as u64, std::sync::atomic::Ordering::Relaxed);
+}
+
+/// A container whose tombstones this round looked at and did NOT collect.
+///
+/// COUNTED FOR THE SAME REASON THE REFUSAL ARMS ARE. "Nothing was collected" is the reading of both a
+/// round that found no container to collect from and a round that found one and declined it, and those
+/// are different facts -- the second is the rule doing its job and the first is a store with nothing
+/// pending.
+pub(super) fn note_container_tombstone_collection_declined() {
+    CONTAINER_TOMBSTONE_COLLECTIONS_DECLINED
+        .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+}
+
+/// (entries collected, containers declined) since the last reset.
+pub fn container_tombstone_collection_counts() -> (u64, u64) {
+    (
+        CONTAINER_TOMBSTONES_COLLECTED.load(std::sync::atomic::Ordering::Relaxed),
+        CONTAINER_TOMBSTONE_COLLECTIONS_DECLINED.load(std::sync::atomic::Ordering::Relaxed),
+    )
+}
+
+/// Forget the counts, so a test measures its own round.
+pub fn reset_container_tombstone_collection_counts() {
+    CONTAINER_TOMBSTONES_COLLECTED.store(0, std::sync::atomic::Ordering::Relaxed);
+    CONTAINER_TOMBSTONE_COLLECTIONS_DECLINED.store(0, std::sync::atomic::Ordering::Relaxed);
+}
+
 /// The same, with a say over whether an outcome is staged for the record.
 ///
 /// A block write produces an outcome, and this is where that outcome is produced -- so a caller
@@ -4437,9 +4634,15 @@ pub(super) fn rebuild_bucket_first_index(
     // WITHOUT THIS, A COMPACTION ROUND ERASED EVERY REMOVAL FROM THE PAGES. This function runs first
     // in the round and `rebuild_bucket_block_ownership` runs after it; both rebuild from the model
     // maps, and the tombstone count went to zero at this one. Driven by
-    // `a_removal_retains_one_entry_and_nothing_yet_collects_it`, whose denominator is
+    // `a_removal_retains_one_entry_and_a_split_round_does_not_collect_it`, whose denominator is
     // `tombstones_refiled_count` so that "nothing was dropped" cannot be confused with "nothing was
     // rebuilt".
+    //
+    // THE CARRY-OVER IS STILL NECESSARY NOW THAT A ROUND CAN COLLECT, and it is worth saying why they
+    // are not the same mechanism pulling in two directions. The collection runs ONCE, at the end of the
+    // round, and only for a container whose ENTIRE page set that round rewrote. This carry-over runs on
+    // every rebuild and keeps a tombstone that no collection has earned the right to drop. A round that
+    // collects nothing must still not lose one.
     //
     // The bucket each was FILED IN travels with it rather than being recomputed from the key: the
     // removal recorded that bucket because the outcome's `block_routing_bucket(key, 0, u32::MAX)` is a

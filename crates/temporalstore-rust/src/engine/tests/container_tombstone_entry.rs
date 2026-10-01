@@ -363,17 +363,40 @@ fn no_index_reader_answers_from_a_tombstone_entry() {
     );
 }
 
+/// A REMOVAL RETAINS ONE ENTRY, AND A ROUND THAT DOES NOT REWRITE THE WHOLE CONTAINER KEEPS IT.
+///
+/// # WHY THE FIXTURE IS OVER THE BATCH CAP, WHICH IT DID NOT USED TO BE
+///
+/// This test was `a_removal_retains_one_entry_and_nothing_yet_collects_it` over EIGHT members, and
+/// both halves of that name were true when it was written: nothing in production called the fold, so
+/// no round could collect a tombstone whatever it rewrote. A round now does -- the compaction round
+/// censuses the container's entries, asks `container_membership::tombstones_collectable`, and drops
+/// the tombstone entries when the rewrite was total -- so an eight-member container is collected and
+/// the old claim is false.
+///
+/// The fixture is therefore over `CONTAINER_BATCH_ELEMENT_CAP`, which makes the round seal TWO
+/// batches and the rule decline: a tombstone dropped into batch one is not seen by batch two. That
+/// keeps this test on the subject it was built for -- the entry COST, and the CARRY-OVER across
+/// `bucket_map.clear()` -- rather than turning it into a second copy of the collection guard.
+/// `container_tombstone_wiring::a_total_round_collects_a_containers_tombstones_and_a_split_round_does_not`
+/// drives the other verdict, and drives both in ONE round so neither is the gate answering the same
+/// way to everything.
+///
 /// rust-internal: drives SetAdd/SetRemove and counts index entries
 #[test]
-fn a_removal_retains_one_entry_and_nothing_yet_collects_it() {
+fn a_removal_retains_one_entry_and_a_split_round_does_not_collect_it() {
     let dir = tempfile::tempdir().expect("tempdir");
     let engine = engine_on(dir.path());
     load_on(&engine, "cte-cost");
 
     // THE COST IS STATED AS A NUMBER RATHER THAN DESCRIBED. A removal used to FREE an entry and now
     // retains one, so a workload that adds and removes distinct members holds one entry per element
-    // ever written rather than one per live element.
-    const MEMBERS: usize = 8;
+    // ever written rather than one per live element -- until a round rewrites the container whole.
+    //
+    // OVER THE ELEMENT CAP ON PURPOSE, so the round below splits and the rule declines. Expressed
+    // against the constant rather than as a literal, so a change to the cap moves this fixture with it
+    // instead of silently making the round single-batch and this test a duplicate of the collecting one.
+    const MEMBERS: usize = crate::engine::CONTAINER_BATCH_ELEMENT_CAP + 30;
     const REMOVED: usize = 3;
     let key = "cte-cost-set";
     let members: Vec<Vec<u8>> = (0..MEMBERS)
@@ -453,7 +476,13 @@ fn a_removal_retains_one_entry_and_nothing_yet_collects_it() {
     //
     // The source is still asserted, because it is what makes carrying them necessary rather than
     // merely sufficient: the resident map must hold the live members and NONE of the removed ones.
+    //
+    // AND THE ROUND BELOW IS A SPLIT ONE, so the collection the round can now perform declines and the
+    // carry-over is what this measures. The decline is asserted on its own COUNTER rather than inferred
+    // from the tombstones surviving: "they survived" is equally what a container the census never
+    // looked at produces, and those are different facts.
     crate::engine::reset_container_batch_counts();
+    crate::engine::storage_bucket_internals::reset_container_tombstone_collection_counts();
     crate::engine::storage_bucket_internals::reset_tombstones_refiled_count();
     engine
         .compact_shard_blocks(1)
@@ -482,10 +511,33 @@ fn a_removal_retains_one_entry_and_nothing_yet_collects_it() {
         "  the resident map the rebuild reads: {resident_live} member(s), holds a removed one = \
          {resident_holds_removed}"
     );
+    let (collected, declined) =
+        crate::engine::storage_bucket_internals::container_tombstone_collection_counts();
+    println!("  collection: {collected} entries collected, {declined} container(s) declined");
     assert!(
         batches > 0 && folded > 0,
         "DENOMINATOR: the round folded nothing ({batches} batches, {folded} pages), so it says \
          nothing about what a round does to a tombstone"
+    );
+    // THE FIXTURE'S WHOLE POINT, asserted rather than assumed: the round must have SPLIT. A
+    // single-batch round over this container would be collected, and every assertion below would then
+    // be measuring the wrong verdict -- which is exactly what happened to this test's previous shape
+    // when the collection was wired.
+    assert!(
+        batches > 1,
+        "THE ROUND DID NOT SPLIT ({batches} batch). This fixture is over \
+         CONTAINER_BATCH_ELEMENT_CAP so that it does; one batch means the cap moved and this test is \
+         now driving the COLLECTING verdict under a name that says otherwise."
+    );
+    assert_eq!(
+        0, collected,
+        "A SPLIT ROUND COLLECTED {collected} tombstone entries. The rule's second term is that a \
+         single batch is required, because a tombstone dropped into batch one is not seen by batch two."
+    );
+    assert!(
+        declined > 0,
+        "NOTHING WAS DECLINED, so the tombstones surviving below is not the gate declining -- it would \
+         be a container the census never looked at, which has the same appearance and a different cause"
     );
     assert!(
         refiled > 0,

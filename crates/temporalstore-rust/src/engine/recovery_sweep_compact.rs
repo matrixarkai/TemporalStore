@@ -1503,6 +1503,22 @@ fn expiry_scan_budget(limit: usize) -> usize {
             ),
         };
 
+        // WHAT EACH CONTAINER'S PAGES ARE, BEFORE THIS ROUND MOVES ANY OF THEM.
+        //
+        // Taken here and not inside the arms below for a borrow reason that is also the right
+        // ordering: the arms hold `shard.sets` and the other three mutably, so the bucket index is
+        // unreachable from inside them -- and the census has to describe the state the round STARTED
+        // from anyway, because that is the denominator the tombstone rule compares what the round
+        // rewrote against.
+        //
+        // EMPTY ON ANY STORE WITH NO PENDING REMOVAL, which is the ordinary case: the walk finds no
+        // deleted container entry and returns one empty map, so no page is read and nothing below
+        // runs. A store that HAS removals pays one index walk per round.
+        let container_census = census_containers_with_tombstones(shard);
+        // What each container's round actually did, collected inside the closure and acted on after
+        // it, because the decision needs `shard` back.
+        let mut container_rounds: Vec<(StoredModelKind, std::sync::Arc<str>, ContainerBatchRound)> =
+            Vec::new();
         // Relocate every model's live pages onto the freshly rolled slab. A mid-way failure
         // (append ENOSPC / an unreadable torn page) is caught below so we can durably commit the
         // consistent partial state instead of leaving the volatile index half-advanced but
@@ -1544,7 +1560,7 @@ fn expiry_scan_budget(limit: usize) -> usize {
         // these four arms is already standing on exactly one, so it says so once.
         for (key, fields) in shard.hashes.iter_mut() {
             let routing_bucket = bucket_of(key);
-            compact_container_pages_batched(
+            let round = compact_container_pages_batched(
                 &self.block_store,
                 &self.cache,
                 shard_id,
@@ -1558,10 +1574,11 @@ fn expiry_scan_budget(limit: usize) -> usize {
                 }),
                 &mut rewrite_stats,
             )?;
+            container_rounds.push((stored_model_kind("hash"), key.as_str().into(), round));
         }
         for (key, members) in shard.zsets.iter_mut() {
             let routing_bucket = bucket_of(key);
-            compact_container_pages_batched(
+            let round = compact_container_pages_batched(
                 &self.block_store,
                 &self.cache,
                 shard_id,
@@ -1581,10 +1598,11 @@ fn expiry_scan_budget(limit: usize) -> usize {
                 }),
                 &mut rewrite_stats,
             )?;
+            container_rounds.push((stored_model_kind("zset"), key.as_str().into(), round));
         }
         for (key, elements) in shard.lists.iter_mut() {
             let routing_bucket = bucket_of(key);
-            compact_container_pages_batched(
+            let round = compact_container_pages_batched(
                 &self.block_store,
                 &self.cache,
                 shard_id,
@@ -1602,10 +1620,11 @@ fn expiry_scan_budget(limit: usize) -> usize {
                 }),
                 &mut rewrite_stats,
             )?;
+            container_rounds.push((stored_model_kind("list"), key.as_str().into(), round));
         }
         for (key, members) in shard.sets.iter_mut() {
             let routing_bucket = bucket_of(key);
-            compact_container_pages_batched(
+            let round = compact_container_pages_batched(
                 &self.block_store,
                 &self.cache,
                 shard_id,
@@ -1619,6 +1638,7 @@ fn expiry_scan_budget(limit: usize) -> usize {
                 }),
                 &mut rewrite_stats,
             )?;
+            container_rounds.push((stored_model_kind("set"), key.as_str().into(), round));
         }
         for (key, series) in shard.features.iter_mut() {
             let routing_bucket = bucket_of(key);
@@ -1819,6 +1839,83 @@ fn expiry_scan_budget(limit: usize) -> usize {
                 .expect("compaction round lock poisoned")
                 .insert(shard_id, (previous_block_slab_id, target_block_slab_id));
             return Err(err);
+        }
+
+        // COLLECT THE TOMBSTONES THIS ROUND EARNED THE RIGHT TO, AND NO OTHERS.
+        //
+        // # WHY HERE
+        //
+        // AFTER the failure handler above, so a round that failed partway collects NOTHING: that
+        // handler returns, and a partial round by definition left pages where they were, which is the
+        // one state the rule must refuse. BEFORE `rebuild_bucket_first_index` below, so the entries
+        // this drops are gone before the index is rebuilt, the ownership map is recomputed and the
+        // report is taken -- a collection the rebuild could not see would be a volatile index
+        // disagreeing with the durable one, which is the desync the handler above exists for.
+        //
+        // # WHAT MAKES IT SAFE, IN ONE PLACE
+        //
+        // `tombstones_collectable` is the whole gate and it is asked per container. It refuses unless
+        // the derivation over that container's ENTIRE page set was TRUSTED -- which a `LiveOnly` page
+        // alone is enough to deny, because such a page cannot state a removal and so makes the fold a
+        // superset that would put the removed element back -- and unless the round rewrote every page
+        // of the container in exactly one batch, and unless the pages agree every component being
+        // dropped is gone.
+        //
+        // THE COUNTS ARE IN DISTINCT PAGES. `ContainerBatchRound::live_pages_rewritten` is a set
+        // cardinality and not `pages_folded`, which counts ELEMENTS; `may_drop_tombstones`' doc
+        // comment carries the resurrection that confusing the two causes.
+        if !container_census.is_empty() {
+            let (start_bucket, end_bucket) = (start_routing_bucket, end_routing_bucket);
+            for (kind, object_key, round) in &container_rounds {
+                let Some(census) = container_census.get(&(*kind, object_key.clone())) else {
+                    // No tombstone for this container, so there is nothing to collect and nothing to
+                    // decline -- it is not a decision, so it is not counted as one.
+                    continue;
+                };
+                let routing_bucket = block_routing_bucket(object_key, start_bucket, end_bucket);
+                let pages: Vec<BlockAddress> = census
+                    .live_pages
+                    .values()
+                    .chain(census.tombstone_pages.values())
+                    .cloned()
+                    .collect();
+                let derived = container_membership::derive_trusted_membership(
+                    kind.as_str(),
+                    pages,
+                    |address| {
+                        read_container_page_for_fold(
+                            &self.cache,
+                            &self.block_store,
+                            shard_id,
+                            kind.as_str(),
+                            object_key,
+                            address,
+                            routing_bucket,
+                        )
+                    },
+                );
+                let facts = container_membership::ContainerRoundFacts {
+                    live_pages: census.live_pages.len(),
+                    live_pages_rewritten: round.live_pages_rewritten,
+                    tombstone_pages: census.tombstone_pages.len(),
+                    batches: round.batches,
+                };
+                if container_membership::tombstones_collectable(
+                    &facts,
+                    derived.as_ref(),
+                    &census.tombstone_components,
+                ) {
+                    drop_container_tombstone_entries(
+                        shard,
+                        *kind,
+                        object_key,
+                        &census.tombstone_components,
+                        &census.tombstone_buckets,
+                    );
+                } else {
+                    note_container_tombstone_collection_declined();
+                }
+            }
         }
 
         // A round that spent its budget stays open, so the next one fills the same slab instead

@@ -58,6 +58,30 @@
 //! NOTHING -- not "present", not "absent" -- and it is counted separately so a store still holding
 //! pre-#2028 pages is visible as such rather than being read as authoritative. Its items are still
 //! applied as live, which is correct: they were written as live and the shape has no other kind.
+//!
+//! AND THE CALLER NOW REFUSES ONE, which is what the count was missing. Counting it was never the
+//! protection it looked like: `live_only_pages` had THREE occurrences -- the field, its increment,
+//! and a `println!` in one test -- so no production decision read it, and a derivation over a v1
+//! page returned a SUPERSET of the membership, resurrecting every element a removal had retired,
+//! while `is_complete` answered TRUE because nothing had failed. [`derive_trusted_membership`] is the
+//! entry point that answers `None` for it, [`DerivedMembership::is_authoritative`] is the predicate,
+//! and [`MembershipDerivePath`] counts BOTH arms so a refusal is not mistaken for a container that
+//! had no pages.
+//!
+//! # NOTHING MIGRATES A V1 PAGE, SO THE REFUSAL IS NOT A TRANSIENT STATE
+//!
+//! There is no upgrade pass. `encode_container_page` is the only writer of either magic and it writes
+//! the SECOND unconditionally, so every page written from #2040 onward is v2 and no code rewrites an
+//! existing v1 page *because* it is v1. A v1 page is replaced only incidentally, when a compaction
+//! round happens to relocate the elements on it and re-encodes them -- and `should_relocate` declines
+//! a page already on the target slab and, on a periodic round, every page outside the drain set. So a
+//! container can hold a v1 page indefinitely.
+//!
+//! THE CONSEQUENCE IS A BOUND ON EVERYTHING DOWNSTREAM, and it is stated here rather than implied: a
+//! store still holding v1 pages can NEVER have a trusted derivation over the containers that hold
+//! them, so page-derived membership is a property a store EARNS by having been fully rewritten, not
+//! one it has because the binary is new. `membership_derive_path_counts`' second element is how an
+//! operator finds out which kind of store they have.
 
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -109,6 +133,107 @@ impl DerivedMembership {
     pub(super) fn failures(&self) -> usize {
         self.read_failures + self.undecodable + self.unframed + self.unrenderable_items
     }
+
+    /// Whether this derivation STATES the membership, rather than merely not having failed.
+    ///
+    /// # A DIFFERENT QUESTION FROM `is_complete`, AND NOT FOLDED INTO IT
+    ///
+    /// [`Self::is_complete`] asks about the READ: was every page this object resolves to fetched and
+    /// walked. A `LiveOnly` page is fetched perfectly and walked perfectly. What it cannot do is
+    /// state a REMOVAL -- `container_pages`' own words for the first shape are "Every item is live;
+    /// the shape cannot say otherwise" -- so a derivation that saw one is a SUPERSET of the
+    /// membership: every element any page ever named live, including the ones a later removal
+    /// retired.
+    ///
+    /// Folding the two would make a v1 page read as a read FAILURE, which it is not, and would move
+    /// what `is_complete`'s four counters mean under the guards that already assert them at zero.
+    /// Two predicates, two questions, and a caller that must not act on a superset asks this one.
+    ///
+    /// # WHAT WAS WRONG BEFORE THIS PREDICATE EXISTED
+    ///
+    /// `live_only_pages` was incremented and counted and NOTHING DECIDED ANYTHING WITH IT -- its
+    /// three occurrences on main were this field, that increment, and one `println!` in a test. So a
+    /// derivation over a pre-#2040 page resurrected every element a removal had retired and reported
+    /// itself COMPLETE while doing it, because `is_complete` answers true for a page that read fine.
+    /// The superset was not a risk the caller accepted; it was one no caller could see.
+    pub(super) fn is_authoritative(&self) -> bool {
+        self.is_complete() && self.live_only_pages == 0
+    }
+}
+
+/// WHICH WAY A DERIVATION OVER A CONTAINER'S PAGES WENT.
+///
+/// # WHY A COUNTED REFUSAL, AND NOT AN `Err` AND NOT A BARE `Option`
+///
+/// Shaped on [`super::persistence::IndexLoadPath`], which exists for exactly this class of problem
+/// and says so: "the refusal is a `return Ok(None)` that the caller cannot tell from an absent
+/// index". The same two states collide here. A derivation REFUSED because a v1 page is present and a
+/// derivation over a container with NO PAGES both hand the caller nothing, and they are opposites --
+/// the first is a container whose tombstones can never be collected and whose membership cannot be
+/// trusted, the second is a container with nothing to collect and nothing to distrust. One counter
+/// each is what makes them different facts rather than one silence.
+///
+/// NOT AN `Err`: there is no message a caller can act on and nothing to propagate. The only correct
+/// response to any refusal is to keep what the index already said, which is what the caller would
+/// have done anyway, so an error would be a `Result` every call site discards.
+///
+/// NOT A BARE `Option`: that is the mistake above, with the type system's blessing.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MembershipDerivePath {
+    /// Every page was read, walked, and carried the SECOND shape. The membership may be acted on.
+    Trusted,
+    /// At least one page carried the FIRST shape, which cannot state a removal, so the derivation is
+    /// a superset of the membership. See [`DerivedMembership::is_authoritative`].
+    RefusedLiveOnlyPage,
+    /// A page could not be read, could not be walked as a frame, was not framed at all, or named an
+    /// element its own page's spelling could not render back. Refused for the reason
+    /// [`DerivedMembership::is_complete`] gives: such a derivation can be over-complete as easily as
+    /// under-complete, so there is no direction to fail safely in.
+    RefusedIncomplete,
+    /// The container resolved to no readable page at all, or to a kind whose pages carry no element
+    /// key. NOT A REFUSAL: nothing was derived because there was nothing to derive.
+    NoPages,
+}
+
+static MEMBERSHIP_DERIVES_TRUSTED: std::sync::atomic::AtomicU64 =
+    std::sync::atomic::AtomicU64::new(0);
+static MEMBERSHIP_DERIVES_REFUSED_LIVE_ONLY: std::sync::atomic::AtomicU64 =
+    std::sync::atomic::AtomicU64::new(0);
+static MEMBERSHIP_DERIVES_REFUSED_INCOMPLETE: std::sync::atomic::AtomicU64 =
+    std::sync::atomic::AtomicU64::new(0);
+static MEMBERSHIP_DERIVES_NO_PAGES: std::sync::atomic::AtomicU64 =
+    std::sync::atomic::AtomicU64::new(0);
+
+fn note_membership_derive(path: MembershipDerivePath) {
+    let counter = match path {
+        MembershipDerivePath::Trusted => &MEMBERSHIP_DERIVES_TRUSTED,
+        MembershipDerivePath::RefusedLiveOnlyPage => &MEMBERSHIP_DERIVES_REFUSED_LIVE_ONLY,
+        MembershipDerivePath::RefusedIncomplete => &MEMBERSHIP_DERIVES_REFUSED_INCOMPLETE,
+        MembershipDerivePath::NoPages => &MEMBERSHIP_DERIVES_NO_PAGES,
+    };
+    counter.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+}
+
+/// (trusted, refused-live-only, refused-incomplete, no-pages) since the last reset.
+///
+/// A TUPLE AND NOT A SUM, for the reason `index_load_path_counts` gives: a guard holding only the
+/// total could not tell a container that was trusted from one that was refused, which is the entire
+/// distinction this exists to draw.
+pub fn membership_derive_path_counts() -> (u64, u64, u64, u64) {
+    (
+        MEMBERSHIP_DERIVES_TRUSTED.load(std::sync::atomic::Ordering::Relaxed),
+        MEMBERSHIP_DERIVES_REFUSED_LIVE_ONLY.load(std::sync::atomic::Ordering::Relaxed),
+        MEMBERSHIP_DERIVES_REFUSED_INCOMPLETE.load(std::sync::atomic::Ordering::Relaxed),
+        MEMBERSHIP_DERIVES_NO_PAGES.load(std::sync::atomic::Ordering::Relaxed),
+    )
+}
+
+/// Forget the counts, so a test measures its own derivations rather than the suite before it.
+pub fn reset_membership_derive_path_counts() {
+    MEMBERSHIP_DERIVES_TRUSTED.store(0, std::sync::atomic::Ordering::Relaxed);
+    MEMBERSHIP_DERIVES_REFUSED_LIVE_ONLY.store(0, std::sync::atomic::Ordering::Relaxed);
+    MEMBERSHIP_DERIVES_REFUSED_INCOMPLETE.store(0, std::sync::atomic::Ordering::Relaxed);
+    MEMBERSHIP_DERIVES_NO_PAGES.store(0, std::sync::atomic::Ordering::Relaxed);
 }
 
 /// The append position of a page, which is the order its items are applied in.
@@ -216,6 +341,57 @@ where
     derived
 }
 
+/// Fold a container's pages into the membership they state, and REFUSE one that cannot be trusted.
+///
+/// # THE PRODUCTION ENTRY POINT, AND WHY IT IS A SECOND FUNCTION
+///
+/// [`derive_membership`] is the FOLD: it answers whatever the pages said, counts everything that
+/// went wrong, and judges nothing. That is the right shape for it -- a guard wants the counts and
+/// wants to see a superset for itself, which is how
+/// `a_live_only_page_makes_the_derivation_a_superset_and_the_caller_refuses_it` drives this at all.
+/// This is the function that DECIDES, and every production caller goes through it so that the
+/// decision is in one place rather than re-derived at each site from the raw counters.
+///
+/// # THE ORDER OF THE ARMS IS PART OF THE CONTRACT
+///
+/// A derivation can be incomplete AND have seen a v1 page. `RefusedIncomplete` is noted first,
+/// because it is the stronger statement: an incomplete derivation is unusable whatever the shapes
+/// were, while a complete v1 derivation is a precisely known superset. Exactly one arm is noted per
+/// call, so the four counters sum to the number of derivations and a guard can floor them against a
+/// denominator it drove itself. `a_derivation_that_is_both_incomplete_and_live_only_counts_once_as_incomplete`
+/// pins the choice, so a later reader changing the order has to change a test that says why.
+///
+/// `NoPages` RETURNS `None` TOO, and that is not the same as a refusal collapsing into it: the two
+/// hand back the same value because there is nothing to act on either way, and they are told apart by
+/// the COUNTER, which is the whole reason [`MembershipDerivePath`] exists.
+pub(super) fn derive_trusted_membership<F>(
+    kind: &str,
+    pages: impl IntoIterator<Item = BlockAddress>,
+    read_page: F,
+) -> Option<DerivedMembership>
+where
+    F: FnMut(&BlockAddress) -> Option<Vec<u8>>,
+{
+    let derived = derive_membership(kind, pages, read_page);
+    if !derived.is_complete() {
+        note_membership_derive(MembershipDerivePath::RefusedIncomplete);
+        return None;
+    }
+    if derived.live_only_pages > 0 {
+        note_membership_derive(MembershipDerivePath::RefusedLiveOnlyPage);
+        return None;
+    }
+    if derived.pages_read == 0 {
+        note_membership_derive(MembershipDerivePath::NoPages);
+        return None;
+    }
+    // ASSERTED RATHER THAN ASSUMED, because this is the one arm that hands back a membership a
+    // caller will act on, and the two predicates are maintained separately.
+    debug_assert!(derived.is_authoritative());
+    note_membership_derive(MembershipDerivePath::Trusted);
+    Some(derived)
+}
+
 /// Whether a compaction round may DROP the tombstones it is rewriting.
 ///
 /// # THE RULE
@@ -249,14 +425,27 @@ where
 /// question does not arise because nothing survives to name anything. Both are this rule: a tombstone
 /// goes when the rewrite is total.
 ///
-/// # A NOTE ON WHAT THIS TREE'S FOLD CAN CURRENTLY SEE
+/// # THE WALK THAT OBEYS IT NOW EXISTS, AND WHAT IT HAD TO ADD
 ///
-/// `compact_container_pages_batched` takes its elements from the RESIDENT maps (`shard.sets` and the
-/// other three), and a removed element is not in them. So the fold does not visit a tombstone at all
-/// today: it neither collects one nor risks dropping one, and a tombstone survives every round
-/// untouched. That is SAFE and it is not collection -- tombstones accumulate until something walks
-/// the index rather than the resident map. This function is the rule that walk will have to obey, and
-/// it is written and driven now so that the walk cannot be added without it.
+/// This paragraph used to say the fold could not see a tombstone: `compact_container_pages_batched`
+/// takes its elements from the RESIDENT maps (`shard.sets` and the other three) and a removed element
+/// is not in them, so a round neither collected a tombstone nor risked dropping one. That is still
+/// true of the ELEMENT walk; what changed is that the compaction round now ALSO censuses the
+/// container's index entries, which is where the tombstones are, and
+/// [`tombstones_collectable`] is the gate it asks. See that function for the two terms this rule does
+/// not supply on its own.
+///
+/// # THE UNIT OF BOTH COUNTS IS A DISTINCT PAGE, AND GETTING THAT WRONG RESURRECTS
+///
+/// Stated here because the obvious number to hand this function is the wrong one. The compactor's own
+/// `pages_folded` counts ELEMENTS whose address it repointed -- it is `destinations.len()`, one per
+/// element -- and several elements share one batched page, so it is larger than the page count
+/// whenever #2027's folding did anything at all. Pass it as `pages_being_rewritten` and the comparison
+/// is an element count against a page count, which can COINCIDE: a container of pages A(x, y, z),
+/// B(m live, w live) and T(not m) has three pages, and a round that relocates x, y and z while
+/// `should_relocate` declines w reports three -- so the rule says the rewrite was total while B
+/// SURVIVES SAYING `m` IS LIVE, and dropping T resurrects `m`. The caller therefore counts DISTINCT
+/// SOURCE PAGE POSITIONS, not elements.
 pub(super) fn may_drop_tombstones(
     pages_in_container: usize,
     pages_being_rewritten: usize,
@@ -270,4 +459,94 @@ pub(super) fn may_drop_tombstones(
     pages_in_container > 0
         && pages_being_rewritten == pages_in_container
         && batches_this_round == 1
+}
+
+/// What one container's compaction round did, in the unit [`may_drop_tombstones`] asks for.
+///
+/// LIVE AND TOMBSTONE PAGES ARE SEPARATE FIELDS rather than one total, because the round rewrites the
+/// two for different reasons and only one of them is conditional. Every tombstone page of the
+/// container goes if the collection goes -- that is what collecting means -- while a LIVE page goes
+/// only if `should_relocate` accepted it and the batch held. Summing them before this type would hide
+/// which half fell short.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) struct ContainerRoundFacts {
+    /// Distinct pages the container's LIVE entries point at, before the round moved anything.
+    pub(super) live_pages: usize,
+    /// How many of those the round actually read and repointed away from. DISTINCT PAGES, not
+    /// elements -- see [`may_drop_tombstones`] for the resurrection the element count causes.
+    pub(super) live_pages_rewritten: usize,
+    /// Distinct pages the container's TOMBSTONE entries point at.
+    pub(super) tombstone_pages: usize,
+    /// Batches this round sealed for this container. More than one and the rule declines.
+    pub(super) batches: usize,
+}
+
+/// Whether this round may drop this container's tombstones -- the FULL gate, not just the rule.
+///
+/// # THREE TERMS, AND [`may_drop_tombstones`] IS ONLY ONE OF THEM
+///
+/// The rule answers "was the rewrite total", which is a question about COUNTS. Two things it cannot
+/// see have to hold as well, and both of them are about what the pages SAY:
+///
+///   1. THE DERIVATION MUST BE TRUSTED. `derived` is `None` whenever
+///      [`derive_trusted_membership`] refused -- most importantly for a `LiveOnly` page, which cannot
+///      state a removal and so makes the fold a SUPERSET. Dropping a tombstone on the strength of a
+///      superset is the resurrection this whole stage exists to close: the v1 page still names the
+///      element live, nothing else now says otherwise, and the next derivation puts it back. This is
+///      the term that makes the collection depend on the refusal rather than merely coexist with it.
+///   2. EVERY COMPONENT BEING DROPPED MUST BE ONE THE PAGES AGREE IS GONE. A tombstone entry whose
+///      component is NOT in `derived.removed` means some page in the set states that element LIVE
+///      later than the tombstone -- a re-add, which `derive_membership`'s third sequence is entirely
+///      about. Its tombstone is already spent and dropping it is harmless, but dropping it *because
+///      the round was total* while treating the element as removed is not, so the conservative answer
+///      is to decline the whole container and let the next round see a simpler state.
+///
+/// A CONJUNCTION AND NOT A SCORE. None of the three is weighted or defaulted.
+///
+/// # HOW MUCH OF THE WORK EACH TERM ACTUALLY DOES, STATED HONESTLY
+///
+/// It would be easy to present all three as equally load-bearing and they are not. IF the denominator
+/// is right -- if `facts.live_pages` really is every page the container's live entries point at -- then
+/// a total rewrite leaves nothing behind but the round's own fresh v2 batch, holding exactly the
+/// resident live elements, and no derivation over it can resurrect anything. On that assumption terms
+/// 1 and 2 are DEFENCE IN DEPTH rather than necessity.
+///
+/// They are kept because that assumption is a property no type enforces. The denominator comes from a
+/// census of the INDEX and the rewritten count comes from a walk of the RESIDENT MAPS, and nothing
+/// makes those two populations agree -- they are built by different code from different sources. A
+/// container holding an element in one and not the other makes the two counts disagree, and the
+/// failure is silent in both directions. Term 1 then refuses anything the pages cannot vouch for, and
+/// term 2 refuses any component the pages do not actually say is gone. The cost of both is two
+/// predicates and a page read per container that has a tombstone; the cost of being wrong is a member
+/// coming back.
+pub(super) fn tombstones_collectable(
+    facts: &ContainerRoundFacts,
+    derived: Option<&DerivedMembership>,
+    components_being_dropped: &[String],
+) -> bool {
+    let Some(derived) = derived else {
+        return false;
+    };
+    // BELT AND BRACES, and not redundant: `derive_trusted_membership` is the only producer of a
+    // `Some` here today, so this cannot fire -- but it is the invariant the two terms below rest on,
+    // and a second producer added later would otherwise slip past both.
+    if !derived.is_authoritative() {
+        return false;
+    }
+    if components_being_dropped.is_empty() {
+        // Nothing to collect. Declining rather than returning true keeps "this round collected" a
+        // statement that something was actually dropped.
+        return false;
+    }
+    if !components_being_dropped
+        .iter()
+        .all(|component| derived.removed.contains(component))
+    {
+        return false;
+    }
+    may_drop_tombstones(
+        facts.live_pages + facts.tombstone_pages,
+        facts.live_pages_rewritten + facts.tombstone_pages,
+        facts.batches,
+    )
 }

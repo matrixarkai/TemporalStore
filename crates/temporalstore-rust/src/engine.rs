@@ -4885,13 +4885,25 @@ fn mark_bucket_index_block_deleted_with(
 /// `(object_key, model_id, component)`, so writing an element back CLEARS its tombstone as a side
 /// effect of behaviour that predates tombstones -- five add/remove cycles on one member leave one
 /// entry, which `a_re_add_clears_the_tombstone_entry_so_churn_on_one_element_does_not_accumulate`
-/// drives. `a_removal_retains_one_entry_and_nothing_yet_collects_it` measures the other half.
+/// drives. `a_removal_retains_one_entry_and_a_split_round_does_not_collect_it` measures the other
+/// half.
 ///
-/// AND NOTHING YET COLLECTS ONE, which is the part it would be easy to imply otherwise.
+/// AND A COMPACTION ROUND NOW COLLECTS ONE, WHEN IT HAS EARNED THE RIGHT TO. This paragraph used to
+/// say nothing did, and the reason it gave is still true of the ELEMENT walk:
 /// `compact_container_pages_batched` takes its elements from the RESIDENT maps and those do not hold
-/// removed elements, so a fold round cannot see a tombstone: it neither collects one nor risks
-/// dropping one. `container_membership::may_drop_tombstones` is the rule a walk that CAN see them will
-/// have to obey, written and driven now so it cannot be added without one.
+/// removed elements, so the fold cannot see a tombstone. What the round now also does is CENSUS the
+/// container's index entries, which is where the tombstones are, and ask
+/// `container_membership::tombstones_collectable` -- the rule `may_drop_tombstones` states, AND that
+/// the derivation over the container's whole page set was trusted, AND that the pages agree each
+/// component being dropped is gone. So the bound on the cost is no longer "one entry per distinct
+/// element currently removed, for ever": it is that, until a round rewrites the container whole.
+///
+/// WHAT STILL ACCUMULATES, because it would be easy to read the above as a solved problem. A container
+/// whose every member has been removed has NO live elements, so the round seals no batch for it, so
+/// `batches_this_round == 1` is false and its tombstones are never collected -- which is precisely the
+/// case `compaction_action_for_policy` names `drop_tombstones`. A container larger than one batch is
+/// never collected either. The cost is bounded for the containers a round can rewrite whole, and
+/// unbounded for the rest.
 ///
 /// That is the price of the pages being authoritative at all, and it is the same price the comparison
 /// design pays in page bytes rather than entry bytes.

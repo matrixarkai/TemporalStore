@@ -201,4 +201,5 @@ mod view_rebuild_page_read_failures;
 mod folded_page_membership;
 mod container_tombstone_collection;
 mod container_tombstone_entry;
+mod container_tombstone_wiring;
 mod tombstone_reload_path;
