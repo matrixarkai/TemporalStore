@@ -3524,6 +3524,21 @@ pub struct StorageManagerStageReport {
     pub eviction_pressure_after: u64,
     #[serde(default)]
     pub eviction_cooldown: bool,
+    /// Buckets whose resident block list the evict stage RELEASED this round, and buckets it tried
+    /// and was refused.
+    ///
+    /// Carried here because this is the stage report that gets exported. The eviction report has
+    /// held these three numbers since the release path landed, and the periodic scheduler throws
+    /// that report away -- so a release and a round that refused every candidate reached an
+    /// operator as the same thing: a resident-bytes gauge that did or did not move. A gauge that
+    /// did not move cannot distinguish "nothing needed releasing" from "every candidate was
+    /// refused", which is the distinction worth paging on.
+    #[serde(default)]
+    pub eviction_buckets_released: usize,
+    #[serde(default)]
+    pub eviction_blocks_released: usize,
+    #[serde(default)]
+    pub eviction_release_refused: usize,
     #[serde(default)]
     pub dropped_object_count: usize,
     #[serde(default)]

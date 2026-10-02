@@ -288,6 +288,12 @@ fn append_storage_manager_cycle_metrics(out: &mut String, report: &StorageManage
             ),
             ("dirty_slots", stage.dirty_bucket_count as u64),
             ("dumped_slots", stage.dumped_bucket_count as u64),
+            // The evict stage's actuator, which had no exported row at all. Named "buckets"
+            // rather than following the older "slots" spelling beside it: these are new series
+            // and the vocabulary is bucket.
+            ("eviction_buckets_released", stage.eviction_buckets_released as u64),
+            ("eviction_blocks_released", stage.eviction_blocks_released as u64),
+            ("eviction_release_refused", stage.eviction_release_refused as u64),
             ("wal_records_removed", stage.wal_records_removed as u64),
             (
                 // AN UPPER BOUND, not an exact count, and published as one on purpose.

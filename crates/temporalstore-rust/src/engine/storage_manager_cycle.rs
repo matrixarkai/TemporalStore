@@ -932,6 +932,18 @@ impl TemporalEngine {
                 .as_ref()
                 .map(|report| report.cooldown)
                 .unwrap_or(false),
+            eviction_buckets_released: eviction_report
+                .as_ref()
+                .map(|report| report.bucket_index_buckets_released)
+                .unwrap_or_default(),
+            eviction_blocks_released: eviction_report
+                .as_ref()
+                .map(|report| report.bucket_index_blocks_released)
+                .unwrap_or_default(),
+            eviction_release_refused: eviction_report
+                .as_ref()
+                .map(|report| report.bucket_index_release_refused)
+                .unwrap_or_default(),
             dropped_object_count: eviction_report
                 .as_ref()
                 .map(|report| report.dropped_object_count)
