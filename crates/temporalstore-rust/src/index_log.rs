@@ -1397,6 +1397,28 @@ pub struct IndexDeltaRecord {
     /// No `skip_serializing_if`. The encoding is POSITIONAL, so a skipped field shifts every
     /// field after it; `None` goes on the wire as nil. Appended at the END, which is the only
     /// safe place to add to a positional record.
+    ///
+    /// AND THE RULE THAT MAKES THIS HOIST SAFE, WHICH IS NOT THE STAMP. Hoisting a repeated field
+    /// onto the record means the writer puts a SENTINEL in each item's own slot and the reader
+    /// puts the real value back. That is safe here for one reason and it is worth naming, because
+    /// it does not generalise: AN EMPTY OBJECT KEY IS OUTSIDE THE FIELD'S LEGAL DOMAIN. A reader
+    /// that does not know about this field -- an older binary -- folds items whose key is the
+    /// empty string, and an empty key is not a key, so the damage is loud.
+    ///
+    /// `routing_bucket` is the counter-example, and it is why a bucket hoist is NOT available on
+    /// the same pattern despite being worth a measured 2 B of a 30 B row. Its sentinel would have
+    /// to be zero, and ZERO IS A LEGAL BUCKET: `bucket_for_object` returns
+    /// `start_routing_bucket + hash % count`, so a shard whose range starts at zero owns bucket
+    /// zero. An older binary reading a hoisted record would take that zero literally and fold
+    /// EVERY entry into bucket zero, silently and with no error anywhere.
+    ///
+    /// AND A FORMAT STAMP CANNOT STOP IT. The guard at `engine::persistence`'s index load is
+    /// one-sided -- `if shard.index_format_version < SHARD_INDEX_FORMAT_VERSION` -- so it refuses
+    /// a store written by an OLDER binary and ACCEPTS one written by a newer. Raising the stamp
+    /// protects a new binary from an old store and does nothing in the direction that matters
+    /// here. So the rule is a property of the field, not of the version: HOIST ONLY WHEN THE
+    /// SENTINEL IS OUTSIDE THE FIELD'S LEGAL DOMAIN, and when it is not, the field stays on the
+    /// item however much it repeats.
     #[serde(rename = "sk", alias = "shared_object_key", default)]
     pub shared_object_key: Option<String>,
 }
@@ -7459,6 +7481,253 @@ flag exists to say",
         assert!(
             slope_high > 0.0,
             "a record carrying more items must be larger",
+        );
+    }
+
+    /// WHAT THE REMAINING NARROWING MECHANISMS ARE WORTH ON A DELTA ROW, MEASURED.
+    ///
+    /// `what_every_byte_of_an_index_item_is_spent_on` prices the row a writer emits for items
+    /// that each name a DIFFERENT object: 119 B unstripped, 55 B stripped. That is the worst
+    /// case and not the common one. A write that touches several blocks almost always touches
+    /// several blocks OF ONE OBJECT, and then a sixth harvest fires that the per-slot table
+    /// cannot show, because it lives on the RECORD and not on the item: the writer hoists the
+    /// object key to `IndexDeltaRecord::shared_object_key` and blanks every copy. The object key
+    /// is 26 of those 55 bytes, so the common row is a different number and this measures it.
+    ///
+    /// Then each mechanism still on the table is priced as a MEASURED re-encode of that row,
+    /// not as arithmetic over the slot widths. The widths do not predict the encoding: this is
+    /// msgpack, which writes the smallest form of a VALUE and is indifferent to the Rust type
+    /// the value came out of. That single fact kills the first candidate outright, and only a
+    /// measurement shows it -- an arithmetic argument from `size_of` would have predicted a win.
+    ///
+    /// WHAT EACH VERDICT COSTS, AND WHICH ARE SLOT-PRESERVING. The row is a positional array
+    /// with no field name written anywhere, so a mechanism that changes the NUMBER of slots
+    /// shortens the array and every already-written row stops decoding. That is a format break
+    /// and a stamp. A mechanism that keeps twelve slots and writes a cheaper value into one is
+    /// not: an old row carries the dear value and restores as a no-op. So the two classes are
+    /// priced separately and the cheap-looking one is usually the one that breaks the format.
+    #[test]
+    fn what_the_remaining_index_item_mechanisms_are_worth() {
+        let shard: ShardId = 7;
+        let model_id = "string".to_string();
+        let object_key = "tenant/7/object/000000123".to_string();
+
+        // Eight blocks of ONE object -- the shape the hoist was built for.
+        let build = || -> Vec<IndexItem> {
+            (0..8u64)
+                .map(|index| {
+                    let address = crate::block_store::BlockAddress::from_parts(
+                        42,
+                        1_048_576 + index * 4096,
+                        4096,
+                        Some(index),
+                        None,
+                    );
+                    let mut item = IndexItem {
+                        kind: IndexItemKind::Page,
+                        routing_bucket: 8539,
+                        block_ref_key: block_ref_key_from_parts(
+                            &model_id,
+                            &object_key,
+                            None,
+                            address.block_slab_id(),
+                            address.offset(),
+                            address.length(),
+                            address.block_id().unwrap_or_default(),
+                            address.generation().unwrap_or_default(),
+                        ),
+                        object_key: object_key.clone(),
+                        model_id: model_id.clone(),
+                        component: None,
+                        object_id: crate::engine::hashing::stable_block_object_id(
+                            shard, &model_id, &object_key,
+                        ),
+                        block_id: index,
+                        address: Some(address.clone()),
+                        size: address.length(),
+                        in_log: false,
+                        deleted: false,
+                    };
+                    // The writer's order, which is load-bearing: the handle strip DERIVES from
+                    // `object_key`, so blanking the key before it runs makes it decline.
+                    item.strip_block_ref_key_repeat();
+                    item.strip_size_repeat();
+                    item.strip_address_repeats();
+                    item.strip_object_id_repeat(shard);
+                    item
+                })
+                .collect()
+        };
+
+        let row = |item: &IndexItem| rmp_serde::to_vec(item).expect("encode a row").len();
+
+        // POSITIVE CONTROLS on the four item strips. Without these the "common row" below is
+        // the cost of a writer that gave up, which reads identically to a cheap one.
+        let distinct = build();
+        assert!(
+            distinct[0].block_ref_key.is_empty(),
+            "the composite-handle strip did not fire",
+        );
+        assert_eq!(0, distinct[0].size, "the size strip did not fire");
+        assert_eq!(0, distinct[0].object_id, "the object-id strip did not fire");
+        let unhoisted = row(&distinct[0]);
+
+        // THE SIXTH HARVEST, the one that does not appear in a per-slot table of the item.
+        let mut hoisted = build();
+        let shared = match hoisted.split_first() {
+            Some((first, rest)) if rest.iter().all(|i| i.object_key == first.object_key) => {
+                Some(first.object_key.clone())
+            }
+            _ => None,
+        };
+        assert!(
+            shared.is_some(),
+            "eight blocks of one object must hoist, or this measures the wrong case",
+        );
+        for item in hoisted.iter_mut() {
+            item.object_key.clear();
+        }
+        let common = row(&hoisted[0]);
+
+        println!("=== a delta row, by case ===");
+        println!("  distinct objects   {unhoisted:>4} B");
+        println!("  one object, hoisted{common:>5} B   <- the common case");
+
+        assert!(
+            common < unhoisted,
+            "hoisting the key must shrink the row: {unhoisted} -> {common}",
+        );
+
+        // ------------------------------------------------------------------
+        // The mechanisms, each measured against the COMMON row.
+        // ------------------------------------------------------------------
+        let mut priced: Vec<(&str, usize, &str)> = Vec::new();
+
+        // (1) NARROWING A FIELD'S TYPE. Priced by giving the field a value that a sixteen-bit
+        // field could hold and re-encoding. If the encoding cared about the declared width this
+        // would move; it does not, because the value is already written in its smallest form.
+        let mut narrowed = hoisted[0].clone();
+        narrowed.routing_bucket = 8539; // already fits sixteen bits
+        assert_eq!(
+            common,
+            row(&narrowed),
+            "a value that fits sixteen bits already encodes as its smallest form, so declaring \
+             the field u16 cannot move the row",
+        );
+        priced.push(("narrow routing_bucket to u16", 0, "slot-preserving"));
+
+        // (2) PACKING kind, in_log AND deleted INTO ONE SLOT. Priced by measuring the three
+        // slots the row writes today against the one byte a bitfield would write. This is the
+        // candidate that looks cheap and is not: it takes the array from twelve slots to ten.
+        //
+        // THROUGH THE ADAPTER THE ROW ACTUALLY USES. `kind` is not written as a Rust enum --
+        // it goes through `item_kind_as_number`, and encoding the enum directly writes its
+        // variant NAME instead. The first version of this test did exactly that and the
+        // mechanism looked like a 6-byte win at 20% of the row, which is the cost of a slot
+        // nobody emits. The control below is that adapter pricing at one byte.
+        struct Kind<'a>(&'a IndexItemKind);
+        impl serde::Serialize for Kind<'_> {
+            fn serialize<S: serde::Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
+                item_kind_as_number(self.0, s)
+            }
+        }
+        let kind_slot = rmp_serde::to_vec(&Kind(&hoisted[0].kind)).expect("k").len();
+        assert_eq!(
+            1, kind_slot,
+            "the row writes `kind` as a number in one byte; this priced it at {kind_slot}, so it \
+             is not going through the adapter the row uses",
+        );
+        let three_slots = kind_slot
+            + rmp_serde::to_vec(&hoisted[0].in_log).expect("l").len()
+            + rmp_serde::to_vec(&hoisted[0].deleted).expect("d").len();
+        let one_slot = rmp_serde::to_vec(&0u8).expect("packed").len();
+        priced.push((
+            "pack kind + in_log + deleted",
+            three_slots - one_slot,
+            "SLOT-REMOVING: twelve slots become ten, every written row stops decoding",
+        ));
+
+        // (3) HOISTING routing_bucket TO THE RECORD, the way the object key already is. The
+        // item keeps its slot and the writer puts a zero in it, so this is slot-preserving: an
+        // old row carries a real bucket and the restore, keyed on the RECORD field being
+        // present rather than on the item's zero, leaves it alone. No sentinel is spent, which
+        // matters because a zero IS a legal routing bucket.
+        let mut bucket_hoisted = hoisted[0].clone();
+        bucket_hoisted.routing_bucket = 0;
+        priced.push((
+            "hoist routing_bucket to the record",
+            common - row(&bucket_hoisted),
+            "slot-preserving; needs the record to carry it",
+        ));
+
+        println!("=== mechanisms, against a {common} B common row ===");
+        for (name, saving, note) in &priced {
+            println!(
+                "  {name:<34} {saving:>2} B  {:>5.1}%  {note}",
+                *saving as f64 / common as f64 * 100.0
+            );
+        }
+
+        // ------------------------------------------------------------------
+        // THE VERDICTS, as assertions so a change that makes one of them wrong fails here.
+        // ------------------------------------------------------------------
+
+        // Narrowing is worth nothing on the wire, and `what_every_byte_of_an_index_item_is_spent_on`
+        // has already shown it is worth nothing resident -- the tail holds 7 bytes of field in
+        // the 8 the aligner gives it, so every narrowing of a tail field rounds straight back.
+        assert_eq!(
+            0, priced[0].1,
+            "narrowing is supposed to be worth zero on the wire; it measured {} B",
+            priced[0].1,
+        );
+
+        // The bitfield is worth two bytes and costs the format. Stated as a bound rather than an
+        // equality: what matters is that it is small, not that it is exactly two.
+        assert!(
+            priced[1].1 <= 3,
+            "packing three one-byte slots into one cannot save more than 2 B; it measured {}",
+            priced[1].1,
+        );
+
+        // The hoist is the only one of the three that is both non-zero and slot-preserving.
+        assert!(
+            priced[2].1 > 0,
+            "hoisting the bucket must save something, or there is nothing to propose",
+        );
+        assert!(
+            priced[2].1 >= priced[0].1,
+            "the hoist is the surviving candidate and must beat the refuted one",
+        );
+
+        // AND THE ONE MECHANISM THAT IS NOT PRICED HERE, BECAUSE IT IS A CORRECTNESS BUG.
+        //
+        // Reading `size == 0` as a tombstone, and dropping the `deleted` flag, is unavailable in
+        // this encoding for a reason that has nothing to do with how many bytes it would save:
+        // `size == 0` IS ALREADY TAKEN. `strip_size_repeat` zeroes the field whenever it equals
+        // the address's length and `restore_size_repeat` reads that zero as "take the length
+        // from the address" -- so a zero size is what a LIVE row looks like after stripping,
+        // which is nearly every row. The assertion below is that collision, stated.
+        //
+        // The second collision is independent of the strip and is the one that loses data: a
+        // block that legitimately holds zero bytes has an address whose length is zero, so it
+        // restores to a zero size and would be read as a tombstone -- and a tombstone REMOVES
+        // the entry on replay. An empty value is a supported command shape, not a hypothetical;
+        // the WAL's own round-trip fixtures carry a case named for it.
+        let mut live = hoisted[0].clone();
+        live.restore_size_repeat();
+        assert_eq!(
+            4096, live.size,
+            "a stripped LIVE row restores its size from the address, which is what makes a zero \
+             size mean 'derivable' rather than 'deleted'",
+        );
+        assert_eq!(
+            0, hoisted[0].size,
+            "this live, undeleted row carries size == 0 on the wire -- so size == 0 cannot also \
+             mean deleted",
+        );
+        assert!(
+            !hoisted[0].deleted,
+            "the row the assertion above is about must be a LIVE one for it to say anything",
         );
     }
 
