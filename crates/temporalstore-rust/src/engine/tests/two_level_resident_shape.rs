@@ -768,3 +768,151 @@ fn what_an_insert_costs_in_each_shape_at_six_occupancies() {
          own object's run, so only later OBJECTS move) has stopped holding"
     );
 }
+
+
+// =================================================================================================
+// THE WRITE PATTERN #2080 SCOPED ITSELF OUT OF: inner keys that do NOT arrive ascending
+// =================================================================================================
+
+/// Which end of its own run a write lands on.
+#[cfg(feature = "alloc-probe")]
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Landing {
+    /// Each new inner key is ABOVE every key that object already holds, so the row lands at the end
+    /// of its own run. A timestamped series and a right push both do this.
+    AtTheEnd,
+    /// Each new inner key is BELOW every key that object already holds, so the row lands at the start
+    /// of its own run. This is a left push, and it is the case #2080 did not measure.
+    AtTheStart,
+    /// Alternating, because a real list does both.
+    AtBothEnds,
+}
+
+#[cfg(feature = "alloc-probe")]
+impl Landing {
+    fn label(self) -> &'static str {
+        match self {
+            Landing::AtTheEnd => "at the end (a timestamp, a right push)",
+            Landing::AtTheStart => "at the start (a left push)",
+            Landing::AtBothEnds => "at both ends (a real list)",
+        }
+    }
+}
+
+/// `keys` objects receiving `points_per_key` writes each, with the inner key chosen so every write
+/// lands where `landing` says.
+///
+/// Interleaved one write per key per tick, for the reason #2080 states: building key-at-a-time would
+/// append past the end of the bucket every time and price the easy case.
+#[cfg(feature = "alloc-probe")]
+fn push_workload(keys: usize, points_per_key: usize, landing: Landing) -> Vec<Row> {
+    // Mid-range base so a descending run never underflows and an ascending one never collides.
+    const BASE: u64 = 1 << 40;
+    let mut out = Vec::with_capacity(keys * points_per_key);
+    let built: Vec<Arc<str>> = (0..keys).map(|k| Arc::from(format!("l{k}"))).collect();
+    for point in 0..points_per_key {
+        for (index, key) in built.iter().enumerate() {
+            let at = match landing {
+                Landing::AtTheEnd => BASE + point as u64,
+                Landing::AtTheStart => BASE - point as u64,
+                Landing::AtBothEnds => {
+                    if point % 2 == 0 {
+                        BASE + (point as u64) / 2
+                    } else {
+                        BASE - (point as u64 + 1) / 2
+                    }
+                }
+            };
+            out.push(Row {
+                key: Arc::clone(key),
+                at,
+                address: BlockAddress::from_parts(
+                    (index * points_per_key + point) as u64,
+                    0,
+                    64,
+                    Some(1),
+                    Some((index * points_per_key + point) as u64),
+                ),
+            });
+        }
+    }
+    out
+}
+
+/// What each landing costs the grouped run, at the same six occupancies.
+///
+/// WHY THIS DECIDES WHETHER `lists` CAN TAKE THE SHAPE. A list's own declaration says left pushes walk
+/// the low end down and right pushes walk the high end up, so both ends are O(log n) in a B-tree and
+/// the tree's order IS the list's order. In a grouped run a left push lands at the START of its
+/// object's run, so it moves every row that object owns and every row of every object after it -- and
+/// unlike the ascending case that gets WORSE as the key gets longer. #2080 measured only the ascending
+/// landing and said so; this is the measurement it deferred.
+#[test]
+#[cfg(feature = "alloc-probe")]
+#[ignore = "builds three workloads at six occupancies, counting row moves; run by name"]
+fn what_a_push_workload_costs_in_a_grouped_run_at_six_occupancies() {
+    let mut worst_at_the_start = 0.0f64;
+    let mut rows_at_the_start: Vec<(usize, f64)> = Vec::new();
+    for (label, keys, points_per_key) in [
+        ("1 point a key", 40_000usize, 1usize),
+        ("2 points a key", 20_000, 2),
+        ("4 points a key", 10_000, 4),
+        ("10 points a key", 4_000, 10),
+        ("100 points a key", 400, 100),
+        ("1000 points a key", 40, 1_000),
+    ] {
+        println!("  {label}:");
+        for landing in [Landing::AtTheEnd, Landing::AtTheStart, Landing::AtBothEnds] {
+            let data = push_workload(keys, points_per_key, landing);
+            assert_eq!(
+                keys * points_per_key,
+                data.len(),
+                "denominator: every write must be generated"
+            );
+            let moves = moves_to_build_grouped(&data);
+            let per_insert = moves as f64 / data.len() as f64;
+            println!(
+                "      {:<40} {:>12} moves over {:>6} writes = {:>9.1} an insert",
+                landing.label(),
+                moves,
+                data.len(),
+                per_insert
+            );
+            if landing == Landing::AtTheStart {
+                worst_at_the_start = worst_at_the_start.max(per_insert);
+                rows_at_the_start.push((points_per_key, per_insert));
+            }
+        }
+    }
+
+    // NON-VACUITY on the scan, not per row: at least one reading must have moved something, or the
+    // counter is blind and every figure above is a zero that means nothing.
+    assert_eq!(6, rows_at_the_start.len(), "six occupancies must be measured");
+    assert!(
+        worst_at_the_start > 0.0,
+        "no left-push reading moved a single row, so the counter is not counting"
+    );
+
+    println!("\n  the left-push landing, against how long the key is:");
+    for (points, per_insert) in &rows_at_the_start {
+        println!(
+            "      {points:>5} points a key: {per_insert:>9.1} moves an insert ({:.1}x a B-tree's \
+             eleven-entry bound)",
+            per_insert / 11.0
+        );
+    }
+
+    // THE QUESTION THIS FIXTURE EXISTS TO ANSWER, as an assertion so the answer cannot drift
+    // unnoticed. A left push lands at the start of its object's run, so the cost should GROW with how
+    // many rows that object already holds -- which is the opposite of the ascending landing, where it
+    // falls. If this ever stops holding, the recorded reason for keeping `lists` on its own shape has
+    // stopped holding too.
+    let sparse = rows_at_the_start[0].1;
+    let dense = rows_at_the_start[rows_at_the_start.len() - 1].1;
+    assert!(
+        dense > sparse * 4.0,
+        "a left push moved {dense:.1} rows an insert at a thousand points a key against \
+         {sparse:.1} at one -- the cost is supposed to grow with the key's own length, and if it no \
+         longer does then a grouped run can serve a list after all and that is the finding"
+    );
+}
