@@ -34,6 +34,14 @@ whether it SHOULD be closed. Each can change silently and each changes what reco
    decision about the keys rather than as a quiet edit -- re-deriving a map with keys the index
    cannot supply would repair the disagreement the cross-check exists to detect.
 
+   THE SHAPE OF THAT RE-DERIVATION IS NO LONGER ONE SHAPE, and this file was blinded once by
+   assuming it was. `hashes` is a `RecordedHashContainer` now -- a type that owns the map together
+   with the durable record of its mutations, so the inner map is private and the rebuild cannot
+   assign the field. It calls the container's named reconcile instead. The other two maps are still
+   plain maps and are still re-derived, if ever, by a wholesale assignment. So the scan below
+   recognises BOTH shapes, and names the method it accepts rather than accepting any call, because
+   `shard.hashes.len()` is a read.
+
 `object_block_lookup` also carries the attribute but lives on `CoreIndex`, not `ShardState`, and
 is a derived lookup rebuilt from the bucket map on load. The scan is scoped to the `ShardState`
 body for that reason; a file-wide grep reports four and is wrong about this class.
@@ -129,6 +137,31 @@ def _all_fields(body: str) -> List[str]:
     return [match.group(1) for match in _FIELD.finditer(body)]
 
 
+
+# The two shapes that count as re-deriving a model map in the rebuild, and nothing else.
+#
+# `shard.X = ...` is how a plain map is replaced. `shard.X.<named reconcile>(...)` is how a map
+# behind a type that owns its own mutation record is replaced -- the inner map is private, so the
+# field cannot be assigned. The methods are NAMED rather than matched as "any call", because
+# `shard.hashes.len()` is a read and "any call" would count it.
+REDERIVE_METHODS = ("reconcile_from_durable",)
+
+
+def _rederived_fields(body: str) -> Set[str]:
+    found: Set[str] = set()
+    for field in UNSERIALIZED:
+        if re.search(r"shard\.%s\s*=(?!=)" % re.escape(field), body):
+            found.add(field)
+            continue
+        for method in REDERIVE_METHODS:
+            pattern = r"shard\s*\.\s*%s\s*\.\s*%s\s*\(" % (
+                re.escape(field), re.escape(method))
+            if re.search(pattern, body):
+                found.add(field)
+                break
+    return found
+
+
 class ThreeModelMapsDoNotSurviveSerialization(unittest.TestCase):
     def setUp(self) -> None:
         self.state = _read(STATE)
@@ -168,9 +201,34 @@ class ThreeModelMapsDoNotSurviveSerialization(unittest.TestCase):
     def test_the_rebuild_re_derives_exactly_one_of_them(self) -> None:
         rebuild = _fn_body(
             self.internals, "rebuild_unserialized_model_maps_from_bucket_index")
-        assigned: Set[str] = {
-            field for field in UNSERIALIZED
-            if re.search(r"shard\.%s\s*=" % re.escape(field), rebuild)}
+        # The body has to have been parsed. An empty body yields no matches and the scan would then
+        # report "re-derives nothing" for the wrong reason.
+        self.assertGreater(
+            len(rebuild), 400,
+            "`rebuild_unserialized_model_maps_from_bucket_index` parsed to %d characters, which is "
+            "not its body -- every count below would be a zero presented as a finding."
+            % len(rebuild))
+        assigned = _rederived_fields(rebuild)
+
+        # CONTROLS on the matcher itself, because this one was blinded once: it must see both
+        # re-derivation shapes and must not see a read.
+        self.assertEqual(
+            {"context_events"},
+            _rederived_fields("shard.context_events = derive(bucket_index);"),
+            "the matcher no longer sees a wholesale assignment, which is how the two plain maps "
+            "would be re-derived")
+        self.assertEqual(
+            {"hashes"},
+            _rederived_fields("shard.hashes.reconcile_from_durable(derived, &live, &mut n);"),
+            "the matcher no longer sees the container's named reconcile, which is how `hashes` is "
+            "re-derived now that its inner map is private -- this is exactly the blindness that "
+            "made this guard fail on a change that kept the fact it pins")
+        self.assertEqual(
+            set(),
+            _rederived_fields("let n = shard.hashes.len(); if shard.hashes.is_empty() {}"),
+            "the matcher counts a READ as a re-derivation, so it would pass on a rebuild that "
+            "only looked at the map")
+
         self.assertEqual(
             REBUILT, assigned,
             "the rebuild now re-derives %s rather than %s. Widening it is the fix for what the "
