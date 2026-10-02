@@ -24,6 +24,11 @@ mod lifecycle;
 mod object_manager;
 mod packed_pages;
 mod product_model;
+// Step one of three: the container lands with nothing using it, so the design can be reviewed
+// without a call-site conversion riding on it. The allow is the honest consequence and comes off
+// in the step that converts a map to it.
+#[allow(dead_code)]
+mod grouped_series_index;
 mod set_index_serde;
 mod zset_index_serde;
 mod seen_index_serde;
