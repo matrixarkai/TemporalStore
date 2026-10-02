@@ -2078,7 +2078,7 @@ fn rebuild_bucket_block_ownership_preserves_dirty_watermarks() {
     let mut shard = ShardState::default();
     let derived_bucket = crate::engine::hashing::bucket_for_object("k", 0, u32::MAX);
     shard.strings.insert(
-        "k".to_string(),
+        "k".into(),
         BlockAddress::from_parts(1, 0, 4, Some(1), Some(30)),
     );
     shard.bucket_index.bucket_map.insert(

@@ -174,16 +174,16 @@ fn as_an_older_build_wrote_it(address: &BlockAddress) -> BlockAddress {
 fn round_trip_every_page_through_the_wire(
     shard: &mut crate::engine::state::ShardState,
 ) -> usize {
-    let keys: Vec<String> = shard.strings.keys().cloned().collect();
+    let keys: Vec<String> = shard.strings.keys().map(|key| key.to_string()).collect();
     for key in &keys {
-        let before = shard.strings.get(key).expect("key present").clone();
+        let before = shard.strings.get(key.as_str()).expect("key present").clone();
         let older = as_an_older_build_wrote_it(&before);
         assert_eq!(
             older, before,
             "page {key} changed when its `rs` key was removed from the wire; the key is inert and \
              this round trip has to be the identity"
         );
-        shard.strings.insert(key.clone(), older);
+        shard.strings.insert(key.as_str().into(), older);
     }
     keys.len()
 }
@@ -329,14 +329,14 @@ fn the_two_sites_that_file_a_page_now_file_it_under_the_shards_own_range() {
             "the shard under test is not carrying 0..{NARROW_END}, so what follows would measure \
              the fallback rather than the fix"
         );
-        let before = shard.strings.get(&key).expect("key present").clone();
+        let before = shard.strings.get(key.as_str()).expect("key present").clone();
         let address = as_an_older_build_wrote_it(&before);
         assert_eq!(
             address, before,
             "the wire round trip changed the address. `rs` is inert -- the address holds no routing \
              bucket -- so this has to be the identity."
         );
-        shard.strings.insert(key.clone(), address.clone());
+        shard.strings.insert(key.as_str().into(), address.clone());
 
         if sync_path {
             crate::engine::storage_bucket_internals::sync_bucket_index_object_blocks(
@@ -428,7 +428,7 @@ fn the_two_writers_file_by_the_stamp_and_the_two_stamps_disagree() {
             "the shard is not carrying 0..{stamp}, so the arm below files by something else"
         );
         for key in &keys {
-            let address = shard.strings.get(key).expect("key present").clone();
+            let address = shard.strings.get(key.as_str()).expect("key present").clone();
             crate::engine::storage_bucket_internals::upsert_bucket_index_block(
                 shard, 1, "string", key, None, address, true,
             );
@@ -513,7 +513,7 @@ fn narrowing_the_writers_removes_no_page_that_was_already_filed() {
     );
 
     let key = keys[0].clone();
-    let address = shard.strings.get(&key).expect("key present").clone();
+    let address = shard.strings.get(key.as_str()).expect("key present").clone();
     crate::engine::storage_bucket_internals::upsert_bucket_index_block(
         shard, 1, "string", &key, None, address, true,
     );

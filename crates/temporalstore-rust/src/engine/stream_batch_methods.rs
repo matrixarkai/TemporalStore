@@ -876,7 +876,7 @@ impl TemporalEngine {
                     .iter()
                     .filter(|(_, address)| crate::wal_record::is_wal_resident(address.block_slab_id()))
                     .map(|(key, address)| {
-                        (PublishTarget::String { key: key.clone() }, address.clone())
+                        (PublishTarget::String { key: key.to_string() }, address.clone())
                     })
                     .collect::<Vec<_>>();
                 publish_targets.extend(
@@ -902,7 +902,7 @@ impl TemporalEngine {
             } else {
                 let mut publish_targets = Vec::new();
                 for key in &selected_keys {
-                    if let Some(address) = shard.strings.get(key) {
+                    if let Some(address) = shard.strings.get(key.as_str()) {
                         if crate::wal_record::is_wal_resident(address.block_slab_id()) {
                             publish_targets.push((
                                 PublishTarget::String { key: key.clone() },
@@ -992,7 +992,7 @@ impl TemporalEngine {
             {
                 match target {
                     PublishTarget::String { key } => {
-                        if shard.strings.get(&key) != Some(&original) {
+                        if shard.strings.get(key.as_str()) != Some(&original) {
                             continue;
                         }
                         let _ = self.cache.put(
@@ -1019,7 +1019,7 @@ impl TemporalEngine {
                             false,
                         );
                         published_object_keys.insert(key.clone());
-                        shard.strings.insert(key, published);
+                        shard.strings.insert(key.into_boxed_str(), published);
                     }
                     PublishTarget::Hash { key, field } => {
                         let current = shard.hashes.get(&key).and_then(|fields| fields.get(&field));

@@ -2847,7 +2847,7 @@ fn bucket_dump_manifest_rejects_object_lifecycle_mismatch() {
             .expect("manifest string address");
         restored
             .strings
-            .insert("lifecycle-renamed-to-move-its-derived-id".to_string(), address);
+            .insert("lifecycle-renamed-to-move-its-derived-id".into(), address);
         reused_owner.index_bytes = crate::engine::encode_index_bytes(&restored);
         reused_owner.index_sha256 = sha256_hex_bytes(&reused_owner.index_bytes);
         reused_owner.dump_generation_id = bucket_dump_generation_id(&reused_owner);
@@ -5048,20 +5048,20 @@ fn how_many_times_one_object_key_is_stored() {
         }
     }
     for key in shard.expires_at_ms.keys() {
-        if *key == sample {
+        if **key == *sample {
             allocations.insert(key.as_ptr());
             holders += 1;
         }
     }
     for (_model, object, _refs) in shard.bucket_index.object_block_lookup.iter() {
-        if object.as_ref() == sample.as_str() {
+        if object.as_ref() == &*sample {
             allocations.insert(object.as_ptr());
             holders += 1;
         }
     }
     for bucket in shard.bucket_index.bucket_map.values() {
         for (_ref_key, page) in bucket.block_index.iter() {
-            if page.object_key.as_ref() == sample.as_str() {
+            if page.object_key.as_ref() == &*sample {
                 allocations.insert(page.object_key.as_ptr());
                 holders += 1;
             }
@@ -5070,7 +5070,7 @@ fn how_many_times_one_object_key_is_stored() {
 
     assert!(holders > 0, "the sampled key was found nowhere; nothing was measured");
 
-    let key_bytes: usize = shard.strings.keys().map(String::len).sum();
+    let key_bytes: usize = shard.strings.keys().map(|key| key.len()).sum();
     let block_key_bytes: usize = shard
         .bucket_index
         .bucket_map
@@ -7948,7 +7948,7 @@ fn per_record_structure_census() {
     // String bytes each structure actually holds. RSS is ~2.8 KB/record and a key byte costs
     // 14.1 B of it, so knowing WHERE the key copies live says whether interning would pay and
     // which structure to attack first.
-    let key_bytes: usize = shard.strings.keys().map(String::len).sum();
+    let key_bytes: usize = shard.strings.keys().map(|key| key.len()).sum();
     let block_index_bytes: usize = shard
         .bucket_index
         .bucket_map

@@ -1486,7 +1486,7 @@ impl TemporalEngine {
                     let (start_routing_bucket, end_routing_bucket) = shard.routing_range();
                     FastPathRead::String {
                         key: key.as_str(),
-                        address: shard.strings.get(key).cloned(),
+                        address: shard.strings.get(key.as_str()).cloned(),
                         routing_bucket: block_routing_bucket(
                             key,
                             start_routing_bucket,
@@ -3137,7 +3137,7 @@ fn collect_upsert_index_items(
                 .get(object_key)
                 .and_then(|fields| fields.get(field))
                 .cloned(),
-            ("string", None) => shard.strings.get(object_key).cloned(),
+            ("string", None) => shard.strings.get(object_key.as_str()).cloned(),
             // `zset_component` is `{biased:016x}` followed by hex(member), so the member the map is
             // keyed by is recoverable from the component it was filed under.
             ("zset", Some(component)) => component
@@ -3589,7 +3589,13 @@ fn capture_key_states(shard: &ShardState, keys: &[String]) -> Vec<serde_json::Va
             put("control_state_changes", shard.control_state_changes.get(key).and_then(|v| serde_json::to_value(v).ok()));
             put("control_state_change_sketch", shard.control_state_change_sketch.get(key).and_then(|v| serde_json::to_value(v).ok()));
             put("control_state_selection", shard.control_state_selection.get(key).and_then(|v| serde_json::to_value(v).ok()));
-            put("context_nodes", shard.context_nodes.get(key).and_then(|v| serde_json::to_value(v).ok()));
+            put(
+            "context_nodes",
+            shard
+                .context_nodes
+                .get(key.as_str())
+                .and_then(|v| serde_json::to_value(v).ok()),
+        );
             put("context_events", shard.context_events.get(key).and_then(|v| serde_json::to_value(v).ok()));
             put("context_indexes", shard.context_indexes.get(key).and_then(|v| serde_json::to_value(v).ok()));
             put("context_audits", shard.context_audits.get(key).and_then(|v| serde_json::to_value(v).ok()));
@@ -3915,13 +3921,17 @@ fn fold_carried_container_elements(shard: &mut ShardState, carried: &[serde_json
 /// kept in key order where that matters without this having to care.
 /// The two things [`apply_key_state_field`] does to a map, so it does not have to name the map.
 trait KeyedState<V> {
-    fn insert_entry(&mut self, key: String, value: V);
+    /// Takes `&str`, not `String`: the three bare-address model maps are keyed by
+    /// [`super::state::ModelKey`] and the ordered ones by `String`, so the key type belongs to the
+    /// implementor and not to this signature. Spelling `String` here is what made a key-type
+    /// change reach a helper that has no interest in the key type at all.
+    fn insert_entry(&mut self, key: &str, value: V);
     fn remove_entry(&mut self, key: &str);
 }
 
 impl<V> KeyedState<V> for std::collections::HashMap<String, V> {
-    fn insert_entry(&mut self, key: String, value: V) {
-        self.insert(key, value);
+    fn insert_entry(&mut self, key: &str, value: V) {
+        self.insert(key.to_string(), value);
     }
     fn remove_entry(&mut self, key: &str) {
         self.remove(key);
@@ -3929,8 +3939,19 @@ impl<V> KeyedState<V> for std::collections::HashMap<String, V> {
 }
 
 impl<V> KeyedState<V> for std::collections::BTreeMap<String, V> {
-    fn insert_entry(&mut self, key: String, value: V) {
-        self.insert(key, value);
+    fn insert_entry(&mut self, key: &str, value: V) {
+        self.insert(key.to_string(), value);
+    }
+    fn remove_entry(&mut self, key: &str) {
+        self.remove(key);
+    }
+}
+
+/// The three bare-address model maps. `Box<str>: Borrow<str>` is what lets `remove` take the `&str`
+/// this trait is written against, exactly as it does for `String`.
+impl<V> KeyedState<V> for std::collections::HashMap<state::ModelKey, V> {
+    fn insert_entry(&mut self, key: &str, value: V) {
+        self.insert(key.into(), value);
     }
     fn remove_entry(&mut self, key: &str) {
         self.remove(key);
@@ -3945,7 +3966,7 @@ where
     match value {
         Some(value) if !value.is_null() => {
             if let Ok(parsed) = serde_json::from_value::<V>(value.clone()) {
-                map.insert_entry(key.to_string(), parsed);
+                map.insert_entry(key, parsed);
             }
         }
         _ => {
@@ -5460,7 +5481,7 @@ fn persist_control_state_block(
         async_storage,
     ) {
         upsert_bucket_index_block(shard, shard_id, "control_state", key, None, address.clone(), true);
-        shard.control_state_blocks.insert(key.to_string(), address);
+        shard.control_state_blocks.insert(key.to_string().into_boxed_str(), address);
         true
     } else {
         false

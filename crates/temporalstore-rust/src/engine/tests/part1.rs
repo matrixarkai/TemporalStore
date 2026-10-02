@@ -1460,7 +1460,7 @@ fn context_temporal_compression_and_raw_backfill_use_cold_storage_without_cache_
 fn live_block_slab_ids_scan_all_index_backed_data_models() {
     let mut shard = ShardState::default();
     shard.strings.insert(
-        "string".to_string(),
+        "string".into(),
         BlockAddress::from_parts(7, 0, 1, None, None),
     );
     shard.hashes.entry("hash".to_string()).or_default().insert(
@@ -3560,7 +3560,7 @@ fn served_index_container_round_trips_and_still_reads_plain_json() {
 
     let mut shard = ShardState::default();
     shard.strings.insert(
-        "container-probe".to_string(),
+        "container-probe".into(),
         BlockAddress::from_parts(7, 11, 13, None, None),
     );
 
@@ -3599,7 +3599,7 @@ fn binary_index_payload_round_trips_and_refuses_a_shape_it_cannot_read() {
     shard.index_format_version = crate::engine::SHARD_INDEX_FORMAT_VERSION;
     for i in 0..64u64 {
         shard.strings.insert(
-            format!("object-{i}"),
+            format!("object-{i}").into_boxed_str(),
             BlockAddress::from_parts(i, i * 7, i + 1, Some(i), Some(i * 3)),
         );
     }
@@ -3980,7 +3980,7 @@ fn how_many_blocks_do_a_retrieves_candidates_span() {
                     .hashes
                     .get(&key)
                     .and_then(|fields| fields.values().next())
-                    .or_else(|| shard.context_nodes.get(&key));
+                    .or_else(|| shard.context_nodes.get(key.as_str()));
                 if let Some(address) = address {
                     if extents.insert((address.block_slab_id(), address.offset(), address.length())) {
                         bytes += address.length();
@@ -4009,7 +4009,7 @@ fn how_many_blocks_do_a_retrieves_candidates_span() {
                     .hashes
                     .get(&key)
                     .and_then(|fields| fields.values().next())
-                    .or_else(|| shard.context_nodes.get(&key))
+                    .or_else(|| shard.context_nodes.get(key.as_str()))
                 {
                     ranges.push((address.offset(), address.length()));
                 }
@@ -4119,7 +4119,7 @@ fn how_scattered_are_node_extents_after_a_real_ingest() {
                 .hashes
                 .get(&key)
                 .and_then(|fields| fields.values().next())
-                .or_else(|| shard.context_nodes.get(&key))
+                .or_else(|| shard.context_nodes.get(key.as_str()))
             {
                 ranges.push((address.block_slab_id(), address.offset(), address.length()));
             }
@@ -5628,7 +5628,7 @@ fn where_a_block_read_miss_allocates() {
             .map(|(key, address)| {
                 (
                     Some(super::hashing::block_routing_bucket(key, start, end)),
-                    key.clone(),
+                    key.to_string(),
                     address.clone(),
                 )
             })
@@ -5791,7 +5791,7 @@ fn what_a_block_read_costs_hit_against_miss() {
             .map(|(key, address)| {
                 (
                     Some(super::hashing::block_routing_bucket(key, start, end)),
-                    key.clone(),
+                    key.to_string(),
                     address.clone(),
                 )
             })

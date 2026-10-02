@@ -1882,10 +1882,10 @@ fn wal_reclaim_never_frees_what_the_default_load_path_replays() {
     let shards = reader.shards.read().expect("shards lock poisoned");
     let shard = shards.get(&1).expect("the shard loaded");
     let live_back = (0..PRE_KEYS)
-        .filter(|index| shard.strings.contains_key(&pre_key(*index)))
+        .filter(|index| shard.strings.contains_key(pre_key(*index).as_str()))
         .count();
     let expired_back = (0..DUE_KEYS)
-        .filter(|index| shard.strings.contains_key(&due_key(*index)))
+        .filter(|index| shard.strings.contains_key(due_key(*index).as_str()))
         .count();
     println!("  fresh default load replayed from {replayed_from}");
     assert_eq!(

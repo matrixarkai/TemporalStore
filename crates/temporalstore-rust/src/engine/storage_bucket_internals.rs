@@ -2613,7 +2613,7 @@ pub(super) fn sync_blocks_for_written_components(
                 .get(object_key)
                 .and_then(|fields| fields.get(field))
                 .cloned(),
-            ("string", None) => shard.strings.get(object_key).cloned(),
+            ("string", None) => shard.strings.get(object_key.as_str()).cloned(),
             _ => None,
         };
         let Some(address) = address else {
@@ -4803,7 +4803,7 @@ pub(super) fn reconcile_secondary_views_from_bucket_index(
         match entry.kind.as_str() {
             "string" => {
                 saw_strings = true;
-                strings.insert(entry.object_key.to_string(), entry.address);
+                strings.insert(entry.object_key.as_ref().into(), entry.address);
             }
             "hash" => {
                 // SKIPPED, NOT DEFAULTED, and the fourth arm to need it. This was
@@ -4991,7 +4991,7 @@ pub(super) fn reconcile_secondary_views_from_bucket_index(
                         control_state.insert(entry.object_key.clone().to_string(), series);
                     }
                 }
-                control_state_blocks.insert(entry.object_key.to_string(), entry.address);
+                control_state_blocks.insert(entry.object_key.as_ref().into(), entry.address);
             }
             "context_event" => {
                 saw_context_events = true;
@@ -5901,7 +5901,7 @@ mod release_refusal_guards {
         shard.set_routing_range(0, RELEASE_RANGE_END);
         let key = key_routing_to(key_prefix, routing_bucket);
         let held = address(routing_bucket, 64);
-        shard.strings.insert(key.clone(), held.clone());
+        shard.strings.insert(key.as_str().into(), held.clone());
         shard
             .bucket_index
             .bucket_map
@@ -5922,7 +5922,7 @@ mod release_refusal_guards {
         shard.set_routing_range(0, u32::MAX);
         let routing_bucket = crate::engine::hashing::block_routing_bucket(key, 0, u32::MAX);
         let held = address(routing_bucket, 64);
-        shard.strings.insert(key.to_string(), held.clone());
+        shard.strings.insert(key.to_string().into_boxed_str(), held.clone());
         shard
             .bucket_index
             .bucket_map
@@ -5947,7 +5947,7 @@ mod release_refusal_guards {
         shard.set_routing_range(0, RELEASE_RANGE_END);
         let key = key_routing_to(key_prefix, routing_bucket);
         let held = address(routing_bucket, 64);
-        shard.strings.insert(key.clone(), held.clone());
+        shard.strings.insert(key.as_str().into(), held.clone());
         let dirty = BlockIndex {
             dirty: true,
             ..block(&key, "string", None, held)
@@ -6182,7 +6182,7 @@ mod release_refusal_guards {
     #[test]
     fn a_model_map_disagreement_is_refused_and_the_refusal_names_the_map_term() {
         let (mut shard, key) = releasable_shard(7, "disagreement-key");
-        shard.strings.insert(key, address(7, 4_096));
+        shard.strings.insert(key.into_boxed_str(), address(7, 4_096));
 
         let outcome = release_bucket_blocks(&mut shard, &[7]);
 
@@ -6225,7 +6225,7 @@ mod release_refusal_guards {
             .bucket_index
             .bucket_map
             .insert(4, node(4, block(&kind_key, "hash", Some("field"), held)));
-        shard.strings.insert(disagreement_key, address(5, 4_096));
+        shard.strings.insert(disagreement_key.into_boxed_str(), address(5, 4_096));
 
         let candidates = [1u32, 2, 3, 4, 5];
         let outcome = release_bucket_blocks(&mut shard, &candidates);
@@ -6732,7 +6732,7 @@ mod model_kind_registry_guards {
     fn shard_holding_one_page_of_every_kind() -> ShardState {
         let mut shard = ShardState::default();
         let at = address(7);
-        shard.strings.insert("s".to_string(), at.clone());
+        shard.strings.insert("s".into(), at.clone());
         shard
             .hashes
             .insert("h".to_string(), [("f".to_string(), at.clone())].into_iter().collect());
@@ -6748,8 +6748,8 @@ mod model_kind_registry_guards {
         shard
             .features
             .insert("f".to_string(), BTreeMap::from([(1u64, at.clone())]));
-        shard.control_state_blocks.insert("c".to_string(), at.clone());
-        shard.context_nodes.insert("ctx:node:t:n".to_string(), at.clone());
+        shard.control_state_blocks.insert("c".into(), at.clone());
+        shard.context_nodes.insert("ctx:node:t:n".into(), at.clone());
         shard
             .context_events
             .insert("ctx:event:t:n".to_string(), BTreeMap::from([(1u64, at.clone())]));

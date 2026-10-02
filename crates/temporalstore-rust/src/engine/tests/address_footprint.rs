@@ -2108,7 +2108,7 @@ fn the_warm_page_is_found_under_the_key_the_other_side_wrote() {
             let shards = engine.shards.read().expect("engine lock poisoned");
             let shard = shards.get(&1).expect("shard is loaded");
             let (start, end) = shard.routing_range();
-            (shard.strings.get(&keys[0]).expect("indexed").clone(), start, end)
+            (shard.strings.get(keys[0].as_str()).expect("indexed").clone(), start, end)
         };
         let derived = crate::engine::hashing::block_routing_bucket(&keys[0], start, end);
         let read_key = matrixcache::CacheKey::page_with_slot(

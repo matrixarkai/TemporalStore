@@ -48,6 +48,35 @@ pub(super) struct WalResidentBlock {
 /// Two log coordinates. One per block whose only durable copy is a log record.
 const _: () = assert!(std::mem::size_of::<WalResidentBlock>() == 16);
 
+/// The key type the three bare-address resident model maps are keyed by.
+///
+/// `Box<str>` rather than `String`. A model-map key is written once when the key is first seen and
+/// is never appended to, so the capacity word a `String` carries is eight bytes per entry that
+/// nothing can ever use -- and the table holds a slot for every bucket, not for every live key, so
+/// those eight bytes are charged at the table's occupancy rather than at the key count. Measured on
+/// the counting allocator at the shipped routing range: 1.434 slots a live key at 40,000 keys, so
+/// 13.1 B/key off each map's chunk column (112.4 -> 99.2 B/key on the string map).
+///
+/// The three are `strings`, `control_state_blocks` and `context_nodes` -- every resident map
+/// whose value is a bare [`BlockAddress`] rather than a nested container. `address_footprint`
+/// iterates the three together in one array, so they have to agree on their key type; that
+/// array is the reason the class is these three and not just the one that was measured.
+///
+/// EVERY READ SHAPE IS UNCHANGED, which is why this is a key-type change and not a surface change.
+/// `Box<str>: Borrow<str>`, so `get`, `get_mut`, `contains_key` and `remove` still take `&str` and
+/// every call site that passes one compiles untouched. `keys()` yields `&Box<str>`, which derefs to
+/// `&str`. Only the sites that CREATE a key change, and they change from `.clone()` to `.into()`.
+///
+/// NO STORED BYTES MOVE. The shard index is `serde_json`, where a map key is a string either way;
+/// `the_string_map_key_is_the_same_json_either_way` round-trips a snapshot to prove it rather than
+/// asserting it, so this carries no index format stamp.
+pub(super) type ModelKey = Box<str>;
+
+/// The eight bytes, as a guard rather than as a sentence in the comment above: a `String` put back
+/// here would be a silent per-live-key regression, and nothing else in the suite would notice.
+const _: () = assert!(std::mem::size_of::<ModelKey>() == 16);
+const _: () = assert!(std::mem::size_of::<ModelKey>() + 8 == std::mem::size_of::<String>());
+
 #[derive(Debug, Default, Clone, Serialize, Deserialize)]
 pub(super) struct ShardState {
     /// On-disk shape of this index. 0 means "written before the stamp existed".
@@ -118,7 +147,7 @@ pub(super) struct ShardState {
     /// an ordered index here.
     #[serde(skip)]
     pub(super) expiry_by_deadline: BTreeMap<(u64, String), ()>,
-    pub(super) strings: HashMap<String, BlockAddress>,
+    pub(super) strings: HashMap<ModelKey, BlockAddress>,
     // Rebuildable from the durable bucket/block index on load; do not duplicate in checkpoints.
     //
     // THE INNER CONTAINER IS A SORTED VECTOR, NOT A TABLE AND NOT A B-TREE, and it is the only one
@@ -172,7 +201,7 @@ pub(super) struct ShardState {
     pub(super) sequences: HashMap<String, BTreeMap<u64, BlockAddress>>,
     pub(super) control_state: HashMap<String, BTreeMap<u64, i64>>,
     #[serde(default)]
-    pub(super) control_state_blocks: HashMap<String, BlockAddress>,
+    pub(super) control_state_blocks: HashMap<ModelKey, BlockAddress>,
     #[serde(default)]
     pub(super) control_state_changes: HashMap<String, BTreeMap<u64, BTreeSet<Vec<u8>>>>,
     // Bounded distinct: per (key, bucket) HyperLogLog sketch. A bucket lives in EITHER
@@ -215,7 +244,7 @@ pub(super) struct ShardState {
     #[serde(skip)]
     pub(super) feature_rollups: HashMap<String, RollupEntry>,
     #[serde(default)]
-    pub(super) context_nodes: HashMap<String, BlockAddress>,
+    pub(super) context_nodes: HashMap<ModelKey, BlockAddress>,
     // Keyed by EVENT ID HASH, aligning events with entities/embeddings so update and delete
     // address one event directly in log n instead of scanning the node's whole series (mem0
     // delete carries the event id, not the time, so it previously had no way to locate one).

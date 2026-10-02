@@ -1477,7 +1477,7 @@ impl TemporalEngine {
                 match (item.kind.as_str(), component.as_deref()) {
                     ("string", _) => {
                         super::mark_bucket_index_object_deleted(shard, &item.object_key);
-                        shard.strings.remove(&item.object_key);
+                        shard.strings.remove(item.object_key.as_str());
                     }
                     ("hash", Some(field)) => {
                         if let Some(fields) = shard.hashes.get_mut(&item.object_key) {
@@ -1608,7 +1608,7 @@ impl TemporalEngine {
                     address.clone(),
                     true,
                 );
-                shard.strings.insert(item.object_key.clone(), address);
+                shard.strings.insert(item.object_key.as_str().into(), address);
                 true
             }
             // The component is what the map is keyed by, encoded. Each of these mirrors the
@@ -1870,7 +1870,7 @@ impl TemporalEngine {
                 );
                 shard
                     .control_state_blocks
-                    .insert(item.object_key.clone(), address);
+                    .insert(item.object_key.as_str().into(), address);
                 true
             }
             "context_entity" => {
@@ -2041,7 +2041,7 @@ impl TemporalEngine {
                     .filter(|(_, address)| {
                         crate::wal_record::is_wal_resident(address.block_slab_id())
                     })
-                    .map(|(key, address)| (key.clone(), address.clone()))
+                    .map(|(key, address)| (key.to_string(), address.clone()))
                     .collect(),
                 start_routing_bucket,
                 end_routing_bucket,
@@ -2088,7 +2088,7 @@ impl TemporalEngine {
             {
                 let mut shards = self.shards.write().expect("engine lock poisoned");
                 if let Some(shard) = shards.get_mut(&shard_id) {
-                    shard.strings.insert(key.clone(), durable.clone());
+                    shard.strings.insert(key.as_str().into(), durable.clone());
                     super::upsert_bucket_index_block(
                         shard,
                         shard_id,

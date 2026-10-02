@@ -809,7 +809,7 @@ fn what_the_outer_model_maps_cost_per_map_and_per_key() {
          as a measurement"
     );
 
-    println!("--- outer map, HashMap<String, V> against BTreeMap<String, V>, keys MOVED in ---");
+    println!("--- outer map, HashMap<K, V> against BTreeMap<K, V>, keys MOVED in ---");
     println!(
         "  {:>8}  {:>9}  {:>12}  {:>12}  {:>12}  {:>12}  {:>9}",
         "keys", "shape", "allocs", "request B", "chunk B", "B per key", "slack"

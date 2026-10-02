@@ -1526,7 +1526,7 @@ fn expiry_scan_budget(limit: usize) -> usize {
             shard
                 .strings
                 .iter_mut()
-                .map(|(key, address)| (bucket_of(key), std::borrow::Cow::Borrowed(key.as_str()), address)),
+                .map(|(key, address)| (bucket_of(key), std::borrow::Cow::Borrowed(&**key), address)),
             &mut rewrite_stats,
         )?;
         // THE FOUR CONTAINER ARMS BATCH, and each hands over the element's KEY BYTES rather than
@@ -1641,7 +1641,7 @@ fn expiry_scan_budget(limit: usize) -> usize {
             shard
                 .control_state_blocks
                 .iter_mut()
-                .map(|(key, address)| (bucket_of(key), std::borrow::Cow::Borrowed(key.as_str()), address)),
+                .map(|(key, address)| (bucket_of(key), std::borrow::Cow::Borrowed(&**key), address)),
             &mut rewrite_stats,
         )?;
         compact_block_addresses(
@@ -1652,7 +1652,7 @@ fn expiry_scan_budget(limit: usize) -> usize {
             shard
                 .context_nodes
                 .iter_mut()
-                .map(|(key, address)| (bucket_of(key), std::borrow::Cow::Borrowed(key.as_str()), address)),
+                .map(|(key, address)| (bucket_of(key), std::borrow::Cow::Borrowed(&**key), address)),
             &mut rewrite_stats,
         )?;
         for (key, series) in shard.context_events.iter_mut() {

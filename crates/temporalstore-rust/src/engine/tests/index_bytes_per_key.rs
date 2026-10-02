@@ -806,7 +806,7 @@ fn what_a_live_key_costs_in_the_index_at_two_corpus_sizes() {
             shard.dirty_objects.bucket_ids().count()
         );
         let rows: Vec<(String, u64)> = vec![
-            ("strings HashMap<String, BlockAddress>".to_string(), strings_bytes),
+            ("strings HashMap<ModelKey, BlockAddress>".to_string(), strings_bytes),
             ("features HashMap<String, BTreeMap<..>>".to_string(), features_bytes),
             ("other model maps (hashes/sets/zsets/..)".to_string(), other_model_bytes),
             ("context maps (nine of them)".to_string(), context_bytes),
@@ -1220,7 +1220,7 @@ fn what_a_live_key_costs_on_the_shipped_routing_range() {
                 "  distinct shared strings: bucket index {arc_count}, dirty index {dirty_arc_count}"
             );
             let rows: [(&str, u64); 11] = [
-                ("strings HashMap<String, BlockAddress>", strings_bytes),
+                ("strings HashMap<ModelKey, BlockAddress>", strings_bytes),
                 ("features HashMap<String, BTreeMap<..>>", features_bytes),
                 ("bucket_index.bucket_map", bucket_map_bytes),
                 ("bucket_index.object_block_lookup", lookup_bytes),
