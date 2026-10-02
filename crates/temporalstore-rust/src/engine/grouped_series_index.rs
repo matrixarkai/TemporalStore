@@ -42,8 +42,8 @@
 //! against a whole run. #2075 measured that rather than arguing it.
 //!
 //! THE RANGE IS NOT KNOWN WHEN THE BYTES ARE DECODED, which is why the bucketing is a method rather
-//! than a constructor. `routing_range()` answers `(0, u32::MAX)` until `install_shard_state` stamps
-//! it, and on that range every key gets a bucket of its own by construction -- precisely the regime
+//! than a constructor. `ShardState::routing_range` answers the whole keyspace until
+//! `install_shard_state` stamps it, and on that range every key gets a bucket of its own by construction -- precisely the regime
 //! where the amortisation vanishes. So a decoded container is CORRECT but uncompacted, and
 //! [`GroupedSeriesIndex::rebucket`] is what compacts it once the range is known. Correct in every
 //! state, compact once told the range; there is no invalid state to get wrong.
@@ -356,11 +356,7 @@ impl GroupedSeriesIndex {
                 let start = object.start as usize;
                 let len = object.len as usize;
                 let points = rows[start..start + len].to_vec();
-                let bucket_id = crate::engine::hashing::block_routing_bucket(
-                    object.key.as_ref(),
-                    start_routing_bucket,
-                    end_routing_bucket,
-                );
+                let bucket_id = self.bucket_of(object.key.as_ref());
                 by_bucket.entry(bucket_id).or_default().push((object.key, points));
             }
         }
@@ -396,15 +392,24 @@ impl GroupedSeriesIndex {
 
     /// Build from the historical shape, on the whole keyspace.
     ///
-    /// Grouped on `(0, u32::MAX)` because that is what the range answers before install, and
-    /// [`Self::rebucket`] is what moves it onto the real one.
+    /// Grouped on whatever range the fresh index carries -- the whole keyspace, because that is what
+    /// `ShardState::routing_range` answers before install -- and [`Self::rebucket`] is what moves it
+    /// onto the real one.
+    ///
+    /// IT FILES THROUGH [`Self::bucket_of`] RATHER THAN SPELLING THE RANGE, and that is not a way
+    /// around `every_site_that_hard_codes_the_whole_routing_range_is_accounted_for`; it is what that
+    /// guard asks for. Its own record says the sites that merely ATTRIBUTE an already-filed page keep
+    /// their literal as a last resort, while the two that PLACE a page left the list by reading the
+    /// shard's carried range instead -- a placed bucket has no filing to fall back to, so the range
+    /// itself had to change. This places, so it reads the range this container carries, which
+    /// `rebucket` can correct. Spelling `0, u32::MAX` here would have been a bucket no caller could
+    /// put right.
     fn from_plain(plain: HashMap<String, BTreeMap<u64, BlockAddress>>) -> Self {
         let mut index = GroupedSeriesIndex::new();
         let mut by_bucket: BTreeMap<u32, Vec<(Arc<str>, Vec<(u64, BlockAddress)>)>> =
             BTreeMap::new();
         for (key, series) in plain {
-            let bucket_id =
-                crate::engine::hashing::block_routing_bucket(&key, 0, u32::MAX);
+            let bucket_id = index.bucket_of(&key);
             by_bucket
                 .entry(bucket_id)
                 .or_default()
