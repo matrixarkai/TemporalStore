@@ -4250,3 +4250,156 @@ mod component_lookup_tests {
         assert_eq!(index.object_component_block_refs, Some(2));
     }
 }
+
+// =================================================================================================
+// REPACKING A DECODED INDEX
+// =================================================================================================
+
+/// How many entries fit in one B-tree leaf, so a map at or below this size cannot have split yet.
+///
+/// `std`'s `BTreeMap` leaf holds eleven entries whatever the key and value types are. A map that
+/// never split has no half-empty node to recover, so repacking one would buy nothing and cost a
+/// transient vector -- and a store holding one point per series would pay that per series. The
+/// consequence of this number being wrong in a future `std` is a repack skipped or a pass wasted,
+/// never a wrong answer: the repack below preserves contents and order whatever it is applied to.
+const ENTRIES_IN_ONE_LEAF: usize = 11;
+
+/// Rebuild `map` so its entries are packed rather than spread across half-empty leaves.
+///
+/// `collect` into a `BTreeMap` sorts the entries and builds the tree bottom-up, filling every leaf;
+/// `insert` one at a time splits each full leaf in half and never returns to the left half. The
+/// entries are MOVED through the intermediate vector, not cloned, so the only new allocation is
+/// that vector.
+fn repack_btree_map<K: Ord, V>(map: &mut BTreeMap<K, V>) {
+    if map.len() <= ENTRIES_IN_ONE_LEAF {
+        return;
+    }
+    *map = std::mem::take(map).into_iter().collect();
+}
+
+/// The same, for a set.
+fn repack_btree_set<T: Ord>(set: &mut BTreeSet<T>) {
+    if set.len() <= ENTRIES_IN_ONE_LEAF {
+        return;
+    }
+    *set = std::mem::take(set).into_iter().collect();
+}
+
+/// Every nested series of one model map.
+fn repack_nested<K: Ord, V>(map: &mut HashMap<String, BTreeMap<K, V>>) {
+    for series in map.values_mut() {
+        repack_btree_map(series);
+    }
+}
+
+/// Pack every B-tree a decode filled one entry at a time.
+///
+/// WHY THIS RIDES THE DECODE AND NOTHING ELSE. `serde`'s `Deserialize` for `BTreeMap` fills the map
+/// with `insert` in a loop, and the bytes it reads were written in key order, so every nested series
+/// in a decoded index is built by ASCENDING insertion -- the one insertion order that leaves a
+/// B-tree half empty, because each full leaf splits and the left half is never filled again. The
+/// load is therefore both the cause and the only moment at which the whole structure is in hand and
+/// already paid for. There is no timer, no threshold and no flag: a decode that happens repacks,
+/// and a decode that does not happen has nothing to repack.
+///
+/// WHY IT DESTRUCTURES THE WHOLE STRUCT. The set of maps this has to cover is not a list someone
+/// keeps up to date, it is every field of `ShardState` -- so the field list is written out in full
+/// with no `..`, and a field added to the struct is a COMPILE ERROR here until someone says which
+/// of the two groups below it belongs to. A hand-kept list would go stale and nothing would fail.
+///
+/// WHAT IT COSTS, measured under the counting allocator at three corpus sizes: see
+/// `what_a_cold_load_spends_decoding_an_index_at_three_corpus_sizes`. One O(n) pass inside a
+/// function already O(n), moving entries rather than copying them.
+pub(super) fn repack_decoded_btrees(state: &mut ShardState) {
+    let ShardState {
+        // ----- Packed here. Deserialized, and filled one entry at a time. -----
+        wal_resident_blocks,
+        expires_at_ms,
+        sets,
+        seen,
+        zsets,
+        lists,
+        features,
+        sequences,
+        control_state,
+        control_state_changes,
+        control_state_change_sketch,
+        context_events,
+        context_event_timeline,
+        context_indexes,
+        context_audits,
+        context_entities,
+        context_children,
+        context_summaries,
+        context_compressions,
+
+        // ----- Nothing to pack. Each for a stated reason, not by omission. -----
+        //
+        // Not a B-tree at all: a hashed table has no insertion-order shape, and `HashFieldMap`
+        // keeps a sorted vector whose length IS its capacity below its growth threshold.
+        strings: _,
+        hashes: _,
+        buckets: _,
+        control_state_blocks: _,
+        control_state_selection: _,
+        control_state_uuid: _,
+        context_nodes: _,
+        context_dirty_index: _,
+        context_embedding_dirty_index: _,
+        context_compression_watermark: _,
+        bucket_recency: _,
+        // Not deserialized: `#[serde(skip)]`, so a decode leaves it default-empty and there is
+        // nothing in it to pack. `expiry_by_deadline` is the one of these that IS refilled by
+        // ascending insertion -- from `expires_at_ms`, which is itself in key order -- but that
+        // refill happens in the expiry path rather than here, and is left to it.
+        buckets_pending_flag_refresh: _,
+        expiry_by_deadline: _,
+        control_state_rollups: _,
+        control_coalesce_persist: _,
+        control_distinct_sketch: _,
+        feature_values: _,
+        feature_rollups: _,
+        dirty_objects: _,
+        promote_scan_done: _,
+        evict_sampler: _,
+        routing_range_start: _,
+        routing_range_end: _,
+        routing_range_known: _,
+        shard_id: _,
+        shard_id_known: _,
+        applied_wal_sequence: _,
+        index_format_version: _,
+        // The bucket index's own containers are owned elsewhere and are deliberately left alone
+        // here, so this pass cannot be blamed for a change in them.
+        bucket_index: _,
+    } = state;
+
+    repack_btree_map(wal_resident_blocks);
+    repack_btree_map(expires_at_ms);
+    repack_nested(sets);
+    repack_nested(zsets);
+    repack_nested(lists);
+    repack_nested(features);
+    repack_nested(sequences);
+    repack_nested(control_state);
+    repack_nested(context_events);
+    repack_nested(context_event_timeline);
+    repack_nested(context_indexes);
+    repack_nested(context_audits);
+    repack_nested(context_entities);
+    repack_nested(context_children);
+    repack_nested(context_summaries);
+    repack_nested(context_compressions);
+    repack_nested(control_state_change_sketch);
+    // Two levels: the series, and the member set each of its entries carries.
+    for series in control_state_changes.values_mut() {
+        repack_btree_map(series);
+        for members in series.values_mut() {
+            repack_btree_set(members);
+        }
+    }
+    for window in seen.values_mut() {
+        repack_btree_map(&mut window.by_member);
+        repack_btree_map(&mut window.by_time);
+    }
+}

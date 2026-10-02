@@ -203,3 +203,4 @@ mod container_tombstone_collection;
 mod container_tombstone_entry;
 mod tombstone_reload_path;
 mod hash_container_reload_authority;
+mod decoded_index_packing;

@@ -3010,7 +3010,24 @@ pub(super) fn encode_index_bytes_as_plain_json(shard: &ShardState) -> Vec<u8> {
 /// a container written by a newer one is refused with a clear error rather than mis-parsed. Every
 /// decode site goes through here; the previous attempt at a binary index failed precisely because
 /// the decoders were scattered and could not move together.
+///
+/// And it is where a decoded index gets PACKED. `serde` fills a `BTreeMap` one `insert` at a time
+/// from bytes written in key order, which is the one insertion order that leaves a B-tree half
+/// empty for the rest of the process's life; `repack_decoded_btrees` puts the entries back filling
+/// every leaf. It rides the load rather than a timer or a flag, because the load is the moment the
+/// whole structure is in hand and already paid for.
 pub(super) fn decode_index_bytes(bytes: &[u8]) -> Result<ShardState, String> {
+    // WRAPPED RATHER THAN EDITED PER ARM. Every codec path below returns its own
+    // `ShardState`, and a fifth one added later would return another; a repack written into
+    // each arm would be a thing to remember. Written here it is a thing nobody can forget.
+    let mut state = decode_index_bytes_inner(bytes)?;
+    state::repack_decoded_btrees(&mut state);
+    Ok(state)
+}
+
+/// The codec arms themselves. Reached only through `decode_index_bytes` above, which packs what
+/// this fills -- so a fourth arm added here is covered without being told to be.
+fn decode_index_bytes_inner(bytes: &[u8]) -> Result<ShardState, String> {
     if !bytes.starts_with(INDEX_CONTAINER_MAGIC) {
         return serde_json::from_slice::<ShardState>(bytes).map_err(|error| error.to_string());
     }
