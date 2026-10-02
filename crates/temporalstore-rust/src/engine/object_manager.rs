@@ -144,7 +144,7 @@ pub(super) fn runtime_report(shard: &ShardState) -> ObjectManagerRuntimeReport {
             object.deleted |= object_deleted;
             if page.deleted || object_deleted {
                 object.deleted_block_ref_count = object.deleted_block_ref_count.saturating_add(1);
-            } else if bucket.in_memory() && !page.log_backed {
+            } else if bucket.in_memory() && !page.log_backed() {
                 object.hot_block_ref_count = object.hot_block_ref_count.saturating_add(1);
             } else {
                 object.cold_block_ref_count = object.cold_block_ref_count.saturating_add(1);

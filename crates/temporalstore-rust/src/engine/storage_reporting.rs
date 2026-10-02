@@ -512,7 +512,7 @@ pub(super) fn storage_physical_index_report(
                 checksum: None,
                 dirty: page.dirty,
                 deleted: page.deleted,
-                log_backed: page.log_backed,
+                log_backed: page.log_backed(),
                 native_packed_block_index_len: NATIVE_PACKED_BLOCK_INDEX_SIZE,
                 native_packed_block_index_hex: String::new(),
             };

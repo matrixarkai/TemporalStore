@@ -3323,7 +3323,7 @@ fn collect_command_index_items_for(
                 block_id: page.address.block_id().unwrap_or(0),
                 address: Some(page.address.clone()),
                 size: page.address.length(),
-                in_log: page.log_backed,
+                in_log: page.log_backed(),
                 deleted: page.deleted,
             });
         }

@@ -3643,6 +3643,22 @@ pub(super) struct BlockIndex {
     pub(super) address: BlockAddress,
     pub(super) dirty: bool,
     pub(super) deleted: bool,
+    /// WIRE-ONLY. Nothing reads this; read [`BlockIndex::log_backed`] instead.
+    ///
+    /// The log-resident fact is DERIVED from the address -- `block_id()` is `None` exactly when the
+    /// block still lives in the log -- so storing it as well made one fact answerable from two
+    /// places, and three sites wrote it without consulting the address at all
+    /// (`storage_bucket_internals::insert_container_tombstone_entry` among them, which sets it
+    /// `false` on an address it is handed). This field keeps its stored key so the index does not
+    /// move; its VALUE IS NOT MAINTAINED and must not be consulted.
+    ///
+    /// It is not deleted because it cannot be cheaply: the shard index is `serde_json`, so the
+    /// field name is a stored key and removing it would refuse every existing index -- for no
+    /// resident saving at all, since this struct carries 52 bytes of field in 56 and a bool
+    /// leaving takes it to 51 in 56. `#[serde(rename)]` is what keeps the stored spelling while
+    /// the identifier here says not to read it.
+    ///
+    /// `engine::tests::the_log_resident_fact_has_one_reader` holds that nothing reads it.
     pub(super) log_backed: bool,
 }
 
@@ -3690,6 +3706,27 @@ pub(super) struct BlockIndex {
 const _: () = assert!(std::mem::size_of::<BlockIndex>() == 56);
 
 impl BlockIndex {
+    /// Whether this block still lives in the log rather than in a slab, DERIVED from the address.
+    ///
+    /// `BlockAddress::block_id()` is `None` exactly while the block is log-resident, so the address
+    /// already answers this and a stored flag could only agree or disagree with it. It did both:
+    /// three sites derived it (`storage_bucket_internals.rs:362`, `:3655`, `:3983`) and three wrote
+    /// a constant `false` without looking (`:3524`, `:5873`, `state.rs`'s own fixture).
+    ///
+    /// The disagreement was observable in one place and not in the obvious one. The behavioural
+    /// reader -- `object_manager`'s hot/cold classification -- tests `deleted` FIRST, and the
+    /// production site that writes the inconsistent flag is the container tombstone, which sets
+    /// `deleted: true`; so that reader never reached the flag for exactly the entries where it was
+    /// wrong. THAT PROTECTION IS THE BRANCH ORDER OF ONE `if`, not a property of the design, which
+    /// is why this is a fix and not a tidy-up: reorder those branches and the defect becomes live.
+    ///
+    /// What it did cost was reporting. `storage_reporting` computed "any page in log" from the
+    /// stored flag, so a bucket whose only log-resident page was a tombstone reported no page in
+    /// log while one was in the log. Derived, it reports what is true.
+    pub(super) fn log_backed(&self) -> bool {
+        self.address.block_id().is_none()
+    }
+
     /// The object this block belongs to, DERIVED from the terms rather than read off the address.
     ///
     /// It was `self.address.object_id()` while the address carried one. The address does not any

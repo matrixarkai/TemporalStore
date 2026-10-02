@@ -1806,7 +1806,7 @@ pub(super) fn collect_bucket_index_live_block_entries(shard: &ShardState) -> Vec
                 address: page.address.clone(),
                 dirty: page.dirty,
                 deleted: page.deleted,
-                log_backed: page.log_backed,
+                log_backed: page.log_backed(),
                 // The key of the map being walked. This walk always knew it; it was iterating
                 // `.values()` and throwing it away, which is why five readers downstream had to
                 // guess it back out of the object key.

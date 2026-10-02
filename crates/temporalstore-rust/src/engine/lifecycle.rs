@@ -1185,7 +1185,7 @@ impl TemporalEngine {
                     page.address.offset(),
                     page.address.length(),
                     page.deleted,
-                    page.log_backed,
+                    page.log_backed(),
                 ));
             }
         }
