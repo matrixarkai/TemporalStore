@@ -26,20 +26,45 @@
 //!     zset    zset_index_serde     (member bytes, (score, address))        identity AND score
 //!     list    plain serde          (i64 sequence, address)                 the sequence
 //!     string  #[serde(skip)]       nothing                 no component at all; the key IS identity
-//!     hash    skip_serializing     nothing written         the component IS the caller's field name
+//!     hash    serde(default)       the field name          the component IS the caller's field name
 //! ```
 //!
-//! So three kinds have a durable copy of what their name spells and two genuinely do not -- and for
-//! the two, deriving is not a second copy of anything: a string has no component, and a hash field is
-//! the caller's own text rather than something this engine rendered. They are left alone.
+//! HASH HAS CHANGED GROUPS, AND THE RULE BELOW HAD TO BE RE-DERIVED RATHER THAN ITS ROW CORRECTED.
+//! This table read `hash  skip_serializing  nothing written`, and the sentence under it -- "three
+//! kinds have a durable copy of what their name spells and two genuinely do not" -- counted hash as
+//! one of the two. `ShardState::hashes` carries `#[serde(default)]` now and is written, so hash has
+//! a durable copy of its field names and the count is FOUR and one. Correcting the row alone would
+//! have left a rule that no longer followed from its own table.
+//!
+//! What the re-derivation changes, and what it does not: a STRING still has no component, so for it
+//! deriving is not a second copy of anything and it is still left alone. A HASH now has a durable
+//! copy -- which is why `an_unnamed_hash_page_is_skipped_and_the_durable_map_keeps_the_field` below
+//! can pass at all, and that test already says so, naming the six-fields-served-as-zero shape as
+//! what the durability fixed. So the hash arm is in the same position as the three spelled kinds:
+//! the derived view decides which elements exist, and the durable map keeps what a name cannot
+//! supply. It is left alone for a DIFFERENT reason than a string is -- not "there is nothing to
+//! outrank it with", but "the component is the caller's own text rather than something this engine
+//! rendered, so there is no parse to get wrong."
 //!
 //! # WHY THE RULE IS NOT THE ONE `control_state` USES
 //!
 //! The `control_state` arm keeps the persisted series wholesale for every key it has, saying why: "the
 //! serialized i64 series is authoritative (the page is a copy of it)". Copying that rule here would be
 //! wrong. `apply_key_states` folds `features` and the control-state maps out of the delta log and NOT
-//! `sets`, `zsets` or `lists` -- so for these three the derived view is the ONLY path by which a
-//! folded element arrives, and taking the durable map wholesale per key would drop exactly those.
+//! `sets`, `zsets` or `lists`.
+//!
+//! THERE ARE TWO CHANNELS AND THAT SENTENCE DESCRIBES ONE OF THEM. It used to continue "so for these
+//! three the derived view is the ONLY path by which a folded element arrives", which is true of
+//! `apply_key_states` and false of the fold. The fold path also collects the record's
+//! `CARRIED_CONTAINER_FIELDS` -- `set_elements`, `zset_elements`, `list_elements` and `hash_fields`
+//! -- and `fold_carried_container_elements` merges all four into their durable maps, gated on the
+//! pages the finished fold actually left behind. So a folded element of any of those four kinds
+//! arrives by BOTH routes, and `engine::tests::fold_hash_map_completeness` measures that for hash:
+//! after a fold the durable map and the page index name the same field set, in both directions.
+//!
+//! Naming one function's behaviour as the whole path's is how this was read as "the derived view is
+//! the only path" by three separate documents. Both channels are named here so the next reader has
+//! to meet the second one.
 //!
 //! The rule is therefore per ELEMENT: the derived view decides which elements exist and which page
 //! backs each, because it reflects the fold; the durable map supplies what the name merely re-spells,
