@@ -185,6 +185,79 @@ fn arm_c(rows: &[Row]) -> HashMap<String, Vec<(u64, BlockAddress)>> {
     map
 }
 
+/// One bucket in ARM D: its objects, and one contiguous fixed-width row run for all of them.
+///
+/// `objects` is sorted by key and names where each object's rows start and how many there are.
+/// `rows` is grouped by object in that same order and sorted by inner key inside each group.
+#[derive(Clone)]
+struct GroupedBucket {
+    objects: Vec<(Arc<str>, u32, u32)>,
+    rows: Vec<(u64, BlockAddress)>,
+}
+
+/// ARM D -- two levels, with identity stored ONCE PER OBJECT instead of once per row.
+///
+/// THIS IS THE ANSWER TO WHY ARM B LOSES AS A KEY FILLS UP. Arm B pays a 16-byte shared-text pointer
+/// in every row; a container a key pays it once. Arm D pays it once per object as well, and reaches
+/// an object's rows through a start and a length -- eight bytes per OBJECT.
+///
+/// AND THAT IS WHY IT DOES NOT HAND THE BYTES BACK. The earlier result that an offset table gives up
+/// the saving was about a VARIABLE-LENGTH packed buffer, where an offset is needed for every entry
+/// because entries are not the same width. These rows are FIXED WIDTH, so finding a row inside an
+/// object's run is arithmetic, and the only thing that needs naming is where each OBJECT's run
+/// begins. Per-row offsets would indeed give it back; per-object ones cost eight bytes against a
+/// whole run.
+///
+/// Every lookup stays logarithmic: binary search `objects` for the key, then binary search the
+/// object's own contiguous slice of `rows` for the inner key. Nothing is walked.
+fn arm_d(rows_in: &[Row]) -> HashMap<u32, GroupedBucket> {
+    // Group by bucket, then by key inside the bucket.
+    let mut staged: HashMap<u32, HashMap<Arc<str>, Vec<(u64, BlockAddress)>>> = HashMap::new();
+    for row in rows_in {
+        staged
+            .entry(bucket_of(&row.key))
+            .or_default()
+            .entry(Arc::clone(&row.key))
+            .or_default()
+            .push((row.at, row.address.clone()));
+    }
+    let mut out: HashMap<u32, GroupedBucket> = HashMap::new();
+    for (bucket, by_key) in staged {
+        let mut keys: Vec<(Arc<str>, Vec<(u64, BlockAddress)>)> = by_key.into_iter().collect();
+        keys.sort_by(|a, b| a.0.as_ref().cmp(b.0.as_ref()));
+        let total: usize = keys.iter().map(|(_, points)| points.len()).sum();
+        let mut objects: Vec<(Arc<str>, u32, u32)> = Vec::with_capacity(keys.len());
+        let mut flat: Vec<(u64, BlockAddress)> = Vec::with_capacity(total);
+        for (key, mut points) in keys {
+            points.sort_by_key(|(at, _)| *at);
+            let start = flat.len() as u32;
+            let len = points.len() as u32;
+            flat.extend(points);
+            objects.push((key, start, len));
+        }
+        objects.shrink_to_fit();
+        flat.shrink_to_fit();
+        out.insert(bucket, GroupedBucket { objects, rows: flat });
+    }
+    out
+}
+
+/// The lookup arm D would serve, written out so the shape is not merely asserted to be searchable.
+///
+/// A fixture that measured bytes without ever reading one back would be pricing a structure nobody
+/// could use. Two binary searches, no walk.
+fn arm_d_lookup(map: &HashMap<u32, GroupedBucket>, key: &str, at: u64) -> Option<BlockAddress> {
+    let bucket = map.get(&bucket_of(key))?;
+    let which = bucket
+        .objects
+        .binary_search_by(|(name, _, _)| name.as_ref().cmp(key))
+        .ok()?;
+    let (_, start, len) = bucket.objects[which];
+    let run = &bucket.rows[start as usize..(start + len) as usize];
+    let at_index = run.binary_search_by(|(row_at, _)| row_at.cmp(&at)).ok()?;
+    Some(run[at_index].1.clone())
+}
+
 // =================================================================================================
 // THE INSTRUMENT, PROVEN BEFORE THE SUBJECT
 // =================================================================================================
@@ -250,6 +323,7 @@ fn what_a_two_level_resident_map_costs_against_one_container_per_key() {
     );
     let mut summary: Vec<(&'static str, f64, f64, f64)> = Vec::new();
     let mut vector_arm: Vec<f64> = Vec::new();
+    let mut grouped_arm: Vec<f64> = Vec::new();
 
     for (label, keys, points_per_key) in [
         ("1 point a key", 40_000usize, 1usize),
@@ -331,6 +405,46 @@ fn what_a_two_level_resident_map_costs_against_one_container_per_key() {
         assert_eq!(a_sum, c_sum, "arm C does not hold the same rows as arm A");
         let (c_bytes, c_allocs) = deep_heap(&c);
         drop(c);
+        let d = arm_d(&data);
+        let d_rows: usize = d.values().map(|bucket| bucket.rows.len()).sum();
+        let d_objects: usize = d.values().map(|bucket| bucket.objects.len()).sum();
+        assert_eq!(data.len(), d_rows, "arm D lost rows");
+        assert_eq!(keys, d_objects, "arm D must name every object exactly once");
+        let d_sum: u64 = d
+            .values()
+            .flat_map(|bucket| bucket.rows.iter())
+            .map(|(at, address)| at ^ address.length())
+            .fold(0u64, |acc, v| acc.wrapping_add(v));
+        assert_eq!(a_sum, d_sum, "arm D does not hold the same rows as arm A");
+        // AND IT MUST ANSWER A READ, or the bytes below price something unusable. Checked on the
+        // first and last generated row, and on a key that is absent.
+        let first = &data[0];
+        let last = &data[data.len() - 1];
+        assert_eq!(
+            Some(first.address.clone()),
+            arm_d_lookup(&d, &first.key, first.at),
+            "arm D could not read back the first row"
+        );
+        assert_eq!(
+            Some(last.address.clone()),
+            arm_d_lookup(&d, &last.key, last.at),
+            "arm D could not read back the last row"
+        );
+        assert_eq!(
+            None,
+            arm_d_lookup(&d, "a key that was never written", first.at),
+            "arm D answered for a key it does not hold"
+        );
+        let (d_table_bytes, d_allocs) = deep_heap(&d);
+        let mut d_seen: HashSet<usize> = HashSet::new();
+        let d_text: u64 = d
+            .values()
+            .flat_map(|bucket| bucket.objects.iter())
+            .map(|(key, _, _)| shared_text_bytes(&mut d_seen, key))
+            .sum();
+        assert_eq!(keys, d_seen.len(), "arm D must hold one text allocation per key");
+        let d_bytes = d_table_bytes + d_text;
+        drop(d);
         let (b_table_bytes, b_allocs) = deep_heap(&b);
         // Arm B's shared key text is invisible to a clone, so add each distinct allocation back once.
         let mut seen: HashSet<usize> = HashSet::new();
@@ -372,11 +486,19 @@ fn what_a_two_level_resident_map_costs_against_one_container_per_key() {
             c_bytes as f64 / a_bytes.max(1) as f64
         );
         println!(
+            "                           identity once an object: {d_bytes:>10} B  {:>7.1} B/row  {:>8.1} B/key  {d_allocs:>7} allocations  ({:.3}x the B-tree a key, {:.3}x flat two levels)",
+            d_bytes as f64 / data.len() as f64,
+            d_bytes as f64 / keys as f64,
+            d_bytes as f64 / a_bytes.max(1) as f64,
+            d_bytes as f64 / b_bytes.max(1) as f64
+        );
+        println!(
             "                           for comparison, one container a key BEFORE the decode              repack: {ascending_bytes:>10} B  {:>7.1} B/row  ({:.3}x the packed arm)",
             ascending_bytes as f64 / data.len() as f64,
             ascending_bytes as f64 / a_bytes.max(1) as f64
         );
         vector_arm.push(c_bytes as f64 / data.len() as f64);
+        grouped_arm.push(d_bytes as f64 / data.len() as f64);
         summary.push((
             label,
             per_row_a,
@@ -391,6 +513,7 @@ fn what_a_two_level_resident_map_costs_against_one_container_per_key() {
         vector_arm.len(),
         "every occupancy must carry all three arms"
     );
+    assert_eq!(summary.len(), grouped_arm.len(), "every occupancy must carry arm D too");
     println!("\nsummary, bytes per row -- and WHICH SHAPE WINS at each occupancy:");
     for ((label, a, b, _ratio), c) in summary.iter().zip(vector_arm.iter()) {
         let best = if c <= b && c <= a {
@@ -426,6 +549,23 @@ fn what_a_two_level_resident_map_costs_against_one_container_per_key() {
         "at one point a key the two-level arm must beat a vector a key, or the SECOND level is \
          buying nothing anywhere and only the first is worth taking"
     );
+    // ARM D'S CLAIM, which is the one that matters: storing identity once per OBJECT rather than
+    // once per row must beat what ships at EVERY occupancy -- including the densest, where flat two
+    // levels loses. If that holds, the per-object start-and-length is not an offset table that hands
+    // the bytes back; it is eight bytes against a whole run.
+    println!("\narm D -- identity once an object -- bytes per row, against what ships:");
+    for ((label, a, _b, _r), d) in summary.iter().zip(grouped_arm.iter()) {
+        println!(
+            "  {label:<18} B-tree a key {a:>7.1}   identity once an object {d:>7.1}   {:.3}x",
+            d / a
+        );
+        assert!(
+            d < a,
+            "at {label} storing identity once an object cost {d:.1} B/row against {a:.1} for what \
+             ships -- the per-object start-and-length HAS handed the bytes back, and that is the \
+             result rather than the shape"
+        );
+    }
     assert!(
         *vector_arm.last().expect("six rows") < dense_btree,
         "a sorted vector a key must beat a B-tree a key at the densest occupancy too, or the \
