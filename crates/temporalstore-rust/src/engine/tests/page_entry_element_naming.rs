@@ -800,7 +800,7 @@ fn a_hash_page_naming_no_field_is_skipped_while_a_genuine_empty_field_name_is_ke
             "hash:{nameless_key}::{}:nameless",
             nameless_address.address_word()
         ),
-        object_key: nameless_key.to_string(),
+        object_key: nameless_key.into(),
         model_id: "hash".to_string(),
         // THE WHOLE POINT: this item names no field.
         component: None,

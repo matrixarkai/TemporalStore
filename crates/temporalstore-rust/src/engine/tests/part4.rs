@@ -17018,7 +17018,7 @@ fn a_list_push_files_its_index_item_under_the_pushed_entry() {
         .iter()
         .rev()
         .flat_map(|record| record.items.iter())
-        .find(|item| item.object_key == "queue" && item.component.is_some())
+        .find(|item| item.object_key.as_ref() == "queue" && item.component.is_some())
         .and_then(|item| item.component.clone())
         .expect("the push wrote an index item with a component");
 

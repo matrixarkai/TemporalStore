@@ -62,7 +62,7 @@ fn index_item(index: usize) -> IndexItem {
         kind: IndexItemKind::Page,
         routing_bucket: (index % 64) as u32,
         block_ref_key: format!("tenant/1/object/{index:08}"),
-        object_key: format!("tenant/1/object/{index:08}"),
+        object_key: format!("tenant/1/object/{index:08}").into(),
         model_id: "m".to_string(),
         component: None,
         object_id: 1,
@@ -1193,7 +1193,7 @@ fn index_record_shapes() -> Vec<(String, crate::index_log::IndexDeltaRecord)> {
         let mut record = one_delta_record(4);
         let noise = incompressible(600, 99);
         let key: String = noise.iter().map(|byte| (b'a' + (byte % 26)) as char).collect();
-        record.items[0].object_key = key.clone();
+        record.items[0].object_key = key.as_str().into();
         record.items[0].block_ref_key = key;
         record
     }));
@@ -1493,7 +1493,7 @@ fn index_framed_size(dir: &std::path::Path, key_chars: usize) -> usize {
     let store = LocalIndexLogStore::new(dir);
     let key: String = std::iter::repeat('k').take(key_chars).collect();
     let mut item = index_item(1);
-    item.object_key = key.clone();
+    item.object_key = key.as_str().into();
     item.block_ref_key = key;
     store
         .append_delta(SHARD, vec![item], Vec::new(), None, None, false, false)

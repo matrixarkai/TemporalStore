@@ -3220,9 +3220,9 @@ fn collect_upsert_index_items(
             kind: crate::index_log::IndexItemKind::Page,
             routing_bucket,
             block_ref_key,
-            object_key: object_key.clone(),
+            object_key: std::sync::Arc::from(object_key.as_str()),
             model_id: (*kind).to_string(),
-            component: component.clone(),
+            component: component.as_deref().map(std::sync::Arc::from),
             object_id,
             block_id: address.block_id().unwrap_or(0),
             size: address.length(),
@@ -3308,9 +3308,11 @@ fn collect_command_index_items_for(
                 kind: crate::index_log::IndexItemKind::Page,
                 routing_bucket,
                 block_ref_key: block_ref_key.to_string(),
-                object_key: page.object_key.clone().to_string(),
+                // The resident entry already holds these as shared names, so the item
+                // takes the pointer instead of copying the characters per item.
+                object_key: page.object_key.clone(),
                 model_id: page.model_id.clone().to_string(),
-                component: page.component.clone().map(|value| value.to_string()),
+                component: page.component.clone(),
                 object_id: page.object_id(shard_id),
                 block_id: page.address.block_id().unwrap_or(0),
                 address: Some(page.address.clone()),
@@ -4016,7 +4018,7 @@ fn fold_delta_block_items(
             };
             bucket.block_index.retain(&mut bucket_index.block_slab_live, |_, page| {
                 !(page.model_id.as_str() == item.model_id
-                    && page.object_key.as_ref() == item.object_key.as_str()
+                    && page.object_key.as_ref() == item.object_key.as_ref()
                     && page.component.as_deref() == item.component.as_deref())
             });
         }
@@ -4079,7 +4081,7 @@ fn delta_record_covered_keys(record: &crate::index_log::IndexDeltaRecord) -> BTr
         .collect();
     // Fall back to the items' own object keys if a record carried block items but no blobs.
     for item in &record.items {
-        keys.insert(item.object_key.clone());
+        keys.insert(item.object_key.to_string());
     }
     keys
 }

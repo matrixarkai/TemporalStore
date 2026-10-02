@@ -98,7 +98,7 @@ fn index_item(bucket: u32, key: &str) -> IndexItem {
         kind: IndexItemKind::Page,
         routing_bucket: bucket,
         block_ref_key: key.to_string(),
-        object_key: key.to_string(),
+        object_key: key.into(),
         model_id: "m".to_string(),
         component: None,
         object_id: 1,

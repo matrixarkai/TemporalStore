@@ -642,8 +642,10 @@ pub struct IndexItem {
         serialize_with = "block_ref_key_as_number_when_it_is_one"
     )]
     pub block_ref_key: String,
+    /// SHARED WITH THE RESIDENT ENTRY, which holds this same text as an `Arc<str>`. A
+    /// `String` spends a capacity word on a value that is never grown in place.
     #[serde(rename = "ok", alias = "object_key", default)]
-    pub object_key: String,
+    pub object_key: std::sync::Arc<str>,
     #[serde(
         rename = "mi",
         alias = "model_id",
@@ -652,8 +654,10 @@ pub struct IndexItem {
         deserialize_with = "model_id_either_shape"
     )]
     pub model_id: String,
+    /// Shared with the resident entry the same way `object_key` is. The `Option` still
+    /// costs nothing: a thin pointer's niche carries the discriminant.
     #[serde(rename = "c", alias = "component", default)]
-    pub component: Option<String>,
+    pub component: Option<std::sync::Arc<str>>,
     #[serde(rename = "oi", alias = "object_id", default)]
     pub object_id: u64,
     #[serde(rename = "pi", alias = "page_id", default)]
@@ -700,7 +704,7 @@ pub struct IndexItem {
 /// documented history of exactly that failure about its own wire format, and the same rule applies
 /// to the resident one: a width chain that does not start where the assertion does is read as the
 /// current width by whoever reads it next.)
-const _: () = assert!(std::mem::size_of::<IndexItem>() == 152);
+const _: () = assert!(std::mem::size_of::<IndexItem>() == 136);
 
 /// A field whose value is its default says nothing, and every field here carries
 /// `#[serde(default)]` -- so a reader that meets an absent one fills in the same value it would
@@ -1270,6 +1274,17 @@ where
     }
 
     deserializer.deserialize_any(EitherShape)
+}
+
+/// One empty `Arc<str>`, shared, for blanking a key the record has hoisted.
+///
+/// `String::clear()` was free. An `Arc<str>` cannot be emptied in place, and
+/// `Arc::from("")` allocates -- once per ITEM on the hoist path, which is the path the
+/// hoist exists to make cheaper. Cloning one shared empty is an atomic increment and no
+/// allocation at all, so the hoist keeps costing what it did.
+fn empty_object_key() -> std::sync::Arc<str> {
+    static EMPTY: std::sync::OnceLock<std::sync::Arc<str>> = std::sync::OnceLock::new();
+    EMPTY.get_or_init(|| std::sync::Arc::from("")).clone()
 }
 
 fn block_ref_key_as_number_when_it_is_one<S>(value: &str, serializer: S) -> Result<S::Ok, S::Error>
@@ -2362,13 +2377,14 @@ impl LocalIndexLogStore {
         // derive a different handle and the strip would decline -- costing more than this saves.
         let shared_object_key = match items.split_first() {
             Some((first, rest)) if rest.iter().all(|item| item.object_key == first.object_key) => {
-                Some(first.object_key.clone())
+                Some(first.object_key.to_string())
             }
             _ => None,
         };
         if shared_object_key.is_some() {
+            let blank = empty_object_key();
             for item in items.iter_mut() {
-                item.object_key.clear();
+                item.object_key = blank.clone();
             }
         }
         let record = IndexDeltaRecord {
@@ -2617,7 +2633,10 @@ impl LocalIndexLogStore {
                 // written before that stripping carries both already, and this leaves those
                 // alone. The hoisted key FIRST: everything below derives from the item's own
                 // fields and `object_key` is one of them.
-                if let Some(shared) = record.shared_object_key.clone() {
+                if let Some(shared) = record.shared_object_key.as_deref() {
+                    // Converted ONCE for the record, not once per item: every item in a
+                    // hoisted record carries the same key, so they share one allocation.
+                    let shared: std::sync::Arc<str> = std::sync::Arc::from(shared);
                     for item in record.items.iter_mut() {
                         item.object_key = shared.clone();
                     }
@@ -3996,7 +4015,7 @@ mod tests {
             kind: IndexItemKind::Page,
             routing_bucket: 0,
             block_ref_key: "k".to_string(),
-            object_key: "k".to_string(),
+            object_key: "k".into(),
             model_id: "m".to_string(),
             component: None,
             object_id: 1,
@@ -4287,7 +4306,7 @@ mod tests {
             kind: IndexItemKind::Page,
             routing_bucket: bucket,
             block_ref_key: key.to_string(),
-            object_key: key.to_string(),
+            object_key: key.into(),
             model_id: "m".to_string(),
             component: None,
             object_id: 1,
@@ -5510,7 +5529,7 @@ mod tests {
         });
         let item: IndexItem = serde_json::from_value(legacy).expect("a legacy item must load");
         assert_eq!(item.routing_bucket, 545210715);
-        assert_eq!(item.object_key, "m:0");
+        assert_eq!(item.object_key.as_ref(), "m:0");
         assert_eq!(item.object_id, 122110326161599232);
         assert_eq!(item.size, 126);
         assert!(!item.deleted);
@@ -5556,7 +5575,7 @@ mod tests {
             kind: IndexItemKind::Page,
             routing_bucket: 545210715,
             block_ref_key: "string:m:0::0:0:126:0:0".to_string(),
-            object_key: "m:0".to_string(),
+            object_key: "m:0".into(),
             model_id: "string".to_string(),
             component: None,
             object_id: 122110326161599232,
@@ -5786,9 +5805,9 @@ mod tests {
                 kind: IndexItemKind::Page,
                 routing_bucket: 1024,
                 block_ref_key,
-                object_key: key.to_string(),
+                object_key: key.into(),
                 model_id: "feature".to_string(),
-                component: Some(component.to_string()),
+                component: Some(component.into()),
                 object_id: 0,
                 block_id: 0,
                 address: Some(address),
@@ -5808,7 +5827,7 @@ mod tests {
         for (label, items) in cases {
             let dir = tempfile::tempdir().unwrap();
             let store = LocalIndexLogStore::new(dir.path());
-            let expected: Vec<String> = items.iter().map(|item| item.object_key.clone()).collect();
+            let expected: Vec<String> = items.iter().map(|item| item.object_key.clone()).map(|v| v.to_string()).collect();
             let expected_handles: Vec<String> =
                 items.iter().map(|item| item.block_ref_key.clone()).collect();
             store
@@ -5817,7 +5836,7 @@ mod tests {
 
             let read = store.read_delta_records(11, 0).unwrap();
             assert_eq!(read.len(), 1, "{label}: expected one record");
-            let back: Vec<String> = read[0].items.iter().map(|item| item.object_key.clone()).collect();
+            let back: Vec<String> = read[0].items.iter().map(|item| item.object_key.clone()).map(|v| v.to_string()).collect();
             assert_eq!(back, expected, "{label}: object keys did not round-trip");
             // The derived handle too: it is derived FROM the object key, so a key restored after
             // it would have produced a handle derived against an empty key.
@@ -5845,9 +5864,9 @@ mod tests {
                 kind: IndexItemKind::Page,
                 routing_bucket: 1024,
                 block_ref_key: String::new(),
-                object_key: "ctx:event:41:tenant-7".to_string(),
+                object_key: "ctx:event:41:tenant-7".into(),
                 model_id: "feature".to_string(),
-                component: Some((1_787_429_651_961u64 + index).to_string()),
+                component: Some((1_787_429_651_961u64 + index).to_string().into()),
                 object_id: 0,
                 block_id: index,
                 address: None,
@@ -5860,7 +5879,7 @@ mod tests {
         let mut hoisted = items.clone();
         let shared = hoisted[0].object_key.clone();
         for item in hoisted.iter_mut() {
-            item.object_key.clear();
+            item.object_key = empty_object_key();
         }
         let before = encode_index_payload(
             &IndexDeltaRecord {
@@ -5886,7 +5905,7 @@ mod tests {
                 applied_wal_sequence: Some(1),
                 upsert: true,
                 key_states: Vec::new(),
-                shared_object_key: Some(shared),
+                shared_object_key: Some(shared.to_string()),
             },
             INDEX_LOG_SHAPE_DELTA,
         )
@@ -6368,7 +6387,7 @@ mod tests {
             "every delta record, in log order, across the piece boundaries"
         );
         assert_eq!(
-            folded[0].items[0].object_key, "tenant/1/object/000000",
+            folded[0].items[0].object_key.as_ref(), "tenant/1/object/000000",
             "an item survives the boundary with its fields put back"
         );
         assert_eq!(store.record_count(6).unwrap(), 400, "both shapes are still counted");
@@ -6739,14 +6758,14 @@ mod tests {
         assert_eq!(decoded.block_id, 0, "page_id must default to zero when absent");
         assert_eq!(decoded.size, 0, "size must default to zero when absent");
         assert_eq!(decoded.routing_bucket, 8539, "what WAS written must survive");
-        assert_eq!(decoded.object_key, "tenant/7/object/000000123");
+        assert_eq!(decoded.object_key.as_ref(), "tenant/7/object/000000123");
 
         // And a full item still round-trips: skipping is about what is written, not what is meant.
         let full = IndexItem {
             kind: IndexItemKind::Page,
             routing_bucket: 8539,
             block_ref_key: "17665223918442101733".to_string(),
-            object_key: "tenant/7/object/000000123".to_string(),
+            object_key: "tenant/7/object/000000123".into(),
             model_id: "string".to_string(),
             component: None,
             object_id: 12_345,
@@ -6830,7 +6849,7 @@ mod tests {
             kind: IndexItemKind::Page,
             routing_bucket: 8539,
             block_ref_key: handle.to_string(),
-            object_key: "tenant/7/object/000000123".to_string(),
+            object_key: "tenant/7/object/000000123".into(),
             model_id: "string".to_string(),
             component: None,
             object_id: 12_345,
@@ -6895,7 +6914,7 @@ mod tests {
             kind: IndexItemKind::Page,
             routing_bucket: bucket,
             block_ref_key: 17_665_223_918_442_101_733u64.to_string(),
-            object_key: "tenant/7/object/000000123".to_string(),
+            object_key: "tenant/7/object/000000123".into(),
             model_id: "string".to_string(),
             component: None,
             object_id,
@@ -6963,9 +6982,9 @@ mod tests {
             kind: IndexItemKind::Page,
             routing_bucket: 1024,
             block_ref_key: "k".to_string(),
-            object_key: "tenant/1/object/9".to_string(),
+            object_key: "tenant/1/object/9".into(),
             model_id: "feature".to_string(),
-            component: Some("a".to_string()),
+            component: Some("a".into()),
             object_id: 0,
             block_id: 3,
             address: Some(address.clone()),
@@ -7079,7 +7098,7 @@ flag exists to say",
             kind: IndexItemKind::Page,
             routing_bucket: bucket,
             block_ref_key: 17_665_223_918_442_101_733u64.to_string(),
-            object_key: "tenant/7/object/000000123".to_string(),
+            object_key: "tenant/7/object/000000123".into(),
             model_id: "string".to_string(),
             component: None,
             object_id,
@@ -7125,7 +7144,7 @@ flag exists to say",
             kind: IndexItemKind::Page,
             routing_bucket: 8539,
             block_ref_key: 17_665_223_918_442_101_733u64.to_string(),
-            object_key: "tenant/7/object/000000123".to_string(),
+            object_key: "tenant/7/object/000000123".into(),
             model_id: "string".to_string(),
             component: None,
             object_id: 12_345_678_901_234_567u64,
@@ -7151,7 +7170,7 @@ flag exists to say",
 
         println!("  ITEM whole record {whole} B");
         price("address", IndexItem { address: None, ..full.clone() });
-        price("object_key", IndexItem { object_key: String::new(), ..full.clone() });
+        price("object_key", IndexItem { object_key: empty_object_key(), ..full.clone() });
         price("page_ref_key", IndexItem { block_ref_key: String::new(), ..full.clone() });
         price("model_id", IndexItem { model_id: String::new(), ..full.clone() });
         price("object_id", IndexItem { object_id: 0, ..full.clone() });
@@ -7208,6 +7227,11 @@ flag exists to say",
         for (name, member) in [
             ("String", align_of::<String>()),
             ("Option<String>", align_of::<Option<String>>()),
+            ("Arc<str>", align_of::<std::sync::Arc<str>>()),
+            (
+                "Option<Arc<str>>",
+                align_of::<Option<std::sync::Arc<str>>>(),
+            ),
             (
                 "Option<BlockAddress>",
                 align_of::<Option<crate::block_store::BlockAddress>>(),
@@ -7231,14 +7255,17 @@ flag exists to say",
             );
         }
 
-        //   block_ref_key, object_key, model_id : String                (3 x 24)
-        //   component                           : Option<String>        (24, the pointer's niche
+        //   block_ref_key, model_id             : String                (2 x 24)
+        //   object_key                          : Arc<str>              (16, a thin pointer and a
+        //                                          length, shared with the resident entry)
+        //   component                           : Option<Arc<str>>      (16, the pointer's niche
         //                                          holds the discriminant)
         //   address                             : Option<BlockAddress>  (24: a 16-byte address
         //                                          with no niche, so the discriminant costs a word)
         //   object_id, block_id, size           : u64                   (3 x 8)
-        let eight_aligned = 3 * size_of::<String>()
-            + size_of::<Option<String>>()
+        let eight_aligned = 2 * size_of::<String>()
+            + size_of::<std::sync::Arc<str>>()
+            + size_of::<Option<std::sync::Arc<str>>>()
             + size_of::<Option<crate::block_store::BlockAddress>>()
             + 3 * size_of::<u64>();
         //   routing_bucket : u32            (4)
@@ -7253,8 +7280,8 @@ flag exists to say",
         println!("  total               {:>4} B", size_of::<IndexItem>());
 
         assert_eq!(
-            144, eight_aligned,
-            "the eight-aligned group is {eight_aligned} B, not 144 -- a field entered or left it",
+            128, eight_aligned,
+            "the eight-aligned group is {eight_aligned} B, not 128 -- a field entered or left it",
         );
         assert_eq!(7, tail, "the tail is {tail} B of field, not 7");
         assert_eq!(8, rounded_tail, "the tail rounds to {rounded_tail}, not 8");
@@ -7328,7 +7355,7 @@ flag exists to say",
                 address.block_id().unwrap_or_default(),
                 address.generation().unwrap_or_default(),
             ),
-            object_key: object_key.clone(),
+            object_key: object_key.clone().into(),
             model_id: model_id.clone(),
             component: None,
             object_id: crate::engine::hashing::stable_block_object_id(shard, &model_id, &object_key),
@@ -7469,7 +7496,7 @@ flag exists to say",
                             address.block_id().unwrap_or_default(),
                             address.generation().unwrap_or_default(),
                         ),
-                        object_key: object_key.clone(),
+                        object_key: object_key.clone().into(),
                         model_id: model_id.clone(),
                         component: None,
                         object_id: crate::engine::hashing::stable_block_object_id(
@@ -7585,7 +7612,7 @@ flag exists to say",
                             address.block_id().unwrap_or_default(),
                             address.generation().unwrap_or_default(),
                         ),
-                        object_key: object_key.clone(),
+                        object_key: object_key.clone().into(),
                         model_id: model_id.clone(),
                         component: None,
                         object_id: crate::engine::hashing::stable_block_object_id(
@@ -7634,7 +7661,7 @@ flag exists to say",
             "eight blocks of one object must hoist, or this measures the wrong case",
         );
         for item in hoisted.iter_mut() {
-            item.object_key.clear();
+            item.object_key = empty_object_key();
         }
         let common = row(&hoisted[0]);
 

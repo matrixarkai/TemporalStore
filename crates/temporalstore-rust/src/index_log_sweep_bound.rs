@@ -74,7 +74,7 @@ fn item(key: &str) -> IndexItem {
         kind: IndexItemKind::Page,
         routing_bucket: 0,
         block_ref_key: key.to_string(),
-        object_key: key.to_string(),
+        object_key: key.into(),
         model_id: "m".to_string(),
         component: None,
         object_id: 1,

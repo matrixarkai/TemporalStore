@@ -22,7 +22,7 @@ fn small_item(bucket: u32, key: &str) -> IndexItem {
         kind: IndexItemKind::Page,
         routing_bucket: bucket,
         block_ref_key: key.to_string(),
-        object_key: key.to_string(),
+        object_key: key.into(),
         model_id: "m".to_string(),
         component: None,
         object_id: 1,
@@ -1522,7 +1522,7 @@ fn large_fold_cost(
                     record
                         .items
                         .first()
-                        .map(|item| item.object_key.clone())
+                        .map(|item| item.object_key.to_string())
                         .unwrap_or_default(),
                 );
             }
