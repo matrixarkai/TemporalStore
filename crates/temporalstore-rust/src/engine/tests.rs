@@ -107,6 +107,7 @@ mod inner_range;
 mod shard_carried_range;
 mod shard_carried_identity;
 mod index_bytes_per_key;
+mod model_number_agreement;
 mod dump_scale;
 mod dump_release_scale;
 mod restore_scale;

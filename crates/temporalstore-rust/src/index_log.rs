@@ -1153,7 +1153,32 @@ impl serde::Serialize for IndexItem {
     }
 }
 
-const MODEL_ID_NUMBERS: &[&str] = &[
+/// The spellings a row may write as a NUMBER instead of a string, and the number IS the position.
+///
+/// APPEND-ONLY, AND THE POSITION IS THE WIRE VALUE. Index 0 is `"string"`, so a stored row holding
+/// the number 0 means `"string"` and will mean it forever. Inserting or reordering an entry
+/// renumbers every entry after it and silently reinterprets the model of every row already
+/// written. New spellings go at the END and nowhere else.
+///
+/// AND THIS NUMBERING IS NOT THE REGISTRY'S, WHICH IS THE TRAP WORTH NAMING. The entry spelling's
+/// own registry (`engine::storage_bucket_internals`'s `model_kind_registry!`) gives each kind an
+/// EXPLICIT code with deliberate holes -- `"string"` is 1 there, `"hash"` is 2, and 5 and 15 belong
+/// to retired names. This list is POSITIONAL and 0-based, so `"hash"` is 1 here and 1 is
+/// `"string"` there. The two numbering schemes agree on nothing.
+///
+/// So if `IndexItem::model_id` ever becomes the one-byte `StoredModelKind` the resident entry
+/// already holds -- which is worth 23 bytes resident and is the obvious next step -- THE WIRE
+/// NUMBER MUST STILL BE THIS LIST'S POSITION AND NOT THE REGISTRY'S CODE. Serializing the
+/// registry code would be slot-preserving in shape and incompatible in value: every stored row's
+/// model would be reinterpreted as a different kind, with no error anywhere. The in-memory type
+/// may change; the mapping through this list may not.
+///
+/// MEMBERSHIP IS GUARDED, because this is a second list of spellings sitting beside a registry
+/// that derives its own retired half as the complement of its live half "so it cannot disagree
+/// with the declaration". This list had no such tie and did go stale: `"zset"` and `"list"` were
+/// added to the registry as live kinds and never added here, so two live kinds wrote their full
+/// string spelling on every index-log row. `engine::tests::model_number_agreement` is the tie.
+pub(crate) const MODEL_ID_NUMBERS: &[&str] = &[
     "string",
     "hash",
     "set",
@@ -1169,6 +1194,12 @@ const MODEL_ID_NUMBERS: &[&str] = &[
     "context_summary",
     "context_compression",
     "context_entity",
+    // APPENDED, NOT INSERTED. Both are LIVE kinds the registry declares -- `"zset"` at its
+    // code 6 and `"list"` at its code 12, the two codes the old packed report skipped -- and
+    // this list never learned either, so both wrote their full string spelling on every row.
+    // They go at the END so every position above keeps the meaning it already has on disk.
+    "zset",
+    "list",
 ];
 
 fn model_id_as_number_when_it_is_known<S>(value: &str, serializer: S) -> Result<S::Ok, S::Error>
@@ -1179,6 +1210,24 @@ where
         Some(index) => serializer.serialize_u64(index as u64),
         None => serializer.serialize_str(value),
     }
+}
+
+/// What the model slot costs for one spelling, priced THROUGH the adapter the row writes it with.
+///
+/// Exists so the guard on the two spelling lists can carry a byte figure rather than a correctness
+/// claim alone, and so that figure cannot drift from the encoder: pricing this slot any other way
+/// -- encoding the `&str` directly, say -- prices a row nobody emits.
+#[cfg(test)]
+pub(crate) fn model_id_slot_bytes(model: &str) -> usize {
+    struct Model<'a>(&'a str);
+    impl serde::Serialize for Model<'_> {
+        fn serialize<S: serde::Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
+            model_id_as_number_when_it_is_known(self.0, s)
+        }
+    }
+    rmp_serde::to_vec(&Model(model))
+        .expect("encode the model slot")
+        .len()
 }
 
 fn model_id_either_shape<'de, D>(deserializer: D) -> Result<String, D::Error>
