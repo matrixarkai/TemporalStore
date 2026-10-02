@@ -671,11 +671,35 @@ pub struct IndexItem {
 /// One per changed page per write, and transient -- it lives for the length of an append.
 /// Pinned because it is the widest thing built per page anywhere in the engine.
 ///
+/// WHAT THIS NUMBER IS MADE OF IS RECONSTRUCTED RATHER THAN RESTATED, by
+/// `tests::what_every_byte_of_an_index_item_is_spent_on`: the eight-aligned fields come to 144 and
+/// the tail -- the routing bucket, the kind and the two flags -- comes to 7, which the aligner
+/// rounds to 8. The probe asserts each field is really in the group it counts it in, so a field
+/// that MOVES between the two fails there with the group it left.
+///
+/// AND THE ONE SPARE BYTE IN THAT TAIL IS THE WHOLE VERDICT ON NARROWING THIS STRUCT. Seven bytes
+/// of field in eight means a one-byte field added to the tail is FREE, and every narrowing inside
+/// it is worth EXACTLY ZERO: the routing bucket at sixteen bits leaves five and rounds back to
+/// eight, and deleting the kind and both flags outright leaves four and still rounds to eight.
+/// Shedding eight bytes means taking a WHOLE WORD out of the eight-aligned group.
+///
+/// 152, not 160, since that `BlockAddress` then shed its `object_id` and became a derivation of the
+/// terms beside it. The address is inside an `Option` here with no niche to put the discriminant
+/// in, so the eight bytes that left the address take the `Option` from 32 to 24 and the item from
+/// 160 to 152.
+///
 /// 160, not 168, since the `BlockAddress` it carries shed its `routing_bucket` and narrowed its
 /// `block_id` to sixteen bits. The address is inside an `Option` here and the item is 8-aligned, so
 /// the six bytes of payload that left round to one whole word -- the same step, and the same reason,
 /// as in the page entry. 168, not 176, since that address merged its slab id and its offset into one
 /// word; 176, not 184, since it shed its derived `generation` before that.
+///
+/// (THE CHAIN USED TO START AT 160 WHILE THE ASSERTION BELOW SAID 152. The step the address took
+/// when its identity became derived moved this width and nothing moved the prose, so the first
+/// sentence a reader met named a width this struct had not had for a release. This file has a
+/// documented history of exactly that failure about its own wire format, and the same rule applies
+/// to the resident one: a width chain that does not start where the assertion does is read as the
+/// current width by whoever reads it next.)
 const _: () = assert!(std::mem::size_of::<IndexItem>() == 152);
 
 /// A field whose value is its default says nothing, and every field here carries
@@ -7062,6 +7086,380 @@ flag exists to say",
         price("object_id", IndexItem { object_id: 0, ..full.clone() });
 
         assert!(whole > 0, "the probe must encode something");
+    }
+
+    /// WHAT EVERY BYTE OF AN INDEX ITEM IS SPENT ON, AS ARITHMETIC RATHER THAN AS A LITERAL.
+    ///
+    /// Two reconstructions, and each one is a SUM THAT HAS TO CLOSE. Neither restates a width:
+    /// the literals stay where they belong -- at the declaration, as a `const` assertion, and in
+    /// `engine::tests::per_item_byte_budget` -- and this says WHY each number is the number it is,
+    /// so a field that moves fails here with the group it moved out of.
+    ///
+    ///   * RESIDENT. The declared fields in TWO GROUPS -- the eight-aligned ones, and the tail the
+    ///     aligner rounds up -- plus the proof that each field is really in the group this test
+    ///     puts it in. A decomposition that only adds up is satisfied by a field counted in the
+    ///     wrong group and a compensating error elsewhere; asserting each member's own alignment
+    ///     is what makes the split a statement rather than a coincidence.
+    ///
+    ///   * WIRE. A msgpack array is a header followed by its elements CONCATENATED, so the twelve
+    ///     slot encodings sum to the row EXACTLY, and the test asserts they do. Each slot is
+    ///     priced by encoding its own value through the same adapter the row's `Serialize` uses.
+    ///
+    /// WHY NOT THE DIFFERENCE METHOD, AND THE SIZE OF THE ERROR IT MAKES.
+    /// `what_an_index_item_is_made_of` above clears one field and subtracts. Under a POSITIONAL
+    /// encoding that does not price the slot: clearing a field writes `nil` or an empty string in
+    /// the slot it already had, so the difference is value-minus-placeholder and the slot itself --
+    /// which is what a format break would have to remove -- is never priced at all. Run both and
+    /// the gap is exactly that placeholder: the difference probe prices the address slot at 15 B
+    /// where it is 16, one byte of `nil` short, and prices `model_id` at 0 B for a slot that costs
+    /// 1 -- a field it reports as free. The two probes answer different questions and the
+    /// difference one reads like this one, which is the whole reason for saying so here.
+    ///
+    /// AND THE RESIDENT NUMBER IS NOT A PER-CORPUS COST, which is the thing most likely to be read
+    /// off this test wrongly. This struct is per CHANGED BLOCK PER APPEND and transient: it is
+    /// built, stripped, encoded and dropped inside one append, so what it costs at any moment is
+    /// bounded by the BATCH, not by the store. `engine::tests::per_item_byte_budget`'s own corpus
+    /// ranking is the evidence -- it measures eight structures at two corpus sizes and this one is
+    /// not among them, because there is no corpus count to measure. The durable per-item cost of an
+    /// index item is the WIRE row below, and that is the number a footprint argument wants.
+    #[test]
+    fn what_every_byte_of_an_index_item_is_spent_on() {
+        use std::mem::{align_of, size_of};
+
+        // ------------------------------------------------------------------
+        // RESIDENT
+        // ------------------------------------------------------------------
+        let align = align_of::<IndexItem>();
+        assert_eq!(8, align, "the groups below are an eight-aligned split");
+
+        // Each member of the first group must actually BE eight-aligned, or it does not belong
+        // to it and the split is a fiction that happens to add up.
+        for (name, member) in [
+            ("String", align_of::<String>()),
+            ("Option<String>", align_of::<Option<String>>()),
+            (
+                "Option<BlockAddress>",
+                align_of::<Option<crate::block_store::BlockAddress>>(),
+            ),
+            ("u64", align_of::<u64>()),
+        ] {
+            assert_eq!(
+                align, member,
+                "{name} is counted in the eight-aligned group and is {member}-aligned",
+            );
+        }
+        for (name, member) in [
+            ("u32", align_of::<u32>()),
+            ("IndexItemKind", align_of::<IndexItemKind>()),
+            ("bool", align_of::<bool>()),
+        ] {
+            assert!(
+                member < align,
+                "{name} is counted in the rounded tail and is {member}-aligned, which puts it in \
+                 the other group",
+            );
+        }
+
+        //   block_ref_key, object_key, model_id : String                (3 x 24)
+        //   component                           : Option<String>        (24, the pointer's niche
+        //                                          holds the discriminant)
+        //   address                             : Option<BlockAddress>  (24: a 16-byte address
+        //                                          with no niche, so the discriminant costs a word)
+        //   object_id, block_id, size           : u64                   (3 x 8)
+        let eight_aligned = 3 * size_of::<String>()
+            + size_of::<Option<String>>()
+            + size_of::<Option<crate::block_store::BlockAddress>>()
+            + 3 * size_of::<u64>();
+        //   routing_bucket : u32            (4)
+        //   kind           : IndexItemKind  (1, a three-variant enum with no payload)
+        //   in_log, deleted: bool           (2)
+        let tail = size_of::<u32>() + size_of::<IndexItemKind>() + 2 * size_of::<bool>();
+        let rounded_tail = (tail + align - 1) / align * align;
+
+        println!("=== IndexItem, resident ===");
+        println!("  eight-aligned group {eight_aligned:>4} B");
+        println!("  tail                {tail:>4} B -> {rounded_tail} rounded");
+        println!("  total               {:>4} B", size_of::<IndexItem>());
+
+        assert_eq!(
+            144, eight_aligned,
+            "the eight-aligned group is {eight_aligned} B, not 144 -- a field entered or left it",
+        );
+        assert_eq!(7, tail, "the tail is {tail} B of field, not 7");
+        assert_eq!(8, rounded_tail, "the tail rounds to {rounded_tail}, not 8");
+        assert_eq!(
+            eight_aligned + rounded_tail,
+            size_of::<IndexItem>(),
+            "the groups add to {} and the struct is {} -- the field list here has drifted from \
+             the declaration",
+            eight_aligned + rounded_tail,
+            size_of::<IndexItem>(),
+        );
+
+        // THE ONE SPARE BYTE, AND IT IS THE WHOLE VERDICT ON NARROWING THIS STRUCT.
+        //
+        // The tail holds 7 bytes of field in the 8 the aligner gives it. So: a ONE-BYTE field
+        // added to the tail is FREE, and EVERY narrowing of a tail field is worth EXACTLY ZERO --
+        // `routing_bucket` at 16 bits leaves a 5-byte tail that rounds straight back to 8, and
+        // deleting `kind`, `in_log` and `deleted` outright leaves 4 and still rounds to 8.
+        // Shedding eight bytes means taking a WHOLE WORD out of the eight-aligned group, or
+        // emptying the tail completely -- all four of its fields, for one word.
+        assert_eq!(
+            1,
+            rounded_tail - tail,
+            "the tail has {} spare bytes, not 1; the narrowing verdict above is derived from \
+             there being exactly one",
+            rounded_tail - tail,
+        );
+
+        // ------------------------------------------------------------------
+        // WIRE
+        // ------------------------------------------------------------------
+        // The adapters the row's `Serialize` wraps three of its slots in. Re-declared here rather
+        // than shared, because the point is to price what the row writes: if either copy drifts,
+        // the closing assertion below stops summing to the row.
+        struct Kind<'a>(&'a IndexItemKind);
+        impl serde::Serialize for Kind<'_> {
+            fn serialize<S: serde::Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
+                item_kind_as_number(self.0, s)
+            }
+        }
+        struct Handle<'a>(&'a str);
+        impl serde::Serialize for Handle<'_> {
+            fn serialize<S: serde::Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
+                block_ref_key_as_number_when_it_is_one(self.0, s)
+            }
+        }
+        struct Model<'a>(&'a str);
+        impl serde::Serialize for Model<'_> {
+            fn serialize<S: serde::Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
+                model_id_as_number_when_it_is_known(self.0, s)
+            }
+        }
+        fn one<T: serde::Serialize>(value: &T) -> usize {
+            rmp_serde::to_vec(value).expect("encode one slot").len()
+        }
+
+        let shard: ShardId = 7;
+        let address = crate::block_store::BlockAddress::from_parts(42, 1_048_576, 4096, Some(7), None);
+        let object_key = "tenant/7/object/000000123".to_string();
+        let model_id = "string".to_string();
+        let mut item = IndexItem {
+            kind: IndexItemKind::Page,
+            routing_bucket: 8539,
+            block_ref_key: block_ref_key_from_parts(
+                &model_id,
+                &object_key,
+                None,
+                address.block_slab_id(),
+                address.offset(),
+                address.length(),
+                address.block_id().unwrap_or_default(),
+                address.generation().unwrap_or_default(),
+            ),
+            object_key: object_key.clone(),
+            model_id: model_id.clone(),
+            component: None,
+            object_id: crate::engine::hashing::stable_block_object_id(shard, &model_id, &object_key),
+            block_id: 7,
+            address: Some(address.clone()),
+            size: address.length(),
+            in_log: false,
+            deleted: false,
+        };
+
+        // THE UNSTRIPPED ROW FIRST, so each strip is priced against the row that carries it.
+        let before: Vec<(&str, usize)> = vec![
+            ("kind", one(&Kind(&item.kind))),
+            ("routing_bucket", one(&item.routing_bucket)),
+            ("block handle", one(&Handle(&item.block_ref_key))),
+            ("object_key", one(&item.object_key)),
+            ("model", one(&Model(&item.model_id))),
+            ("component", one(&item.component)),
+            ("object_id", one(&item.object_id)),
+            ("block_id", one(&item.block_id)),
+            ("address", one(&item.address)),
+            ("size", one(&item.size)),
+            ("in_log", one(&item.in_log)),
+            ("deleted", one(&item.deleted)),
+        ];
+        let unstripped = rmp_serde::to_vec(&item).expect("encode the row").len();
+
+        // POSITIVE CONTROLS. Each strip has to actually FIRE on this row, or the "after" column
+        // below is the cost of a writer that gave up, which reads identically to a cheap one.
+        item.strip_block_ref_key_repeat();
+        assert!(
+            item.block_ref_key.is_empty(),
+            "the composite-handle strip did not fire, so this row is not the shape the writer emits",
+        );
+        item.strip_size_repeat();
+        assert_eq!(0, item.size, "the size strip did not fire");
+        item.strip_address_repeats();
+        item.strip_object_id_repeat(shard);
+        assert_eq!(0, item.object_id, "the object-id strip did not fire");
+
+        let after: Vec<(&str, usize)> = vec![
+            ("kind", one(&Kind(&item.kind))),
+            ("routing_bucket", one(&item.routing_bucket)),
+            ("block handle", one(&Handle(&item.block_ref_key))),
+            ("object_key", one(&item.object_key)),
+            ("model", one(&Model(&item.model_id))),
+            ("component", one(&item.component)),
+            ("object_id", one(&item.object_id)),
+            ("block_id", one(&item.block_id)),
+            ("address", one(&item.address)),
+            ("size", one(&item.size)),
+            ("in_log", one(&item.in_log)),
+            ("deleted", one(&item.deleted)),
+        ];
+        let stripped = rmp_serde::to_vec(&item).expect("encode the row").len();
+
+        // A twelve-element array is one header byte (`0x9c`, fixarray) and then the elements.
+        const ARRAY_HEADER: usize = 1;
+        let sum_before: usize = before.iter().map(|slot| slot.1).sum();
+        let sum_after: usize = after.iter().map(|slot| slot.1).sum();
+
+        println!("=== IndexItem, on the wire: 12 positional slots ===");
+        println!("  {:<16} {:>9} {:>9}", "slot", "written", "stripped");
+        for (index, (name, bytes)) in before.iter().enumerate() {
+            println!("  {name:<16} {bytes:>9} {:>9}", after[index].1);
+        }
+        println!("  {:<16} {ARRAY_HEADER:>9} {ARRAY_HEADER:>9}", "array header");
+        println!(
+            "  {:<16} {:>9} {:>9}",
+            "ROW",
+            ARRAY_HEADER + sum_before,
+            ARRAY_HEADER + sum_after
+        );
+
+        // THE CLOSING ASSERTIONS. These are what make the table a decomposition: if any slot were
+        // priced through the wrong adapter, or a slot were missing from the list, the sum would
+        // not be the row.
+        assert_eq!(
+            ARRAY_HEADER + sum_before,
+            unstripped,
+            "the twelve slot sizes sum to {} and the written row is {unstripped} B",
+            ARRAY_HEADER + sum_before,
+        );
+        assert_eq!(
+            ARRAY_HEADER + sum_after,
+            stripped,
+            "the twelve slot sizes sum to {} and the stripped row is {stripped} B",
+            ARRAY_HEADER + sum_after,
+        );
+        assert_eq!(
+            12,
+            before.len(),
+            "the row writes twelve slots; this table prices {}",
+            before.len(),
+        );
+        assert!(
+            stripped < unstripped,
+            "the strips are supposed to make the row SMALLER: {unstripped} -> {stripped}",
+        );
+    }
+
+    /// WHAT AN INDEX ITEM COSTS PER APPEND, AT THREE BATCH SIZES.
+    ///
+    /// The row is not the whole story and the record is not the row: a delta record carries an
+    /// envelope -- shard, sequence, meta, the key states, the hoisted object key -- that a batch
+    /// of one pays in full and a batch of thirty-two divides. So the per-item figure is the
+    /// MARGINAL one, read off the slope between batch sizes, and a single batch size cannot tell
+    /// an envelope from an item.
+    ///
+    /// THREE SIZES AND NOT TWO, because two points fit any line. The slope between 1 and 8 and
+    /// the slope between 8 and 32 have to agree, or the thing being measured is not per-item.
+    #[test]
+    fn what_an_index_item_costs_per_append_at_three_batch_sizes() {
+        let shard: ShardId = 7;
+        let mut measured: Vec<(usize, usize)> = Vec::new();
+        for count in [1usize, 8, 32] {
+            let items: Vec<IndexItem> = (0..count)
+                .map(|index| {
+                    let object_key = format!("tenant/7/object/{index:09}");
+                    let model_id = "string".to_string();
+                    let address = crate::block_store::BlockAddress::from_parts(
+                        42,
+                        1_048_576 + index as u64 * 4096,
+                        4096,
+                        Some(index as u64),
+                        None,
+                    );
+                    let mut item = IndexItem {
+                        kind: IndexItemKind::Page,
+                        routing_bucket: 8539,
+                        block_ref_key: block_ref_key_from_parts(
+                            &model_id,
+                            &object_key,
+                            None,
+                            address.block_slab_id(),
+                            address.offset(),
+                            address.length(),
+                            address.block_id().unwrap_or_default(),
+                            address.generation().unwrap_or_default(),
+                        ),
+                        object_key: object_key.clone(),
+                        model_id: model_id.clone(),
+                        component: None,
+                        object_id: crate::engine::hashing::stable_block_object_id(
+                            shard, &model_id, &object_key,
+                        ),
+                        block_id: index as u64,
+                        address: Some(address.clone()),
+                        size: address.length(),
+                        in_log: false,
+                        deleted: false,
+                    };
+                    item.strip_block_ref_key_repeat();
+                    item.strip_size_repeat();
+                    item.strip_address_repeats();
+                    item.strip_object_id_repeat(shard);
+                    assert!(
+                        item.block_ref_key.is_empty(),
+                        "the handle strip must fire, or this measures an unstripped writer",
+                    );
+                    item
+                })
+                .collect();
+            let record = IndexDeltaRecord {
+                shard_id: shard,
+                sequence: 1,
+                items,
+                meta: None,
+                applied_wal_sequence: Some(1),
+                upsert: true,
+                key_states: Vec::new(),
+                shared_object_key: None,
+            };
+            // The payload WITHOUT compression, so the figure is the record's own shape rather
+            // than zstd's opinion of this fixture's repetitiveness.
+            let bytes = rmp_serde::to_vec(&record).expect("encode the record").len();
+            measured.push((count, bytes));
+        }
+
+        println!("=== a delta record, by batch size ===");
+        for (count, bytes) in &measured {
+            println!(
+                "  {count:>3} items {bytes:>6} B  ({:>6.1} B/item all-in)",
+                *bytes as f64 / *count as f64
+            );
+        }
+        let (small, small_bytes) = measured[0];
+        let (mid, mid_bytes) = measured[1];
+        let (large, large_bytes) = measured[2];
+        let slope_low = (mid_bytes - small_bytes) as f64 / (mid - small) as f64;
+        let slope_high = (large_bytes - mid_bytes) as f64 / (large - mid) as f64;
+        println!("  marginal {slope_low:.2} B/item over 1..8, {slope_high:.2} B/item over 8..32");
+
+        assert!(
+            (slope_low - slope_high).abs() < 4.0,
+            "the two slopes are {slope_low:.2} and {slope_high:.2} B/item -- a per-item cost has \
+             one slope, so something here scales with the record and not with the items",
+        );
+        assert!(
+            slope_high > 0.0,
+            "a record carrying more items must be larger",
+        );
     }
 
 
