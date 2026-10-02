@@ -63,6 +63,10 @@ pub use storage_bucket_internals::{
     reset_stage_walk_charges, take_stage_walk_charges,
     BLOCK_SLAB_LIVE_DRIFTS, BLOCK_SLAB_LIVE_RECONCILES,
 };
+pub use storage_reports::{
+    reset_storage_cache_inspection_listings, storage_cache_inspection_listing_entries,
+    storage_cache_inspection_listings,
+};
 pub use state::{block_slab_live_charges, reset_block_slab_live_charges};
 pub use shard_write_guard::{
     index_encode_counts, maintenance_mirror_sink_lookups, maintenance_block_read_counts,

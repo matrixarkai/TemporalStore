@@ -550,7 +550,10 @@ impl TemporalEngine {
         &self,
         shard_id: ShardId,
     ) -> StorageCacheInspectionReport {
+        STORAGE_CACHE_INSPECTION_LISTINGS.with(|cell| cell.set(cell.get().saturating_add(1)));
         let entries = self.cache.entries_for_shard(shard_id);
+        STORAGE_CACHE_INSPECTION_LISTING_ENTRIES
+            .with(|cell| cell.set(cell.get().saturating_add(entries.len() as u64)));
         let mut bucket_summaries = BTreeMap::<u32, StorageCacheBucketSummary>::new();
         for entry in &entries {
             let Some(routing_bucket) = cache_entry_routing_bucket(entry) else {
@@ -690,4 +693,44 @@ impl TemporalEngine {
             unreadable_block_bytes,
         }
     }
+}
+
+/// Calls to [`TemporalEngine::storage_cache_inspection_report`], which is the only cache listing
+/// the storage-manager round makes.
+///
+/// WHY THIS IS COUNTED AND NOT TIMED. The listing is `MultiLayerCache::entries_for_shard`, which
+/// materialises and SORTS one entry per cached record for the shard and falls through to a
+/// filesystem `metadata()` for every entry the disk index does not hold. So its cost is a function
+/// of the shard's cache occupancy, and a COUNT of listings is the load-independent way to say
+/// whether a round paid it. A wall-clock figure on this box moves with whatever else is building.
+///
+/// WHY THREAD-LOCAL AND NOT A GLOBAL ATOMIC. The guard that reads this asserts a count of ZERO, and
+/// a process-global counter cannot attribute a zero across concurrent `#[test]`s: any other test
+/// taking an inspection report between the reset and the read would add to it, so a correct tree
+/// would fail whenever `cargo test` was run without `--test-threads=1`. A thread-local cell counts
+/// only the work the reading thread did. The cost of that choice is that a listing made on ANOTHER
+/// thread is invisible, which could make a zero vacuous -- so the guard carries a positive arm that
+/// drives a listing through the same round on the same thread and asserts the counter SEES it,
+/// rather than trusting that it would.
+thread_local! {
+    static STORAGE_CACHE_INSPECTION_LISTINGS: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+    /// Entries those listings RETURNED, the upper bound on their `metadata()` syscalls.
+    static STORAGE_CACHE_INSPECTION_LISTING_ENTRIES: std::cell::Cell<u64> =
+        const { std::cell::Cell::new(0) };
+}
+
+/// Cache listings made by `storage_cache_inspection_report` ON THIS THREAD since the last reset.
+pub fn storage_cache_inspection_listings() -> u64 {
+    STORAGE_CACHE_INSPECTION_LISTINGS.with(|cell| cell.get())
+}
+
+/// Entries returned by those listings on this thread since the last reset.
+pub fn storage_cache_inspection_listing_entries() -> u64 {
+    STORAGE_CACHE_INSPECTION_LISTING_ENTRIES.with(|cell| cell.get())
+}
+
+/// Reset both listing counters for this thread. Pairs with the two accessors above.
+pub fn reset_storage_cache_inspection_listings() {
+    STORAGE_CACHE_INSPECTION_LISTINGS.with(|cell| cell.set(0));
+    STORAGE_CACHE_INSPECTION_LISTING_ENTRIES.with(|cell| cell.set(0));
 }

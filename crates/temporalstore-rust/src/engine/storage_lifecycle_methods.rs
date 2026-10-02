@@ -1873,19 +1873,31 @@ impl TemporalEngine {
         dump_before_evict: bool,
         delete_drop: bool,
     ) -> StorageEvictionReport {
-        let before_cache = self.storage_cache_inspection_report(shard_id);
         // THE SIGNAL. Every memory number this gate used to read was the CACHE's, and the bucket
         // index is in none of them: at 8,000 records the gate saw ~600 KB of cache while the index
         // held 8,000 entries it could not see, was never evicted, and cost ~760 B a record. A gate
         // that cannot see a cost cannot relieve it, so the resident index is part of the pressure
         // now -- and it is part of it only because the release path above can actually reduce it.
+        //
+        // READ FROM `cache.stats()` DIRECTLY, NOT FROM THE INSPECTION REPORT. The two are the same
+        // bytes -- `storage_cache_inspection_report` fills its `stats` field with exactly this call
+        // -- but the report also builds `entries` and `bucket_summaries`, and NEITHER is gate input.
+        // That listing is `MultiLayerCache::entries_for_shard`: it materialises and SORTS one entry
+        // per cached record for the shard and falls through to a filesystem `metadata()` for every
+        // entry the disk index does not hold. Taking the report here made every round that reached
+        // this stage pay a per-cache-entry walk to compute a number the gate below might decline on
+        // immediately -- which is the per-round cost of having the stage enabled at all, paid on
+        // every loaded shard whether or not anything is ever evicted. The report is taken AFTER the
+        // gate, where the summaries are actually used. `the_declining_gate_pays_no_cache_listing`
+        // is the gate on that, and it fails on the previous arrangement rather than merely
+        // describing it.
+        let cache_stats = self.cache.stats();
         let bucket_index_bytes_before = self.bucket_index_resident_bytes(shard_id);
-        let pressure_before = before_cache
-            .stats
+        let pressure_before = cache_stats
             .memory_bytes
-            .saturating_add(before_cache.stats.disk_bytes)
-            .saturating_add(before_cache.stats.async_writeback_queue_bytes)
-            .saturating_add(before_cache.stats.async_writeback_queue_depth)
+            .saturating_add(cache_stats.disk_bytes)
+            .saturating_add(cache_stats.async_writeback_queue_bytes)
+            .saturating_add(cache_stats.async_writeback_queue_depth)
             .saturating_add(bucket_index_bytes_before);
         if pressure_before < memory_pressure_threshold {
             return StorageEvictionReport {
@@ -1905,6 +1917,8 @@ impl TemporalEngine {
                 ..StorageEvictionReport::default()
             };
         }
+        // The gate has opened, so the per-bucket cache summaries are now worth their listing.
+        let before_cache = self.storage_cache_inspection_report(shard_id);
         let cache_by_bucket = before_cache
             .bucket_summaries
             .iter()
@@ -2174,14 +2188,19 @@ impl TemporalEngine {
                 let _ = self.index_log_store.append_index_bytes(shard_id, &index_bytes);
             }
         }
-        let after_cache = self.storage_cache_inspection_report(shard_id);
+        // `cache.stats()`, for the same reason as the BEFORE reading above and more plainly here:
+        // every field this arithmetic touches is on `.stats`, so taking the whole inspection report
+        // built the per-entry `entries` and `bucket_summaries` and then dropped them -- a second
+        // per-cache-entry listing, with its own filesystem `metadata()` fallthrough, for nothing.
+        // The round now makes exactly one cache listing when the gate opens and none when it does
+        // not, against two and one before.
+        let after_cache_stats = self.cache.stats();
         let bucket_index_bytes_after = self.bucket_index_resident_bytes(shard_id);
-        let pressure_after = after_cache
-            .stats
+        let pressure_after = after_cache_stats
             .memory_bytes
-            .saturating_add(after_cache.stats.disk_bytes)
-            .saturating_add(after_cache.stats.async_writeback_queue_bytes)
-            .saturating_add(after_cache.stats.async_writeback_queue_depth)
+            .saturating_add(after_cache_stats.disk_bytes)
+            .saturating_add(after_cache_stats.async_writeback_queue_bytes)
+            .saturating_add(after_cache_stats.async_writeback_queue_depth)
             .saturating_add(bucket_index_bytes_after);
         StorageEvictionReport {
             shard_id,

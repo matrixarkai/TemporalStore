@@ -101,6 +101,29 @@ fn seeded_runtime(dir: &std::path::Path, keys: usize) -> DataNodeRuntime {
     )
 }
 
+/// Read every seeded key back, so the record cache holds something.
+///
+/// WHY THIS EXISTS AND WHY IT IS NOT OPTIONAL. The first version of the threshold measurements below
+/// read the cache terms straight off a freshly seeded store and got ZERO for both -- the write path
+/// does not populate the record cache, only the read path does. A "warm" arm that is really a
+/// write-only arm reports `cache_memory_bytes = 0` and makes any claim about what the cache term can
+/// reach vacuous. Every measurement here that names the cache asserts the warming worked.
+fn warm_cache_by_reading(engine: &TemporalEngine, shard_id: ShardId, prefix: &str, keys: usize) {
+    for index in 0..keys {
+        let response = engine.execute(ExecuteRequest {
+            shard_id,
+            command: Command::StringGet {
+                key: format!("{prefix}{index:06}"),
+            },
+        });
+        assert!(
+            response.status.ok,
+            "warming read {prefix}{index:06}: {:?}",
+            response.status
+        );
+    }
+}
+
 /// The configuration a default-on change would ship, so the gates below run that rather than a
 /// hand-tuned neighbour of it.
 ///
@@ -678,5 +701,511 @@ fn a_write_landing_during_the_cycle_is_never_lost() {
          was LOST or a stale version was served: first {:?}",
         wrong.len(),
         &wrong[..wrong.len().min(5)]
+    );
+}
+
+/// The in-memory record-cache budget the shipped `config/temporalstore.toml` sets
+/// (`cache_memory_bytes = 16777216`) and the one `seeded_runtime` above passes to
+/// `with_local_dirs`. Named because the threshold decision is a comparison against it.
+const SHIPPED_CACHE_MEMORY_BUDGET: u64 = 16 * 1024 * 1024;
+
+/// WHOSE CACHE THE EVICT GATE IS READING. The decisive control for the threshold decision.
+///
+/// `apply_storage_eviction` builds its gate input from `storage_cache_inspection_report(shard_id)`
+/// `.stats`, and that field is `MultiLayerCache::stats()` -- which folds every CACHE shard and is
+/// NOT filtered by the TemporalStore `shard_id` it was asked about. Reading the code says the cache
+/// terms are process-wide; this runs it.
+///
+/// TWO SHARDS, DELIBERATELY LOPSIDED: shard 1 holds a corpus, shard 2 holds ten keys. If the cache
+/// terms were per-shard, shard 2's pressure would be its own ten keys' worth. If they are
+/// process-wide, shard 2's pressure carries shard 1's cache.
+///
+/// WHY IT MATTERS FOR A DEFAULT. A constant threshold below the process-wide cache budget opens the
+/// gate on EVERY loaded shard as soon as the process cache is warm, however small the shard -- which
+/// is `enable_evict_stays_off_...`'s own objection ("the gate opens at pressure the operator never
+/// asked to relieve") arriving by a different route than the zero threshold.
+#[test]
+fn the_evict_gates_cache_terms_are_process_wide_not_per_shard() {
+    const BIG_KEYS: usize = 8_000;
+    const SMALL_KEYS: usize = 10;
+
+    let dir = tempdir().unwrap();
+    let engine = TemporalEngine::with_local_dirs(
+        SHIPPED_CACHE_MEMORY_BUDGET as usize,
+        dir.path().join("cache"),
+        dir.path().join("pages"),
+        dir.path().join("indexes"),
+    );
+    for shard_id in [1u32, 2u32] {
+        let response = engine.load_shard_with(crate::control::LoadShardRequest {
+            shard_id: shard_id as ShardId,
+            table_name: format!("evict-live-{shard_id}"),
+            shard_uri: format!("local://evict-live/{shard_id}"),
+            start_routing_bucket: 0,
+            end_routing_bucket: SHIPPED_END_BUCKET,
+            readonly: false,
+            load_version: 1,
+            local_node_id: Some(1),
+        });
+        assert!(
+            response.status.ok,
+            "load shard {shard_id}: {:?}",
+            response.status
+        );
+    }
+    for (shard_id, keys) in [(1u32, BIG_KEYS), (2u32, SMALL_KEYS)] {
+        for index in 0..keys {
+            let response = engine.execute(ExecuteRequest {
+                shard_id: shard_id as ShardId,
+                command: Command::StringSet {
+                    key: format!("s{shard_id}-{index:06}"),
+                    value: keyed_value(index),
+                },
+            });
+            assert!(
+                response.status.ok,
+                "write {shard_id}/{index}: {:?}",
+                response.status
+            );
+        }
+    }
+    let runtime = DataNodeRuntime::new_without_workers_with_options(
+        engine,
+        DataNodeRuntimeOptions {
+            worker_threads: 0,
+            max_queue_depth: 64,
+            max_background_queue_depth: 8,
+        },
+    );
+    let engine = runtime.engine();
+    let options = proposed_options();
+
+    // Warm the cache from SHARD 1 ONLY. Writes do not fill the record cache -- reads do -- so this
+    // is what puts bytes in the cache terms at all, and doing it on one shard is what makes the
+    // comparison below able to say whose bytes they are.
+    warm_cache_by_reading(&engine, 1, "s1-", BIG_KEYS);
+
+    let (big, _) = runtime.storage_manager_pressure_snapshot(1, &options);
+    let (small, _) = runtime.storage_manager_pressure_snapshot(2, &options);
+    let big_index = engine.bucket_index_resident_bytes(1);
+    let small_index = engine.bucket_index_resident_bytes(2);
+
+    eprintln!(
+        "  [evict-gate-scope] shard 1 ({BIG_KEYS} keys): pressure={} cache_mem={} cache_disk={} index={}",
+        big.eviction_memory_pressure_bytes, big.cache_memory_bytes, big.cache_disk_bytes, big_index,
+    );
+    eprintln!(
+        "  [evict-gate-scope] shard 2 ({SMALL_KEYS} keys): pressure={} cache_mem={} cache_disk={} index={}",
+        small.eviction_memory_pressure_bytes,
+        small.cache_memory_bytes,
+        small.cache_disk_bytes,
+        small_index,
+    );
+
+    // PROOF THE FIXTURE IS LOPSIDED, before reading anything out of the comparison. Without this a
+    // run where both shards ended up the same size would "confirm" process-wide terms vacuously.
+    assert!(
+        big_index > small_index.saturating_mul(4),
+        "the two shards' indexes are not lopsided ({big_index} vs {small_index}), so this fixture \
+         cannot tell a process-wide cache term from a per-shard one"
+    );
+    // PROOF THE CACHE IS WARM. Without this the equality below holds trivially at zero, which is
+    // exactly what the first version of this test measured and nearly published.
+    assert!(
+        big.cache_memory_bytes > 0,
+        "the cache memory term is zero after warming {BIG_KEYS} reads on shard 1, so this test \
+         compares two zeroes and proves nothing about whose cache the gate reads"
+    );
+
+    // THE FINDING. Both shards report the SAME cache terms, which are therefore not theirs.
+    assert_eq!(
+        small.cache_memory_bytes, big.cache_memory_bytes,
+        "the cache memory term differs between shards, so it IS per-shard and the process-wide \
+         reading of `MultiLayerCache::stats()` is wrong -- re-argue the threshold from that"
+    );
+    assert_eq!(
+        small.cache_disk_bytes, big.cache_disk_bytes,
+        "the cache disk term differs between shards, so it IS per-shard"
+    );
+    // And the consequence, stated as arithmetic: the ten-key shard's pressure is mostly the OTHER
+    // shard's cache.
+    assert!(
+        small.cache_memory_bytes.saturating_add(small.cache_disk_bytes) > small_index,
+        "the ten-key shard's pressure is dominated by its own index after all ({} cache vs {} \
+         index), which would make a constant threshold safer than this test claims",
+        small.cache_memory_bytes.saturating_add(small.cache_disk_bytes),
+        small_index,
+    );
+    eprintln!(
+        "    => the ten-key shard's gate reads {} B, of which {} B is the EIGHT-THOUSAND-key \
+shard's cache. A constant threshold below the process cache occupancy opens the gate on a shard \
+holding ten records.",
+        small.eviction_memory_pressure_bytes,
+        small.cache_memory_bytes.saturating_add(small.cache_disk_bytes),
+    );
+}
+
+/// WHAT A DEFAULT THRESHOLD HAS TO CLEAR, measured warm AND cold at four corpus sizes.
+///
+/// `what_pressure_a_shard_carries_at_three_corpus_sizes` above drops the cache first, so every byte
+/// it reports is index. That is the right way to see the index slope and the wrong way to pick a
+/// threshold, because the state a threshold has to NOT fire in is the state the writes left: cache
+/// warm, nobody asking for anything to be relieved.
+///
+/// So each size is read twice from the same store -- WARM exactly as seeded, then COLD after
+/// `invalidate_shard` -- and the budget the cache is allowed to fill is printed beside both.
+#[test]
+fn what_a_default_eviction_threshold_has_to_clear() {
+    // THREE sizes, a decade apart at the ends. Not four: every size is seeded AND read back, and
+    // the point of the table is the slope plus the comparison against the cache budget, neither of
+    // which a fourth point settles. The extrapolation to a corpus that would reach a candidate
+    // threshold is stated from this slope rather than measured, and says so.
+    const SIZES: [usize; 3] = [2_000, 8_000, 20_000];
+
+    struct Row {
+        keys: usize,
+        warm_total: u64,
+        warm_cache: u64,
+        warm_index: u64,
+        cold_total: u64,
+        cold_index: u64,
+    }
+
+    let mut rows: Vec<Row> = Vec::new();
+    for keys in SIZES {
+        let dir = tempdir().unwrap();
+        let runtime = seeded_runtime(dir.path(), keys);
+        let engine = runtime.engine();
+        let options = proposed_options();
+
+        // WARM MEANS READ-WARM. Seeding alone leaves both cache terms at zero.
+        warm_cache_by_reading(&engine, 1, "evictlive-", keys);
+        let (warm, _) = runtime.storage_manager_pressure_snapshot(1, &options);
+        let warm_index = engine.bucket_index_resident_bytes(1);
+        assert!(
+            warm.cache_memory_bytes > 0,
+            "{keys} keys: the cache term is zero after reading every key back, so the warm arm is \
+             not warm and its comparison against the budget means nothing"
+        );
+        let _ = engine.cache().invalidate_shard(1);
+        let (cold, _) = runtime.storage_manager_pressure_snapshot(1, &options);
+        let cold_index = engine.bucket_index_resident_bytes(1);
+
+        assert!(
+            warm.eviction_memory_pressure_bytes > 0,
+            "{keys} keys produced no warm pressure"
+        );
+        assert!(cold_index > 0, "{keys} keys produced no resident index");
+        rows.push(Row {
+            keys,
+            warm_total: warm.eviction_memory_pressure_bytes,
+            warm_cache: warm.cache_memory_bytes.saturating_add(warm.cache_disk_bytes),
+            warm_index,
+            cold_total: cold.eviction_memory_pressure_bytes,
+            cold_index,
+        });
+    }
+
+    eprintln!(
+        "  [evict-threshold-bar] shipped cache_memory_bytes budget = {SHIPPED_CACHE_MEMORY_BUDGET}"
+    );
+    eprintln!(
+        "    {:>6} {:>12} {:>12} {:>12} {:>9} {:>12} {:>12} {:>9}",
+        "keys",
+        "warm_total",
+        "warm_cache",
+        "warm_index",
+        "warm_B/k",
+        "cold_total",
+        "cold_index",
+        "cold_B/k"
+    );
+    for row in &rows {
+        eprintln!(
+            "    {:>6} {:>12} {:>12} {:>12} {:>9.1} {:>12} {:>12} {:>9.1}",
+            row.keys,
+            row.warm_total,
+            row.warm_cache,
+            row.warm_index,
+            row.warm_total as f64 / row.keys as f64,
+            row.cold_total,
+            row.cold_index,
+            row.cold_total as f64 / row.keys as f64,
+        );
+    }
+    let biggest = rows.last().expect("three sizes");
+    eprintln!(
+        "    => at {} keys the whole shard's pressure is {} B, which is {:.3}x the cache budget \
+alone. A constant default threshold set above the budget does not fire here; one set below it \
+fires on a shard holding nothing.",
+        biggest.keys,
+        biggest.warm_total,
+        biggest.warm_total as f64 / SHIPPED_CACHE_MEMORY_BUDGET as f64,
+    );
+
+    // THE SHAPE, asserted on the index term, which is the only one eviction can reduce.
+    assert!(
+        rows.windows(2).all(|pair| pair[0].cold_index < pair[1].cold_index),
+        "the resident index did not grow with the corpus: {:?}",
+        rows.iter()
+            .map(|row| (row.keys, row.cold_index))
+            .collect::<Vec<_>>()
+    );
+    // AND THE TERM THAT DOES NOT GROW WITH THE SHARD. The cache is capped by its own budget and
+    // evicts to stay there; the index is not capped by anything. That asymmetry is the whole reason
+    // a default threshold is hard, so it is asserted rather than left to the table to imply.
+    assert!(
+        rows.iter()
+            .all(|row| row.warm_cache <= SHIPPED_CACHE_MEMORY_BUDGET),
+        "a cache term exceeded the budget it was given, so the cache is not self-capping and the \
+         threshold argument below has to be redone: {:?}",
+        rows.iter()
+            .map(|row| (row.keys, row.warm_cache))
+            .collect::<Vec<_>>()
+    );
+}
+
+/// WHAT THE GATE COSTS WHEN IT DECLINES -- the per-round price of switching `enable_evict` on.
+///
+/// With the stage enabled, every maintenance round on every loaded shard computes the gate's input
+/// before it can decline. That input is built from `storage_cache_inspection_report`, whose listing
+/// is `MultiLayerCache::entries_for_shard`: it materialises and SORTS one entry per cached record
+/// and falls through to a filesystem `metadata()` for every entry the disk index does not hold.
+/// None of that is gate input -- the gate reads `.stats` (aggregate counters) and the bucket-index
+/// walk, and the per-entry `entries`/`bucket_summaries` are used only AFTER the gate opens.
+///
+/// COUNTED, NOT TIMED, on purpose: this box is shared and a wall-clock figure moves with whatever
+/// else is compiling, while a listing count does not. See the counter's own doc.
+///
+/// WHAT MAKES THIS FAIL RATHER THAN BE VACUOUS:
+///   * the control arm asserts the round DID run the stage and the gate DID decline, so a pass
+///     cannot come from the stage being skipped for some other reason;
+///   * the cache is warm and non-empty, asserted, so a zero listing count cannot come from there
+///     being nothing to list;
+///   * both a must-find and a must-not-find number are checked -- the index walk must still happen
+///     (the gate needs it) and the cache listing must not.
+#[test]
+fn the_declining_gate_pays_no_cache_listing() {
+    const KEYS: usize = 4_000;
+
+    let dir = tempdir().unwrap();
+    let runtime = seeded_runtime(dir.path(), KEYS);
+    let engine = runtime.engine();
+
+    // Warm and non-empty: the listing this test says is not paid has something to return. Reads,
+    // not the writes above -- the write path leaves the record cache empty.
+    warm_cache_by_reading(&engine, 1, "evictlive-", KEYS);
+    let cache_entries = engine.cache().entries_for_shard(1).len();
+    assert!(
+        cache_entries > 0,
+        "the shard's cache is empty, so a zero listing count below would prove nothing"
+    );
+
+    // A threshold ABOVE the shard's own pressure, so the gate declines. Read from the shard rather
+    // than written as a literal: a literal would stop being above the pressure the moment the
+    // per-key cost moved, and the test would quietly start measuring the open-gate path instead.
+    let probe_options = proposed_options();
+    let (pressure, _) = runtime.storage_manager_pressure_snapshot(1, &probe_options);
+    let closing_threshold = pressure.eviction_memory_pressure_bytes.saturating_mul(4) + 1;
+    let options = StorageManagerOptions {
+        enable_evict: true,
+        eviction_dump_before_evict: true,
+        eviction_memory_pressure_threshold: closing_threshold,
+        ..StorageManagerOptions::default()
+    };
+
+    crate::engine::reset_storage_cache_inspection_listings();
+    crate::engine::reset_bucket_index_resident_bytes_visits();
+    let report = runtime.run_storage_manager_once(1, options);
+    let listings = crate::engine::storage_cache_inspection_listings();
+    let listed_entries = crate::engine::storage_cache_inspection_listing_entries();
+    let index_visits = crate::engine::bucket_index_resident_bytes_visits();
+
+    // THE POSITIVE ARM, and the reason the zero below is not vacuous. The counter is thread-local,
+    // so a listing made on another thread would be invisible and an un-instrumented round would
+    // read zero exactly like an instrumented one that did not list. This drives the OPEN gate --
+    // threshold 0, the same round, the same thread, the same engine -- and asserts the counter sees
+    // its listing. Run AFTER the declining arm so it cannot perturb it.
+    crate::engine::reset_storage_cache_inspection_listings();
+    let open_report = runtime.run_storage_manager_once(
+        1,
+        StorageManagerOptions {
+            enable_evict: true,
+            eviction_dump_before_evict: true,
+            eviction_memory_pressure_threshold: 0,
+            ..StorageManagerOptions::default()
+        },
+    );
+    let open_listings = crate::engine::storage_cache_inspection_listings();
+    let open_eviction = open_report
+        .eviction
+        .as_ref()
+        .expect("the evict stage must report when it is enabled");
+    assert_eq!(
+        open_eviction.skipped_reason, "",
+        "the positive arm's gate did not open at threshold 0, so it cannot show the counter seeing \
+         a listing: reason={:?}",
+        open_eviction.skipped_reason
+    );
+    assert!(
+        open_listings > 0,
+        "the OPEN-gate round made no cache listing this thread could see, so the counter is not \
+         wired to the round at all and the zero asserted below proves nothing"
+    );
+
+    let eviction = report
+        .eviction
+        .as_ref()
+        .expect("the evict stage must report when it is enabled");
+
+    eprintln!(
+        "  [evict-gate-cost] {KEYS} keys, {cache_entries} cache entries, threshold={} \
+pressure_before={} -- DECLINING round: cache listings={} listed_entries={} \
+index_walk_visits={}; OPEN-gate control round: cache listings={}",
+        eviction.memory_pressure_threshold,
+        eviction.pressure_before,
+        listings,
+        listed_entries,
+        index_visits,
+        open_listings,
+    );
+
+    // PROOF THE ROUND IS THE ONE THIS TEST IS ABOUT, before reading the counters.
+    assert!(
+        report.executed_stages.iter().any(|stage| stage == "evict"),
+        "the evict stage did not run: executed={:?} skipped={:?}",
+        report.executed_stages,
+        report.skipped_stages
+    );
+    assert_eq!(
+        eviction.skipped_reason, "memory_pressure_below_threshold",
+        "the gate did not decline, so this round is not the declining-gate case: reason={:?} \
+pressure_before={} threshold={}",
+        eviction.skipped_reason,
+        eviction.pressure_before,
+        eviction.memory_pressure_threshold,
+    );
+    assert!(
+        eviction.selected_victims.is_empty(),
+        "the declining gate still took {} victims",
+        eviction.selected_victims.len()
+    );
+
+    // MUST BE FOUND: the gate's own input. The index walk is irreducible -- it IS the per-shard
+    // term the gate exists to read -- so a zero here would mean the gate is not reading the index
+    // at all and the whole signal has regressed.
+    assert!(
+        index_visits > 0,
+        "the round made no bucket-index resident walk, so the gate did not read its index term"
+    );
+
+    // MUST NOT BE FOUND: the per-entry cache listing, which the gate does not need.
+    assert_eq!(
+        listings, 0,
+        "a round whose evict gate DECLINED still listed the shard's cache {listings} time(s), \
+         returning {listed_entries} entries. That listing is \
+         `MultiLayerCache::entries_for_shard` -- a sort over one entry per cached record plus a \
+         filesystem `metadata()` for every entry the disk index does not hold -- and the gate \
+         reads none of it. Defaulting `enable_evict` on makes every loaded shard pay this on \
+         every maintenance round to reach a decision that does not use it."
+    );
+}
+
+/// THAT THE LOOP SETTLES: once eviction has fired, the quantity the gate reads falls BELOW the
+/// threshold and the next round declines.
+///
+/// This is the property the signal was changed to have -- the gate reads
+/// `bucket_index_resident_bytes` and not the node-only `_floor`, because the floor cannot fall when
+/// a bucket is released and a gate on it would re-fire for ever. "Would converge" is an argument;
+/// this runs rounds until the stage declines and prints the trajectory.
+///
+/// The threshold is set just BELOW the shard's measured pressure, so the first round's gate opens
+/// and the only way the loop can stop is by the pressure actually falling. A threshold picked as a
+/// literal could stop the loop by being unreachable rather than by convergence.
+#[test]
+fn the_eviction_loop_settles_below_its_threshold_instead_of_refiring() {
+    const KEYS: usize = 4_000;
+    const MAX_ROUNDS: usize = 40;
+
+    let dir = tempdir().unwrap();
+    let runtime = seeded_runtime(dir.path(), KEYS);
+    let engine = runtime.engine();
+    let _ = engine.cache().invalidate_shard(1);
+
+    let probe = proposed_options();
+    let (start, _) = runtime.storage_manager_pressure_snapshot(1, &probe);
+    let start_pressure = start.eviction_memory_pressure_bytes;
+    assert!(
+        start_pressure > 2,
+        "no pressure to converge from: {start_pressure}"
+    );
+    // Just under the shard's own pressure: the first gate must open.
+    let threshold = start_pressure - 1;
+
+    let options = StorageManagerOptions {
+        enable_evict: true,
+        eviction_dump_before_evict: true,
+        eviction_memory_pressure_threshold: threshold,
+        ..StorageManagerOptions::default()
+    };
+
+    let mut trajectory: Vec<(usize, u64, usize, String)> = Vec::new();
+    let mut settled_at: Option<usize> = None;
+    let mut rounds_that_evicted = 0usize;
+    for round in 1..=MAX_ROUNDS {
+        // Cold between rounds, so the cache cannot be what makes the number fall: the only term
+        // left moving is the resident index, which is the one eviction acts on.
+        let _ = engine.cache().invalidate_shard(1);
+        let report = runtime.run_storage_manager_once(1, options.clone());
+        let eviction = report
+            .eviction
+            .as_ref()
+            .expect("the evict stage must report when it is enabled");
+        trajectory.push((
+            round,
+            eviction.pressure_before,
+            eviction.selected_victims.len(),
+            eviction.skipped_reason.clone(),
+        ));
+        if eviction.skipped_reason == "memory_pressure_below_threshold" {
+            settled_at = Some(round);
+            break;
+        }
+        rounds_that_evicted += 1;
+    }
+
+    eprintln!(
+        "  [evict-convergence] {KEYS} keys, threshold={threshold} (start pressure {start_pressure})"
+    );
+    for (round, pressure, victims, reason) in &trajectory {
+        eprintln!(
+            "    round {round:>3}  pressure_before={pressure:>10}  victims={victims:>4}  \
+reason={reason}"
+        );
+    }
+
+    // PROOF THE LOOP ACTUALLY DID SOMETHING, so "settled" cannot mean "never started".
+    assert!(
+        rounds_that_evicted > 0,
+        "no round ever evicted, so the gate was never open and nothing converged: {trajectory:?}"
+    );
+    let settled_at = settled_at.unwrap_or_else(|| {
+        panic!(
+            "the gate was still open after {MAX_ROUNDS} rounds, so the loop re-fires rather than \
+             settling: {trajectory:?}"
+        )
+    });
+    let final_pressure = trajectory
+        .last()
+        .map(|row| row.1)
+        .expect("a trajectory with at least one round");
+    assert!(
+        final_pressure < threshold,
+        "the loop stopped at pressure {final_pressure}, which is not below its threshold \
+         {threshold} -- it stopped for some other reason than convergence"
+    );
+    eprintln!(
+        "    => settled at round {settled_at}: pressure fell {start_pressure} -> {final_pressure}, \
+below the threshold {threshold}"
     );
 }

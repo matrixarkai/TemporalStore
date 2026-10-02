@@ -876,14 +876,38 @@ pub struct StorageManagerOptions {
     /// to relieve memory, on no evidence about their workloads.
     #[serde(default)]
     pub enable_evict: bool,
-    /// Cache bytes (memory + disk) above which the evict stage acts. 0 evicts whenever it runs.
+    /// Bytes above which the evict stage acts. 0 evicts whenever it runs.
+    ///
+    /// NOT "cache bytes (memory + disk)", which is what this said and has not been true since the
+    /// index term joined the gate. The quantity is cache memory + cache disk + the async writeback
+    /// queue's bytes and depth + `bucket_index_resident_bytes` -- see
+    /// `StorageManagerPressureSnapshot::eviction_memory_pressure_bytes`, which publishes exactly it.
+    ///
+    /// AND THE THREE CACHE TERMS ARE PROCESS-WIDE, not this shard's: they come from
+    /// `MultiLayerCache::stats()`, which folds every cache partition and takes no shard argument.
+    /// Only `bucket_index_resident_bytes` is per-shard -- and it is also the only term the evict
+    /// stage can reduce. `data_node::tests::evict_live::the_evict_gates_cache_terms_are_process_wide\
+    /// _not_per_shard` measures a ten-key shard whose gate reads 2,685,344 B of which 2,683,904 B is
+    /// another shard's cache, and `what_a_default_eviction_threshold_has_to_clear` measures the cache
+    /// term at about 4.5x the index term at every corpus size it tried. So a value set here is not a
+    /// property of the shard it gates: raising it to stop an idle shard evicting also stops a fat one,
+    /// and lowering it to catch a fat one makes idle shards evict whenever the node's cache is warm.
+    /// That is why the default is still 0 with the stage off rather than a chosen number -- see
+    /// `enable_evict_stays_off_because_its_gate_reads_other_shards_memory`.
     #[serde(default)]
     pub eviction_memory_pressure_threshold: u64,
     /// How many buckets one evict stage may take. 0 means no limit.
     #[serde(default)]
     pub eviction_batch_limit: usize,
     /// Dump a bucket before freeing it, so eviction relieves log pressure as well as memory.
-    /// Without it an evicted dirty bucket still pins the log.
+    ///
+    /// Defaults TRUE. "Without it an evicted dirty bucket still pins the log" is what this said and
+    /// it understates the case: without it the bucket is not freed at all. A release requires every
+    /// block clean and undeleted, a written-and-undumped bucket is dirty, so the actuator REFUSES
+    /// every candidate -- 16 of 16 refused and 0 released, measured in
+    /// `data_node::tests::evict_live::what_the_dump_costs_and_which_half_recovers_the_index`, against
+    /// 4 released with the dump on. Turning this off therefore does not make eviction cheaper; it
+    /// makes the round pay its whole-store release walk and give nothing back.
     #[serde(default)]
     pub eviction_dump_before_evict: bool,
     /// Drop rather than dump. Off by default: this is the arm that can lose unflushed state.
@@ -1040,7 +1064,25 @@ impl Default for StorageManagerOptions {
             // it was between a considered value that already existed next door and an accidental
             // one. Only reachable when `enable_evict` is on, which is still off by default.
             eviction_batch_limit: crate::engine::reports::DEFAULT_EVICTION_BATCH_LIMIT,
-            eviction_dump_before_evict: false,
+            // ON, and the one of the two objections to `enable_evict` that measurement settles.
+            //
+            // A release requires every block in the bucket clean and undeleted, and a bucket written
+            // and not yet dumped is dirty, so WITHOUT a dump first the actuator refuses every
+            // candidate: `what_the_dump_costs_and_which_half_recovers_the_index` measures 16 of 16
+            // refused and 0 buckets released on a freshly seeded store, against 4 released with the
+            // dump on. So `enable_evict: true, eviction_dump_before_evict: false` is not a cheaper
+            // eviction policy -- it is a round that pays the whole-store release walk to give back
+            // nothing, which is what `evict_scale.rs` records as "WHAT THE ACTUATOR RELEASES AT THE
+            // SHIPPED SETTINGS: nothing". Defaulting the dump on is what makes the stage do the
+            // thing its name claims when anyone turns it on.
+            //
+            // THIS IS INERT TODAY and deliberately so: the flag is read only inside the evict stage,
+            // and `enable_evict` above is still false, so no shipped round's behaviour moves. What
+            // it DOES change is the behaviour an operator gets from setting `enable_evict` on by
+            // hand -- previously a cheap no-op, now a stage that dumps and releases, and costs
+            // accordingly. That is the better of the two, because a flag that silently does nothing
+            // is the worse failure, but it is a change and the PR says so.
+            eviction_dump_before_evict: true,
             eviction_delete_drop: false,
             eviction_count_limit: DEFAULT_EVICTION_COUNT_LIMIT,
             // 0 = unbounded, the behaviour this loop has always had. See the field docs.

@@ -8682,19 +8682,48 @@ fn the_evict_decision_reports_the_pressure_it_gates_on_not_its_own_threshold() {
 
 /// THE DECISION ON THE DEFAULT: `enable_evict` stays OFF, and this is why, measured.
 ///
-/// The objection is not to eviction. It is to eviction under the defaults that sit beside the
-/// flag: `eviction_memory_pressure_threshold` is 0 -- documented as "0 evicts whenever it runs" --
-/// and `eviction_dump_before_evict` is false. Flip only `enable_evict` and every maintenance round
-/// on every shard evicts unconditionally, with no dump first, on a shard under no memory pressure
-/// whatsoever. That is not an eviction policy; it is a policy-shaped hole.
+/// RESTATED, NOT RE-GOLDENED. This test was
+/// `enable_evict_stays_off_because_its_neighbouring_defaults_would_evict_at_zero_pressure`, and it
+/// held that there were TWO objections to flipping the flag: a threshold of 0, and
+/// `eviction_dump_before_evict` false, so that "an evicted dirty bucket keeps pinning the log it
+/// was never written out of". It named what would retire each. ONE OF THE TWO IS NOW RETIRED: the
+/// dump defaults true, on the measurement its own prose asked for -- a release without a dump
+/// refuses every candidate (16 of 16, 0 released, in
+/// `data_node::tests::evict_live::what_the_dump_costs_and_which_half_recovers_the_index`), so the
+/// dump is not an optional improvement to eviction, it is the half that recovers anything. The
+/// superseded reasoning stays written down above rather than deleted, because a reader who finds
+/// this test needs to know the dump default was argued and settled, not merely flipped.
 ///
-/// So this test does not assert a preference. It runs the thing and shows what default-on would
-/// mean: the gate opens at pressure the operator never asked to relieve. What would have to be
-/// true to flip it: a non-zero DEFAULT threshold chosen against a measured working set, and
-/// `eviction_dump_before_evict` defaulted true so an evicted dirty bucket does not keep pinning
-/// the log. Both are separate decisions with their own evidence, and neither is made here.
+/// THE OTHER OBJECTION STANDS, and a second one joined it that the old prose did not know about.
+///
+///   1  THE THRESHOLD IS STILL 0, which is documented as "0 evicts whenever it runs". The gate is
+///      `pressure_before < threshold`, false for every shard that has ever existed, so the gate
+///      cannot close. That is unchanged and is measured below.
+///
+///   2  AND A NON-ZERO THRESHOLD CANNOT BE CHOSEN FROM THIS SIGNAL, which is the new finding and
+///      the reason "pick a number against a measured working set" is not an available move. The
+///      quantity the gate reads is cache memory + cache disk + the writeback queue +
+///      `bucket_index_resident_bytes`, and `MultiLayerCache::stats()` is NOT filtered by shard: the
+///      three cache terms are PROCESS-WIDE while the index term is per-shard.
+///      `the_evict_gates_cache_terms_are_process_wide_not_per_shard` runs two shards and measures a
+///      TEN-KEY shard whose gate reads 2,685,344 B of which 2,683,904 B -- 99.95% -- is an
+///      eight-thousand-key shard's cache. `what_a_default_eviction_threshold_has_to_clear` measures
+///      the cache term at 4.5x the index term at every size it tried. So a constant default
+///      threshold low enough to fire on a fat index also fires on an idle shard sharing the process,
+///      and one high enough to be safe has its trigger point set by other shards rather than by the
+///      shard being decided about. Either way the gate opens at pressure the operator never asked to
+///      relieve -- the same defect the old prose named, reached through the cache term instead of
+///      through the zero.
+///
+/// WHAT WOULD HAVE TO BE TRUE TO FLIP IT NOW, restated against that: the gate needs a signal whose
+/// terms all belong to the shard it is deciding about. The cheap per-shard term exists already
+/// (`bucket_index_resident_bytes`, which is also the only term the release can reduce); the
+/// per-shard CACHE bytes do not, because `matrixcache` keeps `memory_bytes` per cache partition and
+/// the only per-shard view is `entries_for_shard`, a listing whose cost is the thing
+/// `the_declining_gate_pays_no_cache_listing` exists to keep out of the round. So the remaining
+/// decision is narrowing the gate's signal, not picking a number, and it is not made here.
 #[test]
-fn enable_evict_stays_off_because_its_neighbouring_defaults_would_evict_at_zero_pressure() {
+fn enable_evict_stays_off_because_its_gate_reads_other_shards_memory() {
     let defaults = StorageManagerOptions::default();
 
     // The default is a DECISION, pinned here so a later edit to the `Default` impl has to come
@@ -8705,13 +8734,21 @@ fn enable_evict_stays_off_because_its_neighbouring_defaults_would_evict_at_zero_
     );
     assert_eq!(
         defaults.eviction_memory_pressure_threshold, 0,
-        "the eviction threshold is no longer 0, which removes the main objection to defaulting \
-         enable_evict on -- revisit that decision rather than deleting this assertion"
+        "the eviction threshold is no longer 0. That is objection 1 above retired, but objection 2 \
+         -- that the gate's cache terms are process-wide, so no constant threshold is both safe \
+         and effective -- is not retired by a number. Revisit the enable_evict decision against \
+         both, rather than deleting this assertion"
     );
+    // RESTATED. This asserted `!defaults.eviction_dump_before_evict` and told a future reader to
+    // revisit the enable_evict default if it ever turned on. It has turned on, on the evidence the
+    // doc above names, so the assertion now pins the NEW decision in the same shape: the dump
+    // default is a decision, and moving it again has to come past this test.
     assert!(
-        !defaults.eviction_dump_before_evict,
-        "dump-before-evict now defaults on, which removes the second objection -- revisit the \
-         enable_evict default rather than deleting this assertion"
+        defaults.eviction_dump_before_evict,
+        "dump-before-evict no longer defaults on. It was defaulted on because a release WITHOUT a \
+         dump refuses every candidate and releases nothing -- 16 of 16 refused, measured -- so \
+         turning it back off makes `enable_evict` a stage that pays a whole-store walk to recover \
+         nothing. Revisit that measurement rather than deleting this assertion"
     );
 
     // THE MEASUREMENT. A shard under no memory pressure anyone would act on.
@@ -8797,25 +8834,55 @@ fn enable_evict_stays_off_because_its_neighbouring_defaults_would_evict_at_zero_
         eviction.pressure_before,
         eviction.memory_pressure_threshold
     );
-    // And it took them without dumping first, because that default is off too: a dirty bucket
-    // evicted this way keeps pinning the log it was never written out of.
+    // RESTATED, AND THE RESTATEMENT IS THE POINT. This used to assert `!eviction.dump_before_evict`
+    // and an EMPTY manifest list, and its comment read "a dirty bucket evicted this way keeps
+    // pinning the log it was never written out of". That was true of the round the old defaults
+    // produced. The dump default has moved, so the round a default-on change would produce now
+    // carries the dump flag -- the objection retired, asserted here rather than deleted, so that
+    // turning the dump back off fails HERE as well as on the pinned default above.
     assert!(
-        !eviction.dump_before_evict,
-        "this round dumped first, so it is not the round the shipped defaults would produce"
+        eviction.dump_before_evict,
+        "the round a default-on change would produce does not dump first, so the dump default has \
+         moved back and the 'dirty bucket keeps pinning the log' objection is live again"
+    );
+    // AND NO MANIFEST, FOR A REASON THAT IS ASSERTED RATHER THAN ASSUMED. The first restatement of
+    // this test asserted a manifest MUST appear now that the dump defaults on, and it failed here:
+    // 64 victims, dump on, no manifest. The reason is this fixture's own shape, not a broken
+    // default. `create_bucket_dump_manifest` is called only for victims with
+    // `dirty_object_count > 0`, and the CONTROL round above is a full default round -- prepare and
+    // the dump stages included -- so it has already written these buckets out. By the time the
+    // treatment round picks victims they are clean, and a clean bucket has nothing to dump.
+    //
+    // So the honest assertion is the mechanism: every victim is clean, THEREFORE no manifest. That
+    // fails if either half stops being true, and it does not claim a manifest the fixture cannot
+    // produce. The pin on the default itself is `eviction.dump_before_evict` above.
+    let dirty_victims = eviction
+        .selected_victims
+        .iter()
+        .filter(|victim| victim.dirty_object_count > 0)
+        .count();
+    assert_eq!(
+        dirty_victims, 0,
+        "{dirty_victims} of {} victims are dirty, so this round DID have something to dump and the \
+         empty manifest list below is a defect rather than a property of the fixture",
+        eviction.selected_victims.len()
     );
     assert!(
         eviction.dump_manifest_ids.is_empty(),
-        "a dump manifest appeared without dump-before-evict: {:?}",
+        "a dump manifest appeared for {} victims none of which is dirty: {:?}",
+        eviction.selected_victims.len(),
         eviction.dump_manifest_ids
     );
     eprintln!(
         "  [evict-default] flipping only enable_evict: threshold={} pressure_before={} \
-victims={} dump_manifests={} -- the gate opens on a shard nobody asked to relieve \
-(snapshot eviction_memory_pressure_bytes={})",
+victims={} dump_manifests={} (no victim is dirty, so there is nothing to dump) -- the gate STILL \
+opens on a shard nobody asked to relieve, because the threshold is {} (snapshot \
+eviction_memory_pressure_bytes={})",
         eviction.memory_pressure_threshold,
         eviction.pressure_before,
         eviction.selected_victims.len(),
         eviction.dump_manifest_ids.len(),
+        eviction.memory_pressure_threshold,
         pressure.eviction_memory_pressure_bytes,
     );
 }
