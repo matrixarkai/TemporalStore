@@ -572,3 +572,199 @@ fn what_a_two_level_resident_map_costs_against_one_container_per_key() {
          unconditional recommendation in this fixture's docs does not hold"
     );
 }
+
+
+// =================================================================================================
+// WHAT THE SHAPE COSTS TO WRITE, which the footprint arms above do not price
+// =================================================================================================
+
+/// How many rows a single insert has to move, as exact arithmetic rather than as a timing.
+///
+/// WHY THIS EXISTS. The footprint arms above price what each shape COSTS TO HOLD. They say nothing
+/// about what it costs to change, and the two-level arms change that cost fundamentally: a key's rows
+/// live inside a run shared with every other object in the bucket, so inserting one row shifts every
+/// row that sits after it. A B-tree a key shifts within one node and splits at most a path to the
+/// root.
+///
+/// This matters because it scales with the SAME occupancy as the footprint win, in the OPPOSITE
+/// direction. The win comes from many objects sharing one allocation; the write cost comes from many
+/// rows sharing one allocation. A fixture that measured only the first would recommend a shape whose
+/// write path it had never looked at.
+///
+/// Counted as MOVES rather than timed, because a count is exact, is the same in debug and release,
+/// and is not a reading off a shared box.
+#[cfg(feature = "alloc-probe")]
+fn moves_to_build_grouped(rows_in: &[Row]) -> u64 {
+    // One bucket's state: objects sorted by key, and a contiguous run of rows grouped in that order.
+    struct Bucket {
+        objects: Vec<(Arc<str>, u32, u32)>,
+        rows: Vec<(u64, BlockAddress)>,
+    }
+    let mut buckets: HashMap<u32, Bucket> = HashMap::new();
+    let mut moves = 0u64;
+    for row in rows_in {
+        let bucket = buckets.entry(bucket_of(&row.key)).or_insert_with(|| Bucket {
+            objects: Vec::new(),
+            rows: Vec::new(),
+        });
+        match bucket
+            .objects
+            .binary_search_by(|(name, _, _)| name.as_ref().cmp(row.key.as_ref()))
+        {
+            Ok(at) => {
+                // The object is already here. Its run grows by one, so every row after its run
+                // moves, and every later object's start moves.
+                let (_, start, len) = bucket.objects[at];
+                let run = &bucket.rows[start as usize..(start + len) as usize];
+                let inner = run
+                    .binary_search_by(|(existing, _)| existing.cmp(&row.at))
+                    .unwrap_or_else(|insert_at| insert_at);
+                let index = start as usize + inner;
+                moves += (bucket.rows.len() - index) as u64;
+                bucket.rows.insert(index, (row.at, row.address.clone()));
+                bucket.objects[at].2 += 1;
+                for later in bucket.objects[at + 1..].iter_mut() {
+                    later.1 += 1;
+                }
+            }
+            Err(at) => {
+                // A new object. Its run starts where the next object's run used to.
+                let index = if at < bucket.objects.len() {
+                    bucket.objects[at].1 as usize
+                } else {
+                    bucket.rows.len()
+                };
+                moves += (bucket.rows.len() - index) as u64;
+                bucket.rows.insert(index, (row.at, row.address.clone()));
+                // The objects array shifts too, and that is a move as much as a row is.
+                moves += (bucket.objects.len() - at) as u64;
+                bucket.objects.insert(at, (Arc::clone(&row.key), index as u32, 1));
+                for later in bucket.objects[at + 1..].iter_mut() {
+                    later.1 += 1;
+                }
+            }
+        }
+    }
+    moves
+}
+
+/// What a B-tree a key moves for the same inserts, as the same kind of count.
+///
+/// A `BTreeMap` insert shifts entries inside ONE leaf, and splits at most the path to the root. The
+/// leaf holds eleven, so the shift is bounded by eleven however large the map is -- which is the
+/// property the grouped run gives up. Counted the same way so the two numbers are comparable: the
+/// entries moved inside the node the insert lands in.
+#[cfg(feature = "alloc-probe")]
+fn moves_to_build_btree_a_key(rows_in: &[Row]) -> u64 {
+    // The B-tree's own node shifts are not observable from outside, so this counts the BOUND rather
+    // than the actual: at most one leaf's worth per insert. That is an over-estimate for the B-tree
+    // and so is the conservative direction for the comparison being made.
+    (rows_in.len() as u64) * (ENTRIES_IN_ONE_LEAF_FOR_THE_COUNT as u64)
+}
+
+/// `std`'s B-tree leaf capacity, named here only to bound the count above.
+#[cfg(feature = "alloc-probe")]
+const ENTRIES_IN_ONE_LEAF_FOR_THE_COUNT: usize = 11;
+
+/// What it costs to WRITE each shape, at the same six occupancies the footprint used.
+///
+/// The ascending-timestamp order is the one the product issues: a counter series and a feature series
+/// both append at the end of their own key's run. That is the BEST case for the grouped shape, and it
+/// is still the whole tail of the bucket that moves.
+#[test]
+#[cfg(feature = "alloc-probe")]
+#[ignore = "builds six populations twice, counting row moves; run by name"]
+fn what_an_insert_costs_in_each_shape_at_six_occupancies() {
+    let mut rows_out: Vec<(&'static str, usize, u64, u64, f64)> = Vec::new();
+    for (label, keys, points_per_key) in [
+        ("1 point a key", 40_000usize, 1usize),
+        ("2 points a key", 20_000, 2),
+        ("4 points a key", 10_000, 4),
+        ("10 points a key", 4_000, 10),
+        ("100 points a key", 400, 100),
+        ("1000 points a key", 40, 1_000),
+    ] {
+        // INTERLEAVED, not key-at-a-time: a store receives one write per key per tick, which is what
+        // makes a key's run grow while other objects already sit after it. Building key-at-a-time
+        // would append at the very end every time and price the easy case.
+        let base = rows(keys, points_per_key);
+        let mut interleaved: Vec<Row> = Vec::with_capacity(base.len());
+        for point in 0..points_per_key {
+            for key_index in 0..keys {
+                interleaved.push(base[key_index * points_per_key + point].clone());
+            }
+        }
+        assert_eq!(base.len(), interleaved.len(), "denominator: no row lost in the interleave");
+
+        let grouped = moves_to_build_grouped(&interleaved);
+        let btree = moves_to_build_btree_a_key(&interleaved);
+        let per_insert = grouped as f64 / interleaved.len() as f64;
+        println!(
+            "  {label:<18} {:>7} inserts: grouped run moved {grouped:>12} rows ({per_insert:>9.1} \
+             an insert); a B-tree a key moves at most {btree:>10} ({:>5.1} an insert)",
+            interleaved.len(),
+            btree as f64 / interleaved.len() as f64
+        );
+        // NOT asserted non-zero here. Zero is the TRUE answer at the densest occupancy -- forty keys
+        // over forty buckets, every ascending append landing at the very end of its bucket -- and a
+        // per-occupancy non-vacuity check forbade the real result. The counter is proved to work
+        // below instead, on the occupancies where it must be non-zero.
+        rows_out.push((label, interleaved.len(), grouped, btree, per_insert));
+    }
+    assert_eq!(6, rows_out.len(), "six occupancies must be measured");
+    println!("\nmoves an insert -- the write cost the footprint arms do not price:");
+    for (label, _n, _g, _b, per_insert) in &rows_out {
+        println!("  {label:<18} {per_insert:>10.1} rows moved an insert");
+    }
+    // WHAT THIS FIXTURE WAS WRITTEN TO FEAR, AND WHAT IT FOUND INSTEAD. It was written expecting the
+    // move count to RISE with occupancy -- a key's rows sharing a run with every other object in the
+    // bucket, so an insert shifts the whole tail. That assertion was written first and it FAILED,
+    // which is the only reason this comment is accurate.
+    //
+    // It falls instead, and the reason is worth more than the number. Timestamps within one key
+    // arrive ASCENDING, so a row lands at the end of ITS OWN object's run; the only rows that move
+    // are those belonging to objects that sort AFTER it in the same bucket. So the cost is set by
+    // OBJECTS PER BUCKET, not by rows per bucket -- and objects per bucket is what FALLS as each key
+    // gets denser, because the corpus is held constant. At a thousand points a key there are forty
+    // keys over forty buckets, every append is at the very end of its bucket, and the count is zero.
+    //
+    // THE PROPERTY WORTH GUARDING is therefore the one that was actually established: the per-insert
+    // move count is bounded by a small constant and does NOT grow with the corpus. Forty thousand
+    // rows per occupancy and never more than ~13 moves an insert is what makes the shape writable at
+    // all; a count that scaled with the bucket's rows would have made it unusable whatever it saved.
+    // NON-VACUITY, where it belongs: the counter must have counted SOMETHING, or every zero below is
+    // a broken instrument rather than a result. The sparsest occupancy has 40,000 keys over 1,024
+    // buckets, so objects certainly share buckets there and rows certainly move.
+    let total: u64 = rows_out.iter().map(|(_, _, grouped, _, _)| *grouped).sum();
+    assert!(
+        total > 0,
+        "no occupancy moved a single row, so the move counter is not counting and every figure here \
+         is a zero that means nothing"
+    );
+    assert!(
+        rows_out[0].2 > 0,
+        "the sparsest occupancy moved no rows, and with 40,000 keys over 1,024 buckets it must -- \
+         the counter is blind"
+    );
+    let sparse = rows_out[0].4;
+    let dense = rows_out[rows_out.len() - 1].4;
+    println!(
+        "  the per-insert count is {sparse:.1} at the sparsest occupancy and {dense:.1} at the \
+         densest, over {} rows either way",
+        rows_out[0].1
+    );
+    for (label, inserts, _grouped, _btree, per_insert) in &rows_out {
+        assert!(
+            *per_insert < 64.0,
+            "at {label} the grouped run moved {per_insert:.1} rows an insert over {inserts} \
+             inserts -- that is no longer a small constant, so the write cost has started to scale \
+             with the bucket and the shape is not writable"
+        );
+    }
+    assert!(
+        dense <= sparse,
+        "the per-insert count rose from {sparse:.1} at the sparsest occupancy to {dense:.1} at the \
+         densest -- the recorded reason for the fall (ascending timestamps land at the end of their \
+         own object's run, so only later OBJECTS move) has stopped holding"
+    );
+}
