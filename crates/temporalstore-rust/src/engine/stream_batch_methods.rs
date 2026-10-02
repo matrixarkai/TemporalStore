@@ -1040,19 +1040,16 @@ impl TemporalEngine {
                             ),
                             bytes,
                         );
-                        upsert_bucket_index_block(
+                        let recorded = super::recorded_hash_container::record_hash_element(
                             shard,
                             shard_id,
-                            "hash",
                             &key,
-                            Some(field.clone()),
-                            published.clone(),
+                            field,
+                            published,
                             false,
                         );
                         published_object_keys.insert(key.clone());
-                        if let Some(fields) = shard.hashes.get_mut(&key) {
-                            fields.insert(field, published);
-                        }
+                        shard.hashes.install(recorded);
                     }
                 }
             }

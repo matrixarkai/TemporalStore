@@ -1772,10 +1772,8 @@ pub(super) fn rebuild_unserialized_model_maps_from_bucket_index(shard: &mut Shar
     // durable map is now the only record of. The merge keeps it; the live-address filter still drops
     // a durable element whose page the settled index does not hold.
     let mut resurrections_refused = 0usize;
-    let persisted = std::mem::take(&mut shard.hashes);
-    shard.hashes = fill_absent_elements(
+    shard.hashes.reconcile_from_durable(
         hashes,
-        persisted,
         &live_pages_by_address,
         &mut resurrections_refused,
     );
@@ -4666,7 +4664,7 @@ fn reconcile_timestamped_series_membership(
 /// under a live key. `record_exists_exact` reads `contains_key` on these maps, so that was a key
 /// EXISTS answered 1 for and every listing answered empty for, arriving by reload rather than by
 /// `SetRemove`. The entry is created only where an element survives.
-fn fill_absent_elements<K, M>(
+pub(super) fn fill_absent_elements<K, M>(
     mut derived: std::collections::HashMap<K, M>,
     persisted: std::collections::HashMap<K, M>,
     live: &std::collections::HashSet<super::LiveBlockKey>,
@@ -5180,10 +5178,8 @@ pub(super) fn reconcile_secondary_views_from_bucket_index(
     // describes for the other three -- a skipped merge leaves the deserialized persisted map
     // standing WHOLE and unfiltered.
     {
-        let persisted = std::mem::take(&mut shard.hashes);
-        shard.hashes = fill_absent_elements(
+        shard.hashes.reconcile_from_durable(
             hashes,
-            persisted,
             &live_pages_by_address,
             &mut resurrections_refused,
         );
@@ -6049,9 +6045,7 @@ mod release_refusal_guards {
         let held = address(7, 64);
         shard
             .hashes
-            .entry(key.clone())
-            .or_default()
-            .insert("field".to_string(), held.clone());
+            .insert_element_for_test(&key, "field", held.clone());
         shard.bucket_index.bucket_map.insert(
             7,
             node(7, block(&key, "hash", Some("field"), held)),
@@ -6218,9 +6212,7 @@ mod release_refusal_guards {
         let held = address(4, 64);
         shard
             .hashes
-            .entry(kind_key.clone())
-            .or_default()
-            .insert("field".to_string(), held.clone());
+            .insert_element_for_test(&kind_key, "field", held.clone());
         shard
             .bucket_index
             .bucket_map
@@ -6735,7 +6727,7 @@ mod model_kind_registry_guards {
         shard.strings.insert("s".into(), at.clone());
         shard
             .hashes
-            .insert("h".to_string(), [("f".to_string(), at.clone())].into_iter().collect());
+            .insert_fields_for_test("h", [("f".to_string(), at.clone())].into_iter().collect());
         shard
             .zsets
             .insert("z".to_string(), BTreeMap::from([(vec![1u8], (9u64, at.clone()))]));

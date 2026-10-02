@@ -93,6 +93,7 @@ mod hot_page_spill;
 mod block_in_wal;
 mod state;
 mod hash_field_map;
+mod recorded_hash_container;
 // `pub(crate)`: a replication payload names the range it carries, and those payloads live
 // outside this module.
 pub(crate) mod routing_range_stamp;
@@ -3922,8 +3923,7 @@ fn fold_carried_container_elements(shard: &mut ShardState, carried: &[serde_json
             &live,
             &mut skipped,
         );
-        merge_container_elements(
-            &mut shard.hashes,
+        shard.hashes.fold_carried_elements(
             key,
             blob.get(CARRIED_CONTAINER_FIELDS[3]),
             &live,
@@ -4807,10 +4807,14 @@ fn delete_record(shard: &mut ShardState, key: &str) -> bool {
 
 fn delete_record_exact(shard: &mut ShardState, key: &str) -> bool {
     let mut removed = false;
-    removed |= mark_bucket_index_object_deleted(shard, key);
+    // The one call of `mark_bucket_index_object_deleted` on this path, and now also the place the
+    // hash drop gets its proof: the deletion it files is what makes dropping the resident hash
+    // legitimate, and the container will not drop it without that value.
+    let (marked, hash_removal) = recorded_hash_container::record_hash_object_removal(shard, key);
+    removed |= marked;
     removed |= clear_expiry(shard, key);
     removed |= shard.strings.remove(key).is_some();
-    removed |= shard.hashes.remove(key).is_some();
+    removed |= shard.hashes.remove_object(hash_removal);
     removed |= shard.sets.remove(key).is_some();
     removed |= shard.lists.remove(key).is_some();
     removed |= shard.zsets.remove(key).is_some();

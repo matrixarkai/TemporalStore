@@ -1463,8 +1463,9 @@ fn live_block_slab_ids_scan_all_index_backed_data_models() {
         "string".into(),
         BlockAddress::from_parts(7, 0, 1, None, None),
     );
-    shard.hashes.entry("hash".to_string()).or_default().insert(
-        "field".to_string(),
+    shard.hashes.insert_element_for_test(
+        "hash",
+        "field",
         BlockAddress::from_parts(8, 0, 1, None, None),
     );
     shard.sets.entry("set".to_string()).or_default().insert(
@@ -3603,8 +3604,9 @@ fn binary_index_payload_round_trips_and_refuses_a_shape_it_cannot_read() {
             BlockAddress::from_parts(i, i * 7, i + 1, Some(i), Some(i * 3)),
         );
     }
-    shard.hashes.entry("hash-object".to_string()).or_default().insert(
-        "component".to_string(),
+    shard.hashes.insert_element_for_test(
+        "hash-object",
+        "component",
         BlockAddress::from_parts(9, 1, 2, None, None),
     );
     shard.applied_wal_sequence = Some(4242);

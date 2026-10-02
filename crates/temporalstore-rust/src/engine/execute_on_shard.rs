@@ -166,20 +166,15 @@ fn write_context_node(
         // Its own kind, deliberately: this writes a hash block and -- unlike HashSet --
         // never registers it in the bucket index, so recording it as a "hash" would have
         // a rebuild add an entry the write never made.
-        stage_component_outcome(
+        let recorded = super::recorded_hash_container::record_context_node_element(
             shard_id,
             "context_node",
             object_key,
-            Some(CONTEXT_NODE_FIELD.to_string()),
+            CONTEXT_NODE_FIELD,
             routing_bucket,
-            Some(address.clone()),
-            None,
+            address,
         );
-        shard
-            .hashes
-            .entry(object_key.to_string())
-            .or_default()
-            .insert(CONTEXT_NODE_FIELD.to_string(), address);
+        shard.hashes.install(recorded);
         wrote = true;
     }
     invalidate_context_record(cache, shard_id, object_key);
@@ -245,7 +240,7 @@ fn drop_if_expired(
 /// floored at zero by the guards, so neither is a tolerance -- they are how a hole announces itself
 /// instead of appearing later as a resurrected member.
 #[allow(clippy::too_many_arguments)]
-fn remove_container_element(
+pub(super) fn remove_container_element(
     cache: &MultiLayerCache,
     block_store: &BlockStore,
     shard: &mut ShardState,
@@ -751,20 +746,15 @@ pub(crate) fn execute_on_shard(
                 async_storage,
                 block_ordinal,
             ) {
-                upsert_bucket_index_block(
+                let recorded = super::recorded_hash_container::record_hash_element(
                     shard,
                     shard_id,
-                    "hash",
                     &key,
-                    Some(field.clone()),
-                    address.clone(),
+                    field.clone(),
+                    address,
                     true,
                 );
-                shard
-                    .hashes
-                    .entry(key.clone())
-                    .or_default()
-                    .insert(field.clone(), address);
+                shard.hashes.install(recorded);
                 mutated = true;
             }
             invalidate_if_cached(cache, CacheKey::hash(shard_id, &key, &field));
@@ -864,23 +854,21 @@ pub(crate) fn execute_on_shard(
                     async_storage,
                     block_ordinal,
                 ) {
-                    upsert_bucket_index_block(
+                    let recorded = super::recorded_hash_container::record_hash_element(
                         shard,
                         shard_id,
-                        "hash",
                         &key,
-                        Some(field.clone()),
-                        address.clone(),
+                        field.clone(),
+                        address,
                         true,
                     );
                     invalidate_if_cached(cache, CacheKey::hash(shard_id, &key, &field));
-                    applied.push((field, address));
+                    applied.push(recorded);
                 }
             }
             if !applied.is_empty() {
-                let fields = shard.hashes.entry(key).or_default();
-                for (field, address) in applied {
-                    fields.insert(field, address);
+                for recorded in applied {
+                    shard.hashes.install(recorded);
                 }
                 mutated = true;
             }
@@ -938,20 +926,15 @@ pub(crate) fn execute_on_shard(
                 async_storage,
                 block_ordinal,
             ) {
-                upsert_bucket_index_block(
+                let recorded = super::recorded_hash_container::record_hash_element(
                     shard,
                     shard_id,
-                    "hash",
                     &key,
-                    Some(field.clone()),
-                    address.clone(),
+                    field.clone(),
+                    address,
                     true,
                 );
-                shard
-                    .hashes
-                    .entry(key.clone())
-                    .or_default()
-                    .insert(field.clone(), address);
+                shard.hashes.install(recorded);
                 invalidate_if_cached(cache, CacheKey::hash(shard_id, &key, &field));
                 mutated = true;
             }
@@ -1009,34 +992,29 @@ pub(crate) fn execute_on_shard(
         }
         Command::HashDelete { key, field } => {
             mutated |= drop_if_expired(cache, shard_id, shard, &key);
-            mutated |=
-                remove_container_element(
-                    cache,
-                    block_store,
-                    shard,
-                    shard_id,
-                    "hash",
-                    &key,
-                    field.as_str(),
-                    start_routing_bucket,
-                    end_routing_bucket,
-                    async_storage,
-                );
-            if let Some(fields) = shard.hashes.get_mut(&key) {
-                mutated |= fields.remove(&field).is_some();
-                // Mirror hash2::Del: deleting the last field removes the whole key
-                // (DeleteObject on empty). Leaving an empty field map behind makes the key
-                // still report as existing (EXISTS=1, TYPE=hash) -- a phantom hash.
-                //
-                // THE PARENTHESIS THAT USED TO END THIS NOTE SAID SETS DID NOT NEED THE CLEANUP,
-                // and it was wrong about this engine: `record_exists_exact` reads
-                // `shard.sets.contains_key(key)` on the line after the one it reads
-                // `shard.hashes.contains_key(key)` on, so a set left holding an empty member map is
-                // the same phantom by the same reader. `SetRemove` does the cleanup now too.
-                if fields.is_empty() {
-                    shard.hashes.remove(&key);
-                }
-            }
+            // Mirror hash2::Del: deleting the last field removes the whole key (DeleteObject
+            // on empty). Leaving an empty field map behind makes the key still report as existing
+            // (EXISTS=1, TYPE=hash) -- a phantom hash. That cleanup now lives inside
+            // `RecordedHashContainer::remove_field`, so no arm can forget it.
+            //
+            // THE PARENTHESIS THAT USED TO END THIS NOTE SAID SETS DID NOT NEED THE CLEANUP,
+            // and it was wrong about this engine: `record_exists_exact` reads
+            // `shard.sets.contains_key(key)` on the line after the one it reads
+            // `shard.hashes.contains_key(key)` on, so a set left holding an empty member map is
+            // the same phantom by the same reader. `SetRemove` does the cleanup now too.
+            let (removed, recorded) = super::recorded_hash_container::record_hash_field_removal(
+                cache,
+                block_store,
+                shard,
+                shard_id,
+                &key,
+                field.as_str(),
+                start_routing_bucket,
+                end_routing_bucket,
+                async_storage,
+            );
+            mutated |= removed;
+            mutated |= shard.hashes.remove_field(recorded);
             invalidate_if_cached(cache, CacheKey::hash(shard_id, &key, &field));
             CommandResponse::Empty
         }

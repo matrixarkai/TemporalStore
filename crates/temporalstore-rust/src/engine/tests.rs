@@ -109,6 +109,7 @@ mod shard_carried_identity;
 mod index_bytes_per_key;
 mod log_resident_is_derived;
 mod fold_hash_map_completeness;
+mod recorded_hash_container_invariant;
 mod model_number_agreement;
 mod dump_scale;
 mod dump_release_scale;

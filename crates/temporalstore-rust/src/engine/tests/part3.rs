@@ -2241,7 +2241,7 @@ fn bucket_index_is_authoritative_when_secondary_views_are_missing() {
         let shard = shards.get_mut(&1).expect("shard loaded");
         assert!(!shard.bucket_index.bucket_map.is_empty());
         shard.strings.clear();
-        shard.hashes.clear();
+        shard.hashes.clear_for_test();
         shard.sets.clear();
     }
 

@@ -161,8 +161,23 @@ pub(super) struct ShardState {
     //
     // The wire shape is unchanged: `HashFieldMap` serializes to and from the same MAP the
     // `HashMap` did, so an index written before this field became `skip_serializing` still decodes.
+    //
+    // AND THE WRAPPER AROUND IT MOVES NO BYTES EITHER. `RecordedHashContainer` is
+    // `#[serde(transparent)]` over exactly one field, `HashMap<String, HashFieldMap>` -- the type
+    // this field had -- so the derived impls forward verbatim and no snapshot, manifest or
+    // index-log encoding changes by a byte. `SHARD_INDEX_FORMAT_VERSION` does not move for it, and
+    // `engine::tests::recorded_hash_container_invariant` holds the two encodings equal against the
+    // bare map with a control that detects a planted difference.
+    //
+    // WHAT THE WRAPPER IS FOR IS NOT FOOTPRINT. It owns the map together with the durable record of
+    // its mutations: the inner map is private to the container's module, so the only way to change
+    // membership is to pass a value that could not have been constructed without the record already
+    // being emitted. A writer that mutates this map without recording does not compile. The five
+    // paths that legitimately mutate WITHOUT a record -- the reconcile, the delta fold, two replay
+    // arms and the compactor's address rewrite -- are named methods there, each with its reason,
+    // and that set is closed. See `engine::recorded_hash_container`.
     #[serde(default)]
-    pub(super) hashes: HashMap<String, HashFieldMap>,
+    pub(super) hashes: super::recorded_hash_container::RecordedHashContainer,
     #[serde(default, with = "super::set_index_serde")]
     pub(super) sets: HashMap<String, BTreeMap<Vec<u8>, BlockAddress>>,
     /// Windowed seen-sets backing idempotency keys: member -> when it was last seen, plus

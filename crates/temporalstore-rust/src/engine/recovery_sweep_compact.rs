@@ -1564,16 +1564,16 @@ fn expiry_scan_budget(limit: usize) -> usize {
         // THE OBJECT KEY GOES IN ONCE PER ARM rather than once per item. `compact_block_addresses`
         // pairs a key with every address because its string arm walks a map of many objects; each of
         // these four arms is already standing on exactly one, so it says so once.
-        for (key, fields) in shard.hashes.iter_mut() {
+        for (key, mut addresses) in shard.hashes.element_addresses_mut() {
             let routing_bucket = bucket_of(key);
             compact_container_pages_batched(
                 &self.block_store,
                 &self.cache,
                 shard_id,
                 "hash",
-                key.as_str(),
+                key,
                 routing_bucket,
-                fields.iter_mut().map(|(field, address)| ContainerElementRef {
+                addresses.iter_mut().map(|(field, address)| ContainerElementRef {
                     // A hash field's component IS the field name, so its key bytes are the name's.
                     key: field.as_bytes().to_vec(),
                     address,

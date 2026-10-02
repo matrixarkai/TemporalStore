@@ -878,7 +878,7 @@ fn a_hash_page_naming_no_field_is_skipped_while_a_genuine_empty_field_name_is_ke
         // `shard.hashes` is the map both arms rebuild, so clear it first: left populated, a stale
         // entry could supply the very field the derive is supposed to produce and the assertions
         // below would pass on the fixture's own leftovers.
-        shard.hashes.clear();
+        shard.hashes.clear_for_test();
         match arm {
             "reconcile_secondary_views" => {
                 crate::engine::storage_bucket_internals::reconcile_secondary_views_from_bucket_index(

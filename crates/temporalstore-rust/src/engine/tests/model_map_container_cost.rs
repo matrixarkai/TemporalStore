@@ -160,10 +160,47 @@ fn no_nested_model_map_is_a_hashed_table_and_hashes_carries_the_named_container(
         named.len(),
         "the `hashes` declaration is no longer findable, so this guard is reading nothing: {named:?}"
     );
+    // READ THROUGH THE WRAPPER, because the claim did not change when the declaration did.
+    //
+    // `hashes` is declared as `RecordedHashContainer` now -- the type that owns the map together
+    // with the record of its mutations -- and the sorted-vector container this module priced is one
+    // layer down, inside it. So this asserts BOTH halves: that the field is the recorded container,
+    // and that the recorded container is still a map of the named sorted vector. Relaxing this to
+    // "contains anything" would have let the inner container change back to a hashed table without
+    // a single test noticing, which is exactly what the 272-versus-64 measurement bought.
     assert!(
-        named[0].contains("HashMap<String, HashFieldMap>"),
-        "`hashes` no longer carries the named container this module priced: {}",
+        named[0].contains("RecordedHashContainer"),
+        "`hashes` is no longer the recorded container, so the mutation-record invariant may be \
+         gone as well as the pricing: {}",
         named[0]
+    );
+    let container = include_str!("../recorded_hash_container.rs");
+    assert!(
+        container.len() > 8_000,
+        "the recorded container's source did not load, so the inner-container check below would \
+         pass on an empty string: {} bytes",
+        container.len()
+    );
+    // THE EXACT DECLARATION, not the name anywhere. Asking for a line CONTAINING
+    // `entries: HashMap<String, HashFieldMap>` found three -- the field, a `_for_test` setter's
+    // PARAMETER and a `From` impl's parameter -- and the guard failed on two lines that declare
+    // nothing. That was driven. The field declaration is one exact line, so that is what is asked
+    // for, and the control below is the other direction: the string must still be findable at all.
+    let inner: Vec<&str> = container
+        .lines()
+        .map(|line| line.trim())
+        .filter(|line| *line == "entries: HashMap<String, HashFieldMap>,")
+        .collect();
+    assert!(
+        container.contains("entries: HashMap<String, HashFieldMap>"),
+        "the inner declaration is not findable in any form, so the exact match below would report \
+         zero for the wrong reason"
+    );
+    assert_eq!(
+        1,
+        inner.len(),
+        "`RecordedHashContainer` no longer holds exactly one `HashMap<String, HashFieldMap>`, so \
+         `hashes` no longer carries the named container this module priced: {inner:?}"
     );
     assert!(
         ordered_inner.len() >= 17,
@@ -209,9 +246,19 @@ fn the_context_node_write_path_produces_exactly_one_field_per_hash() {
     // Every place a context node's address is taken out of the inner map spells the ONE constant.
     let readers = execute.matches("fields.get(CONTEXT_NODE_FIELD)").count()
         + context.matches("fields.get(CONTEXT_NODE_FIELD)").count();
-    // And the one write site inserts that constant and nothing else.
+    // And the one write site files that constant and nothing else.
+    //
+    // THE SHAPE MOVED AND THE MATCHER MOVED WITH IT. The producer used to spell
+    // `.insert(CONTEXT_NODE_FIELD.to_string(), address)` straight into the model map. It now mints
+    // a record under that field and installs the proof, because the map's inner field is private
+    // and an insert without a record does not compile. So the thing to count is the MINT.
+    //
+    // The count is also no longer the whole guarantee, which is the point of the change this
+    // matcher was updated for: `record_context_node_element` is the only constructor of a
+    // context-node proof and `RecordedHashContainer::install` is the only consumer, so a second
+    // producer cannot appear without appearing HERE.
     let writers = execute
-        .matches(".insert(CONTEXT_NODE_FIELD.to_string(), address)")
+        .matches("record_context_node_element(")
         .count();
 
     println!("context-node inner-map readers spelling the one constant field: {readers}");
@@ -1624,24 +1671,24 @@ fn what_a_durable_hash_map_costs_the_compressed_checkpoint() {
     let mut shard = ShardState::default();
     // The context-node shape: one field per hash, under one constant name.
     for i in 0..NARROW_HASHES {
-        shard
-            .hashes
-            .entry(format!("ctx:node:{i}"))
-            .or_default()
-            .insert(
-                "meta".to_string(),
-                BlockAddress::from_parts(1, (i as u64) * 512, 384, None, None),
-            );
+        shard.hashes.insert_element_for_test(
+            &format!("ctx:node:{i}"),
+            "meta",
+            BlockAddress::from_parts(1, (i as u64) * 512, 384, None, None),
+        );
     }
     // The wide arm, with field names that are not all one string.
     for h in 0..WIDE_HASHES {
-        let entry = shard.hashes.entry(format!("wide:hash:{h}")).or_default();
+        let mut entry = crate::engine::hash_field_map::HashFieldMap::default();
         for f in 0..WIDE_FIELDS {
             entry.insert(
                 format!("field-{h}-{f}"),
                 BlockAddress::from_parts(2, ((h * WIDE_FIELDS + f) as u64) * 512, 384, None, None),
             );
         }
+        shard
+            .hashes
+            .insert_fields_for_test(&format!("wide:hash:{h}"), entry);
     }
 
     let keys = shard.hashes.len();
@@ -1659,9 +1706,9 @@ fn what_a_durable_hash_map_costs_the_compressed_checkpoint() {
 
     let with_bytes = serialize_index_stamped(&mut shard).len();
     // What main wrote: the same shard with the field skipped.
-    let held = std::mem::take(&mut shard.hashes);
+    let held = shard.hashes.take_for_test();
     let without_bytes = serialize_index_stamped(&mut shard).len();
-    shard.hashes = held;
+    shard.hashes.restore_for_test(held);
 
     assert!(
         with_bytes > without_bytes,

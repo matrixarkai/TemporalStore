@@ -567,20 +567,15 @@ impl TemporalEngine {
         ) else {
             return false;
         };
-        super::upsert_bucket_index_block(
+        let recorded = super::recorded_hash_container::record_hash_element(
             shard,
             shard_id,
-            "hash",
             object_key,
-            Some(field.to_string()),
-            address.clone(),
+            field.to_string(),
+            address,
             true,
         );
-        shard
-            .hashes
-            .entry(object_key.to_string())
-            .or_default()
-            .insert(field.to_string(), address);
+        shard.hashes.install(recorded);
         true
     }
 
@@ -1480,9 +1475,7 @@ impl TemporalEngine {
                         shard.strings.remove(item.object_key.as_str());
                     }
                     ("hash", Some(field)) => {
-                        if let Some(fields) = shard.hashes.get_mut(&item.object_key) {
-                            fields.remove(field);
-                        }
+                        shard.hashes.replay_remove_field(&item.object_key, field);
                     }
                     ("set", Some(encoded)) => {
                         let Ok(member) = hex::decode(encoded) else {
@@ -1619,20 +1612,15 @@ impl TemporalEngine {
                 else {
                     return false;
                 };
-                super::upsert_bucket_index_block(
+                let recorded = super::recorded_hash_container::record_hash_element(
                     shard,
                     shard_id,
-                    "hash",
                     &item.object_key,
-                    Some(field.clone()),
-                    address.clone(),
+                    field,
+                    address,
                     true,
                 );
-                shard
-                    .hashes
-                    .entry(item.object_key.clone())
-                    .or_default()
-                    .insert(field, address);
+                shard.hashes.install(recorded);
                 true
             }
             // set: the component is the member, hex encoded.
@@ -1894,11 +1882,13 @@ impl TemporalEngine {
                 else {
                     return false;
                 };
+                // NO RECORD IS FILED HERE, and that is this arm's own rule rather than an
+                // oversight: a context node is never registered in the bucket index, so unlike the
+                // `hash` arm above there is nothing for a replay to re-file, and the item being
+                // replayed IS the record. See `replay_install_element`.
                 shard
                     .hashes
-                    .entry(item.object_key.clone())
-                    .or_default()
-                    .insert(field, address);
+                    .replay_install_element(&item.object_key, field, address);
                 true
             }
             // The counter's RESULTING value at one bucket. Installing a result twice is the same
