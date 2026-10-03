@@ -7807,6 +7807,202 @@ flag exists to say",
         );
     }
 
+    /// WHAT A CONTAINER ELEMENT'S NAME COSTS A DELTA ROW, AT THREE NAME LENGTHS.
+    ///
+    /// EVERY ROW FIGURE THIS CAMPAIGN PUBLISHED WAS MEASURED ON A ROW WITH `component: None`.
+    /// 119 B unstripped and 55 B stripped come from `what_every_byte_of_an_index_item_is_spent_on`;
+    /// the hoisted common row comes from `what_the_remaining_index_item_mechanisms_are_worth`
+    /// directly above. All three fixtures build a `string` record, and a string record's block
+    /// names no element inside its object because there is no element -- those rows are
+    /// COMPONENTLESS.
+    ///
+    /// A CONTAINER ROW IS NOT. A hash field, a set member and a zset member each carry the
+    /// element's own name in the `component` slot, at the length of that name, ONCE PER ROW. So
+    /// the conclusion that was drawn from those figures -- that the identity still on a row is
+    /// down to a couple of bytes, so sharing it would buy nothing -- is a true statement about
+    /// the rows that were measured and says nothing at all about the rows that carry an element
+    /// name. This prices that difference.
+    ///
+    /// WHY THE CONTROL IS ASSERTED AND NOT MERELY PRINTED. A fixture that quietly stopped
+    /// hoisting, or a strip that stopped firing, moves every arm here in the same direction, and
+    /// three deltas against a moved baseline still read as plausible. So the componentless row is
+    /// built on this same fixture and asserted equal to the figure the campaign's own rows were
+    /// taken against, and the three arms are reported as deltas FROM it.
+    ///
+    /// AND THE KIND NAME IS ELIMINATED AS A CONFOUND IN THE SAME BREATH. The campaign's rows say
+    /// `string` in the model slot and a container row says `hash`, which is a different number of
+    /// characters -- so a second control re-measures the componentless row under `hash` and
+    /// asserts the two agree. They do, because both spellings go through
+    /// `model_id_as_number_when_it_is_known` and both are known; without this arm the element
+    /// deltas below would silently carry the model slot's difference as well.
+    #[test]
+    fn what_a_container_elements_row_costs() {
+        let shard: ShardId = 7;
+        let object_key = "tenant/7/object/000000123".to_string();
+
+        // The eight-blocks-of-one-object fixture of the mechanism pricing above, verbatim apart
+        // from the two things being varied: the model spelling and the element name.
+        let row_of = |model: &str, component: Option<&str>| -> usize {
+            let model_id = model.to_string();
+            let mut items: Vec<IndexItem> = (0..8u64)
+                .map(|index| {
+                    let address = crate::block_store::BlockAddress::from_parts(
+                        42,
+                        1_048_576 + index * 4096,
+                        4096,
+                        Some(index),
+                        None,
+                    );
+                    let mut item = IndexItem {
+                        kind: IndexItemKind::Page,
+                        routing_bucket: 8539,
+                        block_ref_key: block_ref_key_from_parts(
+                            &model_id,
+                            &object_key,
+                            component,
+                            address.block_slab_id(),
+                            address.offset(),
+                            address.length(),
+                            address.block_id().unwrap_or_default(),
+                            address.generation().unwrap_or_default(),
+                        ),
+                        object_key: object_key.clone().into(),
+                        model_id: model_id.clone(),
+                        component: component.map(std::sync::Arc::from),
+                        object_id: crate::engine::hashing::stable_block_object_id(
+                            shard, &model_id, &object_key,
+                        ),
+                        block_id: index,
+                        address: Some(address.clone()),
+                        size: address.length(),
+                        in_log: false,
+                        deleted: false,
+                    };
+                    // The writer's order. The handle strip DERIVES from `object_key` AND from
+                    // `component`, so it fires for an element row exactly as it does for a
+                    // componentless one -- which is the only reason these arms are comparable.
+                    item.strip_block_ref_key_repeat();
+                    item.strip_size_repeat();
+                    item.strip_address_repeats();
+                    item.strip_object_id_repeat(shard);
+                    item
+                })
+                .collect();
+
+            // POSITIVE CONTROLS ON EVERY ARM, not once on the baseline. A row left unstripped is
+            // the cost of a writer that gave up, and it reads identically to an expensive element.
+            assert!(
+                items[0].block_ref_key.is_empty(),
+                "the composite-handle strip did not fire for model {model} component {component:?}",
+            );
+            assert_eq!(
+                0, items[0].size,
+                "the size strip did not fire for model {model} component {component:?}",
+            );
+            assert_eq!(
+                0, items[0].object_id,
+                "the object-id strip did not fire for model {model} component {component:?}",
+            );
+
+            // The record-level hoist, which is what makes this the COMMON row rather than the
+            // worst case. Checked before it is applied, so a fixture that stopped sharing the
+            // object key fails here instead of measuring a case nobody emits.
+            assert!(
+                items.iter().all(|i| i.object_key == items[0].object_key),
+                "eight blocks of one object must hoist, or this measures the wrong case",
+            );
+            for item in items.iter_mut() {
+                item.object_key = empty_object_key();
+            }
+
+            rmp_serde::to_vec(&items[0]).expect("encode a row").len()
+        };
+
+        // THE CONTROL: the componentless hoisted row every published figure in this campaign was
+        // measured against.
+        const CONTROL_ROW_BYTES: usize = 30;
+        let control = row_of("string", None);
+        assert_eq!(
+            CONTROL_ROW_BYTES, control,
+            "the componentless hoisted row measured {control} B, not the {CONTROL_ROW_BYTES} B \
+             the campaign's row figures were taken against. The fixture, the strips or the \
+             encoding has moved, and every delta below would be against the wrong baseline",
+        );
+
+        // THE SECOND CONTROL: the kind name is not what the deltas below are measuring.
+        let control_hash = row_of("hash", None);
+        assert_eq!(
+            control, control_hash,
+            "a componentless row costs {control} B under `string` and {control_hash} B under \
+             `hash`, so the model slot differs between the campaign's fixture and a container's \
+             and the element deltas below would carry that difference too",
+        );
+
+        // Three element-name lengths. 1 is the shortest a field can be, 16 is an ordinary field
+        // name, and 64 crosses msgpack's fixstr boundary at 32 -- so the header width is exercised
+        // as well as the payload.
+        let mut measured: Vec<(usize, usize)> = Vec::new();
+        for length in [1usize, 16, 64] {
+            let name = "e".repeat(length);
+            measured.push((length, row_of("hash", Some(&name))));
+        }
+
+        println!(
+            "=== a container element's row, against a {control} B componentless control ==="
+        );
+        for (length, bytes) in &measured {
+            println!(
+                "  element name {length:>3} chars  {bytes:>4} B   +{:>3} B over the control  \
+                 ({:>5.1}% of it)",
+                bytes - control,
+                (bytes - control) as f64 / control as f64 * 100.0,
+            );
+        }
+
+        // ------------------------------------------------------------------
+        // THE VERDICTS.
+        // ------------------------------------------------------------------
+
+        // (1) AN ELEMENT NAME IS NOT FREE ON ANY ARM. This is the claim the campaign's
+        //     componentless rows could not make either way.
+        for (length, bytes) in &measured {
+            assert!(
+                *bytes > control,
+                "an element name of {length} chars left the row at {bytes} B against a {control} B \
+                 componentless control, so the name is being written for free somewhere",
+            );
+        }
+
+        // (2) IT IS PAID PER ROW AT THE LENGTH OF THE NAME, not at some pooled or shared cost.
+        //     Each delta is the name's own bytes plus msgpack's header, minus the one byte a
+        //     `nil` component spends -- so between `length` and `length + 1`. A mechanism that
+        //     shared the name across the rows of one object would show up here as a delta that
+        //     stopped tracking the length.
+        for (length, bytes) in &measured {
+            let delta = bytes - control;
+            assert!(
+                delta >= *length && delta <= length + 2,
+                "an element name of {length} chars added {delta} B to the row; a per-row name \
+                 costs its own length plus a header, so anything outside {length}..={} means the \
+                 slot is no longer written per row at its full length",
+                length + 2,
+            );
+        }
+
+        // (3) THE HEADLINE, AS AN ASSERTION. At 64 characters the element name alone is worth
+        //     more than the entire componentless row -- which is the figure that makes "identity
+        //     is already down to a couple of bytes" false of the rows that carry one.
+        let (long_length, long_bytes) = *measured.last().expect("three arms");
+        assert!(
+            long_bytes - control > control,
+            "a {long_length}-char element name added {} B to a {control} B row; the premise of \
+             this probe is that a long element name can outweigh the whole componentless row, and \
+             on this encoding it did not",
+            long_bytes - control,
+        );
+    }
+
+
 
     /// Append a binary-framed record carrying a msgpack payload, after whatever is already in
     /// the log. Returns the path so a test can measure the file.

@@ -4,6 +4,97 @@
 //! Standalone per-shard command execution extracted from engine.rs.
 use super::*;
 
+/// THE SERVED-PATH DIVERGENCE COUNTER FOR THE HASH WHOLE-OBJECT READ.
+///
+/// WHAT IT COUNTS. One increment for each field a served `HashGetAll` found NAMED BY THE PAGE
+/// INDEX and NOT HELD BY the durable container `shard.hashes`. Per (read, field), so one read of
+/// an object whose container lacks three of its fields counts three.
+///
+/// WHY ONLY THAT DIRECTION. It is the direction that loses a read once the index stops being
+/// consulted -- which is the whole point of measuring it, because taking `component` off the page
+/// entry is what makes the container load-bearing. The other direction, a field the container
+/// holds that the index does not name, is not a loss: the union in `Command::HashGetAll` already
+/// answers it from the container, and counting it would mix a rescued read in with a threatened
+/// one.
+///
+/// WHAT A ZERO MEANS, AND WHAT IT DOES NOT. A zero means NO DIVERGENCE ON THE ROUTES THE TRAFFIC
+/// TOOK. IT IS NOT PROOF OF COMPLETENESS. A field installed by a route that no request read is
+/// never sampled here and cannot be, because this counter only ever sees reads; an object nobody
+/// got is an object nobody checked. Reading a zero from here as "the container holds everything
+/// the fold installs" would repeat exactly the substitution #2078 made -- it read a fixture's
+/// green as a statement about the engine -- and that is the mistake a correction comment on #2078
+/// was written for.
+///
+/// `reads_served` is reported BESIDE the count for that reason, and it is the figure to read
+/// first: a zero over a zero denominator says nothing whatever, and the two numbers are the only
+/// way to tell "no divergence" from "nothing was asked".
+///
+/// WHAT IT IS STRICTLY BETTER AT THAN THE FIXTURE IT REPLACES. It samples whatever route the
+/// traffic actually took, including routes no fixture drives, and it cannot be satisfied by one
+/// source being derived from the other -- the comparison happens at read time against both
+/// sources as they are, with no load path in between to fill one from the other.
+///
+/// WHY IT IS PROCESS-WIDE AND NOT PER-SHARD. The figure is a property of the engine's read path,
+/// not of a shard's contents, and it is read as a trend rather than as an inventory. Carrying a
+/// `shard_id` on it would be a label describing something it did not measure, so the report
+/// surface does not carry one.
+///
+/// THE RATE LIMIT ON THE LOG. The first [`LOG_BURST`] divergences are logged, and after that one
+/// in every [`LOG_EVERY`]. An unbounded log would be one line per field per read for as long as
+/// the divergence lasts, which on a hot object is the loudest possible way to say one thing; a
+/// log of only the first would go quiet exactly when the condition spread. `divergences_logged`
+/// is reported so the log and the count can be told apart.
+pub(super) mod hash_read_divergence {
+    use std::sync::atomic::{AtomicU64, Ordering};
+
+    static READS_SERVED: AtomicU64 = AtomicU64::new(0);
+    static INDEX_NAMED_FIELDS_THE_CONTAINER_LACKED: AtomicU64 = AtomicU64::new(0);
+    static DIVERGENCES_LOGGED: AtomicU64 = AtomicU64::new(0);
+    static LAST: std::sync::Mutex<Option<(String, String)>> = std::sync::Mutex::new(None);
+
+    /// Log every one of the first this many, so a divergence that happens once is still named.
+    const LOG_BURST: u64 = 8;
+    /// After the burst, log one in this many.
+    const LOG_EVERY: u64 = 1_024;
+
+    /// One served whole-object hash read that resolved through both sources.
+    ///
+    /// Counted after the expiry door, because a read that removed an expired key never consulted
+    /// either source and including it would inflate the denominator with reads that could not
+    /// have diverged.
+    pub(crate) fn note_read() {
+        READS_SERVED.fetch_add(1, Ordering::Relaxed);
+    }
+
+    /// One field the page index named and the container did not hold.
+    pub(crate) fn note(object_key: &str, field: &str) {
+        let seen = INDEX_NAMED_FIELDS_THE_CONTAINER_LACKED.fetch_add(1, Ordering::Relaxed) + 1;
+        if let Ok(mut last) = LAST.lock() {
+            *last = Some((object_key.to_string(), field.to_string()));
+        }
+        if seen <= LOG_BURST || seen % LOG_EVERY == 0 {
+            DIVERGENCES_LOGGED.fetch_add(1, Ordering::Relaxed);
+            tracing::warn!(
+                object_key,
+                field,
+                divergences = seen,
+                "the page index named a hash field the durable container does not hold; the \
+                 union served it from the index"
+            );
+        }
+    }
+
+    /// The four figures, read together so a reader cannot take the count without its denominator.
+    pub(crate) fn snapshot() -> (u64, u64, u64, Option<(String, String)>) {
+        (
+            READS_SERVED.load(Ordering::Relaxed),
+            INDEX_NAMED_FIELDS_THE_CONTAINER_LACKED.load(Ordering::Relaxed),
+            DIVERGENCES_LOGGED.load(Ordering::Relaxed),
+            LAST.lock().ok().and_then(|last| last.clone()),
+        )
+    }
+}
+
 /// Put aside an outcome that no block backs: a deletion, a deadline, or state that lives only
 /// in the index snapshot.
 ///
@@ -948,28 +1039,114 @@ pub(crate) fn execute_on_shard(
                     mutated,
                 };
             }
-            let entries = bucket_index_component_block_addresses(shard, "hash", &key)
+            // THE TWO SOURCES THAT NAME THIS OBJECT'S FIELDS, AND WHY THIS READ NOW ASKS BOTH.
+            //
+            // The page index has always been the source this read resolves field names from, and
+            // the durable container `shard.hashes` names the same fields from the other side.
+            // #2078 set out to prove the container holds every field the fold installs, and it
+            // does not prove that: BOTH load-path functions in `storage_bucket_internals` derive a
+            // hash field map by WALKING THE PAGE INDEX and merge it into the container through
+            // `RecordedHashContainer::reconcile_from_durable` --
+            // `rebuild_unserialized_model_maps_from_bucket_index` and
+            // `reconcile_secondary_views_from_bucket_index`. So after a reload the container names
+            // what the index names BY CONSTRUCTION, the fixture compares the index against a
+            // structure derived from it, and disabling the container carry leaves it green.
+            //
+            // CITED BY FUNCTION AND NOT BY LINE, because this change watched a line citation go
+            // stale while it was being written: the second site sat at `:5229` on the commit this
+            // was authored against and at `:5248` two commits later, moved by #2085.
+            //
+            // So the precondition is established HERE instead, at run time against whatever
+            // traffic the process serves. That samples every route a request takes rather than
+            // the ones a fixture drives, and no load path sits between the two sources to fill
+            // one from the other.
+            //
+            // SERVING THE UNION IS WHAT MAKES THAT SAFE. A field only one source names is still
+            // answered, so a divergence is OBSERVED rather than SUFFERED and no read is lost
+            // while the measurement is being taken.
+            let indexed = bucket_index_component_block_addresses(shard, "hash", &key);
+            // Copied out before the block reads: those borrow the cache and the block store while
+            // this borrows the shard, and the addresses are what both halves of the union need.
+            let contained: Vec<(String, crate::block_store::BlockAddress)> = shard
+                .hashes
+                .get(&key)
+                .map(|fields| {
+                    fields
+                        .iter()
+                        .map(|(name, address)| (name.clone(), address.clone()))
+                        .collect()
+                })
+                .unwrap_or_default();
+
+            // THE UNION, KEYED ON THE FIELD NAME, AND WHICH SIDE WINS A TIE.
+            //
+            // The INDEX wins. That makes this a no-op for every field the index names -- which
+            // today is every field -- and leaves the container contributing exactly the fields
+            // the index does not name. A union that preferred the container would change the
+            // address served for every read in the store, and a change whose purpose is to
+            // measure is not entitled to do that.
+            let mut resolved: Vec<(
+                String,
+                Option<std::sync::Arc<str>>,
+                crate::block_store::BlockAddress,
+            )> = Vec::with_capacity(indexed.len() + contained.len());
+            let mut named_by_index: std::collections::HashSet<String> =
+                std::collections::HashSet::with_capacity(indexed.len());
+            for (component, address) in indexed {
+                // A `None` COMPONENT NAMES NO FIELD, and is deliberately not counted below. It is
+                // the whole-object door's answer for a block that belongs to the object rather
+                // than to an element of it; the container is keyed by field name and cannot hold
+                // one, so treating it as a field the container lacks would be a false positive on
+                // every single occurrence. It is served exactly as it always was.
+                if let Some(name) = component.as_deref() {
+                    named_by_index.insert(name.to_string());
+                }
+                let name = component
+                    .as_deref()
+                    .map(|name| name.to_string())
+                    .unwrap_or_default();
+                resolved.push((name, component, address));
+            }
+
+            // THE MEASUREMENT. See `hash_read_divergence` for what a zero from it does and does
+            // not mean; the short form is that a zero is a statement about the routes traffic
+            // took and NOT a proof of completeness on the routes it did not.
+            {
+                let held: std::collections::HashSet<&str> =
+                    contained.iter().map(|(name, _)| name.as_str()).collect();
+                for name in named_by_index.iter().filter(|name| !held.contains(name.as_str())) {
+                    hash_read_divergence::note(&key, name);
+                }
+                hash_read_divergence::note_read();
+            }
+
+            // The container's own fields that the index does not name. These are the reads the
+            // union ADDS: without it they are not served at all, which is why the union is the
+            // part that makes observing a divergence safe rather than merely informative.
+            for (name, address) in contained {
+                if !named_by_index.contains(&name) {
+                    let component: std::sync::Arc<str> = std::sync::Arc::from(name.as_str());
+                    resolved.push((name, Some(component), address));
+                }
+            }
+
+            let entries = resolved
                 .into_iter()
-                .filter_map(|(field, address)| {
+                .filter_map(|(name, component, address)| {
                     read_block_bytes(
                         cache,
                         block_store,
                         shard_id,
                         &address,
                         // The element the whole-object door handed back beside this address.
-                        PageIdentity::of(shard_id, "hash", &key, field.as_deref()),
+                        PageIdentity::of(shard_id, "hash", &key, component.as_deref()),
                         Some(block_routing_bucket(
                             &key,
                             start_routing_bucket,
                             end_routing_bucket,
                         )),
                     )
-                    .map(|value| {
-                        (
-                            field.map(|name| name.to_string()).unwrap_or_default(),
-                            value,
-                        )
-                    })
+                    .map(|value| (name, value))
                 })
                 .collect();
             CommandResponse::HashEntries { entries }

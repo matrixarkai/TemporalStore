@@ -20,6 +20,54 @@ fn public_storage_strings(values: &[&str]) -> Vec<String> {
     values.iter().map(|value| (*value).to_string()).collect()
 }
 
+/// The most recent field the two sources of a hash read disagreed about.
+///
+/// One sample and not a list: the point of the surface is the COUNT, and an unbounded list of
+/// every divergent field is a memory cost paid by a production read path to hold evidence of a
+/// condition whose first example is as diagnostic as its thousandth. The log carries the rest,
+/// under the rate limit `hash_read_divergence` documents.
+#[derive(Debug, Default, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct HashReadDivergenceSample {
+    pub object_key: String,
+    pub field: String,
+}
+
+/// WHAT THE SERVED HASH WHOLE-OBJECT READ SAW OF ITS TWO SOURCES, PROCESS-WIDE.
+///
+/// `Command::HashGetAll` resolves field names from the durable container `shard.hashes`, still
+/// consults the page index, and serves the UNION of the two. This is what it observed while doing
+/// so.
+///
+/// READ `reads_served` FIRST. It is the denominator, and without it
+/// `index_named_fields_the_container_lacked` is unreadable: zero divergences over zero reads is
+/// not a clean bill of health, it is an absence of evidence.
+///
+/// WHAT A ZERO MEANS, AND WHAT IT DOES NOT. Zero means NO DIVERGENCE ON THE ROUTES THE TRAFFIC
+/// TOOK. IT IS NOT PROOF OF COMPLETENESS ON THE ROUTES IT DID NOT TAKE. A field installed by a
+/// write path that no read ever asked for is never sampled by this counter and cannot be, because
+/// the counter only sees reads. Anyone who reads a zero here as "the container holds every field
+/// the fold installs" has made the same substitution #2078 made when it read a fixture's green as
+/// a statement about the engine, and a correction comment on #2078 says so.
+///
+/// WHY THERE IS NO `shard_id` ON IT. The figures are a property of the read path and are
+/// accumulated process-wide; a shard label would describe something this report did not measure.
+#[derive(Debug, Default, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct HashReadDivergenceReport {
+    /// THE DENOMINATOR. Whole-object hash reads that got as far as consulting both sources --
+    /// reads turned away by the expiry door are not counted, because they consulted neither.
+    pub reads_served: u64,
+    /// THE COUNT. Fields the PAGE INDEX named that the durable container did NOT hold, summed
+    /// per (read, field). Only this direction: it is the one that loses a read once the index
+    /// stops being consulted. The opposite direction is served from the container by the union
+    /// and is not a loss.
+    pub index_named_fields_the_container_lacked: u64,
+    /// How many of those reached the log, which is rate-limited. Reported so a quiet log cannot
+    /// be mistaken for a zero count.
+    pub divergences_logged: u64,
+    #[serde(default)]
+    pub last_divergence: Option<HashReadDivergenceSample>,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(untagged)]
 pub enum StorageContractValue {

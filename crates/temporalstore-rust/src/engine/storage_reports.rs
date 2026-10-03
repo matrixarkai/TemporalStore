@@ -5,6 +5,30 @@
 use super::*;
 
 impl TemporalEngine {
+
+    /// WHAT THE SERVED HASH READ HAS SEEN OF ITS TWO SOURCES, read off the counters the read
+    /// path keeps.
+    ///
+    /// The numbers are process-wide and monotonic for the life of the process, so two calls
+    /// subtract into "what happened in between" -- which is how a trend is read off them. There
+    /// is no reset on the production surface, because a counter a reader can zero is a counter
+    /// whose history a reader can lose.
+    ///
+    /// See [`HashReadDivergenceReport`] for what a zero does and does not mean. It is a statement
+    /// about the routes traffic took and NOT a proof of completeness on the routes it did not.
+    pub fn hash_read_divergence_report(&self) -> HashReadDivergenceReport {
+        let (reads_served, index_named_fields_the_container_lacked, divergences_logged, last) =
+            super::execute_on_shard::hash_read_divergence::snapshot();
+        HashReadDivergenceReport {
+            reads_served,
+            index_named_fields_the_container_lacked,
+            divergences_logged,
+            last_divergence: last.map(|(object_key, field)| HashReadDivergenceSample {
+                object_key,
+                field,
+            }),
+        }
+    }
     pub fn run_storage_manager_loop(
         &self,
         mut request: StorageManagerLoopRequest,
