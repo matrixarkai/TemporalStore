@@ -248,18 +248,27 @@ fn the_context_node_write_path_produces_exactly_one_field_per_hash() {
         + context.matches("fields.get(CONTEXT_NODE_FIELD)").count();
     // And the one write site files that constant and nothing else.
     //
-    // THE SHAPE MOVED AND THE MATCHER MOVED WITH IT. The producer used to spell
-    // `.insert(CONTEXT_NODE_FIELD.to_string(), address)` straight into the model map. It now mints
-    // a record under that field and installs the proof, because the map's inner field is private
-    // and an insert without a record does not compile. So the thing to count is the MINT.
+    // THE SHAPE HAS MOVED TWICE NOW, AND THIS MATCHER HAS MOVED WITH IT BOTH TIMES. The producer
+    // first spelled `.insert(CONTEXT_NODE_FIELD.to_string(), address)` straight into the model map.
+    // Then it minted a record and installed a proof, because the map's inner field became private.
+    // Now it calls ONE function that does both. Each time, the fact this test pins -- exactly one
+    // producer of a context-node page -- was unchanged, and each time the matcher reported zero
+    // until it was updated. That is the right failure mode: a rename makes this test fail loudly
+    // rather than pass while counting nothing, and the assertion below names the number it saw.
     //
-    // The count is also no longer the whole guarantee, which is the point of the change this
-    // matcher was updated for: `record_context_node_element` is the only constructor of a
-    // context-node proof and `RecordedHashContainer::install` is the only consumer, so a second
-    // producer cannot appear without appearing HERE.
+    // The count is also no longer the whole guarantee: `install_context_node_element` is the only
+    // function that can reach the model map under a context node's field, because the mutator it
+    // calls is private to the container's module. So a second producer cannot appear without
+    // appearing HERE.
     let writers = execute
-        .matches("record_context_node_element(")
+        .matches("install_context_node_element(")
         .count();
+    // VACUITY: the name must be findable at all, so a future rename cannot make `writers == 0` and
+    // then have someone "fix" this test by lowering the expected count to zero.
+    assert!(
+        execute.contains("install_context_node_element"),
+        "the context-node install is not findable by name in `execute_on_shard.rs`, so the count          below would be zero for the wrong reason"
+    );
 
     println!("context-node inner-map readers spelling the one constant field: {readers}");
     println!("context-node inner-map writers inserting it:                   {writers}");

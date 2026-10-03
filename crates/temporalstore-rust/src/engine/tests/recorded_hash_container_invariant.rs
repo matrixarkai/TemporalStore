@@ -26,7 +26,7 @@
 use super::*;
 
 use crate::engine::recorded_hash_container::{
-    record_context_node_element, record_hash_element, record_hash_object_removal,
+    delete_hash_object, install_context_node_element, install_hash_element,
 };
 
 /// The module whose surface is the invariant.
@@ -157,9 +157,29 @@ fn the_hash_container_exposes_no_way_to_mutate_the_map_without_a_record() {
     // CONTROL 2: the matcher is reading the module it thinks it is reading. A token that MUST be
     // present, so an empty or wrong `include_str!` cannot score clean.
     assert!(
-        SOURCE.contains("pub(super) fn install"),
-        "the source read is not `recorded_hash_container.rs`: it has no `install`"
+        SOURCE.contains("pub(super) fn install_hash_element"),
+        "the source read is not `recorded_hash_container.rs`: it has no `install_hash_element`"
     );
+    // AND THE MUTATOR IS PRIVATE, which is half the invariant now that callers no longer hold a
+    // proof. `fn install(` with no visibility is what makes the proof unreachable from outside.
+    assert!(
+        SOURCE.contains("\n    fn install(&mut self, recorded: RecordedHashElement)"),
+        "`install` is no longer a PRIVATE method. With it `pub(super)`, a caller outside this \
+         module could mint nothing and still reach the map through any proof it got hold of -- the \
+         one-call surface only narrows the enforcement if the mutators behind it are unreachable."
+    );
+    for private in [
+        "\nstruct RecordedHashElement {",
+        "\nstruct RecordedHashFieldRemoval {",
+        "\nstruct RecordedHashObjectRemoval {",
+    ] {
+        assert!(
+            SOURCE.contains(private),
+            "a proof type is no longer private to this module: {private:?}. A `pub(super)` proof \
+             type is constructible nowhere else -- its fields are private -- but making it nameable \
+             outside invites an accessor that returns one, so it is pinned here."
+        );
+    }
     assert!(
         SOURCE.len() > 8_000,
         "the source read is {} bytes, which is too small to be the module",
@@ -183,18 +203,23 @@ fn the_hash_container_exposes_no_way_to_mutate_the_map_without_a_record() {
          `&mut shard.hashes.entries` from any other module."
     );
 
+    // NINETEEN NAMES, DOWN FROM TWENTY-FIVE, AND THE SIX THAT LEFT ARE THE POINT.
+    //
+    // The three proof types and the three mutators that consume them are PRIVATE now. A caller used
+    // to emit a record, receive a proof and pass it to a mutator -- three names on this surface and
+    // a two-statement ordering at every call site. It now calls one function. The proof still
+    // exists, still carries the identity of what was recorded, and the mutator still cannot be
+    // reached without it -- but all of that happens inside this module, so the enforcement surface
+    // is "four functions must construct a proof" rather than "every call site must pass one".
     let expected: Vec<&str> = vec![
         // The container itself.
         "RecordedHashContainer",
-        // The proofs. Each is minted only by an emitter below.
-        "RecordedHashElement",
-        "RecordedHashFieldRemoval",
-        "RecordedHashObjectRemoval",
-        // The emitters. Each emits the durable record, then returns the proof.
-        "record_hash_element",
-        "record_context_node_element",
-        "record_hash_field_removal",
-        "record_hash_object_removal",
+        // THE FOUR OPERATIONS. Each emits the durable record and then mutates, in one call, so a
+        // caller has no ordering to get right and no token to thread.
+        "install_hash_element",
+        "install_context_node_element",
+        "remove_hash_field",
+        "delete_hash_object",
         // Reads, all borrows.
         "get",
         "contains_key",
@@ -203,10 +228,6 @@ fn the_hash_container_exposes_no_way_to_mutate_the_map_without_a_record() {
         "keys",
         "values",
         "iter",
-        // The recorded mutators. Each consumes a proof.
-        "install",
-        "remove_field",
-        "remove_object",
         // The five exceptions, where the record is the source and not the sink.
         "reconcile_from_durable",
         "fold_carried_elements",
@@ -444,7 +465,7 @@ fn each_recorded_hash_mutator_emits_exactly_one_record() {
     // 1. INSTALLING AN ELEMENT. The record is the bucket-index entry, which stages one outcome.
     let mut shard = shard_for_records();
     let before = staged();
-    let recorded = record_hash_element(
+    install_hash_element(
         &mut shard,
         TEST_SHARD,
         "recorded-key",
@@ -461,8 +482,9 @@ fn each_recorded_hash_mutator_emits_exactly_one_record() {
          replay installs the page more than once.",
         after - before
     );
-    // And the mutation is not possible without that proof: this line consumes it.
-    shard.hashes.install(recorded);
+    // The mutation landed in the SAME call that emitted the record, which is why there is nothing
+    // to consume here. What makes that safe rather than merely convenient is that the mutator
+    // behind it is private and still takes a proof -- see the surface test above.
     assert_eq!(
         shard.hashes.get("recorded-key").map(|fields| fields.len()),
         Some(1),
@@ -472,7 +494,8 @@ fn each_recorded_hash_mutator_emits_exactly_one_record() {
     // 2. INSTALLING A CONTEXT NODE, whose record is DELIBERATELY the staged outcome alone and not
     //    a bucket-index entry -- so it is a separate emitter, and it too emits exactly one.
     let before = staged();
-    let recorded = record_context_node_element(
+    install_context_node_element(
+        &mut shard,
         TEST_SHARD,
         "context_node",
         "recorded-node",
@@ -487,7 +510,6 @@ fn each_recorded_hash_mutator_emits_exactly_one_record() {
         "installing one context node staged {} records, not 1",
         after - before
     );
-    shard.hashes.install(recorded);
 
     // 3. DELETING THE WHOLE OBJECT. This one stages NOTHING, and that is correct rather than a
     //    hole: its durable record is the bucket index's own deleted-object set, which a dump
@@ -501,7 +523,7 @@ fn each_recorded_hash_mutator_emits_exactly_one_record() {
         .map(|bucket| bucket.deleted_object_index.object_count())
         .sum();
     let staged_before = staged();
-    let (_marked, removal) = record_hash_object_removal(&mut shard, "recorded-key");
+    let changed = delete_hash_object(&mut shard, "recorded-key");
     let deleted_after: usize = shard
         .bucket_index
         .bucket_map
@@ -521,8 +543,8 @@ fn each_recorded_hash_mutator_emits_exactly_one_record() {
          set; a staged outcome as well would have a load apply the deletion twice."
     );
     assert!(
-        shard.hashes.remove_object(removal),
-        "the recorded object deletion did not drop the resident hash"
+        changed,
+        "the recorded object deletion reported no change"
     );
     assert!(
         !shard.hashes.contains_key("recorded-key"),
@@ -670,7 +692,7 @@ fn the_container_encodes_to_the_same_bytes_as_the_bare_map() {
 fn reading_the_hash_container_hands_back_borrows_and_not_copies() {
     drain_records();
     let mut shard = shard_for_records();
-    let recorded = record_hash_element(
+    install_hash_element(
         &mut shard,
         TEST_SHARD,
         "borrowed-key",
@@ -678,7 +700,6 @@ fn reading_the_hash_container_hands_back_borrows_and_not_copies() {
         an_address(),
         true,
     );
-    shard.hashes.install(recorded);
 
     // Compile-time: each read is a borrow. An owned return would fail to coerce here.
     let point: Option<&crate::engine::hash_field_map::HashFieldMap> =

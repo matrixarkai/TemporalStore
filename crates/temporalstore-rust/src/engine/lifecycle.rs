@@ -567,7 +567,7 @@ impl TemporalEngine {
         ) else {
             return false;
         };
-        let recorded = super::recorded_hash_container::record_hash_element(
+        super::recorded_hash_container::install_hash_element(
             shard,
             shard_id,
             object_key,
@@ -575,7 +575,6 @@ impl TemporalEngine {
             address,
             true,
         );
-        shard.hashes.install(recorded);
         true
     }
 
@@ -1612,7 +1611,7 @@ impl TemporalEngine {
                 else {
                     return false;
                 };
-                let recorded = super::recorded_hash_container::record_hash_element(
+                super::recorded_hash_container::install_hash_element(
                     shard,
                     shard_id,
                     &item.object_key,
@@ -1620,7 +1619,6 @@ impl TemporalEngine {
                     address,
                     true,
                 );
-                shard.hashes.install(recorded);
                 true
             }
             // set: the component is the member, hex encoded.

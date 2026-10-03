@@ -3454,6 +3454,54 @@ pub(super) fn block_physical_identity_key(
     )
 }
 
+/// PROOF THAT A BLOCK HAS BEEN FILED IN THE BUCKET INDEX, which stages its WAL outcome.
+///
+/// The field is private to this module, so this value cannot be constructed anywhere else. A caller
+/// that needs one has to call [`upsert_bucket_index_block_filed`], and a caller that deletes that
+/// call no longer has the value -- which is how a recorded container makes "record, then mutate"
+/// an ordering the COMPILER holds rather than one a function body is trusted to keep.
+#[must_use = "a filed block whose witness is dropped recorded something nothing will apply"]
+pub(super) struct BlockFiled(());
+
+impl BlockFiled {
+    /// The ONE other way to obtain this, for the one record that is a staged outcome and no bucket
+    /// entry. Takes the other witness BY VALUE, so it is a conversion rather than a constructor --
+    /// there is still no way to make one without having emitted something.
+    pub(super) fn from_staged_outcome(_staged: super::block_in_wal::OutcomeStaged) -> Self {
+        BlockFiled(())
+    }
+}
+
+/// PROOF THAT AN OBJECT HAS BEEN MARKED DELETED in the bucket index. Same rule as above.
+#[must_use = "a recorded object deletion whose witness is dropped is a record with no mutation"]
+pub(super) struct ObjectDeletionFiled(());
+
+/// [`upsert_bucket_index_block`], returning the witness a recorded container needs.
+///
+/// The void-returning spelling below stays for the thirty-odd callers that are not behind a
+/// recorded container; this one exists so that those that are cannot skip it and still compile.
+pub(super) fn upsert_bucket_index_block_filed(
+    shard: &mut ShardState,
+    shard_id: ShardId,
+    kind: &str,
+    object_key: &str,
+    component: Option<String>,
+    address: BlockAddress,
+    dirty: bool,
+) -> BlockFiled {
+    upsert_bucket_index_block(shard, shard_id, kind, object_key, component, address, dirty);
+    BlockFiled(())
+}
+
+/// [`super::mark_bucket_index_object_deleted`], returning its witness and the flag it answered.
+pub(super) fn mark_bucket_index_object_deleted_filed(
+    shard: &mut ShardState,
+    object_key: &str,
+) -> (bool, ObjectDeletionFiled) {
+    let marked = super::mark_bucket_index_object_deleted(shard, object_key);
+    (marked, ObjectDeletionFiled(()))
+}
+
 pub(super) fn upsert_bucket_index_block(
     shard: &mut ShardState,
     shard_id: ShardId,

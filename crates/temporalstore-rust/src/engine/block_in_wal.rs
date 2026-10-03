@@ -98,6 +98,33 @@ thread_local! {
 ///
 /// Staged for the same reason pages are -- the record does not exist yet, so there is nowhere
 /// to put it until the append.
+/// PROOF THAT AN OUTCOME HAS BEEN STAGED FOR THE RECORD.
+///
+/// Private field, so only this module constructs it. A recorded container whose record IS a staged
+/// outcome -- a context node, which is never filed in the bucket index -- requires one of these, so
+/// deleting the staging call stops the install from compiling.
+#[must_use = "a staged outcome whose witness is dropped recorded something nothing will apply"]
+pub(super) struct OutcomeStaged(());
+
+impl OutcomeStaged {
+    /// A STAGED OUTCOME IS A FILED RECORD, so it satisfies a recorded container's witness.
+    ///
+    /// A context node's record IS the staged outcome and nothing else -- it is deliberately never
+    /// filed in the bucket index, because recording it as a `hash` there would have a rebuild add
+    /// an entry the write never made. So this is the one conversion between the two witnesses, and
+    /// it goes one way only: a filed block does NOT imply a staged outcome, because
+    /// `upsert_bucket_index_block_with(.., stage: false)` exists precisely to file without staging.
+    pub(super) fn into_block_filed(self) -> super::storage_bucket_internals::BlockFiled {
+        super::storage_bucket_internals::BlockFiled::from_staged_outcome(self)
+    }
+}
+
+/// [`stage_outcome`], returning the witness.
+pub(super) fn stage_outcome_attested(item: crate::wal::WalOutcomeItem) -> OutcomeStaged {
+    stage_outcome(item);
+    OutcomeStaged(())
+}
+
 pub(super) fn stage_outcome(item: crate::wal::WalOutcomeItem) {
     crate::alloc_probe::in_class(crate::alloc_probe::AllocClass::StagedOutcome, || {
         stage_outcome_inner(item)

@@ -1040,7 +1040,7 @@ impl TemporalEngine {
                             ),
                             bytes,
                         );
-                        let recorded = super::recorded_hash_container::record_hash_element(
+                        super::recorded_hash_container::install_hash_element(
                             shard,
                             shard_id,
                             &key,
@@ -1049,7 +1049,6 @@ impl TemporalEngine {
                             false,
                         );
                         published_object_keys.insert(key.clone());
-                        shard.hashes.install(recorded);
                     }
                 }
             }

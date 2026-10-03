@@ -40,20 +40,65 @@
 //! record FIRST and returns the proof SECOND. A caller holding one of those values is holding
 //! evidence that the record is already out. A caller holding none cannot reach the map.
 //!
-//! # WHY A TOKEN AND NOT A METHOD THAT LOGS
+//! # ONE CALL PER OPERATION AT THE SURFACE, A PROOF VALUE INSIDE
 //!
-//! The obvious shape -- `shard.hashes.install_and_log(..)` -- does not compile here, and the reason
-//! is structural rather than incidental. The record emitter `upsert_bucket_index_block` takes
-//! `&mut ShardState`, the WHOLE shard, because filing a block reloads a released bucket, interns
-//! the component name and touches the pending-flag set. `hashes` is a FIELD of `ShardState`. A
-//! method on the field holding `&mut self` cannot hand `&mut ShardState` to the emitter: the field
-//! borrow is already live. Taking the emitter as a closure fails for the same reason -- the closure
-//! would have to capture the shard this method is borrowing out of.
+//! A caller writes ONE statement: [`install_hash_element`], [`remove_hash_field`],
+//! [`delete_hash_object`], [`install_context_node_element`]. There is no token to thread through a
+//! call site and no two-statement ordering for a caller to get right.
 //!
-//! So the emission and the mutation are two statements, and what joins them is a value that cannot
-//! exist unless the first one ran. That is strictly stronger than a method that logs, because it
-//! also leaves the record EXACTLY where each call site emits it today -- nothing is reordered, so
-//! no arm's staging order changes -- while still making the mutation unreachable without it.
+//! The proof value has not gone away -- it has moved INSIDE. Each of those functions emits the
+//! durable record, receives a [`RecordedHashElement`] (or its removal siblings), and hands it to a
+//! mutator that is PRIVATE to this module. So the enforcement is unchanged in kind and smaller in
+//! surface: it used to be "every call site must pass the token", and it is now "one function per
+//! operation must construct it", with all of them in this file under this doc comment.
+//!
+//! WHAT THAT BUYS OVER A SINGLE FUNCTION THAT JUST LOGS AND THEN ASSIGNS, and the one place it
+//! buys less. In the plain shape the ordering is a convention inside one function: delete the log
+//! call and it still compiles. Here, for three of the four operations, it does NOT compile -- each
+//! proof requires a WITNESS that only the emitter can produce:
+//!
+//!   * [`install_hash_element`] needs a `BlockFiled`, minted only by
+//!     `upsert_bucket_index_block_filed`;
+//!   * [`install_context_node_element`] needs an `OutcomeStaged`, minted only by
+//!     `stage_outcome_attested`;
+//!   * [`delete_hash_object`] needs an `ObjectDeletionFiled`, minted only by
+//!     `mark_bucket_index_object_deleted_filed`.
+//!
+//! Each witness is a struct with a PRIVATE unit field living in the module that emits, so it cannot
+//! be constructed anywhere else. Delete the emission and the witness is gone, the proof cannot be
+//! built, and the mutator call stops compiling.
+//!
+//! THAT CLAIM WAS FALSE WHEN THIS SHAPE WAS FIRST BUILT, AND THE TEST IS WHAT SHOWED IT. The proof
+//! was constructed from the function's own arguments, so deleting the emission compiled fine and
+//! only `each_recorded_hash_mutator_emits_exactly_one_record` noticed -- at runtime, while the doc
+//! comment claimed the compiler would. The witnesses exist because driving that test to fail
+//! exposed the gap between the claim and the code.
+//!
+//! [`remove_hash_field`] IS THE EXCEPTION AND HAS NO WITNESS. Its emitter,
+//! `remove_container_element`, is shared with six other arms -- set, zset and list removals among
+//! them -- so giving it a witness return means touching all seven, which belongs with the change
+//! that converts those kinds rather than with this one. For that one operation the ordering is a
+//! convention inside the function, exactly as it would be in the plain shape, and its record count
+//! is covered by the test only. Stated rather than left to be discovered.
+//!
+//! THE PROOF CARRIES IDENTITY, not merely the fact that something was recorded. A
+//! `RecordedHashElement` holds the object key, the field and the address, and the mutator writes
+//! THOSE -- it cannot be handed a proof for one element and asked to write another. A unit token
+//! would have allowed exactly that.
+//!
+//! # WHY THESE ARE FREE FUNCTIONS AND NOT METHODS, which is the obstacle this shape had to clear
+//!
+//! `upsert_bucket_index_block` takes `&mut ShardState`, the WHOLE shard, because filing a block
+//! reloads a released bucket, interns the component name and touches the pending-flag set. `hashes`
+//! is a FIELD of `ShardState`, so a method on the container holding `&mut self` cannot hand
+//! `&mut ShardState` to the emitter -- the field borrow is already live, and a closure capturing the
+//! shard fails for the same reason.
+//!
+//! A free function taking `&mut ShardState` clears it, because the two borrows are SEQUENTIAL
+//! rather than overlapping: the emitter's `&mut shard` ends when it returns, and only then does
+//! `shard.hashes` get borrowed to apply the proof. That is why the surface is a set of free
+//! functions in this module rather than methods on the container, and it is the whole reason the
+//! one-call shape is available at all.
 //!
 //! The ordering the brief asks for is preserved and is in fact structural: the record is emitted
 //! inside the constructor, before the proof exists, so a panic between the two cannot leave a
@@ -117,7 +162,11 @@ pub(super) struct RecordedHashContainer {
 /// one and cannot drift from it.
 #[must_use = "a recorded hash element that is never installed leaves the record describing a page \
               the resident map does not hold"]
-pub(super) struct RecordedHashElement {
+struct RecordedHashElement {
+    /// The emitter's witness. Not read -- holding it IS the point, because it cannot be obtained
+    /// without the record having been filed.
+    #[allow(dead_code)]
+    filed: super::storage_bucket_internals::BlockFiled,
     object_key: String,
     field: String,
     address: BlockAddress,
@@ -126,7 +175,7 @@ pub(super) struct RecordedHashElement {
 /// PROOF THAT THE REMOVAL OF ONE HASH FIELD IS ALREADY RECORDED.
 #[must_use = "a recorded hash field removal that is never applied leaves the field resident after \
               its page was tombstoned"]
-pub(super) struct RecordedHashFieldRemoval {
+struct RecordedHashFieldRemoval {
     object_key: String,
     field: String,
 }
@@ -134,7 +183,9 @@ pub(super) struct RecordedHashFieldRemoval {
 /// PROOF THAT THE DELETION OF A WHOLE OBJECT IS ALREADY RECORDED IN THE BUCKET INDEX.
 #[must_use = "a recorded object deletion that is never applied leaves the hash resident after the \
               index says it is gone"]
-pub(super) struct RecordedHashObjectRemoval {
+struct RecordedHashObjectRemoval {
+    #[allow(dead_code)]
+    filed: super::storage_bucket_internals::ObjectDeletionFiled,
     object_key: String,
 }
 
@@ -142,20 +193,24 @@ pub(super) struct RecordedHashObjectRemoval {
 // THE RECORD EMITTERS. Each one emits, then mints the proof. There is no other constructor.
 // ---------------------------------------------------------------------------------------------
 
-/// File a hash element's block in the bucket index -- which stages its WAL outcome -- and return
-/// the proof needed to put it in the resident map.
+/// Record a hash element's block and put it in the resident map, in that order, in one call.
 ///
 /// This is the one and only wrapping of `upsert_bucket_index_block` at kind `hash`, so the kind
 /// string is spelled once for every hash writer in the engine rather than once per arm.
-pub(super) fn record_hash_element(
+///
+/// Returns the address it displaced, if any.
+pub(super) fn install_hash_element(
     shard: &mut ShardState,
     shard_id: ShardId,
     object_key: &str,
     field: String,
     address: BlockAddress,
     dirty: bool,
-) -> RecordedHashElement {
-    super::storage_bucket_internals::upsert_bucket_index_block(
+) -> Option<BlockAddress> {
+    // THE RECORD FIRST. The proof below cannot exist until this has returned, and `install` cannot
+    // be called without the proof -- so a panic between the two leaves a record with no mutation,
+    // which replays as an idempotent install. The unsafe order is unrepresentable.
+    let filed = super::storage_bucket_internals::upsert_bucket_index_block_filed(
         shard,
         shard_id,
         HASH_KIND,
@@ -164,11 +219,16 @@ pub(super) fn record_hash_element(
         address.clone(),
         dirty,
     );
-    RecordedHashElement {
+    // THEN THE MUTATION, through the proof. Two SEQUENTIAL borrows of the shard, which is the whole
+    // reason this is a free function rather than a method on the container. The proof cannot be
+    // built without `filed`, so deleting the call above is a compile error rather than a silent
+    // unrecorded write.
+    shard.hashes.install(RecordedHashElement {
+        filed,
         object_key: object_key.to_string(),
         field,
         address,
-    }
+    })
 }
 
 /// The same, for a context node -- whose record is DELIBERATELY not a bucket-index entry.
@@ -180,15 +240,16 @@ pub(super) fn record_hash_element(
 /// That difference is the reason this is a separate emitter rather than an argument to the one
 /// above -- the two produce different records, and a boolean would have let an arm pick the wrong
 /// one silently.
-pub(super) fn record_context_node_element(
+pub(super) fn install_context_node_element(
+    shard: &mut ShardState,
     shard_id: ShardId,
     kind: &str,
     object_key: &str,
     field: &str,
     routing_bucket: u32,
     address: BlockAddress,
-) -> RecordedHashElement {
-    super::block_in_wal::stage_outcome(crate::wal::WalOutcomeItem {
+) -> Option<BlockAddress> {
+    let staged = super::block_in_wal::stage_outcome_attested(crate::wal::WalOutcomeItem {
         kind: kind.to_string(),
         object_key: object_key.to_string(),
         component: Some(field.to_string()),
@@ -200,22 +261,23 @@ pub(super) fn record_context_node_element(
         deleted: false,
         meta: false,
     });
-    RecordedHashElement {
+    shard.hashes.install(RecordedHashElement {
+        filed: staged.into_block_filed(),
         object_key: object_key.to_string(),
         field: field.to_string(),
         address,
-    }
+    })
 }
 
-/// Tombstone the element's page and clear its bucket-index entry, then return the proof needed to
-/// drop it from the resident map.
+/// Tombstone the element's page, clear its bucket-index entry, and drop it from the resident map,
+/// in that order, in one call.
 ///
-/// The returned flag is what the removal itself reported -- whether anything was there to remove --
-/// and is handed back rather than folded into the proof because the caller's `mutated` accounting
-/// needs it and the proof must be usable either way: a removal that found nothing still has to
-/// reach the resident map, because the resident map is exactly where a stale copy would survive.
+/// Returns whether anything changed -- the removal's own answer OR the resident drop's. Both are
+/// folded here rather than handed back separately because every caller OR-ed them into one
+/// `mutated` flag, and a removal that found no page still has to reach the resident map: the
+/// resident map is exactly where a stale copy would survive.
 #[allow(clippy::too_many_arguments)]
-pub(super) fn record_hash_field_removal(
+pub(super) fn remove_hash_field(
     cache: &matrixcache::MultiLayerCache,
     block_store: &crate::block_store::BlockStore,
     shard: &mut ShardState,
@@ -225,7 +287,7 @@ pub(super) fn record_hash_field_removal(
     start_routing_bucket: u32,
     end_routing_bucket: u32,
     async_storage: bool,
-) -> (bool, RecordedHashFieldRemoval) {
+) -> bool {
     let removed = super::execute_on_shard::remove_container_element(
         cache,
         block_store,
@@ -238,33 +300,36 @@ pub(super) fn record_hash_field_removal(
         end_routing_bucket,
         async_storage,
     );
-    (
-        removed,
-        RecordedHashFieldRemoval {
-            object_key: object_key.to_string(),
-            field: field.to_string(),
-        },
-    )
+    let dropped = shard.hashes.remove_field(RecordedHashFieldRemoval {
+        object_key: object_key.to_string(),
+        field: field.to_string(),
+    });
+    removed || dropped
 }
 
-/// Mark the whole object deleted in the bucket index and return the proof needed to drop its hash.
+/// Mark the whole object deleted in the bucket index and drop its resident hash, in that order.
 ///
 /// This is the ONE call of `mark_bucket_index_object_deleted` on the record-deletion path. The
-/// record it files is about the OBJECT, not about the hash map in particular -- the same deletion
-/// covers every model map the key appears in -- and the hash proof is minted from it because the
-/// hash map is the one whose drop is now gated. The flag it returns is the one that call returned
-/// before, so the caller's accounting is unchanged.
-pub(super) fn record_hash_object_removal(
-    shard: &mut ShardState,
-    object_key: &str,
-) -> (bool, RecordedHashObjectRemoval) {
-    let marked = super::mark_bucket_index_object_deleted(shard, object_key);
-    (
-        marked,
-        RecordedHashObjectRemoval {
-            object_key: object_key.to_string(),
-        },
-    )
+/// record it files is about the OBJECT, not the hash map in particular -- the same deletion covers
+/// every model map the key appears in -- and the hash drop is gated on it because the hash map is
+/// the one behind this container.
+///
+/// THE ORDER IS LOAD-BEARING AND IS WHY THESE TWO BELONG IN ONE CALL.
+/// `mark_bucket_index_object_deleted` settles a released bucket by reading the block's address
+/// **out of the model map, while the map still holds it**. Dropping the hash first would take the
+/// address it reads. Inlining the pair here puts that ordering in one place instead of leaving it
+/// as a rule two statements at a call site have to keep.
+///
+/// Returns whether anything changed -- the mark's answer OR the drop's, which is how the one
+/// caller already accumulated them.
+pub(super) fn delete_hash_object(shard: &mut ShardState, object_key: &str) -> bool {
+    let (marked, filed) =
+        super::storage_bucket_internals::mark_bucket_index_object_deleted_filed(shard, object_key);
+    let dropped = shard.hashes.remove_object(RecordedHashObjectRemoval {
+        filed,
+        object_key: object_key.to_string(),
+    });
+    marked || dropped
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -317,8 +382,14 @@ impl<'a> IntoIterator for &'a RecordedHashContainer {
 
 impl RecordedHashContainer {
     /// Put a recorded element in the map. Returns the address it displaced, if any.
-    pub(super) fn install(&mut self, recorded: RecordedHashElement) -> Option<BlockAddress> {
+    ///
+    /// PRIVATE TO THIS MODULE, which is the second half of the invariant. The first half is that
+    /// `entries` is private, so nothing outside can mutate the map directly. This is why nothing
+    /// outside can mutate it through a proof it minted either: the only callers are the operations
+    /// above, each of which has already emitted the record.
+    fn install(&mut self, recorded: RecordedHashElement) -> Option<BlockAddress> {
         let RecordedHashElement {
+            filed: _,
             object_key,
             field,
             address,
@@ -335,7 +406,7 @@ impl RecordedHashContainer {
     /// asks this map `contains_key`, so a key left holding an empty field map still reports as
     /// existing -- a phantom hash that answers EXISTS and TYPE for an object with no fields. The
     /// cleanup lives here rather than at the arm precisely so that no future arm can forget it.
-    pub(super) fn remove_field(&mut self, recorded: RecordedHashFieldRemoval) -> bool {
+    fn remove_field(&mut self, recorded: RecordedHashFieldRemoval) -> bool {
         let RecordedHashFieldRemoval { object_key, field } = recorded;
         let Some(fields) = self.entries.get_mut(&object_key) else {
             return false;
@@ -347,8 +418,8 @@ impl RecordedHashContainer {
         removed
     }
 
-    /// Drop a recorded object's whole hash. Returns whether one was resident.
-    pub(super) fn remove_object(&mut self, recorded: RecordedHashObjectRemoval) -> bool {
+    /// Drop a recorded object's whole hash. Returns whether one was resident. Private, as above.
+    fn remove_object(&mut self, recorded: RecordedHashObjectRemoval) -> bool {
         self.entries.remove(&recorded.object_key).is_some()
     }
 }

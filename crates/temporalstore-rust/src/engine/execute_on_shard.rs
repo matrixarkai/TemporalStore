@@ -166,7 +166,8 @@ fn write_context_node(
         // Its own kind, deliberately: this writes a hash block and -- unlike HashSet --
         // never registers it in the bucket index, so recording it as a "hash" would have
         // a rebuild add an entry the write never made.
-        let recorded = super::recorded_hash_container::record_context_node_element(
+        super::recorded_hash_container::install_context_node_element(
+            shard,
             shard_id,
             "context_node",
             object_key,
@@ -174,7 +175,6 @@ fn write_context_node(
             routing_bucket,
             address,
         );
-        shard.hashes.install(recorded);
         wrote = true;
     }
     invalidate_context_record(cache, shard_id, object_key);
@@ -746,7 +746,7 @@ pub(crate) fn execute_on_shard(
                 async_storage,
                 block_ordinal,
             ) {
-                let recorded = super::recorded_hash_container::record_hash_element(
+                super::recorded_hash_container::install_hash_element(
                     shard,
                     shard_id,
                     &key,
@@ -754,7 +754,6 @@ pub(crate) fn execute_on_shard(
                     address,
                     true,
                 );
-                shard.hashes.install(recorded);
                 mutated = true;
             }
             invalidate_if_cached(cache, CacheKey::hash(shard_id, &key, &field));
@@ -823,7 +822,9 @@ pub(crate) fn execute_on_shard(
             remove_if_expired(shard, &key);
             let routing_bucket =
                 block_routing_bucket(&key, start_routing_bucket, end_routing_bucket);
-            let mut applied = Vec::with_capacity(entries.len());
+            // A COUNT, not a list of pending proofs. The install happens inline now, so nothing
+            // is carried past the loop except whether anything landed.
+            let mut applied = 0usize;
             for (field, value) in entries {
                 let object_id = stable_block_object_id(shard_id, "hash", &key);
                 // WHICH block of this object this element is. Computed BEFORE the append, because
@@ -854,7 +855,7 @@ pub(crate) fn execute_on_shard(
                     async_storage,
                     block_ordinal,
                 ) {
-                    let recorded = super::recorded_hash_container::record_hash_element(
+                    super::recorded_hash_container::install_hash_element(
                         shard,
                         shard_id,
                         &key,
@@ -863,13 +864,10 @@ pub(crate) fn execute_on_shard(
                         true,
                     );
                     invalidate_if_cached(cache, CacheKey::hash(shard_id, &key, &field));
-                    applied.push(recorded);
+                    applied += 1;
                 }
             }
-            if !applied.is_empty() {
-                for recorded in applied {
-                    shard.hashes.install(recorded);
-                }
+            if applied > 0 {
                 mutated = true;
             }
             CommandResponse::Empty
@@ -926,7 +924,7 @@ pub(crate) fn execute_on_shard(
                 async_storage,
                 block_ordinal,
             ) {
-                let recorded = super::recorded_hash_container::record_hash_element(
+                super::recorded_hash_container::install_hash_element(
                     shard,
                     shard_id,
                     &key,
@@ -934,7 +932,6 @@ pub(crate) fn execute_on_shard(
                     address,
                     true,
                 );
-                shard.hashes.install(recorded);
                 invalidate_if_cached(cache, CacheKey::hash(shard_id, &key, &field));
                 mutated = true;
             }
@@ -1002,7 +999,7 @@ pub(crate) fn execute_on_shard(
             // `shard.sets.contains_key(key)` on the line after the one it reads
             // `shard.hashes.contains_key(key)` on, so a set left holding an empty member map is
             // the same phantom by the same reader. `SetRemove` does the cleanup now too.
-            let (removed, recorded) = super::recorded_hash_container::record_hash_field_removal(
+            mutated |= super::recorded_hash_container::remove_hash_field(
                 cache,
                 block_store,
                 shard,
@@ -1013,8 +1010,6 @@ pub(crate) fn execute_on_shard(
                 end_routing_bucket,
                 async_storage,
             );
-            mutated |= removed;
-            mutated |= shard.hashes.remove_field(recorded);
             invalidate_if_cached(cache, CacheKey::hash(shard_id, &key, &field));
             CommandResponse::Empty
         }

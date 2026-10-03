@@ -4807,14 +4807,13 @@ fn delete_record(shard: &mut ShardState, key: &str) -> bool {
 
 fn delete_record_exact(shard: &mut ShardState, key: &str) -> bool {
     let mut removed = false;
-    // The one call of `mark_bucket_index_object_deleted` on this path, and now also the place the
-    // hash drop gets its proof: the deletion it files is what makes dropping the resident hash
-    // legitimate, and the container will not drop it without that value.
-    let (marked, hash_removal) = recorded_hash_container::record_hash_object_removal(shard, key);
-    removed |= marked;
+    // The one call of `mark_bucket_index_object_deleted` on this path, paired in one call with the
+    // resident hash drop it authorises. The pairing is not tidiness: the mark settles a released
+    // bucket by reading the block's address out of the model map while the map still holds it, so
+    // the mark has to precede the drop, and `delete_hash_object` is where that ordering lives now.
+    removed |= recorded_hash_container::delete_hash_object(shard, key);
     removed |= clear_expiry(shard, key);
     removed |= shard.strings.remove(key).is_some();
-    removed |= shard.hashes.remove_object(hash_removal);
     removed |= shard.sets.remove(key).is_some();
     removed |= shard.lists.remove(key).is_some();
     removed |= shard.zsets.remove(key).is_some();
