@@ -48,11 +48,28 @@
 //!
 //! Because that breaks the same contract in the other direction, and this tree has the incident.
 //! #1989 is the recorded case: a member was served but undeletable because the listing answered
-//! from the page index while `shard.sets` had a single reader. The model maps are not the primary
-//! read path for containers -- `hashes` is `skip_serializing` and is rebuilt FROM the bucket index
-//! on load, and through the delta-fold route a container element arrives as a page entry with no
-//! durable map entry beside it. So the page index is the right source for a hash, and the fix for
-//! two paths that agree by coincidence is to ASSERT the agreement, not to move one of them.
+//! from the page index while `shard.sets` had a single reader.
+//!
+//! ONE HALF OF THE ARGUMENT THIS PARAGRAPH USED TO MAKE HAS EXPIRED. It said `hashes` is
+//! `skip_serializing` and is rebuilt FROM the bucket index on load. `hashes` carries
+//! `#[serde(default)]` now and IS durable, so "it is not persisted" is no longer a reason for
+//! anything. The conclusion below does not rest on it.
+//!
+//! THE HALF THAT HOLDS IS THE DELTA-FOLD ROUTE, and it is worth stating exactly, because it is
+//! the mechanism and not the slogan. `fold_index_log_deltas` applies a record's page items
+//! through `fold_delta_block_items` for EVERY record, but it adds container elements only from
+//! the `key_states` blobs that carry one of `CARRIED_CONTAINER_FIELDS` -- and the fold's own
+//! comment says a fold of records that predate the carry holds nothing. So a pre-carry delta
+//! record leaves the page index an entry and the container nothing.
+//!
+//! AND WHAT RESCUES THAT IS ITSELF A READ OF THE PAGE INDEX, which is the part that decides
+//! whether a reader may move. `fill_absent_elements` completes the durable map from the derived
+//! view, and `an_element_the_durable_map_does_not_hold_still_comes_back_from_its_name` in
+//! `durable_outranks_derived` pins exactly that: an element the durable map lacks still comes
+//! back from its name. So moving a count onto the container would not stop the bucket index
+//! being the thing that makes the container complete -- it would move that dependency from read
+//! time to load time. The page index is the right source for a hash today, and the fix for two
+//! paths that agree by coincidence is to ASSERT the agreement, not to move one of them.
 //!
 //! # THE FIXTURE IS BUILT SO THE TWO COULD DIVERGE IF THE FILING CHANGED
 //!

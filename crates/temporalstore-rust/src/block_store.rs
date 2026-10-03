@@ -374,9 +374,15 @@ pub struct BlockAddress {
 
 /// The width this structure is budgeted at, so a field added to it is a BUILD failure.
 ///
-/// 24 bytes: one 64-bit address word, one 64-bit identity, one 32-bit length, a 16-bit block id
-/// and the presence byte -- 23 bytes of field and one of alignment. Nothing stopped this growing
-/// before it was written down; it had already moved twice.
+/// 16 bytes: one 64-bit address word, one 32-bit length, a 16-bit block id and the presence
+/// byte -- 15 bytes of field and one of alignment. Nothing stopped this growing before it was
+/// written down; it had already moved twice, and this sentence then said 24 for a while after
+/// the structure was 16.
+///
+/// THE ASSERT BELOW IS THE AUTHORITY, NOT THIS SENTENCE. The 64-bit identity named above is
+/// GONE -- its removal is what the rest of this entry is the record of -- and prose stating a
+/// width cannot be trusted to move with the structure. That is why the reconstruction beside
+/// the assert adds the groups up rather than restating a total.
 ///
 /// IT WAS 48, THEN 40, THEN 32, AND EVERY STEP SHED A WHOLE EIGHT BYTES OF PAYLOAD. At 48 the
 /// payload was 45 bytes, at 40 it was 37 and at 32 it was 29, and in each case every field shared
@@ -403,8 +409,9 @@ pub struct BlockAddress {
 /// exactly zero" is worth the WHOLE STEP once the bucket is gone; what was wrong was not the
 /// arithmetic but treating a per-field verdict as a verdict on the field.
 ///
-/// THE FLOOR IS 24 WHILE `object_id` IS HELD, and the payload arithmetic says the field has to
-/// LEAVE rather than narrow. Reaching 16 needs a tail of 8 over an eight-aligned group of 8, and
+/// THE FLOOR WAS 24 WHILE `object_id` WAS HELD, and the payload arithmetic said the field had to
+/// LEAVE rather than narrow. It has left, so the floor below is 16 and the paragraphs that
+/// follow are the record of why narrowing was never going to do it. Reaching 16 needs a tail of 8 over an eight-aligned group of 8, and
 /// the tail is `object_id` plus the length (4), the block id (2) and the presence byte (1). So
 /// `object_id` at four bytes leaves a tail of 11 and the struct at 24, at two bytes a tail of 9 and
 /// the struct at 24, and only at ONE byte or GONE does the tail fit. That is this file's own rule
