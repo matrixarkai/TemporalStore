@@ -94,6 +94,7 @@ mod block_in_wal;
 mod state;
 mod hash_field_map;
 mod recorded_hash_container;
+mod recorded_set_container;
 // `pub(crate)`: a replication payload names the range it carries, and those payloads live
 // outside this module.
 pub(crate) mod routing_range_stamp;
@@ -3902,8 +3903,7 @@ fn fold_carried_container_elements(shard: &mut ShardState, carried: &[serde_json
             continue;
         };
         let before = skipped;
-        merge_container_elements(
-            &mut shard.sets,
+        shard.sets.fold_carried_elements(
             key,
             blob.get(CARRIED_CONTAINER_FIELDS[0]),
             &live,
@@ -4807,14 +4807,25 @@ fn delete_record(shard: &mut ShardState, key: &str) -> bool {
 
 fn delete_record_exact(shard: &mut ShardState, key: &str) -> bool {
     let mut removed = false;
-    // The one call of `mark_bucket_index_object_deleted` on this path, paired in one call with the
-    // resident hash drop it authorises. The pairing is not tidiness: the mark settles a released
-    // bucket by reading the block's address out of the model map while the map still holds it, so
-    // the mark has to precede the drop, and `delete_hash_object` is where that ordering lives now.
-    removed |= recorded_hash_container::delete_hash_object(shard, key);
+    // ONE MARK AUTHORISES EVERY RECORDED CONTAINER'S DROP, and that is why the witness is minted
+    // here and handed out rather than minted inside each container's own operation.
+    //
+    // `mark_bucket_index_object_deleted` files the deletion of the OBJECT -- one record covering
+    // every model map the key appears in -- and it settles a released bucket by reading the block's
+    // address out of the model map WHILE THE MAP STILL HOLDS IT. So the mark has to run once, and
+    // before any drop. Minting inside each container would mark once per kind, which is a second
+    // record of one deletion; dropping before the mark would take the address it reads.
+    //
+    // This is the one call site in the engine where a token is threaded, and it is threaded because
+    // one record genuinely authorises several mutations. Everywhere else a recorded container's
+    // operation mints its own and the caller never sees it.
+    let (marked, deletion) =
+        storage_bucket_internals::mark_bucket_index_object_deleted_filed(shard, key);
+    removed |= marked;
+    removed |= recorded_hash_container::drop_hash_object(shard, key, deletion.clone());
+    removed |= recorded_set_container::drop_set_object(shard, key, deletion);
     removed |= clear_expiry(shard, key);
     removed |= shard.strings.remove(key).is_some();
-    removed |= shard.sets.remove(key).is_some();
     removed |= shard.lists.remove(key).is_some();
     removed |= shard.zsets.remove(key).is_some();
     removed |= shard.buckets.remove(key).is_some();

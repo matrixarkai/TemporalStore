@@ -1625,16 +1625,16 @@ fn expiry_scan_budget(limit: usize) -> usize {
                 &mut rewrite_stats,
             )?;
         }
-        for (key, members) in shard.sets.iter_mut() {
+        for (key, mut addresses) in shard.sets.member_addresses_mut() {
             let routing_bucket = bucket_of(key);
             compact_container_pages_batched(
                 &self.block_store,
                 &self.cache,
                 shard_id,
                 "set",
-                key.as_str(),
+                key,
                 routing_bucket,
-                members.iter_mut().map(|(member, address)| ContainerElementRef {
+                addresses.iter_mut().map(|(member, address)| ContainerElementRef {
                     // A set member's component is `hex::encode(member)`, so the member IS the key.
                     key: member.clone(),
                     address,

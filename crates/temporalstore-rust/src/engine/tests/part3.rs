@@ -2242,7 +2242,7 @@ fn bucket_index_is_authoritative_when_secondary_views_are_missing() {
         assert!(!shard.bucket_index.bucket_map.is_empty());
         shard.strings.clear();
         shard.hashes.clear_for_test();
-        shard.sets.clear();
+        shard.sets.clear_for_test();
     }
 
     let exists = engine.execute(ExecuteRequest {

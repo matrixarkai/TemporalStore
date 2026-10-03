@@ -111,6 +111,8 @@ mod sibling_handles;
 mod log_resident_is_derived;
 mod fold_hash_map_completeness;
 mod recorded_hash_container_invariant;
+mod recorded_set_container_invariant;
+mod set_install_census;
 mod model_number_agreement;
 mod dump_scale;
 mod dump_release_scale;

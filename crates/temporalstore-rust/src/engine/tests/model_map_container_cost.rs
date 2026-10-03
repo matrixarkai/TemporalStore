@@ -122,11 +122,35 @@ fn no_nested_model_map_is_a_hashed_table_and_hashes_carries_the_named_container(
         .filter(|line| line.contains("pub(super)") && line.contains("HashMap<String, HashMap<"))
         .map(|line| line.trim())
         .collect();
+    // THE ORDERED MAPS, WHEREVER THEY NOW LIVE -- which after the container work is two places.
+    //
+    // This counted `state.rs` alone and the floor below was seventeen. `sets` has since moved its
+    // declaration INTO `RecordedSetContainer`, so a `state.rs`-only scan reported sixteen and the
+    // floor fired. That is the floor doing its job: it exists so the hashed count above cannot
+    // reach zero by declarations VANISHING. The right answer is therefore to follow the
+    // declaration, not to lower the number -- lowering it would have retired the only thing
+    // stopping this guard from agreeing vacuously as each kind gets a container.
+    let container_declarations: String = [
+        include_str!("../recorded_set_container.rs"),
+        include_str!("../recorded_hash_container.rs"),
+    ]
+    .concat();
     let ordered_inner: Vec<&str> = STATE_DECLARATIONS
         .lines()
-        .filter(|line| line.contains("pub(super)") && line.contains("HashMap<String, BTreeMap<"))
+        .chain(container_declarations.lines())
+        .filter(|line| {
+            (line.contains("pub(super)") || line.trim().starts_with("entries:"))
+                && (line.contains("HashMap<String, BTreeMap<")
+                    || line.contains("HashMap<String, SetMemberMap>"))
+        })
         .map(|line| line.trim())
         .collect();
+    // AND THE CONTAINER SIDE MUST ACTUALLY CONTRIBUTE, or this is a `state.rs` scan wearing a
+    // wider name and the floor would start drifting down again silently.
+    assert!(
+        container_declarations.contains("entries: HashMap<String, SetMemberMap>"),
+        "the set container's inner declaration is not findable, so the ordered count below is          really a `state.rs`-only count and its floor no longer means what it says"
+    );
 
     println!("--- nested HASHED model maps ({}) ---", nested_hashed.len());
     for line in &nested_hashed {

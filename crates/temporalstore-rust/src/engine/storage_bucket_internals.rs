@@ -3473,7 +3473,11 @@ impl BlockFiled {
 }
 
 /// PROOF THAT AN OBJECT HAS BEEN MARKED DELETED in the bucket index. Same rule as above.
+/// CLONE, DELIBERATELY, because ONE object deletion authorises a drop in EVERY recorded container.
+/// `delete_record_exact` marks once and hands a clone to each kind; minting per kind would file a
+/// second record of one deletion. Cloning attests the same single mark, not a second one.
 #[must_use = "a recorded object deletion whose witness is dropped is a record with no mutation"]
+#[derive(Clone)]
 pub(super) struct ObjectDeletionFiled(());
 
 /// [`upsert_bucket_index_block`], returning the witness a recorded container needs.
@@ -5228,10 +5232,8 @@ pub(super) fn reconcile_secondary_views_from_bucket_index(
         );
     }
     {
-        let persisted = std::mem::take(&mut shard.sets);
-        shard.sets = fill_absent_elements(
+        shard.sets.reconcile_from_durable(
             sets,
-            persisted,
             &live_pages_by_address,
             &mut resurrections_refused,
         );
@@ -6810,7 +6812,7 @@ mod model_kind_registry_guards {
             .insert("l".to_string(), BTreeMap::from([(0i64, at.clone())]));
         shard
             .sets
-            .insert("t".to_string(), BTreeMap::from([(vec![2u8], at.clone())]));
+            .insert_members_for_test("t", BTreeMap::from([(vec![2u8], at.clone())]));
         shard
             .features
             .insert("f".to_string(), BTreeMap::from([(1u64, at.clone())]));

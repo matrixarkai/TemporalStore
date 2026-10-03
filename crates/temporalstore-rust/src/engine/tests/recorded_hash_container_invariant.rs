@@ -26,8 +26,9 @@
 use super::*;
 
 use crate::engine::recorded_hash_container::{
-    delete_hash_object, install_context_node_element, install_hash_element,
+    drop_hash_object, install_context_node_element, install_hash_element,
 };
+use crate::engine::storage_bucket_internals::mark_bucket_index_object_deleted_filed;
 
 /// The module whose surface is the invariant.
 const SOURCE: &str = include_str!("../recorded_hash_container.rs");
@@ -219,7 +220,8 @@ fn the_hash_container_exposes_no_way_to_mutate_the_map_without_a_record() {
         "install_hash_element",
         "install_context_node_element",
         "remove_hash_field",
-        "delete_hash_object",
+        // TAKES the deletion witness rather than minting it -- see the record-count test.
+        "drop_hash_object",
         // Reads, all borrows.
         "get",
         "contains_key",
@@ -523,7 +525,13 @@ fn each_recorded_hash_mutator_emits_exactly_one_record() {
         .map(|bucket| bucket.deleted_object_index.object_count())
         .sum();
     let staged_before = staged();
-    let changed = delete_hash_object(&mut shard, "recorded-key");
+    // THE MARK AND THE DROP ARE TWO CALLS NOW, and the split is visible here on purpose: ONE
+    // object deletion authorises a drop in EVERY recorded container, so the witness is minted once
+    // by `delete_record_exact` and handed to each kind. Minting inside each container's own
+    // operation would file a second record of one deletion once a second kind had a container --
+    // which is exactly what adding the set container would have done.
+    let (marked, deletion) = mark_bucket_index_object_deleted_filed(&mut shard, "recorded-key");
+    let changed = marked | drop_hash_object(&mut shard, "recorded-key", deletion);
     let deleted_after: usize = shard
         .bucket_index
         .bucket_map

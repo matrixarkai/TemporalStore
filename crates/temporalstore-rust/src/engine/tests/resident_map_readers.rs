@@ -651,10 +651,10 @@ fn the_resident_map_readers_asked_in_the_over_complete_state() {
     // The load path's input: the durable map as an index snapshot predating the removals.
     shard
         .sets
-        .insert(ghost.key.clone(), ghost.persisted_before_removal.clone());
+        .insert_members_for_test(&ghost.key, ghost.persisted_before_removal.clone());
     shard
         .sets
-        .insert(control.key.clone(), control.persisted_before_removal.clone());
+        .insert_members_for_test(&control.key, control.persisted_before_removal.clone());
 
     let live_pages: usize = shard
         .bucket_index
@@ -1044,7 +1044,7 @@ fn both_inputs_to_the_merge_now_answer_the_same_live_page_question() {
     // The stale-snapshot entries: one subject per merged kind, beside each kind's real element.
     shard
         .sets
-        .get_mut("s")
+        .members_mut_for_test("s")
         .expect("set key")
         .insert(b"set-subject".to_vec(), dead_address.clone());
     shard
@@ -1370,7 +1370,7 @@ fn the_merge_runs_even_when_no_set_page_survived() {
 
         let mut shards = engine.shards.write().expect("engine lock poisoned");
         let shard = shards.get_mut(&1).expect("shard 1 is loaded");
-        shard.sets.insert("s".to_string(), persisted);
+        shard.sets.insert_members_for_test("s", persisted);
         assert!(
             !shard.bucket_index.bucket_map.is_empty(),
             "{label}: the bucket index is empty, so the reconcile returns before any arm and this \

@@ -1050,20 +1050,15 @@ pub(crate) fn execute_on_shard(
                 async_storage,
                 block_ordinal,
             ) {
-                upsert_bucket_index_block(
+                super::recorded_set_container::install_set_member(
                     shard,
                     shard_id,
-                    "set",
                     &key,
-                    Some(member_component.clone()),
-                    address.clone(),
+                    member_component.clone(),
+                    member.clone(),
+                    address,
                     true,
                 );
-                shard
-                    .sets
-                    .entry(key.clone())
-                    .or_default()
-                    .insert(member.clone(), address);
                 mutated = true;
             }
             let _ = cache.invalidate(&CacheKey::set_members(shard_id, &key));
@@ -1822,21 +1817,6 @@ pub(crate) fn execute_on_shard(
         Command::SetRemove { key, member } => {
             mutated |= drop_if_expired(cache, shard_id, shard, &key);
             let member_component = hex::encode(&member);
-            mutated |= remove_container_element(
-                cache,
-                block_store,
-                shard,
-                shard_id,
-                "set",
-                &key,
-                &member_component,
-                start_routing_bucket,
-                end_routing_bucket,
-                async_storage,
-            );
-            if let Some(set) = shard.sets.get_mut(&key) {
-                mutated |= set.remove(&member).is_some();
-            }
             // REMOVING THE LAST MEMBER REMOVES THE KEY, as it does for the other three container
             // kinds. `record_exists_exact` ORs `shard.sets.contains_key(key)` in beside its
             // bucket-index answer, so an empty member map left under a live key is a key that
@@ -1844,12 +1824,23 @@ pub(crate) fn execute_on_shard(
             // gates on the same function, so it accepted a deadline for it and `ttl_ms` then
             // reported that deadline instead of the -2 of a missing key.
             //
-            // `HashDelete` has done this since it was written, `ZSetRemove` and `ListPop` do it in
-            // exactly this shape, and the note at `HashDelete` said in a parenthesis that sets did
-            // not need it. They do, for the reader in the very next line of the same expression.
-            if shard.sets.get(&key).is_some_and(BTreeMap::is_empty) {
-                shard.sets.remove(&key);
-            }
+            // THAT CLEANUP NOW LIVES INSIDE `RecordedSetContainer::remove_member`, so no arm can
+            // forget it. `HashDelete` has done it since it was written and `ZSetRemove` and
+            // `ListPop` do it in this shape; the note at `HashDelete` said in a parenthesis that
+            // sets did not need it, and they do, for the reader in the very next line of the same
+            // expression.
+            mutated |= super::recorded_set_container::remove_set_member(
+                cache,
+                block_store,
+                shard,
+                shard_id,
+                &key,
+                &member_component,
+                &member,
+                start_routing_bucket,
+                end_routing_bucket,
+                async_storage,
+            );
             let _ = cache.invalidate(&CacheKey::set_members(shard_id, &key));
             CommandResponse::Empty
         }

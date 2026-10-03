@@ -1468,7 +1468,8 @@ fn live_block_slab_ids_scan_all_index_backed_data_models() {
         "field",
         BlockAddress::from_parts(8, 0, 1, None, None),
     );
-    shard.sets.entry("set".to_string()).or_default().insert(
+    shard.sets.insert_member_for_test(
+        "set",
         b"member".to_vec(),
         BlockAddress::from_parts(9, 0, 1, None, None),
     );

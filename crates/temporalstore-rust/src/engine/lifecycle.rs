@@ -1480,9 +1480,7 @@ impl TemporalEngine {
                         let Ok(member) = hex::decode(encoded) else {
                             return false;
                         };
-                        if let Some(members) = shard.sets.get_mut(&item.object_key) {
-                            members.remove(&member);
-                        }
+                        shard.sets.replay_remove_member(&item.object_key, &member);
                     }
                     ("list", Some(encoded)) => {
                         let Ok(biased) = u64::from_str_radix(encoded, 16) else {
@@ -1631,20 +1629,19 @@ impl TemporalEngine {
                 let Ok(member) = hex::decode(&component) else {
                     return false;
                 };
-                super::upsert_bucket_index_block(
+                // RECORDED, NOT AN EXCEPTION. This arm re-files the block in the bucket index
+                // before installing, so it goes through the ordinary recorded path. Hash's
+                // `context_node` arm needed an exception because it installs and files nothing;
+                // this one does not, which is the per-kind difference worth noticing.
+                super::recorded_set_container::install_set_member(
                     shard,
                     shard_id,
-                    "set",
                     &item.object_key,
-                    Some(component),
-                    address.clone(),
+                    component,
+                    member,
+                    address,
                     true,
                 );
-                shard
-                    .sets
-                    .entry(item.object_key.clone())
-                    .or_default()
-                    .insert(member, address);
                 true
             }
             // list: sixteen hex digits of the sequence, biased so the text sorts in list order.

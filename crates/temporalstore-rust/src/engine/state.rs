@@ -178,8 +178,20 @@ pub(super) struct ShardState {
     // and that set is closed. See `engine::recorded_hash_container`.
     #[serde(default)]
     pub(super) hashes: super::recorded_hash_container::RecordedHashContainer,
-    #[serde(default, with = "super::set_index_serde")]
-    pub(super) sets: HashMap<String, BTreeMap<Vec<u8>, BlockAddress>>,
+    // THE WIRE IS UNCHANGED AND THE `with =` MOVED RATHER THAN WENT. `RecordedSetContainer` owns
+    // this map together with the durable record of its mutations -- the inner map is private, so the
+    // only way to change membership is to pass a value that could not exist unless the record was
+    // already emitted, and a writer that mutates without recording does not compile. Its
+    // `Serialize`/`Deserialize` impls CALL `set_index_serde`, the same functions this field named,
+    // so no snapshot, manifest or index-log encoding moves a byte and
+    // `SHARD_INDEX_FORMAT_VERSION` does not change for it.
+    //
+    // The four paths that legitimately mutate WITHOUT a record -- the reconcile, the delta fold,
+    // the replay removal and the compactor's address rewrite -- are named methods there, each with
+    // its reason, and that set is closed. FOUR and not hash's five: recovery's `set` arm re-files
+    // its block, so unlike hash's `context_node` arm it needs no replay-install exception.
+    #[serde(default)]
+    pub(super) sets: super::recorded_set_container::RecordedSetContainer,
     /// Windowed seen-sets backing idempotency keys: member -> when it was last seen, plus
     /// the same entries time-ordered so expiry pops from the front in bounded steps. Like the
     /// buckets, no blocks back this state -- it persists with the shard index snapshot, and a
@@ -4322,7 +4334,7 @@ const ENTRIES_IN_ONE_LEAF: usize = 11;
 /// `insert` one at a time splits each full leaf in half and never returns to the left half. The
 /// entries are MOVED through the intermediate vector, not cloned, so the only new allocation is
 /// that vector.
-fn repack_btree_map<K: Ord, V>(map: &mut BTreeMap<K, V>) {
+pub(super) fn repack_btree_map<K: Ord, V>(map: &mut BTreeMap<K, V>) {
     if map.len() <= ENTRIES_IN_ONE_LEAF {
         return;
     }
@@ -4428,7 +4440,7 @@ pub(super) fn repack_decoded_btrees(state: &mut ShardState) {
 
     repack_btree_map(wal_resident_blocks);
     repack_btree_map(expires_at_ms);
-    repack_nested(sets);
+    sets.repack_decoded();
     repack_nested(zsets);
     repack_nested(lists);
     repack_nested(features);

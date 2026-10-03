@@ -322,14 +322,15 @@ pub(super) fn remove_hash_field(
 ///
 /// Returns whether anything changed -- the mark's answer OR the drop's, which is how the one
 /// caller already accumulated them.
-pub(super) fn delete_hash_object(shard: &mut ShardState, object_key: &str) -> bool {
-    let (marked, filed) =
-        super::storage_bucket_internals::mark_bucket_index_object_deleted_filed(shard, object_key);
-    let dropped = shard.hashes.remove_object(RecordedHashObjectRemoval {
+pub(super) fn drop_hash_object(
+    shard: &mut ShardState,
+    object_key: &str,
+    filed: super::storage_bucket_internals::ObjectDeletionFiled,
+) -> bool {
+    shard.hashes.remove_object(RecordedHashObjectRemoval {
         filed,
         object_key: object_key.to_string(),
-    });
-    marked || dropped
+    })
 }
 
 // ---------------------------------------------------------------------------------------------
