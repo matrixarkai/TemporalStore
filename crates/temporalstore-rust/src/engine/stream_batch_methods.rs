@@ -1040,13 +1040,15 @@ impl TemporalEngine {
                             ),
                             bytes,
                         );
-                        super::recorded_hash_container::install_hash_element(
+                        super::recorded_map::install_element::<super::recorded_map::HashKind>(
                             shard,
                             shard_id,
                             &key,
+                            Some(field.clone()),
                             field,
-                            published,
+                            published.clone(),
                             false,
+                            published,
                         );
                         published_object_keys.insert(key.clone());
                     }

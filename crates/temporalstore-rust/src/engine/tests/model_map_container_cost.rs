@@ -130,25 +130,25 @@ fn no_nested_model_map_is_a_hashed_table_and_hashes_carries_the_named_container(
     // reach zero by declarations VANISHING. The right answer is therefore to follow the
     // declaration, not to lower the number -- lowering it would have retired the only thing
     // stopping this guard from agreeing vacuously as each kind gets a container.
-    let container_declarations: String = [
-        include_str!("../recorded_set_container.rs"),
-        include_str!("../recorded_hash_container.rs"),
-    ]
-    .concat();
+    // ONE MODULE NOW, because there is one type. This read two and concatenated them; the
+    // two containers collapsed into `recorded_map`, so the scan follows the declaration
+    // there rather than having its floor lowered -- which is the third time this guard has
+    // been moved rather than re-goldened.
+    let container_declarations: String = include_str!("../recorded_map.rs").to_string();
     let ordered_inner: Vec<&str> = STATE_DECLARATIONS
         .lines()
         .chain(container_declarations.lines())
         .filter(|line| {
             (line.contains("pub(super)") || line.trim().starts_with("entries:"))
                 && (line.contains("HashMap<String, BTreeMap<")
-                    || line.contains("HashMap<String, SetMemberMap>"))
+                    || line.contains("HashMap<String, K::Elements>"))
         })
         .map(|line| line.trim())
         .collect();
     // AND THE CONTAINER SIDE MUST ACTUALLY CONTRIBUTE, or this is a `state.rs` scan wearing a
     // wider name and the floor would start drifting down again silently.
     assert!(
-        container_declarations.contains("entries: HashMap<String, SetMemberMap>"),
+        container_declarations.contains("entries: HashMap<String, K::Elements>"),
         "the set container's inner declaration is not findable, so the ordered count below is          really a `state.rs`-only count and its floor no longer means what it says"
     );
 
@@ -193,12 +193,12 @@ fn no_nested_model_map_is_a_hashed_table_and_hashes_carries_the_named_container(
     // "contains anything" would have let the inner container change back to a hashed table without
     // a single test noticing, which is exactly what the 272-versus-64 measurement bought.
     assert!(
-        named[0].contains("RecordedHashContainer"),
+        named[0].contains("RecordedMap<super::recorded_map::HashKind>"),
         "`hashes` is no longer the recorded container, so the mutation-record invariant may be \
          gone as well as the pricing: {}",
         named[0]
     );
-    let container = include_str!("../recorded_hash_container.rs");
+    let container = include_str!("../recorded_map.rs");
     assert!(
         container.len() > 8_000,
         "the recorded container's source did not load, so the inner-container check below would \
@@ -213,17 +213,17 @@ fn no_nested_model_map_is_a_hashed_table_and_hashes_carries_the_named_container(
     let inner: Vec<&str> = container
         .lines()
         .map(|line| line.trim())
-        .filter(|line| *line == "entries: HashMap<String, HashFieldMap>,")
+        .filter(|line| *line == "type Elements = super::hash_field_map::HashFieldMap;")
         .collect();
     assert!(
-        container.contains("entries: HashMap<String, HashFieldMap>"),
+        container.contains("type Elements = super::hash_field_map::HashFieldMap;"),
         "the inner declaration is not findable in any form, so the exact match below would report \
          zero for the wrong reason"
     );
     assert_eq!(
         1,
         inner.len(),
-        "`RecordedHashContainer` no longer holds exactly one `HashMap<String, HashFieldMap>`, so \
+        "`HashKind` no longer names `HashFieldMap` as its level-two container, so \
          `hashes` no longer carries the named container this module priced: {inner:?}"
     );
     assert!(
@@ -284,13 +284,24 @@ fn the_context_node_write_path_produces_exactly_one_field_per_hash() {
     // function that can reach the model map under a context node's field, because the mutator it
     // calls is private to the container's module. So a second producer cannot appear without
     // appearing HERE.
+    // RESTATED A FOURTH TIME, and the count of restatements is itself the point: this matcher has
+    // tracked an inline `.insert(CONTEXT_NODE_FIELD.to_string(), address)`, then a record mint, then
+    // a one-call `install_context_node_element`, and now the ONE generic operation named with the
+    // kind it is for. Each time the FACT it pins -- exactly one producer of a context-node page --
+    // was unchanged, and each time the matcher reported zero until it was moved. Reporting zero
+    // loudly is the right failure mode; being relaxed to accept anything would not be.
+    //
+    // The count is also no longer the whole guarantee. `install_element_staged_only` is the only
+    // operation that files a context node's record, the mutator behind it is private to
+    // `recorded_map`, and the map's inner field is private -- so a second producer cannot appear
+    // without appearing HERE.
     let writers = execute
-        .matches("install_context_node_element(")
+        .matches("install_element_staged_only::<super::recorded_map::HashKind>(")
         .count();
     // VACUITY: the name must be findable at all, so a future rename cannot make `writers == 0` and
     // then have someone "fix" this test by lowering the expected count to zero.
     assert!(
-        execute.contains("install_context_node_element"),
+        execute.contains("install_element_staged_only"),
         "the context-node install is not findable by name in `execute_on_shard.rs`, so the count          below would be zero for the wrong reason"
     );
 
@@ -1706,7 +1717,7 @@ fn what_a_durable_hash_map_costs_the_compressed_checkpoint() {
     for i in 0..NARROW_HASHES {
         shard.hashes.insert_element_for_test(
             &format!("ctx:node:{i}"),
-            "meta",
+            "meta".to_string(),
             BlockAddress::from_parts(1, (i as u64) * 512, 384, None, None),
         );
     }
@@ -1721,7 +1732,7 @@ fn what_a_durable_hash_map_costs_the_compressed_checkpoint() {
         }
         shard
             .hashes
-            .insert_fields_for_test(&format!("wide:hash:{h}"), entry);
+            .insert_elements_for_test(&format!("wide:hash:{h}"), entry);
     }
 
     let keys = shard.hashes.len();

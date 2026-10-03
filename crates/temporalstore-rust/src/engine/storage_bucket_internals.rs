@@ -6121,7 +6121,7 @@ mod release_refusal_guards {
         let held = address(7, 64);
         shard
             .hashes
-            .insert_element_for_test(&key, "field", held.clone());
+            .insert_element_for_test(&key, "field".to_string(), held.clone());
         shard.bucket_index.bucket_map.insert(
             7,
             node(7, block(&key, "hash", Some("field"), held)),
@@ -6288,7 +6288,7 @@ mod release_refusal_guards {
         let held = address(4, 64);
         shard
             .hashes
-            .insert_element_for_test(&kind_key, "field", held.clone());
+            .insert_element_for_test(&kind_key, "field".to_string(), held.clone());
         shard
             .bucket_index
             .bucket_map
@@ -6803,7 +6803,7 @@ mod model_kind_registry_guards {
         shard.strings.insert("s".into(), at.clone());
         shard
             .hashes
-            .insert_fields_for_test("h", [("f".to_string(), at.clone())].into_iter().collect());
+            .insert_elements_for_test("h", [("f".to_string(), at.clone())].into_iter().collect());
         shard
             .zsets
             .insert("z".to_string(), BTreeMap::from([(vec![1u8], (9u64, at.clone()))]));
@@ -6812,7 +6812,7 @@ mod model_kind_registry_guards {
             .insert("l".to_string(), BTreeMap::from([(0i64, at.clone())]));
         shard
             .sets
-            .insert_members_for_test("t", BTreeMap::from([(vec![2u8], at.clone())]));
+            .insert_elements_for_test("t", BTreeMap::from([(vec![2u8], at.clone())]));
         shard
             .features
             .insert("f".to_string(), BTreeMap::from([(1u64, at.clone())]));

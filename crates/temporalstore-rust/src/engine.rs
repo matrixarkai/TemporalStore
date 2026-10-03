@@ -93,8 +93,7 @@ mod hot_page_spill;
 mod block_in_wal;
 mod state;
 mod hash_field_map;
-mod recorded_hash_container;
-mod recorded_set_container;
+mod recorded_map;
 // `pub(crate)`: a replication payload names the range it carries, and those payloads live
 // outside this module.
 pub(crate) mod routing_range_stamp;
@@ -4822,8 +4821,8 @@ fn delete_record_exact(shard: &mut ShardState, key: &str) -> bool {
     let (marked, deletion) =
         storage_bucket_internals::mark_bucket_index_object_deleted_filed(shard, key);
     removed |= marked;
-    removed |= recorded_hash_container::drop_hash_object(shard, key, deletion.clone());
-    removed |= recorded_set_container::drop_set_object(shard, key, deletion);
+    removed |= recorded_map::drop_object::<recorded_map::HashKind>(shard, key, deletion.clone());
+    removed |= recorded_map::drop_object::<recorded_map::SetKind>(shard, key, deletion);
     removed |= clear_expiry(shard, key);
     removed |= shard.strings.remove(key).is_some();
     removed |= shard.lists.remove(key).is_some();

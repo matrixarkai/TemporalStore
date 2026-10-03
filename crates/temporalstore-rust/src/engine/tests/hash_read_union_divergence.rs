@@ -200,7 +200,7 @@ fn the_hash_read_serves_both_sources_and_counts_what_only_the_index_names() {
         let shard = shards.get_mut(&1).expect("shard is loaded");
         let fields_of = shard
             .hashes
-            .fields_mut_for_test(PLANTED_KEY)
+            .elements_mut_for_test(PLANTED_KEY)
             .expect("the container holds the seeded object");
         let removed = fields_of.remove(PLANTED_FIELD);
         assert!(

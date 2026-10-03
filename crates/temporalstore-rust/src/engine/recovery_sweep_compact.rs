@@ -1564,7 +1564,7 @@ fn expiry_scan_budget(limit: usize) -> usize {
         // THE OBJECT KEY GOES IN ONCE PER ARM rather than once per item. `compact_block_addresses`
         // pairs a key with every address because its string arm walks a map of many objects; each of
         // these four arms is already standing on exactly one, so it says so once.
-        for (key, mut addresses) in shard.hashes.element_addresses_mut() {
+        for (key, mut addresses) in shard.hashes.element_values_mut() {
             let routing_bucket = bucket_of(key);
             compact_container_pages_batched(
                 &self.block_store,
@@ -1625,7 +1625,7 @@ fn expiry_scan_budget(limit: usize) -> usize {
                 &mut rewrite_stats,
             )?;
         }
-        for (key, mut addresses) in shard.sets.member_addresses_mut() {
+        for (key, mut addresses) in shard.sets.element_values_mut() {
             let routing_bucket = bucket_of(key);
             compact_container_pages_batched(
                 &self.block_store,

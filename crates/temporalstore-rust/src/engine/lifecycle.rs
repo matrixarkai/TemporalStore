@@ -567,13 +567,15 @@ impl TemporalEngine {
         ) else {
             return false;
         };
-        super::recorded_hash_container::install_hash_element(
+        super::recorded_map::install_element::<super::recorded_map::HashKind>(
             shard,
             shard_id,
             object_key,
+            Some(field.to_string()),
             field.to_string(),
-            address,
+            address.clone(),
             true,
+            address,
         );
         true
     }
@@ -1474,13 +1476,18 @@ impl TemporalEngine {
                         shard.strings.remove(item.object_key.as_str());
                     }
                     ("hash", Some(field)) => {
-                        shard.hashes.replay_remove_field(&item.object_key, field);
+                        // `&field.to_string()` because this kind's element IS a `String` and the replayed item
+                        // carries a `&str`. One allocation on a replay removal, which is the honest
+                        // cost of the element type being the key rather than a borrow of it.
+                        shard
+                            .hashes
+                            .replay_remove_element(&item.object_key, &field.to_string());
                     }
                     ("set", Some(encoded)) => {
                         let Ok(member) = hex::decode(encoded) else {
                             return false;
                         };
-                        shard.sets.replay_remove_member(&item.object_key, &member);
+                        shard.sets.replay_remove_element(&item.object_key, &member);
                     }
                     ("list", Some(encoded)) => {
                         let Ok(biased) = u64::from_str_radix(encoded, 16) else {
@@ -1609,13 +1616,15 @@ impl TemporalEngine {
                 else {
                     return false;
                 };
-                super::recorded_hash_container::install_hash_element(
+                super::recorded_map::install_element::<super::recorded_map::HashKind>(
                     shard,
                     shard_id,
                     &item.object_key,
+                    Some(field.clone()),
                     field,
-                    address,
+                    address.clone(),
                     true,
+                    address,
                 );
                 true
             }
@@ -1633,14 +1642,15 @@ impl TemporalEngine {
                 // before installing, so it goes through the ordinary recorded path. Hash's
                 // `context_node` arm needed an exception because it installs and files nothing;
                 // this one does not, which is the per-kind difference worth noticing.
-                super::recorded_set_container::install_set_member(
+                super::recorded_map::install_element::<super::recorded_map::SetKind>(
                     shard,
                     shard_id,
                     &item.object_key,
-                    component,
+                    Some(component),
                     member,
-                    address,
+                    address.clone(),
                     true,
+                    address,
                 );
                 true
             }

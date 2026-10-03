@@ -1465,10 +1465,10 @@ fn live_block_slab_ids_scan_all_index_backed_data_models() {
     );
     shard.hashes.insert_element_for_test(
         "hash",
-        "field",
+        "field".to_string(),
         BlockAddress::from_parts(8, 0, 1, None, None),
     );
-    shard.sets.insert_member_for_test(
+    shard.sets.insert_element_for_test(
         "set",
         b"member".to_vec(),
         BlockAddress::from_parts(9, 0, 1, None, None),
@@ -3607,7 +3607,7 @@ fn binary_index_payload_round_trips_and_refuses_a_shape_it_cannot_read() {
     }
     shard.hashes.insert_element_for_test(
         "hash-object",
-        "component",
+        "component".to_string(),
         BlockAddress::from_parts(9, 1, 2, None, None),
     );
     shard.applied_wal_sequence = Some(4242);

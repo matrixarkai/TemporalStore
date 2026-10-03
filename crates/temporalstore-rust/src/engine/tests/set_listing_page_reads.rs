@@ -628,7 +628,7 @@ fn the_resident_set_map_and_the_live_page_index_are_not_the_same_population() {
     // path's reconcile over the live page index.
     let mut shards = engine.shards.write().expect("engine lock poisoned");
     let shard = shards.get_mut(&1).expect("shard is loaded");
-    shard.sets.insert_members_for_test(&key, persisted_before_removal);
+    shard.sets.insert_elements_for_test(&key, persisted_before_removal);
 
     let live_pages: usize = shard
         .bucket_index

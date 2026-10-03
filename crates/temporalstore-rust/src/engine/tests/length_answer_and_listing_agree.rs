@@ -788,7 +788,7 @@ fn the_two_sources_of_a_hash_length_part_on_the_pre_carry_route_and_a_reload_res
         let shard = shards.get_mut(&1).expect("shard is loaded");
         let fields = shard
             .hashes
-            .fields_mut_for_test(KEY)
+            .elements_mut_for_test(KEY)
             .expect("the fixture's hash is in the container");
         let removed = fields.remove("field-0");
         assert!(

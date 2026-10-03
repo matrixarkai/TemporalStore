@@ -137,7 +137,15 @@ fn every_command_that_installs_a_set_member_reports_a_touched_element() {
         // The stronger statement is why the restatement is not a relaxation: before, an arm could
         // install by any spelling that reached a `HashMap`, and this matcher had to guess them all.
         // Now there is exactly one, enforced by privacy, and the matcher names it.
-        if body.contains("recorded_set_container::install_set_member(") {
+        // RESTATED AGAIN, by the collapse of the two containers into one generic map. This asked
+        // for `recorded_set_container::install_set_member(`, which was itself a restatement of an
+        // earlier `.sets` plus `entry`/`insert`. The operation is now written ONCE for every kind
+        // and named with the kind it is for, so what identifies a set install is the turbofish.
+        //
+        // Each restatement has been STRONGER than the one before, which is why none of them is a
+        // relaxation: first any spelling that reached a `HashMap`, then one named per-kind function,
+        // and now one generic function whose kind parameter the compiler checks.
+        if body.contains("install_element::<super::recorded_map::SetKind>(") {
             installs.push(name.clone());
         }
     }
@@ -146,7 +154,7 @@ fn every_command_that_installs_a_set_member_reports_a_touched_element() {
     // VACUITY: the operation must be findable by name, so a rename cannot make `installs` empty
     // and have someone "fix" this test by expecting nothing.
     assert!(
-        execute.contains("recorded_set_container::install_set_member("),
+        execute.contains("install_element::<super::recorded_map::SetKind>("),
         "the recorded set install is not findable by name in `execute_on_shard.rs`, so the census          below would report zero installs for the wrong reason"
     );
     assert_eq!(
@@ -229,7 +237,7 @@ fn every_command_that_installs_a_set_member_reports_a_touched_element() {
     // shape, and after the conversion it cannot become it without this assertion failing -- because
     // the only other way to reach the map from a replay arm is a named exception in the container.
     assert!(
-        replay_body.contains("recorded_set_container::install_set_member("),
+        replay_body.contains("install_element::<super::recorded_map::SetKind>("),
         "the WAL replay arm for `set` no longer installs through the recorded operation. If it \
          reaches the model map some other way it is either using a named exception -- which for a \
          replay INSTALL would be a NEW one, and hash needed exactly such an exception for its \
@@ -239,7 +247,7 @@ fn every_command_that_installs_a_set_member_reports_a_touched_element() {
     // AND IT IS NOT USING AN EXCEPTION, which is the per-kind difference from hash worth pinning:
     // a replay-install exception exists for `hashes` and must not quietly appear for `sets`.
     assert!(
-        !replay_body.contains("replay_install"),
+        !replay_body.contains("replay_install_element"),
         "the `set` replay arm has acquired a replay-INSTALL exception. Hash needed one because its \
          `context_node` arm files no record; if sets now needs one, the reason has to be written \
          down in the container and this census updated to say so."

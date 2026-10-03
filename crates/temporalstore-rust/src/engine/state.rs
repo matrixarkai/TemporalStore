@@ -177,7 +177,7 @@ pub(super) struct ShardState {
     // arms and the compactor's address rewrite -- are named methods there, each with its reason,
     // and that set is closed. See `engine::recorded_hash_container`.
     #[serde(default)]
-    pub(super) hashes: super::recorded_hash_container::RecordedHashContainer,
+    pub(super) hashes: super::recorded_map::RecordedMap<super::recorded_map::HashKind>,
     // THE WIRE IS UNCHANGED AND THE `with =` MOVED RATHER THAN WENT. `RecordedSetContainer` owns
     // this map together with the durable record of its mutations -- the inner map is private, so the
     // only way to change membership is to pass a value that could not exist unless the record was
@@ -191,7 +191,7 @@ pub(super) struct ShardState {
     // its reason, and that set is closed. FOUR and not hash's five: recovery's `set` arm re-files
     // its block, so unlike hash's `context_node` arm it needs no replay-install exception.
     #[serde(default)]
-    pub(super) sets: super::recorded_set_container::RecordedSetContainer,
+    pub(super) sets: super::recorded_map::RecordedMap<super::recorded_map::SetKind>,
     /// Windowed seen-sets backing idempotency keys: member -> when it was last seen, plus
     /// the same entries time-ordered so expiry pops from the front in bounded steps. Like the
     /// buckets, no blocks back this state -- it persists with the shard index snapshot, and a

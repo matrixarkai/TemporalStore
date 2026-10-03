@@ -257,13 +257,15 @@ fn write_context_node(
         // Its own kind, deliberately: this writes a hash block and -- unlike HashSet --
         // never registers it in the bucket index, so recording it as a "hash" would have
         // a rebuild add an entry the write never made.
-        super::recorded_hash_container::install_context_node_element(
+        super::recorded_map::install_element_staged_only::<super::recorded_map::HashKind>(
             shard,
             shard_id,
             "context_node",
             object_key,
             CONTEXT_NODE_FIELD,
             routing_bucket,
+            CONTEXT_NODE_FIELD.to_string(),
+            address.clone(),
             address,
         );
         wrote = true;
@@ -837,13 +839,15 @@ pub(crate) fn execute_on_shard(
                 async_storage,
                 block_ordinal,
             ) {
-                super::recorded_hash_container::install_hash_element(
+                super::recorded_map::install_element::<super::recorded_map::HashKind>(
                     shard,
                     shard_id,
                     &key,
+                    Some(field.clone()),
                     field.clone(),
-                    address,
+                    address.clone(),
                     true,
+                    address,
                 );
                 mutated = true;
             }
@@ -946,13 +950,15 @@ pub(crate) fn execute_on_shard(
                     async_storage,
                     block_ordinal,
                 ) {
-                    super::recorded_hash_container::install_hash_element(
+                    super::recorded_map::install_element::<super::recorded_map::HashKind>(
                         shard,
                         shard_id,
                         &key,
+                        Some(field.clone()),
                         field.clone(),
-                        address,
+                        address.clone(),
                         true,
+                        address,
                     );
                     invalidate_if_cached(cache, CacheKey::hash(shard_id, &key, &field));
                     applied += 1;
@@ -1015,13 +1021,15 @@ pub(crate) fn execute_on_shard(
                 async_storage,
                 block_ordinal,
             ) {
-                super::recorded_hash_container::install_hash_element(
+                super::recorded_map::install_element::<super::recorded_map::HashKind>(
                     shard,
                     shard_id,
                     &key,
+                    Some(field.clone()),
                     field.clone(),
-                    address,
+                    address.clone(),
                     true,
+                    address,
                 );
                 invalidate_if_cached(cache, CacheKey::hash(shard_id, &key, &field));
                 mutated = true;
@@ -1176,13 +1184,14 @@ pub(crate) fn execute_on_shard(
             // `shard.sets.contains_key(key)` on the line after the one it reads
             // `shard.hashes.contains_key(key)` on, so a set left holding an empty member map is
             // the same phantom by the same reader. `SetRemove` does the cleanup now too.
-            mutated |= super::recorded_hash_container::remove_hash_field(
+            mutated |= super::recorded_map::remove_element::<super::recorded_map::HashKind>(
                 cache,
                 block_store,
                 shard,
                 shard_id,
                 &key,
                 field.as_str(),
+                field.clone(),
                 start_routing_bucket,
                 end_routing_bucket,
                 async_storage,
@@ -1227,14 +1236,15 @@ pub(crate) fn execute_on_shard(
                 async_storage,
                 block_ordinal,
             ) {
-                super::recorded_set_container::install_set_member(
+                super::recorded_map::install_element::<super::recorded_map::SetKind>(
                     shard,
                     shard_id,
                     &key,
-                    member_component.clone(),
+                    Some(member_component.clone()),
                     member.clone(),
-                    address,
+                    address.clone(),
                     true,
+                    address,
                 );
                 mutated = true;
             }
@@ -2006,14 +2016,14 @@ pub(crate) fn execute_on_shard(
             // `ListPop` do it in this shape; the note at `HashDelete` said in a parenthesis that
             // sets did not need it, and they do, for the reader in the very next line of the same
             // expression.
-            mutated |= super::recorded_set_container::remove_set_member(
+            mutated |= super::recorded_map::remove_element::<super::recorded_map::SetKind>(
                 cache,
                 block_store,
                 shard,
                 shard_id,
                 &key,
                 &member_component,
-                &member,
+                member.clone(),
                 start_routing_bucket,
                 end_routing_bucket,
                 async_storage,
