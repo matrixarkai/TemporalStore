@@ -692,3 +692,249 @@ fn the_equality_check_fails_when_a_listing_comes_back_short() {
 fn the_equality_check_refuses_a_row_whose_floor_is_zero() {
     assert_count_matches_listing("hash", 0, 0, 0);
 }
+
+// =================================================================================================
+// THE PRE-CARRY ROUTE, WHICH IS WHERE THE TWO SOURCES PART
+// =================================================================================================
+
+/// THE TWO SOURCES OF A HASH LENGTH, DRIVEN THROUGH THE ROUTE THIS MODULE'S PROSE CALLS DANGEROUS.
+///
+/// # THE HOLE THIS CLOSES, STATED NARROWLY
+///
+/// The header argues that a hash count must not move onto the model map, and the surviving half of
+/// that argument is the delta-fold route: `fold_index_log_deltas` applies a record's page items for
+/// EVERY record but adds container elements only from the `key_states` blobs carrying one of
+/// `CARRIED_CONTAINER_FIELDS`, so a record written before the carry existed leaves the page index an
+/// entry and the container nothing.
+///
+/// That route IS already driven --
+/// `durable_outranks_derived::a_key_state_blob_that_carries_no_elements_leaves_the_container_maps_untouched`
+/// folds exactly an old record's blob. What nothing asserted is the thing this module is for: that a
+/// LENGTH and its LISTING still agree once the route has left the container short. So that is all
+/// this adds.
+///
+/// # WHY COMPARING THE TWO COMMANDS WOULD BE VACUOUS HERE, WHICH IS THE WHOLE DESIGN
+///
+/// `HashLen` and `HashGetAll` BOTH resolve through `bucket_index_component_block_addresses` today.
+/// Counted over all eight `Command::Hash*` arms: four read the bucket index (`HashGet`,
+/// `HashIncrBy`, `HashGetAll`, `HashLen`), one reads the container (`HashMultiGet`), one reads BOTH
+/// (`HashDelete`) and two are writes. So leaving the container short cannot make the two commands
+/// disagree -- they would keep agreeing over any container state at all, and a test that compared
+/// only them would pass this route while asserting nothing about it.
+///
+/// The agreement that decides whether a reader may move is between the two SOURCES. So this reads
+/// four numbers at each stage -- the container's count, the index's count, and both commands -- and
+/// prints all four, because the interesting fact is which of them move together.
+///
+/// # WHAT IT MEASURES, AND WHY THAT IS THE ARGUMENT AGAINST FLIPPING A READER TODAY
+///
+/// Warm, all four agree. With the container left short the way the route leaves it, the commands do
+/// not move -- they are reading the index -- and the container alone is short. **A `HashLen` reading
+/// the container at that moment would under-report**, which is the measurement, not an opinion.
+///
+/// And after an unload and a load all four agree again, because `fill_absent_elements` completes the
+/// durable map FROM the derived view. That is the fact that makes moving a reader a RELOCATION of
+/// the bucket-index dependency from read time to load time rather than a removal of it, and
+/// `durable_outranks_derived::an_element_the_durable_map_does_not_hold_still_comes_back_from_its_name`
+/// is the tripwire that pins the completion itself.
+///
+/// rust-internal: drives the engine's own unload/load cycle and reads shard state, no external
+/// surface
+#[test]
+fn the_two_sources_of_a_hash_length_part_on_the_pre_carry_route_and_a_reload_restores_them() {
+    const KEY: &str = "pre-carry-hash";
+
+    let dir = tempfile::tempdir().expect("tempdir");
+    let engine = engine_on(dir.path());
+    load_on(&engine, OPERATOR_END);
+
+    for m in 0..APPENDED {
+        write(
+            &engine,
+            Command::HashSet {
+                key: KEY.to_string(),
+                field: format!("field-{m}"),
+                value: format!("value-{m}").into_bytes(),
+            },
+        );
+    }
+
+    // ---------------------------------------------------------------------------------------------
+    // WARM: every one of the four answers is the population.
+    // ---------------------------------------------------------------------------------------------
+    let warm = four_answers(&engine, KEY);
+    warm.print("warm");
+    assert_eq!(
+        APPENDED, warm.container,
+        "VACUITY: the container must hold the {APPENDED} fields the fixture wrote before anything \
+         is taken out of it; it holds {}",
+        warm.container,
+    );
+    warm.assert_all_agree(
+        APPENDED,
+        "warm, before the route has been driven: all four answers must be the population",
+    );
+
+    // ---------------------------------------------------------------------------------------------
+    // THE ROUTE: the container loses an element the page index still holds.
+    //
+    // Done to the container directly, which is the shape the fold leaves behind and the same shape
+    // `an_element_the_durable_map_does_not_hold_still_comes_back_from_its_name` builds. Folding a
+    // real pre-carry record would reach the same state through more moving parts than the property
+    // being checked.
+    // ---------------------------------------------------------------------------------------------
+    {
+        let mut shards = engine.shards.write().expect("engine lock poisoned");
+        let shard = shards.get_mut(&1).expect("shard is loaded");
+        let fields = shard
+            .hashes
+            .fields_mut_for_test(KEY)
+            .expect("the fixture's hash is in the container");
+        let removed = fields.remove("field-0");
+        assert!(
+            removed.is_some(),
+            "the fixture could not take `field-0` out of the container, so the route below was \
+             never driven and the rest of this test would measure a warm shard"
+        );
+    }
+
+    let parted = four_answers(&engine, KEY);
+    parted.print("container left short, as the route leaves it");
+
+    // THE COMMANDS DO NOT MOVE, because both of them read the index.
+    parted.assert_commands_agree(
+        "with the container short: the length and the listing must still agree with each other -- \
+         that is this module's contract and it must hold through this route",
+    );
+    assert_eq!(
+        APPENDED as i64, parted.length_command,
+        "the length command answered {} rather than {APPENDED} with only the CONTAINER short. It \
+         resolves through the bucket index, so a short container must not reach it; if this moved, \
+         the reader has already been flipped and the assertion below is the one to read",
+        parted.length_command,
+    );
+
+    // AND THE CONTAINER ALONE IS SHORT. This is the measured reason a reader cannot simply move.
+    assert_eq!(
+        APPENDED - 1,
+        parted.container,
+        "the container holds {} rather than {} after one element was taken out of it",
+        parted.container,
+        APPENDED - 1,
+    );
+    assert_eq!(
+        APPENDED, parted.index,
+        "the bucket index holds {} rather than {APPENDED}; the route is supposed to leave the INDEX \
+         untouched and take the element only out of the container",
+        parted.index,
+    );
+    assert_ne!(
+        parted.container, parted.index,
+        "the two sources agree even though an element was taken out of one of them. Then either \
+         the container is being refilled synchronously -- in which case a reader could move today \
+         and this test should say so -- or the removal did not happen. Both are worth knowing."
+    );
+    println!(
+        "  [sources part] container {} vs index {} -- a length reading the CONTAINER here would \
+         under-report by {}",
+        parted.container,
+        parted.index,
+        parted.index - parted.container,
+    );
+
+    // ---------------------------------------------------------------------------------------------
+    // AND A RELOAD PUTS THEM BACK, because the completion reads the derived view.
+    // ---------------------------------------------------------------------------------------------
+    engine.unload_shard(1);
+    load_on(&engine, OPERATOR_END);
+
+    let healed = four_answers(&engine, KEY);
+    healed.print("after an unload and a load");
+    healed.assert_all_agree(
+        APPENDED,
+        "after a reload: the completion is supposed to rebuild the durable map from the derived \
+         view, so all four answers must be the population again. If the container is still short \
+         here then the completion does not cover this route, and a reader moved onto the container \
+         would under-report for the life of the shard rather than until the next load",
+    );
+    println!(
+        "  [sources rejoin] the completion rebuilt the container from the derived view, so moving a \
+         reader would move the bucket-index dependency to load time rather than remove it"
+    );
+}
+
+/// The four numbers that answer "how many elements does this hash hold", read at one instant.
+struct FourAnswers {
+    container: usize,
+    index: usize,
+    length_command: i64,
+    listing_command: usize,
+}
+
+impl FourAnswers {
+    fn print(&self, stage: &str) {
+        println!(
+            "  {:<44} container {:>3}  index {:>3}  HLEN {:>3}  listing {:>3}",
+            stage, self.container, self.index, self.length_command, self.listing_command
+        );
+    }
+
+    fn assert_commands_agree(&self, why: &str) {
+        assert_eq!(
+            self.length_command, self.listing_command as i64,
+            "the length answered {} and the listing returned {} elements. {why}",
+            self.length_command, self.listing_command,
+        );
+    }
+
+    fn assert_all_agree(&self, population: usize, why: &str) {
+        self.assert_commands_agree(why);
+        assert_eq!(
+            population, self.container,
+            "the container holds {} rather than {population}. {why}",
+            self.container,
+        );
+        assert_eq!(
+            population, self.index,
+            "the bucket index holds {} rather than {population}. {why}",
+            self.index,
+        );
+        assert_eq!(
+            population as i64, self.length_command,
+            "the length command answered {} rather than {population}. {why}",
+            self.length_command,
+        );
+    }
+}
+
+/// Read all four at once, so a stage cannot compare numbers taken at different moments.
+fn four_answers(engine: &TemporalEngine, key: &str) -> FourAnswers {
+    let (container, index) = {
+        let shards = engine.shards.read().expect("engine lock poisoned");
+        let shard = shards.get(&1).expect("shard is loaded");
+        let container = shard.hashes.get(key).map(|fields| fields.len()).unwrap_or(0);
+        let index = super::bucket_index_component_block_addresses(shard, "hash", key).len();
+        (container, index)
+    };
+    let length_command = length_answer(
+        engine,
+        Command::HashLen {
+            key: key.to_string(),
+        },
+    );
+    let listing_command = match read(
+        engine,
+        Command::HashGetAll {
+            key: key.to_string(),
+        },
+    ) {
+        crate::types::CommandResponse::HashEntries { entries } => entries.len(),
+        other => panic!("HashGetAll answered {other:?} rather than hash entries"),
+    };
+    FourAnswers {
+        container,
+        index,
+        length_command,
+        listing_command,
+    }
+}
