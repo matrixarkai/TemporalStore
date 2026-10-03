@@ -37,7 +37,7 @@
 //!
 //! WHAT IT COSTS, STATED RATHER THAN HIDDEN. An insert is O(n): a binary search for the slot and a
 //! memmove of the tail. At one field that is one comparison and no move. At the wide arm it is a
-//! shift of a 48-byte entry per displaced field, no allocation, and it replaces a hash of the field
+//! shift of a 40-byte entry per displaced field, no allocation, and it replaces a hash of the field
 //! name. A lookup is a binary search, which at one field is ONE comparison and ZERO hashes against
 //! the table's one comparison AND one hash -- so at the occupancy the product path writes, the
 //! lookup is strictly cheaper too, counted rather than timed.
@@ -73,6 +73,88 @@ use crate::block_store::BlockAddress;
 /// Below it, slack is the thing being removed; at and above it, the reallocation count is.
 const EXACT_GROWTH_BELOW: usize = 8;
 
+/// THE LEVEL-TWO VALUE OF A MODEL MAP: where one element of one object lives.
+///
+/// # WHY THIS IS A NAMED TYPE AND NOT STILL A BARE ADDRESS
+///
+/// The resident page entry is being RELOCATED into this position. Today an element of a hash is
+/// described twice: once by a [`BlockAddress`] in this map, and once by a 56-byte `BlockIndex` in
+/// the bucket index, keyed by a hash of the object key, the model id, the component and five
+/// address terms. The entry here can be KEY-INDEPENDENT -- the object key is the level-one key and
+/// the element name is the level-two key, so the value does not have to name either -- which is the
+/// whole reason the relocation is worth anything.
+///
+/// This step introduces the type and moves nothing else. That is deliberate: the inner vector is
+/// private precisely so the value can be reconsidered "without another fifty-site rewrite", and
+/// introducing the type is what buys that for the two steps after this one. A single change
+/// carrying the type, the authority move and a format stamp would be unreviewable.
+///
+/// # THE WIDTH, AND WHAT THE NEXT STEP COSTS
+///
+/// 16 bytes today, which is exactly the address: this type adds NOTHING to the value yet, and the
+/// assert below says so rather than leaving it to be believed. The end state is 24 -- one packed
+/// flags byte over the address is 17 bytes of field in an eight-aligned group -- and the
+/// counterfactual is asserted beside the width, because the arithmetic is the claim.
+///
+/// # WHAT IS DELIBERATELY NOT HERE: THE MODEL ID
+///
+/// A `BlockIndex` carries a one-byte `model_id`, and relocating it into this value would cost
+/// nothing in width -- 16 + 1 + 1 still rounds to 24, so the byte is free. It is still wrong.
+/// `rebuild_unserialized_model_maps_from_bucket_index` filters `entry.kind.as_str() != "hash"`
+/// BEFORE inserting here, so every element in this map is hash-kind BY CONSTRUCTION: the map
+/// determines the kind, and storing it in the value would make one fact answerable from two
+/// places. That is the defect #2084 removed, where a log-resident flag was stored beside an
+/// address that already derived it and three sites wrote it without consulting the address at
+/// all. It is also the precedent [`BlockAddress`] set when `routing_bucket` left it: a field that
+/// was a cache of a pure function of the key, whose walk-based readers now take the bucket they
+/// are walking. A reader here takes the kind of the map it is reading.
+///
+/// A free byte is the easiest kind of redundant stored fact to ship, which is why this says so.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub(super) struct ElementEntry {
+    address: BlockAddress,
+}
+
+impl ElementEntry {
+    pub(super) fn new(address: BlockAddress) -> Self {
+        Self { address }
+    }
+
+    pub(super) fn address(&self) -> &BlockAddress {
+        &self.address
+    }
+
+    pub(super) fn address_mut(&mut self) -> &mut BlockAddress {
+        &mut self.address
+    }
+
+    pub(super) fn into_address(self) -> BlockAddress {
+        self.address
+    }
+}
+
+/// The value adds NOTHING to the address at this step, asserted rather than stated.
+const _: () = assert!(
+    std::mem::size_of::<ElementEntry>() == std::mem::size_of::<BlockAddress>()
+);
+
+/// AND THE END-STATE WIDTH IS 24, carried beside the current width so a reader can see what the
+/// next step costs instead of taking it on trust.
+///
+/// A reconstruction, not a restatement: the flags byte lands in the tail over the address's
+/// eight-aligned group, so the end state is the address rounded up by one byte.
+const _: () = {
+    let with_one_flags_byte = std::mem::size_of::<BlockAddress>() + 1;
+    assert!((with_one_flags_byte + 7) / 8 * 8 == 24);
+};
+
+/// THE DISPLACED-ENTRY WIDTH, which a doc comment in this file had stale.
+///
+/// The header above priced an insert as "a shift of a 48-byte entry per displaced field". That was
+/// true when the address was 24 bytes; the address is 16 now, so the pair is 40. Asserted instead
+/// of corrected in prose, because the prose went stale silently once already.
+const _: () = assert!(std::mem::size_of::<(String, ElementEntry)>() == 40);
+
 /// The field map of one hash: field name -> the page that holds the field's value, kept sorted by
 /// field name.
 ///
@@ -82,7 +164,7 @@ const EXACT_GROWTH_BELOW: usize = 8;
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(from = "HashMap<String, BlockAddress>", into = "HashMap<String, BlockAddress>")]
 pub(super) struct HashFieldMap {
-    entries: Vec<(String, BlockAddress)>,
+    entries: Vec<(String, ElementEntry)>,
 }
 
 impl HashFieldMap {
@@ -93,12 +175,17 @@ impl HashFieldMap {
     }
 
     pub(super) fn get(&self, field: &str) -> Option<&BlockAddress> {
+        self.slot(field).ok().map(|at| self.entries[at].1.address())
+    }
+
+    /// The whole level-two value, for the steps that move the entry here.
+    pub(super) fn entry(&self, field: &str) -> Option<&ElementEntry> {
         self.slot(field).ok().map(|at| &self.entries[at].1)
     }
 
     pub(super) fn get_mut(&mut self, field: &str) -> Option<&mut BlockAddress> {
         match self.slot(field) {
-            Ok(at) => Some(&mut self.entries[at].1),
+            Ok(at) => Some(self.entries[at].1.address_mut()),
             Err(_) => None,
         }
     }
@@ -136,14 +223,17 @@ impl HashFieldMap {
     /// `what_the_engine_resident_field_maps_cost_against_the_container_they_replaced`.
     pub(super) fn insert(&mut self, field: String, address: BlockAddress) -> Option<BlockAddress> {
         match self.slot(&field) {
-            Ok(at) => Some(std::mem::replace(&mut self.entries[at].1, address)),
+            Ok(at) => Some(
+                std::mem::replace(&mut self.entries[at].1, ElementEntry::new(address))
+                    .into_address(),
+            ),
             Err(at) => {
                 if self.entries.len() == self.entries.capacity()
                     && self.entries.len() < EXACT_GROWTH_BELOW
                 {
                     self.entries.reserve_exact(1);
                 }
-                self.entries.insert(at, (field, address));
+                self.entries.insert(at, (field, ElementEntry::new(address)));
                 None
             }
         }
@@ -151,7 +241,7 @@ impl HashFieldMap {
 
     pub(super) fn remove(&mut self, field: &str) -> Option<BlockAddress> {
         match self.slot(field) {
-            Ok(at) => Some(self.entries.remove(at).1),
+            Ok(at) => Some(self.entries.remove(at).1.into_address()),
             Err(_) => None,
         }
     }
@@ -165,13 +255,18 @@ impl HashFieldMap {
     }
 
     pub(super) fn iter(&self) -> impl Iterator<Item = (&String, &BlockAddress)> {
-        self.entries.iter().map(|(name, address)| (name, address))
+        self.entries.iter().map(|(name, entry)| (name, entry.address()))
+    }
+
+    /// The level-two values themselves, for the steps that move the entry here.
+    pub(super) fn entries(&self) -> impl Iterator<Item = (&String, &ElementEntry)> {
+        self.entries.iter().map(|(name, entry)| (name, entry))
     }
 
     pub(super) fn iter_mut(&mut self) -> impl Iterator<Item = (&String, &mut BlockAddress)> {
         self.entries
             .iter_mut()
-            .map(|(name, address)| (&*name, address))
+            .map(|(name, entry)| (&*name, entry.address_mut()))
     }
 
     pub(super) fn keys(&self) -> impl Iterator<Item = &String> {
@@ -179,15 +274,16 @@ impl HashFieldMap {
     }
 
     pub(super) fn values(&self) -> impl Iterator<Item = &BlockAddress> {
-        self.entries.iter().map(|(_, address)| address)
+        self.entries.iter().map(|(_, entry)| entry.address())
     }
 
     pub(super) fn values_mut(&mut self) -> impl Iterator<Item = &mut BlockAddress> {
-        self.entries.iter_mut().map(|(_, address)| address)
+        self.entries.iter_mut().map(|(_, entry)| entry.address_mut())
     }
 
     pub(super) fn retain(&mut self, mut keep: impl FnMut(&String, &mut BlockAddress) -> bool) {
-        self.entries.retain_mut(|(name, address)| keep(name, address));
+        self.entries
+            .retain_mut(|(name, entry)| keep(name, entry.address_mut()));
     }
 
     /// The exact-sized shape this container exists for: no spare capacity to carry.
@@ -225,7 +321,10 @@ impl super::ElementMap for HashFieldMap {
 
 impl FromIterator<(String, BlockAddress)> for HashFieldMap {
     fn from_iter<I: IntoIterator<Item = (String, BlockAddress)>>(iter: I) -> Self {
-        let mut entries: Vec<(String, BlockAddress)> = iter.into_iter().collect();
+        let mut entries: Vec<(String, ElementEntry)> = iter
+            .into_iter()
+            .map(|(name, address)| (name, ElementEntry::new(address)))
+            .collect();
         // Sort, then drop earlier duplicates of a field so the result matches what repeated
         // `insert` would have left: the LAST value for a field wins, as it does in a table.
         entries.sort_by(|left, right| left.0.cmp(&right.0));
@@ -245,13 +344,13 @@ impl FromIterator<(String, BlockAddress)> for HashFieldMap {
 impl<'a> IntoIterator for &'a HashFieldMap {
     type Item = (&'a String, &'a BlockAddress);
     type IntoIter = std::iter::Map<
-        std::slice::Iter<'a, (String, BlockAddress)>,
-        fn(&'a (String, BlockAddress)) -> (&'a String, &'a BlockAddress),
+        std::slice::Iter<'a, (String, ElementEntry)>,
+        fn(&'a (String, ElementEntry)) -> (&'a String, &'a BlockAddress),
     >;
 
     fn into_iter(self) -> Self::IntoIter {
-        fn split<'b>(pair: &'b (String, BlockAddress)) -> (&'b String, &'b BlockAddress) {
-            (&pair.0, &pair.1)
+        fn split<'b>(pair: &'b (String, ElementEntry)) -> (&'b String, &'b BlockAddress) {
+            (&pair.0, pair.1.address())
         }
         self.entries.iter().map(split as fn(_) -> _)
     }
@@ -259,10 +358,16 @@ impl<'a> IntoIterator for &'a HashFieldMap {
 
 impl IntoIterator for HashFieldMap {
     type Item = (String, BlockAddress);
-    type IntoIter = std::vec::IntoIter<(String, BlockAddress)>;
+    type IntoIter = std::iter::Map<
+        std::vec::IntoIter<(String, ElementEntry)>,
+        fn((String, ElementEntry)) -> (String, BlockAddress),
+    >;
 
     fn into_iter(self) -> Self::IntoIter {
-        self.entries.into_iter()
+        fn split(pair: (String, ElementEntry)) -> (String, BlockAddress) {
+            (pair.0, pair.1.into_address())
+        }
+        self.entries.into_iter().map(split as fn(_) -> _)
     }
 }
 
@@ -278,6 +383,10 @@ impl From<HashMap<String, BlockAddress>> for HashFieldMap {
 
 impl From<HashFieldMap> for HashMap<String, BlockAddress> {
     fn from(fields: HashFieldMap) -> Self {
-        fields.entries.into_iter().collect()
+        fields
+            .entries
+            .into_iter()
+            .map(|(name, entry)| (name, entry.into_address()))
+            .collect()
     }
 }
