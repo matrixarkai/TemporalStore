@@ -38,7 +38,8 @@
 #![allow(clippy::all)]
 use super::*;
 use crate::block_store::BlockAddress;
-use crate::engine::hash_field_map::{ElementEntry, HashFieldMap};
+use crate::block_store::ElementEntry;
+use crate::engine::hash_field_map::HashFieldMap;
 
 fn address(slab: u64, offset: u64, length: u64, block: u64) -> BlockAddress {
     BlockAddress::from_parts(slab, offset, length, Some(block), None)
