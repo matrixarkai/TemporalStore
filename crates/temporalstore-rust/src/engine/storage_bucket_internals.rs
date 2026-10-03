@@ -4582,39 +4582,58 @@ pub(super) fn rebuild_bucket_first_index(
 ///  - a key absent from the persisted map is rebuilt from the block (the legitimate
 ///    rebuild-from-bucket-index case, e.g. a bucket_index entry with no model-map counterpart).
 /// This is why `promote` never clears the model maps: they remain the membership source.
-fn reconcile_timestamped_series_membership(
-    persisted: &HashMap<String, BTreeMap<u64, BlockAddress>>,
+///
+/// # IT REFRESHES THE MAP IT HAS RATHER THAN BUILDING A NEW ONE
+///
+/// This took the persisted map by reference, took the derived view by value and RETURNED a third
+/// map, so every caller wrote `let persisted = mem::take(&mut shard.x); shard.x = reconcile(..)`.
+/// That signature was not the cost; what the signature forced was:
+///
+///   * a fresh `BTreeMap` collected per key present in BOTH, because the merge was expressed as
+///     building a new series rather than refreshing addresses in the one already there -- and on a
+///     normal reload the blocks exist for every key, so that is the arm EVERY key takes;
+///   * a deep `clone` of every series present in the PERSISTED map only;
+///   * and a fresh outer map to hold them.
+///
+/// In other words it rebuilt the whole series map in order to refresh addresses inside it, on the
+/// path every shard load takes. Refreshing in place allocates none of that: the addresses are
+/// overwritten through `iter_mut`, and the persisted-only loop disappears entirely because a key
+/// nothing touches needs no clone to survive. `what_a_reconcile_allocates_rebuilding_against_refreshing_in_place`
+/// measures both forms over one input and requires this one to allocate NOTHING in the covered case.
+///
+/// THE ANSWER IS UNCHANGED, and that is asserted rather than asserted-to-be-obvious: the same
+/// fixture builds both shapes over all-covered, half-covered and none-covered inputs and requires
+/// the resulting maps to be equal, plus a check that a covered address really did change so the
+/// agreement cannot be two forms agreeing on having done nothing.
+/// `pub(super)` only so `reconcile_allocation` can price THE SHIPPED FUNCTION rather than a
+/// transcription of it. The arm that no longer exists in the tree has to be transcribed there;
+/// this one does not, and a fixture that copied it could drift from it silently.
+pub(super) fn reconcile_timestamped_series_membership_in_place(
+    target: &mut HashMap<String, BTreeMap<u64, BlockAddress>>,
     block_derived: HashMap<String, BTreeMap<u64, BlockAddress>>,
-) -> HashMap<String, BTreeMap<u64, BlockAddress>> {
-    let mut result: HashMap<String, BTreeMap<u64, BlockAddress>> = HashMap::new();
+) {
     for (key, block_series) in block_derived {
-        match persisted.get(&key) {
-            Some(persisted_series) => {
-                let merged = persisted_series
-                    .iter()
-                    .map(|(timestamp_ms, persisted_address)| {
-                        let address = block_series
-                            .get(timestamp_ms)
-                            .cloned()
-                            .unwrap_or_else(|| persisted_address.clone());
-                        (*timestamp_ms, address)
-                    })
-                    .collect();
-                result.insert(key, merged);
+        match target.get_mut(&key) {
+            // PRESENT IN BOTH: the persisted series keeps exactly its own timestamps -- no
+            // resurrection of evicted points, no loss on a failed block read -- and each address is
+            // refreshed from the derived view where that view has one. An overwrite, not a build.
+            Some(series) => {
+                for (timestamp_ms, address) in series.iter_mut() {
+                    if let Some(fresh) = block_series.get(timestamp_ms) {
+                        *address = fresh.clone();
+                    }
+                }
             }
+            // ABSENT FROM THE PERSISTED MAP: rebuilt from the block, which is the legitimate
+            // rebuild-from-bucket-index case. Moved in, not copied.
             None => {
-                result.insert(key, block_series);
+                target.insert(key, block_series);
             }
         }
     }
-    // Preserve persisted keys entirely absent from the block-derived view (block unreadable or
-    // not in bucket_index) so a transient read failure never drops a durable series.
-    for (key, persisted_series) in persisted {
-        result
-            .entry(key.clone())
-            .or_insert_with(|| persisted_series.clone());
-    }
-    result
+    // A key the derived view does not carry needs no clause at all now. It is already in `target`
+    // and nothing above removes it, which is what the final loop used to achieve by cloning every
+    // such series into a new map.
 }
 
 /// The derived view, with every element the DURABLE map holds and it does not AND WHOSE BLOCK IS
@@ -5220,8 +5239,7 @@ pub(super) fn reconcile_secondary_views_from_bucket_index(
         );
     }
     if saw_features {
-        let persisted = std::mem::take(&mut shard.features);
-        shard.features = reconcile_timestamped_series_membership(&persisted, features);
+        reconcile_timestamped_series_membership_in_place(&mut shard.features, features);
         // The feature numeric view + rollup are derived from the feature series; drop them so
         // they rebuild lazily from the series reconcile just materialized.
         super::control_rollup::feature_clear_all(shard);
@@ -5241,8 +5259,10 @@ pub(super) fn reconcile_secondary_views_from_bucket_index(
         super::control_rollup::clear_all(shard);
     }
     if saw_context_events {
-        let persisted = std::mem::take(&mut shard.context_events);
-        shard.context_events = reconcile_timestamped_series_membership(&persisted, context_events);
+        reconcile_timestamped_series_membership_in_place(
+            &mut shard.context_events,
+            context_events,
+        );
         // The time index is derived state: rebuild it wholesale from what the blocks actually
         // carried rather than reconciling it, so it can never reference an event id that
         // membership reconciliation just dropped from the primary map.
@@ -5258,31 +5278,37 @@ pub(super) fn reconcile_secondary_views_from_bucket_index(
         });
     }
     if saw_context_indexes {
-        let persisted = std::mem::take(&mut shard.context_indexes);
-        shard.context_indexes =
-            reconcile_timestamped_series_membership(&persisted, context_indexes);
+        reconcile_timestamped_series_membership_in_place(
+            &mut shard.context_indexes,
+            context_indexes,
+        );
     }
     if saw_context_audits {
-        let persisted = std::mem::take(&mut shard.context_audits);
-        shard.context_audits = reconcile_timestamped_series_membership(&persisted, context_audits);
+        reconcile_timestamped_series_membership_in_place(
+            &mut shard.context_audits,
+            context_audits,
+        );
     }
     if saw_context_entities {
         shard.context_entities = context_entities;
     }
     if saw_context_children {
-        let persisted = std::mem::take(&mut shard.context_children);
-        shard.context_children =
-            reconcile_timestamped_series_membership(&persisted, context_children);
+        reconcile_timestamped_series_membership_in_place(
+            &mut shard.context_children,
+            context_children,
+        );
     }
     if saw_context_summaries {
-        let persisted = std::mem::take(&mut shard.context_summaries);
-        shard.context_summaries =
-            reconcile_timestamped_series_membership(&persisted, context_summaries);
+        reconcile_timestamped_series_membership_in_place(
+            &mut shard.context_summaries,
+            context_summaries,
+        );
     }
     if saw_context_compressions {
-        let persisted = std::mem::take(&mut shard.context_compressions);
-        shard.context_compressions =
-            reconcile_timestamped_series_membership(&persisted, context_compressions);
+        reconcile_timestamped_series_membership_in_place(
+            &mut shard.context_compressions,
+            context_compressions,
+        );
     }
 
     // THE SHARD, FROM WHICHEVER OF THE TWO PLACES HAS IT, resolved before the mutable borrow below.
@@ -5369,7 +5395,7 @@ pub(super) fn insert_timestamped_secondary_view(
     // reload instead of by removal.
     //
     // WHY IT IS LOSS HERE AND DEGRADATION ELSEWHERE, which is the reason this arm is the one that
-    // had to change. `reconcile_timestamped_series_membership` keeps a persisted series the derived
+    // had to change. `reconcile_timestamped_series_membership_in_place` keeps a persisted series the derived
     // view could not produce, and says so: "a transient read failure never drops a durable series".
     // That consolation is real for `features`, whose map IS serialized. It does not exist for
     // `context_events` or `context_indexes`: both are `skip_serializing` on `ShardState`
