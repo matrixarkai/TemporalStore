@@ -219,3 +219,4 @@ mod packed_element_scan_cost;
 mod set_listing_source;
 mod one_entry_a_page_gate;
 mod projection_names_a_page;
+mod authority_check_cost;
