@@ -4428,6 +4428,60 @@ fn env_flag_on(name: &str) -> bool {
     crate::env_flag::env_bool(name, false)
 }
 
+/// The name of the gate below, written ONCE so the gate and the test that pins it cannot come to
+/// disagree about which variable an operator has to set. A hand-copied name is a gate nobody can
+/// turn on and a test that still passes.
+///
+/// UNREAD AT THIS STEP, AND THE SUPPRESSION IS PART OF THE SCAFFOLDING. Step one adds the switch
+/// and nothing else, so the library build correctly reports this and the gate below as dead --
+/// only the test beside them reads either. The allow is here to say that is intended for exactly
+/// one step rather than to quiet a lint: step two gives the gate its first reader, at which point
+/// both of these become unnecessary and removing them is how the next commit shows the gate is
+/// actually wired. An allow that is still here with no reader is the thing to raise.
+#[allow(dead_code)]
+pub(crate) const TS_CONTAINER_ONE_ENTRY_A_PAGE: &str = "TS_CONTAINER_ONE_ENTRY_A_PAGE";
+
+/// Whether the page index files ONE ENTRY PER PAGE for a container, rather than one per ELEMENT.
+///
+/// # WHAT IT IS FOR
+///
+/// A container's index holds one entry per element: per hash field, set member, zset scored member
+/// and list index. Measured on this tree, that is **~152 bytes per element, flat whatever the
+/// occupancy** -- 6,120 bytes for an object of forty elements on one compacted page, against 104
+/// for one entry per page. The page already carries each element's key in its payload, because
+/// `container_pages` writes it there precisely so a page is interpretable without the entry that
+/// names it. So the entries restate what the page already says.
+///
+/// # WHY A GATE AND NOT A CHANGE
+///
+/// The index is a DERIVED PROJECTION of the model maps: `visit_model_live_blocks` emits one entry
+/// per member from `shard.sets` and friends, and `rebuild_bucket_first_index` re-derives the whole
+/// thing -- twice inside one compaction sweep. So the filing and the derivation cannot be changed
+/// in separate commits: whichever lands first is undone by the other. A projection can, however,
+/// be computed two ways behind one switch, and that is what this is for. Each edit in the series
+/// lands conditional on this gate, with the old path intact beside it, and nothing changes for a
+/// deployment that has not set it.
+///
+/// # IT SHIPS OFF AND IS MEANT TO BE DELETED
+///
+/// This is scaffolding with a planned demolition, stated here because the alternative has a
+/// record: a gate that ships OFF and is never flipped strands the feature behind it, and this
+/// repository is already carrying one such lever that way. The series ends by flipping the default
+/// and then REMOVING both this gate and the per-element path, so that the two ways of computing
+/// the projection do not become a permanent fork. If this constant is still here with the default
+/// off and no further steps landed, that is the failure mode to raise -- not a stable state.
+///
+/// # WHAT IT DOES TODAY
+///
+/// Nothing. No caller reads it yet; step two is the first, and it is the derivation. The test
+/// beside it pins only what can be true at this step: that the default is off and that the switch
+/// answers in both directions.
+/// See the constant above for why this is allowed to be dead at this step and not at the next.
+#[allow(dead_code)]
+pub(crate) fn container_index_files_one_entry_a_page() -> bool {
+    env_flag_on(TS_CONTAINER_ONE_ENTRY_A_PAGE)
+}
+
 /// Tuning for sampled eviction, read from the environment with defaults that mirror the
 /// established policy: sample several buckets per wanted victim, keep a bounded candidate pool
 /// across passes, and cap how far one pass may walk.
