@@ -4881,15 +4881,26 @@ pub(super) fn reconcile_secondary_views_from_bucket_index(
                 // genuine empty-named field and takes its address. An empty hash FIELD NAME is
                 // legal, which is exactly why the absent one must not spell it.
                 //
-                // THE CONSOLATION THE OTHER THREE ARMS RELY ON DOES NOT EXIST HERE. Each of those
-                // says "the durable map below still holds the element", and each is MERGED through
-                // `fill_absent_elements` for that reason. `hashes` is `skip_serializing`
-                // (`state.rs`), so nothing is written, this arm ASSIGNS rather than merges, and
-                // there is no durable map to outrank a wrong answer. A phantom field here is the
-                // only answer the shard has -- and for a context node, whose block is filed under the
-                // single constant `CONTEXT_NODE_FIELD`, a phantom `""` is not merely a wrong name:
-                // the seven readers that spell `"meta"` back find nothing and the node reads as
-                // ABSENT.
+                // THIS PARAGRAPH IS NOW A MIXED AUDIT AND IS WRITTEN THAT WAY ON PURPOSE, because
+                // two of its three claims went false and the third is the load-bearing one. Keeping
+                // the true half visible matters more than deleting the paragraph: a reader who
+                // discards all of it loses the reason this arm skips rather than defaults.
+                //
+                // FALSE NOW: "`hashes` is `skip_serializing`". It carries `#[serde(default)]`
+                // (`state.rs`), so the map IS written.
+                //
+                // FALSE NOW: "this arm ASSIGNS rather than merges, and there is no durable map to
+                // outrank a wrong answer". Every one of the four kinds merges through
+                // `RecordedMap::reconcile_from_durable` -- `hashes` from BOTH reconcile sites -- so
+                // `fill_absent_elements` is no longer reached by three arms but by all of them.
+                //
+                // STILL TRUE, AND MEASURED: a context node's block IS filed under the single
+                // constant `CONTEXT_NODE_FIELD`, so a phantom `""` here is not merely a wrong name.
+                // The readers that spell `"meta"` back find nothing and the node reads as ABSENT.
+                // `context_node_survives_reload` asks the bucket index directly and gets
+                // `("hash", Some("meta"), deleted=false)` for a node written through the command
+                // path, which is why the skip below is still the right behaviour even though the
+                // durable map now exists to catch what it drops.
                 //
                 // `saw_hashes` MOVED IN HERE WITH IT, and that is part of the fix rather than tidying.
                 // The flag gates `shard.hashes = hashes`, a wholesale assignment; set outside the

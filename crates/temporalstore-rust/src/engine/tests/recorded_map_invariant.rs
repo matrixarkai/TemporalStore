@@ -247,9 +247,11 @@ fn the_recorded_map_exposes_no_way_to_mutate_any_kind_without_a_record() {
 /// Five paths mutate without recording. THREE are shared by every kind. TWO are not, and that is
 /// the single thing two concrete containers established that one could not have:
 ///
-///   * hash has a recovery arm that installs an element and files NO record -- `write_context_node`
-///     is never registered in the bucket index -- so it needs `replay_install_element`. The set
-///     replay arm re-files its block, so it does not.
+///   * hash has a recovery arm that installs an element and files NO outcome record -- the replayed
+///     log item IS the record for `write_context_node` -- so it needs `replay_install_element`. The
+///     set replay arm re-files its block, so it does not. (This said the node "is never registered
+///     in the bucket index", which is false: the index holds an entry for the block. The asymmetry
+///     is about the outcome record, not the index.)
 ///   * set's level-2 container is a B-tree that a decode leaves half empty, so it needs
 ///     `repack_decoded`. `HashFieldMap` is a sorted vector whose length is its capacity, so it has
 ///     nothing to pack.

@@ -254,9 +254,15 @@ fn write_context_node(
         Some(routing_bucket),
         async_storage,
     ) {
-        // Its own kind, deliberately: this writes a hash block and -- unlike HashSet --
-        // never registers it in the bucket index, so recording it as a "hash" would have
-        // a rebuild add an entry the write never made.
+        // Its own kind, deliberately: this writes a hash block and records the OUTCOME under
+        // `context_node` rather than `hash`, so a rebuild cannot add an entry naming a block the
+        // outcome never described.
+        //
+        // CORRECTED: this said the write "never registers it in the bucket index". It does -- the
+        // `append_value` above files the block from the object id, `CONTEXT_NODE_FIELD` and the
+        // routing bucket, and `context_node_survives_reload` reads that entry back as
+        // `("hash", Some("meta"), deleted=false)`. The distinction is between the index entry,
+        // which exists, and the outcome record's kind, which is not `hash` on purpose.
         super::recorded_map::install_element_staged_only::<super::recorded_map::HashKind>(
             shard,
             shard_id,

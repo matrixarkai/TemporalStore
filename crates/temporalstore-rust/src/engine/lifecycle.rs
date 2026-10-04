@@ -1887,10 +1887,20 @@ impl TemporalEngine {
                 else {
                     return false;
                 };
-                // NO RECORD IS FILED HERE, and that is this arm's own rule rather than an
-                // oversight: a context node is never registered in the bucket index, so unlike the
-                // `hash` arm above there is nothing for a replay to re-file, and the item being
-                // replayed IS the record. See `replay_install_element`.
+                // NO OUTCOME RECORD IS FILED HERE, and that is this arm's own rule rather than
+                // an oversight: the item being replayed IS the record. See
+                // `replay_install_element`.
+                //
+                // CORRECTED, AND THE OLD WORDING SAID SOMETHING FALSE. This read "a context node is
+                // never registered in the bucket index". It IS registered -- `append_value` files
+                // the block from its own object-id, component and routing-bucket arguments, and
+                // `context_node_survives_reload` reads `("hash", Some("meta"), deleted=false)` back
+                // out of `bucket_index` for a node written through the command path. What is not
+                // filed is the OUTCOME record under kind `hash`, which is deliberate: recording it
+                // as a hash would have a rebuild add an entry naming a block the outcome never
+                // described. "Not recorded as a hash outcome" is not "absent from the index", and
+                // conflating the two is what made a whole route look like it had no durable
+                // source.
                 shard
                     .hashes
                     .replay_install_element(&item.object_key, field, address);

@@ -556,16 +556,33 @@ fn all_three_spelled_kinds_and_the_two_without_a_durable_map_survive_a_reload() 
 }
 
 // =============================================================================================
-// 3. THE FALLBACK: DURABLE WINS WHERE PRESENT, NOT "NEVER DERIVE"
+// 3. THE FALLBACK: AN ELEMENT WITH NO DURABLE ENTRY IS STILL DERIVABLE
+//    (and NOT "durable wins where present" -- the index-derived address wins a collision)
 // =============================================================================================
 
 /// AN ELEMENT WITH NO DURABLE ENTRY STILL COMES BACK FROM ITS NAME.
 ///
-/// The rule is "the durable map wins where it has the element", not "never derive". It has to be:
-/// `apply_key_states` folds `features` and the control-state maps out of the delta log and NOT
-/// `sets`, `zsets` or `lists`, so an element the fold added reaches these maps ONLY through the
-/// derived view. A rule that preferred the durable map per KEY -- which is what the `control_state`
-/// arm does, for a reason that holds there -- would drop every one of them.
+/// The rule is "an element missing from the durable map is still derivable", not "never derive",
+/// and NOT -- as this paragraph said until it was measured -- "the durable map wins where it has
+/// the element". It does not win: `fill_absent_elements` starts from the map built out of the
+/// bucket index and calls `insert_element_if_absent`, so on a collision the INDEX-DERIVED address
+/// is the one that survives and the durable map supplies only what the index could not name. This
+/// test never exercised that direction, which is why the wrong claim sat here passing.
+///
+/// It has to allow derivation at all because `apply_key_states` folds `features` and the
+/// control-state maps out of the delta log and NOT `sets`, `zsets` or `lists`, so an element the
+/// fold added reaches these maps ONLY through the derived view. A rule that preferred the durable
+/// map per KEY -- which is what the `control_state` arm does, for a reason that holds there --
+/// would drop every one of them.
+///
+/// AND THE CLAIM IS NARROWER THAN IT LOOKS, which is worth stating because it was read too widely
+/// for most of a campaign. What this pins is the REPAIR case: an element the durable map has LOST
+/// comes back because the index entry names it. It is NOT evidence that the index must name every
+/// element for a load to be correct -- a container element the index does not name at all survives
+/// the reconcile untouched, measured in
+/// `context_node_survives_reload::a_container_only_element_survives_the_reconcile_when_its_page_is_still_live`,
+/// because the live filter keys on `(slab_id, offset, length)` and asks only whether the PAGE is
+/// still there.
 ///
 /// Driven directly on the merge, because constructing a half-folded store through the public surface
 /// would be a fixture with more moving parts than the property it checks.
@@ -642,8 +659,9 @@ fn an_element_the_durable_map_does_not_hold_still_comes_back_from_its_name() {
         );
     }
     println!(
-        "[fallback] so the derived view remains the fallback: durable wins where present, and an \
-         element it does not hold still arrives through its name"
+        "[fallback] so an element the durable map does not hold still arrives through its name. \
+         This says nothing about a collision: the assertions above exercise only the ABSENT case, \
+         and where both sources hold one element it is the index-derived address that survives"
     );
 }
 

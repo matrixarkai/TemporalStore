@@ -240,10 +240,16 @@ pub(super) fn install_element<K: RecordedKind>(
 
 /// The same, for a record that is a STAGED OUTCOME and no bucket-index entry.
 ///
-/// A context node is deliberately never registered in the bucket index -- recording it as a `hash`
-/// there would have a rebuild add an entry the write never made -- so its durable record is the
-/// staged outcome alone. That is a different record, which is why it is a different emitter rather
-/// than a boolean on the one above: a boolean would have let an arm pick the wrong record silently.
+/// A context node's OUTCOME is deliberately never recorded under kind `hash` -- doing so would have
+/// a rebuild add an entry naming a block the outcome never described -- so the record this emitter
+/// files is the staged outcome alone. That is a different record, which is why it is a different
+/// emitter rather than a boolean on the one above: a boolean would have let an arm pick the wrong
+/// record silently.
+///
+/// CORRECTED: this said the node is "never registered in the bucket index". The BLOCK is registered
+/// -- `append_value` files it from the object id, `CONTEXT_NODE_FIELD` and the routing bucket, and
+/// `context_node_survives_reload` reads `("hash", Some("meta"), deleted=false)` back out of the
+/// index. Only the outcome's KIND differs.
 #[allow(clippy::too_many_arguments)]
 pub(super) fn install_element_staged_only<K: RecordedKind>(
     shard: &mut ShardState,
@@ -561,9 +567,12 @@ impl<K: RecordedKind> RecordedMap<K> {
 
 /// PER-KIND EXCEPTION, hash only.
 impl<K: ReplaysInstallsUnrecorded> RecordedMap<K> {
-    /// Recovery installs an element and files NOTHING, because this kind has a replay arm whose
-    /// block is never registered in the bucket index -- so there is no entry for a replay to
-    /// re-file, and the log item being replayed IS the record.
+    /// Recovery installs an element and files NOTHING, because this kind has a replay arm that
+    /// files no OUTCOME record of its own: the log item being replayed IS the record.
+    ///
+    /// CORRECTED: this said the arm's block "is never registered in the bucket index", and that is
+    /// false -- the index does hold an entry for it. What the arm does not do is file an outcome,
+    /// which is the thing this exception exempts it from.
     ///
     /// GATED BY A MARKER TRAIT, so a kind that has not declared the path cannot call this. `sets`
     /// has not: its replay arm re-files its block and goes through [`install_element`] like any
@@ -685,8 +694,9 @@ impl RecordedKind for HashKind {
 
 /// HASH DECLARES THE REPLAY-INSTALL PATH, and it is the only kind that does.
 ///
-/// Recovery's `context_node` arm installs a hash element and files no record of its own, because a
-/// context node is never registered in the bucket index.
+/// Recovery's `context_node` arm installs a hash element and files no record of its own, because the
+/// log item being replayed is already the record. (Not because the index lacks an entry for the
+/// block -- it has one; see the method's own note.)
 impl ReplaysInstallsUnrecorded for HashKind {}
 
 // AND IT DELIBERATELY DOES NOT DECLARE `RepacksAfterDecode`: `HashFieldMap` is a sorted vector
