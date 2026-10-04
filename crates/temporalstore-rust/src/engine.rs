@@ -4432,13 +4432,9 @@ fn env_flag_on(name: &str) -> bool {
 /// disagree about which variable an operator has to set. A hand-copied name is a gate nobody can
 /// turn on and a test that still passes.
 ///
-/// UNREAD AT THIS STEP, AND THE SUPPRESSION IS PART OF THE SCAFFOLDING. Step one adds the switch
-/// and nothing else, so the library build correctly reports this and the gate below as dead --
-/// only the test beside them reads either. The allow is here to say that is intended for exactly
-/// one step rather than to quiet a lint: step two gives the gate its first reader, at which point
-/// both of these become unnecessary and removing them is how the next commit shows the gate is
-/// actually wired. An allow that is still here with no reader is the thing to raise.
-#[allow(dead_code)]
+/// READ BY THE SET ARM OF `visit_model_live_blocks` SINCE STEP TWO. The step-one suppression that
+/// stood here is gone, and its absence is the evidence the gate is wired: a dead-code allow would
+/// now be hiding the fact that nothing reads it.
 pub(crate) const TS_CONTAINER_ONE_ENTRY_A_PAGE: &str = "TS_CONTAINER_ONE_ENTRY_A_PAGE";
 
 /// Whether the page index files ONE ENTRY PER PAGE for a container, rather than one per ELEMENT.
@@ -4471,13 +4467,35 @@ pub(crate) const TS_CONTAINER_ONE_ENTRY_A_PAGE: &str = "TS_CONTAINER_ONE_ENTRY_A
 /// the projection do not become a permanent fork. If this constant is still here with the default
 /// off and no further steps landed, that is the failure mode to raise -- not a stable state.
 ///
+/// # DO NOT TURN THIS ON YET. THE GATED PATH IS INCOMPLETE BY CONSTRUCTION.
+///
+/// This is a build-out switch, not an operator switch, and the difference matters because the
+/// incomplete state is not loud. Measured at this step, with the gate on, a set's listing returns
+/// **no members at all** -- the projection emits one entry per page and the listing still takes its
+/// identity from per-element entries, of which there are then none. Reads do not error; they come
+/// back empty.
+///
+/// That is the consumers not having caught up rather than a defect in the projection, and bringing
+/// them along is the rest of the series: the authority check, the ordinal source, the removal
+/// representation, the replay arm, the index-log emitter, the reconcile and the listing. Until
+/// those land, the only safe value is the default.
+///
+/// `projection_names_a_page` pins that empty listing as the CURRENT truth rather than describing it
+/// in prose, so the step that fixes it has to change an assertion deliberately. A gate removes the
+/// signal a breaking change normally gives -- nothing goes red, because the suite runs with the
+/// gate off -- so the incomplete state is asserted on purpose to put that signal back.
+///
 /// # WHAT IT DOES TODAY
 ///
-/// Nothing. No caller reads it yet; step two is the first, and it is the derivation. The test
-/// beside it pins only what can be true at this step: that the default is off and that the switch
-/// answers in both directions.
-/// See the constant above for why this is allowed to be dead at this step and not at the next.
-#[allow(dead_code)]
+/// One reader: the SET arm of `visit_model_live_blocks`, the projection that derives the page index
+/// from the model maps. With the gate on, a set object emits one entry per distinct page address
+/// and no component; with it off, one entry per member as before. The other three container kinds
+/// still emit one entry per element either way, so a consumer that has not been brought along yet
+/// sees no change for them.
+///
+/// Observed, per OBJECT, at one page in every row: forty elements emit **forty entries ungated and
+/// one gated**, four emit four against one, and one emits one against one -- with every ungated
+/// entry carrying a component and no gated entry carrying one.
 pub(crate) fn container_index_files_one_entry_a_page() -> bool {
     env_flag_on(TS_CONTAINER_ONE_ENTRY_A_PAGE)
 }

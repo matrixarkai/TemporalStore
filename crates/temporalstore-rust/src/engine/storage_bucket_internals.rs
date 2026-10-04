@@ -3200,11 +3200,55 @@ fn visit_model_live_blocks(
                 }
             }
         }
+        // THE SET ARM, AND THE ONE PLACE THIS PROJECTION DECIDES WHAT NAMES A PAGE.
+        //
+        // The index is a DERIVED PROJECTION of the model maps, and this is where the derivation
+        // happens: whatever shape it emits is the shape the index takes, because
+        // `rebuild_bucket_first_index` re-derives the whole thing from here -- twice inside one
+        // compaction sweep. So changing how a container is FILED anywhere else is undone before the
+        // sweep returns, and changing it HERE is the whole change.
+        //
+        // UNDER THE GATE THE PAGE ID IS THE IDENTITY. A set's component is `hex::encode(member)`,
+        // and it exists only because the entry is per-element: something has to tell two entries of
+        // one object apart. One entry per PAGE needs no such name -- the page already carries each
+        // element's key in its payload, written there by `container_pages` precisely so a page is
+        // interpretable without the entry that names it -- so the entry is emitted with no
+        // component at all.
+        //
+        // WHY THE MEMBERS DO NOT GO MISSING, which is the question this shape raises and #2098
+        // answered: the reconcile's live filter keys on `(slab, offset, length)` and carries NO
+        // component, so it asks whether an element's PAGE is one the index names, not whether the
+        // element is NAMED by an entry. One entry naming the folded page therefore keeps every
+        // member of that page live. The model map is already the authority for existence; this
+        // stops the index pretending to be the name-holder.
+        //
+        // BOTH ARMS WALK THE SAME ITERATION, over the same map with the same `accept`, so they
+        // cannot come to disagree about WHICH pages are live -- only about how many entries name
+        // each one. And the ungated arm is left byte-identical, including its allocation
+        // behaviour: this walk is deliberately careful not to build a `String` for a block the
+        // caller will discard, so the gated arm's bookkeeping is created only when it is used.
+        let one_entry_a_page = super::container_index_files_one_entry_a_page();
         for (key, members) in &shard.sets {
-            for (member, address) in members.iter() {
-                if accept(key, address) {
-                    let component = hex::encode(member);
-                    emit(ModelKind::Set, key, Some(component.as_str()), address);
+            if one_entry_a_page {
+                let mut emitted_pages: std::collections::BTreeSet<(u64, u64, u64)> =
+                    std::collections::BTreeSet::new();
+                for (_member, address) in members.iter() {
+                    if accept(key, address)
+                        && emitted_pages.insert((
+                            address.block_slab_id(),
+                            address.offset(),
+                            address.length(),
+                        ))
+                    {
+                        emit(ModelKind::Set, key, None, address);
+                    }
+                }
+            } else {
+                for (member, address) in members.iter() {
+                    if accept(key, address) {
+                        let component = hex::encode(member);
+                        emit(ModelKind::Set, key, Some(component.as_str()), address);
+                    }
                 }
             }
         }
