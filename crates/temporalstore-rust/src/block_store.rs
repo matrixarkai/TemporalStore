@@ -9010,3 +9010,98 @@ mod shorter_struct_against_an_existing_row {
         );
     }
 }
+
+/// THE SHARED PAYLOAD OF A RESIDENT ENTRY AND A LOG ROW: where one element of one object
+/// lives.
+///
+/// # WHY IT LIVES HERE AND NOT BESIDE THE MAP THAT HOLDS IT
+///
+/// It began in `engine::hash_field_map` as that map's level-2 value. It is now also the
+/// payload of `index_log::IndexItem`, and that decides the module: `IndexItem` is `pub` in a
+/// `pub` module while `hash_field_map` is PRIVATE, so a public field of a type declared there
+/// cannot compile (E0446). `block_store` is public and already holds the [`BlockAddress`] that
+/// is the whole payload, so the type sits beside the thing it wraps.
+///
+/// MOVED, NOT COPIED. Two structures describing one fact drift -- this is the tree that has
+/// had the same field name mean three things in one file -- and the point of sharing the
+/// payload is that there is ONE place a field's meaning is defined.
+///
+/// # WHY THIS IS A NAMED TYPE AND NOT STILL A BARE ADDRESS
+///
+/// The resident page entry is being RELOCATED into this position. Today an element of a hash is
+/// described twice: once by a [`BlockAddress`] in this map, and once by a 56-byte `BlockIndex` in
+/// the bucket index, keyed by a hash of the object key, the model id, the component and five
+/// address terms. The entry here can be KEY-INDEPENDENT -- the object key is the level-one key and
+/// the element name is the level-two key, so the value does not have to name either -- which is the
+/// whole reason the relocation is worth anything.
+///
+/// This step introduces the type and moves nothing else. That is deliberate: the inner vector is
+/// private precisely so the value can be reconsidered "without another fifty-site rewrite", and
+/// introducing the type is what buys that for the two steps after this one. A single change
+/// carrying the type, the authority move and a format stamp would be unreviewable.
+///
+/// # THE WIDTH, AND WHAT THE NEXT STEP COSTS
+///
+/// 16 bytes today, which is exactly the address: this type adds NOTHING to the value yet, and the
+/// assert below says so rather than leaving it to be believed. The end state is 24 -- one packed
+/// flags byte over the address is 17 bytes of field in an eight-aligned group -- and the
+/// counterfactual is asserted beside the width, because the arithmetic is the claim.
+///
+/// # WHAT IS DELIBERATELY NOT HERE: THE MODEL ID
+///
+/// A `BlockIndex` carries a one-byte `model_id`, and relocating it into this value would cost
+/// nothing in width -- 16 + 1 + 1 still rounds to 24, so the byte is free. It is still wrong.
+/// `rebuild_unserialized_model_maps_from_bucket_index` filters `entry.kind.as_str() != "hash"`
+/// BEFORE inserting here, so every element in this map is hash-kind BY CONSTRUCTION: the map
+/// determines the kind, and storing it in the value would make one fact answerable from two
+/// places. That is the defect #2084 removed, where a log-resident flag was stored beside an
+/// address that already derived it and three sites wrote it without consulting the address at
+/// all. It is also the precedent [`BlockAddress`] set when `routing_bucket` left it: a field that
+/// was a cache of a pure function of the key, whose walk-based readers now take the bucket they
+/// are walking. A reader here takes the kind of the map it is reading.
+///
+/// A free byte is the easiest kind of redundant stored fact to ship, which is why this says so.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct ElementEntry {
+    address: BlockAddress,
+}
+
+impl ElementEntry {
+    pub fn new(address: BlockAddress) -> Self {
+        Self { address }
+    }
+
+    pub fn address(&self) -> &BlockAddress {
+        &self.address
+    }
+
+    pub fn address_mut(&mut self) -> &mut BlockAddress {
+        &mut self.address
+    }
+
+    pub fn into_address(self) -> BlockAddress {
+        self.address
+    }
+}
+
+/// The value adds NOTHING to the address at this step, asserted rather than stated.
+const _: () = assert!(
+    std::mem::size_of::<ElementEntry>() == std::mem::size_of::<BlockAddress>()
+);
+
+/// AND THE END-STATE WIDTH IS 24, carried beside the current width so a reader can see what the
+/// next step costs instead of taking it on trust.
+///
+/// A reconstruction, not a restatement: the flags byte lands in the tail over the address's
+/// eight-aligned group, so the end state is the address rounded up by one byte.
+const _: () = {
+    let with_one_flags_byte = std::mem::size_of::<BlockAddress>() + 1;
+    assert!((with_one_flags_byte + 7) / 8 * 8 == 24);
+};
+
+/// THE DISPLACED-ENTRY WIDTH, which a doc comment in this file had stale.
+///
+/// The header above priced an insert as "a shift of a 48-byte entry per displaced field". That was
+/// true when the address was 24 bytes; the address is 16 now, so the pair is 40. Asserted instead
+/// of corrected in prose, because the prose went stale silently once already.
+const _: () = assert!(std::mem::size_of::<(String, ElementEntry)>() == 40);
