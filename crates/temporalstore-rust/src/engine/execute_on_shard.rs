@@ -2002,41 +2002,56 @@ pub(crate) fn execute_on_shard(
                 };
             }
             cached_response(cache, CacheKey::set_members(shard_id, &key), || {
-                // EVERY MEMBER COMES OUT OF THE PAGE, WHICH IS WHERE THEY ALREADY ARE.
+                // ONE DECODE PER DISTINCT PAGE, AND IDENTITY STAYS WITH THE ENTRIES.
                 //
-                // `container_pages` writes a per-item key into the payload precisely so the page is
-                // interpretable without the entry that names it. This reads that, instead of asking
-                // the index for one entry per member and then reading a page per entry -- and after
-                // a compaction those entries all name the SAME page, so a forty-member set read one
-                // page forty times and every read was a linear walk of its packed keys.
+                // The walk below is unchanged: it names the members that exist, and a removed
+                // member's entry is filtered out of it exactly as before. What changes is that a
+                // page is read ONCE rather than once per entry naming it -- and after a fold every
+                // entry of an object names the SAME page, so a forty-member set read one page forty
+                // times, each read a linear walk of that page's packed keys.
                 //
-                // ONE SHAPE SERVES BOTH OCCUPANCIES, which is what lets the filing change be safe:
-                // an object whose members are still on separate pages decodes one item out of each,
-                // and an object whose members have been folded onto one page decodes all of them
-                // out of it. So this is correct before, during and after a compaction.
+                // WHY IDENTITY DOES NOT MOVE, which is the whole reason this is safe. An earlier
+                // attempt enumerated the members out of the payload and dropped the walk. It read
+                // one page instead of forty and it RESURRECTED A REMOVED MEMBER: a fold followed by
+                // a removal leaves the folded page still naming the member as live, while the
+                // removal lives in a separate tombstone page and a deleted entry. Enumerating the
+                // payload saw neither. Asking the entries WHICH members exist, and the page only
+                // WHAT each one holds, cannot reach that state: an element with no live entry is
+                // never asked for.
                 let routing_bucket =
                     block_routing_bucket(&key, start_routing_bucket, end_routing_bucket);
-                // The PHYSICAL page, so an object named by several entries that resolve to one page
-                // is read once. Deliberately the same three terms `live_page_key` uses.
-                let mut pages_read = std::collections::BTreeSet::<(u64, u64, u64)>::new();
-                let mut members: Vec<Vec<u8>> = Vec::new();
-                for (_component, address) in
-                    bucket_index_component_block_addresses(shard, "set", &key)
-                {
-                    if !pages_read.insert((
+                let walk = bucket_index_component_block_addresses(shard, "set", &key);
+
+                // Decoded once per distinct page. The key is the PHYSICAL page -- the same three
+                // terms `live_page_key` uses -- because several entries of one object resolve to
+                // one page and reading it again would decode the same items again.
+                let mut by_component: std::collections::BTreeMap<String, Vec<u8>> =
+                    std::collections::BTreeMap::new();
+                // An unframed page is one value and the entry beside it names the element, which is
+                // every page written before `container_pages`. Its payload IS the member, so it is
+                // kept against its address rather than contributed to the component map -- there is
+                // no frame to render a component out of.
+                let mut unframed: std::collections::BTreeMap<(u64, u64, u64), Vec<u8>> =
+                    std::collections::BTreeMap::new();
+                let mut decoded: std::collections::BTreeSet<(u64, u64, u64)> =
+                    std::collections::BTreeSet::new();
+
+                for (_component, address) in &walk {
+                    let page = (
                         address.block_slab_id(),
                         address.offset(),
                         address.length(),
-                    )) {
+                    );
+                    if !decoded.insert(page) {
                         continue;
                     }
-                    // `None`, so the funnel hands back the WHOLE payload: naming a component here
-                    // would select one element out of a frame this is about to read in full.
+                    // `None`, so the funnel hands back the WHOLE payload: naming an element here
+                    // would select one out of a frame about to be read in full.
                     let Some(bytes) = read_block_bytes(
                         cache,
                         block_store,
                         shard_id,
-                        &address,
+                        address,
                         PageIdentity::of(shard_id, "set", &key, None),
                         Some(routing_bucket),
                     ) else {
@@ -2044,36 +2059,58 @@ pub(crate) fn execute_on_shard(
                     };
                     match crate::engine::container_pages::decode_container_page(&bytes) {
                         crate::engine::container_pages::ContainerPageDecode::Framed {
+                            spelling,
                             items,
                             ..
                         } => {
-                            // A removal rides in the frame as an item that states it; it is not a
-                            // member and must not be listed as one.
-                            members.extend(
-                                items
-                                    .into_iter()
-                                    .filter(|item| !item.deleted)
-                                    .map(|item| item.value),
-                            );
+                            for item in items {
+                                // An item stating its own removal yields no value, which is the
+                                // same answer the per-element selector gave: it answered `Removed`
+                                // and the listing dropped it.
+                                if item.deleted {
+                                    continue;
+                                }
+                                if let Some(component) =
+                                    crate::engine::container_pages::component_from_element_key(
+                                        spelling, &item.key,
+                                    )
+                                {
+                                    by_component.insert(component, item.value);
+                                }
+                            }
                         }
-                        // No magic: the payload is one value and the entry beside it named the
-                        // element -- every page written before `container_pages`. The payload IS
-                        // the member.
                         crate::engine::container_pages::ContainerPageDecode::NotFramed => {
-                            members.push(bytes);
+                            unframed.insert(page, bytes);
                         }
-                        // The bytes CLAIM to be a frame and will not walk. Serving them would hand
-                        // framing bytes back as a member, which is the one outcome this module
+                        // The bytes CLAIM to be a frame and will not walk. Handing them back would
+                        // serve framing bytes as a member, which is the outcome `container_pages`
                         // exists to make impossible, so this page contributes nothing.
                         crate::engine::container_pages::ContainerPageDecode::Corrupt(_) => {}
                     }
                 }
-                // THE ORDER IS PRESERVED RATHER THAN INHERITED. The listing this replaces walked
-                // entries sorted by component, and a set's component is its member rendered in hex,
-                // so that order was the member's byte order. Page order is written order, which is
-                // not the same, so it is sorted back -- a listing that changed its order would be a
-                // behaviour change hiding inside a footprint one.
-                members.sort();
+
+                // ANSWERED ENTRY BY ENTRY, IN THE WALK'S OWN ORDER. The walk is sorted by
+                // component, so this is the order the listing has always returned -- there is
+                // nothing to sort back.
+                let members = walk
+                    .into_iter()
+                    .filter_map(|(component, address)| {
+                        let page = (
+                            address.block_slab_id(),
+                            address.offset(),
+                            address.length(),
+                        );
+                        match component.as_deref() {
+                            Some(component) => by_component
+                                .get(component)
+                                .cloned()
+                                .or_else(|| unframed.get(&page).cloned()),
+                            // An entry naming no component can only be answered by a page that
+                            // names no element either.
+                            None => unframed.get(&page).cloned(),
+                        }
+                    })
+                    .collect();
                 CommandResponse::Members { members }
             })
         }

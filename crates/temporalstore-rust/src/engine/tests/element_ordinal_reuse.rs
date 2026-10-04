@@ -2201,54 +2201,87 @@ fn the_component_ordering_property_is_consumed_by_no_reader() {
     // `read_block_bytes` and NOTHING ELSE. If this arm ever sorts, compares or keys by it, member
     // order becomes component order and an ordinal would change it -- which is the thing this
     // whole module is about.
-    let set_arm_start = execute
-        .find("bucket_index_component_block_addresses(shard, \"set\", &key)")
-        .expect("the SetMembers arm is still built from the whole-object door");
-    let set_arm = &execute[set_arm_start..];
-    let set_arm = &set_arm[..set_arm
-        .find("CommandResponse::Members")
-        .expect("the SetMembers arm still answers with Members")];
-    assert!(
-        set_arm.len() > 200,
-        "DENOMINATOR: the SetMembers arm read back as {} bytes; a short slice scores every claim \
-         below as a pass",
-        set_arm.len()
-    );
-    assert!(
-        set_arm.contains(".into_iter()"),
-        "the SetMembers arm no longer consumes the whole-object door's walk directly; if something \
-         has been interposed, this arm can no longer say what member order is"
-    );
-    for ordering in ["sort", ".cmp(", "BTreeSet", "BTreeMap", "min_by", "max_by", "rev()"] {
-        assert!(
-            !set_arm.contains(ordering),
-            "the SetMembers arm now contains {ordering:?}. If it orders by the component, set \
-             member order IS component order and an ordinal would change it -- which is what this \
-             module exists to refuse"
+    // THE PROXY IS RETIRED HERE. Three source-text proxies have stood for this property and all
+    // three died of the arm changing shape -- the discarded component, then the bare component in
+    // the identity slot, then `.into_iter()` with a ban on `sort`/`BTreeSet`. The third died on a
+    // COMMENT: the arm stopped sorting altogether, and the sentence explaining why it no longer
+    // needs to contains the word the ban matched. A text proxy a comment can fail is measuring the
+    // wrong thing, so the property is asserted by DRIVING instead.
+    //
+    // THE PROPERTY, STATED ONCE: `SetMembers` inherits the order
+    // `bucket_index_component_block_addresses` walked in and imposes no ordering of its own. That
+    // is what makes an ordinal safe here -- it changes the walk and the listing together, rather
+    // than leaving the listing ordered by something the component has stopped being.
+    {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let engine = engine_on(dir.path());
+        load_on(&engine, OPERATOR_END);
+        // Members whose BYTE order and INSERTION order differ, so inheriting the walk and
+        // inheriting the write order are distinguishable answers.
+        let members: Vec<Vec<u8>> = [7usize, 1, 9, 3, 5, 0, 8, 2, 6, 4]
+            .iter()
+            .map(|index| format!("ord-member-{index:02}").into_bytes())
+            .collect();
+        for member in &members {
+            write(
+                &engine,
+                Command::SetAdd {
+                    key: "eo-set-order".to_string(),
+                    member: member.clone(),
+                },
+            );
+        }
+
+        // THE WALK'S OWN ORDER, read from the door the listing is built on.
+        let walked: Vec<Vec<u8>> = {
+            let shards = engine.shards.read().expect("engine lock poisoned");
+            let shard = shards.get(&1).expect("shard 1 is loaded");
+            crate::engine::bucket_store::bucket_index_component_block_addresses(
+                shard,
+                "set",
+                "eo-set-order",
+            )
+            .into_iter()
+            .filter_map(|(component, _address)| {
+                hex::decode(component.as_deref().unwrap_or_default()).ok()
+            })
+            .collect()
+        };
+        assert_eq!(
+            members.len(),
+            walked.len(),
+            "DENOMINATOR: the walk yielded {} component(s) for {} members, so comparing orders \
+             below would compare different populations",
+            walked.len(),
+            members.len()
+        );
+
+        let response = engine.execute(ExecuteRequest {
+            shard_id: 1,
+            command: Command::SetMembers {
+                key: "eo-set-order".to_string(),
+            },
+        });
+        assert!(response.status.ok, "the listing failed: {response:?}");
+        let listed = match response.response {
+            crate::types::CommandResponse::Members { members } => members,
+            other => panic!("expected Members, got {other:?}"),
+        };
+        assert_eq!(
+            walked, listed,
+            "the set listing's order is not the order the whole-object door walked in. It must \
+             INHERIT that order and impose none of its own; if it sorts or keys by anything else, \
+             respelling the component changes the walk without changing the listing and the two \
+             stop agreeing"
+        );
+        // AND THE WALK IS NOT THE WRITE ORDER, so the assertion above is a real comparison rather
+        // than two orders that happen to coincide.
+        assert_ne!(
+            members, walked,
+            "the fixture's write order and the walk's order are the same, so the comparison above \
+             cannot tell an inherited order from an insertion order"
         );
     }
-    // And the component is used for exactly one thing: naming the page to read. Asserted by
-    // POSITION rather than by presence -- it has to be the ELEMENT term of the identity in the
-    // argument immediately before the routing bucket, which is the slot `read_block_bytes` reads
-    // the page's name from.
-    //
-    // RETARGETED A SECOND TIME, for the same reason as the first and worth stating so the next move
-    // is not read as drift. The arm first asserted `filter_map(|(_, address)| {` -- that SetMembers
-    // THREW THE COMPONENT AWAY -- as a proxy for "member order is not component order". That proxy
-    // died when a carried page began needing to say which element it is. The replacement asserted
-    // the bare `member.as_deref(),` in the component slot, and that died when the slot stopped
-    // being a component and became a whole page IDENTITY: an object and an element together, so
-    // that a read cannot name one and forget the other. The PROPERTY has not moved through either
-    // change. Member order is still the order `bucket_index_component_block_addresses` walked in.
-    assert!(
-        set_arm.contains(
-            "PageIdentity::of(shard_id, \"set\", &key, member.as_deref()),\n                            Some(block_routing_bucket("
-        ),
-        "the component no longer reaches `read_block_bytes` as the element half of the page's \
-         identity. Either it has gone back to being discarded -- in which case a carried set page \
-         is served the first page of its key -- or it is being used for something else, which this \
-         arm cannot see"
-    );
 
     // And driven: a reload puts a list back IN ORDER even though the reconcile re-keys rather than
     // inheriting the walk's order. Element by element, because a length check cannot see a swap.

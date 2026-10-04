@@ -1,42 +1,40 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright 2026 MatrixArkAI
 
-//! WHICH SOURCE THE SET LISTING ANSWERS FROM, PROVED BY MAKING THE TWO SOURCES DISAGREE.
+//! THE SET LISTING DECODES EACH PAGE ONCE AND STILL TAKES ITS IDENTITY FROM THE ENTRIES.
 //!
-//! # WHAT CHANGED
+//! # WHAT CHANGED, AND WHAT DELIBERATELY DID NOT
 //!
-//! The listing used to ask the page index for one entry per member and then read a page per entry.
-//! After a compaction every one of those entries names the SAME page, so a forty-member set read
-//! one page forty times and each read was a linear walk of that page's packed keys. It now reads
-//! each distinct page ONCE and decodes every member out of it, which is what `container_pages`
-//! wrote the per-item keys into the payload for.
+//! The listing read one page per entry. After a fold every entry of an object names the SAME page,
+//! so a forty-member set read one page forty times and each read was a linear walk of that page's
+//! packed keys. It now decodes each distinct page ONCE and answers each entry out of that.
 //!
-//! # WHY A LISTING TEST ALONE WOULD PROVE NOTHING
+//! WHAT DID NOT MOVE IS WHERE IDENTITY COMES FROM. The entry walk still says which members exist.
+//! That is not conservatism, it is the correctness argument, and it is here because the first
+//! version of this change got it wrong.
 //!
-//! Before and after the change the listing returns the same members, because both sources agree.
-//! Two readers of sources that agree cannot disagree, so a test that only compares the listing
-//! against the members it wrote is asserting agreement rather than source -- which is the defect
-//! #2092's instrument exists to avoid. So the sources are made to DISAGREE: an entry is dropped
-//! from the page index while the page itself is left intact.
+//! # THE REJECTED VERSION, RECORDED BECAUSE IT LOOKED RIGHT
 //!
-//! Post-fold the object's members all live on one page, so dropping one entry removes a NAME while
-//! leaving the page that holds the member. A listing that enumerates members from entries loses
-//! exactly that member; one that enumerates them from the payload loses nothing. That is the whole
-//! experiment, and it can only come out one way per implementation.
+//! The first attempt enumerated members out of the payload and dropped the entry walk. It read one
+//! page instead of forty. It had a source-proof -- drop an entry, the member survives -- and a
+//! working negative control. It also **resurrected a removed member**, and `tombstone_reload_path`
+//! caught it.
 //!
-//! # AND THE NEGATIVE CONTROL IS WHAT MAKES IT FALSIFIABLE
+//! The mechanism is the thing to remember: a fold followed by a removal leaves the folded page
+//! still naming the member as LIVE, while the removal lives in a SEPARATE tombstone page and a
+//! DELETED index entry. A reader enumerating the payload sees neither of those, so it serves an
+//! element the store was told to forget.
 //!
-//! Dropping EVERY entry of the object must leave the listing empty. The index is still what makes
-//! the page REACHABLE -- it holds the address -- so a listing that answered a full set with no
-//! entries at all would mean this test could not fail, and would mean the reachability claim was
-//! being smuggled in. The two arms together say exactly what moved: enumeration left the index,
-//! reachability did not.
+//! And the guard that missed it was not badly built -- it was built over the wrong property.
+//! **Presence and absence are two properties.** A loss guard asks "is everything that should be
+//! here, here?"; a resurrection guard asks "is everything that should be gone, gone?" The
+//! source-proof and the negative control were both about presence. So this module asserts both,
+//! and the absence arm is the one that would have failed.
 
 #![allow(clippy::all)]
 use super::*;
 
-/// Enough members that a fold is worth doing and a lost one is unmistakable. Forty on one compacted
-/// page is the measured, real shape.
+/// Forty on one compacted page is the measured, real shape.
 const MEMBERS: usize = 40;
 
 /// Member payload width, wide enough that a member is not confusable with framing.
@@ -80,68 +78,116 @@ fn member_bytes(index: usize) -> Vec<u8> {
     bytes
 }
 
-/// A loaded shard holding one set of `MEMBERS` members, FOLDED onto as few pages as the batcher
-/// will use. Returns the engine and the directory that must outlive it.
+fn write_to(engine: &TemporalEngine, command: Command) {
+    let response = engine.execute(ExecuteRequest {
+        shard_id: 1,
+        command,
+    });
+    assert!(response.status.ok, "a fixture write failed: {response:?}");
+}
+
+/// A loaded shard holding one set of `MEMBERS` members, folded onto as few pages as the batcher
+/// will use. The fold is asserted, because every arm here rests on members sharing a page.
 fn folded_set(object_key: &str) -> (TemporalEngine, tempfile::TempDir) {
     let dir = tempfile::tempdir().expect("tempdir");
     let engine = engine_on(dir.path());
     load_on(&engine);
     for index in 0..MEMBERS {
-        let response = engine.execute(ExecuteRequest {
-            shard_id: 1,
-            command: Command::SetAdd {
+        write_to(
+            &engine,
+            Command::SetAdd {
                 key: object_key.to_string(),
                 member: member_bytes(index),
             },
-        });
-        assert!(response.status.ok, "a fixture write failed: {response:?}");
+        );
     }
-
     crate::engine::reset_container_batch_counts();
     engine
         .compact_shard_blocks(1)
         .expect("the compaction round failed");
     let (batches, folded) = crate::engine::container_batch_counts();
-    // PROOF THE TREATMENT RAN. Without a fold the members sit on separate pages, every entry names
-    // a different address, and dropping one entry would drop its page too -- so the experiment
-    // below would be measuring the wrong thing while still passing.
     assert!(
         batches > 0 && folded > 0,
-        "the fixture folded nothing: {batches} batch(es), {folded} page(s) folded. Every arm \
-         below rests on the members sharing a page, so this is not a fixture detail."
+        "the fixture folded nothing: {batches} batch(es), {folded} page(s). Every arm below rests \
+         on the members sharing a page, so this is not a fixture detail."
     );
     (engine, dir)
 }
 
-/// Distinct page addresses and live index entries this object resolves to.
-fn addresses_and_entries(engine: &TemporalEngine, object_key: &str) -> (usize, usize) {
+/// Distinct page addresses and LIVE index entries this object resolves to, plus tombstoned ones.
+fn page_and_entry_counts(
+    engine: &TemporalEngine,
+    object_key: &str,
+) -> (usize, usize, usize) {
     let shards = engine.shards.read().expect("engine lock poisoned");
     let shard = shards.get(&1).expect("shard 1 is loaded");
-    let mut addresses = std::collections::BTreeSet::new();
-    let mut entries = 0usize;
+    let mut pages = std::collections::BTreeSet::new();
+    let mut live = 0usize;
+    let mut tombstoned = 0usize;
     for bucket in shard.bucket_index.bucket_map.values() {
         for page in bucket.block_index.values() {
-            if page.deleted
-                || page.model_id.as_str() != "set"
-                || &*page.object_key != object_key
-            {
+            if page.model_id.as_str() != "set" || &*page.object_key != object_key {
                 continue;
             }
-            entries += 1;
-            addresses.insert((
+            if page.deleted {
+                tombstoned += 1;
+                continue;
+            }
+            live += 1;
+            pages.insert((
                 page.address.block_slab_id(),
                 page.address.offset(),
                 page.address.length(),
             ));
         }
     }
-    (addresses.len(), entries)
+    (pages.len(), live, tombstoned)
 }
 
-/// Drop `how_many` of this object's set entries from the page index, leaving their PAGE untouched.
+/// Every element key a live page of this object still states as PRESENT, read off the bytes.
 ///
-/// `usize::MAX` drops all of them. Returns how many were dropped.
-fn drop_entries(engine: &TemporalEngine, object_key: &str, how_many: usize) -> usize {
+/// This is the other source. The point of the absence arm is that it disagrees with the listing.
+fn components_the_pages_still_state(
+    engine: &TemporalEngine,
+    object_key: &str,
+) -> std::collections::BTreeSet<String> {
+    let shards = engine.shards.read().expect("engine lock poisoned");
+    let shard = shards.get(&1).expect("shard 1 is loaded");
+    let mut stated = std::collections::BTreeSet::new();
+    for bucket in shard.bucket_index.bucket_map.values() {
+        for page in bucket.block_index.values() {
+            if page.model_id.as_str() != "set" || &*page.object_key != object_key {
+                continue;
+            }
+            let Ok(bytes) = engine.block_store.read(&page.address) else {
+                continue;
+            };
+            if let crate::engine::container_pages::ContainerPageDecode::Framed {
+                spelling,
+                items,
+                ..
+            } = crate::engine::container_pages::decode_container_page(&bytes)
+            {
+                for item in items {
+                    if item.deleted {
+                        continue;
+                    }
+                    if let Some(component) =
+                        crate::engine::container_pages::component_from_element_key(
+                            spelling, &item.key,
+                        )
+                    {
+                        stated.insert(component);
+                    }
+                }
+            }
+        }
+    }
+    stated
+}
+
+/// Drop `how_many` of this object's live set entries, leaving their PAGE untouched.
+fn drop_live_entries(engine: &TemporalEngine, object_key: &str, how_many: usize) -> usize {
     let mut shards = engine.shards.write().expect("engine lock poisoned");
     let shard = shards.get_mut(&1).expect("shard 1 is loaded");
     let mut dropped = 0usize;
@@ -149,7 +195,9 @@ fn drop_entries(engine: &TemporalEngine, object_key: &str, how_many: usize) -> u
         bucket
             .block_index
             .retain(&mut shard.bucket_index.block_slab_live, |_handle, page| {
-                let mine = page.model_id.as_str() == "set" && &*page.object_key == object_key;
+                let mine = page.model_id.as_str() == "set"
+                    && &*page.object_key == object_key
+                    && !page.deleted;
                 if mine && dropped < how_many {
                     dropped += 1;
                     return false;
@@ -174,83 +222,156 @@ fn listed_members(engine: &TemporalEngine, object_key: &str) -> Vec<Vec<u8>> {
     }
 }
 
-fn expected_members() -> Vec<Vec<u8>> {
+fn all_members() -> Vec<Vec<u8>> {
     let mut all: Vec<Vec<u8>> = (0..MEMBERS).map(member_bytes).collect();
     all.sort();
     all
 }
 
+// =================================================================================================
+// PRESENCE
+// =================================================================================================
+
+/// EVERY MEMBER IS STILL LISTED AFTER A FOLD, AND THE ORDER IS THE ONE CALLERS HAD.
 #[test]
-fn the_set_listing_answers_from_the_page_and_not_from_the_entries_that_name_it() {
-    // ---- ARM A: the fold happened, and the listing is whole. -------------------------------
+fn a_folded_set_still_lists_every_member_in_the_order_it_always_did() {
     let (engine, _dir) = folded_set("listing/whole");
-    let (addresses, entries) = addresses_and_entries(&engine, "listing/whole");
+    let (pages, live, tombstoned) = page_and_entry_counts(&engine, "listing/whole");
     println!(
-        "[source] after the fold: {addresses} distinct page(s), {entries} index entr(ies) for \
-         {MEMBERS} members"
+        "[presence] {pages} distinct page(s), {live} live entr(ies), {tombstoned} tombstoned, \
+         for {MEMBERS} members"
     );
     assert!(
-        addresses < entries,
-        "the members did not come to share a page: {addresses} page(s) for {entries} entries. \
-         The experiment below needs one page named by several entries."
+        pages < live,
+        "the members did not come to share a page: {pages} page(s) for {live} entries, so nothing \
+         here is exercising a page read that used to happen several times"
     );
-    let mut whole = listed_members(&engine, "listing/whole");
-    whole.sort();
+    let listed = listed_members(&engine, "listing/whole");
+    // ORDER AND NOT JUST CONTENT. The walk is sorted by component, a set's component is its member
+    // in hex, and hex preserves byte order -- so this is the order the listing always returned.
     assert_eq!(
-        expected_members(),
-        whole,
-        "the listing did not return the members that were written"
+        all_members(),
+        listed,
+        "the folded set did not list its members, in order"
     );
-    drop(engine);
+}
 
-    // ---- ARM B: one NAME removed, the page left intact. -------------------------------------
-    //
-    // The sources now disagree. An index-enumerated listing is short by exactly one; a
-    // payload-enumerated one is whole.
+// =================================================================================================
+// ABSENCE -- the property the rejected version failed
+// =================================================================================================
+
+/// A MEMBER REMOVED AFTER THE FOLD STAYS REMOVED, THOUGH ITS PAGE STILL SAYS OTHERWISE.
+///
+/// THIS IS THE ARM THAT WOULD HAVE CAUGHT THE REJECTED VERSION, and it is built so that it can.
+/// The removal lands AFTER the fold, so the folded page still states the member as live while the
+/// removal lives in a tombstone page and a deleted entry. The two sources therefore DISAGREE, and
+/// that disagreement is asserted before the listing is consulted -- otherwise this would be an
+/// agreement test and could not discriminate.
+///
+/// A reader enumerating the payload answers with the removed member. A reader taking identity from
+/// the live entries cannot.
+#[test]
+fn a_member_removed_after_the_fold_is_not_listed_even_though_its_page_still_states_it() {
+    let (engine, _dir) = folded_set("listing/removed");
+    let victim = member_bytes(2);
+    write_to(
+        &engine,
+        Command::SetRemove {
+            key: "listing/removed".to_string(),
+            member: victim.clone(),
+        },
+    );
+
+    let (pages, live, tombstoned) = page_and_entry_counts(&engine, "listing/removed");
+    println!(
+        "[absence] after fold+remove: {pages} live page(s), {live} live entr(ies), \
+         {tombstoned} tombstoned"
+    );
+
+    // THE TWO SOURCES MUST DISAGREE, OR THIS ARM PROVES NOTHING.
+    let stated = components_the_pages_still_state(&engine, "listing/removed");
+    let victim_component = hex::encode(&victim);
+    assert!(
+        stated.contains(&victim_component),
+        "the pages no longer state the removed member as present, so the payload and the entries \
+         AGREE and this arm cannot tell a payload-enumerating reader from an entry-driven one. \
+         The removal has to land after the fold for the folded page to still carry it."
+    );
+
+    // AND THE LISTING MUST SIDE WITH THE ENTRIES.
+    let listed = listed_members(&engine, "listing/removed");
+    assert!(
+        !listed.contains(&victim),
+        "the listing returned a member that was removed. Its page still states it as live, so a \
+         reader enumerating the payload answers exactly this way -- which is the defect this arm \
+         exists for, and the reason identity stays with the entries"
+    );
+    let expected: Vec<Vec<u8>> = all_members()
+        .into_iter()
+        .filter(|member| *member != victim)
+        .collect();
+    assert_eq!(
+        expected, listed,
+        "the listing after one removal is not every other member, in order"
+    );
+}
+
+// =================================================================================================
+// WHICH SOURCE, AND THE CONTROL
+// =================================================================================================
+
+/// IDENTITY COMES FROM THE ENTRIES, PROVED BY REMOVING A NAME AND NOT ITS PAGE.
+///
+/// Post-fold the members share a page, so dropping ONE live entry removes a name while leaving the
+/// page that holds the member. A listing driven by the entries loses exactly that member; one
+/// enumerating the payload loses none. This is the same experiment the rejected version used --
+/// with the assertion the other way round, because the answer it was looking for was the wrong one.
+///
+/// THE CONTROL IS DROPPING EVERY ENTRY: the listing must be empty. Without it the arm above could
+/// pass on a listing that answers nothing at all.
+#[test]
+fn the_set_listing_takes_its_identity_from_the_entries_and_not_from_the_payload() {
     let (engine, _dir) = folded_set("listing/one-name-gone");
-    let dropped = drop_entries(&engine, "listing/one-name-gone", 1);
+    let dropped = drop_live_entries(&engine, "listing/one-name-gone", 1);
     assert_eq!(1, dropped, "the fixture dropped {dropped} entries, not one");
-    let (addresses, entries) = addresses_and_entries(&engine, "listing/one-name-gone");
+    let (pages, live, _) = page_and_entry_counts(&engine, "listing/one-name-gone");
     assert!(
-        addresses >= 1,
-        "dropping one entry took the page with it, so this arm cannot distinguish the sources"
+        pages >= 1 && live == MEMBERS - 1,
+        "after dropping one entry: {pages} page(s), {live} live entr(ies). The page must survive \
+         for this arm to distinguish the sources"
     );
-    println!(
-        "[source] one entry dropped: {addresses} page(s), {entries} entr(ies) still name it"
-    );
-    let mut after = listed_members(&engine, "listing/one-name-gone");
-    after.sort();
+    let listed = listed_members(&engine, "listing/one-name-gone");
     assert_eq!(
-        expected_members(),
-        after,
-        "a member disappeared when its index ENTRY was dropped while its PAGE was left intact, \
-         so the listing is still enumerating members from entries rather than from the payload. \
-         This is the whole claim of the change."
+        MEMBERS - 1,
+        listed.len(),
+        "the listing returned {} member(s) after one NAME was dropped while its page survived. \
+         Identity is supposed to come from the entries, so exactly one member should go; a \
+         payload-enumerating reader would still return all {MEMBERS}",
+        listed.len()
     );
     drop(engine);
 
-    // ---- ARM C: NEGATIVE CONTROL -- every name removed. -------------------------------------
-    //
-    // The index still owns reachability: it holds the address. With no entry at all there is no
-    // page to read, and the listing must be empty. Without this arm the test could not fail.
+    // THE CONTROL.
     let (engine, _dir) = folded_set("listing/all-names-gone");
-    let dropped = drop_entries(&engine, "listing/all-names-gone", usize::MAX);
+    let dropped = drop_live_entries(&engine, "listing/all-names-gone", usize::MAX);
     assert!(
         dropped >= MEMBERS,
-        "the control dropped only {dropped} of {MEMBERS} entries, so the set is still reachable \
-         and the control proves nothing"
+        "the control dropped only {dropped} of {MEMBERS} entries, so it proves nothing"
     );
     let empty = listed_members(&engine, "listing/all-names-gone");
     assert!(
         empty.is_empty(),
-        "the listing returned {} member(s) with NO index entry naming the page. The index is \
-         what makes a page reachable, so answering here would mean this test cannot fail.",
+        "the listing returned {} member(s) with no live entry naming the page, so this test \
+         cannot fail",
         empty.len()
     );
-    println!("[source] every entry dropped: listing is empty, so the test can fail");
+    println!("[source] one name dropped -> one member gone; every name dropped -> empty");
 }
 
-/// Page reads the listing performs, with the cache cold.
+// =================================================================================================
+// WHAT IT COSTS
+// =================================================================================================
+
 fn page_reads_of<T>(work: impl FnOnce() -> T) -> (T, u64) {
     crate::engine::reset_maintenance_block_read_counts();
     let value = work();
@@ -258,8 +379,7 @@ fn page_reads_of<T>(work: impl FnOnce() -> T) -> (T, u64) {
     (value, counts.block_reads_total)
 }
 
-/// A shard holding one set of `MEMBERS` members, optionally folded, then REOPENED so the cache is
-/// cold and a page read is a real one.
+/// A shard holding one set, optionally folded, REOPENED so the cache is cold.
 ///
 /// The compaction round puts the page it writes into the cache, so measuring on the same engine
 /// would count zero reads and measure nothing. Reopening is what makes the count a count.
@@ -269,14 +389,13 @@ fn reopened_set(object_key: &str, fold: bool) -> (TemporalEngine, tempfile::Temp
         let engine = engine_on(dir.path());
         load_on(&engine);
         for index in 0..MEMBERS {
-            let response = engine.execute(ExecuteRequest {
-                shard_id: 1,
-                command: Command::SetAdd {
+            write_to(
+                &engine,
+                Command::SetAdd {
                     key: object_key.to_string(),
                     member: member_bytes(index),
                 },
-            });
-            assert!(response.status.ok, "a fixture write failed: {response:?}");
+            );
         }
         if fold {
             crate::engine::reset_container_batch_counts();
@@ -295,20 +414,18 @@ fn reopened_set(object_key: &str, fold: bool) -> (TemporalEngine, tempfile::Temp
     (engine, dir)
 }
 
-/// WHAT THE LISTING COSTS IN PAGE READS, FOLDED AGAINST UNFOLDED, ON ONE FIXTURE.
+/// WHAT THE FOLD IS WORTH TO A LISTING THAT DECODES EACH PAGE ONCE.
 ///
-/// THE SAME CODE RUNS BOTH ARMS. What differs is the data shape: unfolded, each member has its own
-/// page and its own address, so the listing reads a page per member exactly as it always did;
-/// folded, every member's address is the one batched page, so the listing reads that page ONCE and
-/// decodes every member out of it. So this measures what the fold is worth to a reader that takes
-/// its members from the payload -- which is a saving the listing could not collect before, because
-/// it asked for one element per entry and got one page read per ask.
+/// THE SAME CODE RUNS BOTH ARMS; only the data shape differs. Unfolded, each member owns its page
+/// and its address, so a page is read per member exactly as before. Folded, every entry names one
+/// page, which is now decoded once.
 ///
 /// COUNTS AND NOT TIMES, for the reason the sibling module states: a timing ratio on this box has
 /// read 485x idle against 11x busy off identical code, so the instrument is the counter inside the
-/// one place a page read past the cache is noted.
+/// one place a page read past the cache is noted -- and a count is unaffected by the load it was
+/// taken under.
 #[test]
-fn what_the_fold_is_worth_to_a_listing_that_reads_the_payload() {
+fn what_the_fold_is_worth_to_a_listing_that_decodes_each_page_once() {
     println!(
         "\nload average: {}",
         std::fs::read_to_string("/proc/loadavg")
@@ -316,32 +433,28 @@ fn what_the_fold_is_worth_to_a_listing_that_reads_the_payload() {
             .unwrap_or_else(|_| "unavailable".to_string())
     );
 
-    let mut rows: Vec<(&str, u64, usize)> = Vec::new();
+    let mut reads_by_arm: Vec<(&str, u64)> = Vec::new();
     for (label, fold) in [("unfolded", false), ("folded", true)] {
         let key = format!("cost/{label}");
         let (engine, _dir) = reopened_set(&key, fold);
-        let (addresses, entries) = addresses_and_entries(&engine, &key);
-        let (members, reads) = page_reads_of(|| listed_members(&engine, &key));
-        let mut got = members;
-        got.sort();
+        let (pages, live, _) = page_and_entry_counts(&engine, &key);
+        let (listed, reads) = page_reads_of(|| listed_members(&engine, &key));
         assert_eq!(
-            expected_members(),
-            got,
-            "the {label} arm did not list the members that were written, so its read count is a \
-             count over the wrong answer"
+            all_members(),
+            listed,
+            "the {label} arm did not list its members, so its read count is a count over the \
+             wrong answer"
         );
         println!(
-            "  {label:<9} pages={addresses:<3} entries={entries:<4} reads={reads:<4} \
-             reads/member={:.3}",
+            "  {label:<9} pages={pages:<3} entries={live:<4} reads={reads:<4} reads/member={:.3}",
             reads as f64 / MEMBERS as f64
         );
-        rows.push((label, reads, addresses));
+        reads_by_arm.push((label, reads));
         drop(engine);
     }
 
-    let unfolded = rows[0].1;
-    let folded = rows[1].1;
-    // PROOF BOTH ARMS DID WORK. A zero read count on both would satisfy any ratio.
+    let unfolded = reads_by_arm[0].1;
+    let folded = reads_by_arm[1].1;
     assert!(
         unfolded > 0 && folded > 0,
         "an arm read no pages at all ({unfolded} unfolded, {folded} folded), so the comparison is \
@@ -349,13 +462,13 @@ fn what_the_fold_is_worth_to_a_listing_that_reads_the_payload() {
     );
     assert_eq!(
         MEMBERS as u64, unfolded,
-        "the unfolded arm read {unfolded} pages for {MEMBERS} members. One per member is the shape \
-         this listing has always had when every member owns its own page"
+        "the unfolded arm read {unfolded} pages for {MEMBERS} members; one per member is the shape \
+         this listing has when every member owns its own page"
     );
     assert!(
         folded < unfolded,
-        "the folded arm read {folded} pages against the unfolded arm's {unfolded}. Folding the \
-         members onto one page is supposed to let one read answer the whole listing"
+        "the folded arm read {folded} pages against {unfolded} unfolded, so decoding each page \
+         once bought nothing"
     );
     println!(
         "  => the fold takes the listing from {unfolded} page reads to {folded} for the same \
