@@ -3908,15 +3908,13 @@ fn fold_carried_container_elements(shard: &mut ShardState, carried: &[serde_json
             &live,
             &mut skipped,
         );
-        merge_container_elements(
-            &mut shard.zsets,
+        shard.zsets.fold_carried_elements(
             key,
             blob.get(CARRIED_CONTAINER_FIELDS[1]),
             &live,
             &mut skipped,
         );
-        merge_container_elements(
-            &mut shard.lists,
+        shard.lists.fold_carried_elements(
             key,
             blob.get(CARRIED_CONTAINER_FIELDS[2]),
             &live,
@@ -4821,12 +4819,15 @@ fn delete_record_exact(shard: &mut ShardState, key: &str) -> bool {
     let (marked, deletion) =
         storage_bucket_internals::mark_bucket_index_object_deleted_filed(shard, key);
     removed |= marked;
+    // ONE MARK, FOUR DROPS, which is now every container kind. The witness is `Clone` precisely
+    // so that one recorded object deletion can authorise each of them; minting per kind would file
+    // four records of one deletion. The last call takes it by value because nothing follows.
     removed |= recorded_map::drop_object::<recorded_map::HashKind>(shard, key, deletion.clone());
-    removed |= recorded_map::drop_object::<recorded_map::SetKind>(shard, key, deletion);
+    removed |= recorded_map::drop_object::<recorded_map::SetKind>(shard, key, deletion.clone());
+    removed |= recorded_map::drop_object::<recorded_map::ListKind>(shard, key, deletion.clone());
+    removed |= recorded_map::drop_object::<recorded_map::ZSetKind>(shard, key, deletion);
     removed |= clear_expiry(shard, key);
     removed |= shard.strings.remove(key).is_some();
-    removed |= shard.lists.remove(key).is_some();
-    removed |= shard.zsets.remove(key).is_some();
     removed |= shard.buckets.remove(key).is_some();
     removed |= shard.seen.remove(key).is_some();
     if shard.features.remove(key).is_some() {

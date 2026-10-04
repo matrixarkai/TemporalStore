@@ -1323,11 +1323,16 @@ pub(crate) fn execute_on_shard(
                     address.clone(),
                     true,
                 );
-                shard
-                    .zsets
-                    .entry(key.clone())
-                    .or_default()
-                    .insert(member.clone(), (biased, address));
+                super::recorded_map::install_element::<super::recorded_map::ZSetKind>(
+                    shard,
+                    shard_id,
+                    &key,
+                    Some(component.clone()),
+                    member.clone(),
+                    (biased, address.clone()),
+                    true,
+                    address,
+                );
                 mutated = true;
             }
             CommandResponse::Integer {
@@ -1352,30 +1357,35 @@ pub(crate) fn execute_on_shard(
         }
         Command::ZSetRemove { key, member } => {
             mutated |= drop_if_expired(cache, shard_id, shard, &key);
-            let removed = shard
+            // THE SCORE IS READ BEFORE THE REMOVAL RATHER THAN TAKEN FROM IT, and that is the
+            // one ordering this conversion had to change rather than preserve.
+            //
+            // This arm used to drop the member from the resident map FIRST, because the removal's
+            // own return value carried the biased score that the component is rendered from -- so
+            // the resident mutation preceded the durable record, which is the order a recorded
+            // container exists to make unrepresentable. Reading the score with `get` costs one
+            // lookup and lets the record go first.
+            let biased = shard
                 .zsets
-                .get_mut(&key)
-                .and_then(|members| members.remove(&member));
-            match removed {
+                .get(&key)
+                .and_then(|members| members.get(&member))
+                .map(|(biased, _)| *biased);
+            match biased {
                 None => CommandResponse::Integer { value: 0 },
-                Some((biased, _)) => {
-                    mutated = true;
+                Some(biased) => {
                     let component = zset_component(biased, &member);
-                    remove_container_element(
+                    mutated |= super::recorded_map::remove_element::<super::recorded_map::ZSetKind>(
                         cache,
                         block_store,
                         shard,
                         shard_id,
-                        "zset",
                         &key,
                         &component,
+                        member.clone(),
                         start_routing_bucket,
                         end_routing_bucket,
                         async_storage,
                     );
-                    if shard.zsets.get(&key).is_some_and(BTreeMap::is_empty) {
-                        shard.zsets.remove(&key);
-                    }
                     CommandResponse::Integer { value: 1 }
                 }
             }
@@ -1671,19 +1681,19 @@ pub(crate) fn execute_on_shard(
                 async_storage,
                 block_ordinal,
             ) {
-                shard
-                    .zsets
-                    .entry(key.clone())
-                    .or_default()
-                    .insert(member.clone(), (biased, address.clone()));
-                upsert_bucket_index_block(
+                // THIS ARM HAD THE TWO STATEMENTS IN THE UNSAFE ORDER. It inserted into the
+                // resident map and THEN filed the bucket-index entry, so a panic between them left
+                // a mutation with no record -- the exact defect class this container removes, found
+                // in the engine rather than argued from. One call now does both, record first.
+                super::recorded_map::install_element::<super::recorded_map::ZSetKind>(
                     shard,
                     shard_id,
-                    "zset",
                     &key,
-                    Some(component),
-                    address,
+                    Some(component.clone()),
+                    member.clone(),
+                    (biased, address.clone()),
                     true,
+                    address.clone(),
                 );
                 mutated = true;
             }
@@ -1721,15 +1731,10 @@ pub(crate) fn execute_on_shard(
                     end_routing_bucket,
                     async_storage,
                 );
-                if let Some(entries) = shard.zsets.get_mut(&key) {
-                    entries.remove(&member);
-                }
+                shard.zsets.replay_remove_element(&key, &member);
                 mutated = true;
                 members.push(member);
                 members.push(zset_score_string(biased).into_bytes());
-            }
-            if shard.zsets.get(&key).is_some_and(BTreeMap::is_empty) {
-                shard.zsets.remove(&key);
             }
             if mutated {
             }
@@ -1772,13 +1777,25 @@ pub(crate) fn execute_on_shard(
         }
         Command::ListPush { key, member, left } => {
             remove_if_expired(shard, &key);
-            let seq = {
-                let list = shard.lists.entry(key.clone()).or_default();
-                if left {
-                    list.keys().next().copied().map_or(0, |first| first - 1)
-                } else {
-                    list.keys().next_back().copied().map_or(0, |last| last + 1)
+            // READ, NOT `entry().or_default()`, WHICH CLOSES #2087 BY CONSTRUCTION.
+            //
+            // This arm was the only container command that created its map entry BEFORE the append
+            // that justifies it. A failed append therefore left an empty `BTreeMap` under the key,
+            // and `record_exists_exact` ORs `shard.lists.contains_key(key)` into its answer -- so
+            // the key reported EXISTS=1 and TYPE=list with no block behind it, and `CommonExpire`
+            // gating on the same function accepted a deadline for it.
+            //
+            // The container makes the old shape inexpressible: reading the next sequence is a READ,
+            // and the entry now comes into being only through the recorded install below.
+            let seq = match shard.lists.get(&key) {
+                Some(list) => {
+                    if left {
+                        list.keys().next().copied().map_or(0, |first| first - 1)
+                    } else {
+                        list.keys().next_back().copied().map_or(0, |last| last + 1)
+                    }
                 }
+                None => 0,
             };
             // Two's-complement bias makes the hex component sort lexically in list order,
             // which is what lets recovery and range reads walk the bucket index directly.
@@ -1824,11 +1841,16 @@ pub(crate) fn execute_on_shard(
                     address.clone(),
                     true,
                 );
-                shard
-                    .lists
-                    .entry(key.clone())
-                    .or_default()
-                    .insert(seq, address);
+                super::recorded_map::install_element::<super::recorded_map::ListKind>(
+                    shard,
+                    shard_id,
+                    &key,
+                    Some(component.clone()),
+                    seq,
+                    address.clone(),
+                    true,
+                    address,
+                );
                 mutated = true;
             }
             let length = shard.lists.get(&key).map_or(0, BTreeMap::len) as i64;
@@ -1842,34 +1864,34 @@ pub(crate) fn execute_on_shard(
                     mutated,
                 };
             }
-            let popped = shard.lists.get_mut(&key).and_then(|list| {
+            // READ THE ELEMENT, THEN RECORD, THEN DROP -- the same reordering `ZSetRemove`
+            // needed and for the same reason: this arm took the address out of the resident map
+            // before the removal was recorded.
+            let popped = shard.lists.get(&key).and_then(|list| {
                 let seq = if left {
                     list.keys().next().copied()
                 } else {
                     list.keys().next_back().copied()
                 }?;
-                list.remove(&seq).map(|address| (seq, address))
+                list.get(&seq).map(|address| (seq, address.clone()))
             });
             match popped {
                 None => CommandResponse::Bytes { value: None },
                 Some((seq, address)) => {
                     let component = format!("{:016x}", (seq as u64).wrapping_sub(i64::MIN as u64));
                     mutated = true;
-                    remove_container_element(
+                    super::recorded_map::remove_element::<super::recorded_map::ListKind>(
                         cache,
                         block_store,
                         shard,
                         shard_id,
-                        "list",
                         &key,
                         &component,
+                        seq,
                         start_routing_bucket,
                         end_routing_bucket,
                         async_storage,
                     );
-                    if shard.lists.get(&key).is_some_and(BTreeMap::is_empty) {
-                        shard.lists.remove(&key);
-                    }
                     CommandResponse::Bytes {
                         value: read_block_bytes(
                             cache,

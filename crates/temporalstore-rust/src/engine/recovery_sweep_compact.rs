@@ -1581,14 +1581,14 @@ fn expiry_scan_budget(limit: usize) -> usize {
                 &mut rewrite_stats,
             )?;
         }
-        for (key, members) in shard.zsets.iter_mut() {
+        for (key, mut members) in shard.zsets.element_values_mut() {
             let routing_bucket = bucket_of(key);
             compact_container_pages_batched(
                 &self.block_store,
                 &self.cache,
                 shard_id,
                 "zset",
-                key.as_str(),
+                key,
                 routing_bucket,
                 members.iter_mut().map(|(member, entry)| {
                     // The biased score big-endian, then the member: the two halves the component
@@ -1604,14 +1604,14 @@ fn expiry_scan_budget(limit: usize) -> usize {
                 &mut rewrite_stats,
             )?;
         }
-        for (key, elements) in shard.lists.iter_mut() {
+        for (key, mut elements) in shard.lists.element_values_mut() {
             let routing_bucket = bucket_of(key);
             compact_container_pages_batched(
                 &self.block_store,
                 &self.cache,
                 shard_id,
                 "list",
-                key.as_str(),
+                key,
                 routing_bucket,
                 elements.iter_mut().map(|(sequence, address)| ContainerElementRef {
                     // The same two's-complement bias `ListPush` renders as sixteen hex characters,

@@ -22,8 +22,8 @@
 use super::*;
 
 use crate::engine::recorded_map::{
-    drop_object, install_element, install_element_staged_only, remove_element, HashKind,
-    RecordedMap, RepacksAfterDecode, ReplaysInstallsUnrecorded, SetKind,
+    drop_object, install_element, install_element_staged_only, remove_element, HashKind, ListKind,
+    RecordedMap, RepacksAfterDecode, ReplaysInstallsUnrecorded, SetKind, ZSetKind,
 };
 use crate::engine::storage_bucket_internals::mark_bucket_index_object_deleted_filed;
 
@@ -224,9 +224,12 @@ fn the_recorded_map_exposes_no_way_to_mutate_any_kind_without_a_record() {
         // absent by construction, while `ElementValuesMut::iter_mut` is present because it is an
         // inherent `pub(super) fn`. That is the matcher being consistent rather than blind: a trait
         // method cannot be added without its trait appearing above, and the traits ARE pinned.
-        // The kinds themselves.
+        // The kinds themselves -- ALL FOUR container kinds now, which is the whole point: adding
+        // one is a `RecordedKind` impl plus markers, and it appears HERE rather than as a new type.
         "HashKind",
         "SetKind",
+        "ZSetKind",
+        "ListKind",
     ];
     let actual = exposed_surface(SOURCE);
     assert_eq!(
@@ -263,6 +266,8 @@ fn the_per_kind_exceptions_are_declared_per_kind_and_the_compiler_enforces_it() 
     fn only_a_kind_that_repacks<K: RepacksAfterDecode>() {}
     only_a_kind_that_replays_unrecorded::<HashKind>();
     only_a_kind_that_repacks::<SetKind>();
+    only_a_kind_that_repacks::<ZSetKind>();
+    only_a_kind_that_repacks::<ListKind>();
 
     // THE NEGATIVE HALF CANNOT BE WRITTEN IN THE LANGUAGE -- Rust has no negative bounds, so
     // "`SetKind` does NOT replay unrecorded" is not expressible as a type check. It is expressible
@@ -291,19 +296,37 @@ fn the_per_kind_exceptions_are_declared_per_kind_and_the_compiler_enforces_it() 
     );
     assert_eq!(
         repacks,
-        vec!["impl RepacksAfterDecode for SetKind {}"],
-        "the set of kinds that repack after a decode changed. Adding one is routine for a B-tree \
-         level-2 container; REMOVING one, or adding `HashKind`, is not -- `HashFieldMap` is a sorted \
-         vector with nothing to pack, and claiming otherwise would repack a vector every load."
+        vec![
+            "impl RepacksAfterDecode for SetKind {}",
+            "impl RepacksAfterDecode for ZSetKind {}",
+            "impl RepacksAfterDecode for ListKind {}",
+        ],
+        "the set of kinds that repack after a decode changed. THREE of the four declare it, and the \
+         one that does not is the point: `HashFieldMap` is a sorted vector whose length is its \
+         capacity, so it has nothing to pack, while `sets`, `zsets` and `lists` are all B-trees a \
+         decode fills by ascending insertion. Adding a B-tree kind here is routine; adding \
+         `HashKind` would repack a vector on every load for no benefit, and removing one would \
+         leave that kind's trees half empty after every decode."
     );
 
     // AND THE TWO SETS ARE DISJOINT, which is the asymmetry itself rather than two counts that
     // happen to be one.
+    // THE OTHER THREE KINDS MUST NOT CLAIM THE UNRECORDED REPLAY INSTALL. Each of their replay
+    // arms re-files its block through the bucket index before installing -- read from the arms
+    // rather than assumed -- so hash remains the only kind whose recovery installs and files
+    // nothing. `SetKind` is named separately because `ZSetKind` contains it as a substring.
     assert!(
-        !replays.iter().any(|line| line.contains("SetKind")),
+        !replays.iter().any(|line| line.contains("for SetKind")),
         "`SetKind` now declares the unrecorded replay install. Its replay arm re-files its block, \
          so if that changed the arm changed."
     );
+    for kind in ["ZSetKind", "ListKind"] {
+        assert!(
+            !replays.iter().any(|line| line.contains(kind)),
+            "`{kind}` now declares the unrecorded replay install, but its replay arm re-files its \
+             block. Either the arm changed or the marker is wrong; both need saying out loud."
+        );
+    }
     assert!(
         !repacks.iter().any(|line| line.contains("HashKind")),
         "`HashKind` now declares the decode repack, which would repack a sorted vector on every \
@@ -392,6 +415,49 @@ fn every_kind_records_exactly_once_through_the_one_operation() {
         staged() - before
     );
     assert_eq!(shard.sets.get("rec-set").map(|e| e.len()), Some(1));
+
+    // ZSET: the element is the member bytes and the VALUE carries the score, which is why this
+    // kind needed no composite key and no widened trait.
+    let zmember = b"zmember".to_vec();
+    let before = staged();
+    install_element::<ZSetKind>(
+        &mut shard,
+        TEST_SHARD,
+        "rec-zset",
+        Some(format!("{:016x}{}", 7u64, hex::encode(&zmember))),
+        zmember.clone(),
+        (7u64, an_address()),
+        true,
+        an_address(),
+    );
+    assert_eq!(
+        staged() - before,
+        1,
+        "installing one ZSET element staged {} records, not 1",
+        staged() - before
+    );
+    assert_eq!(shard.zsets.get("rec-zset").map(|e| e.len()), Some(1));
+
+    // LIST: the element is an `i64` sequence, so this kind pays no name at all -- which is why its
+    // row cost does not move with an element name the way a hash field's does.
+    let before = staged();
+    install_element::<ListKind>(
+        &mut shard,
+        TEST_SHARD,
+        "rec-list",
+        Some(format!("{:016x}", 0u64)),
+        0i64,
+        an_address(),
+        true,
+        an_address(),
+    );
+    assert_eq!(
+        staged() - before,
+        1,
+        "installing one LIST element staged {} records, not 1",
+        staged() - before
+    );
+    assert_eq!(shard.lists.get("rec-list").map(|e| e.len()), Some(1));
 
     // THE STAGED-ONLY RECORD, which is a context node: never filed in the bucket index, so its
     // record is the staged outcome alone. One record, counted the same way.
@@ -572,6 +638,48 @@ fn every_kind_round_trip_uses_the_codec_its_field_always_used() {
          encoding cannot represent"
     );
 
+    // ZSET: `Vec<u8>` members again, so `zset_index_serde` -- STATED by the kind, not inherited.
+    let mut z = std::collections::BTreeMap::new();
+    z.insert(b"zm".to_vec(), (3u64, an_address()));
+    z.insert(vec![0u8, 254, 255], (9u64, an_address()));
+    let mut zsets = RecordedMap::<ZSetKind>::default();
+    zsets.insert_elements_for_test("z", z);
+    let z_json = serde_json::to_vec(&zsets).expect(
+        "the zset map serializes -- a plain-map impl fails HERE for the same reason it does for a \
+         set: a `Vec<u8>` key has no JSON object-key representation",
+    );
+    let z_back: RecordedMap<ZSetKind> =
+        serde_json::from_slice(&z_json).expect("the zset map round-trips");
+    assert_eq!(z_back, zsets, "the zset codec does not round-trip");
+    assert!(
+        z_back
+            .get("z")
+            .expect("present")
+            .contains_key(&vec![0u8, 254, 255]),
+        "the non-UTF8 zset member did not survive the round trip"
+    );
+
+    // LIST: an `i64` key, which a JSON object CAN carry as a string -- so this kind legitimately
+    // uses the plain map, and says so rather than defaulting to it.
+    let mut l = std::collections::BTreeMap::new();
+    l.insert(-5i64, an_address());
+    l.insert(0i64, an_address());
+    l.insert(9_223_372_036_854_775_807i64, an_address());
+    let mut lists = RecordedMap::<ListKind>::default();
+    lists.insert_elements_for_test("l", l);
+    let l_json = serde_json::to_vec(&lists).expect("the list map serializes");
+    let l_back: RecordedMap<ListKind> =
+        serde_json::from_slice(&l_json).expect("the list map round-trips");
+    assert_eq!(l_back, lists, "the list codec does not round-trip");
+    assert!(
+        l_back
+            .get("l")
+            .expect("present")
+            .contains_key(&9_223_372_036_854_775_807i64),
+        "the extreme sequence did not survive the round trip, which is the value a narrower key \
+         type would have lost"
+    );
+
     // CONTROL: the comparison detects a planted difference, so agreement above is not vacuous.
     let mut planted = RecordedMap::<SetKind>::default();
     planted.insert_elements_for_test(
@@ -581,5 +689,124 @@ fn every_kind_round_trip_uses_the_codec_its_field_always_used() {
     assert_ne!(
         planted, sets,
         "the equality used above cannot tell two different maps apart, so it proves nothing"
+    );
+}
+
+/// #2087 IS CLOSED BY CONSTRUCTION: READING A LIST'S NEXT SEQUENCE CANNOT CREATE THE LIST.
+///
+/// # THE DEFECT
+///
+/// `ListPush` was the only container command that created its map entry BEFORE the append that
+/// justifies it: it called `shard.lists.entry(key).or_default()` purely to read the next sequence
+/// number. A failed append therefore left an empty `BTreeMap` under the key, and
+/// `record_exists_exact` ORs each model map's `contains_key` into its answer -- so the key reported
+/// EXISTS=1 and TYPE=list with no block behind it, and `CommonExpire`, which gates on the same
+/// function, accepted a deadline for it.
+///
+/// # WHAT THIS TEST ASSERTS, AND WHAT IT DOES NOT
+///
+/// It asserts the two halves of the structural fix:
+///
+///   1. a READ of an absent key does not create it, and the sequence computation `ListPush` now
+///      uses is a read;
+///   2. the arm contains no `entry(` call against `lists` at all, so the old shape is not merely
+///      unused but absent.
+///
+/// THE TREE-LEVEL DRIVE IS A COMPILE ERROR, WHICH IS THE STRONGEST FORM THIS COULD TAKE. Planting
+/// the literal old shape -- `shard.lists.entry(key.clone()).or_default()` -- does not fail this
+/// test, it fails the BUILD:
+///
+/// ```text
+/// error[E0599]: no method named `entry` found for struct `RecordedMap<ListKind>`
+/// ```
+///
+/// So the second assertion below is belt-and-braces: it guards the residual risk that someone adds
+/// an `entry`-like accessor to the container later, at which point the arm could reacquire the shape
+/// without the compiler objecting. Its own matcher is driven against a planted string instead, since
+/// the tree cannot hold the defect for it to find.
+///
+/// IT DOES NOT SIMULATE A FAILED APPEND, and that is deliberate rather than an omission. Forcing
+/// `append_value_of_object` to fail needs a block store that cannot write, and this tree has no
+/// helper for that -- a permissions fixture on a shared machine can leave state behind, which is a
+/// worse trade than the narrower assertion. The reason the narrower one suffices is that the
+/// container removes the *expressibility*: `entries` is private, so the only way a key can come
+/// into being is `install_element`, and that is called only inside `if let Ok(address) = append…`.
+/// A failed append has no path to the map left to take.
+#[test]
+fn reading_a_lists_next_sequence_cannot_create_the_list() {
+    let mut shard = shard_for_records();
+
+    // 1. THE READ DOES NOT CREATE. This is the exact shape `ListPush` now uses.
+    assert!(shard.lists.get("never-pushed").is_none());
+    let seq = match shard.lists.get("never-pushed") {
+        Some(list) => list.keys().next().copied().map_or(0, |first| first - 1),
+        None => 0,
+    };
+    assert_eq!(seq, 0, "the empty-list sequence is still 0");
+    assert!(
+        !shard.lists.contains_key("never-pushed"),
+        "reading the next sequence CREATED the key. `record_exists_exact` ORs this very \
+         `contains_key` into its answer, so that is an EXISTS=1 for a list with no block behind it \
+         -- which is #2087."
+    );
+    assert_eq!(shard.lists.len(), 0, "the map gained an entry from a read");
+
+    // 2. AND THE OLD SHAPE IS ABSENT FROM THE ARM, not merely unused. The matcher is scoped to the
+    //    `ListPush` arm rather than the file, because `entry(` against other maps is legitimate.
+    let execute = include_str!("../execute_on_shard.rs");
+    let at = execute
+        .find("Command::ListPush { key, member, left } => {")
+        .expect("the ListPush arm is findable by name");
+    let rest = &execute[at..];
+    let arm = match rest.find("\n        Command::") {
+        Some(end) => &rest[..end],
+        None => rest,
+    };
+    assert!(
+        arm.len() > 400,
+        "the ListPush arm parsed to {} characters, which is not its body",
+        arm.len()
+    );
+    // CONTROL: the slice really is that arm.
+    assert!(
+        arm.contains("install_element::<super::recorded_map::ListKind>("),
+        "the slice taken is not the ListPush arm -- it does not install a list element"
+    );
+    // COMMENT LINES COME OUT FIRST, because the note explaining the fix QUOTES the shape it
+    // removed -- `entry().or_default()` -- and the first run of this test fired on that very
+    // sentence. A guard that fires on its own documentation has to be relaxed to survive, and a
+    // relaxed guard is not one; stripping comments keeps both needles exact.
+    let arm_code: String = arm
+        .lines()
+        .map(str::trim)
+        .filter(|line| !line.starts_with("//"))
+        .collect::<Vec<_>>()
+        .join("
+");
+    // CONTROL ON THE MATCHER ITSELF, against a planted string -- because the tree cannot hold the
+    // defect any more, so the matcher has nothing real to find and its silence would otherwise be
+    // unearned. These are the two shapes it exists to catch if an `entry`-like accessor ever
+    // returns to the container.
+    let planted = "let list = shard.lists.entry(key.clone()).or_default();";
+    assert!(
+        planted.contains(".lists.entry(") && planted.contains("or_default()"),
+        "the needles this test asserts the ABSENCE of do not match the shape they were written          for, so their absence from the arm proves nothing"
+    );
+
+    // CONTROL on the strip: the comment WAS there, so the filter is doing work rather than
+    // matching nothing.
+    assert!(
+        arm.contains("entry().or_default()") && !arm_code.contains("entry().or_default()"),
+        "the comment strip removed nothing, so these assertions are not being tested against the          shape they are written for"
+    );
+    assert!(
+        !arm_code.contains(".lists.entry("),
+        "`ListPush` reaches `shard.lists` with `entry(` again. That is how #2087 arose: the entry \
+         is created before the append that justifies it, and a failed append leaves a phantom list."
+    );
+    assert!(
+        !arm_code.contains("or_default()"),
+        "`ListPush` has an `or_default()` again, which is the other half of the shape that created \
+         an entry a failed append then left behind."
     );
 }
