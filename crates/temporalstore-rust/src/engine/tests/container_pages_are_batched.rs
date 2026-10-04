@@ -354,6 +354,12 @@ fn every_element_reads_back_its_own_value_after_the_fold_and_after_a_reload() {
     let elements: Vec<Vec<u8>> = (0..FOLDABLE_ELEMENTS)
         .map(|index| bytes_of(VALUE_WIDTH, index + 2_000))
         .collect();
+    // THE FOURTH KIND. Distinct scores, ascending, so the reload can be asked for them in score
+    // order and a member that came back under the wrong score is visible rather than merely
+    // present.
+    let scored: Vec<(Vec<u8>, f64)> = (0..FOLDABLE_ELEMENTS)
+        .map(|index| (bytes_of(VALUE_WIDTH, index + 3_000), index as f64))
+        .collect();
 
     {
         let engine = TemporalEngine::with_local_dirs(
@@ -389,6 +395,16 @@ fn every_element_reads_back_its_own_value_after_the_fold_and_after_a_reload() {
                     key: "readback".to_string(),
                     member: element.clone(),
                     left: false,
+                },
+            );
+        }
+        for (member, score) in &scored {
+            write(
+                &engine,
+                Command::ZSetAdd {
+                    key: "readback".to_string(),
+                    member: member.clone(),
+                    score: *score,
                 },
             );
         }
@@ -509,6 +525,42 @@ fn every_element_reads_back_its_own_value_after_the_fold_and_after_a_reload() {
         elements, ranged,
         "the reloaded list did not read back its elements in order out of folded pages"
     );
+    // THE FOURTH KIND, AND IT GUARDS A DIFFERENT THING THAN THE THREE ABOVE.
+    //
+    // `ZSetRange` answers out of `shard.zsets` and reads no page, so this cannot show that a
+    // folded zset page is readable -- no production read of a zset reads one. What it shows is
+    // that every member survived the fold and the reload, which runs on the durable map, the
+    // carried elements and the live-address filter. A count first, so a lost member fails here
+    // rather than being mistaken for one that merely came back in a different place.
+    let zset_ranged = match read(
+        &reloaded,
+        Command::ZSetRange {
+            key: "readback".to_string(),
+            start: 0,
+            stop: -1,
+            rev: false,
+        },
+    ) {
+        crate::types::CommandResponse::Members { members } => members,
+        other => panic!("expected Members, got {other:?}"),
+    };
+    // Interleaved member/score pairs, so the element count is half the returned length.
+    assert_eq!(
+        scored.len(),
+        zset_ranged.len() / 2,
+        "the reloaded zset holds {} element(s) where {} were written, so the per-member \
+         comparisons below would be over the wrong population",
+        zset_ranged.len() / 2,
+        scored.len()
+    );
+    for (member, _score) in &scored {
+        assert!(
+            zset_ranged.contains(member),
+            "the reloaded zset lost a member. Its members are restored from the durable map \
+             rather than read off a page, so this is the arm that fails if the fold or the \
+             reload drops one"
+        );
+    }
     assert_eq!(
         0,
         crate::engine::corrupt_container_page_count(),
