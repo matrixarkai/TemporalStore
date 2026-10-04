@@ -66,10 +66,10 @@ fn index_item(index: usize) -> IndexItem {
         model_id: "m".to_string(),
         component: None,
         object_id: 1,
-        block_id: 0,
-        address: None,
-        size: VALUE_BYTES as u64,
-        in_log: false,
+        // ADDRESS-LESS BY DESIGN: this item is the smallest a delta record can carry,
+        // and an address would make it bigger rather than smaller. The `size` it used
+        // to state was never restored on a row with no address to derive it from.
+        entry: None,
         deleted: false,
     }
 }

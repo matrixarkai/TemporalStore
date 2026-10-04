@@ -237,18 +237,21 @@ fn budget() -> Vec<Budgeted> {
             size: size_of::<IndexItem>(),
             align: align_of::<IndexItem>(),
             // kind, routing_bucket, TWO String handles (the composite page handle and the
-            // model spelling), the Arc<str> object key and Option<Arc<str>> component it now
-            // shares with the resident entry, object_id, block_id, Option<BlockAddress>, size,
-            // in_log, deleted
+            // model spelling), the Arc<str> object key and Option<Arc<str>> component it shares
+            // with the resident entry, object_id, the shared Option<ElementEntry> payload, deleted.
+            //
+            // THREE FIELDS LEFT AND ONE WAS RENAMED. `block_id`, `size` and `in_log` were each a
+            // derivation of the address -- `block_id()`, `length()` and `block_id().is_none()` --
+            // and are computed where they are written instead. The address itself is now reached
+            // through the payload the resident model map also holds.
             fields: size_of::<IndexItemKind>()
                 + size_of::<u32>()
                 + 2 * string
                 + size_of::<std::sync::Arc<str>>()
                 + size_of::<Option<std::sync::Arc<str>>>()
-                + 2 * size_of::<u64>()
-                + size_of::<Option<BlockAddress>>()
                 + size_of::<u64>()
-                + 2 * size_of::<bool>(),
+                + size_of::<Option<crate::block_store::ElementEntry>>()
+                + size_of::<bool>(),
             per_item: true,
         },
         Budgeted {
@@ -343,7 +346,7 @@ fn every_per_item_structure_states_its_width_and_its_padding() {
     assert_eq!(8, size_of::<DeletedObjectIndex>(), "DeletedObjectIndex width moved");
     assert_eq!(24, size_of::<DirtyKeySet>(), "DirtyKeySet width moved");
     assert_eq!(16, size_of::<WalResidentBlock>(), "WalResidentBlock width moved");
-    assert_eq!(136, size_of::<IndexItem>(), "IndexItem width moved");
+    assert_eq!(120, size_of::<IndexItem>(), "IndexItem width moved");
     assert_eq!(104, size_of::<SlabCatalogEntry>(), "SlabCatalogEntry width moved");
     assert_eq!(
         168,
@@ -643,10 +646,14 @@ fn only_the_structures_that_hold_an_address_moved() {
             // against a live `size_of` rather than being frozen into a constant or restated as a
             // width the struct never had.
             let later = match *name {
-                // `object_key` and `component` became the shared names the resident entry holds:
-                // two 24-byte owned strings became a 16-byte pointer each. Nothing to do with
-                // the address.
-                "IndexItem" => 16i64,
+                // `object_key` and `component` became the shared names the resident entry
+                // holds: two 24-byte owned strings became a 16-byte pointer each (16 B). And
+                // `block_id` and `size` left as fields because both were derivations of the
+                // address, which takes two more whole words (16 B) out of the eight-aligned
+                // group. `in_log` left too and is worth nothing here: it was a tail bool the
+                // aligner was already padding, so the tail went 7 -> 6 of 8. None of this is
+                // the address shed, so all 32 are named and subtracted.
+                "IndexItem" => 32i64,
                 _ => 0,
             };
             assert_eq!(
