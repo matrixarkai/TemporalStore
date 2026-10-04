@@ -18,11 +18,10 @@ fn small_item(bucket: u32, key: &str) -> IndexItem {
         model_id: "m".to_string(),
         component: None,
         object_id: 1,
-        block_id: 0,
-        address: None,
-        size: 8,
-        in_log: false,
         deleted: false,
+        // ADDRESS-LESS BY DESIGN: the smallest row a delta record can carry. An address would
+        // make it bigger, not smaller, and the size it stated was never restored without one.
+        entry: None,
     }
 }
 

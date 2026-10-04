@@ -3236,11 +3236,11 @@ fn collect_upsert_index_items(
             model_id: (*kind).to_string(),
             component: component.as_deref().map(std::sync::Arc::from),
             object_id,
-            block_id: address.block_id().unwrap_or(0),
-            size: address.length(),
-            in_log: address.block_id().is_none(),
             deleted: false,
-            address: Some(address),
+            // THE WHOLE PAYLOAD. The three slots this used to fill beside the address --
+            // `block_id`, `size`, `in_log` -- were each a derivation OF the address, so they are
+            // computed where they are written instead of restated here.
+            entry: Some(crate::block_store::ElementEntry::new(address)),
         });
     }
     items
@@ -3326,11 +3326,11 @@ fn collect_command_index_items_for(
                 model_id: page.model_id.clone().to_string(),
                 component: page.component.clone(),
                 object_id: page.object_id(shard_id),
-                block_id: page.address.block_id().unwrap_or(0),
-                address: Some(page.address.clone()),
-                size: page.address.length(),
-                in_log: page.log_backed(),
                 deleted: page.deleted,
+                // `in_log` here was `page.log_backed()` -- the accessor added when the stored
+                // copy of this same fact was removed from the resident entry. One derivation,
+                // two spellings, on a row. Now neither.
+                entry: Some(crate::block_store::ElementEntry::new(page.address.clone())),
             });
         }
     }
@@ -4046,9 +4046,16 @@ fn fold_delta_block_items(
         if item.deleted {
             continue;
         }
-        let Some(address) = item.address.clone() else {
+        let Some(address) = item
+            .entry
+            .as_ref()
+            .map(|entry| entry.address().clone())
+        else {
             continue;
         };
+        // Computed before the address moves into the entry below. This is the same expression
+        // `in_log` used to carry as a field.
+        let log_backed = address.block_id().is_none();
         let bucket = bucket_index
             .bucket_map
             .entry(item.routing_bucket)
@@ -4072,7 +4079,7 @@ fn fold_delta_block_items(
                 address,
                 dirty: false,
                 deleted: false,
-                log_backed: item.in_log,
+                log_backed,
             },
             &mut bucket_index.block_slab_live,
         );

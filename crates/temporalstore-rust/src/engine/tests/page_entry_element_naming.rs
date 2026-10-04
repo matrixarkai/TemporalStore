@@ -805,10 +805,12 @@ fn a_hash_page_naming_no_field_is_skipped_while_a_genuine_empty_field_name_is_ke
         // THE WHOLE POINT: this item names no field.
         component: None,
         object_id: stable_block_object_id(1, "hash", nameless_key),
-        block_id: 0,
-        address: Some(nameless_address.clone()),
-        size: nameless_address.length(),
-        in_log: false,
+        // THIS FIXTURE USED TO DISAGREE WITH ITS OWN ADDRESS. `from_compact_slab_address`
+        // passes `None` for the block id, so the derivation is `in_log = true` and the literal
+        // here said `false`. It now encodes the honest value. All three such sites are tests --
+        // both production builders fill these from the address -- so nothing production writes
+        // ever carried the disagreeing value.
+        entry: Some(crate::block_store::ElementEntry::new(nameless_address.clone())),
         deleted: false,
     };
 

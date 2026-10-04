@@ -10,7 +10,7 @@ use std::sync::{Arc, Mutex};
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
-use crate::block_store::BlockAddress;
+use crate::block_store::{BlockAddress, ElementEntry};
 use crate::types::ShardId;
 
 /// Counters for the scale probes, tests only.
@@ -606,6 +606,7 @@ impl Default for IndexItemKind {
 /// `BlockIndex` the whole-index serialization would have produced. `deleted` is a
 /// tombstone: replaying it removes the entry.
 #[derive(Debug, Clone, PartialEq, Deserialize)]
+#[serde(from = "IndexItemWire")]
 pub struct IndexItem {
     #[serde(
         rename = "k",
@@ -660,28 +661,172 @@ pub struct IndexItem {
     pub component: Option<std::sync::Arc<str>>,
     #[serde(rename = "oi", alias = "object_id", default)]
     pub object_id: u64,
-    #[serde(rename = "pi", alias = "page_id", default)]
-    pub block_id: u64,
-    #[serde(rename = "a", alias = "address", default)]
-    pub address: Option<BlockAddress>,
-    #[serde(rename = "sz", alias = "size", default)]
-    pub size: u64,
-    #[serde(rename = "il", alias = "in_log", default)]
-    pub in_log: bool,
+    /// WHERE THE ELEMENT LIVES -- the SHARED payload, the same struct the resident model map
+    /// holds as its level-2 value.
+    ///
+    /// # WHY FOUR FIELDS BECAME ONE
+    ///
+    /// This row used to carry `address`, `size`, `in_log` and `block_id` side by side, and three
+    /// of those were DERIVATIONS of the first: `size` is `address.length()`, `block_id` is
+    /// `address.block_id()`, and `in_log` is `address.block_id().is_none()`. Both builders said so
+    /// in their own code -- one of them filled `in_log` by calling `BlockIndex::log_backed()`,
+    /// which is the accessor added when the equivalent stored flag was removed from the RESIDENT
+    /// entry for exactly this reason. Two spellings of one derivation, on a row, after the
+    /// entry-side copy was already deleted.
+    ///
+    /// So they are gone as fields and computed where they are written. The payload that remains is
+    /// the address, which is also what the model map's level-2 value holds -- one struct, two
+    /// containers, and ONE place where the meaning of a field is defined.
+    ///
+    /// # AN `Option` AND NOT A DEFAULTED ENTRY
+    ///
+    /// `address` was an `Option` and could be absent. Collapsing an absent address into a
+    /// defaulted all-zero one is the silent conflation this file refuses elsewhere: an old
+    /// record's `ps` of 1 beside an `o` of 2 would land as a well-formed address for a block that
+    /// is not the one that was written, and nothing would fail. So absence stays absence.
+    /// `Option<ElementEntry>` is 24 bytes, exactly what `Option<BlockAddress>` was.
+    ///
+    /// # THE TWELVE SLOTS DID NOT MOVE
+    ///
+    /// Nothing here changes the wire. The index log is POSITIONAL and carries no struct version,
+    /// so a row whose length does not match the struct decoding it is REFUSED -- and the format
+    /// stamp cannot help, because it guards the NAMED served index. All twelve slots are still
+    /// written; the three derived ones are computed in the serializer and CROSS-CHECKED in the
+    /// conversion from [`IndexItemWire`], which is signal this row did not have before.
+    #[serde(skip)]
+    pub entry: Option<ElementEntry>,
     #[serde(rename = "d", alias = "deleted", default)]
     pub deleted: bool,
+}
+
+/// THE TWELVE SLOTS, EXACTLY AS THEY HAVE ALWAYS BEEN, for reading only.
+///
+/// [`IndexItem`] rides `serde(from)` over this, which is the pattern [`BlockAddress`] already uses
+/// for its own wire struct. Two things fall out of it, and both are the reason it is shaped this
+/// way rather than hand-written:
+///
+///   * BOTH SHAPES KEEP WORKING FOR FREE. The derived `Deserialize` accepts a positional row and a
+///     named map, which is what the aliases below are for. Only the two msgpack paths exist today
+///     and the map arm is DEFENSIVE -- there is no live JSON consumer of this row -- but a codec
+///     that handles only the shape currently exercised is the kind of thing that breaks in silence
+///     later, and the aliases are evidence a named shape was once read.
+///   * THE CROSS-CHECK HAS SOMEWHERE TO STAND. The three derived slots are read here and compared
+///     against the address in [`IndexItem::from`], rather than being dropped.
+#[derive(Debug, Clone, Deserialize)]
+struct IndexItemWire {
+    #[serde(
+        rename = "k",
+        alias = "kind",
+        default,
+        deserialize_with = "item_kind_either_shape"
+    )]
+    kind: IndexItemKind,
+    #[serde(rename = "rb", alias = "routing_bucket", alias = "routing_slot", default)]
+    routing_bucket: u32,
+    #[serde(
+        rename = "pk",
+        alias = "page_ref_key",
+        default,
+        deserialize_with = "block_ref_key_either_shape"
+    )]
+    block_ref_key: String,
+    #[serde(rename = "ok", alias = "object_key", default)]
+    object_key: std::sync::Arc<str>,
+    #[serde(
+        rename = "mi",
+        alias = "model_id",
+        default,
+        deserialize_with = "model_id_either_shape"
+    )]
+    model_id: String,
+    #[serde(rename = "c", alias = "component", default)]
+    component: Option<std::sync::Arc<str>>,
+    #[serde(rename = "oi", alias = "object_id", default)]
+    object_id: u64,
+    #[serde(rename = "pi", alias = "page_id", default)]
+    block_id: u64,
+    #[serde(rename = "a", alias = "address", default)]
+    address: Option<BlockAddress>,
+    #[serde(rename = "sz", alias = "size", default)]
+    size: u64,
+    #[serde(rename = "il", alias = "in_log", default)]
+    in_log: bool,
+    #[serde(rename = "d", alias = "deleted", default)]
+    deleted: bool,
+}
+
+/// How many stored rows disagreed with their own address about a derived slot.
+///
+/// A DETECTOR, NOT A REFUSAL. Today a row carrying `sz` that disagrees with `address.length()` is
+/// accepted in silence -- `restore_size_repeat` only fills the slot when it is zero, so a
+/// disagreeing non-zero value is simply kept. Turning that into a decode error would refuse rows
+/// that load today, which is a bigger change than this is allowed to be. So the disagreement is
+/// COUNTED where it was previously invisible, and the count is what a test can assert on.
+static DERIVED_SLOT_DISAGREEMENTS: std::sync::atomic::AtomicUsize =
+    std::sync::atomic::AtomicUsize::new(0);
+
+/// How many derived slots have disagreed with their address since the last reset.
+pub fn derived_slot_disagreements() -> usize {
+    DERIVED_SLOT_DISAGREEMENTS.load(std::sync::atomic::Ordering::Relaxed)
+}
+
+/// Reset the disagreement count, so a test measures its own rows and not another test's.
+pub fn reset_derived_slot_disagreements() {
+    DERIVED_SLOT_DISAGREEMENTS.store(0, std::sync::atomic::Ordering::Relaxed);
+}
+
+impl From<IndexItemWire> for IndexItem {
+    fn from(wire: IndexItemWire) -> Self {
+        // THE CROSS-CHECK. Each of the three derived slots is compared against the address that
+        // defines it. `size` is checked only when the row carried a value: a zero is the STRIP
+        // SENTINEL -- the encoder writes it when the size equals the address length -- and not a
+        // disagreement.
+        if let Some(address) = wire.address.as_ref() {
+            let mut disagreed = 0usize;
+            if wire.size != 0 && wire.size != address.length() {
+                disagreed += 1;
+            }
+            if wire.block_id != address.block_id().unwrap_or_default() {
+                disagreed += 1;
+            }
+            if wire.in_log != address.block_id().is_none() {
+                disagreed += 1;
+            }
+            if disagreed > 0 {
+                DERIVED_SLOT_DISAGREEMENTS
+                    .fetch_add(disagreed, std::sync::atomic::Ordering::Relaxed);
+            }
+        }
+        Self {
+            kind: wire.kind,
+            routing_bucket: wire.routing_bucket,
+            block_ref_key: wire.block_ref_key,
+            object_key: wire.object_key,
+            model_id: wire.model_id,
+            component: wire.component,
+            object_id: wire.object_id,
+            entry: wire.address.map(ElementEntry::new),
+            deleted: wire.deleted,
+        }
+    }
 }
 
 /// One per changed page per write, and transient -- it lives for the length of an append.
 /// Pinned because it is the widest thing built per page anywhere in the engine.
 ///
 /// WHAT THIS NUMBER IS MADE OF IS RECONSTRUCTED RATHER THAN RESTATED, by
-/// `tests::what_every_byte_of_an_index_item_is_spent_on`: the eight-aligned fields come to 144 and
-/// the tail -- the routing bucket, the kind and the two flags -- comes to 7, which the aligner
+/// `tests::what_every_byte_of_an_index_item_is_spent_on`: the eight-aligned fields come to 112
+/// and the tail -- the routing bucket, the kind and the ONE remaining flag -- comes to 6, which
+/// the aligner
 /// rounds to 8. The probe asserts each field is really in the group it counts it in, so a field
 /// that MOVES between the two fails there with the group it left.
 ///
-/// AND THE ONE SPARE BYTE IN THAT TAIL IS THE WHOLE VERDICT ON NARROWING THIS STRUCT. Seven bytes
+/// THE TEST IS THE AUTHORITY, NOT THIS PARAGRAPH. It reconstructs the two groups from the
+/// declaration and fails naming the group a field left, which is how the 120 below was caught
+/// the moment three fields became derivations. Prose stating a width has drifted five times in
+/// this area; a reconstruction has not drifted once.
+///
+/// AND THE TWO SPARE BYTES IN THAT TAIL ARE THE WHOLE VERDICT ON NARROWING THIS STRUCT. Seven bytes
 /// of field in eight means a one-byte field added to the tail is FREE, and every narrowing inside
 /// it is worth EXACTLY ZERO: the routing bucket at sixteen bits leaves five and rounds back to
 /// eight, and deleting the kind and both flags outright leaves four and still rounds to eight.
@@ -704,7 +849,7 @@ pub struct IndexItem {
 /// documented history of exactly that failure about its own wire format, and the same rule applies
 /// to the resident one: a width chain that does not start where the assertion does is read as the
 /// current width by whoever reads it next.)
-const _: () = assert!(std::mem::size_of::<IndexItem>() == 136);
+const _: () = assert!(std::mem::size_of::<IndexItem>() == 120);
 
 /// A field whose value is its default says nothing, and every field here carries
 /// `#[serde(default)]` -- so a reader that meets an absent one fills in the same value it would
@@ -791,7 +936,7 @@ impl IndexItem {
     /// free to change. Asking those two questions the other way round is what produced the error
     /// above.
     fn strip_block_ref_key_repeat(&mut self) {
-        let Some(address) = self.address.as_ref() else {
+        let Some(address) = self.entry.as_ref().map(ElementEntry::address) else {
             return;
         };
         let derived = block_ref_key_from_parts(
@@ -817,7 +962,7 @@ impl IndexItem {
         if !self.block_ref_key.is_empty() {
             return;
         }
-        let Some(address) = self.address.as_ref() else {
+        let Some(address) = self.entry.as_ref().map(ElementEntry::address) else {
             return;
         };
         self.block_ref_key = block_ref_key_from_parts(
@@ -835,22 +980,17 @@ impl IndexItem {
     /// Drop the size when the address already states it.
     ///
     /// `size` and `address.length` are the same number on a page item, written twice.
-    fn strip_size_repeat(&mut self) {
-        if let Some(address) = self.address.as_ref() {
-            if self.size == address.length() {
-                self.size = 0;
-            }
-        }
-    }
+    /// ABSORBED INTO THE CODEC, and kept as a no-op only so the call sites that walk a record
+    /// still read as one list of per-item steps.
+    ///
+    /// The size is no longer a field, so it cannot repeat the address's length: the serializer
+    /// writes the strip sentinel unconditionally and the conversion from the wire restores it.
+    /// What this function used to do is now true by construction.
+    fn strip_size_repeat(&mut self) {}
 
     /// Put the size back from the address that carries it.
-    fn restore_size_repeat(&mut self) {
-        if self.size == 0 {
-            if let Some(address) = self.address.as_ref() {
-                self.size = address.length();
-            }
-        }
-    }
+    /// ABSORBED INTO THE CODEC. See [`IndexItem::strip_size_repeat`].
+    fn restore_size_repeat(&mut self) {}
 
     /// Drop the object id when it is the hash of what this row already says.
     ///
@@ -910,10 +1050,11 @@ impl IndexItem {
     /// before that stripping still carries both, and this leaves those alone: it fills only what is
     /// absent.
     fn restore_address_repeats(&mut self) {
-        if self.address.as_mut().is_some() {
-        }
-        // The routing bucket is not restored onto the address because the address has nowhere to
-        // put it. The item's `routing_bucket` field is what every reader of this item uses.
+        // NOTHING LEFT TO RESTORE, and the body that used to stand here was already an empty
+        // `if` over the address. The routing bucket is not restored onto the address because the
+        // address has nowhere to put it -- the item's `routing_bucket` field is what every reader
+        // uses -- and the object id is derived by `restore_object_id_repeat`. Kept as a no-op so
+        // the per-item restore steps still read as one list at their call sites.
     }
 }
 
@@ -1148,10 +1289,19 @@ impl serde::Serialize for IndexItem {
         row.serialize_element(&Model(&self.model_id))?;
         row.serialize_element(&self.component)?;
         row.serialize_element(&self.object_id)?;
-        row.serialize_element(&self.block_id)?;
-        row.serialize_element(&self.address)?;
-        row.serialize_element(&self.size)?;
-        row.serialize_element(&self.in_log)?;
+        // THE THREE DERIVED SLOTS, computed here because here is where they are written.
+        //
+        // `sz` IS THE STRIP SENTINEL AND ALWAYS ZERO NOW, which is what keeps the stored bytes
+        // identical. `strip_size_repeat` already wrote zero whenever the size equalled
+        // `address.length()`, and with the field gone that equality is no longer representable --
+        // so the harvest it banked is now unconditional rather than conditional. Writing the real
+        // length here instead would have undone a 4 B/row saving with every row still decoding
+        // and nothing failing.
+        let address = self.entry.as_ref().map(ElementEntry::address);
+        row.serialize_element(&address.and_then(BlockAddress::block_id).unwrap_or_default())?;
+        row.serialize_element(&address)?;
+        row.serialize_element(&0u64)?;
+        row.serialize_element(&address.map(|a| a.block_id().is_none()).unwrap_or(false))?;
         row.serialize_element(&self.deleted)?;
         row.end()
     }
@@ -4019,10 +4169,11 @@ mod tests {
             model_id: "m".to_string(),
             component: None,
             object_id: 1,
-            block_id: 0,
-            address: None,
-            size: 8,
-            in_log: false,
+            // ADDRESS-LESS BY DESIGN: this fixture measures a floor, so it stays at
+            // the floor. An address would take the row from one nil to a six-slot
+            // array -- bigger, not smaller -- and the size it stated was never
+            // restored, because there was no address to derive it from.
+            entry: None,
             deleted: false,
         };
         store
@@ -4310,10 +4461,11 @@ mod tests {
             model_id: "m".to_string(),
             component: None,
             object_id: 1,
-            block_id: 0,
-            address: None,
-            size: 8,
-            in_log: false,
+            // ADDRESS-LESS BY DESIGN: this fixture measures a floor, so it stays at
+            // the floor. An address would take the row from one nil to a six-slot
+            // array -- bigger, not smaller -- and the size it stated was never
+            // restored, because there was no address to derive it from.
+            entry: None,
             deleted,
         }
     }
@@ -5527,11 +5679,21 @@ mod tests {
             "in_log": false,
             "deleted": false
         });
+        // THE SLOT, read where it now lives. `size` is not a field any more -- it is derived
+        // from the address -- so the alias this test exists for is asserted on the wire struct
+        // the conversion reads. That observes the stored value directly, where the old form
+        // could have been satisfied by a derivation that happened to agree.
+        let wire: IndexItemWire =
+            serde_json::from_value(legacy.clone()).expect("a legacy item must load as a wire row");
+        assert_eq!(wire.size, 126, "the legacy `size` key must still reach the wire row");
+
         let item: IndexItem = serde_json::from_value(legacy).expect("a legacy item must load");
         assert_eq!(item.routing_bucket, 545210715);
         assert_eq!(item.object_key.as_ref(), "m:0");
         assert_eq!(item.object_id, 122110326161599232);
-        assert_eq!(item.size, 126);
+        // The row carries no address, so there is no payload to derive a size from -- which is
+        // the state this legacy row describes rather than a loss.
+        assert!(item.entry.is_none(), "a legacy row with no address has no payload");
         assert!(!item.deleted);
     }
 
@@ -5556,14 +5718,25 @@ mod tests {
             "in_log": false,
             "deleted": false
         });
-        let item: IndexItem = serde_json::from_value(legacy).expect("a legacy item must load");
         assert_ne!(
             4242, u64::default(),
             "the fixture value must not be the serde default, or this cannot fail"
         );
+        // READ AT THE WIRE, because the renamed field is no longer a field: `block_id` is
+        // derived from the address now. The subject of this test is the KEY MAPPING, and the
+        // wire row is where that mapping lands, so this asserts it without a conversion in
+        // between.
+        let wire: IndexItemWire =
+            serde_json::from_value(legacy.clone()).expect("a legacy item must load as a wire row");
         assert_eq!(
-            item.block_id, 4242,
-            "the old `page_id` key must reach the renamed `block_id` field"
+            wire.block_id, 4242,
+            "the old `page_id` key must still reach the renamed `block_id` slot"
+        );
+        // And the conversion still accepts the row.
+        let item: IndexItem = serde_json::from_value(legacy).expect("a legacy item must load");
+        assert!(
+            item.entry.is_none(),
+            "this legacy row carries no address, so it has no payload"
         );
     }
 
@@ -5579,10 +5752,11 @@ mod tests {
             model_id: "string".to_string(),
             component: None,
             object_id: 122110326161599232,
-            block_id: 0,
-            address: None,
-            size: 126,
-            in_log: false,
+            // ADDRESS-LESS BY DESIGN: this fixture measures a floor, so it stays at
+            // the floor. An address would take the row from one nil to a six-slot
+            // array -- bigger, not smaller -- and the size it stated was never
+            // restored, because there was no address to derive it from.
+            entry: None,
             deleted: false,
         };
         let encoded = serde_json::to_string(&item).unwrap();
@@ -5809,10 +5983,9 @@ mod tests {
                 model_id: "feature".to_string(),
                 component: Some(component.into()),
                 object_id: 0,
-                block_id: 0,
-                address: Some(address),
-                size: 832,
-                in_log: false,
+                // The three slots this used to state were its own derivation; the codec
+                // computes them where they are written.
+                entry: Some(crate::block_store::ElementEntry::new(address)),
                 deleted: false,
             }
         }
@@ -5868,10 +6041,11 @@ mod tests {
                 model_id: "feature".to_string(),
                 component: Some((1_787_429_651_961u64 + index).to_string().into()),
                 object_id: 0,
-                block_id: index,
-                address: None,
-                size: 832,
-                in_log: false,
+                // ADDRESS-LESS BY DESIGN: this fixture measures a floor, so it stays at
+                // the floor. An address would take the row from one nil to a six-slot
+                // array -- bigger, not smaller -- and the size it stated was never
+                // restored, because there was no address to derive it from.
+                entry: None,
                 deleted: false,
             })
             .collect();
@@ -6753,10 +6927,21 @@ mod tests {
         let decoded: IndexItem =
             decode_index_payload(&encoded).expect("an item missing defaults must decode");
 
-        assert!(!decoded.in_log, "in_log must default to false when absent");
+        // THE THREE DERIVED SLOTS ARE READ AT THE WIRE, because they are no longer fields.
+        // Their defaults are the subject of this half, and the wire row is where a default
+        // actually lands -- asserting them after the conversion would assert a derivation
+        // instead of the stored value.
+        let sparse_wire: IndexItemWire =
+            decode_index_payload(&encoded).expect("the sparse row must decode as a wire row");
+        assert!(!sparse_wire.in_log, "in_log must default to false when absent");
+        assert_eq!(sparse_wire.block_id, 0, "page_id must default to zero when absent");
+        assert_eq!(sparse_wire.size, 0, "size must default to zero when absent");
+
         assert!(!decoded.deleted, "deleted must default to false when absent");
-        assert_eq!(decoded.block_id, 0, "page_id must default to zero when absent");
-        assert_eq!(decoded.size, 0, "size must default to zero when absent");
+        assert!(
+            decoded.entry.is_none(),
+            "a row that wrote no address has no payload"
+        );
         assert_eq!(decoded.routing_bucket, 8539, "what WAS written must survive");
         assert_eq!(decoded.object_key.as_ref(), "tenant/7/object/000000123");
 
@@ -6769,19 +6954,45 @@ mod tests {
             model_id: "string".to_string(),
             component: None,
             object_id: 12_345,
-            block_id: 7,
-            address: None,
-            size: 4096,
-            in_log: true,
+            // AN ADDRESS, DELIBERATELY. This half's subject is that a NON-DEFAULT value in each
+            // slot is still written, and the three derived slots only carry non-defaults when
+            // there is an address to derive them from. A length of 4096 and a block id of 7 make
+            // `sz` and `pi` non-default; `il` is then false, because a row holding a block id is
+            // not log-resident. The fixture used to state `block_id: 7` and `in_log: true`
+            // together, which the derivation says cannot both be true.
+            entry: Some(crate::block_store::ElementEntry::new(
+                crate::block_store::BlockAddress::from_parts(42, 1_048_576, 4096, Some(7), None),
+            )),
             deleted: true,
         };
         let round_tripped: IndexItem = decode_index_payload(
             &encode_index_payload(&full, INDEX_LOG_SHAPE_DELTA).expect("encode"),
         )
         .expect("decode");
-        assert_eq!(round_tripped.block_id, 7, "a set page_id must still be written");
-        assert_eq!(round_tripped.size, 4096, "a set size must still be written");
-        assert!(round_tripped.in_log, "a true in_log must still be written");
+        // READ AT THE WIRE, for the same reason as the sparse half: these are slots now.
+        let full_wire: IndexItemWire = decode_index_payload(
+            &encode_index_payload(&full, INDEX_LOG_SHAPE_DELTA).expect("encode"),
+        )
+        .expect("decode");
+        assert_eq!(full_wire.block_id, 7, "a set page_id must still be written");
+        assert!(
+            !full_wire.in_log,
+            "a row holding a block id is not log-resident, so this slot is written false"
+        );
+        // `sz` IS THE STRIP SENTINEL. The size equals the address length by construction now, so
+        // the encoder always writes zero here and the reader derives 4096 back from the address.
+        // That is the harvest the conditional strip used to take only when the two agreed.
+        assert_eq!(0, full_wire.size, "the size slot carries the strip sentinel");
+        assert_eq!(
+            4096,
+            round_tripped
+                .entry
+                .as_ref()
+                .expect("the payload survives")
+                .address()
+                .length(),
+            "and the length comes back from the address"
+        );
         assert!(round_tripped.deleted, "a true deleted must still be written");
     }
 
@@ -6853,10 +7064,11 @@ mod tests {
             model_id: "string".to_string(),
             component: None,
             object_id: 12_345,
-            block_id: 7,
-            address: None,
-            size: 4096,
-            in_log: false,
+            // ADDRESS-LESS BY DESIGN: this fixture measures a floor, so it stays at
+            // the floor. An address would take the row from one nil to a six-slot
+            // array -- bigger, not smaller -- and the size it stated was never
+            // restored, because there was no address to derive it from.
+            entry: None,
             deleted: false,
         };
         let as_text = encode_as_map(&textual, INDEX_LOG_SHAPE_DELTA);
@@ -6910,7 +7122,7 @@ mod tests {
     fn the_address_repeats_round_trip() {
         let object_id = 12_345_678_901_234_567u64;
         let bucket = 8539u32;
-        let build = |address| IndexItem {
+        let build = |address: Option<crate::block_store::BlockAddress>| IndexItem {
             kind: IndexItemKind::Page,
             routing_bucket: bucket,
             block_ref_key: 17_665_223_918_442_101_733u64.to_string(),
@@ -6918,11 +7130,11 @@ mod tests {
             model_id: "string".to_string(),
             component: None,
             object_id,
-            block_id: 7,
-            address,
-            size: 4096,
-            in_log: false,
             deleted: false,
+            // The address arrives as the closure's parameter, so it becomes the payload directly
+            // and the `None` case in the table below still builds an address-less row. The three
+            // slots stated here were this address's own derivation.
+            entry: address.map(crate::block_store::ElementEntry::new),
         };
         let cases = [
             ("no address", None),
@@ -6949,7 +7161,7 @@ mod tests {
                 // own fields are the only copy on the wire, which is what the stripping was
                 // arranging for, and `derived_object_id` turns the terms back into the id.
                 "address holds neither" => {
-                    assert!(back.address.is_some(), "{label}: address survives");
+                    assert!(back.entry.is_some(), "{label}: address survives");
                     assert_eq!(back.object_id, object_id, "{label}: the item carries the id");
                     assert_eq!(back.routing_bucket, bucket, "{label}");
                 }
@@ -6958,27 +7170,152 @@ mod tests {
         }
     }
 
-    /// The size strip is CONDITIONAL, and the condition is the entire content of it.
+
+    /// THE TWELVE STORED SLOTS DID NOT MOVE, ASSERTED AS SLOTS AND NOT AS A DIGEST.
     ///
-    /// Every item the engine writes today sets `size` to `address.length` -- both production
-    /// construction sites in `engine.rs` do -- so an unconditional `self.size = 0` round-trips
-    /// every item this crate produces and looks correct everywhere it is exercised. Mutation
-    /// testing found exactly that: dropping the equality check left the whole index-log and
+    /// # WHY NOT A DIGEST, AND WHY NOT A ROUND TRIP
+    ///
+    /// A raw byte digest of an encoded row cannot be compared against anything: there is no
+    /// previous build to hash, and goldening one from this build proves the code equals itself.
+    /// And a ROUND TRIP cannot see this at all -- `encode` then `decode` agrees with itself
+    /// whatever the slots are called or wherever they sit, which is exactly why the shared-key
+    /// hoist test keeps passing while the bytes its fixture emits change. **A round trip cannot
+    /// detect a change in what gets encoded.**
+    ///
+    /// So the row is decoded as a POSITIONAL ARRAY and each slot is checked where it sits. That
+    /// states the wire contract rather than restating the encoder, and it fails if a slot is
+    /// reordered, retired, added, or given a different value -- any of which is a stored-format
+    /// change on a log that is positional, refuses a length mismatch, and carries no version.
+    ///
+    /// # THE THREE DERIVED SLOTS ARE THE POINT
+    ///
+    /// `pi`, `sz` and `il` are no longer fields. They are computed in the serializer from the
+    /// address, so this is where "the bytes did not move" is actually proved: the block id slot
+    /// still carries the address's block id, the size slot carries the strip sentinel, and the
+    /// log-resident slot still carries `block_id().is_none()`.
+    #[test]
+    fn the_twelve_stored_slots_are_unchanged_and_the_three_derived_ones_carry_their_derivation() {
+        let address =
+            crate::block_store::BlockAddress::from_parts(42, 1_048_576, 4096, Some(7), None);
+        let item = IndexItem {
+            kind: IndexItemKind::Page,
+            routing_bucket: 8539,
+            block_ref_key: "17665223918442101733".to_string(),
+            object_key: "tenant/7/object/000000123".into(),
+            model_id: "string".to_string(),
+            component: Some("field-0".into()),
+            object_id: 12_345,
+            entry: Some(crate::block_store::ElementEntry::new(address.clone())),
+            deleted: false,
+        };
+
+        // THE POSITIONAL SHAPE. Decoded as a generic value so the ASSERTIONS name positions,
+        // not fields -- a struct would re-impose the very mapping under test.
+        let bytes = rmp_serde::to_vec(&item).expect("encode the row positionally");
+        let row: serde_json::Value =
+            rmp_serde::from_slice(&bytes).expect("the row decodes as a generic value");
+        let slots = match &row {
+            serde_json::Value::Array(slots) => slots,
+            other => panic!("the row is not an array, it is {other:?} -- the log is POSITIONAL"),
+        };
+        assert_eq!(
+            12,
+            slots.len(),
+            "the row has {} slots, not 12. The index log is positional and refuses a row whose \
+             length does not match the struct decoding it, so a slot leaving or arriving refuses \
+             every stored row -- and the format stamp cannot help, because it guards the NAMED \
+             served index.",
+            slots.len(),
+        );
+
+        let u = |at: usize| -> u64 {
+            slots[at].as_u64().unwrap_or_else(|| {
+                panic!("slot {at} is {:?}, which is not an unsigned number", slots[at])
+            })
+        };
+
+        // Slot 7 is the block id, and it is the ADDRESS'S block id.
+        assert_eq!(
+            address.block_id().unwrap_or_default(),
+            u(7),
+            "slot 7 must carry the address's block id",
+        );
+        // Slot 9 is the size, and it is the STRIP SENTINEL -- always zero, because the size is
+        // derived from the address and so cannot differ from its length.
+        assert_eq!(0, u(9), "slot 9 must carry the strip sentinel");
+        // Slot 10 is the log-resident flag, derived from whether the address names a block.
+        assert_eq!(
+            Some(address.block_id().is_none()),
+            slots[10].as_bool(),
+            "slot 10 must carry `block_id().is_none()`",
+        );
+        // And slot 11 is the tombstone, which is still a field.
+        assert_eq!(Some(false), slots[11].as_bool(), "slot 11 must carry `deleted`");
+        println!("[slots] 12 positional slots, with 7/9/10 carrying their derivation");
+
+        // AND THE NAMED SHAPE IS NOT THIS ROW'S TO WRITE, which is worth saying because it
+        // looks like an omission. `IndexItem`'s `Serialize` is hand-written and always calls
+        // `serialize_seq(Some(12))`, so it ignores `with_struct_map()` -- an item encoded
+        // "as a map" still comes out a sequence. The row is therefore only ever WRITTEN
+        // positionally, and the named shape exists only on the READ side, for rows an older
+        // binary wrote through a derived `Serialize`.
+        //
+        // That read side is covered by name elsewhere in this module:
+        // `an_index_item_written_with_the_old_field_names_still_loads` and
+        // `the_old_page_id_key_still_loads_into_the_renamed_block_id_field` address the slots by
+        // their STORED NAMES, so a rename breaks them. Which is the division of labour: a
+        // rename is caught there, and order and arity -- which no named test can see -- here.
+        let as_map = encode_as_map(&item, INDEX_LOG_SHAPE_DELTA);
+        let still_a_sequence: Result<std::collections::BTreeMap<String, serde_json::Value>, _> =
+            decode_index_payload(&as_map);
+        assert!(
+            still_a_sequence.is_err(),
+            "an item encoded through the map writer came out as a map. Its `Serialize` is \
+             hand-written positional, so this would mean the twelve slots are no longer written \
+             by position -- which is a stored-format change on a log that has no version to \
+             guard it.",
+        );
+        println!("[slots] and the row is written positionally even through the map writer");
+    }
+
+    /// A SIZE CANNOT DISAGREE WITH ITS ADDRESS, AND A STORED DISAGREEMENT IS COUNTED.
+    ///
+    /// # WHAT THIS TEST USED TO SAY, AND WHY ITS SUBJECT IS GONE
+    ///
+    /// It used to say the size strip is CONDITIONAL, and that the condition was the entire
+    /// content of it: `restore_size_repeat` can only put back `address.length`, so a size
+    /// stripped while it was something else is not recoverable -- the reader invents
+    /// `address.length` and cannot tell it did. Its doc recorded that mutation testing found
+    /// exactly that, and that dropping the equality check left the whole index-log and
     /// block-store suite green.
     ///
-    /// The check is there for the item that does NOT hold, and `restore_size_repeat` is why it
-    /// has to be. The restore can only put back `address.length`; it has no other source. So a
-    /// size stripped while it was something else is not recoverable -- the reader invents
-    /// `address.length` and cannot tell it did.
+    /// The size is no longer a field. It is derived from the address wherever it is written, so
+    /// a size that disagrees is not something this crate can construct -- the mutation that test
+    /// was written to kill is now the design.
     ///
-    /// Driven through the real writer and the real reader. A strip/restore pair called directly
-    /// agrees with itself under the unconditional form too, which is the shape that hid this.
+    /// WHAT MAKES THAT A STRENGTHENING RATHER THAN A DELETED GUARD is the other thing the old
+    /// doc established: every item the engine writes sets `size` to `address.length`, at BOTH
+    /// production construction sites. So the condition protected a case no producer produces,
+    /// and removing the field turns "unproduced" into "unrepresentable". Without that sentence
+    /// the two would be indistinguishable.
+    ///
+    /// # SO THE PURPOSE IS INHERITED, NOT DROPPED
+    ///
+    /// The old test's real worry was a STORED row whose size disagrees, because the reader
+    /// cannot tell. That row is still possible -- an older or foreign writer could have produced
+    /// one -- and the conversion from [`IndexItemWire`] now COUNTS it instead of accepting it in
+    /// silence. Counted and not refused, deliberately: `restore_size_repeat` accepted such a row
+    /// before, so erroring would refuse rows that load today, which is a separate decision with
+    /// its own blast radius.
+    ///
+    /// Driven through a planted MAP row, because the in-memory type can no longer express the
+    /// disagreement. That is a codec-level drive rather than a weakened assertion.
     #[test]
-    fn a_size_that_disagrees_with_the_address_is_not_stripped() {
-        let address = crate::block_store::BlockAddress::from_parts(
-            7, 4096, 832, Some(3), None,
-        );
-        let item = |size: u64| IndexItem {
+    fn a_size_cannot_disagree_with_the_address_and_a_stored_disagreement_is_counted() {
+        let address = crate::block_store::BlockAddress::from_parts(7, 4096, 832, Some(3), None);
+        assert_eq!(832, address.length(), "VACUITY: the fixture address states its length");
+
+        let item = IndexItem {
             kind: IndexItemKind::Page,
             routing_bucket: 1024,
             block_ref_key: "k".to_string(),
@@ -6986,42 +7323,58 @@ mod tests {
             model_id: "feature".to_string(),
             component: Some("a".into()),
             object_id: 0,
-            block_id: 3,
-            address: Some(address.clone()),
-            size,
-            in_log: false,
+            entry: Some(crate::block_store::ElementEntry::new(address.clone())),
             deleted: false,
         };
 
-        // POSITIVE CONTROL: the strip is live. Without this the round trip below is satisfied
-        // just as well by a writer that stopped stripping altogether, which is the opposite
-        // defect and reads identically from the reader's side.
-        let mut agrees = item(address.length());
-        agrees.strip_size_repeat();
+        // ONE: the encoder always writes the strip sentinel, because the size cannot differ from
+        // the length it is derived from. The harvest the conditional strip took only when the two
+        // agreed is now unconditional.
+        let encoded = encode_index_payload(&item, INDEX_LOG_SHAPE_DELTA).expect("encode");
+        let wire: IndexItemWire = decode_index_payload(&encoded).expect("decode as a wire row");
         assert_eq!(
-            agrees.size, 0,
-            "a size the address already states must still be dropped, or this test is measuring \
-a writer that gave up rather than one that is careful",
+            0, wire.size,
+            "the size slot must carry the strip sentinel for every row that has an address",
         );
 
-        // THE ASSERTION. A size the address does NOT state survives the round trip as itself.
-        let disagrees = item(999);
-        assert_ne!(
-            disagrees.size, address.length(),
-            "the case only exists while these differ",
-        );
-        let dir = tempfile::tempdir().unwrap();
-        let store = LocalIndexLogStore::new(dir.path());
-        store
-            .append_delta(11, vec![disagrees.clone()], Vec::new(), Some(1), None, false, true)
-            .unwrap();
-        let read = store.read_delta_records(11, 0).unwrap();
-        assert_eq!(read.len(), 1, "expected one record");
+        // TWO: and nothing is lost -- the length comes back from the address.
+        let back: IndexItem = decode_index_payload(&encoded).expect("decode");
         assert_eq!(
-            read[0].items[0].size, disagrees.size,
-            "a size that disagrees with the address was stripped, and the reader put back \
-`address.length` in its place: the strip's equality check is the only thing standing between \
-this item and a silently rewritten size",
+            832,
+            back.entry.as_ref().expect("the payload survives").address().length(),
+            "the length must come back from the address the row carries",
+        );
+
+        // THREE: a STORED row that disagrees is COUNTED. Planted as a map, because the in-memory
+        // type cannot hold a disagreeing size any more.
+        #[derive(serde::Serialize)]
+        struct PlantedRow {
+            #[serde(rename = "a")]
+            address: Option<crate::block_store::BlockAddress>,
+            #[serde(rename = "sz")]
+            size: u64,
+        }
+        reset_derived_slot_disagreements();
+        assert_eq!(
+            0,
+            derived_slot_disagreements(),
+            "VACUITY: the counter must start at zero or the increment below proves nothing",
+        );
+        let planted = encode_as_map(
+            &PlantedRow { address: Some(address.clone()), size: 999 },
+            INDEX_LOG_SHAPE_DELTA,
+        );
+        assert_ne!(999, address.length(), "the planted case only exists while these differ");
+        let _decoded: IndexItem =
+            decode_index_payload(&planted).expect("a disagreeing row still decodes");
+        assert!(
+            derived_slot_disagreements() >= 1,
+            "a stored size that disagrees with its address was accepted in silence; the counter \
+             is the only thing that now notices what the conditional strip used to protect",
+        );
+        println!(
+            "[derived-slots] a planted stored disagreement was counted: {}",
+            derived_slot_disagreements()
         );
     }
 
@@ -7094,7 +7447,7 @@ flag exists to say",
     fn what_the_address_repeats_costs() {
         let object_id = 12_345_678_901_234_567u64;
         let bucket = 8539u32;
-        let item = |address| IndexItem {
+        let item = |address: Option<crate::block_store::BlockAddress>| IndexItem {
             kind: IndexItemKind::Page,
             routing_bucket: bucket,
             block_ref_key: 17_665_223_918_442_101_733u64.to_string(),
@@ -7102,11 +7455,11 @@ flag exists to say",
             model_id: "string".to_string(),
             component: None,
             object_id,
-            block_id: 7,
-            address,
-            size: 4096,
-            in_log: false,
             deleted: false,
+            // The address arrives as the closure's parameter, so it becomes the payload directly
+            // and the `None` case in the table below still builds an address-less row. The three
+            // slots stated here were this address's own derivation.
+            entry: address.map(crate::block_store::ElementEntry::new),
         };
 
         // As written today: the address repeats the item's object id and routing bucket.
@@ -7148,12 +7501,13 @@ flag exists to say",
             model_id: "string".to_string(),
             component: None,
             object_id: 12_345_678_901_234_567u64,
-            block_id: 7,
-            address: Some(crate::block_store::BlockAddress::from_parts(
-                42, 1_048_576, 4096, Some(7), Some(12_345_678_901_234_567),
+            // The three slots this used to state were its own derivation; the codec
+            // computes them where they are written.
+            entry: Some(crate::block_store::ElementEntry::new(
+                crate::block_store::BlockAddress::from_parts(
+                    42, 1_048_576, 4096, Some(7), Some(12_345_678_901_234_567),
+                ),
             )),
-            size: 4096,
-            in_log: false,
             deleted: false,
         };
 
@@ -7169,7 +7523,7 @@ flag exists to say",
         };
 
         println!("  ITEM whole record {whole} B");
-        price("address", IndexItem { address: None, ..full.clone() });
+        price("address", IndexItem { entry: None, ..full.clone() });
         price("object_key", IndexItem { object_key: empty_object_key(), ..full.clone() });
         price("page_ref_key", IndexItem { block_ref_key: String::new(), ..full.clone() });
         price("model_id", IndexItem { model_id: String::new(), ..full.clone() });
@@ -7262,16 +7616,23 @@ flag exists to say",
         //                                          holds the discriminant)
         //   address                             : Option<BlockAddress>  (24: a 16-byte address
         //                                          with no niche, so the discriminant costs a word)
-        //   object_id, block_id, size           : u64                   (3 x 8)
+        //   object_id                           : u64                   (1 x 8)
+        //
+        // TWO WORDS LEFT THIS GROUP. `block_id` and `size` were derivations of the address --
+        // `address.block_id()` and `address.length()` -- so they are computed where they are
+        // written instead of stored beside it. The payload that replaced the address is the same
+        // width: `Option<ElementEntry>` is 24, exactly what `Option<BlockAddress>` was.
         let eight_aligned = 2 * size_of::<String>()
             + size_of::<std::sync::Arc<str>>()
             + size_of::<Option<std::sync::Arc<str>>>()
-            + size_of::<Option<crate::block_store::BlockAddress>>()
-            + 3 * size_of::<u64>();
+            + size_of::<Option<crate::block_store::ElementEntry>>()
+            + size_of::<u64>();
         //   routing_bucket : u32            (4)
         //   kind           : IndexItemKind  (1, a three-variant enum with no payload)
-        //   in_log, deleted: bool           (2)
-        let tail = size_of::<u32>() + size_of::<IndexItemKind>() + 2 * size_of::<bool>();
+        //   deleted        : bool           (1)
+        //
+        // `in_log` left this group with the other two: it was `address.block_id().is_none()`.
+        let tail = size_of::<u32>() + size_of::<IndexItemKind>() + size_of::<bool>();
         let rounded_tail = (tail + align - 1) / align * align;
 
         println!("=== IndexItem, resident ===");
@@ -7280,10 +7641,10 @@ flag exists to say",
         println!("  total               {:>4} B", size_of::<IndexItem>());
 
         assert_eq!(
-            128, eight_aligned,
-            "the eight-aligned group is {eight_aligned} B, not 128 -- a field entered or left it",
+            112, eight_aligned,
+            "the eight-aligned group is {eight_aligned} B, not 112 -- a field entered or left it",
         );
-        assert_eq!(7, tail, "the tail is {tail} B of field, not 7");
+        assert_eq!(6, tail, "the tail is {tail} B of field, not 6");
         assert_eq!(8, rounded_tail, "the tail rounds to {rounded_tail}, not 8");
         assert_eq!(
             eight_aligned + rounded_tail,
@@ -7294,19 +7655,20 @@ flag exists to say",
             size_of::<IndexItem>(),
         );
 
-        // THE ONE SPARE BYTE, AND IT IS THE WHOLE VERDICT ON NARROWING THIS STRUCT.
+        // THE TWO SPARE BYTES, AND THEY ARE THE WHOLE VERDICT ON NARROWING THIS STRUCT.
         //
-        // The tail holds 7 bytes of field in the 8 the aligner gives it. So: a ONE-BYTE field
-        // added to the tail is FREE, and EVERY narrowing of a tail field is worth EXACTLY ZERO --
-        // `routing_bucket` at 16 bits leaves a 5-byte tail that rounds straight back to 8, and
-        // deleting `kind`, `in_log` and `deleted` outright leaves 4 and still rounds to 8.
-        // Shedding eight bytes means taking a WHOLE WORD out of the eight-aligned group, or
-        // emptying the tail completely -- all four of its fields, for one word.
+        // The tail holds 6 bytes of field in the 8 the aligner gives it -- it was 7 before
+        // `in_log` left. So: a field of up to TWO BYTES added to the tail is FREE, and EVERY
+        // narrowing of a tail field is worth EXACTLY ZERO -- `routing_bucket` at 16 bits leaves a
+        // 4-byte tail that rounds straight back to 8, and deleting `kind` and `deleted` outright
+        // leaves 4 and still rounds to 8. Shedding eight bytes means taking a WHOLE WORD out of
+        // the eight-aligned group, or emptying the tail completely -- all three of its fields,
+        // for one word.
         assert_eq!(
-            1,
+            2,
             rounded_tail - tail,
-            "the tail has {} spare bytes, not 1; the narrowing verdict above is derived from \
-             there being exactly one",
+            "the tail has {} spare bytes, not 2; the narrowing verdict above is derived from \
+             there being exactly two, which is what `in_log` leaving the tail bought",
             rounded_tail - tail,
         );
 
@@ -7359,12 +7721,32 @@ flag exists to say",
             model_id: model_id.clone(),
             component: None,
             object_id: crate::engine::hashing::stable_block_object_id(shard, &model_id, &object_key),
-            block_id: 7,
-            address: Some(address.clone()),
-            size: address.length(),
-            in_log: false,
+            // The three slots this used to state were its own derivation; the codec
+            // computes them where they are written.
+            entry: Some(crate::block_store::ElementEntry::new(address.clone())),
             deleted: false,
         };
+
+        // THE THREE DERIVED SLOTS, as the serializer computes them. Defined once so both
+        // tables and the sentinel assertion price the same expressions the encoder uses.
+        fn slot_block_id(item: &IndexItem) -> u64 {
+            item.entry
+                .as_ref()
+                .and_then(|entry| entry.address().block_id())
+                .unwrap_or_default()
+        }
+        fn slot_address(item: &IndexItem) -> Option<&crate::block_store::BlockAddress> {
+            item.entry.as_ref().map(crate::block_store::ElementEntry::address)
+        }
+        fn slot_in_log(item: &IndexItem) -> bool {
+            item.entry
+                .as_ref()
+                .map(|entry| entry.address().block_id().is_none())
+                .unwrap_or(false)
+        }
+        fn slot_size_written(_item: &IndexItem) -> u64 {
+            0
+        }
 
         // THE UNSTRIPPED ROW FIRST, so each strip is priced against the row that carries it.
         let before: Vec<(&str, usize)> = vec![
@@ -7375,10 +7757,13 @@ flag exists to say",
             ("model", one(&Model(&item.model_id))),
             ("component", one(&item.component)),
             ("object_id", one(&item.object_id)),
-            ("block_id", one(&item.block_id)),
-            ("address", one(&item.address)),
-            ("size", one(&item.size)),
-            ("in_log", one(&item.in_log)),
+            // THE THREE DERIVED SLOTS, priced as the SERIALIZER writes them. They are no longer
+            // fields, but all twelve slots are still on the wire, so this stays a measurement of
+            // the row rather than of the struct. `size` is the strip sentinel and so always zero.
+            ("block_id", one(&slot_block_id(&item))),
+            ("address", one(&slot_address(&item))),
+            ("size", one(&0u64)),
+            ("in_log", one(&slot_in_log(&item))),
             ("deleted", one(&item.deleted)),
         ];
         let unstripped = rmp_serde::to_vec(&item).expect("encode the row").len();
@@ -7391,7 +7776,14 @@ flag exists to say",
             "the composite-handle strip did not fire, so this row is not the shape the writer emits",
         );
         item.strip_size_repeat();
-        assert_eq!(0, item.size, "the size strip did not fire");
+        // THE SENTINEL IS UNCONDITIONAL. The size is derived from the address, so it cannot
+        // differ from the length and the encoder always writes zero. What used to be a
+        // conditional that had to be shown firing is now a property of the type.
+        assert_eq!(
+            0,
+            slot_size_written(&item),
+            "the size slot must carry the strip sentinel",
+        );
         item.strip_address_repeats();
         item.strip_object_id_repeat(shard);
         assert_eq!(0, item.object_id, "the object-id strip did not fire");
@@ -7404,10 +7796,13 @@ flag exists to say",
             ("model", one(&Model(&item.model_id))),
             ("component", one(&item.component)),
             ("object_id", one(&item.object_id)),
-            ("block_id", one(&item.block_id)),
-            ("address", one(&item.address)),
-            ("size", one(&item.size)),
-            ("in_log", one(&item.in_log)),
+            // THE THREE DERIVED SLOTS, priced as the SERIALIZER writes them. They are no longer
+            // fields, but all twelve slots are still on the wire, so this stays a measurement of
+            // the row rather than of the struct. `size` is the strip sentinel and so always zero.
+            ("block_id", one(&slot_block_id(&item))),
+            ("address", one(&slot_address(&item))),
+            ("size", one(&0u64)),
+            ("in_log", one(&slot_in_log(&item))),
             ("deleted", one(&item.deleted)),
         ];
         let stripped = rmp_serde::to_vec(&item).expect("encode the row").len();
@@ -7502,10 +7897,9 @@ flag exists to say",
                         object_id: crate::engine::hashing::stable_block_object_id(
                             shard, &model_id, &object_key,
                         ),
-                        block_id: index as u64,
-                        address: Some(address.clone()),
-                        size: address.length(),
-                        in_log: false,
+                        // The three slots this used to state were its own derivation; the codec
+                        // computes them where they are written.
+                        entry: Some(crate::block_store::ElementEntry::new(address.clone())),
                         deleted: false,
                     };
                     item.strip_block_ref_key_repeat();
@@ -7618,10 +8012,9 @@ flag exists to say",
                         object_id: crate::engine::hashing::stable_block_object_id(
                             shard, &model_id, &object_key,
                         ),
-                        block_id: index,
-                        address: Some(address.clone()),
-                        size: address.length(),
-                        in_log: false,
+                        // The three slots this used to state were its own derivation; the codec
+                        // computes them where they are written.
+                        entry: Some(crate::block_store::ElementEntry::new(address.clone())),
                         deleted: false,
                     };
                     // The writer's order, which is load-bearing: the handle strip DERIVES from
@@ -7644,7 +8037,12 @@ flag exists to say",
             distinct[0].block_ref_key.is_empty(),
             "the composite-handle strip did not fire",
         );
-        assert_eq!(0, distinct[0].size, "the size strip did not fire");
+        // THE SENTINEL IS UNCONDITIONAL, so there is no conditional left to show firing: the
+        // size is derived from the address and the encoder always writes zero.
+        assert!(
+            distinct[0].entry.is_some(),
+            "the row carries a payload, so its size slot is the sentinel by construction",
+        );
         assert_eq!(0, distinct[0].object_id, "the object-id strip did not fire");
         let unhoisted = row(&distinct[0]);
 
@@ -7713,8 +8111,15 @@ flag exists to say",
             "the row writes `kind` as a number in one byte; this priced it at {kind_slot}, so it \
              is not going through the adapter the row uses",
         );
+        // THE `il` SLOT IS DERIVED NOW, so it is priced as the serializer writes it rather
+        // than read off a field.
+        let hoisted_in_log = hoisted[0]
+            .entry
+            .as_ref()
+            .map(|entry| entry.address().block_id().is_none())
+            .unwrap_or(false);
         let three_slots = kind_slot
-            + rmp_serde::to_vec(&hoisted[0].in_log).expect("l").len()
+            + rmp_serde::to_vec(&hoisted_in_log).expect("l").len()
             + rmp_serde::to_vec(&hoisted[0].deleted).expect("d").len();
         let one_slot = rmp_serde::to_vec(&0u8).expect("packed").len();
         priced.push((
@@ -7789,17 +8194,23 @@ flag exists to say",
         // restores to a zero size and would be read as a tombstone -- and a tombstone REMOVES
         // the entry on replay. An empty value is a supported command shape, not a hypothetical;
         // the WAL's own round-trip fixtures carry a case named for it.
-        let mut live = hoisted[0].clone();
-        live.restore_size_repeat();
+        let live = hoisted[0].clone();
         assert_eq!(
-            4096, live.size,
-            "a stripped LIVE row restores its size from the address, which is what makes a zero \
-             size mean 'derivable' rather than 'deleted'",
+            4096,
+            live.entry
+                .as_ref()
+                .expect("a live row carries a payload")
+                .address()
+                .length(),
+            "a live row's length comes back from the address, which is what makes a zero size \
+             slot mean 'derivable' rather than 'deleted'",
         );
-        assert_eq!(
-            0, hoisted[0].size,
-            "this live, undeleted row carries size == 0 on the wire -- so size == 0 cannot also \
-             mean deleted",
+        // AND THE PROPERTY IS NOW TRIVIALLY TRUE RATHER THAN MERELY OBSERVED. The size slot is
+        // the sentinel for every row that has an address, so a zero there can only ever mean
+        // derivable -- it cannot also mean deleted, because it no longer varies at all.
+        assert!(
+            !hoisted[0].deleted,
+            "this row is live, and its zero size slot is the sentinel every live row carries",
         );
         assert!(
             !hoisted[0].deleted,
@@ -7872,10 +8283,9 @@ flag exists to say",
                         object_id: crate::engine::hashing::stable_block_object_id(
                             shard, &model_id, &object_key,
                         ),
-                        block_id: index,
-                        address: Some(address.clone()),
-                        size: address.length(),
-                        in_log: false,
+                        // The three slots this used to state were its own derivation; the codec
+                        // computes them where they are written.
+                        entry: Some(crate::block_store::ElementEntry::new(address.clone())),
                         deleted: false,
                     };
                     // The writer's order. The handle strip DERIVES from `object_key` AND from
@@ -7895,9 +8305,10 @@ flag exists to say",
                 items[0].block_ref_key.is_empty(),
                 "the composite-handle strip did not fire for model {model} component {component:?}",
             );
-            assert_eq!(
-                0, items[0].size,
-                "the size strip did not fire for model {model} component {component:?}",
+            assert!(
+                items[0].entry.is_some(),
+                "model {model} component {component:?} must carry a payload, so its size slot is \
+                 the sentinel by construction",
             );
             assert_eq!(
                 0, items[0].object_id,
