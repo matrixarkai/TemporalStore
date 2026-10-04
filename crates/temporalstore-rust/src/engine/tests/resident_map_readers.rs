@@ -1049,12 +1049,12 @@ fn both_inputs_to_the_merge_now_answer_the_same_live_page_question() {
         .insert(b"set-subject".to_vec(), dead_address.clone());
     shard
         .zsets
-        .get_mut("z")
+        .elements_mut_for_test("z")
         .expect("zset key")
         .insert(b"zset-subject".to_vec(), (9, dead_address.clone()));
     shard
         .lists
-        .get_mut("l")
+        .elements_mut_for_test("l")
         .expect("list key")
         .insert(i64::MAX - 3, dead_address.clone());
 

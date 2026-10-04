@@ -211,13 +211,20 @@ pub(super) struct ShardState {
     /// is derived per query -- V1 accepts the per-range sort; the upgrade path is a second
     /// in-memory map rebuilt at load, never a second persisted structure (the index component
     /// already encodes score-then-member, so recovery has the order for free).
-    #[serde(default, with = "super::zset_index_serde")]
-    pub(super) zsets: HashMap<String, BTreeMap<Vec<u8>, (u64, BlockAddress)>>,
+    // THE WIRE IS UNCHANGED AND THE `with =` MOVED RATHER THAN WENT: `ZSetKind` names
+    // `zset_index_serde` as its codec, which is a REQUIRED associated function with no default --
+    // so this kind cannot inherit the wrong encoding, which is the defect a blanket impl produced
+    // for `sets` and which three reload tests caught.
+    #[serde(default)]
+    pub(super) zsets: super::recorded_map::RecordedMap<super::recorded_map::ZSetKind>,
     /// Redis-style lists: element blocks keyed by a signed sequence -- left pushes walk the
     /// low end down, right pushes walk the high end up, so both ends are O(log n) and the
     /// BTree's order IS the list's order.
+    // A PLAIN MAP, STATED RATHER THAN INHERITED. An `i64` key has a string form a JSON object can
+    // carry, so this kind never needed the codec `sets` and `zsets` do -- and `ListKind` says so
+    // explicitly instead of defaulting to it.
     #[serde(default)]
-    pub(super) lists: HashMap<String, BTreeMap<i64, BlockAddress>>,
+    pub(super) lists: super::recorded_map::RecordedMap<super::recorded_map::ListKind>,
     pub(super) features: HashMap<String, BTreeMap<u64, BlockAddress>>,
     // Sequence data is now stored in `features` (thin-layer fold: Sequence is Feature
     // with a typed row codec over identical timestamped-KV storage). This field is
@@ -4441,8 +4448,8 @@ pub(super) fn repack_decoded_btrees(state: &mut ShardState) {
     repack_btree_map(wal_resident_blocks);
     repack_btree_map(expires_at_ms);
     sets.repack_decoded();
-    repack_nested(zsets);
-    repack_nested(lists);
+    zsets.repack_decoded();
+    lists.repack_decoded();
     repack_nested(features);
     repack_nested(sequences);
     repack_nested(control_state);

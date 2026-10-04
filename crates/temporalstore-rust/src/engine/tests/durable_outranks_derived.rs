@@ -597,7 +597,7 @@ fn an_element_the_durable_map_does_not_hold_still_comes_back_from_its_name() {
         let shard = shards.get_mut(&1).expect("shard is loaded");
         let removed = shard
             .zsets
-            .get_mut("fb-zset")
+            .elements_mut_for_test("fb-zset")
             .expect("the zset is present")
             .remove(b"fb-two".as_slice());
         assert!(
@@ -999,7 +999,7 @@ fn an_empty_zset_member_is_a_whole_component_and_survives_the_fold_shape() {
         let shard = shards.get_mut(&1).expect("shard is loaded");
         let removed = shard
             .zsets
-            .get_mut("mt-zset")
+            .elements_mut_for_test("mt-zset")
             .expect("the zset is present")
             .remove(empty.as_slice());
         assert!(

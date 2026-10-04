@@ -738,6 +738,106 @@ impl RepacksAfterDecode for SetKind {}
 // block through the bucket index before installing, so it goes through `install_element` like any
 // other recorded write. One exception each way, and neither was predictable from the other kind.
 
+/// `shard.zsets` -- member bytes to a score-and-block pair.
+///
+/// THE ONE MOST LIKELY TO HAVE RESISTED, AND IT DID NOT. A zset element is a member AND a score, so
+/// a composite key would have been the obvious guess -- and it is wrong: the score lives in the
+/// VALUE, `(u64, BlockAddress)`, because the map is ordered by member and the score is what the
+/// member maps to. So the blanket `ElementMap for BTreeMap<E, V>` covers it with no new bound, and
+/// `CarriedValue for (u64, BlockAddress)` already existed, so the fold needed nothing either.
+///
+/// Nothing was widened to fit this kind. That matters: a trait grown to fit one kind is how a
+/// generic type acquires a member that belongs to nobody.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) struct ZSetKind;
+
+impl RecordedKind for ZSetKind {
+    type Elements = std::collections::BTreeMap<Vec<u8>, (u64, BlockAddress)>;
+    const KIND: &'static str = "zset";
+
+    /// `zset_index_serde`, for the same reason `sets` needs its own: a member is `Vec<u8>` and a
+    /// JSON object key is a string. STATED rather than inherited -- the codec is a required
+    /// associated function with no default precisely so a new kind cannot acquire the wrong one in
+    /// silence, which is the defect a blanket impl produced for `sets`.
+    fn serialize_entries<S>(
+        entries: &HashMap<String, Self::Elements>,
+        serializer: S,
+    ) -> Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        super::zset_index_serde::serialize(entries, serializer)
+    }
+
+    fn deserialize_entries<'de, D>(
+        deserializer: D,
+    ) -> Result<HashMap<String, Self::Elements>, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        super::zset_index_serde::deserialize(deserializer)
+    }
+
+    fn resident(shard: &mut ShardState) -> &mut RecordedMap<Self> {
+        &mut shard.zsets
+    }
+}
+
+/// A B-TREE LEVEL-2 CONTAINER, SO IT REPACKS. Declared, not inherited.
+impl RepacksAfterDecode for ZSetKind {}
+
+// AND IT DOES NOT DECLARE `ReplaysInstallsUnrecorded`: recovery's `zset` arm re-files its block
+// through `upsert_bucket_index_block` before installing, so it goes through the recorded path.
+// Read from the arm rather than assumed.
+
+/// `shard.lists` -- a biased sequence number to a block.
+///
+/// THIS KIND FOLDS IN FOR UNIFORMITY, NOT FOR BYTES, and the body of its change says so in those
+/// words. #2087 measured the list shape at **499.5 moves per insert**, which is n/2 by construction
+/// for a left push into a vector-backed run and 45.4x a B-tree's bound. Nothing here changes that
+/// and nothing here should be read as claiming it does.
+///
+/// WHAT IT DOES GET is the invariant every other kind now has, plus one latent defect closed by
+/// construction -- see the note on `ListPush` in `execute_on_shard`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) struct ListKind;
+
+impl RecordedKind for ListKind {
+    type Elements = std::collections::BTreeMap<i64, BlockAddress>;
+    const KIND: &'static str = "list";
+
+    /// THE PLAIN MAP, which is what this field always was -- a `#[serde(default)]` map with no
+    /// `with =`. An `i64` key has a string form a JSON object can carry, which is exactly why this
+    /// kind never needed the codec `sets` and `zsets` do. Stated explicitly all the same.
+    fn serialize_entries<S>(
+        entries: &HashMap<String, Self::Elements>,
+        serializer: S,
+    ) -> Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        serde::Serialize::serialize(entries, serializer)
+    }
+
+    fn deserialize_entries<'de, D>(
+        deserializer: D,
+    ) -> Result<HashMap<String, Self::Elements>, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        serde::Deserialize::deserialize(deserializer)
+    }
+
+    fn resident(shard: &mut ShardState) -> &mut RecordedMap<Self> {
+        &mut shard.lists
+    }
+}
+
+/// A B-TREE LEVEL-2 CONTAINER, SO IT REPACKS.
+impl RepacksAfterDecode for ListKind {}
+
+// AND IT DOES NOT DECLARE `ReplaysInstallsUnrecorded`: recovery's `list` arm re-files its block too.
+
 // =============================================================================================
 // WHAT THE LEVEL-2 CONTAINERS HAVE TO SUPPLY. Three small traits, each declared beside the
 // operation that needs it rather than widened onto `ElementMap` -- which is the FOLD's trait, and

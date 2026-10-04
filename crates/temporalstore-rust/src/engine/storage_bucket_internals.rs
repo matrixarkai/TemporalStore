@@ -5214,19 +5214,15 @@ pub(super) fn reconcile_secondary_views_from_bucket_index(
     // index. That trusts the index exactly as far as this function already trusts it two arms up,
     // where `shard.strings = strings` and `shard.hashes = hashes` assign the derived view WHOLESALE.
     {
-        let persisted = std::mem::take(&mut shard.lists);
-        shard.lists = fill_absent_elements(
+        shard.lists.reconcile_from_durable(
             lists,
-            persisted,
             &live_pages_by_address,
             &mut resurrections_refused,
         );
     }
     {
-        let persisted = std::mem::take(&mut shard.zsets);
-        shard.zsets = fill_absent_elements(
+        shard.zsets.reconcile_from_durable(
             zsets,
-            persisted,
             &live_pages_by_address,
             &mut resurrections_refused,
         );
@@ -6806,10 +6802,10 @@ mod model_kind_registry_guards {
             .insert_elements_for_test("h", [("f".to_string(), at.clone())].into_iter().collect());
         shard
             .zsets
-            .insert("z".to_string(), BTreeMap::from([(vec![1u8], (9u64, at.clone()))]));
+            .insert_elements_for_test("z", BTreeMap::from([(vec![1u8], (9u64, at.clone()))]));
         shard
             .lists
-            .insert("l".to_string(), BTreeMap::from([(0i64, at.clone())]));
+            .insert_elements_for_test("l", BTreeMap::from([(0i64, at.clone())]));
         shard
             .sets
             .insert_elements_for_test("t", BTreeMap::from([(vec![2u8], at.clone())]));

@@ -2470,7 +2470,7 @@ fn an_ordinal_loses_the_member_the_fold_delivers_without_a_durable_entry() {
         let shard = shards.get_mut(&1).expect("shard 1 is loaded");
         let removed = shard
             .zsets
-            .get_mut("eo-fold")
+            .elements_mut_for_test("eo-fold")
             .expect("the zset is present")
             .remove(doomed.as_slice());
         assert!(

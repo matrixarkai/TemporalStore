@@ -1494,9 +1494,9 @@ impl TemporalEngine {
                             return false;
                         };
                         let sequence = biased.wrapping_add(i64::MIN as u64) as i64;
-                        if let Some(elements) = shard.lists.get_mut(&item.object_key) {
-                            elements.remove(&sequence);
-                        }
+                        shard
+                            .lists
+                            .replay_remove_element(&item.object_key, &sequence);
                     }
                     ("zset", Some(encoded)) => {
                         if encoded.len() < 16 {
@@ -1506,9 +1506,9 @@ impl TemporalEngine {
                         let Ok(member) = hex::decode(member_hex) else {
                             return false;
                         };
-                        if let Some(members) = shard.zsets.get_mut(&item.object_key) {
-                            members.remove(&member);
-                        }
+                        shard
+                            .zsets
+                            .replay_remove_element(&item.object_key, &member);
                     }
                     // A component-keyed kind with no component names nothing to remove.
                     _ => return false,
@@ -1665,20 +1665,20 @@ impl TemporalEngine {
                     return false;
                 };
                 let sequence = biased.wrapping_add(i64::MIN as u64) as i64;
-                super::upsert_bucket_index_block(
+                // THE STANDALONE UPSERT IS GONE BECAUSE THE OPERATION DOES IT. Leaving both
+                // filed the record twice, which a replay would then install twice -- the mirror
+                // image of the defect the container exists to stop, and the compiler caught it as
+                // a moved `component` rather than as a double write.
+                super::recorded_map::install_element::<super::recorded_map::ListKind>(
                     shard,
                     shard_id,
-                    "list",
                     &item.object_key,
                     Some(component),
+                    sequence,
                     address.clone(),
                     true,
+                    address,
                 );
-                shard
-                    .lists
-                    .entry(item.object_key.clone())
-                    .or_default()
-                    .insert(sequence, address);
                 true
             }
             // zset: sixteen hex digits of the biased score, then the member in hex.
@@ -1697,20 +1697,20 @@ impl TemporalEngine {
                 else {
                     return false;
                 };
-                super::upsert_bucket_index_block(
+                // THE STANDALONE UPSERT IS GONE BECAUSE THE OPERATION DOES IT. Leaving both
+                // filed the record twice, which a replay would then install twice -- the mirror
+                // image of the defect the container exists to stop, and the compiler caught it as
+                // a moved `component` rather than as a double write.
+                super::recorded_map::install_element::<super::recorded_map::ZSetKind>(
                     shard,
                     shard_id,
-                    "zset",
                     &item.object_key,
                     Some(component),
-                    address.clone(),
+                    member,
+                    (biased, address.clone()),
                     true,
+                    address,
                 );
-                shard
-                    .zsets
-                    .entry(item.object_key.clone())
-                    .or_default()
-                    .insert(member, (biased, address));
                 true
             }
             // Every timestamped series is the same shape: stored key -> block, with the key in
