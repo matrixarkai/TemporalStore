@@ -1464,6 +1464,35 @@ impl TemporalEngine {
         let restored_index_bytes = serialize_index(&restored);
         self.persist_bucket_dump_install_marker(manifest, "prepare")
             .map_err(|err| Status::error("slot_dump_install_failed", err.to_string()))?;
+        // THE INSTALL IS WHAT PUTS THE STATE ON DISK, SO THE INSTALL IS WHAT RECORDS ITS
+        // RANGE. The write below materializes the base index UNCONDITIONALLY -- before the
+        // `shard_was_loaded` check -- and `store_has_on_disk_state` counts exactly that file.
+        // Without this, the install-then-load restore (the production order, reached over
+        // `POST /server/storage/dumps/install`) leaves state that no stamp describes, and the
+        // load then has to infer the range from the stamp's absence.
+        //
+        // THE RANGE IS THE ONE THIS INSTALL FILES UNDER, not the one anybody requested:
+        // `shard_routing_range` is the same accessor `routing_bucket_for_key` uses above, and
+        // its missing-info default is the whole range precisely for "a dump manifest installed
+        // before its shard is loaded" -- so an unloaded install records the range it actually
+        // filed under and a loaded one records the range it was loaded with. Behaviour is
+        // unchanged either way; what changes is that it is now WRITTEN DOWN instead of being
+        // recoverable only by a later load guessing the same default.
+        //
+        // BEFORE THE INDEX BYTES, the order `install_index_bytes` already takes: a crash
+        // between the two leaves a stamp with no index, which a load treats as a new store,
+        // rather than an index with no stamp, which is the state this closes.
+        let (start_routing_bucket, end_routing_bucket) =
+            self.shard_routing_range(manifest.shard_id);
+        crate::engine::routing_range_stamp::write_routing_range_stamp(
+            &self.index_dir,
+            manifest.shard_id,
+            crate::engine::routing_range_stamp::RoutingRangeStamp {
+                start_routing_bucket,
+                end_routing_bucket,
+            },
+        )
+        .map_err(|err| Status::error("slot_dump_install_failed", err.to_string()))?;
         // Durable (bulk-gate-bypassing) write: under bulk-ingest mode the ordinary
         // persist_index_bytes is a no-op, which would leave the stale pre-manifest index on
         // disk while the advanced replay watermark suppresses replay of the records this
