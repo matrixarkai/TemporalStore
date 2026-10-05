@@ -8,7 +8,7 @@ within a week and its staleness is silent.
 
 ## Why this exists
 
-There are 311 of them, read by 98 functions.
+There are 312 of them, read by 99 functions.
 
 Deleting unreachable code is not the lever. An earlier version of this document argued that
 by asserting every accessor had a caller -- true when it was hand-checked at 55, and carried
@@ -60,12 +60,12 @@ Anything else is blank, and a blank means go and look.
 
 | flags | count |
 |---|---|
-| total | 311 |
+| total | 312 |
 | booleans whose default this could read off the source | 53 |
 | numbers whose default this could read off the source | 70 |
 | **defaulting on, and set by nothing** | 7 |
 | offered on the portal | 27 |
-| **that nothing in this repository sets** | 173 |
+| **that nothing in this repository sets** | 174 |
 | documented as keeping an older path alive | 3 |
 | reaching more than two files | 15 |
 | whose doc comment is really about another flag | 38 |
@@ -382,7 +382,7 @@ Read only by the benchmark harnesses. Never consulted on a serving path.
 | `TEMPORALSTORE_CONTEXT_BENCHMARK_SELECTED_ID_LIMIT` | 128 | script | 1 | — |
 | `TEMPORALSTORE_CONTEXT_BENCHMARK_SOURCE_ORDER_RANKING` | off | script | 1 | — |
 
-## behaviour (69)
+## behaviour (70)
 
 Everything else that changes what the engine does.
 
@@ -416,6 +416,7 @@ Everything else that changes what the engine does.
 | `TS_BLOCK_INDEX_CHECKSUMS` | off | nothing | 1 | — |
 | `TS_CACHE_DISK_TIER` | — | test | 1 | — |
 | `TS_COLD_SCAN_NO_CACHE_FILL` | on | config, test, portal | 1 | — |
+| `TS_CONTAINER_ONE_ENTRY_A_PAGE` | — | nothing | 1 | — |
 | `TS_DATA_RAFT_READ_MODE` | — | config | 1 | — |
 | `TS_EVICT_SAMPLES` | — | nothing | 1 | — |
 | `TS_EVICT_SCAN_TURNS` | — | nothing | 1 | — |
