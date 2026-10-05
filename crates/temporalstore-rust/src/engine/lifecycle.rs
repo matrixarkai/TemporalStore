@@ -759,30 +759,23 @@ impl TemporalEngine {
             request.start_routing_bucket,
             request.end_routing_bucket,
         ) {
-            crate::engine::routing_range_stamp::RoutingRangeDecision::Refuse { message } => {
+            crate::engine::routing_range_stamp::RoutingRangeDecision::Refuse {
+                code,
+                message,
+            } => {
                 return LoadShardResponse {
-                    status: Status::error("routing_range_mismatch", message),
+                    status: Status::error(code, message),
                 };
             }
             crate::engine::routing_range_stamp::RoutingRangeDecision::Load {
                 start_routing_bucket,
                 end_routing_bucket,
                 write_stamp,
-                adopted_legacy,
             } => {
-                if adopted_legacy {
-                    tracing::warn!(
-                        shard_id = request.shard_id,
-                        requested_start_routing_bucket = request.start_routing_bucket,
-                        requested_end_routing_bucket = request.end_routing_bucket,
-                        start_routing_bucket,
-                        end_routing_bucket,
-                        "shard has on-disk state and no recorded routing range, so it was built \
-                         before the engine recorded one and can only have been built on the whole \
-                         keyspace; honouring that range instead of the requested one. Re-ingest \
-                         into a new store to adopt the current default."
-                    );
-                }
+                // NO OVERRIDE ARM. A load either runs on the range it asked for or was refused
+                // above, so there is no range the caller has to be told it did not choose. The
+                // warning this replaces said a pre-stamp store "can only have been built on the
+                // whole keyspace", which was true of the default and false of the configuration.
                 request.start_routing_bucket = start_routing_bucket;
                 request.end_routing_bucket = end_routing_bucket;
                 if write_stamp {
