@@ -3230,6 +3230,21 @@ fn visit_model_live_blocks(
         let one_entry_a_page = super::container_index_files_one_entry_a_page();
         for (key, members) in &shard.sets {
             if one_entry_a_page {
+                // THIS DEDUP IS LOAD-BEARING FOR CORRECTNESS, NOT ONLY FOR THE COUNT.
+                //
+                // The entries emitted here carry no component, and `state::block_index_handle`
+                // -- the key `block_index` is still keyed by -- HASHES the component along with
+                // the object key and five address terms. Two entries of one object that agreed on
+                // every one of those AND carried `None` would hash to one handle, and the second
+                // `insert` would displace the first: a handle collision does not fail, it returns
+                // a DIFFERENT page.
+                //
+                // What makes that unreachable is exactly this set: emitting at most one entry per
+                // distinct `(slab, offset, length)` means no two emitted entries share an address,
+                // so no two can share a handle. Remove the dedup and `None` components stop being
+                // safe -- quietly, and only for objects whose elements share a page, which is the
+                // case this whole series is about. There is a matching note at
+                // `block_index_handle` saying it still hashes a field this path files as `None`.
                 let mut emitted_pages: std::collections::BTreeSet<(u64, u64, u64)> =
                     std::collections::BTreeSet::new();
                 for (_member, address) in members.iter() {
