@@ -1214,13 +1214,49 @@ pub(crate) fn execute_on_shard(
             // WHICH block of this object this element is. Computed BEFORE the append because the
             // append stamps it into the record header, and read off the block index -- which is
             // where the element's own previous block, if it has one, already states its position.
-            let block_ordinal = crate::engine::state::container_page_ordinal(
-                &shard.bucket_index,
-                routing_bucket,
-                "set",
-                &key,
-                &member_component,
-            );
+            //
+            // EXCEPT THAT UNDER ONE ENTRY PER PAGE THE INDEX CANNOT SAY. `container_page_ordinal`
+            // finds an element's existing position by looking for an entry filed under this
+            // element's component; a gated entry carries none, so that branch cannot match and the
+            // walk falls through to `highest + 1`. Every rewrite of one member would then take a
+            // fresh ordinal -- a fresh `block_id`, a fresh address, and therefore a fresh page --
+            // so a member written five times would leave five pages instead of overwriting one.
+            // Measured: two pages and ordinals [0, 1] where the ungated path leaves one and [0].
+            //
+            // SO THE QUESTION GOES TO THE MAP THAT IS KEYED BY THE MEMBER. `shard.sets` holds this
+            // member against the address it currently occupies, and that address's `block_id` IS
+            // its position -- the same number the index would have reported, read from the
+            // structure that still knows which element is which. It is authoritative rather than
+            // derived, and it needs no page read: adding a fetch to a write path inside a
+            // footprint change is scope drift this series has already declined once.
+            //
+            // The ungated path is left exactly as it was, so a deployment that has not set the
+            // gate computes this the way it always did.
+            let block_ordinal = if crate::engine::container_index_files_one_entry_a_page() {
+                shard
+                    .sets
+                    .get(&key)
+                    .and_then(|members| members.get(&member))
+                    .and_then(|address| address.block_id())
+                    .and_then(|held| u32::try_from(held).ok())
+                    .unwrap_or_else(|| {
+                        crate::engine::state::container_page_ordinal(
+                            &shard.bucket_index,
+                            routing_bucket,
+                            "set",
+                            &key,
+                            &member_component,
+                        )
+                    })
+            } else {
+                crate::engine::state::container_page_ordinal(
+                    &shard.bucket_index,
+                    routing_bucket,
+                    "set",
+                    &key,
+                    &member_component,
+                )
+            };
             // The block STATES which member it is -- see `container_pages`. For a set the element
             // key IS the member and so is the value, which the frame stores once: #2017 measured
             // that redundancy and this is the stage that stops paying it twice.
