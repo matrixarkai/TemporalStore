@@ -1100,3 +1100,132 @@ fn the_shard_carried_range_costs_eight_bytes_on_a_structure_there_is_one_of() {
          test justifies is no longer a saving"
     );
 }
+
+// =============================================================================================
+// 8. THE INSTALL RECORDS THE RANGE IT FILED UNDER
+// =============================================================================================
+
+/// A MANIFEST INSTALL STAMPS THE RANGE IT FILED UNDER, BECAUSE THE INSTALL IS WHAT PUTS THE STATE
+/// ON DISK.
+///
+/// `install_bucket_dump_manifest` writes the base index through `persist_index_bytes_durable`
+/// UNCONDITIONALLY -- before it asks whether the shard was loaded -- and `store_has_on_disk_state`
+/// counts exactly that file. So the install-then-load restore, which is the production one and is
+/// reachable over `POST /server/storage/dumps/install`, leaves a store holding state that no
+/// routing-range stamp describes. The READ side already knows a manifest is state; the WRITE side
+/// never recorded the range it filed under.
+///
+/// WHAT IT COSTS TODAY IS SILENCE, NOT A WRONG ANSWER. A later load reads no stamp, sees state and
+/// adopts the whole keyspace -- which IS the range this install files under while the shard is
+/// unloaded, so the adoption is right by coincidence rather than by record.
+/// `engine::tests::part4::restore_installs_the_manifest_then_replays_the_wal_suffix_on_load` drives
+/// the same path; its load-then-install sibling passes because the load stamped first.
+///
+/// THE RANGE IS NOT GUESSED HERE. It is `shard_routing_range`, the accessor the install's own
+/// `routing_bucket_for_key` already files pages with, and whose documented missing-info default is
+/// the whole range precisely for "a dump manifest installed before its shard is loaded". So the
+/// stamp states what the install DID rather than what a later reader hopes it did.
+///
+/// DRIVEN UNLOADED AND LOADED, because the unloaded arm is the one with no info row to read and the
+/// loaded arm is the one that must not be re-ranged to the default.
+///
+/// rust-internal: drives the engine's own manifest install, no product behaviour
+#[test]
+fn a_manifest_install_records_the_range_it_filed_under() {
+    use crate::engine::routing_range_stamp::{read_routing_range_stamp, store_has_on_disk_state};
+
+    let source_dir = tempfile::tempdir().expect("tempdir");
+    let source = engine_on(source_dir.path());
+    load_on(&source, WIDE_END);
+    let keys = seed(&source, RECORDS);
+    let buckets: Vec<u32> = {
+        let shards = source.shards.read().expect("shards lock poisoned");
+        let shard = shards.get(&1).expect("shard 1");
+        shard.bucket_index.bucket_map.keys().copied().collect()
+    };
+    assert!(!buckets.is_empty(), "the source holds no bucket to dump");
+    let manifest = source
+        .create_bucket_dump_manifest(1, buckets)
+        .expect("the source can dump its own buckets");
+
+    // ARM 1 -- UNLOADED, which is the production restore order. No load has run, so nothing other
+    // than the install could have written a stamp.
+    let unloaded_dir = tempfile::tempdir().expect("tempdir");
+    let unloaded = TemporalEngine::with_local_dirs(
+        64 * 1024 * 1024,
+        unloaded_dir.path().join("cache"),
+        source_dir.path().join("pages"),
+        unloaded_dir.path().join("indexes"),
+    );
+    let unloaded_index_dir = unloaded_dir.path().join("indexes");
+    assert!(
+        read_routing_range_stamp(&unloaded_index_dir, 1).is_none(),
+        "the fixture is not clean: something stamped this store before the install, so a passing \
+         assertion below would say nothing about the install"
+    );
+    unloaded
+        .install_bucket_dump_manifest(&manifest)
+        .expect("the manifest installs on an unloaded shard");
+    assert!(
+        store_has_on_disk_state(&unloaded_index_dir, 1),
+        "the install left NO on-disk state, so this arm is vacuous -- the stamp assertion below \
+         would pass on a store that a load would call new"
+    );
+    let filed = unloaded.shard_routing_range(1);
+    let read_back_stamp = read_routing_range_stamp(&unloaded_index_dir, 1);
+    println!("  unloaded install filed under {filed:?}, stamp {read_back_stamp:?}");
+    let unloaded_stamp = read_back_stamp.expect(
+        "a manifest install left on-disk state with NO routing-range stamp. The next load reads no \
+         stamp, sees state, and has to infer the range from its absence -- which is the silent \
+         re-ranging this stamp exists to prevent",
+    );
+    assert_eq!(
+        filed,
+        (
+            unloaded_stamp.start_routing_bucket,
+            unloaded_stamp.end_routing_bucket
+        ),
+        "the install filed pages under {filed:?} and stamped \
+         {}..{}; a stamp naming a range other than the one the pages were filed under is worse \
+         than no stamp at all",
+        unloaded_stamp.start_routing_bucket,
+        unloaded_stamp.end_routing_bucket
+    );
+
+    // ARM 2 -- LOADED: the range on the info row, never the missing-info default.
+    let loaded_dir = tempfile::tempdir().expect("tempdir");
+    let loaded = TemporalEngine::with_local_dirs(
+        64 * 1024 * 1024,
+        loaded_dir.path().join("cache"),
+        source_dir.path().join("pages"),
+        loaded_dir.path().join("indexes"),
+    );
+    load_on(&loaded, NARROW_END);
+    loaded
+        .install_bucket_dump_manifest(&manifest)
+        .expect("the manifest installs on the narrower loaded shard");
+    let loaded_index_dir = loaded_dir.path().join("indexes");
+    let loaded_stamp = read_routing_range_stamp(&loaded_index_dir, 1)
+        .expect("a loaded shard's manifest install left no routing-range stamp");
+    println!(
+        "  loaded install stamp {}..{}",
+        loaded_stamp.start_routing_bucket, loaded_stamp.end_routing_bucket
+    );
+    assert_eq!(
+        (0, NARROW_END),
+        (
+            loaded_stamp.start_routing_bucket,
+            loaded_stamp.end_routing_bucket
+        ),
+        "the install stamped {}..{} on a shard loaded on 0..{NARROW_END}; stamping the \
+         missing-info default over a range the engine KNOWS is how a narrow store gets re-ranged",
+        loaded_stamp.start_routing_bucket,
+        loaded_stamp.end_routing_bucket
+    );
+    assert_eq!(
+        RECORDS,
+        read_back(&loaded, &keys),
+        "the install stopped the records reading back, so the stamp is not the only thing that \
+         moved here"
+    );
+}
