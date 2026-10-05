@@ -223,3 +223,4 @@ mod authority_check_cost;
 mod sweep_keeps_the_collapse;
 mod ordinal_under_the_gate;
 mod gated_removal;
+mod replay_under_the_gate;
