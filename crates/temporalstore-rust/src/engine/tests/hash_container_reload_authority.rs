@@ -1,19 +1,54 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright 2026 MatrixArkAI
 
-//! DOES A CONTAINER'S RESIDENT MAP STILL HOLD ITS ELEMENTS AFTER A RELOAD?
+//! EVERY ELEMENT OF A CONTAINER SURVIVES AN UNLOAD AND A RELOAD, FOR THE FOUR CONTAINER KINDS.
 //!
-//! #2054 made `hashes` durable -- `#[serde(default)]` with no `skip_serializing` -- which is what
-//! makes it possible for `HashLen` to answer from the container instead of from the page-index entry
-//! count. `HashLen` answers from the entry count today
-//! (`bucket_index_component_block_addresses(..).len()`), and that fact is what closed the batching
-//! route in #1999: an entry that stopped naming an element would silently change what HLEN returns.
+//! # WHAT THIS MODULE DOES NOT ESTABLISH, AND ITS ORIGINAL TITLE SAID IT DID
 //!
-//! SO THE REROUTE DEPENDS ON A PROPERTY NOBODY HAS ASSERTED IN GENERAL. #2054 drove exactly one
-//! case -- a page entry carrying no component, where only the durable map can supply the element --
-//! and asserted both fields present after a reload. That is the mechanism working, not the general
-//! claim that the map's LENGTH is right after a reload for an arbitrary container. This module
-//! asserts the general claim, for the four container kinds, before anything is pointed at it.
+//! This landed as #2067 under the title "a container's resident map is the AUTHORITY a length can be
+//! rerouted to". That is wrong, and the correction belongs here rather than in a note somewhere
+//! else, because the file name still says `authority`.
+//!
+//! The reconcile on the load path is `RecordedMap::reconcile` -> `fill_absent_elements(derived,
+//! persisted, live, ..)`, and its own doc states the rule: "The derived view wins where both have an
+//! element -- it reflects the delta fold, which the persisted map does not". `derived` is built from
+//! the bucket index AFTER `fold_index_log_deltas` has replayed the delta suffix over it; `persisted`
+//! is the container map read out of the base index, which is only as new as the last compaction or
+//! unload. So where the two disagree the INDEX wins, and the container supplies only what the
+//! derived view could not name -- filtered by whether its block is still live.
+//!
+//! The reason is resurrection, and it is measured: a member removed after the last base-index write
+//! is gone from the block index and present in the persisted map, and handing it back is the defect.
+//! #2017 drove exactly that, at resident map 2 members against live block index 1, and it is why a
+//! set listing could not be served from `shard.sets`.
+//!
+//! So the container is DURABLE but NOT AUTHORITATIVE, and pointing a length at it would read from
+//! the losing side of that merge. #2093 is the shape that is actually correct: serve BOTH sources and
+//! count the divergence, rather than reroute to one.
+//!
+//! # WHY THE BODY BELOW CANNOT TELL THE TWO APART, WHICH IS THE DEEPER FAULT
+//!
+//! The fixture writes, unloads and reloads, and both sources AGREE at every point -- the written
+//! population is in the base index and in the container, and nothing diverges them. A fixture in
+//! which two sources agree cannot establish a claim about WHICH source answered. The original title
+//! made exactly that claim, so the name asserted something the body never measured.
+//!
+//! THE GENERAL RULE, worth more than this instance: if a test's name says "X is the authority", its
+//! fixture must contain a case where X and the alternative DISAGREE. Otherwise the name is an
+//! assertion the body does not make.
+//!
+//! # WHAT IT DOES ESTABLISH, which is true and worth keeping
+//!
+//! That no element is LOST across a reload, for all four container kinds, by length and by
+//! membership. #2054 drove one case -- a page entry carrying no component, where only the durable map
+//! can supply the element. This drives the ordinary case for four kinds, which is a different and
+//! still useful fact: it is a no-loss guard, not an authority claim.
+//!
+//! THE DISCRIMINATING ARM IS NOT HERE YET, and that is stated rather than left unsaid. It needs a
+//! fixture where the base index is older than the block index -- write, unload, reload, remove one
+//! element, then load a fresh engine over the same directories WITHOUT an intervening unload, so the
+//! base still names the removed element and the delta does not -- and it must assert that the INDEX
+//! wins. Driven to fail by making the persisted map win, so it has shown it can discriminate.
 //!
 //! WHY LENGTH AND NOT MEMBERSHIP. A reroute of `HashLen` reads `len()`, so `len()` is what has to be
 //! right. Membership is asserted beside it so a map that came back with the right COUNT of the wrong
@@ -144,12 +179,15 @@ fn hash_len_served(engine: &TemporalEngine, key: &str) -> i64 {
     }
 }
 
-/// THE CONTAINER'S RESIDENT MAP STILL HOLDS ITS ELEMENTS AFTER AN UNLOAD AND A RELOAD.
+/// NO ELEMENT OF A CONTAINER IS LOST ACROSS AN UNLOAD AND A RELOAD.
 ///
 /// Four kinds, `ELEMENTS` elements each, the population asserted BEFORE the unload so a failure
 /// afterwards is about the reload. The page-index entry count is printed beside the map length at
-/// both points, because whether those two agree is exactly what decides whether pointing `HashLen` at
-/// the map changes an answer.
+/// both points.
+///
+/// THE TWO NUMBERS AGREE HERE, AND THAT IS THE LIMIT OF WHAT THIS DRIVES. Agreement cannot say which
+/// source answered, so this is a no-loss guard and not a statement about authority -- see the module
+/// header for why the index wins where the two disagree, and for the arm that would measure it.
 ///
 /// rust-internal: drives the four container writes and one reload
 #[test]
