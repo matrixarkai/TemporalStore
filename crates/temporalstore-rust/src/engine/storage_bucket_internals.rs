@@ -3613,7 +3613,7 @@ pub(super) fn insert_container_tombstone_entry(
     shard: &mut ShardState,
     kind: &str,
     object_key: &str,
-    component: &str,
+    component: Option<&str>,
     address: BlockAddress,
     routing_bucket: u32,
 ) {
@@ -3626,7 +3626,11 @@ pub(super) fn insert_container_tombstone_entry(
     let page = BlockIndex {
         object_key: std::sync::Arc::from(object_key),
         model_id: stored_model_kind(kind),
-        component: Some(std::sync::Arc::from(component)),
+        // `None` UNDER ONE ENTRY A PAGE. The tombstone entry exists to make the page
+        // REACHABLE, and under that gate identity is the page -- so naming an element here would
+        // keep `component` alive on the last path that still files one, which is exactly what
+        // step ten has to be able to delete.
+        component: component.map(std::sync::Arc::from),
         address,
         dirty: true,
         deleted: true,
