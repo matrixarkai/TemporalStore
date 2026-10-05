@@ -5137,6 +5137,36 @@ fn mark_bucket_index_block_deleted_recording(
     // The bucket the removed entry was filed in, so the tombstone can be filed in the SAME one.
     // `None` until a `retain` below actually matches something.
     let mut tombstone_bucket: Option<u32> = None;
+    // Kept for the gated branch at the end, because the ungated `if let` below MOVES `tombstone`
+    // out of scope when it builds its tuple.
+    let tombstone_for_gate = tombstone.clone();
+    // THE BUCKET A GATED TOMBSTONE MUST BE FILED IN, read off the object's existing LIVE entry
+    // rather than recomputed.
+    //
+    // Recomputing it is a recorded defect: `block_routing_bucket(key, 0, u32::MAX)` is the form the
+    // WAL outcome uses and is a DIFFERENT number from the shard's own range, and filing a tombstone
+    // in that bucket made `runtime_report` call a live set a deleted object and made compaction
+    // refuse with an owner mismatch. Taking it from an entry cannot drift from the write path,
+    // because it IS the write path's answer read back.
+    //
+    // Computed before the mutable walk below, both to keep the borrow simple and so it describes
+    // the index as it was BEFORE this removal touched it.
+    let gated_tombstone_bucket: Option<u32> = if container_index_files_one_entry_a_page() {
+        shard
+            .bucket_index
+            .bucket_map
+            .iter()
+            .find(|(_, bucket)| {
+                bucket.block_index.values().any(|page| {
+                    !page.deleted
+                        && page.model_id.as_str() == model_id
+                        && &*page.object_key == key
+                })
+            })
+            .map(|(routing_bucket, _)| *routing_bucket)
+    } else {
+        None
+    };
     let target_buckets = if shard.bucket_index.object_block_lookup.is_empty() {
         shard
             .bucket_index
@@ -5277,10 +5307,45 @@ fn mark_bucket_index_block_deleted_recording(
             shard,
             model_id,
             key,
-            component,
+            Some(component),
             address,
             routing_bucket,
         );
+    }
+    // UNDER ONE ENTRY A PAGE THE MATCH ABOVE CANNOT FIRE, AND THE PAGE WOULD BE ORPHANED.
+    //
+    // The `retain` matches `page.component.as_deref() == component`, and a page-named entry has no
+    // component, so a gated removal matches NOTHING: `removed` stays false, `tombstone_bucket` is
+    // never set, and the tombstone page -- already appended, correct and decodable -- is named by
+    // nothing at all. `a_gated_removal_leaves_a_tombstone_page_the_index_can_reach` measured that
+    // state before this branch existed: one live entry before AND after the removal, zero
+    // tombstoned, and a fold of every page the index names still holding the removed member while
+    // reporting itself COMPLETE -- because an unreachable page is never read and so is never
+    // counted as a failure.
+    //
+    // WHY THE LIVE ENTRY IS NOT DROPPED, which is the whole difference from the ungated path above.
+    // Ungated, the matched entry IS the element, so replacing it with a tombstone loses nothing.
+    // Gated, ONE entry names a page holding every member of the object, and dropping it would take
+    // the other thirty-nine with it. So the tombstone entry is ADDED BESIDE the live one, and
+    // `container_membership::derive_membership`'s fold by `append_position` is what makes the
+    // removal win: the tombstone page is the later page to mention the element.
+    //
+    // AND ONLY WHERE THE OBJECT ACTUALLY HAS AN ENTRY. The invariant the ungated path states just
+    // above -- a removal that matched nothing must not file a tombstone, because that would state a
+    // removal that never happened -- is not weakened here: `gated_tombstone_bucket` is `None`
+    // unless the object already holds a live page entry, so a removal against an object the index
+    // does not know files nothing.
+    if !removed && container_index_files_one_entry_a_page() {
+        if let (Some(address), Some(routing_bucket)) = (tombstone_for_gate, gated_tombstone_bucket) {
+            crate::engine::storage_bucket_internals::insert_container_tombstone_entry(
+                shard,
+                model_id,
+                key,
+                None,
+                address,
+                routing_bucket,
+            );
+        }
     }
     removed
 }
