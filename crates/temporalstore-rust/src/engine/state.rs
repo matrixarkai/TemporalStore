@@ -2134,6 +2134,15 @@ pub(super) fn block_index_handle(page: &BlockIndex) -> u64 {
     let mut hasher = std::collections::hash_map::DefaultHasher::new();
     page.model_id.hash(&mut hasher);
     page.object_key.hash(&mut hasher);
+    // STILL HASHED, AND ONE PRODUCER NOW FILES IT AS `None`.
+    //
+    // Under `container_index_files_one_entry_a_page` the set arm of `visit_model_live_blocks`
+    // emits entries with no component, so for those this term contributes the hash of `None` and
+    // the handle is decided by the object key and the address alone. That is safe only because
+    // that producer emits at most one entry per distinct physical page, so two of its entries
+    // cannot share an address and therefore cannot share a handle -- there is a note at the dedup
+    // saying what it is holding. A collision here returns a DIFFERENT page rather than failing,
+    // which is why the property is written at both ends rather than inferred at either.
     page.component.as_deref().hash(&mut hasher);
     page.address.block_slab_id().hash(&mut hasher);
     page.address.offset().hash(&mut hasher);
