@@ -394,6 +394,29 @@ pub(super) fn remove_container_element(
     )
 }
 
+/// Gated listings answered from a fold of the pages, and gated listings that DECLINED to.
+///
+/// Two counters because a test must be able to tell which path produced an answer. A gated
+/// listing that quietly fell back to the durable map would return the right members and prove
+/// nothing about the fold -- the shape that made an earlier measurement in this series report a
+/// clean result over a branch nothing reached.
+static GATED_LISTING_DERIVED: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+static GATED_LISTING_DECLINED: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+/// (derived, declined) for gated container listings.
+pub fn gated_listing_counts() -> (u64, u64) {
+    (
+        GATED_LISTING_DERIVED.load(std::sync::atomic::Ordering::Relaxed),
+        GATED_LISTING_DECLINED.load(std::sync::atomic::Ordering::Relaxed),
+    )
+}
+
+/// Forget them, so a test measures its own exercise.
+pub fn reset_gated_listing_counts() {
+    GATED_LISTING_DERIVED.store(0, std::sync::atomic::Ordering::Relaxed);
+    GATED_LISTING_DECLINED.store(0, std::sync::atomic::Ordering::Relaxed);
+}
+
 /// Removals whose tombstone page could not be APPENDED, as distinct from could not be FRAMED.
 ///
 /// Two counters and not one, because the two say different things about the store: an unframable
@@ -2044,6 +2067,70 @@ pub(crate) fn execute_on_shard(
                 };
             }
             cached_response(cache, CacheKey::set_members(shard_id, &key), || {
+                // ---- UNDER ONE ENTRY A PAGE, IDENTITY IS IN THE PAYLOAD ----
+                //
+                // The walk below answers each ENTRY from the page it names, and its `None` arm
+                // says why that cannot work here: "an entry naming no component can only be
+                // answered by a page that names no element either". Under this gate every entry
+                // names no component and every page IS framed, so that arm drops every member and
+                // the listing returns EMPTY -- measured as `listed=0` against 40 ungated.
+                //
+                // So the gated listing asks the PAYLOAD instead. That is the direction that
+                // resurrected a removed member once, and the two things that make it safe now are
+                // both recent and both driven: the tombstone page is REACHABLE from the index
+                // (step 8a), and `derive_membership` folds every page of the object by
+                // `append_position` with a value and a tombstone as the same kind of statement, so
+                // the later page wins. A hand-rolled loop over the payload lacks exactly that
+                // precedence, which is why one resurrected a member before.
+                //
+                // THE ENUMERATOR IS THE ONE THAT KEEPS TOMBSTONE ENTRIES, because withholding them
+                // would hand the fold only the pages that say "present".
+                if crate::engine::container_index_files_one_entry_a_page() {
+                    let routing_bucket =
+                        block_routing_bucket(&key, start_routing_bucket, end_routing_bucket);
+                    let addresses =
+                        super::bucket_store::bucket_index_all_block_addresses_with_tombstones(
+                            shard, "set", &key,
+                        );
+                    let derived = crate::engine::container_membership::derive_membership(
+                        "set",
+                        addresses,
+                        |address| {
+                            read_block_bytes(
+                                cache,
+                                block_store,
+                                shard_id,
+                                address,
+                                PageIdentity::of(shard_id, "set", &key, None),
+                                Some(routing_bucket),
+                            )
+                        },
+                    );
+                    if derived.is_complete() {
+                        GATED_LISTING_DERIVED
+                            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                        return CommandResponse::Members {
+                            members: derived.live.into_values().collect(),
+                        };
+                    }
+                    // AN INCOMPLETE DERIVATION MUST NOT BE SERVED, and the reason is not
+                    // squeamishness: a page that could not be read may have been the one carrying
+                    // a tombstone, so an incomplete fold can be OVER-complete as easily as under,
+                    // and there is no direction to fail safely in. The durable member map is the
+                    // authority -- `reconcile_from_durable` treats it as such, and a gated removal
+                    // was already shown to survive a reload in it -- so the answer comes from
+                    // there and the decline is counted rather than hidden.
+                    GATED_LISTING_DECLINED.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                    return CommandResponse::Members {
+                        members: shard
+                            .sets
+                            .get(&key)
+                            .map(|members| {
+                                members.iter().map(|(member, _)| member.clone()).collect()
+                            })
+                            .unwrap_or_default(),
+                    };
+                }
                 // ONE DECODE PER DISTINCT PAGE, AND IDENTITY STAYS WITH THE ENTRIES.
                 //
                 // The walk below is unchanged: it names the members that exist, and a removed

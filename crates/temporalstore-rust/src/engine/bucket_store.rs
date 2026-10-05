@@ -217,6 +217,37 @@ pub(super) fn bucket_index_block_address(
         })
 }
 
+/// Every page this object resolves to, LIVE ENTRIES AND TOMBSTONED ALIKE.
+///
+/// # WHY THE EXISTING WALK CANNOT BE USED
+///
+/// [`bucket_index_component_block_addresses`] filters `!page.deleted`, which is right for every
+/// reader that answers FROM an entry: a tombstone entry names no live element and
+/// `no_index_reader_answers_from_a_tombstone_entry` drives all of them.
+///
+/// A FOLD IS NOT SUCH A READER. `container_membership::derive_membership` needs the tombstone
+/// pages precisely BECAUSE they state removals -- it folds by `append_position` and lets the later
+/// page win, so withholding the tombstones would hand it only the pages that say "present" and it
+/// would conclude exactly the resurrection the fold exists to prevent.
+///
+/// So this is deliberately the one enumerator that does not filter the flag, and it is named for
+/// that rather than reading like a variant someone can reach for by accident.
+pub(super) fn bucket_index_all_block_addresses_with_tombstones(
+    shard: &ShardState,
+    model_id: &str,
+    object_key: &str,
+) -> Vec<BlockAddress> {
+    let mut addresses = Vec::new();
+    for bucket in shard.bucket_index.bucket_map.values() {
+        for page in bucket.block_index.values() {
+            if page.model_id.as_str() == model_id && &*page.object_key == object_key {
+                addresses.push(page.address.clone());
+            }
+        }
+    }
+    addresses
+}
+
 pub(super) fn bucket_index_component_block_addresses(
     shard: &ShardState,
     model_id: &str,
