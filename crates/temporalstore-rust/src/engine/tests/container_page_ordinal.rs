@@ -375,6 +375,12 @@ fn a_string_page_is_left_at_zero_which_is_the_control() {
 /// rust-internal: drives repeated writes of one element, no external surface
 #[test]
 fn an_overwrite_keeps_the_members_ordinal_rather_than_climbing() {
+    // ONE MEMBER REWRITTEN REPEATEDLY IS A ONE-PAGE SHAPE ONLY UNGATED -- gated it settles on
+    // two pages and this test's own floor says so ("not measuring an overwrite"). The ordinal
+    // under the collapsed projection is asserted by
+    // `ordinal_under_the_gate::an_overwrite_keeps_the_members_ordinal_under_either_projection`,
+    // which drives BOTH arms, so pinning this one loses nothing.
+    let _gate_off = super::GateOff::held();
     let dir = tempfile::tempdir().expect("tempdir");
     let engine = engine_on(dir.path());
     load_on(&engine, OPERATOR_END);
@@ -622,6 +628,11 @@ fn the_ordinal_names_a_position_and_a_delete_frees_it() {
 /// rust-internal: drives SetAdd x4 then SetRemove, no external surface
 #[test]
 fn deletion_still_finds_its_row_by_component() {
+    // BY COMPONENT IS THE UNGATED MECHANISM, AND THIS TEST IS NAMED AFTER IT. Its instrument
+    // asks which entry NAMES a component; gated, no entry carries one, so it reports every
+    // member as missing -- including ones that are present and served. The gated removal is
+    // covered by `gated_removal` and `removal_the_index_can_find`.
+    let _gate_off = super::GateOff::held();
     let dir = tempfile::tempdir().expect("tempdir");
     let engine = engine_on(dir.path());
     load_on(&engine, OPERATOR_END);

@@ -120,10 +120,11 @@ fn entry_rows(engine: &TemporalEngine, object_key: &str) -> Vec<String> {
 fn rewrites_under(gate_on: bool) -> (usize, Vec<u64>, usize, Vec<String>) {
     let dir = tempfile::tempdir().expect("tempdir");
     let engine = engine_on(dir.path());
+    // BOTH DIRECTIONS AS VALUES: an unset variable now selects the GATED path.
     if gate_on {
         std::env::set_var(TS_CONTAINER_ONE_ENTRY_A_PAGE, "1");
     } else {
-        std::env::remove_var(TS_CONTAINER_ONE_ENTRY_A_PAGE);
+        std::env::set_var(TS_CONTAINER_ONE_ENTRY_A_PAGE, "0");
     }
     load_on(&engine);
 

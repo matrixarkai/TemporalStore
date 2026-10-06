@@ -152,8 +152,11 @@ fn what_the_projection_emits_per_object_gate_off_against_gate_on() {
             .expect("the fold round must succeed");
         let (batches, folded) = crate::engine::container_batch_counts();
 
-        // GATE OFF: today's projection, re-derived so both columns come from the same door.
-        std::env::remove_var(TS_CONTAINER_ONE_ENTRY_A_PAGE);
+        // GATE OFF: the per-element projection, re-derived so both columns come from the same
+        // door. SAID AS A VALUE, not by removing the variable: an unset variable selects the
+        // compiled-in default and that default is ON now, so `remove_var` here would have run this
+        // column gated and compared the gated projection against itself.
+        std::env::set_var(TS_CONTAINER_ONE_ENTRY_A_PAGE, "0");
         rederive(&engine);
         let (off_pages, off_entries, _) = pages_and_entries(&engine, &key);
         let off_named = entries_with_a_component(&engine, &key);
@@ -200,7 +203,7 @@ fn what_the_projection_emits_per_object_gate_off_against_gate_on() {
             .compact_shard_blocks(1)
             .expect("the fold round must succeed");
 
-        std::env::remove_var(TS_CONTAINER_ONE_ENTRY_A_PAGE);
+        std::env::set_var(TS_CONTAINER_ONE_ENTRY_A_PAGE, "0");
         rederive(&engine);
         let off_listed = listed_members(&engine, &off_key).len();
         std::env::set_var(TS_CONTAINER_ONE_ENTRY_A_PAGE, "1");

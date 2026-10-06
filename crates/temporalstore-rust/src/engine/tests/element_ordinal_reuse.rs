@@ -2138,6 +2138,13 @@ fn what_a_component_costs_an_element_at_five_member_widths() {
 /// rust-internal: reads the crate's own source and drives one reload
 #[test]
 fn the_component_ordering_property_is_consumed_by_no_reader() {
+    // THE WALK THIS COMPARES AGAINST IS BUILT BY DECODING EACH ENTRY'S COMPONENT, through an
+    // `unwrap_or_default()` that turns an absent name into the EMPTY member -- the same
+    // defaulting the production readers were fixed to stop doing. Gated it manufactures a
+    // phantom empty member in the expectation while the LISTING answers correctly, so the
+    // instrument fails, not the read. The gated listing's order is
+    // `gated_listing_folds_the_pages`' subject.
+    let _gate_off = super::GateOff::held();
     let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/engine");
     let internals = std::fs::read_to_string(root.join("storage_bucket_internals.rs"))
         .expect("storage_bucket_internals.rs is readable");

@@ -106,10 +106,12 @@ fn one_check_under(gate_on: bool) -> (u64, u64, u64, bool) {
     let dir = tempfile::tempdir().expect("tempdir");
     let engine = engine_on(dir.path());
     load_on(&engine);
+    // BOTH DIRECTIONS AS VALUES. `remove_var` for the off arm selects the compiled-in default,
+    // which is ON, so this would have measured the gated path twice.
     if gate_on {
         std::env::set_var(TS_CONTAINER_ONE_ENTRY_A_PAGE, "1");
     } else {
-        std::env::remove_var(TS_CONTAINER_ONE_ENTRY_A_PAGE);
+        std::env::set_var(TS_CONTAINER_ONE_ENTRY_A_PAGE, "0");
     }
 
     for index in 0..MEMBERS {

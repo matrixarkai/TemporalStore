@@ -4465,49 +4465,76 @@ pub(crate) const TS_CONTAINER_ONE_ENTRY_A_PAGE: &str = "TS_CONTAINER_ONE_ENTRY_A
 /// thing -- twice inside one compaction sweep. So the filing and the derivation cannot be changed
 /// in separate commits: whichever lands first is undone by the other. A projection can, however,
 /// be computed two ways behind one switch, and that is what this is for. Each edit in the series
-/// lands conditional on this gate, with the old path intact beside it, and nothing changes for a
-/// deployment that has not set it.
+/// landed conditional on this gate, with the old path intact beside it. While the default was off
+/// that meant nothing changed for a deployment that had not set it; the default is ON now, so what
+/// an unset variable selects has MOVED -- see the grandfathering section below.
 ///
-/// # IT SHIPS OFF AND IS MEANT TO BE DELETED
+/// # ITS DEFAULT IS ON NOW, AND IT IS STILL MEANT TO BE DELETED
 ///
-/// This is scaffolding with a planned demolition, stated here because the alternative has a
-/// record: a gate that ships OFF and is never flipped strands the feature behind it, and this
-/// repository is already carrying one such lever that way. The series ends by flipping the default
-/// and then REMOVING both this gate and the per-element path, so that the two ways of computing
-/// the projection do not become a permanent fork. If this constant is still here with the default
-/// off and no further steps landed, that is the failure mode to raise -- not a stable state.
+/// This section used to say the opposite, and it is restated rather than deleted because the
+/// reason it said so is the reason to read the rest of this comment: the gated path WAS incomplete
+/// by construction, and a reader who remembers that has to be told it no longer is.
 ///
-/// # DO NOT TURN THIS ON YET. THE GATED PATH IS INCOMPLETE BY CONSTRUCTION.
+/// The default is ON. Every consumer the series set out to bring along has landed -- the authority
+/// check, the ordinal source, the removal representation, the replay arm, the index-log emitter,
+/// the reconcile and, last, the LISTING, which was the one that mattered: until it landed, turning
+/// this on made a folded container's listing return nothing at all. The env var remains in both
+/// directions as an operator escape hatch (`=0|false|no|off` turns it off), through the same shared
+/// boolean vocabulary every other flag uses.
 ///
-/// This is a build-out switch, not an operator switch, and the difference matters because the
-/// incomplete state is not loud. Measured at this step, with the gate on, a set's listing returns
-/// **no members at all** -- the projection emits one entry per page and the listing still takes its
-/// identity from per-element entries, of which there are then none. Reads do not error; they come
-/// back empty.
+/// This is still scaffolding with a planned demolition: the step after this one REMOVES both the
+/// gate and the per-element path, so that the two ways of computing the projection do not become a
+/// permanent fork. A gate that ships off and is never flipped strands the feature behind it, and
+/// this repository is carrying another lever that way; this one is no longer in that state.
 ///
-/// That is the consumers not having caught up rather than a defect in the projection, and bringing
-/// them along is the rest of the series: the authority check, the ordinal source, the removal
-/// representation, the replay arm, the index-log emitter, the reconcile and the listing. Until
-/// those land, the only safe value is the default.
+/// # THERE IS NO GRANDFATHERING, BECAUSE THE INDEX IS RE-DERIVED AT LOAD
 ///
-/// `projection_names_a_page` pins that empty listing as the CURRENT truth rather than describing it
-/// in prose, so the step that fixes it has to change an assertion deliberately. A gate removes the
-/// signal a breaking change normally gives -- nothing goes red, because the suite runs with the
-/// gate off -- so the incomplete state is asserted on purpose to put that signal back.
+/// The most important consequence of moving this default, and the one that is easy to get wrong:
+/// the index is a DERIVED PROJECTION of the model maps, recomputed on the way in. So this gate
+/// decides what the READER files, not what some earlier writer wrote. A store written by an
+/// ungated binary, opened by a binary with this default, comes up with the COLLAPSED entry shape.
+///
+/// Measured across a real store boundary -- write, fold, `unload_shard`, drop the engine, reopen
+/// over the same directories with a separate cache -- at forty elements in each of the four
+/// container kinds, by
+/// `engine::tests::gated_corpus_across_a_store_boundary`:
+///
+/// | store written | read with | set members served | durable |
+/// |---|---|---|---|
+/// | gated | gated | 40 of 40 | 40 |
+/// | UNGATED | gated | 40 of 40 | 40 |
+/// | gated | UNGATED | 40 of 40 | 40 |
+///
+/// The middle row is the upgrade every existing deployment takes, and it is whole. The last row is
+/// why `SHARD_INDEX_FORMAT_VERSION` is NOT bumped for this change: an ungated reader re-derives the
+/// index through the ungated arm and re-files one NAMED entry per element, so the page-named
+/// entries never survive into its view and there is nothing for it to misread. A projection
+/// recomputed at load carries no durable shape to disagree about. If a later step makes the
+/// collapsed shape survive a load -- an authoritative index that is persisted rather than
+/// re-derived -- the stamp question reopens then, and that test is the tripwire for it.
+///
+/// One further measured caution: the `reconcile: N component name(s) could not be read and were
+/// skipped` line fires whenever a gated store is loaded, INCLUDING when every element is served
+/// correctly, and it was silent in the case that served nothing. It is not an alarm for this class
+/// of failure and nothing should be built on it.
 ///
 /// # WHAT IT DOES TODAY
 ///
-/// One reader: the SET arm of `visit_model_live_blocks`, the projection that derives the page index
-/// from the model maps. With the gate on, a set object emits one entry per distinct page address
-/// and no component; with it off, one entry per member as before. The other three container kinds
-/// still emit one entry per element either way, so a consumer that has not been brought along yet
-/// sees no change for them.
+/// FIVE readers, not the one this said when it was written: the SET arm of
+/// `visit_model_live_blocks` (the projection that derives the page index from the model maps), the
+/// block ordinal and the set listing in `execute_on_shard`, and the two removal arms here. With
+/// the gate on, a set object emits one entry per distinct page address and no component; with it
+/// off, one entry per member as before.
+///
+/// The other three container kinds still emit one entry per element either way -- the projection
+/// gates the set arm only -- which is what makes them the control in the test above: a short
+/// answer for hash, zset or list is a broken reload rather than anything this gate did.
 ///
 /// Observed, per OBJECT, at one page in every row: forty elements emit **forty entries ungated and
 /// one gated**, four emit four against one, and one emits one against one -- with every ungated
 /// entry carrying a component and no gated entry carrying one.
 pub(crate) fn container_index_files_one_entry_a_page() -> bool {
-    env_flag_on(TS_CONTAINER_ONE_ENTRY_A_PAGE)
+    env_flag_default_on(TS_CONTAINER_ONE_ENTRY_A_PAGE)
 }
 
 /// Tuning for sampled eviction, read from the environment with defaults that mirror the
