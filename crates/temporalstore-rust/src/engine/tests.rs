@@ -114,6 +114,7 @@ mod fold_hash_map_completeness;
 mod recorded_map_invariant;
 mod set_install_census;
 mod model_number_agreement;
+mod model_slot_is_a_position;
 mod dump_scale;
 mod dump_release_scale;
 mod restore_scale;

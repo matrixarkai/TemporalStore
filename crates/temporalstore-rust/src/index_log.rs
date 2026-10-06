@@ -1371,6 +1371,27 @@ where
 /// Exists so the guard on the two spelling lists can carry a byte figure rather than a correctness
 /// claim alone, and so that figure cannot drift from the encoder: pricing this slot any other way
 /// -- encoding the `&str` directly, say -- prices a row nobody emits.
+/// What NUMBER the model slot actually carries for one spelling, read back THROUGH the adapter
+/// that writes it.
+///
+/// The sibling of [`model_id_slot_bytes`] and for the same reason: pricing or pinning this slot any
+/// other way pins a row nobody emits. This one returns the VALUE rather than the width, because the
+/// hazard here is not size -- it is that the number written is `MODEL_ID_NUMBERS`' POSITION and not
+/// the registry's `report_code()`, and those two agree on nothing. `None` means the spelling was
+/// written as itself, which is what an unlisted model does.
+#[cfg(test)]
+pub(crate) fn model_id_slot_number(model: &str) -> Option<u64> {
+    struct Model<'a>(&'a str);
+    impl serde::Serialize for Model<'_> {
+        fn serialize<S: serde::Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
+            model_id_as_number_when_it_is_known(self.0, s)
+        }
+    }
+    let value: serde_json::Value =
+        serde_json::to_value(Model(model)).expect("encode the model slot");
+    value.as_u64()
+}
+
 #[cfg(test)]
 pub(crate) fn model_id_slot_bytes(model: &str) -> usize {
     struct Model<'a>(&'a str);
