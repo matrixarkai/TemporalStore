@@ -313,3 +313,154 @@ fn a_write_after_a_fold_files_the_same_entry_the_projection_would() {
          the other route never computes -- a durably acknowledged write that reads MISSING"
     );
 }
+
+/// WHAT SUPERSEDES THE ENTRY NAMING AN ELEMENT'S PREVIOUS PAGE.
+///
+/// The repair for the spelling disagreement is to key the upsert's convergence on the ADDRESS
+/// instead of the component, because under this gate the page is the identity. This measures the
+/// case that decides whether that is sufficient on its own: a member REWRITTEN after a fold moves
+/// to a NEW page, so an address-keyed predicate matching only the new address cannot select the
+/// entry naming the OLD one. If the current component-keyed convergence is what removes it, the
+/// repair has to be handed the superseded address as well -- and the write path already reads it,
+/// to compute the ordinal.
+#[test]
+fn a_rewrite_after_a_fold_leaves_one_entry_per_page_today() {
+    let _gate = GateAt::value("1");
+    let dir = tempfile::tempdir().expect("tempdir");
+    let engine = engine_on(dir.path());
+    load_on(&engine);
+
+    for index in 0..FIRST_BATCH {
+        add(&engine, member_bytes(index));
+    }
+    engine
+        .compact_shard_blocks(1)
+        .expect("the fold round must succeed");
+    let (_, _, folded_pages, _) = entry_census(&engine);
+    // FLOOR: the fixture folded, or "one entry per page" below is trivially true.
+    assert_eq!(
+        1,
+        folded_pages.len(),
+        "the members resolve to {} pages after the fold, so there is no shared page to rewrite off",
+        folded_pages.len()
+    );
+
+    // REWRITE a member that is already on the folded page.
+    add(&engine, member_bytes(0));
+    let (live, named, pages, _) = entry_census(&engine);
+    let durable = durable_members(&engine);
+    let listed = listed_members(&engine);
+    println!(
+        "\n=== rewrite after a fold: {live} live entr(ies), {named} naming an element, \
+         {} distinct page(s); durable {}, listing serves {}",
+        pages.len(),
+        durable.len(),
+        listed.len()
+    );
+
+    // FLOOR: nothing was lost, so the counts above are about filing and not about a lost store.
+    let expected: std::collections::BTreeSet<Vec<u8>> =
+        (0..FIRST_BATCH).map(member_bytes).collect();
+    assert_eq!(
+        expected, durable,
+        "the durable map holds {} of {} members after the rewrite",
+        durable.len(),
+        expected.len()
+    );
+    assert_eq!(
+        expected, listed,
+        "the listing served {} member(s) of {} after a rewrite -- compared as a SET, because a \
+         wrong-member answer has the same count as a right one",
+        listed.len(),
+        expected.len()
+    );
+
+    // THE MEASUREMENT THE REPAIR TURNS ON. One entry per distinct page means the entry naming the
+    // member's OLD page was superseded. If this holds today, it holds BECAUSE the convergence is
+    // component-keyed, and an address-keyed replacement must be given the old address too.
+    assert_eq!(
+        pages.len(),
+        live,
+        "{live} live entr(ies) for {} distinct page(s) after a rewrite. Recorded as the state an \
+         address-keyed convergence has to reproduce: if this is one-to-one today, the superseded \
+         page's entry is being removed by the COMPONENT match, and keying on the new address alone \
+         would leave it behind naming a dead page",
+        pages.len()
+    );
+}
+
+/// A COMPONENT-LESS KIND RELOCATING, WHICH IS WHY THE REPAIR CANNOT BE UNCONDITIONAL.
+///
+/// `String`, `ControlState` and `ContextNode` all file `component: None` with ONE page per object.
+/// For them the component-keyed convergence is exactly what supersedes a relocated page -- so a
+/// predicate keyed on the address for EVERY kind would leave a live entry naming the dead page on
+/// every one of these writes. Measured here so the repair's condition is derived from behaviour
+/// rather than from a list of kind names someone remembers.
+#[test]
+fn a_component_less_kind_rewritten_still_resolves_to_one_page() {
+    let _gate = GateAt::value("1");
+    let dir = tempfile::tempdir().expect("tempdir");
+    let engine = engine_on(dir.path());
+    load_on(&engine);
+
+    let key = "waf/string";
+    for round in 0..3usize {
+        let response = engine.execute(ExecuteRequest {
+            shard_id: 1,
+            command: Command::StringSet {
+                key: key.to_string(),
+                value: member_bytes(round),
+            },
+        });
+        assert!(response.status.ok, "write failed: {response:?}");
+    }
+
+    let (live, named, pages) = {
+        let shards = engine.shards.read().expect("engine lock poisoned");
+        let shard = shards.get(&1).expect("shard 1 loaded");
+        let mut live = 0usize;
+        let mut named = 0usize;
+        let mut pages = std::collections::BTreeSet::new();
+        for bucket in shard.bucket_index.bucket_map.values() {
+            for page in bucket.block_index.values() {
+                if page.deleted || page.model_id.as_str() != "string" || &*page.object_key != key {
+                    continue;
+                }
+                live += 1;
+                if page.component.is_some() {
+                    named += 1;
+                }
+                pages.insert((
+                    page.address.block_slab_id(),
+                    page.address.offset(),
+                    page.address.length(),
+                ));
+            }
+        }
+        (live, named, pages)
+    };
+    println!(
+        "  a string rewritten 3 times: {live} live entr(ies), {named} naming an element, \
+         {} distinct page(s)",
+        pages.len()
+    );
+
+    // FLOOR: the object is filed at all.
+    assert!(
+        live > 0,
+        "the string has no live entries, so the one-entry claim below would hold over nothing"
+    );
+    assert_eq!(
+        0, named,
+        "a string entry names an element, which contradicts the premise that this kind is \
+         component-less and makes it the wrong control for the repair's condition"
+    );
+    assert_eq!(
+        1, live,
+        "{live} live entries for a string rewritten three times, resolving to {} page(s). ONE is \
+         the state a component-keyed convergence produces, and it is why the address-keyed repair \
+         must apply to the gated container arm ONLY: applied here it would leave two stale entries \
+         naming dead pages",
+        pages.len()
+    );
+}
