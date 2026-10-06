@@ -682,6 +682,15 @@ fn an_element_the_durable_map_does_not_hold_still_comes_back_from_its_name() {
 /// rust-internal: mutates the engine's own served index, no external surface
 #[test]
 fn an_unreadable_component_name_is_skipped_and_the_durable_map_keeps_the_element() {
+    // IT PLANTS A CORRUPT ELEMENT NAME INTO AN INDEX FILE AND NEEDS TO FIND ONE THERE. A gated
+    // live set entry carries none, so there is nothing to corrupt and the test's own floor says so
+    // in as many words -- "the name was not found in any index file, so nothing was corrupted and
+    // this test would pass without testing anything". That floor is the instrument working.
+    //
+    // The gated equivalent -- a derived view that cannot name an element while the durable map
+    // still holds it -- is held by `gated_corpus_across_a_store_boundary`, whose durable floor is
+    // asserted before any served count is read.
+    let _gate_off = super::GateOff::held();
     let dir = tempfile::tempdir().unwrap();
     let indexes = dir.path().join("indexes");
     let kept = b"kept-member".to_vec();

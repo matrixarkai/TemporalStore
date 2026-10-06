@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright 2026 MatrixArkAI
 
-//! THE GATE FOR FILING ONE INDEX ENTRY PER PAGE: IT SHIPS OFF, AND IT ANSWERS BOTH WAYS.
+//! THE GATE FOR FILING ONE INDEX ENTRY PER PAGE: ITS DEFAULT IS ON, AND IT ANSWERS BOTH WAYS.
 //!
 //! # WHY THERE IS A GATE AT ALL
 //!
@@ -25,7 +25,8 @@
 //!
 //! What it does pin is the two things that can be true now and must stay true:
 //!
-//!   * the DEFAULT IS OFF, so no deployment changes behaviour by taking this commit; and
+//!   * the DEFAULT, which is ON since the series' consumers landed -- this test is the only
+//!     place in the suite that fails when it moves, because every other arm sets the variable; and
 //!   * the SWITCH ANSWERS IN BOTH DIRECTIONS, so when step two gives it a reader, the reader can
 //!     actually be reached from a deployment and from a test.
 //!
@@ -41,25 +42,37 @@
 //! the string again. A retyped name is a gate an operator cannot turn on and a test that passes
 //! anyway, which is the same class as a hand-written subject list going stale.
 //!
-//! No other test in this crate touches this variable, which is what makes setting it here safe:
-//! the value is process-global, so the discipline is that exactly one test owns each name. It is
-//! removed again at the end so a later test sees the shipped default.
+//! EIGHT OTHER MODULES IN THIS CRATE NOW TOUCH THIS VARIABLE -- the projection, the authority
+//! check, the sweep, the ordinal, the removal, the replay, the listing and the store-boundary
+//! corpus. "Exactly one test owns each name" stopped being the discipline here when the gate got
+//! consumers; what makes it safe instead is that the verdict for this crate is a SINGLE-THREADED
+//! run and each of those modules restores the variable when it is done -- the later ones through a
+//! guard whose `Drop` also runs while unwinding, which a bare `remove_var` at the end of a test
+//! does not. It is removed again at the end here so a later test sees the shipped default.
 
 #![allow(clippy::all)]
 use crate::engine::{container_index_files_one_entry_a_page, TS_CONTAINER_ONE_ENTRY_A_PAGE};
 
-/// THE SHIPPED DEFAULT IS OFF.
+/// THE DEFAULT THIS GATE CARRIES IS ON.
 ///
-/// Read with the variable removed, which is the state a deployment that has not heard of this
-/// gate is in.
+/// RESTATED, NOT RE-GOLDENED. This test asserted the opposite and had to go red for the default to
+/// move, which is the signal a gate otherwise removes: nothing else in the suite fails when a
+/// default changes, because every other arm sets the variable. The old text is worth keeping in
+/// mind -- "taking this commit would change how a container's index is filed for every deployment
+/// that has not asked for it" -- because that is EXACTLY what taking this one does, deliberately,
+/// now that the consumers have landed and a store written either way reads back whole across a
+/// reload (`gated_corpus_across_a_store_boundary`).
+///
+/// Read with the variable removed, which is the state a deployment that has not heard of this gate
+/// is in -- and which now selects the collapsed projection.
 #[test]
-fn the_one_entry_a_page_gate_ships_off() {
+fn the_one_entry_a_page_gate_defaults_to_on() {
     std::env::remove_var(TS_CONTAINER_ONE_ENTRY_A_PAGE);
     assert!(
-        !container_index_files_one_entry_a_page(),
-        "the gate is ON by default. Taking this commit would change how a container's index is \
-         filed for every deployment that has not asked for it, which is the one thing a staged \
-         series must not do at its first step"
+        container_index_files_one_entry_a_page(),
+        "the gate is OFF by default. The series ends by flipping it and then deleting both the \
+         gate and the per-element path; a default that has drifted back off strands the collapse \
+         behind a lever nobody sets, which is the failure mode this gate was written to avoid"
     );
 }
 
@@ -85,21 +98,23 @@ fn the_one_entry_a_page_gate_can_be_reached_in_both_directions() {
             "{written:?} did not turn the gate off"
         );
     }
-    // A VALUE NOBODY CAN READ FALLS BACK TO THE DEFAULT, which for this gate is off. It is
+    // A VALUE NOBODY CAN READ FALLS BACK TO THE DEFAULT, which for this gate is now ON. It is
     // asserted rather than assumed because the opposite -- an unreadable value reading as the
-    // non-default -- is what the shared flag vocabulary exists to prevent.
+    // non-default -- is what the shared flag vocabulary exists to prevent, and this is the
+    // direction where that matters: a typo in the escape hatch must not silently leave the gate
+    // off, it must leave it where the default has it.
     for written in ["", "wat", "2", "enabled", "  "] {
         std::env::set_var(TS_CONTAINER_ONE_ENTRY_A_PAGE, written);
         assert!(
-            !container_index_files_one_entry_a_page(),
+            container_index_files_one_entry_a_page(),
             "{written:?} was not read as the default. An unreadable value is not a request to \
-             turn this on"
+             turn this off"
         );
     }
     // Left as the deployment would have it, so a later test reads the shipped default.
     std::env::remove_var(TS_CONTAINER_ONE_ENTRY_A_PAGE);
     assert!(
-        !container_index_files_one_entry_a_page(),
-        "the variable was removed and the gate is still on"
+        container_index_files_one_entry_a_page(),
+        "the variable was removed and the gate is off, so the shipped default has drifted"
     );
 }

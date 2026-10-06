@@ -13,6 +13,48 @@ use crate::types::{
 };
 use crate::{BlockAddress, BlockStoreOptions, BlockStore};
 
+/// Holds the one-entry-a-page gate OFF for as long as it lives, putting back whatever was there --
+/// on a normal drop AND during unwinding.
+///
+/// # WHY A SHARED GUARD APPEARED WHEN THE GATE'S DEFAULT MOVED
+///
+/// Eleven tests in six modules went red when that default became ON, and not one of them mentions
+/// the gate. They were driving the per-element projection THROUGH THE DEFAULT -- so the default was
+/// load-bearing on coverage nobody had declared, and moving it silently changed what they measured.
+/// They fail loudly, which is the good version of this problem; the twenty `remove_var` sites are
+/// the silent version of the same thing, and six of those were arms that meant "off" and stopped
+/// meaning it.
+///
+/// Each user of this guard states the path it drives and names where the COLLAPSED behaviour it is
+/// not asserting is asserted instead, so holding the gate off here cannot quietly drop coverage of
+/// what a deployment now runs.
+///
+/// A guard rather than a `set_var` and a matching `remove_var`: `Drop` runs while unwinding, so a
+/// FAILING test cannot leak the gate into every test after it in the process. That contamination
+/// has already happened once in this series, and it is ordered and silent rather than a flake.
+struct GateOff {
+    restore: Option<String>,
+}
+
+impl GateOff {
+    fn held() -> Self {
+        let restore = std::env::var(crate::engine::TS_CONTAINER_ONE_ENTRY_A_PAGE).ok();
+        std::env::set_var(crate::engine::TS_CONTAINER_ONE_ENTRY_A_PAGE, "0");
+        Self { restore }
+    }
+}
+
+impl Drop for GateOff {
+    fn drop(&mut self) {
+        match self.restore.take() {
+            Some(previous) => {
+                std::env::set_var(crate::engine::TS_CONTAINER_ONE_ENTRY_A_PAGE, previous)
+            }
+            None => std::env::remove_var(crate::engine::TS_CONTAINER_ONE_ENTRY_A_PAGE),
+        }
+    }
+}
+
 fn wait_for_fresh_admission_second() {
     loop {
         let elapsed = SystemTime::now()
@@ -229,3 +271,5 @@ mod removal_the_index_can_find;
 mod gated_listing_folds_the_pages;
 mod the_slot_survives_a_reload;
 mod the_handle_is_computed_at_the_bucket;
+mod gated_corpus_across_a_store_boundary;
+mod write_after_fold;

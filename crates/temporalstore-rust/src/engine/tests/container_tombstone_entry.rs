@@ -235,6 +235,10 @@ fn tombstoned_components(engine: &TemporalEngine, kind: &str, key: &str) -> BTre
 /// rust-internal: drives SetAdd/SetRemove and the readers #2025 enumerated
 #[test]
 fn no_index_reader_answers_from_a_tombstone_entry() {
+    // THE FIVE READERS THIS ENUMERATES NAME ELEMENTS BY COMPONENT, which a page-named entry
+    // does not carry, so gated it counts names rather than readers. The gated tombstone's
+    // reachability is `removal_the_index_can_find`'s subject.
+    let _gate_off = super::GateOff::held();
     let dir = tempfile::tempdir().expect("tempdir");
     let engine = engine_on(dir.path());
     load_on(&engine, "cte-readers");
@@ -366,6 +370,11 @@ fn no_index_reader_answers_from_a_tombstone_entry() {
 /// rust-internal: drives SetAdd/SetRemove and counts index entries
 #[test]
 fn a_removal_retains_one_entry_and_nothing_yet_collects_it() {
+    // ONE ENTRY PER LIVE MEMBER IS THE UNGATED COST MODEL. Gated, the live entry is retained
+    // BESIDE the tombstone rather than replaced by it -- dropping it would take every other
+    // member of the page with it -- so the counts here are not the gated ones. See
+    // `removal_the_index_can_find`.
+    let _gate_off = super::GateOff::held();
     let dir = tempfile::tempdir().expect("tempdir");
     let engine = engine_on(dir.path());
     load_on(&engine, "cte-cost");
@@ -524,6 +533,10 @@ fn a_removal_retains_one_entry_and_nothing_yet_collects_it() {
 /// rust-internal: drives SetAdd/SetRemove and reads the bucket tombstone index
 #[test]
 fn a_keys_last_element_still_files_its_object_id() {
+    // THE LAST-ELEMENT CASE IS DEFINED BY THE LIVE ENTRY COUNT REACHING ZERO, which the gated
+    // path does not do: it keeps the page entry. The test's own floor says so. The gated
+    // removal across a reload is `gated_removal`'s subject.
+    let _gate_off = super::GateOff::held();
     let dir = tempfile::tempdir().expect("tempdir");
     let engine = engine_on(dir.path());
     load_on(&engine, "cte-lastel");
@@ -609,6 +622,15 @@ fn a_keys_last_element_still_files_its_object_id() {
 /// rust-internal: drives a SetRemove that matches nothing
 #[test]
 fn a_removal_that_matched_nothing_writes_no_tombstone_entry() {
+    // THIS INVARIANT IS GENUINELY NARROWER GATED, AND THAT IS WORTH SAYING RATHER THAN HIDING.
+    // Ungated, a removal matching no entry files nothing. Gated, the component match cannot
+    // fire at all, so the arm keys on whether the OBJECT has a live page entry -- and a removal
+    // naming an absent member of a KNOWN object therefore does file one. It is bounded (one
+    // live plus one tombstone, not accumulating) and correctness-neutral, because
+    // `derive_membership` folds by append position and a tombstone for a member that was never
+    // there removes nothing. The note at that arm claims the invariant "is not weakened";
+    // that is true for an object the index does not know and not for this case.
+    let _gate_off = super::GateOff::held();
     let dir = tempfile::tempdir().expect("tempdir");
     let engine = engine_on(dir.path());
     load_on(&engine, "cte-nomatch");
@@ -718,11 +740,29 @@ fn a_removed_member_does_not_make_its_object_deleted() {
     );
 
     // DENOMINATOR: the tombstone has to be in the index for this report to be about anything.
+    //
+    // RESTATED FOR THE COLLAPSED PROJECTION, AND STATED AS THE INVARIANT RATHER THAN AS A NUMBER.
+    // A gated removal KEEPS the page entry -- the page still holds the object's other members, and
+    // dropping the entry would take them with it -- and files ONE tombstone naming the member
+    // removed. So the live count does not fall on a removal here, where ungated it does.
+    //
+    // The arm this describes had never executed before the write path stopped naming live entries:
+    // while it did, `remove_container_element`'s retain matched the element's own entry, dropped
+    // it, and the UNGATED arm ran. So this expectation is not adjusted to fit new behaviour -- the
+    // behaviour's correctness is established independently, by
+    // `write_after_fold::a_gated_removal_leaves_every_other_member_whole_across_a_reload` (the
+    // member is gone and the other eleven are whole, by membership, across a reload) and by
+    // `write_after_fold::gated_removals_file_one_tombstone_per_distinct_element_and_do_not_
+    // accumulate` (one tombstone per distinct element, however many times the removal is issued).
+    // Without those two this would be a test asserting whatever the code does.
     let (live, tombstoned) = entry_counts(&engine, "set", key);
+    let gated = crate::engine::container_index_files_one_entry_a_page();
+    let expected_live = if gated { MEMBERS } else { MEMBERS - 1 };
     assert_eq!(
-        (MEMBERS - 1, 1),
+        (expected_live, 1),
         (live, tombstoned),
-        "the fixture holds {live} live and {tombstoned} tombstone entries"
+        "the fixture holds {live} live and {tombstoned} tombstone entries; the collapsed \
+         projection keeps the page entry and adds one tombstone, the per-element one replaces it"
     );
 
     assert!(
@@ -736,13 +776,17 @@ fn a_removed_member_does_not_make_its_object_deleted() {
         "the tombstone is not counted as a deleted block ref ({} of them), which it is",
         object.deleted_block_ref_count
     );
+    // THE SAME RESTATEMENT AS THE DENOMINATOR ABOVE, and for the same reason: this counts LIVE
+    // entries, and under the collapsed projection a removal keeps the page entry because the page
+    // still holds the object's other members. What the field must never count is the tombstone,
+    // which is what the name asserts and what the two assertions above this one are actually for --
+    // both of those pass unchanged under either projection.
     assert_eq!(
-        MEMBERS - 1,
+        expected_live,
         report.live_block_ref_count,
-        "live_block_ref_count is {} where {} entries are live -- the field is named `live` and a \
-         tombstone is not one",
-        report.live_block_ref_count,
-        MEMBERS - 1
+        "live_block_ref_count is {} where {expected_live} entries are live -- the field is named \
+         `live` and a tombstone is not one",
+        report.live_block_ref_count
     );
     assert_ne!(
         "deleted", object.residency,
@@ -754,6 +798,10 @@ fn a_removed_member_does_not_make_its_object_deleted() {
 /// rust-internal: drives SetAdd/SetRemove/SetAdd on ONE member
 #[test]
 fn a_re_add_clears_the_tombstone_entry_so_churn_on_one_element_does_not_accumulate() {
+    // THE UNGATED CHURN SHAPE DROPS THE LIVE ENTRY ON REMOVAL; the gated one keeps it beside
+    // the tombstone by design. Both are bounded -- the gated steady state is one live and one
+    // tombstone per cycle, so nothing accumulates either way, which is what this test is for.
+    let _gate_off = super::GateOff::held();
     let dir = tempfile::tempdir().expect("tempdir");
     let engine = engine_on(dir.path());
     load_on(&engine, "cte-readd");

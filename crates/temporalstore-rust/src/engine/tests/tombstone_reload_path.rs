@@ -147,10 +147,37 @@ fn seed_and_unload(dir: &std::path::Path) -> (BTreeSet<Vec<u8>>, Vec<u8>) {
         "the fixture does not hold what it expects BEFORE the unload"
     );
     let (live, tombstoned) = entry_counts(&engine);
+    // THE DENOMINATOR, STATED FOR WHICHEVER PROJECTION IS FILING, and as the invariant rather than
+    // as a number. The fixture FOLDS before removing, so the survivors share one page:
+    //
+    //   * per-element, one entry names each surviving member -- MEMBERS - 1 of them;
+    //   * one entry a page, ONE entry names the folded page they all share.
+    //
+    // Either way exactly one tombstone names the member removed, and the membership assertion
+    // directly above this one is what says the survivors are all there -- so this is a count of
+    // how they are FILED and not of how many there are. Both of this module's tests failed here,
+    // two assertions before the accept-or-replay decision they exist to drive, which is why this
+    // is the fixture's statement to correct and not theirs.
+    //
+    // AND THESE TWO ARE THE TRIPWIRE FOR A STEP THAT HAS NOT HAPPENED YET. `SHARD_INDEX_FORMAT_VERSION`
+    // does not move for the collapse, because no stored field does: the entry struct is unchanged
+    // and the tombstone's element name was always a field the per-element path filled. What IS new
+    // is the combination a gated index holds -- live entries carrying no element name beside
+    // tombstones that carry one -- and today nothing in the load path looks at that. If a later
+    // step makes the reader's acceptance check consider entry SHAPE rather than only the stamp
+    // value, these two tests are where it would surface, because they are the only ones that drive
+    // the accept-or-replay decision over a store this binary wrote itself. That is the moment the
+    // stamp question reopens.
+    let expected_live = if crate::engine::container_index_files_one_entry_a_page() {
+        1
+    } else {
+        MEMBERS - 1
+    };
     assert_eq!(
-        (MEMBERS - 1, 1),
+        (expected_live, 1),
         (live, tombstoned),
-        "before the unload there are {live} live and {tombstoned} tombstone entries"
+        "before the unload there are {live} live and {tombstoned} tombstone entries, where this \
+         projection files {expected_live} live and 1"
     );
     // Unload materializes the base index, which is what the reload below has to read.
     engine.unload_shard(1);
@@ -200,12 +227,27 @@ fn a_reload_of_a_store_this_binary_wrote_reads_the_index_rather_than_replaying()
         !seen.contains(&victim),
         "THE REMOVED MEMBER IS BACK AFTER A RELOAD THAT READ THE INDEX"
     );
+    // THE SAME DENOMINATOR AS THE FIXTURE'S, ON THE OTHER SIDE OF THE ROUND TRIP. What this
+    // assertion is FOR is the tombstone surviving -- one of them, either way -- and that half does
+    // not move. The live half does: per-element one entry names each survivor, one entry a page
+    // names the folded page they share.
+    //
+    // And the assertions above this one are what make that a count rather than a defect. The
+    // accept-or-replay check passes, so the binary reads the index it wrote rather than replaying;
+    // the membership is what the removal left; and the removed member is still absent. A short live
+    // count here with those three holding is a statement about FILING.
+    let expected_live = if crate::engine::container_index_files_one_entry_a_page() {
+        1
+    } else {
+        MEMBERS - 1
+    };
     assert_eq!(
-        (MEMBERS - 1, 1),
+        (expected_live, 1),
         (live, tombstoned),
-        "the reload restored {live} live and {tombstoned} tombstone entries. The tombstone entry must \
-         SURVIVE the round trip through the persisted index -- if it does not, the pages stop \
-         recording the removal the moment a store is reloaded, and a later derivation resurrects it."
+        "the reload restored {live} live and {tombstoned} tombstone entries, where this projection \
+         files {expected_live} live and 1. The tombstone entry must SURVIVE the round trip through \
+         the persisted index -- if it does not, the pages stop recording the removal the moment a \
+         store is reloaded, and a later derivation resurrects it."
     );
 }
 

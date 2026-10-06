@@ -428,9 +428,12 @@ fn the_gate_does_not_reach_the_component_the_index_log_item_is_built_from() {
 /// The "deliberate" panic message in this test's output is expected.
 #[test]
 fn the_gate_guard_restores_the_variable_even_when_an_assertion_panics() {
-    // The default is off, and this test is about the guard rather than the default, so it is
-    // established rather than assumed.
-    std::env::remove_var(TS_CONTAINER_ONE_ENTRY_A_PAGE);
+    // THE GATE IS PUT OFF EXPLICITLY, and this test is about the guard rather than the default,
+    // so the starting state is established rather than assumed. It used to say this by removing
+    // the variable; the default is ON now, so that would have started this test GATED and every
+    // "restored" assertion below would have been satisfied by the default rather than by the
+    // guard. `GateHeldOn` puts back whatever it found, so a `"0"` is restored as `"0"`.
+    std::env::set_var(TS_CONTAINER_ONE_ENTRY_A_PAGE, "0");
     assert!(
         !crate::engine::container_index_files_one_entry_a_page(),
         "the gate did not start off, so neither arm below is about the guard"

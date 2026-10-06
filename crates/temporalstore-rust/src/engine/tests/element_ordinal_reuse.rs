@@ -607,12 +607,35 @@ fn every_per_element_delete_leaves_one_tombstone_and_the_whole_object_delete_lea
             after.len(),
             tombstoned
         );
-        assert!(
-            after.len() < before.len(),
-            "{kind}/{key}: the delete left {} live pages of {}, so it did not remove",
-            after.len(),
-            before.len()
-        );
+        // RESTATED FOR THE COLLAPSED PROJECTION, AS THE INVARIANT AND NOT AS A COUNT. A gated
+        // per-element removal does not reduce the LIVE page count: the page it removes from still
+        // holds the object's other elements, so the entry stays and a tombstone naming the removed
+        // element is added beside it. What must fall is the live count OR -- under the collapse --
+        // the tombstone count must rise, and the element must be gone either way.
+        //
+        // The removal's correctness under that arm is established by
+        // `write_after_fold::a_gated_removal_leaves_every_other_member_whole_across_a_reload` and
+        // `..::gated_removals_file_one_tombstone_per_distinct_element_and_do_not_accumulate`,
+        // rather than by this count agreeing with whatever the code now does.
+        let collapsed = kind == "set"
+            && !whole_object
+            && crate::engine::container_index_files_one_entry_a_page();
+        if collapsed {
+            assert!(
+                tombstoned > 0,
+                "{kind}/{key}: the gated per-element delete left {} live pages of {} and filed \
+                 {tombstoned} tombstones, so it recorded the removal nowhere",
+                after.len(),
+                before.len()
+            );
+        } else {
+            assert!(
+                after.len() < before.len(),
+                "{kind}/{key}: the delete left {} live pages of {}, so it did not remove",
+                after.len(),
+                before.len()
+            );
+        }
         if whole_object {
             whole_object_arms += 1;
             assert_eq!(
@@ -1162,6 +1185,11 @@ fn a_high_water_mark_lives_only_where_the_rebuild_recomputes_it() {
 /// rust-internal: reads page entries, no external surface
 #[test]
 fn what_an_element_ordinal_would_mean_for_each_kind() {
+    // IT ASSERTS THAT NO PAGE CARRIES AN ABSENT ELEMENT NAME -- the absence of exactly what this
+    // gate creates. Pinned rather than restated because its subject is the per-element ordinal,
+    // and the ordinal under the collapsed projection is `ordinal_under_the_gate`'s subject, which
+    // drives both arms.
+    let _gate_off = super::GateOff::held();
     let dir = tempfile::tempdir().expect("tempdir");
     let engine = engine_on(dir.path());
     load_on(&engine, OPERATOR_END);
@@ -2138,6 +2166,13 @@ fn what_a_component_costs_an_element_at_five_member_widths() {
 /// rust-internal: reads the crate's own source and drives one reload
 #[test]
 fn the_component_ordering_property_is_consumed_by_no_reader() {
+    // THE WALK THIS COMPARES AGAINST IS BUILT BY DECODING EACH ENTRY'S COMPONENT, through an
+    // `unwrap_or_default()` that turns an absent name into the EMPTY member -- the same
+    // defaulting the production readers were fixed to stop doing. Gated it manufactures a
+    // phantom empty member in the expectation while the LISTING answers correctly, so the
+    // instrument fails, not the read. The gated listing's order is
+    // `gated_listing_folds_the_pages`' subject.
+    let _gate_off = super::GateOff::held();
     let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/engine");
     let internals = std::fs::read_to_string(root.join("storage_bucket_internals.rs"))
         .expect("storage_bucket_internals.rs is readable");

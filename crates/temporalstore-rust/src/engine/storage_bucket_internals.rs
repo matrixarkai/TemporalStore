@@ -3542,6 +3542,68 @@ pub(super) struct ObjectDeletionFiled(());
 ///
 /// The void-returning spelling below stays for the thirty-odd callers that are not behind a
 /// recorded container; this one exists so that those that are cannot skip it and still compile.
+/// Whether an index entry for this kind takes its identity from the PAGE rather than the ELEMENT.
+///
+/// # WHY IT IS SCOPED TO ONE KIND AND NOT TO THE GATE ALONE
+///
+/// `visit_model_live_blocks` reads the gate ONCE and only its SET arm consumes the answer: hash,
+/// zset and list emit one named entry per element either way. So "the gate is on" and "this entry
+/// names a page" are different questions, and every filing predicate needs the second.
+///
+/// MEASURED, which is why the scope is not a matter of taste: `string`, `control_state` and
+/// `context_node` file NO element name with exactly ONE page per object, and for them the
+/// component-keyed convergence is what supersedes a relocated page -- a string rewritten three
+/// times leaves one live entry over one page because of it. An address-keyed predicate applied to
+/// every kind would leave two live entries naming dead pages on a single set rewrite and one on
+/// every string write in the engine. `write_after_fold::a_component_less_kind_rewritten_still_
+/// resolves_to_one_page` holds that.
+///
+/// WRITTEN ONCE AND READ BY EVERY SITE THAT NEEDS IT. Several copies of a condition is how most of
+/// them come to agree and the rest do not, which is the shape this series has already hit once with
+/// two filers disagreeing.
+pub(super) fn index_entry_names_a_page(kind: &str) -> bool {
+    kind == ModelKind::Set.as_str() && super::container_index_files_one_entry_a_page()
+}
+
+/// The name an index ENTRY IS FILED UNDER -- `None` for a gated container, where the page is the
+/// identity.
+///
+/// # WHY THIS IS A TYPE AND NOT AN `Option<&str>`
+///
+/// After the filing name and the element name come apart, two values of identical shape and
+/// opposite meaning are live in the same scope: this one, which becomes `None` for a gated
+/// container, and [`ElementComponent`], which stays the element's own name. Passing both as
+/// `Option<&str>` makes a transposition compile -- and a transposition here is silent and
+/// resurrects a removed member, because the tombstone sweep would then match every tombstone of an
+/// object instead of one. The newtype makes the mistake unrepresentable rather than something a
+/// test has to think to look for.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) struct FiledComponent(Option<String>);
+
+/// The name of the ELEMENT a write is about, whatever its entry is filed under.
+///
+/// The tombstone sweep needs THIS one: a re-add must clear the tombstone its own element left, and
+/// under a gated container the entry is filed under no name at all. See [`FiledComponent`] for why
+/// these are two types.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) struct ElementComponent(Option<String>);
+
+impl FiledComponent {
+    pub(super) fn as_deref(&self) -> Option<&str> {
+        self.0.as_deref()
+    }
+
+    fn into_inner(self) -> Option<String> {
+        self.0
+    }
+}
+
+impl ElementComponent {
+    pub(super) fn as_deref(&self) -> Option<&str> {
+        self.0.as_deref()
+    }
+}
+
 pub(super) fn upsert_bucket_index_block_filed(
     shard: &mut ShardState,
     shard_id: ShardId,
@@ -3608,6 +3670,56 @@ pub(super) fn upsert_bucket_index_block(
 /// all-tombstone (so a twelve-member set reported as a deleted object) and made its filed bucket
 /// disagree with the one its key routes to (so a compaction round refused with
 /// `page_compaction_owner_mismatch` on any container that had had a removal). Both were driven.
+/// Drop an object's LIVE page entries for one kind, leaving its tombstones where they are.
+///
+/// # WHY LIVE ONLY
+///
+/// The counterpart of [`insert_container_tombstone_entry`], turning on the same distinction: a LIVE
+/// entry claims this object has a page with members on it, and a TOMBSTONE records that a named
+/// element was removed. When an object's last element goes the first claim becomes false and the
+/// second stays true -- the tombstone is what makes the removal win a fold by append position, so
+/// taking it along would undo the removal it records.
+///
+/// # WHY IT IS NEEDED AT ALL
+///
+/// EXISTENCE HAS TWO SOURCES. `record_exists_exact` ORs the resident map together with the bucket
+/// index, so an object is enumerable while EITHER names it. A gated removal drops the member from
+/// the resident map and deliberately keeps the live page entry, because the page still holds the
+/// object's other members -- false for the last one. Without this, the key stays answerable through
+/// the index with nothing in it, which `redis::tests::redis_core_api_extensions_use_engine_and_state`
+/// catches through KEYS, SCAN, DBSIZE, EXISTS and TYPE rather than through the index.
+///
+/// The lookup holds LIVE refs only -- `insert_object_block_lookup` returns early on a deleted page
+/// -- so dropping the object's refs there is the same narrowing by construction.
+pub(super) fn drop_live_object_entries(shard: &mut ShardState, kind: &str, object_key: &str) {
+    let model_id = stored_model_kind(kind);
+    let mut touched: Vec<u32> = Vec::new();
+    {
+        let CoreIndex {
+            bucket_map,
+            block_slab_live: live,
+            ..
+        } = &mut shard.bucket_index;
+        for (routing_bucket, bucket) in bucket_map.iter_mut() {
+            let before = bucket.block_index.len();
+            bucket
+                .block_index
+                .retain(&mut *live, |_, page| {
+                    !(!page.deleted && page.model_id == model_id && &*page.object_key == object_key)
+                });
+            if bucket.block_index.len() != before {
+                touched.push(*routing_bucket);
+                classify_bucket_layout_in_place(bucket);
+            }
+        }
+    }
+    if !touched.is_empty() {
+        let _ = shard
+            .bucket_index
+            .remove_object_from_block_lookup(model_id.as_str(), object_key);
+    }
+}
+
 pub(super) fn insert_container_tombstone_entry(
     shard: &mut ShardState,
     kind: &str,
@@ -3720,6 +3832,15 @@ fn upsert_bucket_index_block_inner(
     // whole range, which is what this line passed unconditionally before.
     let (start_routing_bucket, end_routing_bucket) = shard.routing_range();
     let routing_bucket = block_routing_bucket(object_key, start_routing_bucket, end_routing_bucket);
+    // THE TWO NAMES, SPLIT ONCE AND NEVER RECOMBINED.
+    //
+    // `element` is the element this write is about. `filed` is what its ENTRY is filed under, which
+    // for a gated container is nothing at all, because there the page is the identity. They are
+    // different types so that no site below can take one for the other: a transposition compiles if
+    // both are `Option<&str>`, and it resurrects a removed member rather than failing.
+    let names_a_page = index_entry_names_a_page(kind);
+    let element = ElementComponent(component.clone());
+    let filed = FiledComponent(if names_a_page { None } else { component });
     // Filing a block into a RELEASED bucket would leave the node holding one block and claiming to
     // be resident, with the rest of its blocks still only in the model maps -- neither released
     // nor whole. Load it back first; a no-op for every bucket that was never released.
@@ -3737,7 +3858,19 @@ fn upsert_bucket_index_block_inner(
             super::block_in_wal::stage_outcome(crate::wal::WalOutcomeItem {
                 kind: kind.to_string(),
                 object_key: object_key.to_string(),
-                component: component.clone(),
+                // THE ELEMENT, NOT WHAT ITS ENTRY WAS FILED UNDER, and this is the one place
+                // where that distinction costs something if it is got wrong in the other
+                // direction. This component is the only record of WHICH element a replayed page
+                // holds: recovery decodes it to put the member back into the model map. Filing the
+                // page name here made the outcome un-installable and recovery fell back to
+                // re-executing commands -- 4 of 9 outcomes installed -- which
+                // `part4::a_cold_reload_rebuilds_the_shard_from_what_the_writes_recorded` floors
+                // on, because the end state looks the same whichever path ran.
+                //
+                // The fold applies `index_entry_names_a_page` itself when it files the ENTRY, so
+                // the two routes still agree on the entry while the outcome stays a full record of
+                // the write.
+                component: element.as_deref().map(str::to_string),
                 object_id,
                 routing_bucket,
                 address: Some(address.clone()),
@@ -3761,7 +3894,9 @@ fn upsert_bucket_index_block_inner(
     let entry = LiveBlockEntry {
         object_key: shared_object_key,
         kind: stored_model_kind(kind),
-        component: component
+        component: filed
+            .clone()
+            .into_inner()
             .map(|name| crate::engine::state::intern_shared(&mut shard.bucket_index.kind_pool, &name)),
         log_backed: address.block_id().is_none(),
         address,
@@ -3783,12 +3918,52 @@ fn upsert_bucket_index_block_inner(
     } else {
         None
     };
-    shard.bucket_index.remove_object_block_lookup_entry(
-        entry.kind.as_str(),
-        &entry.object_key,
-        entry.component.as_deref(),
-    );
-    if let Some(block_refs) = direct_block_refs {
+    // CONVERGE ON THE PAGE WHEN THE PAGE IS THE IDENTITY, AND ON THE SLOT WHEN THE ELEMENT IS.
+    //
+    // The slot-wide removal is right while an entry's identity is its element: a new filing for
+    // that element supersedes the previous one and nothing else shares the slot. Under one entry a
+    // page every entry of an object shares ONE slot keyed `None`, so dropping the slot to file one
+    // page takes every other page of the object with it. MEASURED: on a five-member set folded onto
+    // one page and then written to once, that left the listing serving ONE member -- the one just
+    // written -- and orphaned four. `write_after_fold` holds the shape.
+    //
+    // So under the gate this selects the refs that name the SAME PHYSICAL PAGE and removes those
+    // singly, which is the uniqueness the gate establishes: the gated producer emits at most one
+    // entry per distinct page, so no two of its entries share an address.
+    let superseded: Option<Vec<crate::engine::state::BlockLookupRef>> = match direct_block_refs {
+        Some(block_refs) if names_a_page => {
+            let here = super::live_page_key(&entry.address);
+            let mine: Vec<_> = block_refs
+                .into_iter()
+                .filter(|block_ref| {
+                    shard
+                        .bucket_index
+                        .bucket_map
+                        .get(&block_ref.routing_bucket)
+                        .and_then(|bucket| bucket.block_index.get(&block_ref.block_ref_key))
+                        .is_some_and(|page| super::live_page_key(&page.address) == here)
+                })
+                .collect();
+            for block_ref in &mine {
+                shard.bucket_index.remove_object_block_lookup_ref(
+                    entry.kind.as_str(),
+                    &entry.object_key,
+                    filed.as_deref(),
+                    block_ref,
+                );
+            }
+            Some(mine)
+        }
+        other => {
+            shard.bucket_index.remove_object_block_lookup_entry(
+                entry.kind.as_str(),
+                &entry.object_key,
+                filed.as_deref(),
+            );
+            other
+        }
+    };
+    if let Some(block_refs) = superseded {
         for block_ref in block_refs {
             let Some(bucket) = shard.bucket_index.bucket_map.get_mut(&block_ref.routing_bucket) else {
                 continue;
@@ -3818,10 +3993,14 @@ fn upsert_bucket_index_block_inner(
         for (routing_bucket, bucket) in bucket_map.iter_mut() {
             note_site(&bucket_visit_sites::REMOVE_ALL_BUCKETS, bucket.block_index.len());
             touched_buckets.push(*routing_bucket);
+            // THE SAME SPLIT AS THE BRANCH ABOVE, for the shard that has no lookup yet. Keyed
+            // on the page when the page is the identity, or every sibling entry of the object goes.
+            let here = super::live_page_key(&entry.address);
             bucket.block_index.retain(&mut *live, |_, page| {
                 !(page.object_key == entry.object_key
                     && page.model_id == entry.kind
-                    && page.component.as_deref() == entry.component.as_deref())
+                    && page.component.as_deref() == entry.component.as_deref()
+                    && (!names_a_page || super::live_page_key(&page.address) == here))
             });
             if !bucket
                 .block_index
@@ -3869,7 +4048,21 @@ fn upsert_bucket_index_block_inner(
                 page.deleted
                     && page.object_key == entry.object_key
                     && page.model_id == entry.kind
-                    && page.component.as_deref() == entry.component.as_deref()
+                    // THE ELEMENT'S OWN NAME, NOT THE ONE THE ENTRY IS FILED UNDER.
+                    //
+                    // These two predicates were going to be left textually untouched, on the
+                    // grounds that the sweep should stay element-keyed. That was not enough: they
+                    // read the FILED name, and this change sets it to `None` for a gated
+                    // container -- so leaving them alone would silently widen them from matching
+                    // ONE tombstone to matching every tombstone of the object. A re-add of member
+                    // Y would then clear member X's tombstone, and X's tombstone page is what
+                    // makes X's removal win the fold by append position, so X would come back.
+                    //
+                    // `write_after_fold::a_re_add_after_a_removal_does_not_bring_the_removed_
+                    // member_back` is green before this change and is what goes red if this reads
+                    // the wrong one of the two names. The names are separate TYPES so that reading
+                    // the wrong one does not compile.
+                    && page.component.as_deref() == element.as_deref()
             })
         });
     if sweep {
@@ -3880,7 +4073,8 @@ fn upsert_bucket_index_block_inner(
                     !(page.deleted
                         && page.object_key == entry.object_key
                         && page.model_id == entry.kind
-                        && page.component.as_deref() == entry.component.as_deref())
+                        // The element's own name. See the probe directly above.
+                        && page.component.as_deref() == element.as_deref())
                 });
             touched_buckets.push(routing_bucket);
             classify_bucket_layout_in_place(bucket);

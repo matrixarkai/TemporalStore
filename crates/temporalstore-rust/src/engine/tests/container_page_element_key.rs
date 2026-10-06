@@ -781,6 +781,14 @@ fn bytes_with_no_magic_are_not_a_frame() {
 /// rust-internal: drives the engine's own command surface
 #[test]
 fn every_container_kind_reads_back_the_value_it_wrote_through_a_framed_page() {
+    // IT FETCHES THE PAGE BY COMPONENT, which is the ungated identity. Under one entry a page a
+    // live set entry carries no element name, so the fetch answers `None` and this panics BEFORE
+    // comparing any value -- the instrument fails, not the readback. That the values are whole
+    // under the gate is held by `gated_corpus_across_a_store_boundary` for all four kinds across a
+    // store boundary, by `container_pages_are_batched::every_element_reads_back_its_own_value_
+    // after_the_fold_and_after_a_reload`, and by `container_page_ordinal::a_reloaded_container_
+    // still_reads_every_element`.
+    let _gate_off = super::GateOff::held();
     let dir = tempfile::tempdir().expect("tempdir");
     println!(
         "\n=== container kinds through the product path ===\n  store path {} characters",

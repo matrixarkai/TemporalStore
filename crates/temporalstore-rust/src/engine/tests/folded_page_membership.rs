@@ -86,6 +86,10 @@ fn write(engine: &TemporalEngine, command: Command) {
 /// rust-internal: drives the engine's own command surface
 #[test]
 fn a_folded_pages_membership_now_states_the_member_the_live_index_no_longer_names() {
+    // THE FIXTURE COUNTS MEMBERS THE LIVE INDEX NAMES, which is zero once entries name pages
+    // instead of elements -- its floor says the removal "did not do what this fixture assumes".
+    // The gated equivalent is `removal_the_index_can_find`.
+    let _gate_off = super::GateOff::held();
     let dir = tempfile::tempdir().expect("tempdir");
     let engine = engine_on(dir.path());
     load_on(&engine);

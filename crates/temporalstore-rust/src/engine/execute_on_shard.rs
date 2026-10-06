@@ -1208,6 +1208,24 @@ pub(crate) fn execute_on_shard(
             // (EXISTS=1, TYPE=hash) -- a phantom hash. That cleanup now lives inside
             // `RecordedHashContainer::remove_field`, so no arm can forget it.
             //
+            // AND "THE MAP FORGOT IT" IS NOT "THE KEYSPACE FORGOT IT". The sentence above is true
+            // and it is about ONE SOURCE: `record_exists_exact` ORs the bucket index in beside the
+            // resident map, so the resident map going empty does not stop the key answering. A
+            // gated removal keeps the object's live page entry -- correctly, while the page still
+            // holds other members -- and for the LAST member that left the key enumerable with
+            // nothing in it across KEYS, SCAN, DBSIZE, EXISTS, TYPE and EXPIRE. The last-element
+            // arm in `recorded_map::remove_element` is what empties the second source.
+            //
+            // THE GENERAL FORM, because this asymmetry has now decided two fixes: a change that
+            // touches "the index entry for this object" WITHOUT SAYING WHICH KIND will keep
+            // getting it wrong. A LIVE entry claims a page with members on it; a TOMBSTONE records
+            // that a named element was removed. The first becomes false when the last member goes;
+            // the second stays true, and it is what makes the removal win a fold by append
+            // position -- so taking it along undoes the removal it records. The gate itself got
+            // this right by naming tombstones and not live entries; the first attempt at the
+            // cleanup above got it wrong by marking the whole object deleted, and a churn test
+            // caught it at zero tombstones where one was required.
+            //
             // THE PARENTHESIS THAT USED TO END THIS NOTE SAID SETS DID NOT NEED THE CLEANUP,
             // and it was wrong about this engine: `record_exists_exact` reads
             // `shard.sets.contains_key(key)` on the line after the one it reads
