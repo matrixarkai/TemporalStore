@@ -714,6 +714,8 @@ fn a_simple_bucket_holds_no_general_case_to_take_away() {
 
 fn page_fixture() -> BlockIndex {
     BlockIndex {
+        kind: crate::index_log::IndexItemKind::Page,
+        routing_bucket: 7,
         object_key: std::sync::Arc::from("arm-000001"),
         // Was `"m"`, a spelling no arm of the walk emits and the registry does not declare.
         // The field's type could not say so when it was a free-form string.

@@ -1552,7 +1552,9 @@ fn the_width_an_element_ordinal_would_take_and_the_ceiling_that_implies() {
          about"
     );
 
-    // What the entry would become. The entry is 56 bytes holding 52 of field, so the arithmetic is
+    // What the entry would become. The entry is 56 bytes holding 56 of field -- it was 52 before
+    // it absorbed the row's two locating fields and shed the flag nothing maintained, so there is
+    // NO SLACK left to absorb a new field. The arithmetic is
     // the claim and the rounding is where it lands.
     //
     // 52 IN 56, NOT 60 IN 64. The object id left the address this entry holds inline, taking a

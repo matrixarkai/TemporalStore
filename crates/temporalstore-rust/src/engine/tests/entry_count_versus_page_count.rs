@@ -507,6 +507,8 @@ fn how_many_index_entries_each_kind_files_for_the_same_element_count() {
 
 fn page_at(component: Option<&str>, slab: u64, offset: u64, length: u64) -> BlockIndex {
     BlockIndex {
+        kind: crate::index_log::IndexItemKind::Page,
+        routing_bucket: 7,
         object_key: std::sync::Arc::from("one-object"),
         model_id: crate::engine::storage_bucket_internals::StoredModelKind::Hash,
         component: component.map(std::sync::Arc::from),

@@ -343,7 +343,8 @@ fn every_byte_of_a_zset_members_index_shadow_is_accounted_for() {
         ("address", offset_of!(BlockIndex, address), size_of::<crate::block_store::BlockAddress>()),
         ("dirty", offset_of!(BlockIndex, dirty), size_of::<bool>()),
         ("deleted", offset_of!(BlockIndex, deleted), size_of::<bool>()),
-        ("log_backed", offset_of!(BlockIndex, log_backed), size_of::<bool>()),
+        ("kind", offset_of!(BlockIndex, kind), size_of::<crate::index_log::IndexItemKind>()),
+        ("routing_bucket", offset_of!(BlockIndex, routing_bucket), size_of::<u32>()),
     ];
     let (index_covered, index_padding) = account(&index_fields, index_total);
 
@@ -404,15 +405,41 @@ fn every_byte_of_a_zset_members_index_shadow_is_accounted_for() {
     // the slack was five bytes at 99, 91 and 83 bytes of field, and #1974's step to 68 leaves
     // FOUR. A literal `5` here -- which is what the first draft of this test asserted -- would have
     // gone red on that rebase while the thing it states stayed true.
-    let flag_bytes = 3 * size_of::<bool>();
+    // THE CLAIM, ASSERTED AS ITSELF RATHER THAN THROUGH A PROXY THAT ZERO SLACK HAS BROKEN.
+    //
+    // This read `slack >= the flags`, which was SUFFICIENT for "packing them reclaims no whole
+    // byte" only while there was slack. There is none now -- the entry carries 56 bytes of field
+    // in 56 -- so the proxy is no longer implied by a claim that is still TRUE: packing the two
+    // remaining flags into one byte leaves 55 of field, which still rounds to 56.
+    //
+    // The comment above records that a literal `5` here went red on a rebase "while the thing it
+    // states stayed true". This is the same failure one level up: the literal was replaced by a
+    // RELATION, and the relation went stale too. So the claim is now asserted directly.
+    //
+    // The flag count is derived from the table rather than written as a number, because a field
+    // count spelled as a constant is exactly what no compile can object to.
+    let flag_bytes: usize = index_fields
+        .iter()
+        .filter(|(name, _, _)| matches!(*name, "dirty" | "deleted"))
+        .map(|(_, _, width)| *width)
+        .sum();
     assert!(
-        index_padding >= flag_bytes,
-        "the {flag_bytes} flag bytes no longer fit inside {index_padding} bytes of alignment slack, \
-         so packing them WOULD now reclaim something and this budget's advice has gone stale"
+        flag_bytes > 0,
+        "VACUITY: no flag field was found in the table by name, so the assertion below would be \
+         comparing the struct's width against itself"
+    );
+    let with_flags_packed = index_covered - flag_bytes + 1;
+    assert_eq!(
+        with_flags_packed.div_ceil(word) * word,
+        index_total,
+        "packing the {flag_bytes} flag bytes into one would take this struct from {index_total} B \
+         to {} B, so packing them WOULD now reclaim a whole byte and this budget's advice has gone \
+         stale",
+        with_flags_packed.div_ceil(word) * word
     );
     println!(
-        "  {flag_bytes} flag bytes inside {index_padding} bytes of slack, so packing them reclaims \
-         no whole byte of the struct"
+        "  {flag_bytes} flag bytes; packed into one they leave {with_flags_packed} of field, which \
+         still rounds to {index_total} -- so packing reclaims no whole byte of the struct"
     );
 
     // ComponentBlocks: one per (object, component), so its count is also the member count.

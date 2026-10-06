@@ -94,6 +94,8 @@ fn component_list_arm(list: &ComponentList) -> &'static str {
 
 fn probe_page(object: &str, component: Option<&str>, slot: u64) -> BlockIndex {
     BlockIndex {
+        kind: crate::index_log::IndexItemKind::Page,
+        routing_bucket: 7,
         object_key: Arc::from(object),
         model_id: crate::engine::storage_bucket_internals::StoredModelKind::String,
         component: component.map(Arc::from),

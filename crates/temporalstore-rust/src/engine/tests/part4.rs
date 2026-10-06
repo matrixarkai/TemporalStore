@@ -5421,6 +5421,8 @@ fn rewriting_a_block_does_not_reuse_its_index_key() {
 #[test]
 fn installing_the_same_block_twice_replaces_it() {
     let page = || crate::engine::state::BlockIndex {
+        kind: crate::index_log::IndexItemKind::Page,
+        routing_bucket: 7,
         object_key: Arc::from("twice".to_string()),
         model_id: crate::engine::storage_bucket_internals::StoredModelKind::String,
         component: None,

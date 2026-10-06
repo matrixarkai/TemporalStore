@@ -208,7 +208,8 @@ struct MirrorEntryThinNames {
     address: BlockAddress,
     dirty: bool,
     deleted: bool,
-    log_backed: bool,
+    kind: crate::index_log::IndexItemKind,
+    routing_bucket: u32,
 }
 
 /// The page entry with `object_key` GONE -- step 1b, the key held on the bucket's object list.
@@ -393,7 +394,7 @@ fn two_one_word_name_slots_take_the_page_entry_from_fifty_six_to_forty() {
     );
 
     // --- THE LIVE ENTRY, FIELD BY FIELD AT ITS REAL OFFSET. ---
-    let live = page_fixture(Some("f0"), 3, (true, false, true));
+    let live = page_fixture(Some("f0"), 3, (true, false));
     let live_fields = [
         (
             "object_key",
@@ -421,10 +422,11 @@ fn two_one_word_name_slots_take_the_page_entry_from_fifty_six_to_forty() {
             field_width(&live.deleted),
             offset_of!(BlockIndex, deleted),
         ),
+        ("kind", field_width(&live.kind), offset_of!(BlockIndex, kind)),
         (
-            "log_backed",
-            field_width(&live.log_backed),
-            offset_of!(BlockIndex, log_backed),
+            "routing_bucket",
+            field_width(&live.routing_bucket),
+            offset_of!(BlockIndex, routing_bucket),
         ),
     ];
 
@@ -436,7 +438,8 @@ fn two_one_word_name_slots_take_the_page_entry_from_fifty_six_to_forty() {
         address: live.address.clone(),
         dirty: true,
         deleted: false,
-        log_backed: true,
+        kind: live.kind,
+        routing_bucket: live.routing_bucket,
     };
     let projected_fields = [
         (
@@ -469,10 +472,11 @@ fn two_one_word_name_slots_take_the_page_entry_from_fifty_six_to_forty() {
             field_width(&projected.deleted),
             offset_of!(MirrorEntryThinNames, deleted),
         ),
+        ("kind", field_width(&projected.kind), offset_of!(MirrorEntryThinNames, kind)),
         (
-            "log_backed",
-            field_width(&projected.log_backed),
-            offset_of!(MirrorEntryThinNames, log_backed),
+            "routing_bucket",
+            field_width(&projected.routing_bucket),
+            offset_of!(MirrorEntryThinNames, routing_bucket),
         ),
     ];
 
@@ -1395,6 +1399,8 @@ fn an_entry_names_its_object_from_its_own_terms() {
     use std::sync::Arc;
 
     let entry = BlockIndex {
+        kind: crate::index_log::IndexItemKind::Page,
+        routing_bucket: 7,
         object_key: Arc::from("named-key"),
         model_id: stored_model_kind("string"),
         component: None,
@@ -1710,7 +1716,7 @@ fn the_object_ordinal_and_the_packing_do_not_follow_and_here_is_what_they_would_
     //     -- leaves out `model_id` and the three flags. With them it is 22, which is what the packed
     //     mirror above measures. ---
     let quoted_floor = 8 + 4 + 2 + 1 + 1 + 2;
-    let ours_on_top = size_of::<StoredModelKind>() + 3 * size_of::<bool>();
+    let ours_on_top = size_of::<StoredModelKind>() + 2 * size_of::<bool>();
     println!(
         "\n  quoted floor {quoted_floor} B + model_id and three flags {ours_on_top} B = {} B, and \
          the packed mirror measures {} B",

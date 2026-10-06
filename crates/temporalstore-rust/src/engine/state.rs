@@ -4012,7 +4012,12 @@ pub(super) struct BlockIndex {
 }
 
 /// One per stored block. TWO shared names, a one-byte model spelling, an address, and three
-/// flags -- 52 bytes of field in 56.
+/// flags -- 56 bytes of field in 56, WITH NO SLACK LEFT.
+///
+/// It was 52 of field in 56 before the entry absorbed the index-log row's two locating fields and
+/// shed the flag nothing maintained. The width did not move; the slack did, from four bytes to
+/// none. SO THE NEXT FIELD ADDED HERE COSTS EIGHT BYTES, NOT NONE -- every field decision in this
+/// structure's history was priced against slack that no longer exists.
 ///
 /// 64, not 72, since the address inside it is 24 bytes and not 32: it shed the `routing_bucket`
 /// the read path now derives from the key, and narrowed its `block_id` to the sixteen bits the
@@ -4629,6 +4634,8 @@ mod component_lookup_tests {
     /// A block carrying nothing but the identity the lookup keys on.
     fn page(object: &str, component: Option<&str>) -> BlockIndex {
         BlockIndex {
+            kind: crate::index_log::IndexItemKind::Page,
+            routing_bucket: 7,
             object_key: Arc::from(object.to_string()),
             model_id: crate::engine::storage_bucket_internals::StoredModelKind::Hash,
             component: component.map(str::to_string).map(Arc::from),

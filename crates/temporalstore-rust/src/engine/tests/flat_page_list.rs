@@ -309,6 +309,8 @@ fn the_page_list_length_distribution_is_reported_as_a_histogram() {
 
 fn page(object_key: &str, component: Option<&str>, slab: u64, offset: u64) -> BlockIndex {
     BlockIndex {
+        kind: crate::index_log::IndexItemKind::Page,
+        routing_bucket: 7,
         object_key: std::sync::Arc::from(object_key),
         model_id: crate::engine::storage_bucket_internals::StoredModelKind::String,
         component: component.map(std::sync::Arc::from),

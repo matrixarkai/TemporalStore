@@ -936,6 +936,8 @@ fn past_the_ceiling_the_ordinal_is_left_unassigned_rather_than_panicking() {
         let bucket = bucket_map.get_mut(&BUCKET).expect("the bucket was inserted");
         bucket.block_index.insert(
             BlockIndex {
+                kind: crate::index_log::IndexItemKind::Page,
+                routing_bucket: 7,
                 object_key: std::sync::Arc::from(key),
                 model_id: crate::engine::storage_bucket_internals::stored_model_kind(kind),
                 component: Some(std::sync::Arc::from("already-at-the-ceiling")),

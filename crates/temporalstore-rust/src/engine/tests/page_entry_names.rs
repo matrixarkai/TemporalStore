@@ -668,6 +668,8 @@ fn capture_the_stored_spelling_of_a_page_entry() {
         flags: (bool, bool, bool),
     ) -> BlockIndex {
         BlockIndex {
+            kind: crate::index_log::IndexItemKind::Page,
+            routing_bucket: 7,
             object_key: Arc::from(key),
             model_id: crate::engine::storage_bucket_internals::stored_model_kind(model),
             component: component.map(Arc::from),
@@ -765,13 +767,13 @@ fn capture_the_stored_spelling_of_a_page_entry() {
 // and the offset are the only part of the stored spelling this change moves.
 // ---------------------------------------------------------------------------------------------
 
-const PAGE_ENTRY_PLAIN: &str = r#"{"object_key":"k","model_id":"string","address":{"a":4294967298,"l":3,"pi":4,"oi":null,"g":4},"dirty":false,"deleted":false,"log_backed":true}"#;
+const PAGE_ENTRY_PLAIN: &str = r#"{"object_key":"k","model_id":"string","address":{"a":4294967298,"l":3,"pi":4,"oi":null,"g":4},"dirty":false,"deleted":false}"#;
 
-const PAGE_ENTRY_WITH_COMPONENT: &str = r#"{"object_key":"k","model_id":"string","component":"f0","address":{"a":4294967298,"l":3,"pi":4,"oi":null,"g":4},"dirty":false,"deleted":false,"log_backed":true}"#;
+const PAGE_ENTRY_WITH_COMPONENT: &str = r#"{"object_key":"k","model_id":"string","component":"f0","address":{"a":4294967298,"l":3,"pi":4,"oi":null,"g":4},"dirty":false,"deleted":false}"#;
 
-const PAGE_ENTRY_ALL_FLAGS: &str = r#"{"object_key":"k","model_id":"string","address":{"a":4294967298,"l":3,"pi":4,"oi":null,"g":4},"dirty":true,"deleted":true,"log_backed":true}"#;
+const PAGE_ENTRY_ALL_FLAGS: &str = r#"{"object_key":"k","model_id":"string","address":{"a":4294967298,"l":3,"pi":4,"oi":null,"g":4},"dirty":true,"deleted":true}"#;
 
-const PAGE_ENTRY_OVER_WIDE: &str = r#"{"object_key":"k","model_id":"string","address":{"a":4294967298,"l":4294967295,"pi":4,"oi":null,"g":4},"dirty":false,"deleted":false,"log_backed":true}"#;
+const PAGE_ENTRY_OVER_WIDE: &str = r#"{"object_key":"k","model_id":"string","address":{"a":4294967298,"l":4294967295,"pi":4,"oi":null,"g":4},"dirty":false,"deleted":false}"#;
 
 /// A whole shard index written at `15583789e`: one bucket holding six pages -- five of one object
 /// (four plain, one carrying a component and a different kind) and one of a SECOND object in the
@@ -832,12 +834,20 @@ const OLD_STORE_PAGES: &[(&str, &str, Option<&str>, u64, u64, u64, bool, bool, b
 
 /// A page entry in a named shape, built from the declared types so the golden moves when the
 /// declaration does rather than going quietly stale.
+/// TWO FLAGS, NOT THREE, AND THE SIGNATURE IS WHAT ENFORCES IT.
+///
+/// This took a three-tuple while the entry carried three flags. When the third left, the body
+/// stopped reading `flags.2` and every caller went on passing a bool that went nowhere -- no
+/// warning, because a tuple field is not an unused variable. Narrowing the tuple makes the
+/// compiler demand the change at each call site, which is the only way a caller finds out.
 pub(super) fn page_fixture(
     component: Option<&str>,
     length: u64,
-    flags: (bool, bool, bool),
+    flags: (bool, bool),
 ) -> BlockIndex {
     BlockIndex {
+        kind: crate::index_log::IndexItemKind::Page,
+        routing_bucket: 7,
         object_key: Arc::from("k"),
         model_id: crate::engine::storage_bucket_internals::StoredModelKind::String,
         component: component.map(Arc::from),
@@ -885,13 +895,13 @@ pub(super) fn page_fixture(
 /// that the stamp moved with them.
 #[test]
 fn the_stored_spelling_of_a_page_entry_moved_in_exactly_one_slot() {
-    let plain = serde_json::to_string(&page_fixture(None, 3, (false, false, true)))
+    let plain = serde_json::to_string(&page_fixture(None, 3, (false, false)))
         .expect("a page entry serializes");
-    let with_component = serde_json::to_string(&page_fixture(Some("f0"), 3, (false, false, true)))
+    let with_component = serde_json::to_string(&page_fixture(Some("f0"), 3, (false, false)))
         .expect("a page entry serializes");
-    let all_flags = serde_json::to_string(&page_fixture(None, 3, (true, true, true)))
+    let all_flags = serde_json::to_string(&page_fixture(None, 3, (true, true)))
         .expect("a page entry serializes");
-    let over_wide = serde_json::to_string(&page_fixture(None, u64::MAX, (false, false, true)))
+    let over_wide = serde_json::to_string(&page_fixture(None, u64::MAX, (false, false)))
         .expect("a page entry serializes");
 
     println!("PLAIN          = {plain}");
@@ -948,13 +958,13 @@ fn the_stored_spelling_of_a_page_entry_moved_in_exactly_one_slot() {
     // will accept, never as its own low bits -- `u64::MAX` truncated to `u32` is 4,294,967,295
     // either way, so the case that decides it is the one below. ---
     let wrapped_would_be = (u64::MAX as u32) as u64; // what `as u32` yields: the low bits.
-    let saturated = page_fixture(None, u64::MAX, (false, false, true)).address.length();
+    let saturated = page_fixture(None, u64::MAX, (false, false)).address.length();
     assert_eq!(
         u32::MAX as u64,
         saturated,
         "an over-wide length must saturate at u32::MAX, not wrap"
     );
-    let low_bits = page_fixture(None, 0x1_0000_0003, (false, false, true))
+    let low_bits = page_fixture(None, 0x1_0000_0003, (false, false))
         .address
         .length();
     assert_eq!(
@@ -1650,7 +1660,7 @@ fn a_store_stamped_with_the_wrong_struct_version_is_refused_before_it_is_decoded
     // --- The other stamp, stated rather than assumed: the in-payload field is NOT what refuses
     // at this layer. `load_index_inner` is. Saying so here keeps the two from being confused. ---
     assert_eq!(
-        7, SHARD_INDEX_FORMAT_VERSION,
+        8, SHARD_INDEX_FORMAT_VERSION,
          "the struct version moved; the refusal messages pinned above quote it. Moved 2 -> 3 when the object id stopped folding the component in: the stored `oi` keeps its type, so an old index decodes cleanly and serves a recomputed id that disagrees with its own `object_index`. Moved 3 -> 5 when a container page gained the ability to state that one of its items was REMOVED: the payload is opaque to every index encoder, so an old index again decodes cleanly, and what disagrees is what a tombstone item MEANS -- the previous binary reads one as an empty live value and puts the element back. Moved 6 -> 7 when the object list began storing its SLOTS rather than a sorted set of its ids: the sequence is written in slot order and spells a placeholder `null`, so a bucket holding more than one object writes different bytes, and a previous binary reading them would take a slot position for an ascending rank -- which is the same class of silent misread as the three below, arriving on the load path. Moved 5 -> 6 when `object_id` left `BlockAddress`: `generation` is the block id alone now, so a WAL-resident page's generation went from Some(object_id) to None, every ref key it resolves through moves, and an OMITTED ref key restores to a different handle entirely. 4 was skipped and its reservation is now VOID -- it was held while this constant was 3, main moved to 5, and spending 4 would LOWER the constant, which `persistence.rs`'s one-sided `<` turns into a silent accept. A stamp may only ever increase. All three bumps share one shape: the stored row decodes cleanly and the disagreement appears later, on a recovery path. The pinned assertions above resolve the constant symbolically, so they followed it -- this literal is the tripwire that made someone come and check that they did"
     );
     // --- AND THE REFUSAL IS COUNTED APART FROM AN ABSENCE, which is the whole reason the counters

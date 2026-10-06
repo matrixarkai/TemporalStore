@@ -507,7 +507,7 @@ fn the_entry_without_a_component_is_forty_and_the_stride_forty_eight() {
         + size_of::<StoredModelKind>()               // model_id
         + size_of::<Option<Arc<str>>>()              // component
         + size_of::<BlockAddress>()                  // address
-        + 3 * size_of::<bool>();                     // dirty, deleted, log_backed
+        + 2 * size_of::<bool>();                     // dirty, deleted
     assert_eq!(
         round_up_to_eight(live_fields),
         size_of::<BlockIndex>(),
@@ -659,6 +659,8 @@ fn a_hash_page_naming_no_field_is_skipped_while_a_genuine_empty_field_name_is_ke
     // leaves the key out entirely and reads back as `None` -- an absent component round-trips as a
     // STABLE shape rather than as damage.
     let nameless_entry = BlockIndex {
+        kind: crate::index_log::IndexItemKind::Page,
+        routing_bucket: 7,
         object_key: Arc::from("ef-wire-probe"),
         model_id: stored_model_kind("hash"),
         component: None,

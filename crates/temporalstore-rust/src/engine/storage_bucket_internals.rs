@@ -1429,6 +1429,8 @@ pub(super) fn rebuild_bucket_block_ownership(
         // tally held before `bucket_map.clear()` above.
         bucket.insert_page(
             BlockIndex {
+                kind: crate::index_log::IndexItemKind::Page,
+                routing_bucket: routing_bucket,
                 object_key: entry.object_key,
                 model_id: entry.kind,
                 component: entry.component.clone(),
@@ -2372,6 +2374,8 @@ pub(super) fn reload_released_bucket(
         let address = entry.address;
         pages.push((
             BlockIndex {
+                kind: crate::index_log::IndexItemKind::Page,
+                routing_bucket: routing_bucket,
                 object_key: entry.object_key,
                 model_id: entry.kind,
                 component: entry.component,
@@ -3733,6 +3737,8 @@ pub(super) fn insert_container_tombstone_entry(
     // same two terms that fed the stamp -- so the value is unchanged by construction and the shard
     // is no longer needed here to produce it.
     let page = BlockIndex {
+        kind: crate::index_log::IndexItemKind::Page,
+        routing_bucket: routing_bucket,
         object_key: std::sync::Arc::from(object_key),
         model_id: stored_model_kind(kind),
         // `None` UNDER ONE ENTRY A PAGE. The tombstone entry exists to make the page
@@ -4082,6 +4088,8 @@ fn upsert_bucket_index_block_inner(
     // there is no second copy to keep in step.
     let address = entry.address;
     let block_index = BlockIndex {
+        kind: crate::index_log::IndexItemKind::Page,
+        routing_bucket: routing_bucket,
         object_key: entry.object_key,
         model_id: entry.kind,
         component: entry.component.clone(),
@@ -4310,6 +4318,8 @@ pub(super) fn sync_bucket_index_object_blocks_with_mode(
         bucket.deleted_object_index.remove(&object_id);
         let mut block_ref_key: u64 = 0;
         let page = BlockIndex {
+            kind: crate::index_log::IndexItemKind::Page,
+            routing_bucket: routing_bucket,
             object_key: entry.object_key,
             model_id: entry.kind,
             component: entry.component.clone(),
@@ -4941,6 +4951,8 @@ pub(super) fn rebuild_bucket_first_index(
         bucket.object_index.insert(object_id);
         bucket.insert_page(
             BlockIndex {
+                kind: crate::index_log::IndexItemKind::Page,
+                routing_bucket: routing_bucket,
                 object_key: entry.object_key,
                 model_id: entry.kind,
                 component: entry.component.clone(),
@@ -6337,6 +6349,8 @@ mod release_refusal_guards {
 
     fn block(key: &str, model_id: &str, component: Option<&str>, address: BlockAddress) -> BlockIndex {
         BlockIndex {
+            kind: crate::index_log::IndexItemKind::Page,
+            routing_bucket: 7,
             object_key: Arc::from(key),
             model_id: super::stored_model_kind(model_id),
             component: component.map(Arc::from),

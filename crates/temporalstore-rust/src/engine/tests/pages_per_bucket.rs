@@ -487,7 +487,7 @@ fn every_byte_of_the_page_index_is_accounted_for() {
     let opt_arc_str = size_of::<Option<Arc<str>>>();
     let index_eight_aligned = arc_str + opt_arc_str + size_of::<BlockAddress>();
     let index_tail = size_of::<crate::engine::storage_bucket_internals::StoredModelKind>()
-        + 3 * size_of::<bool>();
+        + 2 * size_of::<bool>();
     let index_rounded_tail = round_up_to(index_tail, 8);
     println!(
         "BlockIndex: {index_eight_aligned} B eight-aligned + {index_tail} B tail rounded to \
@@ -1742,6 +1742,8 @@ fn reading_a_page_out_of_line_costs_a_dependent_load_an_inline_entry_did_not() {
 
 fn page_for(seed: u64) -> BlockIndex {
     BlockIndex {
+        kind: crate::index_log::IndexItemKind::Page,
+        routing_bucket: 7,
         object_key: Arc::from(format!("key-{seed}").as_str()),
         // Was `"strings"`, which is not a spelling the registry declares -- the plural was a
         // fixture typo that a free-form string field could not catch.
@@ -1761,6 +1763,8 @@ fn page_for(seed: u64) -> BlockIndex {
 
 fn component_page(seed: u64, component: &str) -> BlockIndex {
     BlockIndex {
+        kind: crate::index_log::IndexItemKind::Page,
+        routing_bucket: 7,
         object_key: Arc::from("container"),
         // Was `"hashes"`, likewise not a declared spelling.
         model_id: crate::engine::storage_bucket_internals::StoredModelKind::Hash,
@@ -2310,7 +2314,7 @@ fn the_page_entry_and_not_the_bucket_node_is_the_next_dominant_term() {
     let model_id = size_of::<crate::engine::storage_bucket_internals::StoredModelKind>();
     let component = size_of::<Option<Arc<str>>>();
     let names = object_key + model_id + component;
-    let flags = 3 * size_of::<bool>();
+    let flags = 2 * size_of::<bool>();
     let field_sum = names + size_of::<BlockAddress>() + flags;
     println!(
         "\n=== inside the {} B page entry ===",

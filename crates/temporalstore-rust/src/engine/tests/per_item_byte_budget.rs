@@ -137,7 +137,7 @@ fn budget() -> Vec<Budgeted> {
                 + size_of::<crate::engine::storage_bucket_internals::StoredModelKind>()
                 + opt_arc_str
                 + size_of::<BlockAddress>()
-                + 3 * size_of::<bool>(),
+                + 2 * size_of::<bool>(),
             per_item: true,
         },
         Budgeted {
