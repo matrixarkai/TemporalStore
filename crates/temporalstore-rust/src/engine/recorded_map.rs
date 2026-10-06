@@ -320,6 +320,33 @@ where
         object_key: object_key.to_string(),
         element,
     });
+    // AND WHEN THAT WAS THE LAST ELEMENT, THE INDEX HAS TO LET GO TOO.
+    //
+    // EXISTENCE HAS TWO SOURCES AND EMPTYING ONE DOES NOT EMPTY THE KEY. `record_exists_exact` ORs
+    // the resident map's answer together with the bucket index's, so an object is gone only once
+    // BOTH are. The resident removal above is unconditional -- which is why membership is right
+    // under either projection -- but under one entry a page the removal deliberately keeps the live
+    // page entry, on the stated grounds that the page still holds the object's other members.
+    //
+    // That justification is false for the LAST element: there are none. The retained entry then
+    // keeps the key enumerable with nothing in it, and KEYS, SCAN, DBSIZE, EXISTS, TYPE and EXPIRE
+    // all answer for it -- `redis::tests::redis_core_api_extensions_use_engine_and_state` is the
+    // arm that caught it, through those surfaces rather than through the index.
+    //
+    // ASKED OF THE RESIDENT MAP RATHER THAN OF THE INDEX, because the resident map is the authority
+    // for existence and the index is the derived view. And asked AFTER the removal above, so it
+    // reads the post-removal state rather than predicting it.
+    if K::resident(shard).get(object_key).is_none() {
+        // THE LIVE ENTRIES ONLY. Not `mark_bucket_index_object_deleted`, which takes the tombstones
+        // too: one live entry and one tombstone are different facts. The live entry claims this
+        // object has a page with members on it, which is false once the last member goes. The
+        // tombstone records that a NAMED element was removed, which stays true and is what makes
+        // the removal win a fold by append position -- taking it along would undo the removal it
+        // records, and `container_tombstone_entry::a_re_add_clears_the_tombstone_entry_so_churn_on_
+        // one_element_does_not_accumulate` is the arm that holds the difference at one live and one
+        // tombstone per cycle.
+        super::storage_bucket_internals::drop_live_object_entries(shard, K::KIND, object_key);
+    }
     removed || dropped
 }
 

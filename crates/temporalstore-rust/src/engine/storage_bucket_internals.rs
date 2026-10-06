@@ -3670,6 +3670,56 @@ pub(super) fn upsert_bucket_index_block(
 /// all-tombstone (so a twelve-member set reported as a deleted object) and made its filed bucket
 /// disagree with the one its key routes to (so a compaction round refused with
 /// `page_compaction_owner_mismatch` on any container that had had a removal). Both were driven.
+/// Drop an object's LIVE page entries for one kind, leaving its tombstones where they are.
+///
+/// # WHY LIVE ONLY
+///
+/// The counterpart of [`insert_container_tombstone_entry`], turning on the same distinction: a LIVE
+/// entry claims this object has a page with members on it, and a TOMBSTONE records that a named
+/// element was removed. When an object's last element goes the first claim becomes false and the
+/// second stays true -- the tombstone is what makes the removal win a fold by append position, so
+/// taking it along would undo the removal it records.
+///
+/// # WHY IT IS NEEDED AT ALL
+///
+/// EXISTENCE HAS TWO SOURCES. `record_exists_exact` ORs the resident map together with the bucket
+/// index, so an object is enumerable while EITHER names it. A gated removal drops the member from
+/// the resident map and deliberately keeps the live page entry, because the page still holds the
+/// object's other members -- false for the last one. Without this, the key stays answerable through
+/// the index with nothing in it, which `redis::tests::redis_core_api_extensions_use_engine_and_state`
+/// catches through KEYS, SCAN, DBSIZE, EXISTS and TYPE rather than through the index.
+///
+/// The lookup holds LIVE refs only -- `insert_object_block_lookup` returns early on a deleted page
+/// -- so dropping the object's refs there is the same narrowing by construction.
+pub(super) fn drop_live_object_entries(shard: &mut ShardState, kind: &str, object_key: &str) {
+    let model_id = stored_model_kind(kind);
+    let mut touched: Vec<u32> = Vec::new();
+    {
+        let CoreIndex {
+            bucket_map,
+            block_slab_live: live,
+            ..
+        } = &mut shard.bucket_index;
+        for (routing_bucket, bucket) in bucket_map.iter_mut() {
+            let before = bucket.block_index.len();
+            bucket
+                .block_index
+                .retain(&mut *live, |_, page| {
+                    !(!page.deleted && page.model_id == model_id && &*page.object_key == object_key)
+                });
+            if bucket.block_index.len() != before {
+                touched.push(*routing_bucket);
+                classify_bucket_layout_in_place(bucket);
+            }
+        }
+    }
+    if !touched.is_empty() {
+        let _ = shard
+            .bucket_index
+            .remove_object_from_block_lookup(model_id.as_str(), object_key);
+    }
+}
+
 pub(super) fn insert_container_tombstone_entry(
     shard: &mut ShardState,
     kind: &str,
