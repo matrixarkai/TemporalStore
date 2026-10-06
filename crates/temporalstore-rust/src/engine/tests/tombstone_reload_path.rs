@@ -227,12 +227,27 @@ fn a_reload_of_a_store_this_binary_wrote_reads_the_index_rather_than_replaying()
         !seen.contains(&victim),
         "THE REMOVED MEMBER IS BACK AFTER A RELOAD THAT READ THE INDEX"
     );
+    // THE SAME DENOMINATOR AS THE FIXTURE'S, ON THE OTHER SIDE OF THE ROUND TRIP. What this
+    // assertion is FOR is the tombstone surviving -- one of them, either way -- and that half does
+    // not move. The live half does: per-element one entry names each survivor, one entry a page
+    // names the folded page they share.
+    //
+    // And the assertions above this one are what make that a count rather than a defect. The
+    // accept-or-replay check passes, so the binary reads the index it wrote rather than replaying;
+    // the membership is what the removal left; and the removed member is still absent. A short live
+    // count here with those three holding is a statement about FILING.
+    let expected_live = if crate::engine::container_index_files_one_entry_a_page() {
+        1
+    } else {
+        MEMBERS - 1
+    };
     assert_eq!(
-        (MEMBERS - 1, 1),
+        (expected_live, 1),
         (live, tombstoned),
-        "the reload restored {live} live and {tombstoned} tombstone entries. The tombstone entry must \
-         SURVIVE the round trip through the persisted index -- if it does not, the pages stop \
-         recording the removal the moment a store is reloaded, and a later derivation resurrects it."
+        "the reload restored {live} live and {tombstoned} tombstone entries, where this projection \
+         files {expected_live} live and 1. The tombstone entry must SURVIVE the round trip through \
+         the persisted index -- if it does not, the pages stop recording the removal the moment a \
+         store is reloaded, and a later derivation resurrects it."
     );
 }
 
