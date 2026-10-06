@@ -1928,9 +1928,14 @@ impl BlockIndexMap {
     /// discharges the address it displaced and charges the new one. Those are different slabs
     /// whenever a rewrite rolled, which is the whole reason a counter has to see the displaced
     /// address rather than assume a replacement is byte-neutral.
-    pub(super) fn insert(&mut self, page: BlockIndex, live: &mut BlockSlabLiveIndex) -> u64 {
+    pub(super) fn insert_with_handle(
+        &mut self,
+        handle: u64,
+        page: BlockIndex,
+        live: &mut BlockSlabLiveIndex,
+    ) -> u64 {
         let address = page.address.clone();
-        let (handle, displaced) = self.insert_unaccounted(page);
+        let (handle, displaced) = self.insert_unaccounted(handle, page);
         if let Some(displaced) = displaced {
             live.remove_address(&displaced);
         }
@@ -1943,13 +1948,45 @@ impl BlockIndexMap {
     /// One caller, and it must stay that way: `reload_released_bucket` re-files the blocks a
     /// release took out of the index, and release never discharged them. Counting them here would
     /// double every released bucket the moment it was touched again.
-    pub(super) fn insert_released(&mut self, page: BlockIndex) -> u64 {
-        self.insert_unaccounted(page).0
+    pub(super) fn insert_released_with_handle(&mut self, handle: u64, page: BlockIndex) -> u64 {
+        self.insert_unaccounted(handle, page).0
     }
 
-    /// The mechanism, with no accounting: the handle assigned, and the address it displaced.
-    fn insert_unaccounted(&mut self, page: BlockIndex) -> (u64, Option<BlockAddress>) {
+    /// TEST-ONLY DOOR, AND IT DELEGATES RATHER THAN DUPLICATING.
+    ///
+    /// The fixtures build a bare `BlockIndexMap` with no bucket around it, so they have nothing to
+    /// compute a handle from the bucket level with. This keeps their signature and computes it the
+    /// one way it is computed -- `block_index_handle` and then the same install -- so a fixture
+    /// cannot exercise a handle derived differently from the one production writes. Two doors, one
+    /// implementation; the other arrangement is the second path this change exists to delete.
+    #[cfg(test)]
+    pub(super) fn insert(&mut self, page: BlockIndex, live: &mut BlockSlabLiveIndex) -> u64 {
         let handle = block_index_handle(&page);
+        self.insert_with_handle(handle, page, live)
+    }
+
+    /// The other test-only door, delegating for the same reason.
+    #[cfg(test)]
+    pub(super) fn insert_released(&mut self, page: BlockIndex) -> u64 {
+        let handle = block_index_handle(&page);
+        self.insert_released_with_handle(handle, page)
+    }
+
+    /// The mechanism, with no accounting: the handle it was GIVEN, and the address it displaced.
+    ///
+    /// THE HANDLE ARRIVES FROM ABOVE, and that is the whole of this change. It was
+    /// `block_index_handle(&page)` computed right here -- inside the map, from the entry and
+    /// nothing else. A map cannot see the sibling fields of the bucket that owns it, so a term
+    /// that leaves the entry for a per-bucket structure becomes unreachable from this line, and
+    /// every such term was therefore pinned to the entry by this one call.
+    ///
+    /// Computing it one level up at [`BucketNode::insert_page`] changes WHERE, not WHAT: same
+    /// inputs, same order, same hasher, byte-identical `u64`. That matters more than it sounds
+    /// like, because handles are written to disk inside the lookup's refs -- two processes holding
+    /// the same block must compute the same handle or those refs point at nothing, which is what a
+    /// counter did silently until a reload lost an object.
+    /// `the_hoisted_handle_is_byte_identical_to_the_one_the_map_used_to_compute` is the check.
+    fn insert_unaccounted(&mut self, handle: u64, page: BlockIndex) -> (u64, Option<BlockAddress>) {
         let displaced = match self {
             BlockIndexMap::Empty => {
                 // THE ONE ALLOCATION THE INLINE ENTRY DID NOT TAKE, and it is taken here. ONE ENTRY
@@ -2201,6 +2238,19 @@ impl<'a> IntoIterator for &'a BlockIndexMap {
 }
 
 /// Collecting blocks assigns handles, the same as inserting them one at a time.
+///
+/// THE THIRD SITE WITH NO BUCKET IN SCOPE, AND THE ONE THE HOIST DOES NOT REACH.
+///
+/// The two mutation doors compute the handle at [`BucketNode::insert_page`], where the bucket's own
+/// structures are available. This one cannot: it is how a `BlockIndexMap` arrives from serde, and a
+/// `FromIterator` impl is handed pages and nothing else. The enclosing `BucketNode` is being
+/// deserialized at the time, so its other fields may not have been read yet -- field order on the
+/// wire decides, and the stored form is a map whose keys arrive in whatever order the encoder wrote.
+///
+/// So a term moved off the entry into a per-bucket structure is reachable from the mutation paths
+/// and NOT from here. That is a real constraint on the address shed this hoist is a prerequisite
+/// for, it is recorded here rather than discovered later, and it is why the handle is still read off
+/// the entry on this line: same inputs, same order, same hasher, byte-identical value.
 impl FromIterator<BlockIndex> for BlockIndexMap {
     fn from_iter<I: IntoIterator<Item = BlockIndex>>(pages: I) -> Self {
         // Unaccounted: this is how a ShardState arrives from serde, and the tally is derived
@@ -2208,7 +2258,8 @@ impl FromIterator<BlockIndex> for BlockIndexMap {
         // index twice over -- once on the way in, once when the load seeds the tally.
         let mut map = Self::default();
         for page in pages {
-            map.insert_unaccounted(page);
+            let handle = block_index_handle(&page);
+            map.insert_unaccounted(handle, page);
         }
         map
     }
@@ -2226,33 +2277,70 @@ impl From<BTreeMap<String, BlockIndex>> for BlockIndexMap {
     }
 }
 
-impl Serialize for BlockIndexMap {
-    /// Writes the same map of rendered keys, in the same order, without copying the index first.
-    ///
-    /// Hand-written rather than `#[serde(into = ...)]`, which is defined as
-    /// `T::from(self.clone()).serialize(..)`: that duplicates the whole index twice over -- once
-    /// cloning it, once building the converted map -- before a byte is written.
-    ///
-    /// The sort is not incidental. The map this used to convert into was keyed by the rendered
-    /// string, so it emitted entries in string order; this map is keyed by a handle and iterates
-    /// in hash order. Writing them as they come would reorder every dump, which is a change to
-    /// the bytes on disk rather than to how they are produced.
+/// THE PAGE INDEX, SERIALIZED AT THE BUCKET LEVEL.
+///
+/// Holds the whole node rather than just the map, which is the entire reason it exists:
+/// `impl Serialize for BlockIndexMap` could only ever see the map, and serde's
+/// `serialize(&self)` cannot be handed anything else -- so the written key was pinned to terms
+/// living on the entry exactly as the handle was. Composed from the node, a key can draw on
+/// anything the bucket owns.
+///
+/// THE MAP'S OWN `Serialize` IS DELETED RATHER THAN LEFT, and that is not tidying. It had one
+/// caller; a second path that agrees with this one today is a second path to keep agreeing, and
+/// this tree records what two copies that agree cost when one of them later does not.
+///
+/// It writes what it always wrote. Hand-written rather than `#[serde(into = ...)]`, which is
+/// defined as `T::from(self.clone()).serialize(..)` and duplicates the whole index twice over
+/// before a byte is written. And the sort is not incidental: the map this used to convert into was
+/// keyed by the rendered string and emitted entries in string order, while this map is keyed by a
+/// handle and iterates in hash order, so writing them as they come would reorder every dump.
+struct PageIndexAt<'a>(&'a BucketNode);
+
+impl Serialize for PageIndexAt<'_> {
     fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
     where
         S: serde::Serializer,
     {
-        use serde::ser::SerializeMap;
-        let mut entries: Vec<(String, &BlockIndex)> = self
-            .values()
-            .map(|page| (block_index_written_key(page), page))
-            .collect();
-        entries.sort_by(|left, right| left.0.cmp(&right.0));
+        serialize_page_index(&self.0.block_index, serializer)
+    }
+}
 
-        let mut map = serializer.serialize_map(Some(entries.len()))?;
-        for (key, page) in &entries {
-            map.serialize_entry(key, page)?;
-        }
-        map.end()
+/// THE ONE IMPLEMENTATION both doors go through.
+///
+/// A free function rather than a body inside `PageIndexAt`, because the fixtures serialize a bare
+/// map with no node around it and would otherwise need a second body. Two doors over one
+/// implementation is the shape; two implementations that agree today is the hazard this change is
+/// deleting on the handle side, and it would be absurd to introduce it on this one.
+fn serialize_page_index<S>(map: &BlockIndexMap, serializer: S) -> Result<S::Ok, S::Error>
+where
+    S: serde::Serializer,
+{
+    use serde::ser::SerializeMap;
+    let mut entries: Vec<(String, &BlockIndex)> = map
+        .values()
+        .map(|page| (block_index_written_key(page), page))
+        .collect();
+    entries.sort_by(|left, right| left.0.cmp(&right.0));
+
+    let mut serialized = serializer.serialize_map(Some(entries.len()))?;
+    for (key, page) in &entries {
+        serialized.serialize_entry(key, page)?;
+    }
+    serialized.end()
+}
+
+/// TEST-ONLY DOOR onto the same implementation, for fixtures that hold a map and no node.
+///
+/// Production serializes a page index only through [`PageIndexAt`], from the bucket level. This
+/// exists so the six fixtures that write a bare map keep working without a second body for them to
+/// drift against.
+#[cfg(test)]
+impl Serialize for BlockIndexMap {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        serialize_page_index(self, serializer)
     }
 }
 
@@ -3486,6 +3574,30 @@ pub(super) struct BucketNode {
 const _: () = assert!(std::mem::size_of::<BucketNode>() == 88);
 
 impl BucketNode {
+    /// Install a block in this bucket, charge it to the live tally, and return its handle.
+    ///
+    /// THE HANDLE IS COMPUTED HERE, one level above the map, and that is the point of this method
+    /// existing at all. `self` is the bucket, so every structure the bucket owns is in scope --
+    /// which is what a term moved off the entry into a per-bucket structure would need, and what
+    /// `BlockIndexMap` can never offer, since a field cannot see its siblings.
+    ///
+    /// It banks nothing today: `block_index_handle` reads the same terms off the entry it always
+    /// did, in the same order, through the same hasher, so the value is byte-identical. What
+    /// changes is that the computation is no longer pinned to a scope that can only see the entry.
+    pub(super) fn insert_page(&mut self, page: BlockIndex, live: &mut BlockSlabLiveIndex) -> u64 {
+        let handle = block_index_handle(&page);
+        self.block_index.insert_with_handle(handle, page, live)
+    }
+
+    /// Install a block that is ALREADY counted, with the handle computed at this level.
+    ///
+    /// One caller, and it must stay that way -- see
+    /// [`BlockIndexMap::insert_released_with_handle`].
+    pub(super) fn insert_released_page(&mut self, page: BlockIndex) -> u64 {
+        let handle = block_index_handle(&page);
+        self.block_index.insert_released_with_handle(handle, page)
+    }
+
     /// The five lifecycle flags, each read through its own mask and nothing else.
     ///
     /// These are ACCESSORS FOR FIELDS THAT USED TO BE PUBLIC, and they exist so that packing the
@@ -3582,7 +3694,9 @@ impl Serialize for BucketNode {
         node.serialize_field("dirty_generation", &self.dirty_generation)?;
         node.serialize_field("object_index", &self.object_index)?;
         node.serialize_field("deleted_object_index", &self.deleted_object_index)?;
-        node.serialize_field("page_index", &self.block_index)?;
+        // AT THE BUCKET LEVEL, through `PageIndexAt`, so the written key is composed where the
+        // node's other structures are in scope. The bytes are the ones the map's own impl wrote.
+        node.serialize_field("page_index", &PageIndexAt(self))?;
         node.end()
     }
 }
