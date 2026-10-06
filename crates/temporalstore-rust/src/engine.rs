@@ -4027,10 +4027,33 @@ fn fold_delta_block_items(
             let Some(bucket) = bucket_index.bucket_map.get_mut(&item.routing_bucket) else {
                 continue;
             };
+            // CONVERGE ON THE PAGE WHEN THE PAGE IS THE IDENTITY, exactly as the write path's
+            // upsert does -- and through the SAME condition, so the two routes cannot come to
+            // disagree about which entries one filing supersedes.
+            //
+            // Keyed on the component alone this matches every entry of a gated container, because
+            // all of them carry `None`: replaying one item would drop every other page of the
+            // object. The item's own address is what distinguishes the page it is about. An item
+            // carrying no address cannot name a page, so it keeps the component-keyed behaviour it
+            // has always had rather than matching everything.
+            let names_a_page =
+                crate::engine::storage_bucket_internals::index_entry_names_a_page(&item.model_id);
+            let here = item
+                .entry
+                .as_ref()
+                .map(|entry| live_page_key(entry.address()));
+            // COMPARED AGAINST WHAT THE ENTRY IS FILED UNDER. The item carries the element's
+            // name; the entries it supersedes are filed under the page's. Comparing the two
+            // directly would match nothing under the gate and converge on no entry at all.
+            let filed_name = if names_a_page { None } else { item.component.as_deref() };
             bucket.block_index.retain(&mut bucket_index.block_slab_live, |_, page| {
                 !(page.model_id.as_str() == item.model_id
                     && page.object_key.as_ref() == item.object_key.as_ref()
-                    && page.component.as_deref() == item.component.as_deref())
+                    && page.component.as_deref() == filed_name
+                    && match (names_a_page, here.as_ref()) {
+                        (true, Some(here)) => live_page_key(&page.address) == *here,
+                        _ => true,
+                    })
             });
         }
     } else if !covered_keys.is_empty() {
@@ -4076,7 +4099,17 @@ fn fold_delta_block_items(
                 model_id: crate::engine::storage_bucket_internals::stored_model_kind(
                     &item.model_id,
                 ),
-                component: item.component.clone().map(Arc::from),
+                // THE SAME CONDITION THE WRITE PATH FILES UNDER, so the two routes compute
+                // the same written key for the same page. The item's own component is the ELEMENT
+                // -- a full record of the write, which recovery needs to restore the model map --
+                // and what the ENTRY is filed under is decided here, once, from that condition.
+                component: if crate::engine::storage_bucket_internals::index_entry_names_a_page(
+                    &item.model_id,
+                ) {
+                    None
+                } else {
+                    item.component.clone().map(Arc::from)
+                },
                 // The record carries the id and the address no longer does, so there is nothing
                 // to copy across: the entry derives the id from its own terms.
                 address,
