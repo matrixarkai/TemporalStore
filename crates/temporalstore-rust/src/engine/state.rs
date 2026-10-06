@@ -2247,10 +2247,24 @@ impl<'a> IntoIterator for &'a BlockIndexMap {
 /// deserialized at the time, so its other fields may not have been read yet -- field order on the
 /// wire decides, and the stored form is a map whose keys arrive in whatever order the encoder wrote.
 ///
-/// So a term moved off the entry into a per-bucket structure is reachable from the mutation paths
-/// and NOT from here. That is a real constraint on the address shed this hoist is a prerequisite
-/// for, it is recorded here rather than discovered later, and it is why the handle is still read off
-/// the entry on this line: same inputs, same order, same hasher, byte-identical value.
+/// So a term moved off the entry into a per-bucket structure is not reachable from THIS seam. The
+/// handle is therefore still read off the entry on this line: same inputs, same order, same hasher,
+/// byte-identical value.
+///
+/// BUT THIS IS NOT THE SEAM THE LOAD PATH HAS TO USE, AND THAT IS THE IMPORTANT HALF.
+/// `BucketNode`'s own visitor accumulates every field as a SEPARATE LOCAL and builds
+/// `Ok(BucketNode { .. })` at the end, so `object_index` and the page index are both in scope at
+/// that closing construction, order-independently -- which is what a serde map visitor needs, since
+/// it cannot assume one key arrives before another.
+///
+/// WHAT IT COSTS IS A CHANGE OF ACCUMULATION TYPE, not a change of construction site, and the
+/// difference is worth stating because the same seam has already been used for a `u32` where moving
+/// the construction was enough. A `u32` is STAMPED ONTO entries that already exist. A handle IS THE
+/// MAP'S KEY: by the time this impl has run, every entry is already filed under one, and there is
+/// nothing left to stamp. So the visitor would hold the STORED form -- a map of rendered key to
+/// entry -- and build the page index at the closing construction, where the sibling it needs is in
+/// hand. This impl then stays as the standalone door, for deserializing a bare map, which is the
+/// same two-doors-one-body shape the install and the written key already have.
 impl FromIterator<BlockIndex> for BlockIndexMap {
     fn from_iter<I: IntoIterator<Item = BlockIndex>>(pages: I) -> Self {
         // Unaccounted: this is how a ShardState arrives from serde, and the tally is derived
