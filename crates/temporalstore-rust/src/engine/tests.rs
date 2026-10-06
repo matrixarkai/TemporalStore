@@ -228,3 +228,4 @@ mod replay_under_the_gate;
 mod removal_the_index_can_find;
 mod gated_listing_folds_the_pages;
 mod the_slot_survives_a_reload;
+mod the_handle_is_computed_at_the_bucket;
