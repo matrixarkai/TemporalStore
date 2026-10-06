@@ -222,6 +222,34 @@ struct MirrorEntryNoKey {
     log_backed: bool,
 }
 
+/// The slot a packed region needs: the id, an offset into the region, and a present flag.
+///
+/// A FLAG AND NOT A RESERVED ID VALUE, for the reason the slot array itself gives: object ids are
+/// hashes spanning the whole of `u64`, so no value can be spared to mean absent. The flag is what
+/// lets the offset land in padding the `Option`'s discriminant word was already wasting.
+#[allow(dead_code)]
+struct MirrorPackedSlot {
+    id: u64,
+    offset: u32,
+    present: bool,
+}
+
+/// The multi-object arm of a packed object index: the slots, the valid count, and the region.
+#[allow(dead_code)]
+struct MirrorPackedSlots {
+    slots: Vec<MirrorPackedSlot>,
+    valid: usize,
+    region: Vec<u8>,
+}
+
+/// The object index with its names in a packed region rather than behind owned pointers.
+#[allow(dead_code)]
+enum MirrorObjectIndexPacked {
+    Empty,
+    One(MirrorPackedSlot),
+    Many(Box<MirrorPackedSlots>),
+}
+
 /// The object list carrying `(id, key)` instead of a bare id, as step 1b needs.
 #[allow(dead_code)]
 enum MirrorObjectIndexWithKeys {
@@ -607,6 +635,12 @@ struct PageCensus {
     objects_per_bucket: BTreeMap<usize, usize>,
     /// Lengths of the DISTINCT object-key allocations, one entry per allocation.
     object_key_lengths: Vec<usize>,
+    /// Per bucket: how many distinct objects it holds, and the total bytes of their keys.
+    ///
+    /// A PACKED side region is one allocation A BUCKET, so it cannot be priced from a global list
+    /// of key lengths or from a histogram of occupancies -- it needs the two together, per bucket.
+    /// This is what makes the packed row a measurement at the real distribution rather than a mean.
+    per_bucket_key_bytes: Vec<(usize, usize)>,
     /// Lengths of the DISTINCT component allocations, one entry per allocation.
     component_lengths: Vec<usize>,
     /// Pages whose component is `None`, so the optional slot's population is visible.
@@ -642,6 +676,10 @@ fn page_census(engine: &TemporalEngine) -> PageCensus {
                 .entry((page.model_id, page.object_key.to_string()))
                 .or_default() += 1;
         }
+        census.per_bucket_key_bytes.push((
+            objects_here.len(),
+            objects_here.iter().map(|key| key.len()).sum(),
+        ));
         census.buckets += 1;
         census.pages += held;
         *census.pages_per_bucket.entry(held).or_default() += 1;
@@ -741,6 +779,31 @@ fn object_list_heap(census: &PageCensus, element_width: usize) -> usize {
     bytes
 }
 
+/// What a PACKED SIDE REGION costs, at the real per-bucket distribution.
+///
+/// ONE ALLOCATION A BUCKET holding every key that bucket names, each preceded by its length as a
+/// varint -- the shape a container page already uses for its element keys, rather than a new one.
+/// Keys here are far under 128 bytes so the prefix is one byte, and that is asserted at the call.
+///
+/// The slot run is charged exactly as today's is, because a flagged slot carrying an offset is the
+/// same width as the `Option<u64>` the array already holds -- which is the whole reason the offset
+/// is free and is asserted rather than assumed.
+fn packed_region_heap(census: &PageCensus, slot_width: usize) -> usize {
+    let mut bytes = 0usize;
+    for (objects, key_bytes) in &census.per_bucket_key_bytes {
+        if *objects == 0 {
+            continue;
+        }
+        // One region for the bucket: the characters, plus a one-byte length for each key.
+        bytes += chunk(key_bytes + objects);
+        // And the run of slots, which only a bucket holding more than one object allocates.
+        if *objects >= 2 {
+            bytes += chunk(objects * slot_width);
+        }
+    }
+    bytes
+}
+
 /// BOTH BYTE COLUMNS, BOTH ROUTING RANGES, TWO CORPUS SIZES, AND TWO POPULATIONS THAT ARE NEVER
 /// AVERAGED.
 ///
@@ -775,8 +838,19 @@ fn what_a_one_word_name_slot_is_worth_on_the_chunk_column() {
         size_of::<MirrorObjectIndexWithKeys>(),
         size_of::<MirrorObjectIndexWithThinKeys>()
     );
-    assert_eq!(48, entry_thin, "the thin mirror is not 48 B; every row below is fiction");
-    assert_eq!(48, entry_no_key, "the keyless mirror is not 48 B; every row below is fiction");
+    // CORRECTED FROM 48. These asserted 48 while the live mirrors read 40, and this test is
+    // `#[ignore]`d, so the staleness was invisible: the entry shed eight bytes when the object id
+    // left the address and nothing re-ran this to notice. The figures this test published were
+    // taken before that.
+    assert_eq!(40, entry_thin, "the thin mirror is {entry_thin} B, not 40; every row below is fiction");
+    assert_eq!(40, entry_no_key, "the keyless mirror is {entry_no_key} B, not 40; every row below is fiction");
+    assert_eq!(
+        entry_now - entry_no_key,
+        size_of::<Arc<str>>(),
+        "dropping the name saves {} B of entry against a {} B fat pointer, so the saving is not the field and these rows are measuring something else",
+        entry_now - entry_no_key,
+        size_of::<Arc<str>>()
+    );
 
     let mut path_lengths: Vec<usize> = Vec::new();
     let mut rows: Vec<(String, PageCensus)> = Vec::new();
@@ -827,6 +901,13 @@ fn what_a_one_word_name_slot_is_worth_on_the_chunk_column() {
     let mut container_arms = 0usize;
     let mut routed_arms = 0usize;
     let mut thin_wins = 0usize;
+    // THE RELOCATION'S SIGN, COUNTED PER ARM against today's widths and against the baseline the
+    // published figure was taken on, so the disagreement is a tally and not a sentence.
+    let mut list_wins_today = 0usize;
+    let mut list_wins_on_old_baseline = 0usize;
+    let mut packed_wins_today = 0usize;
+    let mut packed_beats_list = 0usize;
+    let mut penalty_halved_by_the_slot_array = 0usize;
 
     for (label, census) in &rows {
         assert!(census.pages > 0, "{label}: denominator is zero, nothing was censused");
@@ -893,7 +974,17 @@ fn what_a_one_word_name_slot_is_worth_on_the_chunk_column() {
         };
         // Step 1b: the key on the object list. The entry loses it; the list grows to carry it, on
         // the heap for a bucket holding several objects and in the NODE for every bucket.
-        let object_list_now = object_list_heap(census, size_of::<u64>());
+        // THE BUG THIS TEST PUBLISHED A NUMBER THROUGH. This read `size_of::<u64>()` -- the
+        // element of the SORTED RUN the object list used to be. The slot array replaced that run
+        // with `Vec<Option<u64>>`, so today's element is twice as wide, and charging the relocation
+        // against the narrow one bills it for eight bytes a slot the merged precondition already
+        // spent. Both are computed, and the old one is kept as the baseline that figure came from.
+        let object_list_before_the_slot_array = object_list_heap(census, size_of::<u64>());
+        let object_list_now = object_list_heap(census, size_of::<Option<u64>>());
+        assert!(
+            object_list_now >= object_list_before_the_slot_array,
+            "{label}: today's slot run is {object_list_now} B and the old sorted run {object_list_before_the_slot_array} B -- today's is not the wider one, so the slot array spent nothing and this correction is wrong"
+        );
         let object_list_with_keys = object_list_heap(census, size_of::<(u64, Arc<str>)>());
         let node_delta = (size_of::<MirrorObjectIndexWithKeys>() - size_of::<ObjectIndex>())
             * census.buckets;
@@ -903,6 +994,19 @@ fn what_a_one_word_name_slot_is_worth_on_the_chunk_column() {
                 + node_delta,
             names: name_heap(&census.object_key_lengths, 2)
                 + name_heap(&census.component_lengths, 2),
+        };
+
+        // THE PACKED DESTINATION. The entry loses the name; the bucket gains ONE region holding
+        // every key it names, and the slot carries an offset into it for free beside the id.
+        let packed_slot_width = size_of::<MirrorPackedSlot>();
+        let packed_node_delta = (size_of::<MirrorObjectIndexPacked>() - size_of::<ObjectIndex>())
+            * census.buckets;
+        let on_packed_region = HeapBytes {
+            entries: page_index_heap(census, entry_no_key, element_no_key)
+                + packed_region_heap(census, packed_slot_width)
+                + packed_node_delta,
+            // The object keys are IN the region now; only the components are still behind pointers.
+            names: name_heap(&census.component_lengths, 2),
         };
 
         let denominator = census.pages as f64;
@@ -916,6 +1020,7 @@ fn what_a_one_word_name_slot_is_worth_on_the_chunk_column() {
             ("1a thin pointer, weak count kept (unsafe)", thin_with_weak),
             ("1a thin pointer as Arc<String> (safe)", arc_string),
             ("1b key on the object list", on_object_list),
+            ("1b key in a packed side region", on_packed_region),
         ];
         for (name, bytes) in counterfactuals {
             println!(
@@ -932,6 +1037,57 @@ fn what_a_one_word_name_slot_is_worth_on_the_chunk_column() {
              {object_list_with_keys} B + {node_delta} B resident across {} buckets",
             census.buckets
         );
+        // --- THE OFFSET IS FREE IN THE SLOT, asserted on the real types rather than assumed. ---
+        assert_eq!(
+            size_of::<Option<u64>>(),
+            packed_slot_width,
+            "{label}: a flagged slot carrying an offset is {packed_slot_width} B against the slot array's {} B, so the offset is NOT free and the packed row owes those bytes",
+            size_of::<Option<u64>>()
+        );
+
+        // --- THE TWO BASELINES, SIDE BY SIDE. This is the correction: the same relocation,
+        //     measured against the list it is actually landing on and against the one the
+        //     published figure divided by. ---
+        let list_delta_today = (on_object_list.total() as f64 - today.total() as f64) / denominator;
+        let today_on_old_baseline = today.total() - object_list_now + object_list_before_the_slot_array;
+        let list_delta_old_baseline =
+            (on_object_list.total() as f64 - today_on_old_baseline as f64) / denominator;
+        let packed_delta_today = (on_packed_region.total() as f64 - today.total() as f64) / denominator;
+        println!(
+            "  object list: before the slot array {object_list_before_the_slot_array} B, today {object_list_now} B, carrying keys {object_list_with_keys} B; packed region {} B",
+            packed_region_heap(census, packed_slot_width)
+        );
+        println!(
+            "  THE RELOCATION, both baselines: {list_delta_today:+.2} B a page against today, {list_delta_old_baseline:+.2} B a page against the pre-slot-array list the published figure used"
+        );
+        println!("  THE PACKED DESTINATION: {packed_delta_today:+.2} B a page against today");
+        if list_delta_today < 0.0 {
+            list_wins_today += 1;
+        }
+        if list_delta_old_baseline < 0.0 {
+            list_wins_on_old_baseline += 1;
+        }
+        if packed_delta_today < 0.0 {
+            packed_wins_today += 1;
+        }
+        // --- WHERE THE RELOCATION LOSES, THE SLOT ARRAY ALREADY PAID HALF THE PENALTY. That is
+        //     the measured correction, and it is NOT a sign change: the published figure stands
+        //     against today's widths, it was simply twice as large against the list it was taken on.
+        if list_delta_today > 0.001 {
+            assert!(
+                list_delta_today < list_delta_old_baseline - 0.001,
+                "{label}: the relocation costs {list_delta_today:+.2} B a page against today and {list_delta_old_baseline:+.2} against the pre-array list -- not cheaper against today's. Then the slot array absorbed none of this penalty"
+            );
+            penalty_halved_by_the_slot_array += 1;
+        }
+        if packed_delta_today < list_delta_today {
+            packed_beats_list += 1;
+        }
+        assert!(
+            list_delta_old_baseline >= list_delta_today - 0.001,
+            "{label}: the relocation is {list_delta_old_baseline:+.2} B a page against the old baseline and {list_delta_today:+.2} against today's -- not dearer against the old one. Then the slot array absorbed none of this change's cost and the whole correction is wrong"
+        );
+
         println!("  --- against today, per page ---");
         for (name, bytes) in counterfactuals.iter().skip(1) {
             println!(
@@ -1108,6 +1264,39 @@ fn what_a_one_word_name_slot_is_worth_on_the_chunk_column() {
 
     assert_eq!(4, container_arms, "{container_arms} container arms ran, not four");
     assert_eq!(4, routed_arms, "{routed_arms} routed arms ran, not four");
+    // --- THE HEADLINE, AS A TALLY OVER ALL EIGHT SEEDED ARMS. Each counter is floored on its own
+    //     arm count, because a comparison between two of them is satisfied by both being zero. ---
+    println!("
+=== the relocation over all eight seeded arms ===");
+    println!("  wins against today's list        : {list_wins_today} of 8");
+    println!("  wins against the pre-array list  : {list_wins_on_old_baseline} of 8");
+    println!("  packed wins against today        : {packed_wins_today} of 8");
+    println!("  packed beats the owned-pointer   : {packed_beats_list} of 8");
+    println!("  penalty reduced by the slot array: {penalty_halved_by_the_slot_array} of 8 arms");
+    // THE PUBLISHED REFUTATION STANDS ON TODAY'S WIDTHS. The relocation wins on exactly the arms it
+    // always won on -- the baseline move did NOT flip a sign anywhere, it halved the penalty on the
+    // arms that lose. A cost model over a flat occupancy said otherwise and was wrong; this is the
+    // seeded instrument at the real distribution, and it reproduces every published figure.
+    assert_eq!(
+        list_wins_today, list_wins_on_old_baseline,
+        "the relocation wins on {list_wins_today} arms against today's list and {list_wins_on_old_baseline} against the pre-array one. A difference would mean the baseline move flipped a verdict, which the seeded run says it does not"
+    );
+    assert_eq!(
+        2, penalty_halved_by_the_slot_array,
+        "the slot array reduced the relocation's penalty on {penalty_halved_by_the_slot_array} arms. Exactly the two routed arms at the deployed range carry a penalty at all, so a different count means a different population is being read"
+    );
+    assert_eq!(
+        8, packed_wins_today,
+        "a packed destination wins on {packed_wins_today} of eight seeded arms. The route rests on it winning everywhere, including where an owned pointer loses"
+    );
+    assert!(
+        packed_wins_today >= list_wins_today,
+        "a packed destination wins on {packed_wins_today} arms and an owned pointer on {list_wins_today}; packing is supposed to win wherever the pointer does and more"
+    );
+    assert!(
+        packed_beats_list > 0,
+        "a packed destination beat the owned pointer on no arm at all, so pricing the destination differently changes nothing and the route stands or falls on the entry saving alone"
+    );
     assert_eq!(
         8, thin_wins,
         "step 1a was asserted a win on {thin_wins} of the eight arms; a verdict resting on fewer \
