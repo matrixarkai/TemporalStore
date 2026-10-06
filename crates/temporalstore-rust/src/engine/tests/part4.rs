@@ -8337,7 +8337,54 @@ fn bucket_object_index_already_matches_a_from_scratch_recompute() {
             ));
         }
     }
+    // --- AND THE PASS AN ID-SET EQUALITY CANNOT DO: THE REBUILD MUST NOT RENUMBER A SLOT. ---
+    //
+    // The comparison above is blind to exactly the failure that matters once a slot is stored. It
+    // compares `sorted_ids`, so a rebuild that kept every id and moved every one of them to a
+    // different slot passes it -- which is what the old whole-array assignment from a `BTreeSet`
+    // did on every call, eleven production callers deep.
+    //
+    // Driven on a CLONE, so the shard under test is not mutated and the before/after is exact, and
+    // compared slot for slot INCLUDING PLACEHOLDERS: `id_at` answers `None` for a hole, and a hole
+    // closing up is a renumber of everything above it.
+    let mut renumbered = Vec::new();
+    let mut slot_arrays_compared = 0usize;
+    let mut placeholders_seen = 0usize;
+    for (routing_bucket, bucket) in shard.bucket_index.bucket_map.iter() {
+        let slots_of = |index: &crate::engine::state::ObjectIndex| -> Vec<Option<u64>> {
+            (0..index.slot_count()).map(|slot| index.id_at(slot)).collect()
+        };
+        let before = slots_of(&bucket.object_index);
+        if before.is_empty() {
+            continue;
+        }
+        slot_arrays_compared += 1;
+        placeholders_seen += before.iter().filter(|slot| slot.is_none()).count();
+        let mut rebuilt = bucket.clone();
+        crate::engine::storage_bucket_internals::update_bucket_layout(1, &mut rebuilt);
+        let after = slots_of(&rebuilt.object_index);
+        if before != after {
+            renumbered.push(format!("  bucket {routing_bucket}: {before:?} -> {after:?}"));
+        }
+    }
+
     assert!(checked > 0, "workload produced no buckets to check");
+    assert!(
+        slot_arrays_compared > 0,
+        "no bucket carried a slot array, so the renumber pass examined nothing. A zero here reads \
+         as agreement and would be the absence the comparison is satisfied by"
+    );
+    assert!(
+        renumbered.is_empty(),
+        "the layout rebuild RENUMBERED {} of {slot_arrays_compared} bucket(s). A stored slot names \
+         one object for life only if the rebuild leaves it where it is:\n{}",
+        renumbered.len(),
+        renumbered.join("\n")
+    );
+    println!(
+        "\n  {slot_arrays_compared} slot arrays survived a rebuild unmoved, {placeholders_seen} \
+         placeholders among them"
+    );
     assert!(
         mismatches.is_empty(),
         "object_index is NOT maintained incrementally by {} of {checked} bucket(s), so the          layout rebuild is load-bearing and cannot be dropped:

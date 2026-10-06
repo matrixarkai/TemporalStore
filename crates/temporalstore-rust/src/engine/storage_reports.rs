@@ -29,6 +29,31 @@ impl TemporalEngine {
             }),
         }
     }
+    /// WHAT THE BUCKET MAINTENANCE SCAN HAS SEEN of the pages and the object list.
+    ///
+    /// Process-wide and monotonic for the life of the process, with no reset on the production
+    /// surface: a counter a reader can zero is a counter whose history a reader can lose. Two calls
+    /// subtract into what happened in between.
+    ///
+    /// See [`ObjectIndexDivergenceReport`] for what a zero does and does not mean -- it is a
+    /// statement about the buckets the scan reached, and `rebuilds` is the denominator that says
+    /// how many that was.
+    pub fn object_index_divergence_report(&self) -> ObjectIndexDivergenceReport {
+        let counts = super::storage_bucket_internals::object_index_divergence::snapshot();
+        ObjectIndexDivergenceReport {
+            rebuilds: counts.rebuilds,
+            reconstructs: counts.reconstructs,
+            pages_named_an_object_the_list_lacked: counts.pages_named_an_object_the_list_lacked,
+            list_held_an_object_no_page_names: counts.list_held_an_object_no_page_names,
+            divergences_logged: counts.divergences_logged,
+            stored_slots_repeated_an_id: super::state::stored_slots_repeated_an_id(),
+            last_divergence: counts.last.map(|(what, object_id)| ObjectIndexDivergenceSample {
+                what: what.to_string(),
+                object_id,
+            }),
+        }
+    }
+
     pub fn run_storage_manager_loop(
         &self,
         mut request: StorageManagerLoopRequest,

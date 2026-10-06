@@ -98,7 +98,9 @@
 //! NOT. What is stored is the IDS and not the slots: the Serialize impl writes them ascending, which
 //! is the order the sorted run wrote and so the order already on disk, and a load re-files them
 //! through `insert`, which hands slots out afresh. So a slot is a RESIDENT fact and no stamp is owed.
-//! `nothing_persists_a_slot_so_the_written_bytes_do_not_move` drives both halves.
+//! `the_slot_array_is_persisted_so_the_written_bytes_moved_and_the_stamp_was_taken` drives both
+//! halves. It was `nothing_persists_a_slot_so_the_written_bytes_do_not_move`, and it is the
+//! tripwire that went red when the slot became durable.
 //!
 //! THE STAMP IS WHAT THE NEXT STEP WOULD NEED, not this one. A page entry naming its object by slot
 //! makes the slot DURABLE, and that is the change that takes the next value above
@@ -1517,7 +1519,14 @@ fn what_a_slot_array_costs_under_churn() {
     );
 }
 
-/// NOTHING PERSISTS A SLOT, SO NOTHING ON DISK MOVES AND NO STAMP IS TAKEN.
+/// THE SLOT ARRAY IS PERSISTED, SO THE WRITTEN BYTES MOVED AND A STAMP WAS TAKEN.
+///
+/// RESTATED, NOT RE-GOLDENED. This test asserted the opposite -- that the written sequence was the
+/// ascending one a sorted run wrote, and that a load handed out slots afresh -- and it was correct
+/// when it was written. It is the tripwire that had to go red for the slot to become durable, and
+/// what it pins now is the new invariant rather than a refreshed copy of the old number. The two
+/// assertions that reversed are called out individually below, because a diff a reviewer can read
+/// is half of what a tripwire is for.
 ///
 /// WHY THIS HAS TO BE DRIVEN RATHER THAN REASONED. `ObjectIndex` is serialized -- it is a field of
 /// `BucketNode`, which is the stored index -- and its Serialize impl used to write `self.iter()`,
@@ -1525,15 +1534,19 @@ fn what_a_slot_array_costs_under_churn() {
 /// word for the order would have moved the bytes of every bucket holding two or more objects: 46.6%
 /// of them. The impl sorts instead, and this is where that is checked.
 ///
-/// WHAT IS STORED IS THE IDS AND NOT THE SLOTS, which is why the stamp does not move at all. A load
-/// re-files what it reads through `insert`, so slots are handed out afresh on every load and a slot is
-/// a RESIDENT fact. That is also the limit of this change: a page entry naming its object by slot
-/// would make the slot durable, and THAT is what would need the next value above
-/// `SHARD_INDEX_FORMAT_VERSION`.
+/// WHAT IS STORED IS THE SLOTS AND NOT A SET OF IDS, which is what the stamp pays for. A load
+/// restores positions rather than re-filing through `insert`, so a slot is a DURABLE fact and the
+/// page entry that names its object by one has something it can rely on. This is the step the old
+/// wording named as the limit of #2057, and taking it moved `SHARD_INDEX_FORMAT_VERSION`.
+///
+/// AN OLDER INDEX STILL LOADS WHERE IT WOULD HAVE. An ascending run of bare ids restores to
+/// ascending positions, which is exactly what the old loader's `insert` handed out for it, so no
+/// store on disk renumbers on upgrade. `the_slot_survives_a_reload` drives that against an index
+/// built the old way rather than against a literal.
 ///
 /// rust-internal: drives this crate's own serde impls, no external surface
 #[test]
-fn nothing_persists_a_slot_so_the_written_bytes_do_not_move() {
+fn the_slot_array_is_persisted_so_the_written_bytes_moved_and_the_stamp_was_taken() {
     // Filed in an order whose slot order is NOT ascending, which is the only order that can catch a
     // Serialize impl taking slot order for id order.
     let filed = [900u64, 5, 700, 1, 800, 0, u64::MAX, 400];
@@ -1557,11 +1570,23 @@ fn nothing_persists_a_slot_so_the_written_bytes_do_not_move() {
         "the fixture's slot order is already ascending, so a Serialize impl that wrote slot order \
          would pass this test for the wrong reason"
     );
-    assert_eq!(
+    // REVERSED. This asserted the written value EQUALLED the ascending one, which was the claim
+    // that no stored byte moved. It is slot order now, so for a fixture whose slot order is not
+    // ascending the two must DIFFER -- and the `assert_ne!` above has already established that this
+    // fixture's slot order is not ascending, so this is not vacuous.
+    assert_ne!(
         serde_json::to_value(&index).expect("serializes"),
         serde_json::to_value(&ascending).expect("serializes"),
-        "the written sequence is not the ascending one a sorted run wrote, so this change moves \
-         bytes already on disk and owes a format stamp"
+        "the written sequence is still the ascending one a sorted run wrote, so the slot array is \
+         not being stored and the format stamp this change took is paying for nothing"
+    );
+    // AND THE SHAPE IT WRITES IS NULLABLE, which is the other half of what moved: a placeholder is
+    // a stored position now, not an omission.
+    assert_eq!(
+        serde_json::to_value(&index).expect("serializes"),
+        serde_json::to_value(&slot_order.iter().map(|id| Some(*id)).collect::<Vec<Option<u64>>>())
+            .expect("serializes"),
+        "the written sequence is not the slot array in slot order"
     );
 
     // And the round trip is the identity on the SET, which is all the wire carries.
@@ -1575,11 +1600,24 @@ fn nothing_persists_a_slot_so_the_written_bytes_do_not_move() {
     );
     // The slots a load hands out are fresh, and ascending because that is what is written. Stated
     // rather than left implicit, because it is the fact that makes a slot resident-only.
+    // REVERSED. This asserted a load filed the SMALLEST id into slot 0 -- the observable
+    // consequence of slots being handed out afresh from an ascending sequence. A load restores
+    // positions now, so slot 0 holds whatever was filed first, and the smallest id is wherever it
+    // was put. Both halves are asserted, because only the pair rules out an accidental agreement.
     assert_eq!(
         loaded.id_at(0),
+        Some(filed[0]),
+        "a loaded bucket holds {:?} in slot 0 rather than the {} it was filed with first, so the \
+         load is still handing out slots instead of restoring them",
+        loaded.id_at(0),
+        filed[0]
+    );
+    assert_ne!(
+        loaded.id_at(0),
         Some(0u64),
-        "a loaded bucket does not file the smallest id first, so the slot a load hands out is not \
-         derivable from the wire and the claim that nothing persists a slot needs re-examining"
+        "slot 0 came back holding the SMALLEST id, which is what an ascending re-file produces. \
+         Either the fixture files its smallest id first -- it does not -- or positions are not \
+         being restored"
     );
 
     // `u64::MAX` IS A LEGITIMATE OBJECT ID, which is why a slot is an `Option` and not a reserved

@@ -697,6 +697,35 @@ impl ObjectSlots {
         ObjectSlots { slots: vec![Some(first), Some(second)], valid: 2 }
     }
 
+    /// Slots read back from a stored index, IN THE POSITIONS THEY WERE WRITTEN IN.
+    ///
+    /// NOT through `insert`, and that is the whole change. `insert` hands out the first free slot,
+    /// so re-filing a stored array through it reproduces the written ORDER and not the written
+    /// POSITIONS -- which is how a slot came back naming a different object after a load, and why
+    /// nothing was allowed to store one.
+    ///
+    /// A REPEATED ID IS PLACEHOLDERED WHERE IT REPEATS, not dropped: dropping it would shorten the
+    /// array and move every id above it, which is the renumber this constructor exists to avoid.
+    /// The first position wins, because it is the one anything already stored would be naming. The
+    /// count is returned so the caller can report it rather than swallow it.
+    fn from_stored_slots(mut slots: Vec<Option<u64>>) -> (Self, u64) {
+        let mut repeated = 0u64;
+        let mut seen: std::collections::BTreeSet<u64> = std::collections::BTreeSet::new();
+        for slot in slots.iter_mut() {
+            if let Some(id) = *slot {
+                if !seen.insert(id) {
+                    *slot = None;
+                    repeated += 1;
+                }
+            }
+        }
+        let mut held = ObjectSlots { valid: slots.iter().filter(|slot| slot.is_some()).count(), slots };
+        // Trailing placeholders are not kept, exactly as a removal does not keep them: the
+        // positions dropped hold no id, so nothing can be naming them.
+        held.drop_trailing_placeholders();
+        (held, repeated)
+    }
+
     fn valid(&self) -> usize {
         self.valid
     }
@@ -945,6 +974,24 @@ impl ObjectIndex {
         }
     }
 
+    /// An index read back from a stored one, IN THE POSITIONS IT WAS WRITTEN IN.
+    ///
+    /// Goes through the same two collapses `settle` applies, so a loaded index is in the shape a
+    /// live one would be in and `slot_of` and `id_at` cannot tell a loaded bucket from a built one.
+    /// That indistinguishability is what the reload test drives.
+    ///
+    /// A repeated id is reported rather than swallowed: it means the stored array disagreed with
+    /// itself, which is a thing an operator should be able to see a count of.
+    pub(super) fn from_stored_slots(slots: Vec<Option<u64>>) -> Self {
+        let (held, repeated) = ObjectSlots::from_stored_slots(slots);
+        if repeated > 0 {
+            note_stored_slots_repeated_an_id(repeated);
+        }
+        let mut index = ObjectIndex::Many(Box::new(held));
+        index.settle();
+        index
+    }
+
     pub(super) fn clear(&mut self) {
         *self = ObjectIndex::Empty;
     }
@@ -1029,20 +1076,34 @@ impl FromIterator<u64> for ObjectIndex {
 }
 
 impl Serialize for ObjectIndex {
-    /// The same sequence of ids it has always written, in the same order.
+    /// THE SLOT ARRAY, IN SLOT ORDER, WITH ITS PLACEHOLDERS -- which is the change.
     ///
-    /// ASCENDING, which is the order a sorted run wrote and so the order already on disk. The slot
-    /// array iterates in SLOT order, so the multi arm SORTS rather than taking the container's word
-    /// for it -- which keeps every written byte where it was, and is why this change moves no stored
-    /// shape and takes no new `SHARD_INDEX_FORMAT_VERSION`. Placeholders are not written: a hole is
-    /// not an id, and a reload re-files what is written through `insert`, which hands out slots
-    /// afresh.
+    /// This wrote `sorted_ids()`: ascending, holes omitted. That kept every byte where a sorted run
+    /// had put it and took no format stamp, and it also meant NOTHING PERSISTED A SLOT. A load
+    /// re-filed the written ids through `insert`, so positions were handed out afresh on every load
+    /// and a slot was a resident fact. A page entry naming its object by slot cannot be built on
+    /// that, and this is the step that makes the slot durable instead.
     ///
-    /// AND THE TWO COMMON ARMS DO NOT ALLOCATE TO SAY SO. A shard index is written on every dump,
-    /// once per bucket and twice counting the tombstone side, and `Empty` and `One` are what most
-    /// buckets are in -- sorting through a `Vec` there would have added an allocation per bucket per
-    /// dump to a path that had none. Only the arm whose order can actually differ from ascending pays
-    /// for being put in ascending order.
+    /// WHAT MOVES ON DISK, AND IT IS TWO THINGS. The sequence is no longer ascending -- it is slot
+    /// order, which is filing order -- and a hole is written as `null` where it used to be left out.
+    /// Both change the bytes of every bucket holding more than one object, which the measurement
+    /// puts at 46.6% of them, so this takes the next `SHARD_INDEX_FORMAT_VERSION`.
+    ///
+    /// AN OLDER INDEX STILL DECODES, AND LANDS WHERE IT WOULD HAVE -- AS DEFENCE IN DEPTH AND NOT
+    /// AS THE UPGRADE PATH. An ascending sequence of bare ids deserializes as `Some` in the
+    /// positions it is written in, and ascending positions are exactly what the old loader's
+    /// `insert` would have handed out for it.
+    ///
+    /// THE UPGRADE PATH IS THE STAMP, THOUGH. `persistence.rs` compares the stored stamp with `<`
+    /// and refuses anything below the constant, so an index written before this change is REFUSED
+    /// and rebuilt from the log rather than decoded -- which is the established cost of a stamp
+    /// here. The tolerance above matters on the one shape where a decode runs before the check, and
+    /// it is worth having for exactly that reason, but it is not what an upgrade exercises.
+    ///
+    /// AND THE TWO COMMON ARMS STILL DO NOT ALLOCATE. A shard index is written on every dump, once
+    /// per bucket and twice counting the tombstone side, and `Empty` and `One` are what most buckets
+    /// are in. Neither builds a vector: the sort that used to stand here is gone, because slot order
+    /// is now the order being written.
     fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
     where
         S: serde::Serializer,
@@ -1052,14 +1113,16 @@ impl Serialize for ObjectIndex {
             ObjectIndex::Empty => serializer.serialize_seq(Some(0))?.end(),
             ObjectIndex::One(id) => {
                 let mut seq = serializer.serialize_seq(Some(1))?;
-                seq.serialize_element(id)?;
+                // `Some(id)` and not `id`: the element type of this sequence is now nullable, and
+                // writing the one-object arm as a bare number would make the two arms write
+                // different shapes for the same array.
+                seq.serialize_element(&Some(*id))?;
                 seq.end()
             }
-            ObjectIndex::Many(_) => {
-                let ids = self.sorted_ids();
-                let mut seq = serializer.serialize_seq(Some(ids.len()))?;
-                for id in &ids {
-                    seq.serialize_element(id)?;
+            ObjectIndex::Many(slots) => {
+                let mut seq = serializer.serialize_seq(Some(slots.slot_count()))?;
+                for slot in slots.iter() {
+                    seq.serialize_element(slot)?;
                 }
                 seq.end()
             }
@@ -1072,15 +1135,16 @@ impl<'de> Deserialize<'de> for ObjectIndex {
     where
         D: serde::Deserializer<'de>,
     {
-        // Through `insert`, so a loaded bucket takes the shape a written one does: one id comes
-        // back held inline rather than in a run, and a repeated id collapses.
+        // BY POSITION, NOT THROUGH `insert`. This read `Vec<u64>` and collected it, which put
+        // each id in the first free slot and so reproduced the written ORDER rather than the
+        // written POSITIONS. That is what made a slot resident-only.
         //
-        // The sequence is read into a `Vec` and not a tree. It accepts exactly what it always
-        // accepted -- a sequence of ids, in any order, duplicates allowed -- and `insert` puts
-        // each one where it belongs, so the loaded shape is the same one a written bucket holds.
-        // The tree that used to stand here was an allocation per bucket for a shape that was
-        // thrown away on the next line.
-        Ok(Vec::<u64>::deserialize(deserializer)?.into_iter().collect())
+        // `Option<u64>` is what accepts both shapes: a `null` is the placeholder this now writes,
+        // and a bare number from an index written before this change comes back as `Some` in the
+        // position it was written in. So the tolerance is in the element type and needs no probing
+        // of the stored form.
+        let slots = Vec::<Option<u64>>::deserialize(deserializer)?;
+        Ok(ObjectIndex::from_stored_slots(slots))
     }
 }
 
@@ -1404,6 +1468,26 @@ pub(super) fn entries_a_bisection_examines(len: usize) -> u64 {
 #[cfg(not(test))]
 fn entries_a_bisection_examines(_len: usize) -> u64 {
     0
+}
+
+/// How many stored slots named an id another slot in the same array already named.
+///
+/// PRODUCTION AND NOT `cfg(test)`, unlike the probe counter below: a stored array disagreeing with
+/// itself is a thing that happens to a real store and a zero here is a fact worth being able to
+/// read. It is a count rather than a refusal because the load path's job is to come up.
+static STORED_SLOTS_REPEATED_AN_ID: std::sync::atomic::AtomicU64 =
+    std::sync::atomic::AtomicU64::new(0);
+
+fn note_stored_slots_repeated_an_id(count: u64) {
+    STORED_SLOTS_REPEATED_AN_ID.fetch_add(count, std::sync::atomic::Ordering::Relaxed);
+    tracing::warn!(
+        repeated = count,
+        "a stored object list named the same object in more than one slot; the first slot wins and          the rest are left as placeholders so nothing above them renumbers"
+    );
+}
+
+pub(super) fn stored_slots_repeated_an_id() -> u64 {
+    STORED_SLOTS_REPEATED_AN_ID.load(std::sync::atomic::Ordering::Relaxed)
 }
 
 #[cfg(test)]
