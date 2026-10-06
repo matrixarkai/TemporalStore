@@ -158,6 +158,16 @@ fn seed_and_unload(dir: &std::path::Path) -> (BTreeSet<Vec<u8>>, Vec<u8>) {
     // how they are FILED and not of how many there are. Both of this module's tests failed here,
     // two assertions before the accept-or-replay decision they exist to drive, which is why this
     // is the fixture's statement to correct and not theirs.
+    //
+    // AND THESE TWO ARE THE TRIPWIRE FOR A STEP THAT HAS NOT HAPPENED YET. `SHARD_INDEX_FORMAT_VERSION`
+    // does not move for the collapse, because no stored field does: the entry struct is unchanged
+    // and the tombstone's element name was always a field the per-element path filled. What IS new
+    // is the combination a gated index holds -- live entries carrying no element name beside
+    // tombstones that carry one -- and today nothing in the load path looks at that. If a later
+    // step makes the reader's acceptance check consider entry SHAPE rather than only the stamp
+    // value, these two tests are where it would surface, because they are the only ones that drive
+    // the accept-or-replay decision over a store this binary wrote itself. That is the moment the
+    // stamp question reopens.
     let expected_live = if crate::engine::container_index_files_one_entry_a_page() {
         1
     } else {
