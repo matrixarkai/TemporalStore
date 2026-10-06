@@ -464,3 +464,153 @@ fn a_component_less_kind_rewritten_still_resolves_to_one_page() {
         pages.len()
     );
 }
+
+fn remove(engine: &TemporalEngine, member: Vec<u8>) {
+    let response = engine.execute(ExecuteRequest {
+        shard_id: 1,
+        command: Command::SetRemove {
+            key: KEY.to_string(),
+            member,
+        },
+    });
+    assert!(response.status.ok, "removal failed: {response:?}");
+}
+
+/// This object's TOMBSTONED entries, and the components they name.
+fn tombstones(engine: &TemporalEngine) -> Vec<Option<String>> {
+    let shards = engine.shards.read().expect("engine lock poisoned");
+    let shard = shards.get(&1).expect("shard 1 loaded");
+    let mut out = Vec::new();
+    for bucket in shard.bucket_index.bucket_map.values() {
+        for page in bucket.block_index.values() {
+            if page.deleted && page.model_id.as_str() == "set" && &*page.object_key == KEY {
+                out.push(page.component.as_deref().map(str::to_string));
+            }
+        }
+    }
+    out.sort();
+    out
+}
+
+/// A REMOVAL MUST SURVIVE A RE-ADD OF A DIFFERENT MEMBER, ACROSS A STORE BOUNDARY.
+///
+/// # THE QUESTION THE GATE ACTIVATES
+///
+/// A re-add clears the tombstone its element left -- that is what bounds the retained tombstone at
+/// one entry per distinct element removed. The sweep that does it matches on the component of the
+/// entry being filed.
+///
+/// Under one entry a page, a gated removal files its tombstone with NO component (`engine.rs`'s
+/// gated removal arm passes `None`). So if the entry being filed also carries no component, the
+/// sweep's predicate matches EVERY tombstone of the object rather than one -- and a re-add of
+/// member Y would clear member X's tombstone. X's tombstone page is what makes X's removal win in
+/// `derive_membership`'s fold by append position, so clearing it can bring X BACK.
+///
+/// That is a resurrection, and presence and absence are different properties: this campaign has a
+/// recorded case where every arm asked whether a PRESENT element survives, none removed anything,
+/// and a removed member came back anyway. So this asks the absence question directly.
+///
+/// # WHY IT IS ASSERTED BY MEMBERSHIP AND ACROSS A RELOAD
+///
+/// By membership because the right COUNT with the wrong members passes a count assertion -- already
+/// caught once in this change. Across a reload because the fold that decides which page wins runs
+/// on the way in, so a live engine can answer from state the reload would rebuild differently.
+///
+/// # AND IT IS FLOORED ON THE SWEEP HAVING SOMETHING TO SWEEP
+///
+/// The tombstone is asserted to exist BEFORE the re-add. Without that, this passes by never having
+/// swept anything, which is the same shape as a guard over a path nothing reached.
+#[test]
+fn a_re_add_after_a_removal_does_not_bring_the_removed_member_back() {
+    let _gate = GateAt::value("1");
+    let dir = tempfile::tempdir().expect("tempdir");
+    let pages = dir.path().join("pages");
+    let indexes = dir.path().join("indexes");
+    let victim = member_bytes(1);
+    let survivor = member_bytes(2);
+
+    let tombs_before;
+    let tombs_after;
+    {
+        let engine = TemporalEngine::with_local_dirs(
+            64 * 1024 * 1024,
+            dir.path().join("cache"),
+            &pages,
+            &indexes,
+        );
+        load_on(&engine);
+        add(&engine, victim.clone());
+        add(&engine, survivor.clone());
+        // Folded, so the two members share a page -- the regime this gate is about. Without it
+        // each member is its own page and the shared tombstone name cannot arise.
+        engine
+            .compact_shard_blocks(1)
+            .expect("the fold round must succeed");
+
+        remove(&engine, victim.clone());
+        tombs_before = tombstones(&engine);
+
+        // ---- FLOOR: THE SWEEP HAS SOMETHING TO SWEEP. ----
+        assert!(
+            !tombs_before.is_empty(),
+            "the removal left no tombstone entry, so the re-add below cannot sweep one and this \
+             test would pass without ever reaching the state it is about"
+        );
+
+        // THE SWEEP TRIGGER: re-add the OTHER member.
+        add(&engine, survivor.clone());
+        tombs_after = tombstones(&engine);
+
+        engine.unload_shard(1);
+    }
+
+    // Its own cache directory, so nothing is answered out of a page the first engine left warm.
+    let reloaded = TemporalEngine::with_local_dirs(
+        64 * 1024 * 1024,
+        dir.path().join("cache-reloaded"),
+        &pages,
+        &indexes,
+    );
+    load_on(&reloaded);
+    let listed = listed_members(&reloaded);
+    let durable = durable_members(&reloaded);
+    println!(
+        "\n=== removal then a re-add of another member, gate on ===\n  tombstones {:?} before \
+         the re-add, {:?} after; after the reload the listing serves {} member(s), durable holds {}",
+        tombs_before,
+        tombs_after,
+        listed.len(),
+        durable.len()
+    );
+
+    // ---- FLOOR: THE OBJECT CAME BACK AT ALL. ----
+    assert!(
+        !listed.is_empty() || !durable.is_empty(),
+        "the object is empty after the reload, so 'the removed member is absent' is true for the \
+         wrong reason"
+    );
+
+    // ---- THE SURVIVOR IS STILL THERE. ----
+    assert!(
+        listed.contains(&survivor),
+        "the re-added member is NOT served after the reload, so the absence of the removed one \
+         below says nothing -- the object lost both"
+    );
+
+    // ---- AND THE REMOVED MEMBER IS STILL GONE. ----
+    assert!(
+        !listed.contains(&victim),
+        "THE REMOVED MEMBER CAME BACK. A re-add of a different member swept the tombstone that \
+         made this removal win, so a durably acknowledged removal was undone by an unrelated \
+         write. Tombstones were {:?} before the re-add and {:?} after",
+        tombs_before,
+        tombs_after
+    );
+    // The durable map is the authority, so it must agree rather than being left holding a member
+    // the listing does not serve.
+    assert!(
+        !durable.contains(&victim),
+        "the durable map still holds the removed member after the reload, so the two sources \
+         disagree about whether the removal happened"
+    );
+}
