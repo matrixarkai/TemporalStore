@@ -147,10 +147,27 @@ fn seed_and_unload(dir: &std::path::Path) -> (BTreeSet<Vec<u8>>, Vec<u8>) {
         "the fixture does not hold what it expects BEFORE the unload"
     );
     let (live, tombstoned) = entry_counts(&engine);
+    // THE DENOMINATOR, STATED FOR WHICHEVER PROJECTION IS FILING, and as the invariant rather than
+    // as a number. The fixture FOLDS before removing, so the survivors share one page:
+    //
+    //   * per-element, one entry names each surviving member -- MEMBERS - 1 of them;
+    //   * one entry a page, ONE entry names the folded page they all share.
+    //
+    // Either way exactly one tombstone names the member removed, and the membership assertion
+    // directly above this one is what says the survivors are all there -- so this is a count of
+    // how they are FILED and not of how many there are. Both of this module's tests failed here,
+    // two assertions before the accept-or-replay decision they exist to drive, which is why this
+    // is the fixture's statement to correct and not theirs.
+    let expected_live = if crate::engine::container_index_files_one_entry_a_page() {
+        1
+    } else {
+        MEMBERS - 1
+    };
     assert_eq!(
-        (MEMBERS - 1, 1),
+        (expected_live, 1),
         (live, tombstoned),
-        "before the unload there are {live} live and {tombstoned} tombstone entries"
+        "before the unload there are {live} live and {tombstoned} tombstone entries, where this \
+         projection files {expected_live} live and 1"
     );
     // Unload materializes the base index, which is what the reload below has to read.
     engine.unload_shard(1);
