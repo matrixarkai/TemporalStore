@@ -352,10 +352,12 @@ fn the_divergence_counter_moves_on_a_planted_disagreement_and_not_on_a_clean_reb
     // test causes itself, asserted as a delta rather than as a level.
     let seeded = engine.object_index_divergence_report();
     println!("\n=== after the workload ===\n  {seeded:?}");
-    assert_eq!(
-        0, seeded.pages_named_an_object_the_list_lacked,
-        "the workload alone produced a divergence, so the clean arm below starts dirty"
-    );
+    //
+    // AND NOT AN ABSOLUTE LEVEL. This asserted the counter read ZERO here, and that passed alone
+    // and FAILED in the suite: these counters are process-wide and monotonic, so every test that
+    // ran before this one in the same process has already moved them. A level is not attributable;
+    // only a delta taken inside this body is. Every assertion below is therefore a subtraction
+    // between two readings taken around one action.
 
     // --- ARM 1, THE POSITIVE CONTROL: plant an id no live page names, then rebuild that bucket. ---
     const PLANTED: u64 = 0xD15A_6E_ED_BEEF_0001u64;

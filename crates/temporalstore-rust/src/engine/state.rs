@@ -987,9 +987,23 @@ impl ObjectIndex {
         if repeated > 0 {
             note_stored_slots_repeated_an_id(repeated);
         }
-        let mut index = ObjectIndex::Many(Box::new(held));
-        index.settle();
-        index
+        // THE ARM IS CHOSEN BEFORE ANYTHING IS BOXED, and that is not a tidy-up.
+        //
+        // This built `Many(Box::new(held))` and then called `settle`, which allocated a box for
+        // every bucket on every load and threw it away again for the two arms most buckets are
+        // actually in. `a_bucket_holding_one_object_holds_no_node` and
+        // `the_tombstone_index_gives_its_allocation_back_when_it_empties` both caught it: a shard
+        // index is read once per bucket and twice counting the tombstone side, so that was an
+        // allocation per bucket per load on a path that had none.
+        //
+        // Constructing `held` itself allocates nothing -- it moves the vector the deserializer
+        // already built -- so the branch is free and the box is taken only by the arm that needs it.
+        // The two collapses are `settle`'s, spelled here against the same two conditions.
+        match (held.valid(), held.slot_count()) {
+            (0, _) => ObjectIndex::Empty,
+            (1, 1) => ObjectIndex::One(held.id_at(0).expect("one valid id in one slot")),
+            _ => ObjectIndex::Many(Box::new(held)),
+        }
     }
 
     pub(super) fn clear(&mut self) {
@@ -1072,6 +1086,46 @@ impl FromIterator<u64> for ObjectIndex {
         let mut index = ObjectIndex::default();
         index.extend(ids);
         index
+    }
+}
+
+impl ObjectIndex {
+    /// THE IDS ASCENDING, HOLES OMITTED -- the spelling this wrote before the slot array became
+    /// durable, kept for the one side that does not need a durable slot.
+    ///
+    /// WHY IT STILL EXISTS. Nothing names a TOMBSTONE by slot: the deleted-object side is the ids a
+    /// bucket has had removed and not yet reclaimed, read as a set and never indexed into. Writing
+    /// it in slot order would move bytes already on disk for no gain at all, on the 2.32% of
+    /// buckets that carry one.
+    ///
+    /// SO THE TWO SIDES NOW DIFFER DELIBERATELY, and that is why this is a named method rather than
+    /// a copy. `DeletedObjectIndex` used to delegate to the live side's `Serialize` on the
+    /// reasoning that two impls which agreed would be two impls to keep agreeing. They no longer
+    /// agree -- one is positional and one is ascending -- so delegation would silently drag the
+    /// tombstone side along. One body for each rule, and the caller says which rule it wants.
+    ///
+    /// Allocation-free on the two arms that hold nothing or one id, which is almost all of them.
+    pub(super) fn serialize_ascending<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        use serde::ser::SerializeSeq;
+        match self {
+            ObjectIndex::Empty => serializer.serialize_seq(Some(0))?.end(),
+            ObjectIndex::One(id) => {
+                let mut seq = serializer.serialize_seq(Some(1))?;
+                seq.serialize_element(id)?;
+                seq.end()
+            }
+            ObjectIndex::Many(_) => {
+                let ids = self.sorted_ids();
+                let mut seq = serializer.serialize_seq(Some(ids.len()))?;
+                for id in &ids {
+                    seq.serialize_element(id)?;
+                }
+                seq.end()
+            }
+        }
     }
 }
 
@@ -1275,20 +1329,22 @@ impl Serialize for DeletedObjectIndex {
     where
         S: serde::Serializer,
     {
-        // ASCENDING, and allocation-free on the arms that hold nothing or one id -- through the
-        // live side's own Serialize impl, where both rules live. This field is serialized, so writing
-        // it in slot order would move bytes already on disk for no gain, and it holds a single id on
-        // 97.68% of the buckets that carry one at all, so an allocation here would be an allocation
-        // on almost all of them.
+        // ASCENDING, and allocation-free on the arms that hold nothing or one id -- through
+        // `ObjectIndex::serialize_ascending`, which is where that rule now lives. This field is
+        // serialized, so writing it in slot order would move bytes already on disk for no gain, and
+        // it holds a single id on 97.68% of the buckets that carry one at all.
         //
-        // DELEGATED RATHER THAN COPIED: two impls that agreed today would be two impls to keep
-        // agreeing, and "carrying nothing" has exactly one spelling precisely so it cannot drift.
+        // NO LONGER `index.serialize(..)`, AND THAT IS THE POINT. The live side's `Serialize` is
+        // POSITIONAL now -- slot order, with a null for a placeholder -- because a page entry has to
+        // be able to name its object by a slot that survives a load. Nothing names a tombstone by
+        // slot, so delegating to it would have moved this field's bytes for nothing. The two rules
+        // are two bodies with one caller each, rather than one body serving a claim that split.
         match &self.0 {
             None => {
                 use serde::ser::SerializeSeq;
                 serializer.serialize_seq(Some(0))?.end()
             }
-            Some(index) => index.serialize(serializer),
+            Some(index) => index.serialize_ascending(serializer),
         }
     }
 }

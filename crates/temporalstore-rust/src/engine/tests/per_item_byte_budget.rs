@@ -3158,22 +3158,27 @@ fn entries(index: &ObjectIndex) -> Vec<u64> {
 /// WHAT THIS TEST USED TO SAY. It was
 /// `the_sorted_run_stays_sorted_and_deduplicated_through_every_mutation`, and it asserted that
 /// ITERATION was strictly ascending -- because the arm was a sorted run, the stored spelling was the
-/// iteration order, and `contains` answered by bisection. Two of those three have moved: the arm is a
-/// SLOT ARRAY, so iteration is in slot order, and `contains` is a walk. The third has not: the stored
-/// spelling is still ascending, because the Serialize impl sorts rather than taking the container's
-/// order, and that is what keeps the bytes on disk where they were.
+/// iteration order, and `contains` answered by bisection. ALL THREE HAVE NOW MOVED: the arm is a SLOT
+/// ARRAY so iteration is in slot order, `contains` is a walk, and the stored spelling is the slot
+/// array itself.
+///
+/// THE THIRD MOVED LAST AND THIS TEST IS WHERE IT IS RECORDED. It read "the stored spelling is still
+/// ascending, because the Serialize impl sorts rather than taking the container's order", and that
+/// was true until a slot had to survive a load: a sorted spelling cannot carry a position, so the
+/// wire became slot order with a null for a placeholder and the format stamp paid for it. RESTATED
+/// rather than re-goldened -- the assertion that reversed is called out at the point it reversed.
 ///
 /// SO THE CLAIM SPLITS IN TWO AND BOTH HALVES ARE DRIVEN HERE. The SET is unchanged -- same ids, no
-/// duplicates, same membership answers, compared element by element against the container the arm used
-/// to be. The ORDER claim moves to the WIRE: `serde_json` of the index must be the ascending sequence,
-/// whatever slots the ids are in.
+/// duplicates, same membership answers, compared element by element against the container the arm
+/// used to be. The ORDER claim is now that the WIRE is the SLOT ARRAY: `serde_json` of the index must
+/// be the ids in the slots they were filed into, which for this fixture is not ascending.
 ///
 /// AND THE FIXTURE IS CHOSEN SO SLOT ORDER IS NOT ASCENDING, which is the only way either half can
 /// fail visibly: every id but the first belongs BEFORE something already filed, so an implementation
 /// that wrote slot order would write them backwards and an implementation that compacted would
 /// renumber on every remove.
 #[test]
-fn the_slot_array_stays_deduplicated_and_what_it_writes_is_still_ascending() {
+fn the_slot_array_stays_deduplicated_and_what_it_writes_is_now_the_slot_array() {
     let inserted = [900u64, 5, 700, 1, 800, 0, u64::MAX, 400];
     let mut index = ObjectIndex::default();
     let mut control = BTreeSet::new();
@@ -3191,17 +3196,24 @@ fn the_slot_array_stays_deduplicated_and_what_it_writes_is_still_ascending() {
             index.sorted_ids(),
             "step {step}: after inserting {id} the array and the control hold different entries"
         );
-        // The WIRE is ascending, stated directly rather than inferred from the comparison above.
-        let written: Vec<u64> =
+        // THE WIRE IS THE SLOT ARRAY, stated directly rather than inferred from the comparison
+        // above. REVERSED: this asserted the written sequence was strictly ASCENDING, which was the
+        // claim that no stored byte moved. The element type is nullable now, because a placeholder
+        // is a stored position rather than an omission.
+        let written: Vec<Option<u64>> =
             serde_json::from_str(&serde_json::to_string(&index).expect("serializes"))
-                .expect("a sequence of ids");
-        assert!(
-            written.windows(2).all(|pair| pair[0] < pair[1]),
-            "step {step}: what the index writes is not strictly ascending: {written:?}"
+                .expect("a sequence of nullable ids");
+        assert_eq!(
+            inserted[..=step].iter().map(|id| Some(*id)).collect::<Vec<Option<u64>>>(),
+            written,
+            "step {step}: what the index writes is not the slots it filed: {written:?}"
         );
+        // AND THE SET IT WRITES IS STILL WHAT IT HOLDS, which is the half that did not move.
+        let mut written_ids: Vec<u64> = written.iter().filter_map(|slot| *slot).collect();
+        written_ids.sort_unstable();
         assert_eq!(
             control.iter().copied().collect::<Vec<u64>>(),
-            written,
+            written_ids,
             "step {step}: what the index writes is not what it holds"
         );
         // And the slot an id is in is the slot it was given. Every id filed so far keeps its
@@ -3216,8 +3228,9 @@ fn the_slot_array_stays_deduplicated_and_what_it_writes_is_still_ascending() {
     }
 
     // SLOT ORDER IS NOT ASCENDING on this fixture, which is what makes the two halves above
-    // distinguishable. Asserted, because a fixture that happened to file in order would pass a
-    // slot-order Serialize impl.
+    // distinguishable. Asserted, because a fixture that happened to file in order would pass an
+    // ASCENDING Serialize impl and a positional one alike -- the direction of the trap reversed
+    // with the change, and the control is still the thing that closes it.
     let slot_order: Vec<u64> = entries(&index);
     assert_eq!(
         inserted.to_vec(),
@@ -3227,8 +3240,8 @@ fn the_slot_array_stays_deduplicated_and_what_it_writes_is_still_ascending() {
     assert_ne!(
         slot_order,
         index.sorted_ids(),
-        "the fixture's slot order is already ascending, so a Serialize impl that wrote slot order \
-         would pass this test for the wrong reason"
+        "the fixture's slot order is already ascending, so an ascending Serialize impl would pass \
+         the wire assertions above for the wrong reason"
     );
 
     // Re-inserting every id must change nothing and must answer false.
@@ -3507,7 +3520,7 @@ fn the_tombstone_index_gives_its_allocation_back_when_it_empties() {
 /// range -- `0` and `u64::MAX`, which are where a representation that reserved a bit for a tag
 /// would have lost an id.
 #[test]
-fn the_stored_spelling_of_the_object_side_did_not_move() {
+fn the_stored_spelling_of_the_object_side_moved_in_exactly_the_live_object_list() {
     // (name, live ids, tombstone ids, the bytes `5f86d420f` wrote)
     let fixtures: Vec<(&str, Vec<u64>, Vec<u64>, &str)> = vec![
         (
@@ -3559,6 +3572,30 @@ fn the_stored_spelling_of_the_object_side_did_not_move() {
     ];
 
     assert_eq!(5, fixtures.len(), "all five captured spellings must be driven");
+    // WHAT MOVED, AS A LITERAL PAIR PER FIXTURE and never computed from the node under test.
+    //
+    // The live object list is written in SLOT order now rather than ascending, so the two fixtures
+    // that file more than one object in a non-ascending order write different bytes. Every other
+    // byte -- including the whole tombstone side, which stays ascending because nothing names a
+    // tombstone by slot -- is still compared against what the older binary wrote.
+    //
+    // Stated as (fixture, old spelling, new spelling) rather than re-captured wholesale, so the
+    // diff says which field moved and a move anywhere else still fails the equality below.
+    let object_list_moved: [(&str, &str, &str); 2] = [
+        (
+            "several objects and several tombstones, both ends of the id range",
+            "\"object_index\":[0,1,7,9,18446744073709551615]",
+            "\"object_index\":[9,1,18446744073709551615,0,7]",
+        ),
+        (
+            "several objects, no tombstone",
+            "\"object_index\":[100,200,300]",
+            "\"object_index\":[300,200,100]",
+        ),
+    ];
+    let mut reached_moved = 0usize;
+    let mut round_trip_bytes_differed = 0usize;
+    let mut reached_unmoved = 0usize;
     let mut reached_multi_live = 0usize;
     let mut reached_multi_dead = 0usize;
 
@@ -3589,7 +3626,33 @@ fn the_stored_spelling_of_the_object_side_did_not_move() {
         // with that one key deleted, so every other byte is still being compared against what
         // `5f86d420f` wrote. The assertion below that the deletion changed something is what stops
         // this reading as an equality against itself.
-        let expected_now = captured.replace("\"last_dump_sequence\":11,", "");
+        let mut expected_now = captured.replace("\"last_dump_sequence\":11,", "");
+        match object_list_moved.iter().find(|(fixture, _, _)| fixture == name) {
+            Some((_, was, now)) => {
+                assert!(
+                    expected_now.contains(was),
+                    "{name}: the captured spelling does not contain {was}, so the stated move is \
+                     against bytes this fixture never wrote"
+                );
+                expected_now = expected_now.replace(was, now);
+                assert!(
+                    !expected_now.contains(was),
+                    "{name}: the stated move left the old spelling in place"
+                );
+                reached_moved += 1;
+            }
+            None => {
+                // Nothing to move: with fewer than two objects filed, slot order IS ascending, so
+                // the positional spelling and the ascending one are the same bytes.
+                assert!(
+                    live.len() < 2,
+                    "{name}: {} objects are filed and no move is stated for this fixture, so a \
+                     spelling that moved would be read as one that did not",
+                    live.len()
+                );
+                reached_unmoved += 1;
+            }
+        }
         assert_ne!(
             *captured, expected_now,
             "{name}: the captured spelling does not contain the key this change removes, so the \
@@ -3633,13 +3696,53 @@ fn the_stored_spelling_of_the_object_side_did_not_move() {
             );
         }
 
-        // And what it loaded writes back to the same bytes but for the one key, so a load is not a
-        // slow rewrite of anything else.
+        // AND WHAT IT LOADED WRITES BACK TO ITS OWN BYTES, which is a DIFFERENT expectation from
+        // the new write above and was briefly conflated with it.
+        //
+        // The new write is in slot order, because a freshly built node filed its objects in the
+        // fixture's order. A node LOADED from the older ascending bytes has its objects in
+        // ASCENDING slots -- that is where the old loader would have put them too -- so it
+        // re-serializes as the ascending sequence it came from. An older index therefore rewrites
+        // as itself and no store renumbers by being read.
+        //
+        // So this compares against the captured bytes WITHOUT the stated move applied, and the
+        // assertion below that the two expectations differ is what stops this reading as a
+        // duplicate of the one above.
+        let expected_round_trip = captured.replace("\"last_dump_sequence\":11,", "");
         let round = serde_json::to_string(&loaded).expect("a loaded node re-serializes");
-        assert_eq!(expected_now, round, "{name}: a load-then-write did not round-trip");
+        assert_eq!(
+            expected_round_trip, round,
+            "{name}: a load-then-write did not round-trip to the bytes it was read from, so \
+             reading an older index moves its slots"
+        );
+        if object_list_moved.iter().any(|(fixture, _, _)| fixture == name) {
+            assert_ne!(
+                expected_round_trip, expected_now,
+                "{name}: the new write and the load-then-write expect the same bytes on a fixture \
+                 whose spelling moved, so one of the two assertions is redundant"
+            );
+            round_trip_bytes_differed += 1;
+        }
     }
 
     // --- NON-VACUITY: the fixtures must reach the arms this change touched. ---
+    assert!(
+        round_trip_bytes_differed == 2,
+        "{round_trip_bytes_differed} fixtures showed a new write and a load-then-write expecting \
+         different bytes. Both fixtures whose spelling moved must, or the claim that an older index \
+         rewrites as itself is not being driven"
+    );
+    assert!(
+        reached_moved == 2,
+        "the stated move was applied to {reached_moved} fixtures, not the two that file more than \
+         one object out of order. A move applied to none would make every equality below an \
+         equality against the old bytes"
+    );
+    assert!(
+        reached_unmoved >= 2,
+        "only {reached_unmoved} fixtures were asserted NOT to move, so nothing here shows the \
+         change is confined to the arm that holds several objects"
+    );
     assert!(
         reached_multi_live >= 2,
         "only {reached_multi_live} fixtures hold two or more objects; the arm this change \

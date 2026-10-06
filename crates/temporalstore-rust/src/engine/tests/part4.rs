@@ -6801,11 +6801,18 @@ fn a_bucket_holding_one_object_holds_no_node() {
     assert!(index.is_empty(), "and to nothing at all");
     assert!(!index.remove(&7), "removing what is not there changes nothing");
 
-    // WHAT IT ITERATES AND WHAT IT WRITES ARE NOW TWO ORDERS, and the split is the change. The
-    // multi arm is a SLOT ARRAY, so `iter` yields the order the ids were FILED -- a slot has to mean
-    // the same object for as long as the object is in the bucket, which it cannot if an insert
-    // reorders. What is still ASCENDING is the written form, because that is the order already on
-    // disk and the Serialize impl sorts to keep it there.
+    // WHAT IT ITERATES AND WHAT IT WRITES ARE NOW THE SAME ORDER AGAIN, and that is the change.
+    //
+    // The multi arm is a SLOT ARRAY, so `iter` yields the order the ids were FILED -- a slot has to
+    // mean the same object for as long as the object is in the bucket, which it cannot if an insert
+    // reorders. This comment read "what is still ASCENDING is the written form, because that is the
+    // order already on disk and the Serialize impl sorts to keep it there", and that was true until
+    // a slot had to survive a load: a sorted spelling cannot carry a position. The written form is
+    // the slot array now, nullable so a placeholder is a stored position, and the format stamp pays
+    // for the bytes that moved. REVERSED here rather than re-goldened.
+    //
+    // `sorted_ids` is still ascending and still has exactly one caller that wants it -- the
+    // TOMBSTONE side, which nothing names by slot and whose bytes therefore did not move.
     let mut many = ObjectIndex::default();
     many.extend([5u64, 1, 3]);
     let ids: Vec<u64> = many.iter().copied().collect();
@@ -6813,8 +6820,30 @@ fn a_bucket_holding_one_object_holds_no_node() {
     assert_eq!(many.sorted_ids(), vec![1, 3, 5], "and sorted on request");
     assert_eq!(
         serde_json::to_string(&many).expect("serializes"),
-        "[1,3,5]",
-        "and are WRITTEN ascending, which is the sequence already on disk"
+        "[5,1,3]",
+        "and are WRITTEN in the slots they were filed into, which is what makes a stored slot \
+         name one object across a load"
+    );
+    // AND THE CONTROL FOR THAT: the fixture's slot order is not its ascending order, so an
+    // ascending Serialize impl could not pass the assertion above.
+    assert_ne!(
+        many.sorted_ids(),
+        ids,
+        "the fixture files its ids in ascending order, so the assertion above would hold for an \
+         ascending written form too and says nothing about positions"
+    );
+    // A PLACEHOLDER IS A STORED POSITION, which is the other half of what moved on the wire.
+    assert!(many.remove(&1), "the middle id is filed");
+    assert_eq!(
+        serde_json::to_string(&many).expect("serializes"),
+        "[5,null,3]",
+        "a hole is not written, so every slot above it closes up on the next load"
+    );
+    assert!(many.insert(1), "refilling the hole");
+    assert_eq!(
+        serde_json::to_string(&many).expect("serializes"),
+        "[5,1,3]",
+        "the first free slot was not the hole, so a refill appended instead"
     );
 
     // A single id writes the same shape, and reads back inline rather than as a set.
