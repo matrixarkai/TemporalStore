@@ -4307,12 +4307,158 @@ pub(super) fn update_bucket_layout(shard_id: ShardId, bucket: &mut BucketNode) {
         .filter(|page| !page.deleted)
         .map(|page| page.object_id(shard_id))
         .collect();
-    if !live_object_ids.is_empty() {
-        bucket.object_index = live_object_ids.into();
-    } else if !bucket.block_index.is_empty() {
-        bucket.object_index.clear();
-    }
+    reconcile_object_index_with_live_pages(bucket, &live_object_ids);
     bucket.layout = classify_bucket_layout(bucket.object_index.object_count(), bucket.block_index.len());
+}
+
+/// THE PAGES AND THE OBJECT LIST ARE RECONCILED, NOT ONE REPLACED BY THE OTHER.
+///
+/// This was `bucket.object_index = live_object_ids.into()` -- a whole-array assignment from a
+/// `BTreeSet`, so every call re-handed every slot in ASCENDING ID ORDER. Nothing could store a slot
+/// while that stood.
+///
+/// ELEVEN PRODUCTION CALLERS, AND NOT THE ONE THAT WOULD BE GUESSED. The plain write path is NOT
+/// among them: it classifies the layout in place and skips this rescan deliberately. What does
+/// reach it is the LOAD path (`persistence.rs`), the release and reload paths, the two delete
+/// paths, the reconstruct paths and the flag-refresh sweep. A load renumbering every slot in a
+/// bucket is the fatal one for anything that stored a slot, and it is also the quietest, which is
+/// why a test driving a write and finding nothing proves nothing here.
+///
+/// WHAT IT DOES NOW, and the three cases are kept apart because they mean different things:
+///
+///   * NOTHING LIVE -> the list is cleared, exactly as before. A bucket whose pages are all
+///     tombstones names no object.
+///   * THE LIST IS EMPTY AND PAGES NAME OBJECTS -> a RECONSTRUCT. This is the load, recovery and
+///     reconstruct path, where the list was never maintained and must be derived; slots are handed
+///     out by `insert` because no slot existed for anything to be naming. Counted separately, so a
+///     reconstruct cannot be read as a divergence or a divergence as a reconstruct.
+///   * OTHERWISE -> a RECONCILE. An id the pages name that the list lacks is inserted; an id the
+///     list holds that no live page names is removed. Every id in both keeps the slot it is in,
+///     which is the property the whole step rests on.
+///
+/// IT COUNTS AND DOES NOT ERROR, deliberately. A disagreeing row is accepted silently today, and a
+/// refusal here would turn a reporting hole into a load failure on stores that are already in this
+/// state. The counters are the fix for the silence; see [`object_index_divergence`].
+///
+/// THE MEMBERSHIP TEST IS AGAINST A COLLECTED VECTOR AND NOT `ObjectIndex::contains`, because
+/// `contains` charges the probe counter that `the_join_a_name_reader_would_pay` reads. Asking it
+/// here would bill a maintenance scan to the read path's measurement.
+fn reconcile_object_index_with_live_pages(bucket: &mut BucketNode, live: &BTreeSet<u64>) {
+    object_index_divergence::note_rebuild();
+
+    if live.is_empty() {
+        if !bucket.block_index.is_empty() {
+            bucket.object_index.clear();
+        }
+        return;
+    }
+
+    if bucket.object_index.is_empty() {
+        object_index_divergence::note_reconstruct();
+        for id in live {
+            bucket.object_index.insert(*id);
+        }
+        return;
+    }
+
+    let held: Vec<u64> = bucket.object_index.iter().copied().collect();
+    for id in live {
+        if !held.contains(id) {
+            object_index_divergence::note_page_named_an_object_the_list_lacked(*id);
+            bucket.object_index.insert(*id);
+        }
+    }
+    for id in &held {
+        if !live.contains(id) {
+            object_index_divergence::note_list_held_an_object_no_page_names(*id);
+            bucket.object_index.remove(id);
+        }
+    }
+}
+
+/// WHAT THE MAINTENANCE SCAN HAS SEEN OF THE TWO SOURCES IT USED TO OVERWRITE ONE WITH.
+///
+/// The scan that rebuilt the object list from the pages is the evidence for the list being correct,
+/// and it destroyed that evidence by assignment: a list that disagreed was silently replaced, so
+/// `8,679 rebuilds, 0 divergences` was a statement about a comparison nobody made. These counters
+/// are what make the same claim checkable.
+///
+/// A ZERO HERE IS NOT A PROOF, and the shape of this module is copied from `hash_read_divergence`
+/// for that reason: a counter that has never moved cannot be distinguished from one that is not
+/// wired up. `the_divergence_counter_moves_on_a_planted_disagreement` is the positive control, and
+/// it exists before any zero is reported.
+///
+/// Process-wide and monotonic for the life of the process, with no reset on the production surface,
+/// so two reads subtract into what happened in between.
+pub(super) mod object_index_divergence {
+    use std::sync::atomic::{AtomicU64, Ordering};
+
+    static REBUILDS: AtomicU64 = AtomicU64::new(0);
+    static RECONSTRUCTS: AtomicU64 = AtomicU64::new(0);
+    static PAGES_NAMED_AN_OBJECT_THE_LIST_LACKED: AtomicU64 = AtomicU64::new(0);
+    static LIST_HELD_AN_OBJECT_NO_PAGE_NAMES: AtomicU64 = AtomicU64::new(0);
+    static DIVERGENCES_LOGGED: AtomicU64 = AtomicU64::new(0);
+    static LAST: std::sync::Mutex<Option<(&'static str, u64)>> = std::sync::Mutex::new(None);
+
+    /// Log every one of the first this many, so a divergence that happens once is still named.
+    const LOG_BURST: u64 = 8;
+    /// After the burst, log one in this many.
+    const LOG_EVERY: u64 = 1_024;
+
+    /// THE DENOMINATOR: one bucket whose pages were scanned and compared against its list.
+    pub(crate) fn note_rebuild() {
+        REBUILDS.fetch_add(1, Ordering::Relaxed);
+    }
+
+    /// A list that held nothing and was derived from the pages. Not a divergence: there was no
+    /// stored answer to disagree with.
+    pub(crate) fn note_reconstruct() {
+        RECONSTRUCTS.fetch_add(1, Ordering::Relaxed);
+    }
+
+    pub(crate) fn note_page_named_an_object_the_list_lacked(object_id: u64) {
+        let seen = PAGES_NAMED_AN_OBJECT_THE_LIST_LACKED.fetch_add(1, Ordering::Relaxed) + 1;
+        record("a live page named an object its bucket list did not hold", object_id, seen);
+    }
+
+    pub(crate) fn note_list_held_an_object_no_page_names(object_id: u64) {
+        let seen = LIST_HELD_AN_OBJECT_NO_PAGE_NAMES.fetch_add(1, Ordering::Relaxed) + 1;
+        record("a bucket list held an object no live page names", object_id, seen);
+    }
+
+    fn record(what: &'static str, object_id: u64, seen: u64) {
+        if let Ok(mut last) = LAST.lock() {
+            *last = Some((what, object_id));
+        }
+        if seen <= LOG_BURST || seen % LOG_EVERY == 0 {
+            DIVERGENCES_LOGGED.fetch_add(1, Ordering::Relaxed);
+            tracing::warn!(object_id, divergences = seen, "{what}");
+        }
+    }
+
+    /// Every figure together, so a count cannot be taken without its denominator.
+    pub(crate) fn snapshot() -> ObjectIndexDivergenceCounts {
+        ObjectIndexDivergenceCounts {
+            rebuilds: REBUILDS.load(Ordering::Relaxed),
+            reconstructs: RECONSTRUCTS.load(Ordering::Relaxed),
+            pages_named_an_object_the_list_lacked: PAGES_NAMED_AN_OBJECT_THE_LIST_LACKED
+                .load(Ordering::Relaxed),
+            list_held_an_object_no_page_names: LIST_HELD_AN_OBJECT_NO_PAGE_NAMES
+                .load(Ordering::Relaxed),
+            divergences_logged: DIVERGENCES_LOGGED.load(Ordering::Relaxed),
+            last: LAST.lock().ok().and_then(|last| *last),
+        }
+    }
+
+    /// The counters as one value. Not a report type: that lives on the engine surface.
+    pub(crate) struct ObjectIndexDivergenceCounts {
+        pub rebuilds: u64,
+        pub reconstructs: u64,
+        pub pages_named_an_object_the_list_lacked: u64,
+        pub list_held_an_object_no_page_names: u64,
+        pub divergences_logged: u64,
+        pub last: Option<(&'static str, u64)>,
+    }
 }
 
 /// Note that a bucket's derived runtime flags may be stale.

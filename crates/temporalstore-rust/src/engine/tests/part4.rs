@@ -6801,11 +6801,18 @@ fn a_bucket_holding_one_object_holds_no_node() {
     assert!(index.is_empty(), "and to nothing at all");
     assert!(!index.remove(&7), "removing what is not there changes nothing");
 
-    // WHAT IT ITERATES AND WHAT IT WRITES ARE NOW TWO ORDERS, and the split is the change. The
-    // multi arm is a SLOT ARRAY, so `iter` yields the order the ids were FILED -- a slot has to mean
-    // the same object for as long as the object is in the bucket, which it cannot if an insert
-    // reorders. What is still ASCENDING is the written form, because that is the order already on
-    // disk and the Serialize impl sorts to keep it there.
+    // WHAT IT ITERATES AND WHAT IT WRITES ARE NOW THE SAME ORDER AGAIN, and that is the change.
+    //
+    // The multi arm is a SLOT ARRAY, so `iter` yields the order the ids were FILED -- a slot has to
+    // mean the same object for as long as the object is in the bucket, which it cannot if an insert
+    // reorders. This comment read "what is still ASCENDING is the written form, because that is the
+    // order already on disk and the Serialize impl sorts to keep it there", and that was true until
+    // a slot had to survive a load: a sorted spelling cannot carry a position. The written form is
+    // the slot array now, nullable so a placeholder is a stored position, and the format stamp pays
+    // for the bytes that moved. REVERSED here rather than re-goldened.
+    //
+    // `sorted_ids` is still ascending and still has exactly one caller that wants it -- the
+    // TOMBSTONE side, which nothing names by slot and whose bytes therefore did not move.
     let mut many = ObjectIndex::default();
     many.extend([5u64, 1, 3]);
     let ids: Vec<u64> = many.iter().copied().collect();
@@ -6813,8 +6820,30 @@ fn a_bucket_holding_one_object_holds_no_node() {
     assert_eq!(many.sorted_ids(), vec![1, 3, 5], "and sorted on request");
     assert_eq!(
         serde_json::to_string(&many).expect("serializes"),
-        "[1,3,5]",
-        "and are WRITTEN ascending, which is the sequence already on disk"
+        "[5,1,3]",
+        "and are WRITTEN in the slots they were filed into, which is what makes a stored slot \
+         name one object across a load"
+    );
+    // AND THE CONTROL FOR THAT: the fixture's slot order is not its ascending order, so an
+    // ascending Serialize impl could not pass the assertion above.
+    assert_ne!(
+        many.sorted_ids(),
+        ids,
+        "the fixture files its ids in ascending order, so the assertion above would hold for an \
+         ascending written form too and says nothing about positions"
+    );
+    // A PLACEHOLDER IS A STORED POSITION, which is the other half of what moved on the wire.
+    assert!(many.remove(&1), "the middle id is filed");
+    assert_eq!(
+        serde_json::to_string(&many).expect("serializes"),
+        "[5,null,3]",
+        "a hole is not written, so every slot above it closes up on the next load"
+    );
+    assert!(many.insert(1), "refilling the hole");
+    assert_eq!(
+        serde_json::to_string(&many).expect("serializes"),
+        "[5,1,3]",
+        "the first free slot was not the hole, so a refill appended instead"
     );
 
     // A single id writes the same shape, and reads back inline rather than as a set.
@@ -8337,7 +8366,54 @@ fn bucket_object_index_already_matches_a_from_scratch_recompute() {
             ));
         }
     }
+    // --- AND THE PASS AN ID-SET EQUALITY CANNOT DO: THE REBUILD MUST NOT RENUMBER A SLOT. ---
+    //
+    // The comparison above is blind to exactly the failure that matters once a slot is stored. It
+    // compares `sorted_ids`, so a rebuild that kept every id and moved every one of them to a
+    // different slot passes it -- which is what the old whole-array assignment from a `BTreeSet`
+    // did on every call, eleven production callers deep.
+    //
+    // Driven on a CLONE, so the shard under test is not mutated and the before/after is exact, and
+    // compared slot for slot INCLUDING PLACEHOLDERS: `id_at` answers `None` for a hole, and a hole
+    // closing up is a renumber of everything above it.
+    let mut renumbered = Vec::new();
+    let mut slot_arrays_compared = 0usize;
+    let mut placeholders_seen = 0usize;
+    for (routing_bucket, bucket) in shard.bucket_index.bucket_map.iter() {
+        let slots_of = |index: &crate::engine::state::ObjectIndex| -> Vec<Option<u64>> {
+            (0..index.slot_count()).map(|slot| index.id_at(slot)).collect()
+        };
+        let before = slots_of(&bucket.object_index);
+        if before.is_empty() {
+            continue;
+        }
+        slot_arrays_compared += 1;
+        placeholders_seen += before.iter().filter(|slot| slot.is_none()).count();
+        let mut rebuilt = bucket.clone();
+        crate::engine::storage_bucket_internals::update_bucket_layout(1, &mut rebuilt);
+        let after = slots_of(&rebuilt.object_index);
+        if before != after {
+            renumbered.push(format!("  bucket {routing_bucket}: {before:?} -> {after:?}"));
+        }
+    }
+
     assert!(checked > 0, "workload produced no buckets to check");
+    assert!(
+        slot_arrays_compared > 0,
+        "no bucket carried a slot array, so the renumber pass examined nothing. A zero here reads \
+         as agreement and would be the absence the comparison is satisfied by"
+    );
+    assert!(
+        renumbered.is_empty(),
+        "the layout rebuild RENUMBERED {} of {slot_arrays_compared} bucket(s). A stored slot names \
+         one object for life only if the rebuild leaves it where it is:\n{}",
+        renumbered.len(),
+        renumbered.join("\n")
+    );
+    println!(
+        "\n  {slot_arrays_compared} slot arrays survived a rebuild unmoved, {placeholders_seen} \
+         placeholders among them"
+    );
     assert!(
         mismatches.is_empty(),
         "object_index is NOT maintained incrementally by {} of {checked} bucket(s), so the          layout rebuild is load-bearing and cannot be dropped:

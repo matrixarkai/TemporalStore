@@ -68,6 +68,47 @@ pub struct HashReadDivergenceReport {
     pub last_divergence: Option<HashReadDivergenceSample>,
 }
 
+/// WHAT THE BUCKET MAINTENANCE SCAN SAW OF THE PAGES AND THE OBJECT LIST.
+///
+/// The scan used to ASSIGN the list from the pages, so a list that disagreed was overwritten and
+/// the disagreement was unobservable. It reconciles now, and these are the figures that makes the
+/// claim "the list already matches a from-scratch recompute" something a reader can check rather
+/// than something a replaced value implied.
+///
+/// A ZERO IS NOT A PROOF OF AGREEMENT unless `rebuilds` is non-zero: it is a statement about the
+/// buckets the scan reached. Read the count beside its denominator, which is why they are one type.
+///
+/// WHY THERE IS NO `shard_id`. The figures accumulate process-wide, as the hash-read divergence
+/// figures do; a shard label would describe something this report did not measure.
+#[derive(Debug, Default, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ObjectIndexDivergenceReport {
+    /// THE DENOMINATOR: buckets whose pages were scanned and compared against their object list.
+    pub rebuilds: u64,
+    /// Buckets whose list held nothing and was derived from the pages -- a load or recovery path,
+    /// not a disagreement. Counted apart so neither can be read as the other.
+    pub reconstructs: u64,
+    /// A live page named an object its bucket's list did not hold. The list gains it; nothing
+    /// already filed moves.
+    pub pages_named_an_object_the_list_lacked: u64,
+    /// The list held an object no live page names. The list drops it, leaving a placeholder.
+    pub list_held_an_object_no_page_names: u64,
+    /// How many of those reached the log, which is rate-limited, so a quiet log cannot be mistaken
+    /// for a zero count.
+    pub divergences_logged: u64,
+    /// Stored slots that named an id another slot in the same array already named. The first slot
+    /// wins; the rest become placeholders so nothing above them renumbers.
+    pub stored_slots_repeated_an_id: u64,
+    #[serde(default)]
+    pub last_divergence: Option<ObjectIndexDivergenceSample>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ObjectIndexDivergenceSample {
+    /// Which direction disagreed, in words, because an id alone does not say.
+    pub what: String,
+    pub object_id: u64,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(untagged)]
 pub enum StorageContractValue {

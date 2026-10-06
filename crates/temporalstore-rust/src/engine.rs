@@ -2485,16 +2485,19 @@ pub(crate) fn eager_cache_warm_on_load() -> bool {
 /// store as its own. That is the silent misread this constant exists to prevent, arriving by the one
 /// route a one-sided comparison leaves open.
 ///
-/// So 4 is a PERMANENT HOLE, this change takes 6, and the next takes 7. The rule the two together
-/// imply: a stamp may only ever INCREASE -- read the constant from the tree immediately before
-/// committing and take the next value above it, never a number reserved while the tree held less.
+/// So 4 is a PERMANENT HOLE, 6 was taken when the object id left the address, and THIS change takes
+/// 7 -- the object list now stores its SLOTS rather than a sorted set of its ids, so the sequence a
+/// bucket writes is in slot order and carries `null` for a placeholder. The next takes 8. The rule
+/// the three together imply: a stamp may only ever INCREASE -- read the constant from the tree
+/// immediately before committing and take the next value above it, never a number reserved while
+/// the tree held less. 7 was read as 6 in the tree at the moment this line was written.
 ///
 /// AND THE CLAIM THAT A HOLE IS INVISIBLE IS NOT QUITE TRUE, which is why the rule is "increase"
 /// rather than "any unused number". The paragraph above says the stamp is "only ever compared for
 /// equality with the constant, never ordered or ranged". `engine::decode_index_bytes` does compare
 /// with `!=` -- but only in its MSGPACK arm, and `persistence.rs` compares with `<`. #2051 tracks
 /// that asymmetry and the decision it needs; nothing here depends on the equality claim.
-pub(super) const SHARD_INDEX_FORMAT_VERSION: u32 = 6;
+pub(super) const SHARD_INDEX_FORMAT_VERSION: u32 = 7;
 
 /// Serialize a shard index, stamping the current format version.
 ///

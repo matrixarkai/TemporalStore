@@ -494,6 +494,13 @@ pub struct BlockAddress {
 /// it 3 -> 5, skipping 4 to hold the reservation. That reservation did not survive main moving past
 /// it. This change therefore takes **6**, and the next one takes 7.
 ///
+/// 7 IS NOW TAKEN, by the object list storing its SLOTS instead of a sorted set of its ids: the
+/// sequence a bucket writes is in slot order and spells a placeholder `null`, so the bytes of every
+/// bucket holding more than one object move. The next change takes 8. An index written before that
+/// change still loads -- an ascending run of bare ids restores to ascending positions, which is
+/// where the old loader would have put them -- so the stamp is paid for the WRITE side moving, not
+/// for a read that would otherwise misparse.
+///
 /// 4 IS A HOLE AND MUST NEVER BE TAKEN. A hole is free going forwards and lethal going backwards,
 /// because the two comparisons are not the same: `engine.rs` checks the served index with `!=` and
 /// refuses either direction, but `persistence.rs` checks the BASE SNAPSHOT with `<`. A binary

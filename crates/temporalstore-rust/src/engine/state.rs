@@ -697,6 +697,35 @@ impl ObjectSlots {
         ObjectSlots { slots: vec![Some(first), Some(second)], valid: 2 }
     }
 
+    /// Slots read back from a stored index, IN THE POSITIONS THEY WERE WRITTEN IN.
+    ///
+    /// NOT through `insert`, and that is the whole change. `insert` hands out the first free slot,
+    /// so re-filing a stored array through it reproduces the written ORDER and not the written
+    /// POSITIONS -- which is how a slot came back naming a different object after a load, and why
+    /// nothing was allowed to store one.
+    ///
+    /// A REPEATED ID IS PLACEHOLDERED WHERE IT REPEATS, not dropped: dropping it would shorten the
+    /// array and move every id above it, which is the renumber this constructor exists to avoid.
+    /// The first position wins, because it is the one anything already stored would be naming. The
+    /// count is returned so the caller can report it rather than swallow it.
+    fn from_stored_slots(mut slots: Vec<Option<u64>>) -> (Self, u64) {
+        let mut repeated = 0u64;
+        let mut seen: std::collections::BTreeSet<u64> = std::collections::BTreeSet::new();
+        for slot in slots.iter_mut() {
+            if let Some(id) = *slot {
+                if !seen.insert(id) {
+                    *slot = None;
+                    repeated += 1;
+                }
+            }
+        }
+        let mut held = ObjectSlots { valid: slots.iter().filter(|slot| slot.is_some()).count(), slots };
+        // Trailing placeholders are not kept, exactly as a removal does not keep them: the
+        // positions dropped hold no id, so nothing can be naming them.
+        held.drop_trailing_placeholders();
+        (held, repeated)
+    }
+
     fn valid(&self) -> usize {
         self.valid
     }
@@ -945,6 +974,38 @@ impl ObjectIndex {
         }
     }
 
+    /// An index read back from a stored one, IN THE POSITIONS IT WAS WRITTEN IN.
+    ///
+    /// Goes through the same two collapses `settle` applies, so a loaded index is in the shape a
+    /// live one would be in and `slot_of` and `id_at` cannot tell a loaded bucket from a built one.
+    /// That indistinguishability is what the reload test drives.
+    ///
+    /// A repeated id is reported rather than swallowed: it means the stored array disagreed with
+    /// itself, which is a thing an operator should be able to see a count of.
+    pub(super) fn from_stored_slots(slots: Vec<Option<u64>>) -> Self {
+        let (held, repeated) = ObjectSlots::from_stored_slots(slots);
+        if repeated > 0 {
+            note_stored_slots_repeated_an_id(repeated);
+        }
+        // THE ARM IS CHOSEN BEFORE ANYTHING IS BOXED, and that is not a tidy-up.
+        //
+        // This built `Many(Box::new(held))` and then called `settle`, which allocated a box for
+        // every bucket on every load and threw it away again for the two arms most buckets are
+        // actually in. `a_bucket_holding_one_object_holds_no_node` and
+        // `the_tombstone_index_gives_its_allocation_back_when_it_empties` both caught it: a shard
+        // index is read once per bucket and twice counting the tombstone side, so that was an
+        // allocation per bucket per load on a path that had none.
+        //
+        // Constructing `held` itself allocates nothing -- it moves the vector the deserializer
+        // already built -- so the branch is free and the box is taken only by the arm that needs it.
+        // The two collapses are `settle`'s, spelled here against the same two conditions.
+        match (held.valid(), held.slot_count()) {
+            (0, _) => ObjectIndex::Empty,
+            (1, 1) => ObjectIndex::One(held.id_at(0).expect("one valid id in one slot")),
+            _ => ObjectIndex::Many(Box::new(held)),
+        }
+    }
+
     pub(super) fn clear(&mut self) {
         *self = ObjectIndex::Empty;
     }
@@ -1028,22 +1089,23 @@ impl FromIterator<u64> for ObjectIndex {
     }
 }
 
-impl Serialize for ObjectIndex {
-    /// The same sequence of ids it has always written, in the same order.
+impl ObjectIndex {
+    /// THE IDS ASCENDING, HOLES OMITTED -- the spelling this wrote before the slot array became
+    /// durable, kept for the one side that does not need a durable slot.
     ///
-    /// ASCENDING, which is the order a sorted run wrote and so the order already on disk. The slot
-    /// array iterates in SLOT order, so the multi arm SORTS rather than taking the container's word
-    /// for it -- which keeps every written byte where it was, and is why this change moves no stored
-    /// shape and takes no new `SHARD_INDEX_FORMAT_VERSION`. Placeholders are not written: a hole is
-    /// not an id, and a reload re-files what is written through `insert`, which hands out slots
-    /// afresh.
+    /// WHY IT STILL EXISTS. Nothing names a TOMBSTONE by slot: the deleted-object side is the ids a
+    /// bucket has had removed and not yet reclaimed, read as a set and never indexed into. Writing
+    /// it in slot order would move bytes already on disk for no gain at all, on the 2.32% of
+    /// buckets that carry one.
     ///
-    /// AND THE TWO COMMON ARMS DO NOT ALLOCATE TO SAY SO. A shard index is written on every dump,
-    /// once per bucket and twice counting the tombstone side, and `Empty` and `One` are what most
-    /// buckets are in -- sorting through a `Vec` there would have added an allocation per bucket per
-    /// dump to a path that had none. Only the arm whose order can actually differ from ascending pays
-    /// for being put in ascending order.
-    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    /// SO THE TWO SIDES NOW DIFFER DELIBERATELY, and that is why this is a named method rather than
+    /// a copy. `DeletedObjectIndex` used to delegate to the live side's `Serialize` on the
+    /// reasoning that two impls which agreed would be two impls to keep agreeing. They no longer
+    /// agree -- one is positional and one is ascending -- so delegation would silently drag the
+    /// tombstone side along. One body for each rule, and the caller says which rule it wants.
+    ///
+    /// Allocation-free on the two arms that hold nothing or one id, which is almost all of them.
+    pub(super) fn serialize_ascending<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
     where
         S: serde::Serializer,
     {
@@ -1067,20 +1129,76 @@ impl Serialize for ObjectIndex {
     }
 }
 
+impl Serialize for ObjectIndex {
+    /// THE SLOT ARRAY, IN SLOT ORDER, WITH ITS PLACEHOLDERS -- which is the change.
+    ///
+    /// This wrote `sorted_ids()`: ascending, holes omitted. That kept every byte where a sorted run
+    /// had put it and took no format stamp, and it also meant NOTHING PERSISTED A SLOT. A load
+    /// re-filed the written ids through `insert`, so positions were handed out afresh on every load
+    /// and a slot was a resident fact. A page entry naming its object by slot cannot be built on
+    /// that, and this is the step that makes the slot durable instead.
+    ///
+    /// WHAT MOVES ON DISK, AND IT IS TWO THINGS. The sequence is no longer ascending -- it is slot
+    /// order, which is filing order -- and a hole is written as `null` where it used to be left out.
+    /// Both change the bytes of every bucket holding more than one object, which the measurement
+    /// puts at 46.6% of them, so this takes the next `SHARD_INDEX_FORMAT_VERSION`.
+    ///
+    /// AN OLDER INDEX STILL DECODES, AND LANDS WHERE IT WOULD HAVE -- AS DEFENCE IN DEPTH AND NOT
+    /// AS THE UPGRADE PATH. An ascending sequence of bare ids deserializes as `Some` in the
+    /// positions it is written in, and ascending positions are exactly what the old loader's
+    /// `insert` would have handed out for it.
+    ///
+    /// THE UPGRADE PATH IS THE STAMP, THOUGH. `persistence.rs` compares the stored stamp with `<`
+    /// and refuses anything below the constant, so an index written before this change is REFUSED
+    /// and rebuilt from the log rather than decoded -- which is the established cost of a stamp
+    /// here. The tolerance above matters on the one shape where a decode runs before the check, and
+    /// it is worth having for exactly that reason, but it is not what an upgrade exercises.
+    ///
+    /// AND THE TWO COMMON ARMS STILL DO NOT ALLOCATE. A shard index is written on every dump, once
+    /// per bucket and twice counting the tombstone side, and `Empty` and `One` are what most buckets
+    /// are in. Neither builds a vector: the sort that used to stand here is gone, because slot order
+    /// is now the order being written.
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        use serde::ser::SerializeSeq;
+        match self {
+            ObjectIndex::Empty => serializer.serialize_seq(Some(0))?.end(),
+            ObjectIndex::One(id) => {
+                let mut seq = serializer.serialize_seq(Some(1))?;
+                // `Some(id)` and not `id`: the element type of this sequence is now nullable, and
+                // writing the one-object arm as a bare number would make the two arms write
+                // different shapes for the same array.
+                seq.serialize_element(&Some(*id))?;
+                seq.end()
+            }
+            ObjectIndex::Many(slots) => {
+                let mut seq = serializer.serialize_seq(Some(slots.slot_count()))?;
+                for slot in slots.iter() {
+                    seq.serialize_element(slot)?;
+                }
+                seq.end()
+            }
+        }
+    }
+}
+
 impl<'de> Deserialize<'de> for ObjectIndex {
     fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
     where
         D: serde::Deserializer<'de>,
     {
-        // Through `insert`, so a loaded bucket takes the shape a written one does: one id comes
-        // back held inline rather than in a run, and a repeated id collapses.
+        // BY POSITION, NOT THROUGH `insert`. This read `Vec<u64>` and collected it, which put
+        // each id in the first free slot and so reproduced the written ORDER rather than the
+        // written POSITIONS. That is what made a slot resident-only.
         //
-        // The sequence is read into a `Vec` and not a tree. It accepts exactly what it always
-        // accepted -- a sequence of ids, in any order, duplicates allowed -- and `insert` puts
-        // each one where it belongs, so the loaded shape is the same one a written bucket holds.
-        // The tree that used to stand here was an allocation per bucket for a shape that was
-        // thrown away on the next line.
-        Ok(Vec::<u64>::deserialize(deserializer)?.into_iter().collect())
+        // `Option<u64>` is what accepts both shapes: a `null` is the placeholder this now writes,
+        // and a bare number from an index written before this change comes back as `Some` in the
+        // position it was written in. So the tolerance is in the element type and needs no probing
+        // of the stored form.
+        let slots = Vec::<Option<u64>>::deserialize(deserializer)?;
+        Ok(ObjectIndex::from_stored_slots(slots))
     }
 }
 
@@ -1211,20 +1329,22 @@ impl Serialize for DeletedObjectIndex {
     where
         S: serde::Serializer,
     {
-        // ASCENDING, and allocation-free on the arms that hold nothing or one id -- through the
-        // live side's own Serialize impl, where both rules live. This field is serialized, so writing
-        // it in slot order would move bytes already on disk for no gain, and it holds a single id on
-        // 97.68% of the buckets that carry one at all, so an allocation here would be an allocation
-        // on almost all of them.
+        // ASCENDING, and allocation-free on the arms that hold nothing or one id -- through
+        // `ObjectIndex::serialize_ascending`, which is where that rule now lives. This field is
+        // serialized, so writing it in slot order would move bytes already on disk for no gain, and
+        // it holds a single id on 97.68% of the buckets that carry one at all.
         //
-        // DELEGATED RATHER THAN COPIED: two impls that agreed today would be two impls to keep
-        // agreeing, and "carrying nothing" has exactly one spelling precisely so it cannot drift.
+        // NO LONGER `index.serialize(..)`, AND THAT IS THE POINT. The live side's `Serialize` is
+        // POSITIONAL now -- slot order, with a null for a placeholder -- because a page entry has to
+        // be able to name its object by a slot that survives a load. Nothing names a tombstone by
+        // slot, so delegating to it would have moved this field's bytes for nothing. The two rules
+        // are two bodies with one caller each, rather than one body serving a claim that split.
         match &self.0 {
             None => {
                 use serde::ser::SerializeSeq;
                 serializer.serialize_seq(Some(0))?.end()
             }
-            Some(index) => index.serialize(serializer),
+            Some(index) => index.serialize_ascending(serializer),
         }
     }
 }
@@ -1404,6 +1524,26 @@ pub(super) fn entries_a_bisection_examines(len: usize) -> u64 {
 #[cfg(not(test))]
 fn entries_a_bisection_examines(_len: usize) -> u64 {
     0
+}
+
+/// How many stored slots named an id another slot in the same array already named.
+///
+/// PRODUCTION AND NOT `cfg(test)`, unlike the probe counter below: a stored array disagreeing with
+/// itself is a thing that happens to a real store and a zero here is a fact worth being able to
+/// read. It is a count rather than a refusal because the load path's job is to come up.
+static STORED_SLOTS_REPEATED_AN_ID: std::sync::atomic::AtomicU64 =
+    std::sync::atomic::AtomicU64::new(0);
+
+fn note_stored_slots_repeated_an_id(count: u64) {
+    STORED_SLOTS_REPEATED_AN_ID.fetch_add(count, std::sync::atomic::Ordering::Relaxed);
+    tracing::warn!(
+        repeated = count,
+        "a stored object list named the same object in more than one slot; the first slot wins and          the rest are left as placeholders so nothing above them renumbers"
+    );
+}
+
+pub(super) fn stored_slots_repeated_an_id() -> u64 {
+    STORED_SLOTS_REPEATED_AN_ID.load(std::sync::atomic::Ordering::Relaxed)
 }
 
 #[cfg(test)]
