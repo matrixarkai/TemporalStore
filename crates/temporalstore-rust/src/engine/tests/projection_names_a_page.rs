@@ -284,11 +284,31 @@ fn what_the_projection_emits_per_object_gate_off_against_gate_on() {
             "occupancy {occupancy}: the ungated listing returned {off_listed} of {occupancy} \
              members. The DEFAULT path must be whole at every step of this series"
         );
+        // ---- CHANGED DELIBERATELY AT STEP EIGHT, which is the step the previous note
+        // ---- anticipated by name.
+        //
+        // What stood here pinned ZERO, and it was right for every step before this one: the
+        // projection had collapsed the entries to one a page, and nothing had yet taught any
+        // reader to take an element's identity out of a PAYLOAD. A gated listing therefore
+        // answered empty -- its `None` arm can only be answered by a page that names no element,
+        // and every gated page is framed.
+        //
+        // Step eight brought the listing along. It folds the object's pages with
+        // `container_membership::derive_membership`, which orders them by `append_position` and
+        // treats a value and a tombstone as the same kind of statement, so the later page wins.
+        // That is the direction that resurrected a removed member when it was tried with a
+        // hand-rolled loop, and the two things that make it safe are driven elsewhere: the
+        // tombstone page is reachable from the index, and the fold owns the precedence.
+        //
+        // RESTATED, NOT DELETED. Removing it would leave the gated listing with no pin at all,
+        // and the property worth holding from here on is the stronger one -- that the gated
+        // listing answers exactly what the ungated listing answers.
         assert_eq!(
-            0, on_listed,
-            "occupancy {occupancy}: the gated listing returned {on_listed} members where this \
-             step expects none. If a later step has brought the listing along, this assertion is \
-             the one to change -- deliberately, saying so -- rather than the projection"
+            occupancy, on_listed,
+            "occupancy {occupancy}: the gated listing returned {on_listed} of {occupancy} \
+             members. Step eight folds the object's pages by `append_position` to answer this, so \
+             it must now return exactly what the ungated listing returns -- and the ungated arm \
+             above is asserted at the same occupancy, so the two are compared on one fixture"
         );
     }
 }
