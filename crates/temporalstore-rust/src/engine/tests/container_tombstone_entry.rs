@@ -740,11 +740,29 @@ fn a_removed_member_does_not_make_its_object_deleted() {
     );
 
     // DENOMINATOR: the tombstone has to be in the index for this report to be about anything.
+    //
+    // RESTATED FOR THE COLLAPSED PROJECTION, AND STATED AS THE INVARIANT RATHER THAN AS A NUMBER.
+    // A gated removal KEEPS the page entry -- the page still holds the object's other members, and
+    // dropping the entry would take them with it -- and files ONE tombstone naming the member
+    // removed. So the live count does not fall on a removal here, where ungated it does.
+    //
+    // The arm this describes had never executed before the write path stopped naming live entries:
+    // while it did, `remove_container_element`'s retain matched the element's own entry, dropped
+    // it, and the UNGATED arm ran. So this expectation is not adjusted to fit new behaviour -- the
+    // behaviour's correctness is established independently, by
+    // `write_after_fold::a_gated_removal_leaves_every_other_member_whole_across_a_reload` (the
+    // member is gone and the other eleven are whole, by membership, across a reload) and by
+    // `write_after_fold::gated_removals_file_one_tombstone_per_distinct_element_and_do_not_
+    // accumulate` (one tombstone per distinct element, however many times the removal is issued).
+    // Without those two this would be a test asserting whatever the code does.
     let (live, tombstoned) = entry_counts(&engine, "set", key);
+    let gated = crate::engine::container_index_files_one_entry_a_page();
+    let expected_live = if gated { MEMBERS } else { MEMBERS - 1 };
     assert_eq!(
-        (MEMBERS - 1, 1),
+        (expected_live, 1),
         (live, tombstoned),
-        "the fixture holds {live} live and {tombstoned} tombstone entries"
+        "the fixture holds {live} live and {tombstoned} tombstone entries; the collapsed \
+         projection keeps the page entry and adds one tombstone, the per-element one replaces it"
     );
 
     assert!(
@@ -758,13 +776,17 @@ fn a_removed_member_does_not_make_its_object_deleted() {
         "the tombstone is not counted as a deleted block ref ({} of them), which it is",
         object.deleted_block_ref_count
     );
+    // THE SAME RESTATEMENT AS THE DENOMINATOR ABOVE, and for the same reason: this counts LIVE
+    // entries, and under the collapsed projection a removal keeps the page entry because the page
+    // still holds the object's other members. What the field must never count is the tombstone,
+    // which is what the name asserts and what the two assertions above this one are actually for --
+    // both of those pass unchanged under either projection.
     assert_eq!(
-        MEMBERS - 1,
+        expected_live,
         report.live_block_ref_count,
-        "live_block_ref_count is {} where {} entries are live -- the field is named `live` and a \
-         tombstone is not one",
-        report.live_block_ref_count,
-        MEMBERS - 1
+        "live_block_ref_count is {} where {expected_live} entries are live -- the field is named \
+         `live` and a tombstone is not one",
+        report.live_block_ref_count
     );
     assert_ne!(
         "deleted", object.residency,

@@ -4563,6 +4563,33 @@ pub(crate) const TS_CONTAINER_ONE_ENTRY_A_PAGE: &str = "TS_CONTAINER_ONE_ENTRY_A
 /// gates the set arm only -- which is what makes them the control in the test above: a short
 /// answer for hash, zset or list is a broken reload rather than anything this gate did.
 ///
+/// # AND IT DROPS THE NAME FROM LIVE ENTRIES ONLY. TOMBSTONES KEEP IT.
+///
+/// The precise scope, written here because it is a design decision with two independent reasons
+/// and neither is visible from a diff. A LIVE entry under this gate is a per-PAGE fact: the page's
+/// payload already names every element on it, so the entry needs no element name, and dropping it
+/// is the collapse. A TOMBSTONE is a per-ELEMENT fact -- recording WHICH element was removed is its
+/// entire content -- so a nameless tombstone is not a smaller one, it is one that has lost what it
+/// was for. Both reasons were measured rather than argued:
+///
+///   * THE SWEEP CANNOT TELL WHOSE IT IS. A re-add clears the tombstone its own element left; against
+///     a nameless tombstone it matches every tombstone of the object, so re-adding Y clears X's and
+///     X comes back.
+///   * AND THE RETENTION CANNOT BE BOUNDED. `removed` is always false under this gate, so the gated
+///     arm fires on every removal: with a nameless tombstone, four removals of ONE member left FOUR
+///     tombstone pages, growing per removal issued rather than per element removed -- on what is a
+///     no-op from the client's side. Named, it is 1 / 1 / 3 for one removal, four of the same
+///     member, and three distinct members.
+///
+/// There is a THIRD consequence that is not about this gate at all, and it is why "nameless" was
+/// never an option rather than merely a worse one: on the outcome wire, a removal's absent component
+/// is load-bearing semantics. `wal_proto` encodes `object_deleted: item.deleted &&
+/// item.component.is_none()`, and `lifecycle` acts on it by dropping the whole object or series. So
+/// `None` there is not an empty field, it is a different instruction.
+///
+/// NO STORED SHAPE MOVES FOR ANY OF THIS. The tombstone's component field already existed and the
+/// ungated path already filled it, so `SHARD_INDEX_FORMAT_VERSION` does not change.
+///
 /// Observed, per OBJECT, at one page in every row: forty elements emit **forty entries ungated and
 /// one gated**, four emit four against one, and one emits one against one -- with every ungated
 /// entry carrying a component and no gated entry carrying one.
@@ -5400,14 +5427,53 @@ fn mark_bucket_index_block_deleted_recording(
     // does not know files nothing.
     if !removed && container_index_files_one_entry_a_page() {
         if let (Some(address), Some(routing_bucket)) = (tombstone_for_gate, gated_tombstone_bucket) {
-            crate::engine::storage_bucket_internals::insert_container_tombstone_entry(
-                shard,
-                model_id,
-                key,
-                None,
-                address,
-                routing_bucket,
-            );
+            // THE TOMBSTONE KEEPS THE ELEMENT'S NAME EVEN THOUGH THE LIVE ENTRY DOES NOT, and the
+            // asymmetry is the point rather than an exception.
+            //
+            // A live entry under this gate is a per-PAGE fact: the page's payload already names
+            // every element on it, so the entry needs no element name and dropping it is the
+            // collapse. A tombstone is a per-ELEMENT fact -- recording WHICH element was removed is
+            // its entire content -- so a nameless one has not been made smaller, it has been made
+            // useless, in two specific ways that were both measured:
+            //
+            //   * THE SWEEP CANNOT TELL WHOSE IT IS. A re-add clears the tombstone its own element
+            //     left; keyed against a nameless tombstone it matches every tombstone of the
+            //     object, so re-adding Y clears X's and X comes back. That is a resurrection, and
+            //     `write_after_fold::a_re_add_after_a_removal_does_not_bring_the_removed_member_
+            //     back` is the arm that holds it.
+            //   * AND THE RETENTION CANNOT BE BOUNDED. `removed` is always false under this gate,
+            //     because the `retain` above looks for a live entry carrying this element's name
+            //     and a page-named entry has none -- so this arm fires on EVERY removal. Measured
+            //     with a nameless tombstone: four removals of ONE member left FOUR tombstone pages
+            //     and four entries, growing per removal issued rather than per element removed, on
+            //     what is a no-op from the client's side. With the name present the arm can ask
+            //     whether this element's tombstone is already filed, which is what the check below
+            //     does.
+            //
+            // So the gate's scope is one clause narrower than it looks: it drops the element name
+            // from LIVE entries only.
+            let already_tombstoned = shard
+                .bucket_index
+                .bucket_map
+                .get(&routing_bucket)
+                .is_some_and(|bucket| {
+                    bucket.block_index.values().any(|page| {
+                        page.deleted
+                            && &*page.object_key == key
+                            && page.model_id.as_str() == model_id
+                            && page.component.as_deref() == component
+                    })
+                });
+            if !already_tombstoned {
+                crate::engine::storage_bucket_internals::insert_container_tombstone_entry(
+                    shard,
+                    model_id,
+                    key,
+                    component,
+                    address,
+                    routing_bucket,
+                );
+            }
         }
     }
     removed

@@ -614,3 +614,202 @@ fn a_re_add_after_a_removal_does_not_bring_the_removed_member_back() {
          disagree about whether the removal happened"
     );
 }
+
+const CROWD: usize = 12;
+
+/// A GATED REMOVAL FROM A FOLDED PAGE: THE MEMBER GOES, EVERY OTHER MEMBER STAYS, ACROSS A RELOAD.
+///
+/// # WHY THIS IS WRITTEN BEFORE ANY EXPECTATION IS RESTATED
+///
+/// The gated removal arm had never executed. While the write path filed each element's name,
+/// `remove_container_element`'s retain matched it, dropped the live entry and took the ungated
+/// path -- so with the gate on, the arm that keeps the page entry beside a tombstone was
+/// unreachable. The keying change files no name, the retain stops matching, and that arm now runs.
+///
+/// Two existing tests disagree with it about the entry counts. Restating them to match what the
+/// code now does would assert whatever the code does -- a tautology, the same shape as a
+/// completeness check in this tree that compared a map against an index rebuilt from that map and
+/// therefore could not fail. So the arm's correctness is established here from the INVARIANT
+/// instead: a removal must remove exactly the member named, must not disturb the others, and must
+/// survive the store.
+///
+/// Asserted by MEMBERSHIP throughout. A container answering the right count of the wrong members
+/// passes a count assertion, and presence and absence are different properties -- this campaign
+/// has a recorded case where every arm asked whether a present element survives, none removed
+/// anything, and a removed member came back.
+#[test]
+fn a_gated_removal_leaves_every_other_member_whole_across_a_reload() {
+    let _gate = GateAt::value("1");
+    let dir = tempfile::tempdir().expect("tempdir");
+    let pages = dir.path().join("pages");
+    let indexes = dir.path().join("indexes");
+    let doomed = member_bytes(3);
+    let rewritten = member_bytes(5);
+
+    {
+        let engine = TemporalEngine::with_local_dirs(
+            64 * 1024 * 1024,
+            dir.path().join("cache"),
+            &pages,
+            &indexes,
+        );
+        load_on(&engine);
+        for index in 0..CROWD {
+            add(&engine, member_bytes(index));
+        }
+        engine
+            .compact_shard_blocks(1)
+            .expect("the fold round must succeed");
+
+        // FLOOR: THE MEMBERS SHARE ONE PAGE. Without the fold each is its own page, the gated arm
+        // is not what runs, and this test would be about the ungated path wearing a gated label.
+        let (_, _, folded_pages, _) = entry_census(&engine);
+        assert_eq!(
+            1,
+            folded_pages.len(),
+            "the {CROWD} members resolve to {} pages after the fold, so no page holds more than \
+             one member and the removal arm under test is not the one that runs",
+            folded_pages.len()
+        );
+
+        remove(&engine, doomed.clone());
+        // FLOOR: a tombstone was filed, so the removal reached the arm at all.
+        assert!(
+            !tombstones(&engine).is_empty(),
+            "the removal filed no tombstone, so the gated arm did not run and every assertion \
+             below would be about the ungated path"
+        );
+
+        // AND A WRITE AFTER THE REMOVAL, which is the sweep interaction: a re-add of a DIFFERENT
+        // member must not disturb the removal.
+        add(&engine, rewritten.clone());
+
+        engine.unload_shard(1);
+    }
+
+    // Its own cache directory, so every byte served came off disk through the reloaded index.
+    let reloaded = TemporalEngine::with_local_dirs(
+        64 * 1024 * 1024,
+        dir.path().join("cache-reloaded"),
+        &pages,
+        &indexes,
+    );
+    load_on(&reloaded);
+    let listed = listed_members(&reloaded);
+    let durable = durable_members(&reloaded);
+    println!(
+        "\n=== one member removed from a folded page of {CROWD}, then another re-added, then a \
+         reload ===\n  the listing serves {} member(s), the durable map holds {}",
+        listed.len(),
+        durable.len()
+    );
+
+    // ---- THE INVARIANT, STATED AS THE SET IT MUST BE. ----
+    let expected: std::collections::BTreeSet<Vec<u8>> = (0..CROWD)
+        .map(member_bytes)
+        .filter(|member| member != &doomed)
+        .collect();
+
+    // FLOOR: the object came back at all, so the absence below is not true for the wrong reason.
+    assert!(
+        !listed.is_empty(),
+        "the object is empty after the reload, so 'the removed member is absent' says nothing"
+    );
+    assert_eq!(
+        expected, listed,
+        "the listing served {} member(s) where the invariant is {}. Compared as a SET: the right \
+         count of the wrong members passes a count check",
+        listed.len(),
+        expected.len()
+    );
+    assert_eq!(
+        expected, durable,
+        "the durable map holds {} member(s) where the invariant is {}, so the two sources disagree \
+         about what the removal did",
+        durable.len(),
+        expected.len()
+    );
+    // Said twice on purpose: absence is a different property from the set comparison above, and
+    // it is the one a wrong answer here would be about.
+    assert!(
+        !listed.contains(&doomed) && !durable.contains(&doomed),
+        "THE REMOVED MEMBER IS BACK after a reload and a re-add of another member"
+    );
+    assert!(
+        listed.contains(&rewritten),
+        "the member re-added after the removal is not served, so the removal took a bystander"
+    );
+}
+
+/// AND THE RETAINED ENTRY IS BOUNDED: ONE TOMBSTONE PER DISTINCT ELEMENT REMOVED.
+///
+/// The stated retention property of the removal representation, never checked against this arm
+/// because the arm never ran. An arm that keeps the live entry AND files a tombstone could grow
+/// per removal ROUND rather than per distinct element, which is unbounded on churn.
+///
+/// Driven over repeated removals of the SAME element and over distinct ones, so "bounded" is
+/// measured against the number of distinct elements removed rather than against a constant.
+#[test]
+fn gated_removals_file_one_tombstone_per_distinct_element_and_do_not_accumulate() {
+    let _gate = GateAt::value("1");
+    let dir = tempfile::tempdir().expect("tempdir");
+    let engine = engine_on(dir.path());
+    load_on(&engine);
+    for index in 0..CROWD {
+        add(&engine, member_bytes(index));
+    }
+    engine
+        .compact_shard_blocks(1)
+        .expect("the fold round must succeed");
+
+    // FLOOR: one page, so the gated arm is what runs.
+    let (_, _, folded_pages, _) = entry_census(&engine);
+    assert_eq!(1, folded_pages.len(), "the fixture did not fold");
+
+    // THE SAME ELEMENT REMOVED SEVERAL TIMES must not file several tombstones: only the first
+    // removal removes anything.
+    remove(&engine, member_bytes(0));
+    let after_first = tombstones(&engine).len();
+    assert!(
+        after_first >= 1,
+        "the first removal filed no tombstone, so the bound below holds over nothing"
+    );
+    for _ in 0..3 {
+        remove(&engine, member_bytes(0));
+    }
+    let after_repeats = tombstones(&engine).len();
+    println!(
+        "\n=== tombstones: {after_first} after removing one member, {after_repeats} after \
+         removing the SAME member three more times"
+    );
+    assert_eq!(
+        after_first, after_repeats,
+        "repeated removals of the same member grew the tombstones from {after_first} to \
+         {after_repeats}, so the retention is per removal rather than per element removed"
+    );
+
+    // AND DISTINCT ELEMENTS: the count tracks the number of distinct members removed.
+    remove(&engine, member_bytes(1));
+    remove(&engine, member_bytes(2));
+    let after_three = tombstones(&engine).len();
+    println!("  {after_three} after removing three DISTINCT members");
+    assert!(
+        after_three <= 3,
+        "three distinct members removed left {after_three} tombstone entries, so the retention is \
+         not bounded at one per distinct element"
+    );
+    assert!(
+        after_three > after_first,
+        "removing two more distinct members did not change the tombstone count ({after_first} \
+         then {after_three}), so this arm is not recording per element and the bound above is \
+         satisfied by it recording nothing"
+    );
+
+    // AND THE SURVIVORS ARE STILL SERVED, so none of the above is bounded by having lost them.
+    let expected: std::collections::BTreeSet<Vec<u8>> = (3..CROWD).map(member_bytes).collect();
+    assert_eq!(
+        expected,
+        listed_members(&engine),
+        "after three removals the listing does not serve exactly the nine remaining members"
+    );
+}
