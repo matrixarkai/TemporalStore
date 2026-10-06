@@ -2619,7 +2619,6 @@ fn bucket_store_reports_all_layout_states_and_runtime_flags() {
                     address: BlockAddress::from_parts(1, 0, 4, Some(1), Some(30)),
                     dirty: false,
                     deleted: false,
-                    log_backed: true,
                 },
             )]
             .into_iter()
@@ -2645,7 +2644,6 @@ fn bucket_store_reports_all_layout_states_and_runtime_flags() {
                         address: BlockAddress::from_parts(2, 0, 4, Some(2), Some(40)),
                         dirty: false,
                         deleted: false,
-                        log_backed: true,
                     },
                 ),
                 (
@@ -2657,7 +2655,6 @@ fn bucket_store_reports_all_layout_states_and_runtime_flags() {
                         address: BlockAddress::from_parts(2, 4, 4, Some(3), Some(40)),
                         dirty: false,
                         deleted: false,
-                        log_backed: true,
                     },
                 ),
             ]
@@ -2684,7 +2681,6 @@ fn bucket_store_reports_all_layout_states_and_runtime_flags() {
                         address: BlockAddress::from_parts(3, 0, 1, Some(4), Some(50)),
                         dirty: false,
                         deleted: false,
-                        log_backed: true,
                     },
                 ),
                 (
@@ -2696,7 +2692,6 @@ fn bucket_store_reports_all_layout_states_and_runtime_flags() {
                         address: BlockAddress::from_parts(3, 1, 1, Some(5), Some(51)),
                         dirty: false,
                         deleted: false,
-                        log_backed: true,
                     },
                 ),
             ]

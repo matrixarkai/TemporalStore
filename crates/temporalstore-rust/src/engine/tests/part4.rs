@@ -5427,7 +5427,6 @@ fn installing_the_same_block_twice_replaces_it() {
         address: BlockAddress::from_parts(1, 0, 4, Some(1), Some(30)),
         dirty: false,
         deleted: false,
-        log_backed: true,
     };
 
     let mut map = crate::engine::state::BlockIndexMap::default();

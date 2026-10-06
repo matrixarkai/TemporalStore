@@ -198,7 +198,7 @@ fn zset_pages(engine: &TemporalEngine) -> Vec<ZsetBlock> {
                 address: page.address.clone(),
                 dirty: page.dirty,
                 deleted: page.deleted,
-                log_backed: page.log_backed,
+                log_backed: page.log_backed(),
             });
         }
     }

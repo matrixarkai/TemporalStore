@@ -78,7 +78,6 @@ fn sibling(object_key: &str, field: &str, address: BlockAddress) -> BlockIndex {
         address,
         dirty: false,
         deleted: false,
-        log_backed: false,
     }
 }
 

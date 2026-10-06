@@ -1486,7 +1486,6 @@ fn sample_entry() -> BlockIndex {
         address: crate::block_store::BlockAddress::from_parts(1, 2, 4, Some(5), Some(6)),
         dirty: true,
         deleted: false,
-        log_backed: true,
     }
 }
 
@@ -1666,7 +1665,7 @@ fn the_model_spelling_did_not_move_on_the_wire_and_the_entry_lost_three_steps_in
         assert_eq!(page.component, decoded.component, "{label}: component moved");
         assert_eq!(page.dirty, decoded.dirty, "{label}: dirty moved");
         assert_eq!(page.deleted, decoded.deleted, "{label}: deleted moved");
-        assert_eq!(page.log_backed, decoded.log_backed, "{label}: log_backed moved");
+        assert_eq!(page.log_backed(), decoded.log_backed(), "{label}: log_backed moved");
     }
 
     // THE ABSENT EFFECT, as THREE numbers now, because three changes have taken bytes off this entry

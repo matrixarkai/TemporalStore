@@ -680,7 +680,6 @@ fn capture_the_stored_spelling_of_a_page_entry() {
             ),
             dirty: flags.0,
             deleted: flags.1,
-            log_backed: flags.2,
         }
     }
 
@@ -748,7 +747,7 @@ fn capture_the_stored_spelling_of_a_page_entry() {
                 entry.address.length(),
                 entry.dirty,
                 entry.deleted,
-                entry.log_backed
+                entry.log_backed()
             );
         }
     }
@@ -851,7 +850,6 @@ pub(super) fn page_fixture(
         ),
         dirty: flags.0,
         deleted: flags.1,
-        log_backed: flags.2,
     }
 }
 
@@ -1019,7 +1017,7 @@ fn an_index_written_before_this_change_loads_page_for_page_and_writes_back_the_s
                 page.address.length(),
                 page.dirty,
                 page.deleted,
-                page.log_backed,
+                page.log_backed(),
             )
         })
         .collect();
@@ -1768,7 +1766,7 @@ fn page_tuples(
                 page.address.length(),
                 page.dirty,
                 page.deleted,
-                page.log_backed,
+                page.log_backed(),
             )
         })
         .collect();
@@ -2032,7 +2030,7 @@ fn a_record_whose_page_handle_was_omitted_still_names_its_page_after_the_fold() 
             page.address.block_slab_id(),
             page.address.offset(),
             page.address.length(),
-            page.log_backed
+            page.log_backed()
         );
     }
 
@@ -2063,7 +2061,7 @@ fn a_record_whose_page_handle_was_omitted_still_names_its_page_after_the_fold() 
         assert_eq!(OFFSET, page.address.offset(), "{label}: offset moved");
         assert_eq!(LENGTH, page.address.length(), "{label}: length moved");
         assert!(
-            page.log_backed,
+            page.log_backed(),
             "{label}: the page must come back WAL-resident, which is the shape the hazard is about"
         );
         assert!(!page.deleted, "{label}: the page must not come back deleted");

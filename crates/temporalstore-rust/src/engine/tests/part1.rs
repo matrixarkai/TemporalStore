@@ -4358,7 +4358,7 @@ fn deep_compare_the_index_a_reconstruct_produces() {
                     page.address.length(),
                     page.dirty,
                     page.deleted,
-                    page.log_backed,
+                    page.log_backed(),
                     bucket.layout as u8 as u32,
                 ));
             }

@@ -519,7 +519,6 @@ fn page_at(component: Option<&str>, slab: u64, offset: u64, length: u64) -> Bloc
         ),
         dirty: false,
         deleted: false,
-        log_backed: false,
     }
 }
 

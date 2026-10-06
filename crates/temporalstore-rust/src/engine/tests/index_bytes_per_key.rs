@@ -100,7 +100,6 @@ fn probe_page(object: &str, component: Option<&str>, slot: u64) -> BlockIndex {
         address: BlockAddress::from_parts(1, slot * 64, 64, Some(slot), Some(slot)),
         dirty: false,
         deleted: false,
-        log_backed: false,
     }
 }
 

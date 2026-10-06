@@ -728,7 +728,6 @@ fn page_fixture() -> BlockIndex {
         ),
         dirty: false,
         deleted: false,
-        log_backed: false,
     }
 }
 

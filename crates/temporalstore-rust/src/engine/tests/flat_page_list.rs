@@ -321,7 +321,6 @@ fn page(object_key: &str, component: Option<&str>, slab: u64, offset: u64) -> Bl
         ),
         dirty: false,
         deleted: false,
-        log_backed: false,
     }
 }
 

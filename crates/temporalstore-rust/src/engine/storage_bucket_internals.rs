@@ -1435,7 +1435,6 @@ pub(super) fn rebuild_bucket_block_ownership(
                 address: entry.address,
                 dirty: entry.dirty,
                 deleted: entry.deleted,
-                log_backed: entry.log_backed,
             },
             &mut shard.bucket_index.block_slab_live,
         );
@@ -2382,7 +2381,6 @@ pub(super) fn reload_released_bucket(
                 // which is the state they were released in.
                 dirty: false,
                 deleted: false,
-                log_backed: entry.log_backed,
             },
             object_id,
         ));
@@ -3745,7 +3743,6 @@ pub(super) fn insert_container_tombstone_entry(
         address,
         dirty: true,
         deleted: true,
-        log_backed: false,
     };
     let bucket = shard
         .bucket_index
@@ -4091,7 +4088,6 @@ fn upsert_bucket_index_block_inner(
         address,
         dirty: entry.dirty,
         deleted: entry.deleted,
-        log_backed: entry.log_backed,
     };
     {
         let bucket = shard
@@ -4323,7 +4319,6 @@ pub(super) fn sync_bucket_index_object_blocks_with_mode(
             },
             dirty: entry.dirty,
             deleted: entry.deleted,
-            log_backed: entry.log_backed,
         };
         // The map assigns the handle; the lookup records the same one.
         let block_ref_key = bucket.insert_page(page.clone(), &mut shard.bucket_index.block_slab_live);
@@ -4952,7 +4947,6 @@ pub(super) fn rebuild_bucket_first_index(
                 address: entry.address,
                 dirty: block_dirty,
                 deleted: entry.deleted,
-                log_backed: entry.log_backed,
             },
             &mut bucket_index.block_slab_live,
         );
@@ -6349,7 +6343,6 @@ mod release_refusal_guards {
             address,
             dirty: false,
             deleted: false,
-            log_backed: false,
         }
     }
 

@@ -665,7 +665,6 @@ fn a_hash_page_naming_no_field_is_skipped_while_a_genuine_empty_field_name_is_ke
         address: BlockAddress::default(),
         dirty: false,
         deleted: false,
-        log_backed: false,
     };
     let encoded = serde_json::to_string(&nameless_entry).expect("a page entry serializes");
     assert!(

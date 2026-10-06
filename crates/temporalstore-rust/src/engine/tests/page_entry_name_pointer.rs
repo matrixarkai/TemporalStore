@@ -1401,7 +1401,6 @@ fn an_entry_names_its_object_from_its_own_terms() {
         address: BlockAddress::from_parts(1, 2, 3, Some(4), None),
         dirty: false,
         deleted: false,
-        log_backed: true,
     };
     // THE DERIVATION IS THE AUTHORITY, and this compares against it rather than against a second
     // copy -- there is no second copy, which is the change being recorded.

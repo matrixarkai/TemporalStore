@@ -942,7 +942,6 @@ fn past_the_ceiling_the_ordinal_is_left_unassigned_rather_than_panicking() {
                 address: at_ceiling,
                 dirty: false,
                 deleted: false,
-                log_backed: false,
             },
             block_slab_live,
         );

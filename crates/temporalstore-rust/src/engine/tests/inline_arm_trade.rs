@@ -302,7 +302,6 @@ fn one_real_page_free_standing() -> BlockIndex {
         address: crate::block_store::BlockAddress::from_parts(1, 64, 32, Some(7), Some(11)),
         dirty: false,
         deleted: false,
-        log_backed: false,
     }
 }
 

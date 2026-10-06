@@ -1756,7 +1756,6 @@ fn page_for(seed: u64) -> BlockIndex {
         ),
         dirty: false,
         deleted: false,
-        log_backed: false,
     }
 }
 
@@ -1775,7 +1774,6 @@ fn component_page(seed: u64, component: &str) -> BlockIndex {
         ),
         dirty: true,
         deleted: false,
-        log_backed: true,
     }
 }
 
@@ -1807,7 +1805,7 @@ fn assert_same_page(context: &str, handle: u64, left: &BlockIndex, right: &Block
         "{context}: page {handle} changed deleted"
     );
     assert_eq!(
-        left.log_backed, right.log_backed,
+        left.log_backed(), right.log_backed(),
         "{context}: page {handle} changed log_backed"
     );
 }

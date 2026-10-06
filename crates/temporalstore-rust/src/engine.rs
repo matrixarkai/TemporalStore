@@ -4079,9 +4079,6 @@ fn fold_delta_block_items(
         else {
             continue;
         };
-        // Computed before the address moves into the entry below. This is the same expression
-        // `in_log` used to carry as a field.
-        let log_backed = address.block_id().is_none();
         let bucket = bucket_index
             .bucket_map
             .entry(item.routing_bucket)
@@ -4115,7 +4112,6 @@ fn fold_delta_block_items(
                 address,
                 dirty: false,
                 deleted: false,
-                log_backed,
             },
             &mut bucket_index.block_slab_live,
         );

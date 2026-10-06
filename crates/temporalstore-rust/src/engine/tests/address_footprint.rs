@@ -2579,7 +2579,6 @@ fn two_buckets_holding_one_object_id_are_reported_as_one_object() {
                 address: BlockAddress::from_parts(1, offset, 64, Some(0), None),
                 dirty: false,
                 deleted: false,
-                log_backed: false,
             },
             &mut Default::default(),
         );
