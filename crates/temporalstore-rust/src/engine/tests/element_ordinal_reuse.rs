@@ -617,9 +617,16 @@ fn every_per_element_delete_leaves_one_tombstone_and_the_whole_object_delete_lea
         // `write_after_fold::a_gated_removal_leaves_every_other_member_whole_across_a_reload` and
         // `..::gated_removals_file_one_tombstone_per_distinct_element_and_do_not_accumulate`,
         // rather than by this count agreeing with whatever the code now does.
-        let collapsed = kind == "set"
-            && !whole_object
-            && crate::engine::container_index_files_one_entry_a_page();
+        // RESTATED FROM `kind == "set"`, WHICH WAS THE WHOLE COLLAPSED SET WHEN THIS WAS WRITTEN.
+        //
+        // `zset` and `list` are collapsed too now, so a hand-written kind here would leave their
+        // per-element arms in the `else` branch below asserting that the LIVE page count FALLS --
+        // which is exactly what a gated removal does not do, and the arm would have gone red for
+        // the right reason with the wrong explanation. Asking the shared predicate means the kind
+        // list lives in ONE place: a kind added to `index_entry_names_a_page` arrives here with
+        // it, and a kind held OUT of it (hash, today) keeps the ungated expectation.
+        let collapsed = !whole_object
+            && crate::engine::storage_bucket_internals::index_entry_names_a_page(kind);
         if collapsed {
             assert!(
                 tombstoned > 0,

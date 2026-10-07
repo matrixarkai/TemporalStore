@@ -22,14 +22,22 @@
 //! The reload gets `cache-reloaded`, so every byte it serves came off disk through the index it
 //! just decoded.
 //!
-//! # ALL FOUR CONTAINER KINDS, INCLUDING THE THREE THE GATE DOES NOT CLAIM TO TOUCH
+//! # ALL FOUR CONTAINER KINDS, AND THE ONE THE GATE DOES NOT CLAIM TO TOUCH
 //!
-//! The projection gates ONE arm -- `shard.sets`. Hash, zset and list emit one entry per element
-//! either way. They are written and read here anyway, for two reasons: a kind that is supposed to
-//! be unaffected is a CONTROL, and a control that is never read cannot detect the case where the
-//! flip moved something nobody expected it to. The four counts are printed side by side so the
-//! difference between "the gate changed this" and "the store is broken" is visible rather than
-//! inferred.
+//! RESTATED. This said the projection gates ONE arm and that "hash, zset and list emit one entry
+//! per element either way", which was true when the set arm was the whole collapse. `list` is
+//! collapsed now as well, so THE CONTROL IS TWO KINDS RATHER THAN THREE: `hash` and `zset`, both
+//! deliberately held out -- a zset component carries the SCORE, and four hash readers resolve
+//! through the index BY COMPONENT with no resident-map fallback. See `index_entry_names_a_page`
+//! for the measured statement of each.
+//!
+//! A kind that is supposed to be unaffected is a CONTROL, and a control that is never read cannot
+//! detect the case where the flip moved something nobody expected it to -- so the hash census is
+//! now ASSERTED on the gated arm and not merely printed. It was bound and left unread when this
+//! module was written, which the compiler reported as an unused variable and nobody acted on; a
+//! control nothing asserts is not a control. The four counts are still printed side by side so
+//! the difference between "the gate changed this" and "the store is broken" stays visible rather
+//! than inferred.
 //!
 //! # EVERY NUMBER IS PRINTED BEFORE IT IS ASSERTED, AND EVERY FLOOR IS ON REACHING THE PATH
 //!
@@ -416,6 +424,18 @@ fn a_gated_corpus_comes_back_whole_across_a_store_boundary_for_all_four_kinds() 
         seen.set_entries_reloaded,
         seen.hash_entries_reloaded,
     );
+    // THE CONTROL, ASSERTED. Both reader and writer are GATED in this arm, so this is the one
+    // place in the module that observes what a gated binary files for a kind held OUT of the
+    // collapse. It must still be one NAMED entry per field: if hash collapses here, the set and
+    // zset/list figures below stop being attributable to the gate's kind list and the four
+    // index-by-component hash readers have to have moved in the same change.
+    assert_eq!(
+        (ELEMENTS, ELEMENTS),
+        hash_entries,
+        "a GATED reader filed {} live hash entries of which {} name a field. Hash is held out of          the page-named set on purpose -- see `index_entry_names_a_page` -- so one named entry per          field is what a gated binary must still derive for it",
+        hash_entries.0,
+        hash_entries.1
+    );
     // THE GATED PROJECTION WROTE THIS STORE. Asserted on the WRITER's census, before any reader
     // could have re-derived it, so "a gated store" is established rather than assumed.
     assert!(
@@ -585,7 +605,11 @@ fn an_ungated_reader_re_derives_a_gated_store_and_so_needs_no_format_stamp() {
         holds.set
     );
 
-    // ---- THE THREE UNGATED KINDS ARE THE CONTROL. ----
+    // ---- THE ONE KIND HELD OUT OF THE COLLAPSE IS THE CONTROL. ----
+    //
+    // `list` was a third of this control and is a collapsed kind now, so what is left is `hash`
+    // and `zset`. They still do the control's job here: this arm's READER is ungated, so a short
+    // answer means the reload is broken rather than that the gate did anything.
     assert_eq!(
         ELEMENTS, serves.hash,
         "the hash served {} of {ELEMENTS}. The gate does not touch the hash arm, so a short hash \
@@ -595,8 +619,9 @@ fn an_ungated_reader_re_derives_a_gated_store_and_so_needs_no_format_stamp() {
     assert_eq!(
         (ELEMENTS, ELEMENTS),
         seen.hash_entries_reloaded,
-        "the hash has {} live entries of which {} name a field; the ungated kinds must still file \
-         one named entry per element, or 'unaffected' is not what happened to them",
+        "the hash has {} live entries of which {} name a field. This arm's reader is UNGATED, so \
+         every kind must file one named entry per element here -- a short count means the reload \
+         is broken, not that the collapse reached a kind it should not have",
         seen.hash_entries_reloaded.0,
         seen.hash_entries_reloaded.1
     );

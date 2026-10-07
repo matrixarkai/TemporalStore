@@ -3166,6 +3166,55 @@ fn visit_model_live_blocks(
     //
     // The kind is a `ModelKind`, not a string literal: see `model_kind_registry` above for why
     // an arm that could name its own kind is an arm the reporting registry can fall behind.
+    /// ONE ENTRY PER DISTINCT PAGE, CARRYING NO COMPONENT -- the whole of the collapse, written
+    /// once for every kind that takes it.
+    ///
+    /// # THE DEDUP IS LOAD-BEARING FOR CORRECTNESS, NOT ONLY FOR THE COUNT
+    ///
+    /// The entries emitted here carry no component, and `state::block_index_handle` -- the key
+    /// `block_index` is still keyed by -- HASHES the component along with the object key and five
+    /// address terms. Two entries of one object that agreed on every one of those AND carried
+    /// `None` would hash to one handle, and the second `insert` would displace the first: a handle
+    /// collision does not fail, it returns a DIFFERENT page. That is the recorded 39-of-40 element
+    /// loss, and it is why this is not merely a count fix.
+    ///
+    /// What makes it unreachable is exactly this set: at most one entry per distinct
+    /// `(slab, offset, length)` means no two emitted entries share an address, so no two can share
+    /// a handle. Deduping on that NARROW triple while the handle hashes the WIDER tuple (`block_id`
+    /// and `generation` as well) is conservative in the safe direction -- two entries that survive
+    /// a narrow dedup necessarily differ in the wide one too, so this set can only ever emit FEWER
+    /// entries than the handle is able to tell apart, never more. There is a matching note at
+    /// `block_index_handle` saying it still hashes a field this path files as `None`.
+    ///
+    /// # WHY IT IS ONE FUNCTION AND NOT ONE BLOCK PER ARM
+    ///
+    /// Three copies of a dedup is how two of them come to agree and the third does not, and the
+    /// third would not fail loudly: it would lose elements only for objects whose elements share a
+    /// page, which is the case this whole series is about. The set arm spelled this inline until
+    /// now and calls this instead, so there is exactly ONE dedup in the projection and a kind
+    /// added later cannot be given a subtly different one.
+    fn emit_one_entry_a_page<'addr>(
+        kind: ModelKind,
+        key: &str,
+        addresses: impl Iterator<Item = &'addr BlockAddress>,
+        accept: &impl Fn(&str, &BlockAddress) -> bool,
+        emit: &mut impl FnMut(ModelKind, &str, Option<&str>, &BlockAddress),
+    ) {
+        let mut emitted_pages: std::collections::BTreeSet<(u64, u64, u64)> =
+            std::collections::BTreeSet::new();
+        for address in addresses {
+            if accept(key, address)
+                && emitted_pages.insert((
+                    address.block_slab_id(),
+                    address.offset(),
+                    address.length(),
+                ))
+            {
+                emit(kind, key, None, address);
+            }
+        }
+    }
+
     fn arms(
         shard: &ShardState,
         accept: impl Fn(&str, &BlockAddress) -> bool,
@@ -3176,26 +3225,66 @@ fn visit_model_live_blocks(
                 emit(ModelKind::String, key, None, address);
             }
         }
+        // WHICH KINDS FILE A PAGE-NAMED ENTRY, ASKED ONCE FOR THE WHOLE WALK.
+        //
+        // `index_entry_names_a_page` is the single authority and every filing predicate in the
+        // engine reads it, so the projection cannot come to disagree with
+        // `upsert_bucket_index_block_inner` or `fold_delta_block_items` about what an entry is
+        // filed under. That is four env reads per SHARD walk rather than one; asking per kind is
+        // what keeps the kind list in ONE place instead of restating it here as well.
+        //
+        // HASH AND ZSET ARE ASKED TOO, AND TODAY THEY BOTH ANSWER FALSE. They are spelled as
+        // questions rather than left out so that widening the predicate is the only edit their
+        // collapse needs in this function -- see `index_entry_names_a_page` for the measured
+        // reason each is held out, neither of which is about this walk.
+        let hash_names_a_page = index_entry_names_a_page(ModelKind::Hash.as_str());
+        let zset_names_a_page = index_entry_names_a_page(ModelKind::Zset.as_str());
+        let list_names_a_page = index_entry_names_a_page(ModelKind::List.as_str());
         for (key, fields) in &shard.hashes {
-            for (field, address) in fields.iter() {
-                if accept(key, address) {
-                    emit(ModelKind::Hash, key, Some(field.as_str()), address);
+            if hash_names_a_page {
+                emit_one_entry_a_page(ModelKind::Hash, key, fields.values(), &accept, &mut emit);
+            } else {
+                for (field, address) in fields.iter() {
+                    if accept(key, address) {
+                        emit(ModelKind::Hash, key, Some(field.as_str()), address);
+                    }
                 }
             }
         }
         for (key, members) in &shard.zsets {
-            for (member, (biased, address)) in members.iter() {
-                if accept(key, address) {
-                    let component = format!("{biased:016x}{}", hex::encode(member));
-                    emit(ModelKind::Zset, key, Some(component.as_str()), address);
+            if zset_names_a_page {
+                // UNREACHED TODAY: `index_entry_names_a_page` answers false for zset, because a
+                // zset component carries the SCORE and dropping it deletes data. Kept so the arm
+                // exists the moment the score moves off the component.
+                emit_one_entry_a_page(
+                    ModelKind::Zset,
+                    key,
+                    members.values().map(|(_biased, address)| address),
+                    &accept,
+                    &mut emit,
+                );
+            } else {
+                for (member, (biased, address)) in members.iter() {
+                    if accept(key, address) {
+                        let component = format!("{biased:016x}{}", hex::encode(member));
+                        emit(ModelKind::Zset, key, Some(component.as_str()), address);
+                    }
                 }
             }
         }
         for (key, elements) in &shard.lists {
-            for (seq, address) in elements.iter() {
-                if accept(key, address) {
-                    let component = format!("{:016x}", (*seq as u64).wrapping_sub(i64::MIN as u64));
-                    emit(ModelKind::List, key, Some(component.as_str()), address);
+            if list_names_a_page {
+                // AND THE GATED ARM DROPS A `format!` PER ELEMENT. The ungated arm below renders
+                // a biased sequence word to sixteen hex digits, once per element on every walk,
+                // for a name the collapsed entry does not carry -- so the allocation goes with it
+                // rather than being built and then discarded.
+                emit_one_entry_a_page(ModelKind::List, key, elements.values(), &accept, &mut emit);
+            } else {
+                for (seq, address) in elements.iter() {
+                    if accept(key, address) {
+                        let component = format!("{:016x}", (*seq as u64).wrapping_sub(i64::MIN as u64));
+                        emit(ModelKind::List, key, Some(component.as_str()), address);
+                    }
                 }
             }
         }
@@ -3226,37 +3315,12 @@ fn visit_model_live_blocks(
         // each one. And the ungated arm is left byte-identical, including its allocation
         // behaviour: this walk is deliberately careful not to build a `String` for a block the
         // caller will discard, so the gated arm's bookkeeping is created only when it is used.
-        let one_entry_a_page = super::container_index_files_one_entry_a_page();
+        let set_names_a_page = index_entry_names_a_page(ModelKind::Set.as_str());
         for (key, members) in &shard.sets {
-            if one_entry_a_page {
-                // THIS DEDUP IS LOAD-BEARING FOR CORRECTNESS, NOT ONLY FOR THE COUNT.
-                //
-                // The entries emitted here carry no component, and `state::block_index_handle`
-                // -- the key `block_index` is still keyed by -- HASHES the component along with
-                // the object key and five address terms. Two entries of one object that agreed on
-                // every one of those AND carried `None` would hash to one handle, and the second
-                // `insert` would displace the first: a handle collision does not fail, it returns
-                // a DIFFERENT page.
-                //
-                // What makes that unreachable is exactly this set: emitting at most one entry per
-                // distinct `(slab, offset, length)` means no two emitted entries share an address,
-                // so no two can share a handle. Remove the dedup and `None` components stop being
-                // safe -- quietly, and only for objects whose elements share a page, which is the
-                // case this whole series is about. There is a matching note at
-                // `block_index_handle` saying it still hashes a field this path files as `None`.
-                let mut emitted_pages: std::collections::BTreeSet<(u64, u64, u64)> =
-                    std::collections::BTreeSet::new();
-                for (_member, address) in members.iter() {
-                    if accept(key, address)
-                        && emitted_pages.insert((
-                            address.block_slab_id(),
-                            address.offset(),
-                            address.length(),
-                        ))
-                    {
-                        emit(ModelKind::Set, key, None, address);
-                    }
-                }
+            if set_names_a_page {
+                // The dedup, and the note explaining why it is correctness and not bookkeeping,
+                // both live on `emit_one_entry_a_page` now -- shared with the zset and list arms.
+                emit_one_entry_a_page(ModelKind::Set, key, members.values(), &accept, &mut emit);
             } else {
                 for (member, address) in members.iter() {
                     if accept(key, address) {
@@ -3544,11 +3608,49 @@ pub(super) struct ObjectDeletionFiled(());
 /// recorded container; this one exists so that those that are cannot skip it and still compile.
 /// Whether an index entry for this kind takes its identity from the PAGE rather than the ELEMENT.
 ///
-/// # WHY IT IS SCOPED TO ONE KIND AND NOT TO THE GATE ALONE
+/// # THE SET OF KINDS, AND WHY HASH AND ZSET ARE NOT IN IT
 ///
-/// `visit_model_live_blocks` reads the gate ONCE and only its SET arm consumes the answer: hash,
-/// zset and list emit one named entry per element either way. So "the gate is on" and "this entry
-/// names a page" are different questions, and every filing predicate needs the second.
+/// RESTATED. This said "only its SET arm consumes the answer: hash, zset and list emit one named
+/// entry per element either way". `list` is here too now, and widening the body is the change --
+/// every filing predicate reads THIS function, so the projection,
+/// `upsert_bucket_index_block_inner` and `fold_delta_block_items` move together rather than being
+/// talked into agreeing.
+///
+/// TWO OF THE THREE REMAINING CONTAINER KINDS WERE ATTEMPTED AND REFUSED ON MEASUREMENT. Both
+/// refusals are recorded here because each is a different kind of obstacle, and neither is about
+/// sequencing:
+///
+///   * `zset` -- ITS COMPONENT IS NOT A NAME, IT IS THE SCORE. A zset component is
+///     `{biased_score:016x}{hex(member)}`, so the entry's name is the only copy of an element's
+///     score outside `shard.zsets`. Dropping it DELETES DATA rather than a label: a member whose
+///     durable entry a fold has not delivered cannot be rebuilt from its page at all, measured as
+///     `Some(3.0)` written and `None` served. And a RESCORE is an in-place rewrite from this
+///     function's side -- the old element key is tombstoned while its live entry is not superseded
+///     -- which left TWO live entries for one member at one score. Attempting it turned 12 tests
+///     red across 5 modules (`element_ordinal_reuse`, `durable_outranks_derived`,
+///     `container_tombstone_entry`, `container_page_ordinal`, `container_member_shadow`), several
+///     of them control arms that panic with "a zset page is named by its component". Converting
+///     zset means first taking the score OUT of the component.
+///   * `hash` -- FOUR OF ITS READERS RESOLVE THROUGH THE INDEX BY COMPONENT, with no resident-map
+///     fallback. `read_bucket_index_value` -> `bucket_index_block_address` requires
+///     `page.component.as_deref() == component` on every branch, so a nameless entry makes a
+///     present field unreachable: `HashGet` answers MISSING for a field that is there,
+///     `HashIncrBy` reads that miss as `unwrap_or_default()` and restarts the counter at zero,
+///     `HashLen` counts entries and so reports the PAGE count, and `HashGetAll` survives only
+///     because it already serves the union with `shard.hashes`. Hash is also the one container
+///     kind that rewrites an element IN PLACE -- `HashSet` on an existing field keeps the
+///     component and takes a new address -- which is the shape the paragraph below says an
+///     address-keyed predicate mishandles. Converting hash means first moving those four readers
+///     onto `shard.hashes`.
+///
+/// `list` IS THE ONE THAT CONVERTS, and it converts because its component carries nothing the
+/// engine reads back out of the entry. The sequence that orders a list lives in `shard.lists`,
+/// which is keyed BY that sequence, and both list readers (`ListLen`, `ListRange`) read the
+/// resident map. `list` also has no `LSET`, `LINSERT` or `LREM`, so it never rewrites an element in
+/// place and the two-live-entries shape cannot arise for it.
+///
+/// Adding `Hash` or `Zset` to the list below without doing the work named above is the lethal-low
+/// direction: it reads as a smaller index and serves a short object.
 ///
 /// MEASURED, which is why the scope is not a matter of taste: `string`, `control_state` and
 /// `context_node` file NO element name with exactly ONE page per object, and for them the
@@ -3562,7 +3664,12 @@ pub(super) struct ObjectDeletionFiled(());
 /// them come to agree and the rest do not, which is the shape this series has already hit once with
 /// two filers disagreeing.
 pub(super) fn index_entry_names_a_page(kind: &str) -> bool {
-    kind == ModelKind::Set.as_str() && super::container_index_files_one_entry_a_page()
+    if !super::container_index_files_one_entry_a_page() {
+        return false;
+    }
+    // Spelled against `ModelKind::as_str` rather than against string literals so a kind renamed in
+    // the registry cannot leave this list silently matching nothing.
+    kind == ModelKind::Set.as_str() || kind == ModelKind::List.as_str()
 }
 
 /// The name an index ENTRY IS FILED UNDER -- `None` for a gated container, where the page is the

@@ -4553,15 +4553,24 @@ pub(crate) const TS_CONTAINER_ONE_ENTRY_A_PAGE: &str = "TS_CONTAINER_ONE_ENTRY_A
 ///
 /// # WHAT IT DOES TODAY
 ///
-/// FIVE readers, not the one this said when it was written: the SET arm of
-/// `visit_model_live_blocks` (the projection that derives the page index from the model maps), the
-/// block ordinal and the set listing in `execute_on_shard`, and the two removal arms here. With
-/// the gate on, a set object emits one entry per distinct page address and no component; with it
-/// off, one entry per member as before.
+/// SIX readers, not the one this said when it was written and not the five it said after that:
+/// `index_entry_names_a_page` (the shared predicate that decides WHICH KINDS this applies to, and
+/// the one every filing predicate asks), the container arms of `visit_model_live_blocks` (the
+/// projection that derives the page index from the model maps), the block ordinal and the set
+/// listing in `execute_on_shard`, and the two removal arms here.
 ///
-/// The other three container kinds still emit one entry per element either way -- the projection
-/// gates the set arm only -- which is what makes them the control in the test above: a short
-/// answer for hash, zset or list is a broken reload rather than anything this gate did.
+/// THE KIND LIST IS NO LONGER "SET". `set` and `list` emit one entry per distinct page address and
+/// no component with the gate on, and one entry per element with it off. Do not read the kind list
+/// out of this paragraph: `index_entry_names_a_page` is the authority and this is a description of
+/// it.
+///
+/// `hash` AND `zset` ARE HELD OUT, both on measurement rather than on sequencing, and for
+/// different reasons -- a zset component carries the SCORE, so dropping it deletes data rather
+/// than a name, while four hash readers resolve through the index BY COMPONENT with no
+/// resident-map fallback, so a nameless hash entry makes a present field unreachable. The full
+/// statement of each, with the numbers, is on `index_entry_names_a_page`. That leaves hash and
+/// zset as the control the three non-set kinds used to be between them: a short answer for either
+/// is a broken reload rather than anything this gate did.
 ///
 /// # AND IT DROPS THE NAME FROM LIVE ENTRIES ONLY. TOMBSTONES KEEP IT.
 ///
