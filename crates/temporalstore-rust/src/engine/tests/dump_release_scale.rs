@@ -19,38 +19,48 @@
 //!
 //! ```text
 //!   records   the dump writes   it releases   written per byte released
-//!    20,000       1,584,685 B     160,229 B                       9.89
-//!   200,000      13,499,807 B     160,271 B                      84.23
+//!    20,000         937,638 B     148,229 B                     6.3256
+//!   200,000       7,730,157 B     148,271 B                    52.1353
 //! ```
 //!
-//! THE RELEASE IS PROPORTIONAL TO THE WORK. 160,229 B against 160,271 B -- the same 4,000 records
+//! THE RELEASE IS PROPORTIONAL TO THE WORK. 148,229 B against 148,271 B -- the same 4,000 records
 //! written since the previous dump, priced the same at ten times the corpus. The index log goes
-//! back to ONE piece of 69 bytes at both sizes, so the bound the store rests on is reachable, and
-//! reaching it costs nothing extra as the store grows.
+//! back to ONE piece at both sizes, so the bound the store rests on is reachable, and reaching it
+//! costs nothing extra as the store grows.
 //!
-//! THE COST IS PROPORTIONAL TO THE STORE. A dump serializes the whole served index and writes it
-//! durably (`engine/persistence.rs`, step 2 of `dump_index_catalog_anchored`), so the bytes it
-//! writes are the shard's, not the round's: 1,584,329 B of base index at 20,000 records and
-//! 13,499,438 B at 200,000. That is a durability decision and this does not argue with it. What
-//! it measures is that the two halves scale differently, so the price of the bound climbs with
-//! the corpus while what it buys does not.
+//! THE COST IS AFFINE IN THE STORE -- A PER-RECORD TERM PLUS A FIXED ONE. A dump serializes the
+//! whole served index and writes it durably (`engine/persistence.rs`, step 2 of
+//! `dump_index_catalog_anchored`), so the bytes it writes are the shard's, not the round's:
+//! 929,480 B of base index at 24,000 records held and 9,050,875 B at 240,000. Fitted on the two
+//! PROPORTIONAL arms, a dump costs 37.598 B per record held PLUS about 35,291 B that does not
+//! move with the corpus, and that line predicts the held-out FIXED arm at 204,000 records held to
+//! 0.322%. The fixed term is visible without any fit as well: everything a dump writes that is
+//! NOT the base index comes to 8,158 / 8,157 / 7,849 / 7,876 B across the four arms -- flat
+//! across a 10x corpus. That is a durability decision and this does not argue with it. What it
+//! measures is that the two halves scale differently, so the price of the bound climbs with the
+//! corpus while what it buys does not.
 //!
 //! BOTH REGIMES, BECAUSE THE CADENCE IS A KNOB. `TS_INDEX_DUMP_WAL_GAP_BYTES` decides how much
 //! index log accrues before a dump fires, which is the same thing as how many records a dump has
 //! to show for itself.
 //!
 //! - FIXED GAP -- what ships: 1 MiB whatever the store holds, so a dump always releases about the
-//!   same amount. Written per byte released goes 9.89 -> 84.23, a factor of 8.52 over a corpus
-//!   factor of 10.
-//! - PROPORTIONAL GAP -- the gap grows with the store. Written per byte released is 9.89 at
-//!   20,000 and 9.89 at 200,000: FLAT to four figures, and a measurement taken only here would
-//!   report a dump whose price does not move with the corpus at all.
+//!   same amount. Written per byte released goes 6.3256 -> 52.1353, a factor of 8.242 over a
+//!   corpus factor of 10.
+//! - PROPORTIONAL GAP -- the gap grows with the store, so the release grows with it and the
+//!   per-record term cancels. What is left is the FIXED term amortised over a release ten times
+//!   larger, so this arm does not climb -- it DECLINES slightly, 6.3256 -> 6.1125 (0.9663x). It
+//!   is BOUNDED, not flat, and that distinction is the whole content of the affine fit above: a
+//!   cost truly proportional to the store, with no fixed term, would make this arm flat to four
+//!   figures. A measurement taken only here would still report a dump whose price does not move
+//!   with the corpus.
 //!
-//! The shipped default is the first one. Derived from the two rates below -- 40.05 B of index log
-//! per record, flat at both sizes, and the base index the dump writes -- the 1 MiB gap admits
-//! about 26,200 records between dumps, and the base index first exceeds that 1 MiB somewhere
-//! between 13,200 and 15,600 records. Past that point every dump the shipped cadence fires writes
-//! more bytes than the cadence will ever let it release.
+//! The shipped default is the first one. Derived from the two rates below -- 37.048 B of index
+//! log per record, flat at both sizes, and the base index the dump writes -- the 1 MiB gap admits
+//! about 28,300 records between dumps, and the base index, 37.599 B per record held plus 27,103 B
+//! fitted over the same two arms, first exceeds that 1 MiB at about 27,200 records. Past that
+//! point every dump the shipped cadence fires writes more bytes than the cadence will ever let it
+//! release: at 200,000 records the base index alone is 7.365 times what the gap can release.
 //!
 //! CAN IT KEEP UP. `a_store_written_between_dumps_returns_to_its_floor_and_pays_the_whole_store`
 //! writes 4,000 records and dumps, five times over. The log returns to 69 bytes every round and
@@ -139,6 +149,67 @@ const ROLL_BYTES: u64 = 8 * 1024;
 /// `TS_INDEX_DUMP_WAL_GAP_BYTES`' shipped default, quoted here so the derived cadence figures in
 /// the header have their input written down beside them.
 const SHIPPED_GAP_BYTES: u64 = 1024 * 1024;
+
+/// WHAT THE DRIFT ON THESE COUNTS ACTUALLY IS, measured, because all three bands below are set
+/// against it rather than guessed. It is NOT uniform across the arms, and the SMALL arms alone
+/// understate it by four orders of magnitude -- which is the trap this comment exists to close.
+///
+/// At SMALL the apparatus is all but deterministic. The small FIXED arm and the small
+/// PROPORTIONAL arm are independent runs of an IDENTICAL configuration -- same corpus, same
+/// suffix, separate temporary directories -- and their costs came out 937,638 B against
+/// 937,637 B: ONE byte, about 1e-6, with the released figure identical to the byte.
+///
+/// At LARGE it is far bigger and it is ONE-SIDED. The 200,000-record FIXED arm reads 52.1353
+/// bytes written per byte released here and has been read at 52.2800 on another run of this
+/// tree -- 0.28%, attributable entirely to the NUMERATOR. Across those runs the released side is
+/// byte-identical (`index_log` 148,271 B, WAL 254,664 B) while the dump writes 21,458 B more,
+/// which is 0.107 B per record; `kernel` on that arm is 99.90% `base_index`, so the movement is
+/// in what a dump WRITES and not in what it frees. The denominator is ruled out independently:
+/// `index_log` moves 42 B across a TEN-FOLD corpus here, where shifting the ratio from 52.1353
+/// to 52.2800 by the denominator alone would take 412 B.
+///
+/// So 0.28% per large arm is what the bands below clear, not the 1e-6 the small arms suggest. It
+/// is NAMED here rather than absorbed: a band has to clear it or this test flakes, but the
+/// movement is a real one-sided effect in the bytes a dump writes, and a guard on it belongs on
+/// the numerator -- `what_a_dump_writes_is_the_base_index` -- rather than on this ratio, which
+/// cannot tell a numerator that grew from a denominator that shrank.
+///
+/// Band on the affine fit's HELD-OUT prediction. The fit is two points, so it has no residual of
+/// its own and every bit of its falsifiable content is the arm it does not see: the FIXED arm at
+/// 204,000 records held, predicted 7,705,232 B against a measured 7,730,157 B, 0.322% off, which
+/// is the base index's own mild non-linearity. The two large arms drift independently, and the
+/// fit carries 5/6 of the proportional arm's drift into the prediction, so the error this
+/// assertion actually sees is 0.322% give or take 0.553% -- up to about 0.88% when the two drifts
+/// oppose. 3% clears that worst case by 3.4x and is still 1/240th of the 724% climb the subject
+/// arm has to show, so it refuses a regime change while tolerating the creep.
+///
+/// Re-measured across a base change that was expected to move these counts and did not: turning
+/// one index entry a page on by default (#2117) left every arm's cost, base index and released
+/// figure identical to the byte, the model error at 0.3224% and the decline at 0.9663x, with the
+/// fitted intercept 35,292 B against 35,291 B -- one byte, the small-arm drift arriving in the
+/// fit.
+const AFFINE_MODEL_BAND: f64 = 0.03;
+/// Band on the fitted FIXED term, as a share of what a dump costs at SMALL. Measured 3.764%
+/// (about 35,291 B of 937,638 B).
+///
+/// This is the term that makes the cost affine rather than proportional, so the FLOOR is what
+/// refuses a cost that has become proportional and the CEILING refuses a fixed term big enough to
+/// mean the dump had stopped writing the whole store. It is the same claim as the decline band
+/// below, counted once at the cost and once at the ratio: a 1% fixed term declines 0.9912x over
+/// this corpus step and a 10% one declines 0.9102x. The 0.28% drift on the large arm moves this
+/// share by about 0.30 of a percentage point, so the floor clears that by 9x and the ceiling by
+/// 21x.
+const FIXED_TERM_SHARE_FLOOR: f64 = 0.01;
+const FIXED_TERM_SHARE_CEILING: f64 = 0.10;
+/// Band on the PROPORTIONAL arm's written-per-byte-released, large over small. Measured 0.9663x.
+///
+/// This arm was asserted FLAT to within 1% until 2026-10-06, which is false about a correct
+/// store: an affine cost over a proportional release DECLINES as the fixed term is amortised. The
+/// CEILING is therefore the live edge here -- it is what refuses flatness -- and the FLOOR refuses
+/// a climb, which is the control's original job. Only the large arm's numerator moves this ratio,
+/// at 0.28%, and the measured value sits 2.87% below the ceiling -- about 10.6x that drift.
+const PROPORTIONAL_DECLINE_FLOOR: f64 = 0.90;
+const PROPORTIONAL_DECLINE_CEILING: f64 = 0.995;
 
 /// Set the rolling threshold for THIS THREAD and put it back on drop, panic included.
 struct RollingThreshold;
@@ -692,18 +763,114 @@ fn what_a_dump_costs_and_releases_at_two_corpus_sizes() {
         small_fixed.corpus,
         large_fixed.corpus
     );
-    // CONTROL ARM. Its own failure message, because a flat proportional arm is what proves the
-    // climb above belongs to the regime and not to the apparatus: if BOTH arms climbed, the
-    // measurement would be saying something about this test rather than about the cadence.
+    // ------------------------------------------------------------------ the affine cost law
+    //
+    // A dump's cost is AFFINE in the records the store holds when it runs -- a per-record term for
+    // the base index it serializes, plus a term that does not move with the corpus at all. The
+    // model is fitted HERE, on the CONTROL arms' own two points, and then used to predict the
+    // SUBJECT arm measured above, so both arms are priced by ONE model taken from THIS run. The
+    // held-out point is the FIXED arm at 204,000 records held, which the fit never sees.
+    //
+    // A two-point fit has no residual of its own, so the held-out arm is where all of this
+    // assertion's content is. A cost that had stopped being `per_record * n + fixed` -- gone
+    // quadratic, or stopped writing the whole store -- is what moves it.
+    let records_held = |measured: &DumpAtSize| (measured.corpus + measured.suffix) as f64;
+    let per_record = (large_proportional.kernel_bytes_written as f64
+        - small_proportional.kernel_bytes_written as f64)
+        / (records_held(large_proportional) - records_held(small_proportional));
+    let fixed_term = small_proportional.kernel_bytes_written as f64
+        - per_record * records_held(small_proportional);
+    let fixed_term_share = fixed_term / small_proportional.kernel_bytes_written as f64;
+    let predicted_large_fixed = per_record * records_held(large_fixed) + fixed_term;
+    let model_error = (predicted_large_fixed - large_fixed.kernel_bytes_written as f64).abs()
+        / large_fixed.kernel_bytes_written as f64;
+    // Every ratio below written with BOTH its arms -- numerator and denominator, in bytes, at the
+    // record count they were taken at -- because a written-per-byte-released figure is the one
+    // number here that can be read two ways.
+    eprintln!(
+        "DUMP AFFINE FIT (fitted on the proportional arms): {per_record:.3} B per record held + \
+         {fixed_term:.0} B fixed; the fixed term is {:.3}% of the {} B a dump costs at {:.0} \
+         records held",
+        fixed_term_share * 100.0,
+        small_proportional.kernel_bytes_written,
+        records_held(small_proportional),
+    );
+    eprintln!(
+        "DUMP AFFINE CONTROL ARMS: {} B written over {} B released at {:.0} records held -> \
+         {proportional_ratio_small:.4}; {} B over {} B released at {:.0} records held -> \
+         {proportional_ratio_large:.4} ({:.4}x)",
+        small_proportional.kernel_bytes_written,
+        small_proportional.index_log_released,
+        records_held(small_proportional),
+        large_proportional.kernel_bytes_written,
+        large_proportional.index_log_released,
+        records_held(large_proportional),
+        proportional_ratio_large / proportional_ratio_small,
+    );
+    eprintln!(
+        "DUMP AFFINE HELD OUT: the fixed arm at {:.0} records held predicted \
+         {predicted_large_fixed:.0} B, measured {} B over {} B released -> \
+         {fixed_ratio_large:.4}; model error {:.4}%",
+        records_held(large_fixed),
+        large_fixed.kernel_bytes_written,
+        large_fixed.index_log_released,
+        model_error * 100.0,
+    );
     assert!(
-        (proportional_ratio_large - proportional_ratio_small).abs() / proportional_ratio_small
-            < 0.01,
-        "CONTROL: with the gap grown in proportion to the store, a dump wrote \
+        model_error < AFFINE_MODEL_BAND,
+        "AFFINE: a line through the two proportional arms -- {per_record:.3} B per record held \
+         plus {fixed_term:.0} B fixed -- predicts {predicted_large_fixed:.0} B for the fixed arm \
+         at {:.0} records held, which measured {} B over {} B released: {:.4}% off, past the \
+         {:.1}% band. What moves this is a dump whose cost has stopped being a per-record term \
+         plus a fixed one",
+        records_held(large_fixed),
+        large_fixed.kernel_bytes_written,
+        large_fixed.index_log_released,
+        model_error * 100.0,
+        AFFINE_MODEL_BAND * 100.0
+    );
+    assert!(
+        fixed_term_share > FIXED_TERM_SHARE_FLOOR && fixed_term_share < FIXED_TERM_SHARE_CEILING,
+        "AFFINE: the fitted fixed term is {fixed_term:.0} B, {:.3}% of the {} B a dump costs at \
+         {:.0} records held, outside {:.1}%..{:.1}%. This is the term that makes the cost AFFINE \
+         rather than proportional: at zero the control arm below would be exactly FLAT, and the \
+         only reason it declines is that this term is being amortised over a larger release",
+        fixed_term_share * 100.0,
+        small_proportional.kernel_bytes_written,
+        records_held(small_proportional),
+        FIXED_TERM_SHARE_FLOOR * 100.0,
+        FIXED_TERM_SHARE_CEILING * 100.0
+    );
+
+    // CONTROL ARM, restated 2026-10-06. It asserted this arm was FLAT to within 1%, which is
+    // false about a correct store, and it was the only failure left in this suite.
+    //
+    // An AFFINE cost over a PROPORTIONAL release is not flat. The per-record term cancels against
+    // the release and what is left is the fixed term divided by a release ten times larger, so
+    // the ratio FALLS a little as that term is amortised -- by the amount the fitted share above
+    // accounts for, 0.9663x measured against 0.9912x at a 1% fixed term and 0.9102x at a 10% one.
+    // The band and the share band are one claim counted twice, once at the cost and once here.
+    //
+    // The control still does the job it was written for. The SUBJECT climbs 8.242x and this arm
+    // does not climb at all, and that contrast is what makes the climb the CADENCE rather than
+    // this test's apparatus: if BOTH arms climbed, the measurement would be saying something
+    // about the fixture. Both edges are load-bearing -- the CEILING refuses a flat arm, which is
+    // what a cost proportional to the store with no fixed term would produce, and the FLOOR
+    // refuses a climb.
+    let proportional_decline = proportional_ratio_large / proportional_ratio_small;
+    assert!(
+        proportional_decline > PROPORTIONAL_DECLINE_FLOOR
+            && proportional_decline < PROPORTIONAL_DECLINE_CEILING,
+        "CONTROL: with the release grown in proportion to the store, a dump wrote \
          {proportional_ratio_small:.4} bytes per byte released at {} records and \
-         {proportional_ratio_large:.4} at {} -- this arm is supposed to be FLAT, and a climb here \
-         means the fixed arm's climb is not the cadence",
+         {proportional_ratio_large:.4} at {} -- {proportional_decline:.4}x, outside {:.3}..{:.3}. \
+         Above the ceiling this arm has gone FLAT, which would say a dump's cost had become \
+         proportional to the store with no fixed term left to amortise; below the floor it is \
+         moving with the corpus, and the fixed arm's climb is then not the cadence",
         small_proportional.corpus,
-        large_proportional.corpus
+        large_proportional.corpus,
+        PROPORTIONAL_DECLINE_FLOOR,
+        PROPORTIONAL_DECLINE_CEILING
     );
 
     // ----------------------------------------------------------------- the shipped cadence
