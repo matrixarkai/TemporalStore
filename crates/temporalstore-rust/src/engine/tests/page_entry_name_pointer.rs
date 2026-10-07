@@ -521,7 +521,17 @@ fn two_one_word_name_slots_take_the_page_entry_from_fifty_six_to_forty() {
     let projected_sum: usize = projected_fields.iter().map(|(_, width, _)| width).sum();
 
     // --- THE MIRROR IS THE ENTRY WITH TWO SLOTS SWAPPED. ---
-    let untouched = ["model_id", "address", "dirty", "deleted", "log_backed"];
+    // A HAND-WRITTEN SUBJECT LIST, which is why it went stale when the field set moved: it named
+    // a field that no longer exists and the lookup below panicked rather than the comparison
+    // failing. The two locating fields are in BOTH tables identically, so they belong here too.
+    let untouched = [
+        "model_id",
+        "address",
+        "dirty",
+        "deleted",
+        "kind",
+        "routing_bucket",
+    ];
     let mut compared = 0usize;
     for name in untouched {
         let here = live_fields
@@ -1716,7 +1726,11 @@ fn the_object_ordinal_and_the_packing_do_not_follow_and_here_is_what_they_would_
     //     -- leaves out `model_id` and the three flags. With them it is 22, which is what the packed
     //     mirror above measures. ---
     let quoted_floor = 8 + 4 + 2 + 1 + 1 + 2;
-    let ours_on_top = size_of::<StoredModelKind>() + 2 * size_of::<bool>();
+    // THREE flags, and they are the PACKED MIRROR's own -- not the live entry's two. This line
+    // describes `MirrorEntryBothOrdinalsPacked`, so it did not move when the live entry's flag
+    // count did. A sweep that matched the arithmetic rather than the structure it describes got
+    // this wrong once already.
+    let ours_on_top = size_of::<StoredModelKind>() + 3 * size_of::<bool>();
     println!(
         "\n  quoted floor {quoted_floor} B + model_id and three flags {ours_on_top} B = {} B, and \
          the packed mirror measures {} B",

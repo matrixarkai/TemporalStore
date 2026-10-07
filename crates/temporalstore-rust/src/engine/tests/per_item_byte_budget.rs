@@ -132,12 +132,16 @@ fn budget() -> Vec<Budgeted> {
             //                        seventeen-element set `model_kind_registry` declares
             // component            : Option<Arc<str>>
             // address              : BlockAddress
-            // dirty/deleted/log_backed : bool x 3
+            // dirty/deleted       : bool x 2
+            // kind                : IndexItemKind, ONE BYTE, absorbed from the index-log row
+            // routing_bucket      : u32, absorbed from the same row
             fields: arc_str
                 + size_of::<crate::engine::storage_bucket_internals::StoredModelKind>()
                 + opt_arc_str
                 + size_of::<BlockAddress>()
-                + 2 * size_of::<bool>(),
+                + 2 * size_of::<bool>()
+                + size_of::<crate::index_log::IndexItemKind>()
+                + size_of::<u32>(),
             per_item: true,
         },
         Budgeted {

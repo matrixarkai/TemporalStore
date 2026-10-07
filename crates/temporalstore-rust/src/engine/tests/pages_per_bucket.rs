@@ -487,7 +487,9 @@ fn every_byte_of_the_page_index_is_accounted_for() {
     let opt_arc_str = size_of::<Option<Arc<str>>>();
     let index_eight_aligned = arc_str + opt_arc_str + size_of::<BlockAddress>();
     let index_tail = size_of::<crate::engine::storage_bucket_internals::StoredModelKind>()
-        + 2 * size_of::<bool>();
+        + 2 * size_of::<bool>()
+        + size_of::<crate::index_log::IndexItemKind>()
+        + size_of::<u32>();
     let index_rounded_tail = round_up_to(index_tail, 8);
     println!(
         "BlockIndex: {index_eight_aligned} B eight-aligned + {index_tail} B tail rounded to \
@@ -1808,10 +1810,11 @@ fn assert_same_page(context: &str, handle: u64, left: &BlockIndex, right: &Block
         left.deleted, right.deleted,
         "{context}: page {handle} changed deleted"
     );
-    assert_eq!(
-        left.log_backed(), right.log_backed(),
-        "{context}: page {handle} changed log_backed"
-    );
+    // THE LOG-RESIDENT COMPARISON IS GONE RATHER THAN REWRITTEN, because it could no longer
+    // fail. It used to compare a STORED flag; it now reads an accessor that is a pure function of
+    // the address, and `left.address == right.address` is asserted nine lines above. An assertion
+    // dominated by an earlier one in the same function cannot distinguish any case the earlier one
+    // admits -- it is not a weaker check, it is none, and it would read as coverage.
 }
 
 /// The whole block set, as an ordered list of handle-and-entry, compared element by element.
@@ -2315,7 +2318,11 @@ fn the_page_entry_and_not_the_bucket_node_is_the_next_dominant_term() {
     let component = size_of::<Option<Arc<str>>>();
     let names = object_key + model_id + component;
     let flags = 2 * size_of::<bool>();
-    let field_sum = names + size_of::<BlockAddress>() + flags;
+    // THE TWO LOCATING FIELDS the entry absorbed from the index-log row. Named here because
+    // this sum is checked against `size_of`, and it reconstructed to the right total by
+    // ROUNDING rather than by being complete before they were added.
+    let locating = size_of::<crate::index_log::IndexItemKind>() + size_of::<u32>();
+    let field_sum = names + size_of::<BlockAddress>() + flags + locating;
     println!(
         "\n=== inside the {} B page entry ===",
         size_of::<BlockIndex>()

@@ -1013,7 +1013,7 @@ fn an_index_written_before_this_change_loads_page_for_page_and_writes_back_the_s
         .expect("the stored bucket must load");
 
     // --- Element by element, in the order the stored map spells them. ---
-    let mut loaded: Vec<(String, String, Option<String>, u64, u64, u64, bool, bool, bool)> = index
+    let mut loaded: Vec<(String, String, Option<String>, u64, u64, u64, bool, bool)> = index
         .bucket_map
         .values()
         .flat_map(|bucket| bucket.block_index.values())
@@ -1027,16 +1027,20 @@ fn an_index_written_before_this_change_loads_page_for_page_and_writes_back_the_s
                 page.address.length(),
                 page.dirty,
                 page.deleted,
-                page.log_backed(),
             )
         })
         .collect();
     loaded.sort();
 
-    let mut expected: Vec<(String, String, Option<String>, u64, u64, u64, bool, bool, bool)> =
+    let mut expected: Vec<(String, String, Option<String>, u64, u64, u64, bool, bool)> =
         OLD_STORE_PAGES
             .iter()
-            .map(|(key, model, component, slab, offset, length, dirty, deleted, log_backed)| {
+            // THE NINTH COLUMN IS READ NO LONGER, AND THE FIXTURE KEEPS IT ON PURPOSE. It records
+            // what the old index STORED, which is the fixture's whole job -- and in some of these
+            // rows what it stored was WRONG: a log-resident flag set on a slab-backed page. That
+            // disagreement was a documented defect. The property is derived from the address now,
+            // so there is no stored copy left to round-trip and nothing to compare it against.
+            .map(|(key, model, component, slab, offset, length, dirty, deleted, _log_backed)| {
                 (
                     (*key).to_string(),
                     (*model).to_string(),
@@ -1046,7 +1050,6 @@ fn an_index_written_before_this_change_loads_page_for_page_and_writes_back_the_s
                     *length,
                     *dirty,
                     *deleted,
-                    *log_backed,
                 )
             })
             .collect();

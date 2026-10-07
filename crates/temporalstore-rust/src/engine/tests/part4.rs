@@ -6630,7 +6630,15 @@ fn the_index_wire_keys_are_what_they_were() {
             // "last_dump_sequence" is gone on purpose: see this test's own note above.
             "layout",
             "loading",
-            "log_backed",
+            // "log_backed" is GONE, and it is the only key this change removes. The entry shed the
+            // flag nothing maintained -- the log-resident fact is derived from the address by an
+            // accessor -- so the stored form is one key lighter.
+            //
+            // AND NOTHING ARRIVED IN ITS PLACE, which is the half worth asserting: the entry also
+            // GAINED two locating fields absorbed from the index-log row, and both are skipped on
+            // the named side. A resident entry is always a page, and the node already records its
+            // own bucket. So neither appears in this list, and this list is what would have caught
+            // them if they did.
             "meta_loaded",
             "model_id",
             // "o" and "ps" are gone -- merged into "a" at the top of this list.

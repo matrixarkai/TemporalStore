@@ -507,7 +507,9 @@ fn the_entry_without_a_component_is_forty_and_the_stride_forty_eight() {
         + size_of::<StoredModelKind>()               // model_id
         + size_of::<Option<Arc<str>>>()              // component
         + size_of::<BlockAddress>()                  // address
-        + 2 * size_of::<bool>();                     // dirty, deleted
+        + 2 * size_of::<bool>()                      // dirty, deleted
+        + size_of::<crate::index_log::IndexItemKind>() // kind
+        + size_of::<u32>();                          // routing_bucket
     assert_eq!(
         round_up_to_eight(live_fields),
         size_of::<BlockIndex>(),

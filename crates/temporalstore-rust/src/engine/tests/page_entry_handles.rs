@@ -1668,7 +1668,14 @@ fn the_model_spelling_did_not_move_on_the_wire_and_the_entry_lost_three_steps_in
         assert_eq!(page.component, decoded.component, "{label}: component moved");
         assert_eq!(page.dirty, decoded.dirty, "{label}: dirty moved");
         assert_eq!(page.deleted, decoded.deleted, "{label}: deleted moved");
-        assert_eq!(page.log_backed(), decoded.log_backed(), "{label}: log_backed moved");
+        // NOT a stored field any more, and this is the ONLY address property this loop checks --
+        // there is no `address` comparison beside it -- so the accessor comparison still has
+        // content: it asserts the block id's PRESENCE survives both encoders.
+        assert_eq!(
+            page.log_backed(),
+            decoded.log_backed(),
+            "{label}: the address stopped agreeing about log-residency across the round trip"
+        );
     }
 
     // THE ABSENT EFFECT, as THREE numbers now, because three changes have taken bytes off this entry
