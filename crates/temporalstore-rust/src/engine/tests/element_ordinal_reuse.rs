@@ -1557,7 +1557,7 @@ fn the_width_an_element_ordinal_would_take_and_the_ceiling_that_implies() {
     // NO SLACK left to absorb a new field. The arithmetic is
     // the claim and the rounding is where it lands.
     //
-    // 52 IN 56, NOT 60 IN 64. The object id left the address this entry holds inline, taking a
+    // 56 IN 56, NOT 60 IN 64. The object id left the address this entry holds inline, taking a
     // whole word out of both numbers. `state.rs` carries the same accounting on `BlockIndex`
     // itself, and the assertion below ties this hand-written sum to the compiler's width so the two
     // cannot drift apart silently -- which is exactly what happened to the 60: it went on
@@ -1565,7 +1565,13 @@ fn the_width_an_element_ordinal_would_take_and_the_ceiling_that_implies() {
     // field", a field sum LARGER than the type, without anything failing until the width assert
     // below was reached.
     let entry_now = std::mem::size_of::<crate::engine::state::BlockIndex>();
-    let field_bytes_now = 52usize;
+    // THE SUM THE PROSE ABOVE NAMES, and it moved: 52 became 56 when the entry absorbed the
+    // row's two locating fields and shed the flag nothing maintained. It was left at 52 while the
+    // comment was rewritten to say 56, and NOTHING FAILED -- because 56 - 52 is 4, which is
+    // exactly what the slack assertion below was written to expect. A stale sum and a stale slack
+    // agreed with each other, so the pair went green while describing a field set the entry no
+    // longer has. Neither number is derived, which is why only reading them together caught it.
+    let field_bytes_now = 56usize;
     let field_bytes_with_u16 = field_bytes_now - component_width + u16_ordinal;
     let field_bytes_with_u32 = field_bytes_now - component_width + u32_ordinal;
 
@@ -1581,19 +1587,23 @@ fn the_width_an_element_ordinal_would_take_and_the_ceiling_that_implies() {
         "the page entry is {entry_now} bytes, not the 56 this arithmetic is written against; \
          re-derive the field sum before trusting the two numbers above"
     );
-    // AND THE FIELD SUM CANNOT EXCEED THE TYPE, which is the check whose absence let the stale 60
-    // print beside a 56-byte entry. The slack is the padding the three flags sit in; asserting it
-    // exactly means a field moving in or out fails here rather than being absorbed.
-    assert!(
-        field_bytes_now <= entry_now,
-        "the field sum {field_bytes_now} is larger than the {entry_now}-byte entry that holds it, \
-         so the arithmetic below is describing a structure this engine does not have"
-    );
+    // AND THE OPERATOR IS TWO-SIDED NOW, which is the half of this guard that was missing. It
+    // read `field_bytes_now <= entry_now`, and it exists because a stale 60 once printed beside a
+    // 56-byte entry -- an OVER-count, which `<=` does catch. An UNDER-count it admits: 52 <= 56
+    // passes. So ONE stale number failed here and a MATCHED PAIR of them did not, because a field
+    // sum of 52 and a slack of 4 are consistent with each other. That is the same shape as any
+    // one-sided comparison: it is satisfied on exactly the side the change moves.
+    //
+    // The entry has no slack left, so the hand-written sum and the compiler's width are the SAME
+    // NUMBER, and equality is the whole claim. It cannot be met from one side; it states the zero
+    // slack directly rather than as a difference that two stale numbers can agree on; and it
+    // removes a subtraction that would have underflowed a `usize` if the sum ever did exceed the
+    // type -- the very case the sentence above says this guard is for.
     assert_eq!(
-        4,
-        entry_now - field_bytes_now,
-        "the entry's slack is {} bytes, not the four the flags sit in; re-derive the field sum",
-        entry_now - field_bytes_now
+        field_bytes_now, entry_now,
+        "the hand-written field sum is {field_bytes_now} B against a {entry_now} B entry. This \
+         type has no slack left, so those must be equal -- re-derive the sum rather than adjusting \
+         a difference to match it"
     );
     assert!(
         field_bytes_with_u16 < field_bytes_now,

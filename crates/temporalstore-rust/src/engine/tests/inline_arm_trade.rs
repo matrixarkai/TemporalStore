@@ -1734,7 +1734,7 @@ fn what_the_narrower_entry_is_worth_on_the_heap_now_that_it_is_behind_a_pointer(
             },
             dirty: page.dirty,
             deleted: page.deleted,
-            log_backed: page.log_backed,
+            log_backed: page.log_backed(),
         };
 
         let plan = census_plan(&census);

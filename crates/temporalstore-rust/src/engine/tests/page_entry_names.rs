@@ -781,7 +781,7 @@ const PAGE_ENTRY_OVER_WIDE: &str = r#"{"object_key":"k","model_id":"string","add
 /// The routing bucket an index written before this change carries, and what this binary writes in
 /// its place -- which is NOTHING, the slot having been retired from the wire struct rather than
 /// held open and written nil. It was `"rs":null,` while the slot was still declared.
-/// See `an_index_written_before_this_change_loads_page_for_page_and_writes_back_the_same_bytes`.
+/// See `an_index_written_before_this_change_is_written_back_without_the_key_the_entry_shed`.
 const STORED_ROUTING_BUCKET: &str = r#""rs":7,"#;
 /// The identity slot as an OLD row spells it, and as this binary writes it back.
 ///
@@ -789,6 +789,10 @@ const STORED_ROUTING_BUCKET: &str = r#""rs":7,"#;
 /// shortens the array and refuses every existing row. It is written EMPTY instead, which is a
 /// change to the stored bytes and is what `SHARD_INDEX_FORMAT_VERSION` 6 pays for.
 const STORED_OBJECT_ID: &str = r#""oi":42,"#;
+/// The log-resident flag AS THE OLD INDEX STORED IT, both polarities, each with its leading comma
+/// so removing one leaves well-formed JSON. The fixture carries six of these across its entries.
+const STORED_LOG_RESIDENT_TRUE: &str = r#","log_backed":true"#;
+const STORED_LOG_RESIDENT_FALSE: &str = r#","log_backed":false"#;
 const EMPTIED_OBJECT_ID: &str = r#""oi":null,"#;
 const EMPTY_ROUTING_BUCKET: &str = r#""#;
 
@@ -992,8 +996,14 @@ fn the_stored_spelling_of_a_page_entry_moved_in_exactly_one_slot() {
 /// of the whole page set, field by field, against what went in -- never that the set is non-empty
 /// afterwards.
 ///
-/// AND THE REVERSE, where it is meaningful: the index this binary re-serializes from what it
-/// loaded must be the SAME BYTES, so a store written by the new binary is one an old binary reads.
+/// AND THE REVERSE IS NO LONGER THE SAME CLAIM, so it is no longer in this name. "An old index
+/// still loads" and "it is written back byte for byte" were one test for as long as both were
+/// true. The second stopped being true when the entry shed `log_backed`: this binary writes the
+/// stored form one key lighter, by construction, and the format stamp is what pays for it. One
+/// name over both would have had to be WEAKENED until it passed, and a weakened version would no
+/// longer pin the half that is still exact -- so the write-back claim is restated, as what this
+/// binary actually writes, in
+/// `an_index_written_before_this_change_is_written_back_without_the_key_the_entry_shed`.
 ///
 /// THE GENERATION IN THESE BYTES MOVED, AND ONLY IT. When `generation` became derived from
 /// `block_id.or(object_id)`, the fixture behind this capture stopped being able to express the
@@ -1001,9 +1011,11 @@ fn the_stored_spelling_of_a_page_entry_moved_in_exactly_one_slot() {
 /// constructor in this engine has ever emitted. The bytes were regenerated with the capture
 /// instrument in this module rather than hand-edited, and they came back the same 1,349 bytes
 /// with `"g":4` and keys ending `:4:4`. An index that really did carry the old combination is
-/// REFUSED rather than re-keyed; the test directly below drives it.
+/// REFUSED rather than re-keyed; `an_old_store_whose_generation_disagrees_is_refused_before_the_decode`
+/// drives it -- named, rather than called "the test directly below", which it stopped being the
+/// moment this test split in two.
 #[test]
-fn an_index_written_before_this_change_loads_page_for_page_and_writes_back_the_same_bytes() {
+fn an_index_written_before_this_change_loads_page_for_page() {
     let index: crate::engine::state::CoreIndex =
         serde_json::from_str(OLD_STORE_INDEX).expect("an index written at 15583789e must load");
 
@@ -1088,7 +1100,37 @@ fn an_index_written_before_this_change_loads_page_for_page_and_writes_back_the_s
         bucket.block_index.len()
     );
 
-    // --- And back: the same bytes but for the one key the node no longer holds. ---
+    // --- The control: a DIFFERENT page set must not compare equal, or the comparison above is
+    // reporting sameness it cannot actually detect. ---
+    let mut injected = loaded.clone();
+    injected[0].5 = injected[0].5.wrapping_add(1);
+    assert_ne!(
+        injected, loaded,
+        "the element-by-element comparison cannot report a difference when one is injected"
+    );
+}
+
+/// WHAT THIS BINARY WRITES BACK WHEN IT IS HANDED AN INDEX WRITTEN BEFORE THIS CHANGE.
+///
+/// THE OTHER HALF OF THE TEST ABOVE, SPLIT OFF RATHER THAN RELAXED -- see its note for why one
+/// name could not keep both claims once the second stopped being true.
+///
+/// THE FIXTURE IS NOT RESTATED, and the direction this test runs in is the reason.
+/// `OLD_STORE_INDEX` records YESTERDAY'S INPUT: the bytes a store at `15583789e` really wrote,
+/// whose whole job is to prove that a pre-change index still decodes. Re-goldening it would hand
+/// this test today's own output, and it would then assert nothing about the past. So the
+/// expectation is DERIVED from those bytes instead, by naming each difference this binary makes to
+/// a stored row and applying it -- with every substitution asserted to have FIRED, so none of them
+/// can quietly match nothing and leave the comparison reporting a sameness it never tested.
+///
+/// FOUR DIFFERENCES ARE NAMED, and none of them is a number that moved: a key that is no longer
+/// written, a slot retired from the wire struct, a slot written empty, and the flag the entry shed.
+#[test]
+fn an_index_written_before_this_change_is_written_back_without_the_key_the_entry_shed() {
+    let index: crate::engine::state::CoreIndex =
+        serde_json::from_str(OLD_STORE_INDEX).expect("an index written at 15583789e must load");
+
+    // --- And back: the same bytes but for the keys the node no longer holds. ---
     let without_the_removed_key = OLD_STORE_INDEX.replace(REMOVED_KEY, "");
     assert_ne!(
         OLD_STORE_INDEX, without_the_removed_key.as_str(),
@@ -1149,26 +1191,46 @@ fn an_index_written_before_this_change_loads_page_for_page_and_writes_back_the_s
         "every stored routing bucket must be gone from the expectation, not rewritten to nil: \
          the slot is retired from the wire struct"
     );
+    // AND THE LOG-RESIDENT KEY IS DROPPED FROM THE EXPECTATION, COUNTED BOTH WAYS.
+    //
+    // THE CLAIM THIS TEST MAKES HAS SPLIT IN TWO, and only the first half is unchanged. An index
+    // written before this change still LOADS page for page -- asserted above, and that is the
+    // tolerant decoder doing its job, since the wire struct declines no unknown key. What it no
+    // longer does is write back the SAME BYTES: it writes back one key lighter, because the entry
+    // shed the flag nothing maintained. That is precisely what the format stamp is spent on.
+    //
+    // Canonicalised rather than asserted around, in the same counted shape as the object id above:
+    // the count is checked BEFORE so the replacement cannot be reporting on nothing, and checked
+    // to zero after so it cannot have half-fired.
+    let log_resident_keys = canonical.matches(STORED_LOG_RESIDENT_TRUE).count()
+        + canonical.matches(STORED_LOG_RESIDENT_FALSE).count();
+    assert_eq!(
+        6, log_resident_keys,
+        "the fixture must carry a stored log-resident flag on each of its six page entries, or \
+         the canonicalisation below is not reporting what happens to one"
+    );
+    let canonical = canonical
+        .replace(STORED_LOG_RESIDENT_TRUE, "")
+        .replace(STORED_LOG_RESIDENT_FALSE, "");
+    assert_eq!(
+        0,
+        canonical.matches("\"log_backed\"").count(),
+        "every stored log-resident flag must be gone from the expectation: the key is retired \
+         from the entry and this binary does not write it"
+    );
+
     let rewritten = serde_json::to_string(&index).expect("the index re-serializes");
     assert_eq!(
         canonical, rewritten,
         "the index this binary writes back differs from the index it was given in some way other \
-         than dropping last_dump_sequence"
+         than dropping last_dump_sequence, retiring the address's routing bucket, emptying its \
+         identity slot, and dropping the log-resident flag the entry shed"
     );
     assert!(
         rewritten.len() > 500,
         "the re-serialized index is {} bytes; a comparison of two near-empty documents cannot \
          report a difference",
         rewritten.len()
-    );
-
-    // --- The control: a DIFFERENT page set must not compare equal, or the comparison above is
-    // reporting sameness it cannot actually detect. ---
-    let mut injected = loaded.clone();
-    injected[0].5 = injected[0].5.wrapping_add(1);
-    assert_ne!(
-        injected, loaded,
-        "the element-by-element comparison cannot report a difference when one is injected"
     );
 }
 

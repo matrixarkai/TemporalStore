@@ -4034,11 +4034,14 @@ pub(super) struct BlockIndex {
 /// counterfactuals beside the width, because the arithmetic is the claim and it was the per-field
 /// reading of it that declared this blocked.
 ///
-/// AND THE FLAGS STILL DO NOT PAY. At 99 bytes of field the slack was five, at 91 five, at 83
-/// five, at 68 four and at 60 it is four again -- the address left in a whole word, which is the
-/// only kind of change that moves this number, and it moved the width without touching the
-/// rounding the flags sit in. Packing the three flags would reclaim nothing and would move the
-/// stored index, which spells each one as its own key.
+/// AND THE FLAGS STILL DO NOT PAY, THOUGH NO LONGER BECAUSE OF SLACK. At 99 bytes of field the
+/// slack was five, at 91 five, at 83 five, at 68 four, at 60 four again -- and at 56 it is ZERO:
+/// the two locating fields absorbed from the index-log row filled the tail exactly. Packing the
+/// TWO flags that remain would still reclaim nothing, because the tail rounds to one word with or
+/// without them, and it would still move the stored index, which spells each of them as its own
+/// key. What changed is that the slack this claim used to be READ OFF is gone, so the claim is
+/// asserted directly in `pages_per_bucket::every_byte_of_the_page_index_is_accounted_for` instead
+/// of through the room left over beside it.
 ///
 /// AND THE WIRE DID MOVE, IN EXACTLY ONE SLOT. This paragraph said "WHAT DID NOT MOVE IS THE WIRE
 /// -- the spelling is still written and read as the string it always was; only the in-memory width
@@ -4054,9 +4057,10 @@ pub(super) struct BlockIndex {
 ///
 /// So the stored form moved, `SHARD_INDEX_FORMAT_VERSION` goes to 6 to pay for it, and the guards
 /// are `the_stored_spelling_of_a_page_entry_moved_in_exactly_one_slot` (the four goldens),
-/// `an_index_written_before_this_change_loads_page_for_page_and_writes_back_the_same_bytes` (the
-/// old-row round trip) and `core_index_loads_legacy_bucket_page_field_names` (that the old names
-/// still read).
+/// `an_index_written_before_this_change_loads_page_for_page` (that an old row still decodes),
+/// `an_index_written_before_this_change_is_written_back_without_the_key_the_entry_shed` (what this
+/// binary writes back in its place) and `core_index_loads_legacy_bucket_page_field_names` (that
+/// the old names still read).
 const _: () = assert!(std::mem::size_of::<BlockIndex>() == 56);
 
 // THE WIDTH, MEASURED AT THIS COMMIT -- not a target.
