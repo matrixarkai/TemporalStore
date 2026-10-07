@@ -2497,7 +2497,7 @@ pub(crate) fn eager_cache_warm_on_load() -> bool {
 /// equality with the constant, never ordered or ranged". `engine::decode_index_bytes` does compare
 /// with `!=` -- but only in its MSGPACK arm, and `persistence.rs` compares with `<`. #2051 tracks
 /// that asymmetry and the decision it needs; nothing here depends on the equality claim.
-pub(super) const SHARD_INDEX_FORMAT_VERSION: u32 = 7;
+pub(super) const SHARD_INDEX_FORMAT_VERSION: u32 = 8;
 
 /// Serialize a shard index, stamping the current format version.
 ///
@@ -4079,9 +4079,6 @@ fn fold_delta_block_items(
         else {
             continue;
         };
-        // Computed before the address moves into the entry below. This is the same expression
-        // `in_log` used to carry as a field.
-        let log_backed = address.block_id().is_none();
         let bucket = bucket_index
             .bucket_map
             .entry(item.routing_bucket)
@@ -4095,6 +4092,8 @@ fn fold_delta_block_items(
         // record's spelling is only rebuilt when the index is written back out.
         bucket.insert_page(
             BlockIndex {
+                kind: crate::index_log::IndexItemKind::Page,
+                routing_bucket: item.routing_bucket,
                 object_key: Arc::from(item.object_key.clone()),
                 model_id: crate::engine::storage_bucket_internals::stored_model_kind(
                     &item.model_id,
@@ -4115,7 +4114,6 @@ fn fold_delta_block_items(
                 address,
                 dirty: false,
                 deleted: false,
-                log_backed,
             },
             &mut bucket_index.block_slab_live,
         );

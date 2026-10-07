@@ -3982,6 +3982,26 @@ pub(super) enum BucketLayoutState {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub(super) struct BlockIndex {
+    /// LOG-ONLY, and SKIPPED on the named side: a resident entry is always a page.
+    ///
+    /// `skip` fills from `Default`, which is safe here only because `index_log`'s
+    /// `impl Default for IndexItemKind` is HAND-WRITTEN and returns `Page`. The named
+    /// round-trip test asserts that default, so a derive swap or an enum reorder goes
+    /// red instead of silently relabelling every decoded entry under a decoder that
+    /// refuses nothing.
+    #[serde(skip)]
+    pub(super) kind: crate::index_log::IndexItemKind,
+    /// LOG-ONLY, and SKIPPED on the named side because the NODE already names it.
+    ///
+    /// NOT a plain `skip`: `Default` is 0 and ZERO IS A LEGAL BUCKET, so skipping it
+    /// alone would fold every entry into bucket zero -- silently, because the named
+    /// decoder refuses nothing. `BucketNode`'s visitor INJECTS the node's own bucket
+    /// into each entry at its closing construction, where both are in scope, so this
+    /// never rides the named wire and cannot disagree with the node it is filed under.
+    /// That makes it the free-to-recompute kind of redundancy rather than the kind
+    /// that is stored so a reader answers with no I/O.
+    #[serde(skip)]
+    pub(super) routing_bucket: u32,
     pub(super) object_key: Arc<str>,
     pub(super) model_id: crate::engine::storage_bucket_internals::StoredModelKind,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -3989,27 +4009,15 @@ pub(super) struct BlockIndex {
     pub(super) address: BlockAddress,
     pub(super) dirty: bool,
     pub(super) deleted: bool,
-    /// WIRE-ONLY. Nothing reads this; read [`BlockIndex::log_backed`] instead.
-    ///
-    /// The log-resident fact is DERIVED from the address -- `block_id()` is `None` exactly when the
-    /// block still lives in the log -- so storing it as well made one fact answerable from two
-    /// places, and three sites wrote it without consulting the address at all
-    /// (`storage_bucket_internals::insert_container_tombstone_entry` among them, which sets it
-    /// `false` on an address it is handed). This field keeps its stored key so the index does not
-    /// move; its VALUE IS NOT MAINTAINED and must not be consulted.
-    ///
-    /// It is not deleted because it cannot be cheaply: the shard index is `serde_json`, so the
-    /// field name is a stored key and removing it would refuse every existing index -- for no
-    /// resident saving at all, since this struct carries 52 bytes of field in 56 and a bool
-    /// leaving takes it to 51 in 56. `#[serde(rename)]` is what keeps the stored spelling while
-    /// the identifier here says not to read it.
-    ///
-    /// `engine::tests::the_log_resident_fact_has_one_reader` holds that nothing reads it.
-    pub(super) log_backed: bool,
 }
 
 /// One per stored block. TWO shared names, a one-byte model spelling, an address, and three
-/// flags -- 52 bytes of field in 56.
+/// flags -- 56 bytes of field in 56, WITH NO SLACK LEFT.
+///
+/// It was 52 of field in 56 before the entry absorbed the index-log row's two locating fields and
+/// shed the flag nothing maintained. The width did not move; the slack did, from four bytes to
+/// none. SO THE NEXT FIELD ADDED HERE COSTS EIGHT BYTES, NOT NONE -- every field decision in this
+/// structure's history was priced against slack that no longer exists.
 ///
 /// 64, not 72, since the address inside it is 24 bytes and not 32: it shed the `routing_bucket`
 /// the read path now derives from the key, and narrowed its `block_id` to the sixteen bits the
@@ -4026,11 +4034,14 @@ pub(super) struct BlockIndex {
 /// counterfactuals beside the width, because the arithmetic is the claim and it was the per-field
 /// reading of it that declared this blocked.
 ///
-/// AND THE FLAGS STILL DO NOT PAY. At 99 bytes of field the slack was five, at 91 five, at 83
-/// five, at 68 four and at 60 it is four again -- the address left in a whole word, which is the
-/// only kind of change that moves this number, and it moved the width without touching the
-/// rounding the flags sit in. Packing the three flags would reclaim nothing and would move the
-/// stored index, which spells each one as its own key.
+/// AND THE FLAGS STILL DO NOT PAY, THOUGH NO LONGER BECAUSE OF SLACK. At 99 bytes of field the
+/// slack was five, at 91 five, at 83 five, at 68 four, at 60 four again -- and at 56 it is ZERO:
+/// the two locating fields absorbed from the index-log row filled the tail exactly. Packing the
+/// TWO flags that remain would still reclaim nothing, because the tail rounds to one word with or
+/// without them, and it would still move the stored index, which spells each of them as its own
+/// key. What changed is that the slack this claim used to be READ OFF is gone, so the claim is
+/// asserted directly in `pages_per_bucket::every_byte_of_the_page_index_is_accounted_for` instead
+/// of through the room left over beside it.
 ///
 /// AND THE WIRE DID MOVE, IN EXACTLY ONE SLOT. This paragraph said "WHAT DID NOT MOVE IS THE WIRE
 /// -- the spelling is still written and read as the string it always was; only the in-memory width
@@ -4046,10 +4057,60 @@ pub(super) struct BlockIndex {
 ///
 /// So the stored form moved, `SHARD_INDEX_FORMAT_VERSION` goes to 6 to pay for it, and the guards
 /// are `the_stored_spelling_of_a_page_entry_moved_in_exactly_one_slot` (the four goldens),
-/// `an_index_written_before_this_change_loads_page_for_page_and_writes_back_the_same_bytes` (the
-/// old-row round trip) and `core_index_loads_legacy_bucket_page_field_names` (that the old names
-/// still read).
+/// `an_index_written_before_this_change_loads_page_for_page` (that an old row still decodes),
+/// `an_index_written_before_this_change_is_written_back_without_the_key_the_entry_shed` (what this
+/// binary writes back in its place) and `core_index_loads_legacy_bucket_page_field_names` (that
+/// the old names still read).
 const _: () = assert!(std::mem::size_of::<BlockIndex>() == 56);
+
+// THE WIDTH, MEASURED AT THIS COMMIT -- not a target.
+//
+// A RECONSTRUCTION rather than a restatement: the groups are added up from the widths
+// they are made of, so a field whose own width moves elsewhere fails HERE rather than
+// passing silently.
+const _: () = {
+    let field_sum = 1                                   // kind
+        + 4                                             // routing_bucket
+        + std::mem::size_of::<Arc<str>>()               // object_key
+        + 1                                             // model_id
+        + std::mem::size_of::<Option<Arc<str>>>()       // component
+        + std::mem::size_of::<BlockAddress>()           // address
+        + 1 + 1;                                        // dirty, deleted
+    assert!(std::mem::size_of::<BlockIndex>() == (field_sum + 7) / 8 * 8);
+    // ZERO SLACK, asserted as the claim: the next field here costs EIGHT bytes.
+    assert!(field_sum == std::mem::size_of::<BlockIndex>());
+};
+
+// THE DEFERRED DECISION, WITH A TRIGGER RATHER THAN A NOTE.
+//
+// This type holds the address DIRECTLY instead of the shared payload value the row
+// used to carry -- the value whose whole point was that the meaning of where a page
+// lives is defined in ONE place, shared with the model map's level-2 value. Holding
+// it directly means two places can describe that and DRIFT APART, and this tree has
+// a recorded case of two copies that agreed, were both silent on a path, and could
+// not be found by comparing them.
+//
+// WHY IT WAS GIVEN UP. The shared value is `Option`-shaped on the row because absence
+// is a DECODE-side requirement: the wire type already carries an optional address for
+// rows written before it existed, and the fold already skips an address-less row.
+// Every resident reader sits where an address is always present -- 25 of 25
+// constructions name one kind, and every absent-address construction in the tree is a
+// test fixture. Carrying the Option inward would have put an absence that CANNOT
+// OCCUR into 203 resident call sites, as 203 `expect`s on a hot path (a new panic
+// surface) or as 203 signatures propagating it outward.
+//
+// Nothing here collapses an absent address into a defaulted one. Absence stays on the
+// wire type where the tolerance is needed, which is where it already lives.
+//
+// THE TRIGGER. The two are the same width today, so the sharing costs nothing to give
+// up. The moment the shared value grows -- its own doc says its end state is one
+// packed flags byte over the address -- this goes RED, and whoever hits it has the
+// argument above in front of them and has to DECIDE the sharing question rather than
+// inherit the answer.
+const _: () = assert!(
+    std::mem::size_of::<crate::block_store::ElementEntry>()
+        == std::mem::size_of::<BlockAddress>()
+);
 
 impl BlockIndex {
     /// Whether this block still lives in the log rather than in a slab, DERIVED from the address.
@@ -4577,13 +4638,14 @@ mod component_lookup_tests {
     /// A block carrying nothing but the identity the lookup keys on.
     fn page(object: &str, component: Option<&str>) -> BlockIndex {
         BlockIndex {
+            kind: crate::index_log::IndexItemKind::Page,
+            routing_bucket: 7,
             object_key: Arc::from(object.to_string()),
             model_id: crate::engine::storage_bucket_internals::StoredModelKind::Hash,
             component: component.map(str::to_string).map(Arc::from),
             address: BlockAddress::from_parts(0, 0, 0, None, Some(0)),
             dirty: false,
             deleted: false,
-            log_backed: false,
         }
     }
 

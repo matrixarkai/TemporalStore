@@ -507,7 +507,9 @@ fn the_entry_without_a_component_is_forty_and_the_stride_forty_eight() {
         + size_of::<StoredModelKind>()               // model_id
         + size_of::<Option<Arc<str>>>()              // component
         + size_of::<BlockAddress>()                  // address
-        + 3 * size_of::<bool>();                     // dirty, deleted, log_backed
+        + 2 * size_of::<bool>()                      // dirty, deleted
+        + size_of::<crate::index_log::IndexItemKind>() // kind
+        + size_of::<u32>();                          // routing_bucket
     assert_eq!(
         round_up_to_eight(live_fields),
         size_of::<BlockIndex>(),
@@ -659,13 +661,14 @@ fn a_hash_page_naming_no_field_is_skipped_while_a_genuine_empty_field_name_is_ke
     // leaves the key out entirely and reads back as `None` -- an absent component round-trips as a
     // STABLE shape rather than as damage.
     let nameless_entry = BlockIndex {
+        kind: crate::index_log::IndexItemKind::Page,
+        routing_bucket: 7,
         object_key: Arc::from("ef-wire-probe"),
         model_id: stored_model_kind("hash"),
         component: None,
         address: BlockAddress::default(),
         dirty: false,
         deleted: false,
-        log_backed: false,
     };
     let encoded = serde_json::to_string(&nameless_entry).expect("a page entry serializes");
     assert!(

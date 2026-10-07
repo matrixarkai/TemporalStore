@@ -2613,13 +2613,14 @@ fn bucket_store_reports_all_layout_states_and_runtime_flags() {
             block_index: [(
                 "string:k::1:0".to_string(),
                 BlockIndex {
+                    kind: crate::index_log::IndexItemKind::Page,
+                    routing_bucket: 7,
                     object_key: Arc::from("k".to_string()),
                     model_id: crate::engine::storage_bucket_internals::StoredModelKind::String,
                     component: None,
                     address: BlockAddress::from_parts(1, 0, 4, Some(1), Some(30)),
                     dirty: false,
                     deleted: false,
-                    log_backed: true,
                 },
             )]
             .into_iter()
@@ -2639,25 +2640,27 @@ fn bucket_store_reports_all_layout_states_and_runtime_flags() {
                 (
                     "feature:k::2:0".to_string(),
                     BlockIndex {
+                        kind: crate::index_log::IndexItemKind::Page,
+                        routing_bucket: 7,
                         object_key: Arc::from("feature-key".to_string()),
                         model_id: crate::engine::storage_bucket_internals::StoredModelKind::Feature,
                         component: None,
                         address: BlockAddress::from_parts(2, 0, 4, Some(2), Some(40)),
                         dirty: false,
                         deleted: false,
-                        log_backed: true,
                     },
                 ),
                 (
                     "feature:k::2:4".to_string(),
                     BlockIndex {
+                        kind: crate::index_log::IndexItemKind::Page,
+                        routing_bucket: 7,
                         object_key: Arc::from("feature-key".to_string()),
                         model_id: crate::engine::storage_bucket_internals::StoredModelKind::Feature,
                         component: None,
                         address: BlockAddress::from_parts(2, 4, 4, Some(3), Some(40)),
                         dirty: false,
                         deleted: false,
-                        log_backed: true,
                     },
                 ),
             ]
@@ -2678,25 +2681,27 @@ fn bucket_store_reports_all_layout_states_and_runtime_flags() {
                 (
                     "hash:k:a:3:0".to_string(),
                     BlockIndex {
+                        kind: crate::index_log::IndexItemKind::Page,
+                        routing_bucket: 7,
                         object_key: Arc::from("hash-key".to_string()),
                         model_id: crate::engine::storage_bucket_internals::StoredModelKind::Hash,
                         component: Some(Arc::from("a".to_string())),
                         address: BlockAddress::from_parts(3, 0, 1, Some(4), Some(50)),
                         dirty: false,
                         deleted: false,
-                        log_backed: true,
                     },
                 ),
                 (
                     "hash:k:b:3:1".to_string(),
                     BlockIndex {
+                        kind: crate::index_log::IndexItemKind::Page,
+                        routing_bucket: 7,
                         object_key: Arc::from("hash-key".to_string()),
                         model_id: crate::engine::storage_bucket_internals::StoredModelKind::Hash,
                         component: Some(Arc::from("b".to_string())),
                         address: BlockAddress::from_parts(3, 1, 1, Some(5), Some(51)),
                         dirty: false,
                         deleted: false,
-                        log_backed: true,
                     },
                 ),
             ]

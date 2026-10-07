@@ -668,6 +668,8 @@ fn capture_the_stored_spelling_of_a_page_entry() {
         flags: (bool, bool, bool),
     ) -> BlockIndex {
         BlockIndex {
+            kind: crate::index_log::IndexItemKind::Page,
+            routing_bucket: 7,
             object_key: Arc::from(key),
             model_id: crate::engine::storage_bucket_internals::stored_model_kind(model),
             component: component.map(Arc::from),
@@ -680,7 +682,6 @@ fn capture_the_stored_spelling_of_a_page_entry() {
             ),
             dirty: flags.0,
             deleted: flags.1,
-            log_backed: flags.2,
         }
     }
 
@@ -748,7 +749,7 @@ fn capture_the_stored_spelling_of_a_page_entry() {
                 entry.address.length(),
                 entry.dirty,
                 entry.deleted,
-                entry.log_backed
+                entry.log_backed()
             );
         }
     }
@@ -766,13 +767,13 @@ fn capture_the_stored_spelling_of_a_page_entry() {
 // and the offset are the only part of the stored spelling this change moves.
 // ---------------------------------------------------------------------------------------------
 
-const PAGE_ENTRY_PLAIN: &str = r#"{"object_key":"k","model_id":"string","address":{"a":4294967298,"l":3,"pi":4,"oi":null,"g":4},"dirty":false,"deleted":false,"log_backed":true}"#;
+const PAGE_ENTRY_PLAIN: &str = r#"{"object_key":"k","model_id":"string","address":{"a":4294967298,"l":3,"pi":4,"oi":null,"g":4},"dirty":false,"deleted":false}"#;
 
-const PAGE_ENTRY_WITH_COMPONENT: &str = r#"{"object_key":"k","model_id":"string","component":"f0","address":{"a":4294967298,"l":3,"pi":4,"oi":null,"g":4},"dirty":false,"deleted":false,"log_backed":true}"#;
+const PAGE_ENTRY_WITH_COMPONENT: &str = r#"{"object_key":"k","model_id":"string","component":"f0","address":{"a":4294967298,"l":3,"pi":4,"oi":null,"g":4},"dirty":false,"deleted":false}"#;
 
-const PAGE_ENTRY_ALL_FLAGS: &str = r#"{"object_key":"k","model_id":"string","address":{"a":4294967298,"l":3,"pi":4,"oi":null,"g":4},"dirty":true,"deleted":true,"log_backed":true}"#;
+const PAGE_ENTRY_ALL_FLAGS: &str = r#"{"object_key":"k","model_id":"string","address":{"a":4294967298,"l":3,"pi":4,"oi":null,"g":4},"dirty":true,"deleted":true}"#;
 
-const PAGE_ENTRY_OVER_WIDE: &str = r#"{"object_key":"k","model_id":"string","address":{"a":4294967298,"l":4294967295,"pi":4,"oi":null,"g":4},"dirty":false,"deleted":false,"log_backed":true}"#;
+const PAGE_ENTRY_OVER_WIDE: &str = r#"{"object_key":"k","model_id":"string","address":{"a":4294967298,"l":4294967295,"pi":4,"oi":null,"g":4},"dirty":false,"deleted":false}"#;
 
 /// A whole shard index written at `15583789e`: one bucket holding six pages -- five of one object
 /// (four plain, one carrying a component and a different kind) and one of a SECOND object in the
@@ -780,7 +781,7 @@ const PAGE_ENTRY_OVER_WIDE: &str = r#"{"object_key":"k","model_id":"string","add
 /// The routing bucket an index written before this change carries, and what this binary writes in
 /// its place -- which is NOTHING, the slot having been retired from the wire struct rather than
 /// held open and written nil. It was `"rs":null,` while the slot was still declared.
-/// See `an_index_written_before_this_change_loads_page_for_page_and_writes_back_the_same_bytes`.
+/// See `an_index_written_before_this_change_is_written_back_without_the_key_the_entry_shed`.
 const STORED_ROUTING_BUCKET: &str = r#""rs":7,"#;
 /// The identity slot as an OLD row spells it, and as this binary writes it back.
 ///
@@ -788,6 +789,10 @@ const STORED_ROUTING_BUCKET: &str = r#""rs":7,"#;
 /// shortens the array and refuses every existing row. It is written EMPTY instead, which is a
 /// change to the stored bytes and is what `SHARD_INDEX_FORMAT_VERSION` 6 pays for.
 const STORED_OBJECT_ID: &str = r#""oi":42,"#;
+/// The log-resident flag AS THE OLD INDEX STORED IT, both polarities, each with its leading comma
+/// so removing one leaves well-formed JSON. The fixture carries six of these across its entries.
+const STORED_LOG_RESIDENT_TRUE: &str = r#","log_backed":true"#;
+const STORED_LOG_RESIDENT_FALSE: &str = r#","log_backed":false"#;
 const EMPTIED_OBJECT_ID: &str = r#""oi":null,"#;
 const EMPTY_ROUTING_BUCKET: &str = r#""#;
 
@@ -833,12 +838,20 @@ const OLD_STORE_PAGES: &[(&str, &str, Option<&str>, u64, u64, u64, bool, bool, b
 
 /// A page entry in a named shape, built from the declared types so the golden moves when the
 /// declaration does rather than going quietly stale.
+/// TWO FLAGS, NOT THREE, AND THE SIGNATURE IS WHAT ENFORCES IT.
+///
+/// This took a three-tuple while the entry carried three flags. When the third left, the body
+/// stopped reading `flags.2` and every caller went on passing a bool that went nowhere -- no
+/// warning, because a tuple field is not an unused variable. Narrowing the tuple makes the
+/// compiler demand the change at each call site, which is the only way a caller finds out.
 pub(super) fn page_fixture(
     component: Option<&str>,
     length: u64,
-    flags: (bool, bool, bool),
+    flags: (bool, bool),
 ) -> BlockIndex {
     BlockIndex {
+        kind: crate::index_log::IndexItemKind::Page,
+        routing_bucket: 7,
         object_key: Arc::from("k"),
         model_id: crate::engine::storage_bucket_internals::StoredModelKind::String,
         component: component.map(Arc::from),
@@ -851,7 +864,6 @@ pub(super) fn page_fixture(
         ),
         dirty: flags.0,
         deleted: flags.1,
-        log_backed: flags.2,
     }
 }
 
@@ -887,13 +899,13 @@ pub(super) fn page_fixture(
 /// that the stamp moved with them.
 #[test]
 fn the_stored_spelling_of_a_page_entry_moved_in_exactly_one_slot() {
-    let plain = serde_json::to_string(&page_fixture(None, 3, (false, false, true)))
+    let plain = serde_json::to_string(&page_fixture(None, 3, (false, false)))
         .expect("a page entry serializes");
-    let with_component = serde_json::to_string(&page_fixture(Some("f0"), 3, (false, false, true)))
+    let with_component = serde_json::to_string(&page_fixture(Some("f0"), 3, (false, false)))
         .expect("a page entry serializes");
-    let all_flags = serde_json::to_string(&page_fixture(None, 3, (true, true, true)))
+    let all_flags = serde_json::to_string(&page_fixture(None, 3, (true, true)))
         .expect("a page entry serializes");
-    let over_wide = serde_json::to_string(&page_fixture(None, u64::MAX, (false, false, true)))
+    let over_wide = serde_json::to_string(&page_fixture(None, u64::MAX, (false, false)))
         .expect("a page entry serializes");
 
     println!("PLAIN          = {plain}");
@@ -950,13 +962,13 @@ fn the_stored_spelling_of_a_page_entry_moved_in_exactly_one_slot() {
     // will accept, never as its own low bits -- `u64::MAX` truncated to `u32` is 4,294,967,295
     // either way, so the case that decides it is the one below. ---
     let wrapped_would_be = (u64::MAX as u32) as u64; // what `as u32` yields: the low bits.
-    let saturated = page_fixture(None, u64::MAX, (false, false, true)).address.length();
+    let saturated = page_fixture(None, u64::MAX, (false, false)).address.length();
     assert_eq!(
         u32::MAX as u64,
         saturated,
         "an over-wide length must saturate at u32::MAX, not wrap"
     );
-    let low_bits = page_fixture(None, 0x1_0000_0003, (false, false, true))
+    let low_bits = page_fixture(None, 0x1_0000_0003, (false, false))
         .address
         .length();
     assert_eq!(
@@ -984,8 +996,14 @@ fn the_stored_spelling_of_a_page_entry_moved_in_exactly_one_slot() {
 /// of the whole page set, field by field, against what went in -- never that the set is non-empty
 /// afterwards.
 ///
-/// AND THE REVERSE, where it is meaningful: the index this binary re-serializes from what it
-/// loaded must be the SAME BYTES, so a store written by the new binary is one an old binary reads.
+/// AND THE REVERSE IS NO LONGER THE SAME CLAIM, so it is no longer in this name. "An old index
+/// still loads" and "it is written back byte for byte" were one test for as long as both were
+/// true. The second stopped being true when the entry shed `log_backed`: this binary writes the
+/// stored form one key lighter, by construction, and the format stamp is what pays for it. One
+/// name over both would have had to be WEAKENED until it passed, and a weakened version would no
+/// longer pin the half that is still exact -- so the write-back claim is restated, as what this
+/// binary actually writes, in
+/// `an_index_written_before_this_change_is_written_back_without_the_key_the_entry_shed`.
 ///
 /// THE GENERATION IN THESE BYTES MOVED, AND ONLY IT. When `generation` became derived from
 /// `block_id.or(object_id)`, the fixture behind this capture stopped being able to express the
@@ -993,9 +1011,11 @@ fn the_stored_spelling_of_a_page_entry_moved_in_exactly_one_slot() {
 /// constructor in this engine has ever emitted. The bytes were regenerated with the capture
 /// instrument in this module rather than hand-edited, and they came back the same 1,349 bytes
 /// with `"g":4` and keys ending `:4:4`. An index that really did carry the old combination is
-/// REFUSED rather than re-keyed; the test directly below drives it.
+/// REFUSED rather than re-keyed; `an_old_store_whose_generation_disagrees_is_refused_before_the_decode`
+/// drives it -- named, rather than called "the test directly below", which it stopped being the
+/// moment this test split in two.
 #[test]
-fn an_index_written_before_this_change_loads_page_for_page_and_writes_back_the_same_bytes() {
+fn an_index_written_before_this_change_loads_page_for_page() {
     let index: crate::engine::state::CoreIndex =
         serde_json::from_str(OLD_STORE_INDEX).expect("an index written at 15583789e must load");
 
@@ -1005,7 +1025,7 @@ fn an_index_written_before_this_change_loads_page_for_page_and_writes_back_the_s
         .expect("the stored bucket must load");
 
     // --- Element by element, in the order the stored map spells them. ---
-    let mut loaded: Vec<(String, String, Option<String>, u64, u64, u64, bool, bool, bool)> = index
+    let mut loaded: Vec<(String, String, Option<String>, u64, u64, u64, bool, bool)> = index
         .bucket_map
         .values()
         .flat_map(|bucket| bucket.block_index.values())
@@ -1019,16 +1039,20 @@ fn an_index_written_before_this_change_loads_page_for_page_and_writes_back_the_s
                 page.address.length(),
                 page.dirty,
                 page.deleted,
-                page.log_backed,
             )
         })
         .collect();
     loaded.sort();
 
-    let mut expected: Vec<(String, String, Option<String>, u64, u64, u64, bool, bool, bool)> =
+    let mut expected: Vec<(String, String, Option<String>, u64, u64, u64, bool, bool)> =
         OLD_STORE_PAGES
             .iter()
-            .map(|(key, model, component, slab, offset, length, dirty, deleted, log_backed)| {
+            // THE NINTH COLUMN IS READ NO LONGER, AND THE FIXTURE KEEPS IT ON PURPOSE. It records
+            // what the old index STORED, which is the fixture's whole job -- and in some of these
+            // rows what it stored was WRONG: a log-resident flag set on a slab-backed page. That
+            // disagreement was a documented defect. The property is derived from the address now,
+            // so there is no stored copy left to round-trip and nothing to compare it against.
+            .map(|(key, model, component, slab, offset, length, dirty, deleted, _log_backed)| {
                 (
                     (*key).to_string(),
                     (*model).to_string(),
@@ -1038,7 +1062,6 @@ fn an_index_written_before_this_change_loads_page_for_page_and_writes_back_the_s
                     *length,
                     *dirty,
                     *deleted,
-                    *log_backed,
                 )
             })
             .collect();
@@ -1077,7 +1100,37 @@ fn an_index_written_before_this_change_loads_page_for_page_and_writes_back_the_s
         bucket.block_index.len()
     );
 
-    // --- And back: the same bytes but for the one key the node no longer holds. ---
+    // --- The control: a DIFFERENT page set must not compare equal, or the comparison above is
+    // reporting sameness it cannot actually detect. ---
+    let mut injected = loaded.clone();
+    injected[0].5 = injected[0].5.wrapping_add(1);
+    assert_ne!(
+        injected, loaded,
+        "the element-by-element comparison cannot report a difference when one is injected"
+    );
+}
+
+/// WHAT THIS BINARY WRITES BACK WHEN IT IS HANDED AN INDEX WRITTEN BEFORE THIS CHANGE.
+///
+/// THE OTHER HALF OF THE TEST ABOVE, SPLIT OFF RATHER THAN RELAXED -- see its note for why one
+/// name could not keep both claims once the second stopped being true.
+///
+/// THE FIXTURE IS NOT RESTATED, and the direction this test runs in is the reason.
+/// `OLD_STORE_INDEX` records YESTERDAY'S INPUT: the bytes a store at `15583789e` really wrote,
+/// whose whole job is to prove that a pre-change index still decodes. Re-goldening it would hand
+/// this test today's own output, and it would then assert nothing about the past. So the
+/// expectation is DERIVED from those bytes instead, by naming each difference this binary makes to
+/// a stored row and applying it -- with every substitution asserted to have FIRED, so none of them
+/// can quietly match nothing and leave the comparison reporting a sameness it never tested.
+///
+/// FOUR DIFFERENCES ARE NAMED, and none of them is a number that moved: a key that is no longer
+/// written, a slot retired from the wire struct, a slot written empty, and the flag the entry shed.
+#[test]
+fn an_index_written_before_this_change_is_written_back_without_the_key_the_entry_shed() {
+    let index: crate::engine::state::CoreIndex =
+        serde_json::from_str(OLD_STORE_INDEX).expect("an index written at 15583789e must load");
+
+    // --- And back: the same bytes but for the keys the node no longer holds. ---
     let without_the_removed_key = OLD_STORE_INDEX.replace(REMOVED_KEY, "");
     assert_ne!(
         OLD_STORE_INDEX, without_the_removed_key.as_str(),
@@ -1138,26 +1191,46 @@ fn an_index_written_before_this_change_loads_page_for_page_and_writes_back_the_s
         "every stored routing bucket must be gone from the expectation, not rewritten to nil: \
          the slot is retired from the wire struct"
     );
+    // AND THE LOG-RESIDENT KEY IS DROPPED FROM THE EXPECTATION, COUNTED BOTH WAYS.
+    //
+    // THE CLAIM THIS TEST MAKES HAS SPLIT IN TWO, and only the first half is unchanged. An index
+    // written before this change still LOADS page for page -- asserted above, and that is the
+    // tolerant decoder doing its job, since the wire struct declines no unknown key. What it no
+    // longer does is write back the SAME BYTES: it writes back one key lighter, because the entry
+    // shed the flag nothing maintained. That is precisely what the format stamp is spent on.
+    //
+    // Canonicalised rather than asserted around, in the same counted shape as the object id above:
+    // the count is checked BEFORE so the replacement cannot be reporting on nothing, and checked
+    // to zero after so it cannot have half-fired.
+    let log_resident_keys = canonical.matches(STORED_LOG_RESIDENT_TRUE).count()
+        + canonical.matches(STORED_LOG_RESIDENT_FALSE).count();
+    assert_eq!(
+        6, log_resident_keys,
+        "the fixture must carry a stored log-resident flag on each of its six page entries, or \
+         the canonicalisation below is not reporting what happens to one"
+    );
+    let canonical = canonical
+        .replace(STORED_LOG_RESIDENT_TRUE, "")
+        .replace(STORED_LOG_RESIDENT_FALSE, "");
+    assert_eq!(
+        0,
+        canonical.matches("\"log_backed\"").count(),
+        "every stored log-resident flag must be gone from the expectation: the key is retired \
+         from the entry and this binary does not write it"
+    );
+
     let rewritten = serde_json::to_string(&index).expect("the index re-serializes");
     assert_eq!(
         canonical, rewritten,
         "the index this binary writes back differs from the index it was given in some way other \
-         than dropping last_dump_sequence"
+         than dropping last_dump_sequence, retiring the address's routing bucket, emptying its \
+         identity slot, and dropping the log-resident flag the entry shed"
     );
     assert!(
         rewritten.len() > 500,
         "the re-serialized index is {} bytes; a comparison of two near-empty documents cannot \
          report a difference",
         rewritten.len()
-    );
-
-    // --- The control: a DIFFERENT page set must not compare equal, or the comparison above is
-    // reporting sameness it cannot actually detect. ---
-    let mut injected = loaded.clone();
-    injected[0].5 = injected[0].5.wrapping_add(1);
-    assert_ne!(
-        injected, loaded,
-        "the element-by-element comparison cannot report a difference when one is injected"
     );
 }
 
@@ -1652,7 +1725,7 @@ fn a_store_stamped_with_the_wrong_struct_version_is_refused_before_it_is_decoded
     // --- The other stamp, stated rather than assumed: the in-payload field is NOT what refuses
     // at this layer. `load_index_inner` is. Saying so here keeps the two from being confused. ---
     assert_eq!(
-        7, SHARD_INDEX_FORMAT_VERSION,
+        8, SHARD_INDEX_FORMAT_VERSION,
          "the struct version moved; the refusal messages pinned above quote it. Moved 2 -> 3 when the object id stopped folding the component in: the stored `oi` keeps its type, so an old index decodes cleanly and serves a recomputed id that disagrees with its own `object_index`. Moved 3 -> 5 when a container page gained the ability to state that one of its items was REMOVED: the payload is opaque to every index encoder, so an old index again decodes cleanly, and what disagrees is what a tombstone item MEANS -- the previous binary reads one as an empty live value and puts the element back. Moved 6 -> 7 when the object list began storing its SLOTS rather than a sorted set of its ids: the sequence is written in slot order and spells a placeholder `null`, so a bucket holding more than one object writes different bytes, and a previous binary reading them would take a slot position for an ascending rank -- which is the same class of silent misread as the three below, arriving on the load path. Moved 5 -> 6 when `object_id` left `BlockAddress`: `generation` is the block id alone now, so a WAL-resident page's generation went from Some(object_id) to None, every ref key it resolves through moves, and an OMITTED ref key restores to a different handle entirely. 4 was skipped and its reservation is now VOID -- it was held while this constant was 3, main moved to 5, and spending 4 would LOWER the constant, which `persistence.rs`'s one-sided `<` turns into a silent accept. A stamp may only ever increase. All three bumps share one shape: the stored row decodes cleanly and the disagreement appears later, on a recovery path. The pinned assertions above resolve the constant symbolically, so they followed it -- this literal is the tripwire that made someone come and check that they did"
     );
     // --- AND THE REFUSAL IS COUNTED APART FROM AN ABSENCE, which is the whole reason the counters
@@ -1768,7 +1841,7 @@ fn page_tuples(
                 page.address.length(),
                 page.dirty,
                 page.deleted,
-                page.log_backed,
+                page.log_backed(),
             )
         })
         .collect();
@@ -2032,7 +2105,7 @@ fn a_record_whose_page_handle_was_omitted_still_names_its_page_after_the_fold() 
             page.address.block_slab_id(),
             page.address.offset(),
             page.address.length(),
-            page.log_backed
+            page.log_backed()
         );
     }
 
@@ -2063,7 +2136,7 @@ fn a_record_whose_page_handle_was_omitted_still_names_its_page_after_the_fold() 
         assert_eq!(OFFSET, page.address.offset(), "{label}: offset moved");
         assert_eq!(LENGTH, page.address.length(), "{label}: length moved");
         assert!(
-            page.log_backed,
+            page.log_backed(),
             "{label}: the page must come back WAL-resident, which is the shape the hazard is about"
         );
         assert!(!page.deleted, "{label}: the page must not come back deleted");

@@ -72,13 +72,14 @@ fn batched_page_address() -> BlockAddress {
 
 fn sibling(object_key: &str, field: &str, address: BlockAddress) -> BlockIndex {
     BlockIndex {
+        kind: crate::index_log::IndexItemKind::Page,
+        routing_bucket: 7,
         object_key: std::sync::Arc::from(object_key),
         model_id: StoredModelKind::Hash,
         component: Some(std::sync::Arc::from(field)),
         address,
         dirty: false,
         deleted: false,
-        log_backed: false,
     }
 }
 

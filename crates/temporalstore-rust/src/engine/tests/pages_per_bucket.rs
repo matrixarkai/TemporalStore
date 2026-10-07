@@ -473,11 +473,13 @@ fn the_pages_a_bucket_holds_are_two_populations_and_not_one_mean() {
 /// A total-only assertion cannot tell "a field was added" from "the aligner rounded differently".
 #[test]
 fn every_byte_of_the_page_index_is_accounted_for() {
-    // --- BlockIndex: TWO shared names and an address pack solid; the one-byte model spelling
-    // and three flags round up together. The model spelling used to be a second `Arc<str>` in the
+    // --- BlockIndex: TWO shared names and an address pack solid; the one-byte model spelling,
+    // TWO flags and the two locating fields the entry absorbed from the index-log row fill the
+    // tail EXACTLY, with nothing spare. The model spelling used to be a second `Arc<str>` in the
     // eight-aligned group; it is now one byte in the tail, which is why that step took SIXTEEN
     // bytes off the structure and not the twelve a field-width subtraction would predict: four of
-    // them came out of the rounding the flags were already sitting in.
+    // them came out of the rounding the flags were THEN still sitting in -- a rounding that has no
+    // room left in it, which is why the claim below is asserted rather than read off the room.
     //
     // THE ADDRESS THEN TOOK A WORD OUT OF THE SAME GROUP, and that step is the other direction of
     // the same lesson: SIX bytes of its payload left, in two narrowings of which neither crosses a
@@ -487,7 +489,9 @@ fn every_byte_of_the_page_index_is_accounted_for() {
     let opt_arc_str = size_of::<Option<Arc<str>>>();
     let index_eight_aligned = arc_str + opt_arc_str + size_of::<BlockAddress>();
     let index_tail = size_of::<crate::engine::storage_bucket_internals::StoredModelKind>()
-        + 3 * size_of::<bool>();
+        + 2 * size_of::<bool>()
+        + size_of::<crate::index_log::IndexItemKind>()
+        + size_of::<u32>();
     let index_rounded_tail = round_up_to(index_tail, 8);
     println!(
         "BlockIndex: {index_eight_aligned} B eight-aligned + {index_tail} B tail rounded to \
@@ -503,11 +507,36 @@ fn every_byte_of_the_page_index_is_accounted_for() {
     );
     assert_eq!(56, size_of::<BlockIndex>(), "the page entry's budgeted width moved");
 
-    // The three flags are ALREADY inside the rounding. Narrowing them reclaims nothing; only
-    // removing the tail entirely would, and it is three keys of the stored index.
-    assert!(
-        index_tail < index_rounded_tail,
-        "the three flags no longer sit inside alignment slack, so the note above is stale"
+    // NARROWING THE FLAGS STILL RECLAIMS NOTHING, BUT NOT FOR THE REASON IT USED TO.
+    //
+    // This asserted `index_tail < index_rounded_tail` -- the flags fit INSIDE the rounding, with
+    // room to spare. The tail now fills its rounding EXACTLY: the entry absorbed two locating
+    // fields from the index-log row, so the tail is model_id + two flags + kind + routing_bucket,
+    // which is eight bytes in eight. There is no slack left anywhere in this structure.
+    //
+    // So the old proxy is false while the CLAIM it stood for is still true, and the claim is now
+    // asserted as itself: packing the two flags into one byte leaves a tail that rounds to the
+    // same eight. A `<` here would go red on a true statement, which is what it just did.
+    let flags_packed_tail = index_tail - 2 * size_of::<bool>() + 1;
+    // AND "NO SLACK LEFT" IS ASSERTED AS EQUALITY, because equality is the form of it that can
+    // FAIL. `index_tail <= index_rounded_tail` cannot state it at all: `index_rounded_tail` IS
+    // `round_up_to(index_tail, 8)`, so that comparison holds for every tail any structure could
+    // ever have, and no change to this type could turn it red. It reads as a check and is none.
+    // Equality can go red -- in either direction -- and it is what the sentence above means: the
+    // same claim `state.rs` carries beside the width as `field_sum == size_of`.
+    assert_eq!(
+        index_tail, index_rounded_tail,
+        "the tail is {index_tail} B inside a {index_rounded_tail} B rounding, so this entry has \
+         {} B of slack again and the claim that the next field here costs a whole word is stale",
+        index_rounded_tail - index_tail
+    );
+    assert_eq!(
+        round_up_to(flags_packed_tail, 8),
+        index_rounded_tail,
+        "packing the two flags into one byte takes the tail from {index_tail} to \
+         {flags_packed_tail}, which rounds to {} rather than {index_rounded_tail} -- so packing \
+         them WOULD now reclaim a whole word and the note above has gone stale",
+        round_up_to(flags_packed_tail, 8)
     );
 
     // --- BlockIndexMap: ONE ARM WITH A PAYLOAD, and the tag rides the list pointer's niche. ---
@@ -885,7 +914,11 @@ fn what_each_shape_of_the_page_index_would_cost() {
 ///     the entry by nothing at all.
 ///
 /// So of the two, one is already banked and the other is worth 8 bytes only if all three flags go
-/// -- and `dirty`, `deleted` and `log_backed` are three keys of the stored block entry.
+/// -- and of those three, `dirty` and `deleted` are keys of the stored block entry while
+/// `log_backed` is NOT one any more: the entry shed it and the log-resident fact is derived from
+/// the address. The mirrors below still declare three flags OF THEIR OWN, and a three-flag tail is
+/// what they price; that is no longer the live entry's field set, while the width each of them is
+/// compared against is the live entry's.
 #[test]
 fn what_the_common_case_could_hold_inline_and_what_this_engines_page_entry_forbids() {
     // --- The controls, first and twice. ---
@@ -1742,6 +1775,8 @@ fn reading_a_page_out_of_line_costs_a_dependent_load_an_inline_entry_did_not() {
 
 fn page_for(seed: u64) -> BlockIndex {
     BlockIndex {
+        kind: crate::index_log::IndexItemKind::Page,
+        routing_bucket: 7,
         object_key: Arc::from(format!("key-{seed}").as_str()),
         // Was `"strings"`, which is not a spelling the registry declares -- the plural was a
         // fixture typo that a free-form string field could not catch.
@@ -1756,12 +1791,13 @@ fn page_for(seed: u64) -> BlockIndex {
         ),
         dirty: false,
         deleted: false,
-        log_backed: false,
     }
 }
 
 fn component_page(seed: u64, component: &str) -> BlockIndex {
     BlockIndex {
+        kind: crate::index_log::IndexItemKind::Page,
+        routing_bucket: 7,
         object_key: Arc::from("container"),
         // Was `"hashes"`, likewise not a declared spelling.
         model_id: crate::engine::storage_bucket_internals::StoredModelKind::Hash,
@@ -1775,7 +1811,6 @@ fn component_page(seed: u64, component: &str) -> BlockIndex {
         ),
         dirty: true,
         deleted: false,
-        log_backed: true,
     }
 }
 
@@ -1806,10 +1841,11 @@ fn assert_same_page(context: &str, handle: u64, left: &BlockIndex, right: &Block
         left.deleted, right.deleted,
         "{context}: page {handle} changed deleted"
     );
-    assert_eq!(
-        left.log_backed, right.log_backed,
-        "{context}: page {handle} changed log_backed"
-    );
+    // THE LOG-RESIDENT COMPARISON IS GONE RATHER THAN REWRITTEN, because it could no longer
+    // fail. It used to compare a STORED flag; it now reads an accessor that is a pure function of
+    // the address, and `left.address == right.address` is asserted nine lines above. An assertion
+    // dominated by an earlier one in the same function cannot distinguish any case the earlier one
+    // admits -- it is not a weaker check, it is none, and it would read as coverage.
 }
 
 /// The whole block set, as an ordered list of handle-and-entry, compared element by element.
@@ -2312,8 +2348,12 @@ fn the_page_entry_and_not_the_bucket_node_is_the_next_dominant_term() {
     let model_id = size_of::<crate::engine::storage_bucket_internals::StoredModelKind>();
     let component = size_of::<Option<Arc<str>>>();
     let names = object_key + model_id + component;
-    let flags = 3 * size_of::<bool>();
-    let field_sum = names + size_of::<BlockAddress>() + flags;
+    let flags = 2 * size_of::<bool>();
+    // THE TWO LOCATING FIELDS the entry absorbed from the index-log row. Named here because
+    // this sum is checked against `size_of`, and it reconstructed to the right total by
+    // ROUNDING rather than by being complete before they were added.
+    let locating = size_of::<crate::index_log::IndexItemKind>() + size_of::<u32>();
+    let field_sum = names + size_of::<BlockAddress>() + flags + locating;
     println!(
         "\n=== inside the {} B page entry ===",
         size_of::<BlockIndex>()
@@ -2322,7 +2362,8 @@ fn the_page_entry_and_not_the_bucket_node_is_the_next_dominant_term() {
     println!("  object_key                    : {object_key:>4} B  (a fat pointer; the length rides beside it)");
     println!("  model_id                      : {model_id:>4} B  (a one-byte spelling since #1994, NOT a pointer)");
     println!("  component                     : {component:>4} B  (a fat optional pointer)");
-    println!("  dirty + deleted + log_backed  : {flags:>4} B  (inside the alignment rounding)");
+    println!("  dirty + deleted               : {flags:>4} B");
+    println!("  kind + routing_bucket         : {locating:>4} B  (absorbed from the index-log row)");
     println!(
         "  {field_sum} B of field in {} B",
         size_of::<BlockIndex>()

@@ -1161,14 +1161,15 @@ fn the_entry_is_fifty_six_bytes_and_every_one_is_accounted_for() {
     let flags = 3usize;
 
     println!("\n=== BlockIndex, field by field ===");
-    println!("  offsets: address@{} object_key@{} component@{} model_id@{} dirty@{} deleted@{} log_backed@{}",
+    println!("  offsets: address@{} object_key@{} component@{} model_id@{} dirty@{} deleted@{} kind@{} routing_bucket@{}",
         offset_of!(BlockIndex, address),
         offset_of!(BlockIndex, object_key),
         offset_of!(BlockIndex, component),
         offset_of!(BlockIndex, model_id),
         offset_of!(BlockIndex, dirty),
         offset_of!(BlockIndex, deleted),
-        offset_of!(BlockIndex, log_backed),
+        offset_of!(BlockIndex, kind),
+        offset_of!(BlockIndex, routing_bucket),
     );
     println!(
         "  address {address} + object_key {object_key} + component {component} + model_id {model} \
@@ -1480,13 +1481,14 @@ fn a_stored_spelling_with_no_row_is_refused_by_name_at_the_decode() {
 /// One page entry, for the tests that mutate a single field of a real encoding.
 fn sample_entry() -> BlockIndex {
     BlockIndex {
+        kind: crate::index_log::IndexItemKind::Page,
+        routing_bucket: 7,
         object_key: Arc::from("k"),
         model_id: StoredModelKind::String,
         component: Some(Arc::from("a")),
         address: crate::block_store::BlockAddress::from_parts(1, 2, 4, Some(5), Some(6)),
         dirty: true,
         deleted: false,
-        log_backed: true,
     }
 }
 
@@ -1666,7 +1668,14 @@ fn the_model_spelling_did_not_move_on_the_wire_and_the_entry_lost_three_steps_in
         assert_eq!(page.component, decoded.component, "{label}: component moved");
         assert_eq!(page.dirty, decoded.dirty, "{label}: dirty moved");
         assert_eq!(page.deleted, decoded.deleted, "{label}: deleted moved");
-        assert_eq!(page.log_backed, decoded.log_backed, "{label}: log_backed moved");
+        // NOT a stored field any more, and this is the ONLY address property this loop checks --
+        // there is no `address` comparison beside it -- so the accessor comparison still has
+        // content: it asserts the block id's PRESENCE survives both encoders.
+        assert_eq!(
+            page.log_backed(),
+            decoded.log_backed(),
+            "{label}: the address stopped agreeing about log-residency across the round trip"
+        );
     }
 
     // THE ABSENT EFFECT, as THREE numbers now, because three changes have taken bytes off this entry

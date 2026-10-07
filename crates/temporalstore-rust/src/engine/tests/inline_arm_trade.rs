@@ -296,13 +296,14 @@ fn arm_census(engine: &TemporalEngine) -> ArmCensus {
 /// differ from a real one in `Arc` sharing and that is exactly what a clone-based instrument sees.
 fn one_real_page_free_standing() -> BlockIndex {
     BlockIndex {
+        kind: crate::index_log::IndexItemKind::Page,
+        routing_bucket: 7,
         object_key: std::sync::Arc::from("free-standing"),
         model_id: crate::engine::storage_bucket_internals::StoredModelKind::String,
         component: None,
         address: crate::block_store::BlockAddress::from_parts(1, 64, 32, Some(7), Some(11)),
         dirty: false,
         deleted: false,
-        log_backed: false,
     }
 }
 
@@ -1733,7 +1734,7 @@ fn what_the_narrower_entry_is_worth_on_the_heap_now_that_it_is_behind_a_pointer(
             },
             dirty: page.dirty,
             deleted: page.deleted,
-            log_backed: page.log_backed,
+            log_backed: page.log_backed(),
         };
 
         let plan = census_plan(&census);

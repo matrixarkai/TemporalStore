@@ -40,13 +40,14 @@ use std::sync::Arc;
 
 fn page(object: &str, component: Option<&str>, slab: u64, offset: u32, length: u32) -> BlockIndex {
     BlockIndex {
+        kind: crate::index_log::IndexItemKind::Page,
+        routing_bucket: 7,
         object_key: Arc::from(object),
         model_id: stored_model_kind("hash"),
         component: component.map(Arc::from),
         address: BlockAddress::from_parts(slab, offset as u64, length as u64, Some(7), Some(11)),
         dirty: false,
         deleted: false,
-        log_backed: false,
     }
 }
 
