@@ -307,10 +307,28 @@ fn budget() -> Vec<Budgeted> {
 #[test]
 fn every_per_item_structure_states_its_width_and_its_padding() {
     let rows = budget();
-    assert!(
-        rows.len() >= 15,
-        "the budget lists {} structures; it was written with 17 and a shrinking list is how a \
-         structure stops being watched",
+    // THE ANTI-SHRINK GUARD, WHICH CAUGHT THIS CHANGE AND IS NOW TWO-SIDED.
+    //
+    // It read `rows.len() >= 15` with the note that "a shrinking list is how a structure stops
+    // being watched", and it did its job: three rows went when `ComponentBlocks`, `ComponentList`
+    // and `ObjectBlockRefs` were deleted, the list went from 17 to 14, and the arm went red.
+    //
+    // IT IS NOT LOWERED TO 14. A `>=` is satisfied on whichever side an edit moves, so moving the
+    // floor down to meet a shrink is the one repair that cannot fail again for the same reason.
+    // The count is stated EXACTLY instead: a row added deliberately edits this number, and a row
+    // that quietly disappears does not get to.
+    //
+    // 14 IS JUSTIFIED AND NOT MERELY MEASURED. The distinction this guard protects is between a
+    // structure that stopped being watched and one that no longer EXISTS to watch, and only the
+    // first is a defect. All three of the removed rows are gone from `state.rs` entirely -- an
+    // object maps straight to its `BlockRefs`, which keeps its own row above -- so there is
+    // nothing left for them to be watched for.
+    assert_eq!(
+        14,
+        rows.len(),
+        "the budget lists {} structures and should list 14: 17 before the three wrappers between \
+         an object and its block refs were deleted, and a list that shrinks for any other reason \
+         is how a structure stops being watched",
         rows.len()
     );
 
