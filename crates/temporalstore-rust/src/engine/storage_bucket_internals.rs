@@ -3235,11 +3235,10 @@ fn visit_model_live_blocks(
         // filed under. That is four env reads per SHARD walk rather than one; asking per kind is
         // what keeps the kind list in ONE place instead of restating it here as well.
         //
-        // HASH AND ZSET ANSWER TRUE NOW, AND SPELLING THEM AS QUESTIONS IS WHAT PAID FOR THAT.
-        // They were asked here while both answered false, so widening the predicate was the only
-        // edit their collapse needed in this function -- which is what the arms below were built
-        // for and is now what happened. See `index_entry_names_a_page` for what discharged each
-        // refusal; neither was ever about this walk.
+        // HASH AND ZSET ARE ASKED TOO, AND TODAY THEY BOTH ANSWER FALSE. They are spelled as
+        // questions rather than left out so that widening the predicate is the only edit their
+        // collapse needs in this function -- see `index_entry_names_a_page` for the measured
+        // reason each is held out, neither of which is about this walk.
         let hash_names_a_page = index_entry_names_a_page(ModelKind::Hash.as_str());
         let zset_names_a_page = index_entry_names_a_page(ModelKind::Zset.as_str());
         let list_names_a_page = index_entry_names_a_page(ModelKind::List.as_str());
@@ -3256,9 +3255,9 @@ fn visit_model_live_blocks(
         }
         for (key, members) in &shard.zsets {
             if zset_names_a_page {
-                // REACHED NOW. This arm stood unreached while a zset component carried the SCORE
-                // and dropping it deleted data; the score moved off the component onto the
-                // outcome's `value` slot, and this is the arm that was kept waiting for that.
+                // UNREACHED TODAY: `index_entry_names_a_page` answers false for zset, because a
+                // zset component carries the SCORE and dropping it deletes data. Kept so the arm
+                // exists the moment the score moves off the component.
                 emit_one_entry_a_page(
                     ModelKind::Zset,
                     key,
@@ -3617,54 +3616,104 @@ pub(super) struct ObjectDeletionFiled(());
 /// recorded container; this one exists so that those that are cannot skip it and still compile.
 /// Whether an index entry for this kind takes its identity from the PAGE rather than the ELEMENT.
 ///
-/// # THE SET OF KINDS: ALL FOUR CONTAINERS, AND WHAT EACH REFUSAL COST TO DISCHARGE
+/// # THE SET OF KINDS, AND WHY HASH AND ZSET ARE NOT IN IT
 ///
-/// RESTATED TWICE. This said "only its SET arm consumes the answer: hash, zset and list emit one
-/// named entry per element either way", then said `set` and `list` with hash and zset held out on
-/// measurement. All four containers are here now, and widening the body is still the whole change
-/// -- every filing predicate reads THIS function, so the projection,
+/// RESTATED. This said "only its SET arm consumes the answer: hash, zset and list emit one named
+/// entry per element either way". `list` is here too now, and widening the body is the change --
+/// every filing predicate reads THIS function, so the projection,
 /// `upsert_bucket_index_block_inner` and `fold_delta_block_items` move together rather than being
 /// talked into agreeing.
 ///
-/// THE TWO REFUSALS WERE REAL AND NEITHER WAS DISCHARGED BY ARGUING WITH IT. Each was an
-/// obstacle in the code, each was removed by a change of its own that landed first, and the
-/// refusals are kept here with what paid them off, because the reason a kind is IN this set is
-/// as load-bearing as the reason one is out:
+/// TWO OF THE THREE REMAINING CONTAINER KINDS WERE ATTEMPTED AND REFUSED ON MEASUREMENT. Both
+/// refusals are recorded here because each is a different kind of obstacle, and neither is about
+/// sequencing:
 ///
-///   * `zset` -- ITS COMPONENT USED TO BE THE SCORE, NOT A NAME. A zset component was
-///     `{biased_score:016x}{hex(member)}`, so the entry's name was the only copy of an element's
-///     score outside `shard.zsets`, and dropping it DELETED DATA rather than a label -- measured
-///     as `Some(3.0)` written and `None` served. DISCHARGED by "A zset component names its member,
-///     and the score rides the outcome": the component is `hex::encode(member)` now and the score
-///     travels on the WAL outcome's `value` slot via `RecordedKind::outcome_value`, so the name
-///     carries no datum any more and a collapsed zset entry drops a label and nothing else. The
-///     in-place RESCORE that left TWO live entries for one member is handled by the same
-///     page-keyed term the other kinds use, below.
-///   * `hash` -- FOUR OF ITS READERS RESOLVED THROUGH THE INDEX BY COMPONENT, with no
-///     resident-map fallback. `read_bucket_index_value` -> `bucket_index_block_address` required
-///     `page.component.as_deref() == component` on every branch, so a nameless entry made a
-///     present field unreachable: `HashGet` answered MISSING for a field that is there,
-///     `HashIncrBy` read that miss as `unwrap_or_default()` and restarted the counter at zero, and
-///     `HashLen` counted entries and so reported the PAGE count. DISCHARGED by "A hash answers
-///     from its resident map, so the entry need not name the field": the two ordinal branches, the
-///     point reads and `HashLen` read `shard.hashes` instead, which is the authority for a hash
-///     field's existence in the way the index never was.
+///   * `zset` -- ITS COMPONENT IS NOT A NAME, IT IS THE SCORE. A zset component is
+///     `{biased_score:016x}{hex(member)}`, so the entry's name is the only copy of an element's
+///     score outside `shard.zsets`. Dropping it DELETES DATA rather than a label: a member whose
+///     durable entry a fold has not delivered cannot be rebuilt from its page at all, measured as
+///     `Some(3.0)` written and `None` served. And a RESCORE is an in-place rewrite from this
+///     function's side -- the old element key is tombstoned while its live entry is not superseded
+///     -- which left TWO live entries for one member at one score. Attempting it turned 12 tests
+///     red across 5 modules (`element_ordinal_reuse`, `durable_outranks_derived`,
+///     `container_tombstone_entry`, `container_page_ordinal`, `container_member_shadow`), several
+///     of them control arms that panic with "a zset page is named by its component". Converting
+///     zset means first taking the score OUT of the component.
+///   * `hash` -- FOUR OF ITS READERS RESOLVE THROUGH THE INDEX BY COMPONENT, with no resident-map
+///     fallback. `read_bucket_index_value` -> `bucket_index_block_address` requires
+///     `page.component.as_deref() == component` on every branch, so a nameless entry makes a
+///     present field unreachable: `HashGet` answers MISSING for a field that is there,
+///     `HashIncrBy` reads that miss as `unwrap_or_default()` and restarts the counter at zero,
+///     `HashLen` counts entries and so reports the PAGE count, and `HashGetAll` survives only
+///     because it already serves the union with `shard.hashes`. Hash is also the one container
+///     kind that rewrites an element IN PLACE -- `HashSet` on an existing field keeps the
+///     component and takes a new address -- which is the shape the paragraph below says an
+///     address-keyed predicate mishandles. Converting hash means first moving those four readers
+///     onto `shard.hashes`.
 ///
-/// WHAT MAKES THE WIDENING SAFE AT THE FILING SITES, for all four and not just the two that were
-/// already here: when a kind names a page the discriminator is the PAGE KEY derived from the
-/// address (`super::live_page_key`), not the component -- so one filing supersedes exactly the
-/// entry that named the same physical page and leaves every sibling page of the object alone.
-/// Hash's in-place rewrite and zset's rescore both take a NEW address, so both converge on the
-/// page they replace. That term is what makes the component dead ON A LIVE ENTRY.
+/// `list` IS THE ONE THAT CONVERTS, and it converts because its component carries nothing the
+/// engine reads back out of the entry. The sequence that orders a list lives in `shard.lists`,
+/// which is keyed BY that sequence, and both list readers (`ListLen`, `ListRange`) read the
+/// resident map. `list` also has no `LSET`, `LINSERT` or `LREM`, so it never rewrites an element in
+/// place and the two-live-entries shape cannot arise for it.
 ///
-/// AND IT IS DEAD ON A LIVE ENTRY ONLY. A TOMBSTONE STILL NAMES ITS ELEMENT, and that is not a
-/// loose end this change left -- it is the scope the collapse has always had, stated on
-/// `container_index_files_one_entry_a_page` with two measured consequences of getting it wrong (a
-/// re-add of Y clearing X's tombstone so X comes back, and retention growing per removal ISSUED
-/// rather than per element removed). So `BlockIndex::component` is NOT retired by this change: the
-/// tombstone sweep in `upsert_bucket_index_block_inner` still reads it, against the ELEMENT's own
-/// name. A width step that deletes the field has to move that identity somewhere a live entry does
-/// not pay for first.
+/// Adding `Hash` or `Zset` to the list below without doing the work named above is the lethal-low
+/// direction: it reads as a smaller index and serves a short object.
+///
+/// # BOTH REFUSALS WERE RE-DRIVEN WITH THAT WORK DONE, AND BOTH STILL REFUSE
+///
+/// The two paragraphs above each name a prerequisite, and BOTH have since landed: a zset component
+/// is `hex::encode(member)` with the score on the WAL outcome's `value` slot, and hash's four
+/// index-by-component readers answer from `shard.hashes`. So the flip was attempted again with
+/// both in hand. IT WAS REFUSED AGAIN, ON MEASUREMENT, and the prerequisites are not what is left
+/// over -- what refuses it now is a THIRD obstacle that neither paragraph above is about and that
+/// the prerequisites could not have addressed.
+///
+/// WHAT THE PAGE-KEYED TERM DOES AND DOES NOT FIX. `upsert_bucket_index_block_inner`'s supersede
+/// term keys on `super::live_page_key` when a kind names a page, and that solves OVER-matching:
+/// one filing no longer takes every sibling entry of the object with it. It does not solve
+/// UNDER-matching. An element rewritten IN PLACE is written to a NEW address, so the new filing's
+/// page key matches NO existing entry and the element's previous live entry is never superseded at
+/// all. `set` and `list` are immune because neither can rewrite an element in place -- a set
+/// member's page key is its member, and a list has no `LSET`, `LINSERT` or `LREM`. Hash
+/// (`HashSet` on an existing field) and zset (a rescore) both can, which is the shape the hash
+/// paragraph above already warned "an address-keyed predicate mishandles" -- a warning that
+/// survived its own prerequisite.
+///
+/// MEASURED, by flipping this function to all four kinds and running the modules that cover them.
+/// The composed base had ONE failure; the flip added SEVENTEEN. Two of them are product defects
+/// rather than fixtures that went stale, and either on its own refuses the flip:
+///
+///   * `gated_corpus_across_a_store_boundary::an_ungated_store_comes_back_whole_under_the_gate`
+///     served `hash: 41` of 40 elements -- an element MORE than was written, from the stale live
+///     entry the rewrite failed to supersede. That arm is labelled "the direction every existing
+///     deployment takes on upgrade", so this is the upgrade path and not a corner.
+///   * `container_tombstone_entry::a_rescore_sweeps_its_own_tombstone_because_the_component_no_
+///     longer_spells_the_score` found 2 live entries for one member at one score. That is the
+///     zset paragraph's own two-live-entries shape, reproduced with the score already moved off
+///     the component -- so moving the score was necessary and not sufficient.
+///
+///   * `element_ordinal_reuse::the_element_ordinal_a_delete_frees_is_handed_straight_back_to_the_
+///     next_element` also changed behaviour, and its own message asks for the module's refutation
+///     to be re-read rather than the assertion relaxed. It is listed apart because it is a
+///     behaviour change this has not finished attributing, not a demonstrated loss.
+///
+/// The other fourteen are stale PLANTS and control arms: several manufacture a component-less
+/// entry by seeding a named one and stripping it, which strips nothing once nothing files a name
+/// (`stripped 0 entries, not one`), and several assert in their own names that hash and zset are
+/// held out. Those would all be ordinary restatement work. The two above are not.
+///
+/// SO THE WIDTH STEP THIS WAS LEADING TO IS BLOCKED TWICE OVER, and the second block is the one
+/// that matters more. Even with all four kinds collapsed, `BlockIndex::component` is NOT dead: the
+/// TOMBSTONE sweep in `upsert_bucket_index_block_inner` reads it against the ELEMENT's own name,
+/// and a tombstone is a per-element fact by design -- see
+/// `super::container_index_files_one_entry_a_page`, which scopes the collapse to LIVE entries and
+/// gives two measured consequences of a nameless tombstone. Driven: making that term vacuous, as
+/// removing the field forces, turns `write_after_fold::a_re_add_after_a_removal_does_not_bring_
+/// the_removed_member_back` red and makes a gated removal serve 12 members where the invariant is
+/// 11. `state`'s `TheEntryWithoutAnElementName` records what the entry WOULD measure without the
+/// field -- 40 bytes, zero slack -- so the number is in hand for whoever moves that identity off
+/// the live entry, which is what the step actually needs and is not this function's to do.
 ///
 /// MEASURED, which is why the scope is not a matter of taste: `string`, `control_state` and
 /// `context_node` file NO element name with exactly ONE page per object, and for them the
@@ -3683,16 +3732,7 @@ pub(super) fn index_entry_names_a_page(kind: &str) -> bool {
     }
     // Spelled against `ModelKind::as_str` rather than against string literals so a kind renamed in
     // the registry cannot leave this list silently matching nothing.
-    //
-    // ALL FOUR CONTAINER KINDS AND NOTHING ELSE. The kinds NOT here -- `string`, `feature`,
-    // `control_state` and every `context_*` -- file no element name at all and have exactly one
-    // page per object, so for them the component term is already `None == None` and the
-    // convergence they need is the object-wide one they have always had. See the note above for
-    // why that is not the same thing as them being page-named.
-    kind == ModelKind::Set.as_str()
-        || kind == ModelKind::List.as_str()
-        || kind == ModelKind::Hash.as_str()
-        || kind == ModelKind::Zset.as_str()
+    kind == ModelKind::Set.as_str() || kind == ModelKind::List.as_str()
 }
 
 /// The name an index ENTRY IS FILED UNDER -- `None` for a gated container, where the page is the
