@@ -226,6 +226,7 @@ mod page_entry_handles;
 
 mod bucket_sequence_budget;
 mod bucket_node_arms;
+mod bucket_node_container_header;
 mod bucket_flag_masks;
 mod inline_arm_trade;
 mod layout_arm_selection;
