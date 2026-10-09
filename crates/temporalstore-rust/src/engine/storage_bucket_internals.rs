@@ -3837,15 +3837,45 @@ pub(super) struct ObjectDeletionFiled(());
 /// ## AND THE GUARDS THAT STILL ASSERT THE PRE-COLLAPSE STATE, BY MODULE
 ///
 /// The retirement of the gate turned every UNGATED-path test into a gated-path test, so this
-/// surface grew rather than shrank: seventeen before it, and AT LEAST 53 after.
+/// surface grew rather than shrank: seventeen before it, and 59 after.
 ///
-/// THE COUNT IS A FLOOR AND IS WRITTEN AS ONE, because the run that produced it had not finished:
-/// 53 failures at 810 of 914 arms, with the `_scale`, `campaign_end_to_end` and `bucket_fill`
-/// measurement families excluded. An earlier draft of this paragraph wrote 49 as a FINAL figure
-/// from the same run four minutes earlier, and it had already risen to 53 by the time the paragraph
-/// was committed -- which is the whole reason a count needs its denominator AND the state of the
-/// run that produced it. Re-measure before quoting a total; the SHAPES below are what is stable.
-/// NONE IS A DEMONSTRATED LOSS OF SERVED DATA. Each was driven and its message read, and they fall
+/// THE FIGURE IS THE RUN'S OWN, WITH ITS FOUR-TERM SUM: 758 passed, 59 failed, 97 ignored, 1,941
+/// filtered out -- 2,855, which is this branch's own total, against `running 914 tests` for the
+/// filter (758 + 59 + 97). Measured with the `_scale`, `campaign_end_to_end` and `bucket_fill`
+/// measurement families excluded, which is stated because a count with no denominator and no
+/// exclusion cannot be checked.
+///
+/// TWO EARLIER DRAFTS OF THIS PARAGRAPH WERE WRONG IN THE SAME DIRECTION. The first wrote 49 as a
+/// TOTAL from a run that had not finished; the second corrected it to a FLOOR of 53, from the same
+/// unfinished run. The run ended at 59. A count read off a run in flight is a floor however it is
+/// worded, and the only fix is to wait for the verdict line.
+///
+/// AND 59 IS THE FIGURE AT THE RETIREMENT COMMIT, not now: two of them have since been fixed --
+/// `collapse_for_list`'s inverted arm and the FIFTH `BucketNode` decomposition, in
+/// `range_free_bucket_id::removing_the_routing_bucket_recovers_no_bytes_alone_and_eight_in_
+/// combination`, which was the only one of the five the tombstone word did not reach when the other
+/// four were restated.
+///
+/// ## ONE OF THE 59 IS NOT A RESTATEMENT AND IS ATTRIBUTED HERE
+///
+/// `wal_reclaim_frame_boundary::reclaim_frees_more_than_accrues_at_both_corpus_sizes` asserts that
+/// the reclaimed log settles to a FLOOR rather than ratcheting, as a spread under one percent of the
+/// mean over the last three rounds. It is MINE, and it is a flake rather than a deterministic
+/// break: five runs on `9651d82fd` pass five times with `Compiling` 0, and five runs on this branch
+/// pass THREE times -- failing at spreads of 29, 49, 59 and 66 B against means near 2,875, which is
+/// 1.0 to 2.3 percent.
+///
+/// THE RATCHET ARM IS NOT THE ONE THAT FIRES. The floors do not trend upward -- [2869, 2869, 2898],
+/// [2858, 2917, 2851] -- so what moved is the VARIANCE of the settled floor, not its level. The
+/// likeliest cause is this series' own extra per-rewrite work on the index-log delta: a rewrite now
+/// retires the entry over the page it vacates, so a round's delta is a slightly different size than
+/// it was.
+///
+/// THE BAND IS NOT WIDENED, and that is deliberate. The test's own comment already says the last
+/// digits of these counts move between rounds, so the one-percent band was sitting at this
+/// magnitude's noise floor before this series touched it -- but a band that was marginal is not a
+/// licence to move it once a change pushes it over. Adjusting the assertion until it passes is the
+/// failure this campaign has recorded most often. It is left red and attributed.
 /// into four shapes:
 ///
 ///   * THEY IDENTIFY AN ELEMENT IN THE INDEX BY ITS COMPONENT, to establish a population that still

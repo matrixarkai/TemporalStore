@@ -80,6 +80,7 @@ use crate::block_store::ElementEntry;
 use crate::engine::state::{
     BlockIndex, BlockIndexMap, BlockSlabLiveIndex, BucketLayoutState, BucketNode, BucketTtl,
     DeletedObjectIndex,
+    TombstoneElements,
     ObjectIndex,
 };
 
@@ -754,6 +755,7 @@ struct MirrorNode<I> {
     object_index: ObjectIndex,
     deleted_object_index: DeletedObjectIndex,
     block_index: I,
+    tombstone_elements: TombstoneElements,
 }
 
 /// WHAT EACH SHAPE OF THE BLOCK INDEX WOULD COST, IN WIDTH.
@@ -1168,6 +1170,7 @@ fn mirror_live_node(node: &BucketNode) -> MirrorNode<BlockIndexMap> {
         object_index: node.object_index.clone(),
         deleted_object_index: node.deleted_object_index.clone(),
         block_index: node.block_index.clone(),
+        tombstone_elements: node.tombstone_elements.clone(),
     }
 }
 
@@ -1197,6 +1200,7 @@ fn mirror_boxed_node(node: &BucketNode) -> MirrorNode<MirrorBoxedPageIndex> {
         object_index: node.object_index.clone(),
         deleted_object_index: node.deleted_object_index.clone(),
         block_index,
+        tombstone_elements: node.tombstone_elements.clone(),
     }
 }
 
