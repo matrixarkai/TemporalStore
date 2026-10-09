@@ -883,41 +883,47 @@ fn an_unreadable_component_name_is_skipped_and_the_durable_map_keeps_the_element
 /// the hash twin of `an_unreadable_component_name_is_skipped_and_the_durable_map_keeps_the_element`,
 /// and it is the one test here that fails if `shard.hashes = hashes` comes back.
 ///
-/// # WHY THE FIXTURE CANNOT CORRUPT A NAME, THE WAY THE SET TWIN DOES
+/// # RESTATED: THE SHAPE IS NO LONGER PLANTED, BECAUSE IT IS THE ONLY SHAPE THERE IS
 ///
-/// A set member's component is `hex::encode(member)`, so swapping one character for `z` keeps the
-/// length and makes it UNDECODABLE. A hash field's component IS the field name, in plain characters
-/// -- there is no decode to break, and every string is a legal field name, so no corruption of its
-/// characters produces an unreadable one. The only shape of "the derived view cannot name this
-/// element" a hash has is a page entry carrying NO component at all, which is what
-/// `reconcile_secondary_views_from_bucket_index` counts in `unreadable_names` and skips.
+/// This test used to BLANK the component on one field's page entry and keep a second field's name as
+/// a control -- a named page and a nameless one, side by side. Under one entry a page NO live entry
+/// of any container kind carries an element name, so there is nothing left to blank: the blanking
+/// loop matched zero entries and the fixture's own floor refused it with `blanked 0, not one`. That
+/// floor is why this reads as a restatement rather than as a test that quietly stopped testing.
 ///
-/// So the fixture blanks the component on ONE field's page entry, in memory, before the unload that
-/// writes the index. That is the same door the zset fallback test uses to produce a shape the public
-/// surface will not produce on demand, and it leaves everything else -- the page, its address, the
-/// durable map -- exactly as the write path left it.
+/// THE CONTROL HAD TO GO WITH IT, AND THAT IS THE HONEST VERSION. `field-0` was the control because
+/// its page still named it, so it arrived through the DERIVED view while `field-1` could only arrive
+/// from the durable map. Neither is named now, so there is no named/nameless contrast to draw, and
+/// keeping `field-0` as a "control" would be a second copy of the same case wearing the word
+/// control. What replaces it is a DENOMINATOR on the other side of the claim: the index must be
+/// shown to hold live hash entries for this key and to name NOTHING with them, or "the durable map
+/// supplied it" is a conclusion about an index that was simply empty.
 ///
-/// # WHAT IS ASSERTED, AND THE CONTROL
+/// # WHAT IS ASSERTED, AND WHAT WOULD HAVE TO DISAGREE FOR IT TO FAIL
 ///
-/// Both fields must be in `shard.hashes` after the reload. `field-0`, whose page still names it, is
-/// THE CONTROL: it arrives through the derived view, so a fixture that lost the whole key cannot
-/// pass as this finding. `field-1`, whose page names nothing, can only arrive from the durable map
-/// through the merge -- before `hashes` was durable this field was simply gone, which is the
-/// six-of-six-fields-served-as-zero shape.
+/// Both fields must be in `shard.hashes` after a reload, and the index must name neither. The two
+/// independent artefacts are the index, which names zero fields, and the durable map, which names
+/// two: if the merge stops consulting the map -- `shard.hashes = hashes`, or
+/// `insert_element_if_absent` ceasing to insert -- the reload serves ZERO fields, because nothing
+/// else can name one. That is a strictly larger failure than the single field the planted version
+/// could lose, so the restatement did not weaken what this holds.
+///
+/// AND IT IS A TRIPWIRE IN THE OTHER DIRECTION TOO. If any live hash entry is ever found naming a
+/// field again, the `named` floor below reddens and says so: the collapse would have been reverted,
+/// and the arms in this module that assume a nameless index would all need re-reading.
 ///
 /// Asserted on the resident map rather than through a command, deliberately: `HashGet` and
-/// `HashGetAll` resolve through `bucket_index_component_block_addresses`, which is keyed BY the
-/// component, so a page naming no field is invisible to them whether the merge works or not. The
-/// map is what this change repairs, so the map is what is read.
+/// `HashGetAll` resolve through the resident map now, so reading them would be reading the same
+/// source twice rather than the index against the map.
 ///
-/// rust-internal: mutates the engine's own in-memory index, no external surface
+/// rust-internal: reads the engine's own in-memory index, no external surface
 #[test]
 fn an_unnamed_hash_page_is_skipped_and_the_durable_map_keeps_the_field() {
     let dir = tempfile::tempdir().unwrap();
     let engine = engine_on(dir.path());
     load_on(&engine, OPERATOR_END);
 
-    // Two fields of one hash, written normally, so both are durable and both have names.
+    // Two fields of one hash, written normally.
     for element in 0..2 {
         write(
             &engine,
@@ -929,70 +935,89 @@ fn an_unnamed_hash_page_is_skipped_and_the_durable_map_keeps_the_field() {
         );
     }
 
-    // Blank the component on ONE field's page entry: a hash page that names no field.
+    // THE TWO DENOMINATORS, both read BEFORE the unload that writes the index.
     {
-        let mut shards = engine.shards.write().expect("engine lock poisoned");
-        let shard = shards.get_mut(&1).expect("shard is loaded");
+        let shards = engine.shards.write().expect("engine lock poisoned");
+        let shard = shards.get(&1).expect("shard is loaded");
         assert_eq!(
             shard.hashes.get("un-hash").map(|fields| fields.len()),
             Some(2),
             "the durable map does not hold both fields, so this fixture cannot create the state it \
              needs and the assertions below would be about nothing"
         );
-        let mut blanked = 0usize;
-        for bucket in shard.bucket_index.bucket_map.values_mut() {
-            for page in bucket.block_index.blocks_mut_unaccounted() {
-                if page.model_id.as_str() == "hash" && page.component.as_deref() == Some("field-1") {
-                    page.component = None;
-                    blanked += 1;
+        let mut entries = 0usize;
+        let mut named = 0usize;
+        for bucket in shard.bucket_index.bucket_map.values() {
+            for page in bucket.block_index.values() {
+                if page.model_id.as_str() == "hash" && &*page.object_key == "un-hash" {
+                    entries += 1;
+                    if page.component.is_some() {
+                        named += 1;
+                    }
                 }
             }
         }
-        assert_eq!(
-            blanked, 1,
-            "expected exactly ONE hash page naming `field-1` and blanked {blanked} -- if this is 0 \
-             the fixture corrupted nothing and the test would pass without testing anything"
+        println!(
+            "[unnamed-hash] the index holds {entries} hash entr(ies) for this key, {named} of \
+             which name a field; the durable map names 2"
         );
-        println!("[unnamed-hash] blanked the component on field-1's page entry");
+        assert!(
+            entries > 0,
+            "THE INDEX HOLDS NO HASH ENTRY FOR THIS KEY AT ALL. Then the claim below would be a \
+             statement about an EMPTY index rather than about a NAMELESS one, and this test would \
+             pass without exercising the merge."
+        );
+        assert_eq!(
+            named, 0,
+            "{named} of {entries} hash entries NAME A FIELD. Under one entry a page none can: if \
+             this reddens the collapse has been reverted, and every arm in this module that assumes \
+             a nameless index has to be re-read rather than this floor relaxed."
+        );
     }
 
-    // The unload writes the index -- the blanked entry and the durable map together -- and the
+    // The unload writes the index -- nameless entries and the durable map together -- and the
     // reload runs the merge over them.
     engine.unload_shard(1);
     load_on(&engine, OPERATOR_END);
 
     let shards = engine.shards.write().expect("engine lock poisoned");
     let shard = shards.get(&1).expect("shard is loaded");
-    let fields = shard
+    // DELIBERATELY NOT AN `expect` ON THE KEY. The regression this arm guards against -- the
+    // reconcile assigning the derived view WHOLESALE instead of merging the durable map into it --
+    // takes the whole KEY with it, not one field of it. An `expect` here reddens with "the hash key
+    // did not survive the reload", which reads as a broken fixture, and the mutation proving this
+    // arm non-vacuous did exactly that. An absent key IS zero fields, so it is folded into the
+    // field set and the assertion under test is the one that speaks.
+    let field_names: std::collections::BTreeSet<String> = shard
         .hashes
         .get("un-hash")
-        .expect("the hash key did not survive the reload at all");
+        .map(|fields| fields.keys().map(|name| name.to_string()).collect())
+        .unwrap_or_default();
     println!(
         "[unnamed-hash] reloaded holding {} field(s): {:?}",
-        fields.len(),
-        fields.keys().map(|name| name.as_str()).collect::<Vec<_>>()
+        field_names.len(),
+        field_names
     );
-    assert!(
-        fields.contains_key("field-0"),
-        "THE CONTROL is gone: field-0's page still names it, so it arrives through the derived view. \
-         Losing it means the fixture broke the key rather than one field's name."
-    );
-    assert!(
-        fields.contains_key("field-1"),
-        "field-1 is GONE, and its page entry names no field -- so the derived view cannot produce it \
-         and the durable map is the only thing that can. This is the assertion that fails if the \
-         merge is reverted to `shard.hashes = hashes`, or if `insert_element_if_absent` stops \
-         inserting."
-    );
+    for field in ["field-0", "field-1"] {
+        assert!(
+            field_names.contains(field),
+            "{field} IS NOT SERVED after the reload; the key came back with {:?}. No page entry \
+             names a field, so the derived view cannot produce either of them and the durable map \
+             is the only thing that can. This reddens if `fill_absent_elements` stops filling -- \
+             i.e. if the reconcile goes back to assigning the derived view wholesale.",
+            field_names
+        );
+    }
     assert_eq!(
-        fields.len(),
+        field_names.len(),
         2,
-        "the hash came back with {} field(s) rather than 2",
-        fields.len()
+        "the hash came back with {} field(s) rather than 2: {:?}",
+        field_names.len(),
+        field_names
     );
     println!(
-        "[unnamed-hash] both fields came back: the unnamed page was skipped rather than defaulted, \
-         and the durable map supplied the field the derived view could not name"
+        "[unnamed-hash] both fields came back from an index that names neither, so the durable map \
+         supplied the whole field set rather than one field of it"
     );
 }
 
