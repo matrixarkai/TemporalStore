@@ -2539,6 +2539,42 @@ pub(crate) fn eager_cache_warm_on_load() -> bool {
 /// that reads it back as a page's element. ELEVEN WAS THIS BRANCH'S OWN PREVIOUS STEP and TEN is
 /// still claimed by an uncommitted edit in another working tree, so this is the next free number
 /// above both; main was re-read at 8 immediately before this commit.
+///
+/// AND REMOVING THE ELEMENT-NAME FIELD OWES NO FURTHER BUMP. TWELVE IS ENOUGH, AND THIS IS WHY.
+///
+/// The step after the one above took `BlockIndex::component` off the entry altogether -- 56 bytes
+/// of field to 40. That is a change to the stored form: the named served index stops writing a
+/// `"component"` key, and `block_index_written_key` renders the element slot of the map key empty.
+/// Both are exactly the kind of movement the four paragraphs above each paid a number for, so the
+/// question is a real one rather than a formality.
+///
+/// WHAT SETTLES IT IS THE REFUSAL FLOOR, NOT THE SIZE OF THE CHANGE. `persistence` refuses an index
+/// stamped BELOW this constant and falls back to WAL replay, with `<` -- so the set of indexes this
+/// binary will decode at all is exactly those stamped 12. Twelve was stamped BY the commit that
+/// made hash and zset page-named, which is the commit after which nothing files an element name on
+/// an entry. So every index this binary accepts was written by a binary that filed no element name,
+/// and the key this step stops writing is a key no accepted index contains. An index that really
+/// does carry one is stamped 10 or lower, is refused before a byte is decoded, and is rebuilt from
+/// the WAL.
+///
+/// THE DIRECTION THAT WOULD HAVE NEEDED A NUMBER IS THE OPPOSITE ONE: a binary BEFORE the collapse
+/// reading an index written after it. That is what 11 and 12 above already stop, and they stop it
+/// in both codecs. Spending a thirteenth number here would refuse every index this binary itself
+/// wrote at 12 and send every store through WAL replay once, for a key none of them carries.
+///
+/// SO THE THREE STORED-FORMAT ARMS THAT WENT RED ARE FIXTURES, NOT PRODUCTION OUTPUT MOVING, and
+/// that distinction is written into each of them in `engine::tests::page_entry_names`. All three
+/// HAND-CONSTRUCT an element name: two canonicalise a stored row that carries one so they can
+/// assert what this binary writes back, and the third goldened a `BlockIndex` built with a
+/// component argument that the struct literal had already stopped using. The combination they
+/// exercise -- an element name beside a CURRENT stamp -- is one no production binary has ever
+/// written, which is the whole reason the floor argument above holds.
+///
+/// ONE HAZARD WORTH RECORDING ABOUT THE NUMBERS THEMSELVES. On this branch the constant went 9 to
+/// 11, back to 9 when the collapse was refused for hash and zset again, then to 11, then to 12. So
+/// STAMP 11 NAMES TWO DIFFERENT ON-DISK SHAPES in this branch's history. Nothing reads an 11, because
+/// the floor is 12 and the comparison is `<` -- but anything that ever starts treating a stamp below
+/// the floor as meaningful has to know that one of them is ambiguous.
 pub(super) const SHARD_INDEX_FORMAT_VERSION: u32 = 12;
 
 /// Serialize a shard index, stamping the current format version.

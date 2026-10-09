@@ -398,7 +398,7 @@ fn one_remaining_name_slot_takes_the_entry_from_forty_to_thirty_two_and_the_chun
     );
 
     // --- THE LIVE ENTRY, FIELD BY FIELD AT ITS REAL OFFSET. ---
-    let live = page_fixture(Some("f0"), 3, (true, false));
+    let live = page_fixture(3, (true, false));
     let live_fields = [
         (
             "object_key",

@@ -6668,7 +6668,24 @@ fn the_index_wire_keys_are_what_they_were() {
             // the address word rather than carrying it. An index written before this still has the
             // key and still loads -- the wire struct does not deny unknown fields, so the stored
             // value is read and ignored.
-            "component",
+            // "component" is GONE, and it is the key this change removes. `BlockIndex` has no
+            // element-name field: all four container kinds file one entry a page, so an entry
+            // names a page and has nothing to say about which element is on it. The entry went 56
+            // bytes of field to 40 with it.
+            //
+            // AND IT OWES NO FORMAT STAMP, which is the part a reader of this list will want and
+            // is argued in full beside `SHARD_INDEX_FORMAT_VERSION`. The short form: the load
+            // refuses anything stamped below 12 and 12 was stamped BY the commit that made hash
+            // and zset page-named, so every index this binary accepts was written by a binary that
+            // filed no element name. The key this list stops expecting is a key no accepted index
+            // contains; one that really carries it is stamped 10 or lower and is rebuilt from the
+            // WAL.
+            //
+            // RESTATED RATHER THAN RE-GOLDENED, which for a list means the removed key is named
+            // here rather than quietly absent -- the same treatment "log_backed", "h", "rs", "o",
+            // "ps", "b" and "last_dump_sequence" already get below. A key that simply disappeared
+            // from this vector would leave the next reader unable to tell a removal from an
+            // oversight, which is the whole job of the list.
             "deleted",
             "deleted_object_index",
             "dirty",
