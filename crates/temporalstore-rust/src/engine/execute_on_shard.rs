@@ -1202,18 +1202,32 @@ pub(crate) fn execute_on_shard(
             let mut named_by_index: std::collections::HashSet<String> =
                 std::collections::HashSet::with_capacity(indexed.len());
             for (component, address) in indexed {
-                // A `None` COMPONENT NAMES NO FIELD, and is deliberately not counted below. It is
-                // the whole-object door's answer for a block that belongs to the object rather
-                // than to an element of it; the container is keyed by field name and cannot hold
-                // one, so treating it as a field the container lacks would be a false positive on
-                // every single occurrence. It is served exactly as it always was.
-                if let Some(name) = component.as_deref() {
-                    named_by_index.insert(name.to_string());
-                }
-                let name = component
-                    .as_deref()
-                    .map(|name| name.to_string())
-                    .unwrap_or_default();
+                // A `None` COMPONENT NAMES NO FIELD, SO IT IS NOT SERVED AS ONE.
+                //
+                // THIS USED TO DEFAULT IT TO `""` AND SERVE IT. The paragraph here said a nameless
+                // entry "is the whole-object door's answer for a block that belongs to the object
+                // rather than to an element of it ... It is served exactly as it always was", and
+                // that was survivable only while every hash entry carried a field name. Under one
+                // entry a page NO hash entry carries one, so every page of the object was served as
+                // a field called `""` whose value was the raw page FRAME.
+                //
+                // MEASURED, and it is the defect that refused this collapse twice: a two-field hash
+                // answered FOUR entries -- `("f1", ..), ("f3", ..)` and two `("", b"TSCPG2\n...")`
+                // -- which `conformance_oracle_matches_reference_model` reports against the
+                // reference model and `a_command_of_one_type_answers_empty_for_a_key_of_another`
+                // reports as a hash that is not the hash that was written. It also served `hash: 41`
+                // of 40 on a forty-field corpus, which is one phantom per folded page.
+                //
+                // AN EMPTY FIELD NAME IS LEGAL, which is exactly why the absent one must not spell
+                // it: defaulting here collides with a genuine `""` field and takes its value. This
+                // is the same `unwrap_or_default()` correction the four derived-view arms already
+                // carry, arriving on the READ path. The field a nameless page holds is named inside
+                // the page's own frame and in `shard.hashes`, and the union below serves it from
+                // there -- so nothing is lost by skipping, only a name that was never written.
+                let Some(name) = component.as_deref().map(str::to_string) else {
+                    continue;
+                };
+                named_by_index.insert(name.clone());
                 resolved.push((name, component, address));
             }
 

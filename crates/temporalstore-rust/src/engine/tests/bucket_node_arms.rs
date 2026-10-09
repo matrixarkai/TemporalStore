@@ -879,6 +879,11 @@ struct TaggedNode {
     dirty_generation: u64,
     first_dirty_wal_sequence: u64,
     first_dirty_index_log_sequence: u64,
+    // THE SAME WORD THE LIVE NODE GAINED, on the node and not inside the heap arm: the
+    // tombstone rows are a per-BUCKET fact, so the proposal would hold them exactly where
+    // the live declaration does. Putting them in the general arm's payload instead would
+    // make this proposal look one word cheaper than it is.
+    tombstone_elements: crate::engine::state::TombstoneElements,
     payload: TaggedLayout,
 }
 
@@ -897,6 +902,10 @@ struct LiveNodeMirror {
     object_index: ObjectIndex,
     deleted_object_index: DeletedObjectIndex,
     block_index: BlockIndexMap,
+    // CARRIED BY EVERY MIRROR, so the DISTANCES stay the prices: a mirror is the live
+    // declaration plus ONE historical difference, and the live node gained this word
+    // when a removal's element name left the page entries.
+    tombstone_elements: crate::engine::state::TombstoneElements,
 }
 
 /// Rebuild one live node in the tagged shape, arm chosen by the engine's OWN classifier.
@@ -936,6 +945,7 @@ fn retag(node: &BucketNode) -> TaggedNode {
         dirty_generation: node.dirty_generation,
         first_dirty_wal_sequence: node.first_dirty_wal_sequence,
         first_dirty_index_log_sequence: node.first_dirty_index_log_sequence,
+        tombstone_elements: node.tombstone_elements.clone(),
         payload,
     }
 }
@@ -1024,7 +1034,7 @@ fn the_tagged_node_is_fifty_six_bytes_and_every_arm_reconstructs() {
         );
     }
 
-    assert_eq!(88, size_of::<BucketNode>(), "the live node moved");
+    assert_eq!(96, size_of::<BucketNode>(), "the live node moved");
     // 48, and it has not moved while the live node has gone 168 -> 160 -> 144 -> 88: this mirror
     // carries the node's HEADER only, and the header lost a whole word when `last_dump_sequence`
     // left it. (56 was itself 64 until the five flags became one byte and a ten-byte tail became

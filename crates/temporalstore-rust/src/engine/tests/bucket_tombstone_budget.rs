@@ -125,6 +125,10 @@ struct TombMirrorLive {
     object_index: ObjectIndex,
     deleted_object_index: DeletedObjectIndex,
     block_index: BlockIndexMap,
+    // CARRIED BY EVERY MIRROR, so the DISTANCES stay the prices: a mirror is the live
+    // declaration plus ONE historical difference, and the live node gained this word
+    // when a removal's element name left the page entries.
+    tombstone_elements: crate::engine::state::TombstoneElements,
 }
 
 /// The tombstone set gone. The bytes LEAVE the structure rather than moving to the tail, which is
@@ -140,6 +144,10 @@ struct TombMirrorNoTombstones {
     first_dirty_index_log_sequence: u64,
     object_index: ObjectIndex,
     block_index: BlockIndexMap,
+    // CARRIED BY EVERY MIRROR, so the DISTANCES stay the prices: a mirror is the live
+    // declaration plus ONE historical difference, and the live node gained this word
+    // when a removal's element name left the page entries.
+    tombstone_elements: crate::engine::state::TombstoneElements,
 }
 
 /// The same eight bytes NARROWED instead of removed, as the control on the claim that removal is
@@ -158,6 +166,10 @@ struct TombMirrorNarrowedToHandle {
     object_index: ObjectIndex,
     deleted_object_index_handle: u32,
     block_index: BlockIndexMap,
+    // CARRIED BY EVERY MIRROR, so the DISTANCES stay the prices: a mirror is the live
+    // declaration plus ONE historical difference, and the live node gained this word
+    // when a removal's element name left the page entries.
+    tombstone_elements: crate::engine::state::TombstoneElements,
 }
 
 /// WHAT REMOVING THE TOMBSTONE SET WOULD MAKE THE NODE, and the control that says removing is not

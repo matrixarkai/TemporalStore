@@ -448,6 +448,10 @@ struct SeqMirrorLive {
     object_index: ObjectIndex,
     deleted_object_index: DeletedObjectIndex,
     block_index: BlockIndexMap,
+    // CARRIED BY EVERY MIRROR, so the DISTANCES stay the prices: a mirror is the live
+    // declaration plus ONE historical difference, and the live node gained this word
+    // when a removal's element name left the page entries.
+    tombstone_elements: crate::engine::state::TombstoneElements,
 }
 
 /// One of the three narrowed to 32 bits.
@@ -463,6 +467,10 @@ struct SeqMirrorOneNarrowed {
     object_index: ObjectIndex,
     deleted_object_index: DeletedObjectIndex,
     block_index: BlockIndexMap,
+    // CARRIED BY EVERY MIRROR, so the DISTANCES stay the prices: a mirror is the live
+    // declaration plus ONE historical difference, and the live node gained this word
+    // when a removal's element name left the page entries.
+    tombstone_elements: crate::engine::state::TombstoneElements,
 }
 
 /// Two of the three narrowed to 32 bits.
@@ -478,6 +486,10 @@ struct SeqMirrorTwoNarrowed {
     object_index: ObjectIndex,
     deleted_object_index: DeletedObjectIndex,
     block_index: BlockIndexMap,
+    // CARRIED BY EVERY MIRROR, so the DISTANCES stay the prices: a mirror is the live
+    // declaration plus ONE historical difference, and the live node gained this word
+    // when a removal's element name left the page entries.
+    tombstone_elements: crate::engine::state::TombstoneElements,
 }
 
 /// All three narrowed to 32 bits.
@@ -493,6 +505,10 @@ struct SeqMirrorThreeNarrowed {
     object_index: ObjectIndex,
     deleted_object_index: DeletedObjectIndex,
     block_index: BlockIndexMap,
+    // CARRIED BY EVERY MIRROR, so the DISTANCES stay the prices: a mirror is the live
+    // declaration plus ONE historical difference, and the live node gained this word
+    // when a removal's element name left the page entries.
+    tombstone_elements: crate::engine::state::TombstoneElements,
 }
 
 /// One of the three gone entirely.
@@ -507,6 +523,10 @@ struct SeqMirrorOneRemoved {
     object_index: ObjectIndex,
     deleted_object_index: DeletedObjectIndex,
     block_index: BlockIndexMap,
+    // CARRIED BY EVERY MIRROR, so the DISTANCES stay the prices: a mirror is the live
+    // declaration plus ONE historical difference, and the live node gained this word
+    // when a removal's element name left the page entries.
+    tombstone_elements: crate::engine::state::TombstoneElements,
 }
 
 /// Both transient claims gone -- the hoist #1958 priced and declined.
@@ -520,6 +540,10 @@ struct SeqMirrorTwoRemoved {
     object_index: ObjectIndex,
     deleted_object_index: DeletedObjectIndex,
     block_index: BlockIndexMap,
+    // CARRIED BY EVERY MIRROR, so the DISTANCES stay the prices: a mirror is the live
+    // declaration plus ONE historical difference, and the live node gained this word
+    // when a removal's element name left the page entries.
+    tombstone_elements: crate::engine::state::TombstoneElements,
 }
 
 /// WHAT NARROWING OR REMOVING EACH SEQUENCE WOULD MAKE THE NODE -- and the answer is not the one

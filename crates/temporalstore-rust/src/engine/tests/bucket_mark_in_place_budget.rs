@@ -109,7 +109,7 @@ fn the_break_even_compaction_cap_is_under_one_entry_per_bucket() {
     println!("  {:<44} {:>6}", "size_of::<(u64, BlockIndex)>()  (stride)", stride);
 
     // The control. These are the widths this module's whole argument rests on.
-    assert_eq!(node, 88, "the node moved; every figure in this module's header is stale");
+    assert_eq!(node, 96, "the node moved; every figure in this module's header is stale");
     assert_eq!(saving, 8, "the tombstone field is no longer 8 bytes; re-price the saving");
     // 56, NOT 64: the object id left the address the entry holds inline, so the entry lost a
     // whole word and the `(u64, BlockIndex)` stride printed above went 72 -> 64 with it. The

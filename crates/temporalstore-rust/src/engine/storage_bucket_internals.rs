@@ -3800,7 +3800,10 @@ pub(super) fn index_entry_names_a_page(kind: &str) -> bool {
     }
     // Spelled against `ModelKind::as_str` rather than against string literals so a kind renamed in
     // the registry cannot leave this list silently matching nothing.
-    kind == ModelKind::Set.as_str() || kind == ModelKind::List.as_str()
+    kind == ModelKind::Set.as_str()
+        || kind == ModelKind::List.as_str()
+        || kind == ModelKind::Hash.as_str()
+        || kind == ModelKind::Zset.as_str()
 }
 
 /// The name an index ENTRY IS FILED UNDER -- `None` for a gated container, where the page is the

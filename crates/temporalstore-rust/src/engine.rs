@@ -2529,7 +2529,17 @@ pub(crate) fn eager_cache_warm_on_load() -> bool {
 /// found nothing above 9, and was wrong for exactly that reason. So the trees were read, not the
 /// refs. The direction that is lethal is TOO LOW, because `persistence` compares with `<` and a
 /// stale value falls through to Accepted.
-pub(super) const SHARD_INDEX_FORMAT_VERSION: u32 = 11;
+///
+/// 11 -> 12 WHEN HASH AND ZSET JOINED THE PAGE-NAMED SET. `block_index_written_key` renders
+/// `component` into the map key the served index is serialized under, so a hash page that used to
+/// render under its field name and a zset page that used to render under its member now render
+/// under neither -- a different key in the same named map, for two more kinds. Same shape as 8 -> 9,
+/// which moved that key for zset alone, and the same reason a bump is needed rather than optional:
+/// the row decodes cleanly either way and what disagrees is what the key MEANS on the recovery path
+/// that reads it back as a page's element. ELEVEN WAS THIS BRANCH'S OWN PREVIOUS STEP and TEN is
+/// still claimed by an uncommitted edit in another working tree, so this is the next free number
+/// above both; main was re-read at 8 immediately before this commit.
+pub(super) const SHARD_INDEX_FORMAT_VERSION: u32 = 12;
 
 /// Serialize a shard index, stamping the current format version.
 ///
