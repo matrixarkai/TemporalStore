@@ -58,15 +58,30 @@
 //! became the statement of its membership, and a page nothing points at is a page no derivation can
 //! read. So a removal keeps an entry pointing at the page that records it.
 //!
-//! **IT STILL DOES NOT RESERVE THE NUMBER, and that is deliberate rather than incidental.**
-//! `container_page_ordinal` filters `deleted`, so the tombstone is invisible to the `max` and the
+//! **IT STILL DOES NOT RESERVE THE NUMBER, and that is deliberate rather than incidental.** The
 //! freed ordinal is still handed to the next element --
-//! `the_element_ordinal_a_delete_frees_is_handed_straight_back_to_the_next_element` still drives that
-//! and still passes. The filter was not free: without it the ordinal would climb once per element ever
-//! written rather than once per live element, and a container churning distinct members would walk to
-//! `MAX_ADDRESSABLE_BLOCK_ID` and fall off the ceiling. So the tombstone exists and the reuse this
-//! module is about is unchanged; what a reader must not conclude is that a tombstone now reserves
-//! anything.
+//! `the_element_ordinal_a_delete_frees_is_handed_straight_back_to_the_next_element` drives that and
+//! passes: three members, the third at ordinal 2, and after removing it the arrival is handed 2.
+//!
+//! **WHAT KEEPS IT UNRESERVED IS NO LONGER A `deleted` FILTER.** This paragraph said
+//! "`container_page_ordinal` filters `deleted`, so the tombstone is invisible to the `max`". That
+//! walk is gone. The allocator asks the RESIDENT MAP, which is keyed by element and holds exactly
+//! the object's live elements, so its high-water mark is over live elements by construction and no
+//! filter is needed -- a removal drops its element from the map and the number falls with it. The
+//! two hazards the filter existed for are unrepresentable rather than guarded now, which
+//! `state::container_page_ordinal`'s own doc sets out.
+//!
+//! AND THAT MATTERS MORE THAN A TIDIER MECHANISM, because the retained live ENTRY a removal leaves
+//! would have defeated the filter. An entry over a vacated page is not deleted, so a walk over live
+//! entries no longer falls after a removal -- which is exactly how this module's own probe broke:
+//! `next_element_ordinal_would_be` was `pages_of(..).len()`, it reported one too many, and two arms
+//! read that as the engine having stopped reusing. It asks the allocator now. The hazard the old
+//! paragraph warned of -- "the ordinal would climb once per element ever written ... and a container
+//! churning distinct members would walk to `MAX_ADDRESSABLE_BLOCK_ID`" -- is real and is what the
+//! move to the resident map avoids, rather than something the filter is still holding off.
+//!
+//! So the tombstone exists and the reuse this module is about is unchanged; what a reader must not
+//! conclude is that a tombstone now reserves anything.
 //!
 //! `every_per_element_delete_leaves_one_tombstone_and_the_whole_object_delete_leaves_none` drives the
 //! new split over the same five arms the old claim covered.
@@ -210,7 +225,7 @@
 //! would force those readers to sort, and the sort could easily cost more than the bytes.
 //!
 //! **No reader on this revision takes its order from the component.**
-//! `the_component_ordering_property_is_consumed_by_no_reader` classifies every consumer: the three
+//! `the_component_ordering_property_is_consumed_by_the_set_listing` classifies every consumer: the three
 //! reconcile arms decode each component and insert into a `BTreeMap` keyed by the MEMBER BYTES or the
 //! `i64` SEQUENCE, so order is re-established by the map rather than inherited from the walk; range
 //! reads use `shard.zsets` (keyed by member, "derived per query -- V1 accepts the per-range sort") and
@@ -422,14 +437,58 @@ fn tombstoned_pages_of(engine: &TemporalEngine, kind: &str, key: &str) -> usize 
     count
 }
 
-/// The number an element-ordinal assignment would hand out next, derived the way this engine's
-/// existing per-object ordinal is derived: one past the highest the object currently holds.
+/// WHAT THE ENGINE'S OWN ALLOCATOR WOULD HAND A NEW ELEMENT OF THIS OBJECT.
 ///
-/// Counts ELEMENTS -- the pages of the object -- because that is what an element ordinal numbers.
-/// A store where nothing is assigned yet answers with the page count, which is the same number a
-/// first assignment would reach.
+/// THIS WAS `pages_of(engine, kind, key).len()` AND THAT PROXY HAS BROKEN. Counting the object's
+/// LIVE page entries stood in for the ordinal high-water mark for as long as the two moved
+/// together, and they no longer do: a container removal leaves the live entry over the page its
+/// element vacated STANDING, beside a tombstone, because the page may still hold the object's other
+/// members. So the live count does not fall after a removal and the proxy reported one too many --
+/// `the_element_ordinal_a_delete_frees_is_handed_straight_back_to_the_next_element` read the
+/// arrival's ordinal as 3 against the removed member's 2, and
+/// `a_high_water_mark_lives_only_where_the_rebuild_recomputes_it` read 8 where 7 was due. Both were
+/// the helper, which is what that arm's own message said to check first: "The helper above counts
+/// LIVE pages; a red caused by the tombstone being counted is a helper that lost its `deleted`
+/// filter, not a reservation." The filter is intact; what changed is that a retained entry is not
+/// deleted.
+///
+/// SO IT ASKS `container_page_ordinal`, WHICH IS THE ALLOCATOR ITSELF rather than anything standing
+/// in for it. There is no second implementation to drift: the number this returns is the number the
+/// next write would be handed. The allocator reads the resident map -- keyed by element, holding
+/// exactly the object's live elements -- so the high-water mark it reports is over live elements by
+/// construction and a retained index entry is invisible to it.
+///
+/// THE PROBE COMPONENT IS ASSERTED ABSENT, because the allocator has two arms and this helper is
+/// only ever asking about one. An element that already holds a block gets its own ordinal back; a
+/// new one gets `high-water + 1`. A probe that accidentally named a held element would measure the
+/// overwrite arm and report that element's position as though it were the next free one.
 fn next_element_ordinal_would_be(engine: &TemporalEngine, kind: &str, key: &str) -> usize {
-    pages_of(engine, kind, key).len()
+    let probe = hex::encode(b"-no-element-of-any-fixture-object-holds-this-");
+    let shards = engine.shards.read().expect("engine lock poisoned");
+    let shard = shards.get(&1).expect("shard 1 is loaded");
+    assert!(
+        crate::engine::state::resident_component_address(shard, kind, key, &probe).is_none(),
+        "the probe component IS held by an element of {kind}/{key}, so the allocator would answer \
+         its overwrite arm and this helper would be reporting that element's position as the next \
+         free ordinal"
+    );
+    crate::engine::state::container_page_ordinal(shard, kind, key, &probe) as usize
+}
+
+/// The ordinal one named element of this object actually holds, from the resident map.
+///
+/// The authority: `container_page_ordinal`'s overwrite arm reads exactly this, so an element's
+/// position and what the allocator would hand it back are one number read one way.
+fn ordinal_of_element(
+    engine: &TemporalEngine,
+    kind: &str,
+    key: &str,
+    component: &str,
+) -> Option<u64> {
+    let shards = engine.shards.read().expect("engine lock poisoned");
+    let shard = shards.get(&1).expect("shard 1 is loaded");
+    crate::engine::state::resident_component_address(shard, kind, key, component)
+        .and_then(crate::block_store::ElementEntry::block_id)
 }
 
 /// Whether any bucket's persisted tombstone holds this object id.
@@ -1232,18 +1291,71 @@ fn what_an_element_ordinal_would_mean_for_each_kind() {
         },
     );
 
+    // ONE ELEMENT'S COMPONENT SPELLING, READ FROM THE PAGE THAT SPELLS IT.
+    //
+    // RE-ATTRIBUTED. This read `pages_of(...)[0].0` -- the component off the index entry -- and
+    // `unwrap_or_else(|| panic!("{kind}/{key} holds a page with no component"))` is exactly what it
+    // did, because an entry has no element-name field to hold one. The four spellings this arm is
+    // about did NOT go anywhere: a container page states its own elements in its payload, which is
+    // what `container_pages::ElementKeySpelling` renders and what makes several pages foldable into
+    // one. So the component comes off the page, through the engine's own
+    // `container_membership::derive_membership`, which is the same door `SetMembers` answers from.
+    //
+    // THE DERIVATION IS FLOORED BOTH WAYS before its key is read: complete, and holding exactly one
+    // live element. An incomplete derivation that happened to yield one key would yield it by luck,
+    // and a derivation holding two would make `keys().next()` an arbitrary choice dressed as a
+    // measurement.
     let one_component = |kind: &str, key: &str| -> String {
-        let held = pages_of(&engine, kind, key);
+        let (addresses, live_entries) = {
+            let shards = engine.shards.read().expect("engine lock poisoned");
+            let shard = shards.get(&1).expect("shard 1 is loaded");
+            let mut addresses: Vec<crate::block_store::ElementEntry> = Vec::new();
+            let mut live = 0usize;
+            for bucket in shard.bucket_index.bucket_map.values() {
+                for page in bucket.block_index.values() {
+                    if page.model_id.as_str() == kind && &*page.object_key == key {
+                        if !page.deleted {
+                            live += 1;
+                        }
+                        // TOMBSTONES INCLUDED, so the fold sees every statement about the object
+                        // and a removal cannot read as an absence.
+                        addresses.push(page.address.clone());
+                    }
+                }
+            }
+            (addresses, live)
+        };
         assert_eq!(
-            held.len(),
-            1,
-            "DENOMINATOR: {kind}/{key} holds {} pages, not the one this arm reads",
-            held.len()
+            live_entries, 1,
+            "DENOMINATOR: {kind}/{key} holds {live_entries} live pages, not the one this arm reads"
         );
-        held[0]
-            .0
+        let derived = crate::engine::container_membership::derive_membership(
+            kind,
+            addresses,
+            |address| engine.block_store.read(address).ok(),
+        );
+        assert!(
+            derived.is_complete(),
+            "the derivation for {kind}/{key} is incomplete ({} failure(s)): {} read, {} \
+             undecodable, {} unframed, {} unrenderable -- its single key would be luck",
+            derived.failures(),
+            derived.read_failures,
+            derived.undecodable,
+            derived.unframed,
+            derived.unrenderable_items
+        );
+        assert_eq!(
+            derived.live.len(),
+            1,
+            "{kind}/{key} derives {} live element(s) from its pages, not the one this arm reads",
+            derived.live.len()
+        );
+        derived
+            .live
+            .keys()
+            .next()
+            .expect("exactly one live element was just asserted")
             .clone()
-            .unwrap_or_else(|| panic!("{kind}/{key} holds a page with no component"))
     };
 
     // list: ALREADY an ordinal. Sixteen hexadecimal characters, and the value is the biased
@@ -1321,10 +1433,24 @@ fn what_an_element_ordinal_would_mean_for_each_kind() {
 // 6. THE READ PATH, COUNTED AT SOURCE LEVEL
 // =================================================================================================
 
-/// THE POINT READ PATH IS THREE CALL SITES AND NOT ONE OF THEM IS A CONTAINER.
+/// THE POINT READ PATH IS ONE CALL SITE AND IT IS A STRING.
 ///
-/// #1985 established this and the mandate for this work said to confirm it rather than inherit it, so
-/// it is counted here from the source text.
+/// RESTATED, AND THE CLAIM GOT STRONGER RATHER THAN WEAKER. This was
+/// `the_point_read_path_is_three_call_sites_and_not_one_of_them_is_a_container`, pinned at three
+/// sites with kinds string/hash/hash: #1985 established it and the mandate for that work said to
+/// confirm it from the source text rather than inherit it. Two of the three were the hash point
+/// reads, and they MOVED -- taking the element name off the entry required `HashGet` and
+/// `HashIncrBy` to answer from `shard.hashes`, because a nameless entry made a present field
+/// unreachable through the index and `HashIncrBy` read that miss as `unwrap_or_default()` and
+/// restarted the counter at zero.
+///
+/// So the count is one and the kind is `string`. The old name's second half -- "not one of them is
+/// a container" -- is still the point of the arm, and it is now carried by a positive pin on the
+/// one kind that remains rather than by the absence of a container among three.
+///
+/// THE COUNT IS NOT RE-GOLDENED SILENTLY. Three became one because two readers moved, and the kind
+/// list is asserted rather than only the number, so a container reader arriving here changes
+/// `kinds` even if it replaces one of these rather than adding to them.
 ///
 /// **THE INPUT SIZE IS ASSERTED BEFORE ANY COUNT IS BELIEVED.** A zero-byte read scores every "there
 /// are exactly N" as a pass; this campaign has already had a gate report a clean scan over an empty
@@ -1332,7 +1458,7 @@ fn what_an_element_ordinal_would_mean_for_each_kind() {
 ///
 /// rust-internal: reads the crate's own source, no external surface
 #[test]
-fn the_point_read_path_is_three_call_sites_and_not_one_of_them_is_a_container() {
+fn the_point_read_path_is_one_call_site_and_it_is_a_string() {
     let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/engine");
     let execute = std::fs::read_to_string(root.join("execute_on_shard.rs"))
         .expect("execute_on_shard.rs is readable");
@@ -1346,7 +1472,7 @@ fn the_point_read_path_is_three_call_sites_and_not_one_of_them_is_a_container() 
         store.len()
     );
 
-    // The point lookup itself has ONE caller in the crate, and it is the read path.
+    // The point lookup itself has ONE caller in the crate, and it is the read path. Unmoved.
     let definition_and_callers = store.matches("bucket_index_block_address(").count();
     assert_eq!(
         definition_and_callers, 2,
@@ -1354,15 +1480,17 @@ fn the_point_read_path_is_three_call_sites_and_not_one_of_them_is_a_container() 
          (its definition plus its callers), not the two this claim rests on"
     );
 
-    // ... and that one is called three times, all from execute_on_shard.
+    // ... and that one is called ONCE, from execute_on_shard.
     let read_sites = execute.matches("read_bucket_index_value(").count();
     assert_eq!(
-        read_sites, 3,
-        "read_bucket_index_value has {read_sites} call sites in execute_on_shard.rs, not three"
+        read_sites, 1,
+        "read_bucket_index_value has {read_sites} call sites in execute_on_shard.rs, not one. It \
+         had three -- string/hash/hash -- until the two hash point reads moved to `shard.hashes`; \
+         a count above one here means a reader came back to the index and the kind list below says \
+         which"
     );
 
-    // Each one's kind argument, in source order. A container kind here would move the whole
-    // question.
+    // Its kind argument. A container kind here would move the whole question.
     let mut kinds: Vec<&str> = Vec::new();
     for (offset, _) in execute.match_indices("read_bucket_index_value(") {
         let window = &execute[offset..(offset + 400).min(execute.len())];
@@ -1374,18 +1502,22 @@ fn the_point_read_path_is_three_call_sites_and_not_one_of_them_is_a_container() 
     }
     assert_eq!(
         kinds,
-        vec!["\"string\"", "\"hash\"", "\"hash\""],
-        "the three point-read kinds are {kinds:?}, not string/hash/hash -- a container kind here \
-         would mean the point lookup DOES resolve a content-derived name"
+        vec!["\"string\""],
+        "the point-read kinds are {kinds:?}, not string alone -- a container kind here would mean \
+         the point lookup DOES resolve a content-derived name"
     );
 
-    // The component-blind whole-object reader takes no component and its caller has none to give,
-    // so an ordinal answers it exactly as a name does. Three callers: hash twice, set once.
+    // The component-blind whole-object reader takes no component and its caller has none to give.
+    //
+    // THIS WAS THREE CALLERS -- hash twice, set once -- AND IT IS ONE. The remaining one is
+    // `HashGetAll`'s divergence-observing half, which reads the index beside `shard.hashes` so a
+    // disagreement is OBSERVED rather than suffered. That it is down to one is the same movement
+    // as the two point reads above, counted at a different door.
     let blind_sites = execute.matches("bucket_index_component_block_addresses(").count();
     assert_eq!(
-        blind_sites, 3,
+        blind_sites, 1,
         "bucket_index_component_block_addresses has {blind_sites} callers in execute_on_shard.rs, \
-         not three"
+         not one"
     );
     assert!(
         store.contains("pub(super) fn bucket_index_component_block_addresses(\n    shard: &ShardState,\n    model_id: &str,\n    object_key: &str,\n) -> Vec<(Option<Arc<str>>, ElementEntry)>"),
@@ -1396,8 +1528,8 @@ fn the_point_read_path_is_three_call_sites_and_not_one_of_them_is_a_container() 
 
     println!(
         "\n  [read path] bucket_index_block_address: 1 caller (read_bucket_index_value)\n  \
-         read_bucket_index_value: {read_sites} call sites, kinds {kinds:?}\n  \
-         bucket_index_component_block_addresses: {blind_sites} callers, component-blind by \
+         read_bucket_index_value: {read_sites} call site, kinds {kinds:?}\n  \
+         bucket_index_component_block_addresses: {blind_sites} caller, component-blind by \
          signature\n  source read: {} + {} bytes",
         execute.len(),
         store.len()
@@ -1539,6 +1671,25 @@ fn the_mis_parse_rate_of_an_ordinal_against_the_names_this_store_already_holds()
 /// Widths come from `field_width` over a real value (#1986's rule: a hand-written table with
 /// `size_of` of the wrong type still compiles) and from `size_of` of the field's own declared type.
 ///
+/// THE ARITHMETIC HERE INVERTED, AND THAT IS A THIRD REFUSAL THIS MODULE DID NOT HAVE. The case for
+/// an element ordinal was a TRADE: sixteen bytes of rendered name on every entry for two or four
+/// bytes of number. `BlockIndex::component` has been REMOVED outright rather than swapped for a
+/// narrower stand-in -- the entry went 56 bytes to 40 -- so those sixteen bytes are already banked
+/// and there is nothing left to trade. An ordinal is now an ADDED field on a structure with ZERO
+/// SLACK, and 40 is a multiple of eight, so it costs a whole word whether it is two bytes or four.
+///
+/// WHAT THIS ARM USED TO COMPUTE, so the change is legible: `field_bytes_now - component_width +
+/// ordinal` against a hand-written `field_bytes_now = 56`. With no component term in the struct
+/// that subtracts a field that is not there, and it reported 44 and 48 as NARROWINGS of a 40-byte
+/// entry -- both larger than the thing they were narrowing. Its own floor caught it: "the page
+/// entry is 40 bytes, not the 56 this arithmetic is written against; re-derive the field sum before
+/// trusting the two numbers above."
+///
+/// THE SUM IS READ OFF THE TYPES RATHER THAN WRITTEN DOWN, which is the same correction `state.rs`
+/// already made to its own const assert. That keeps the pair non-circular: the const assert beside
+/// the struct proves the SUM is 40 and the TYPE is 40, neither inferred from the other; this arm
+/// proves what an ADDED field does to that.
+///
 /// THE CEILING IS NOT FREE TO CHOOSE. #1994 narrowed `BlockAddress::block_id` to sixteen bits, so an
 /// element ordinal folded into the existing per-object ordinal caps at 65,535 an object -- which is
 /// exactly the ceiling of the design that prompted this work, against a measured container shape of
@@ -1561,69 +1712,75 @@ fn the_width_an_element_ordinal_would_take_and_the_ceiling_that_implies() {
     let u16_ordinal = field_width(&Some(0u16));
     let u32_ordinal = field_width(&Some(0u32));
 
+    // STILL MEASURED, THOUGH IT IS NO LONGER A FIELD OF THE ENTRY. Sixteen is the number the whole
+    // proposal was stated in, and it is what the removal actually banked -- so it is measured off
+    // the type the field used to have rather than dropped, and the paragraph below prices the
+    // ordinal against the entry as it is now.
     assert_eq!(
         component_width, 16,
-        "the component field reads {component_width} bytes, not the sixteen this whole proposal is \
-         about"
+        "`Option<Arc<str>>` reads {component_width} bytes, not the sixteen this whole proposal was \
+         stated in"
     );
 
-    // What the entry would become. The entry is 56 bytes holding 56 of field -- it was 52 before
-    // it absorbed the row's two locating fields and shed the flag nothing maintained, so there is
-    // NO SLACK left to absorb a new field. The arithmetic is
-    // the claim and the rounding is where it lands.
-    //
-    // 56 IN 56, NOT 60 IN 64. The object id left the address this entry holds inline, taking a
-    // whole word out of both numbers. `state.rs` carries the same accounting on `BlockIndex`
-    // itself, and the assertion below ties this hand-written sum to the compiler's width so the two
-    // cannot drift apart silently -- which is exactly what happened to the 60: it went on
-    // describing a structure the engine no longer had, and printed "entry now 56 B holding 60 of
-    // field", a field sum LARGER than the type, without anything failing until the width assert
-    // below was reached.
     let entry_now = std::mem::size_of::<crate::engine::state::BlockIndex>();
-    // THE SUM THE PROSE ABOVE NAMES, and it moved: 52 became 56 when the entry absorbed the
-    // row's two locating fields and shed the flag nothing maintained. It was left at 52 while the
-    // comment was rewritten to say 56, and NOTHING FAILED -- because 56 - 52 is 4, which is
-    // exactly what the slack assertion below was written to expect. A stale sum and a stale slack
-    // agreed with each other, so the pair went green while describing a field set the entry no
-    // longer has. Neither number is derived, which is why only reading them together caught it.
-    let field_bytes_now = 56usize;
-    let field_bytes_with_u16 = field_bytes_now - component_width + u16_ordinal;
-    let field_bytes_with_u32 = field_bytes_now - component_width + u32_ordinal;
+    // RECONSTRUCTED FROM THE TYPES, so a field whose own width moves elsewhere fails HERE rather
+    // than passing beside a stale literal. This was the literal `56`, and the literal is how a
+    // stale sum and a stale slack came to agree with each other once before.
+    let field_bytes_now = std::mem::size_of::<crate::index_log::IndexItemKind>()
+        + std::mem::size_of::<u32>()
+        + std::mem::size_of::<std::sync::Arc<str>>()
+        + std::mem::size_of::<crate::engine::storage_bucket_internals::StoredModelKind>()
+        + std::mem::size_of::<crate::block_store::ElementEntry>()
+        + std::mem::size_of::<bool>()
+        + std::mem::size_of::<bool>();
+    // ADDITION, NOT SUBSTITUTION. There is no name left to trade.
+    let field_bytes_with_u16 = field_bytes_now + u16_ordinal;
+    let field_bytes_with_u32 = field_bytes_now + u32_ordinal;
+    let width_with_u16 = (field_bytes_with_u16 + 7) / 8 * 8;
+    let width_with_u32 = (field_bytes_with_u32 + 7) / 8 * 8;
 
     println!(
-        "\n  [width] component Option<Arc<str>> = {component_width} B; Option<u16> = {u16_ordinal} \
-         B; Option<u32> = {u32_ordinal} B\n  entry now {entry_now} B holding {field_bytes_now} of \
-         field; with a u16 ordinal {field_bytes_with_u16} of field, with a u32 \
-         {field_bytes_with_u32}"
+        "\n  [width] the name this proposal would have traded: Option<Arc<str>> = \
+         {component_width} B, ALREADY REMOVED; Option<u16> = {u16_ordinal} B, Option<u32> = \
+         {u32_ordinal} B\n  entry now {entry_now} B holding {field_bytes_now} of field, zero \
+         slack; ADDING a u16 ordinal gives {field_bytes_with_u16} of field in {width_with_u16}, a \
+         u32 {field_bytes_with_u32} in {width_with_u32}"
     );
 
     assert_eq!(
-        entry_now, 56,
-        "the page entry is {entry_now} bytes, not the 56 this arithmetic is written against; \
+        entry_now, 40,
+        "the page entry is {entry_now} bytes, not the 40 this arithmetic is written against; \
          re-derive the field sum before trusting the two numbers above"
     );
-    // AND THE OPERATOR IS TWO-SIDED NOW, which is the half of this guard that was missing. It
-    // read `field_bytes_now <= entry_now`, and it exists because a stale 60 once printed beside a
-    // 56-byte entry -- an OVER-count, which `<=` does catch. An UNDER-count it admits: 52 <= 56
-    // passes. So ONE stale number failed here and a MATCHED PAIR of them did not, because a field
-    // sum of 52 and a slack of 4 are consistent with each other. That is the same shape as any
-    // one-sided comparison: it is satisfied on exactly the side the change moves.
-    //
-    // The entry has no slack left, so the hand-written sum and the compiler's width are the SAME
-    // NUMBER, and equality is the whole claim. It cannot be met from one side; it states the zero
-    // slack directly rather than as a difference that two stale numbers can agree on; and it
-    // removes a subtraction that would have underflowed a `usize` if the sum ever did exceed the
-    // type -- the very case the sentence above says this guard is for.
+    // ZERO SLACK, as an equality rather than a difference. It read `field_bytes_now <= entry_now`
+    // once, and a one-sided comparison is satisfied on exactly the side a change moves: a stale
+    // over-count fails it and a stale under-count passes, and a matched pair of stale numbers
+    // passes either way. Equality states the zero slack directly.
     assert_eq!(
         field_bytes_now, entry_now,
-        "the hand-written field sum is {field_bytes_now} B against a {entry_now} B entry. This \
-         type has no slack left, so those must be equal -- re-derive the sum rather than adjusting \
-         a difference to match it"
+        "the reconstructed field sum is {field_bytes_now} B against a {entry_now} B entry. This \
+         type has no slack left, so those must be equal"
     );
+
+    // THE INVERSION, ASSERTED IN THE DIRECTION IT NOW RUNS. This read
+    // `field_bytes_with_u16 < field_bytes_now` -- "a u16 ordinal does not narrow the field sum at
+    // all" -- which was the claim while the ordinal was replacing sixteen bytes of name. It
+    // replaces nothing now.
     assert!(
-        field_bytes_with_u16 < field_bytes_now,
-        "a u16 ordinal does not narrow the field sum at all: {field_bytes_with_u16} against \
-         {field_bytes_now}"
+        field_bytes_with_u16 > field_bytes_now,
+        "adding a u16 ordinal did not grow the field sum: {field_bytes_with_u16} against \
+         {field_bytes_now}. With no element name left on the entry there is nothing for an ordinal \
+         to be traded against, so it can only add"
+    );
+    // AND IT COSTS A WHOLE WORD, WHICH IS THE ANSWER THAT MATTERS. "Costs something" and "costs
+    // eight bytes" are different numbers, and both ordinal widths land on the same one: 40 is a
+    // multiple of eight, so the first field added here rounds the type up by a full word.
+    assert_eq!(
+        (width_with_u16, width_with_u32),
+        (48, 48),
+        "a u16 ordinal takes the entry to {width_with_u16} B and a u32 to {width_with_u32} B, not \
+         48 and 48 -- the zero-slack claim above says the next field costs a whole word, and these \
+         are what that costs"
     );
 
     // The ceiling, stated. Sixteen bits is the existing ordinal's width after #1994.
@@ -2155,7 +2312,7 @@ fn what_a_component_costs_an_element_at_five_member_widths() {
 // 12. WHO CONSUMES COMPONENT ORDER
 // =================================================================================================
 
-/// THE ORDERING PROPERTY IS CLAIMED BY THREE COMMENTS AND CONSUMED BY NOBODY.
+/// THE ORDERING PROPERTY IS CLAIMED BY THREE COMMENTS AND THE SET LISTING CONSUMES IT.
 ///
 /// A zset component is score-bits-then-member and a list component is a `i64::MIN`-biased sequence,
 /// both so that LEXICAL order is the element's order. `execute_on_shard.rs` says the bias is "what
@@ -2167,12 +2324,14 @@ fn what_a_component_costs_an_element_at_five_member_widths() {
 /// **IT IS NOT THE REFUTATION, BECAUSE NO READER TAKES ITS ORDER FROM THE COMPONENT.** Enumerated,
 /// with each consumer classified rather than counted:
 ///
-///   * **RECOVERY RE-KEYS BY THE DECODED VALUE.** The three arms of
-///     `reconcile_secondary_views_from_bucket_index` decode each component and insert into a
-///     `BTreeMap` keyed by the MEMBER BYTES (`set`, `zset`) or by the `i64` SEQUENCE (`list`). The
-///     order is re-established by the map; nothing is inherited from the walk. A shuffled walk
-///     produces the identical map, and that is asserted below by driving a reload and checking the
-///     order came back.
+///   * **RECOVERY DERIVES NOTHING FROM A COMPONENT.** This read "RECOVERY RE-KEYS BY THE DECODED
+///     VALUE. The three arms of `reconcile_secondary_views_from_bucket_index` decode each component
+///     and insert into a `BTreeMap` keyed by the MEMBER BYTES (`set`, `zset`) or by the `i64`
+///     SEQUENCE (`list`)." Those three arms are GONE. An entry has no element-name field, so there
+///     is nothing to decode: `rebuild_unserialized_model_maps_from_bucket_index` passes an empty
+///     derived map and keeps only its live-address filter, and the durable resident maps are the
+///     sole source. The order is still re-established by the map rather than inherited from a walk,
+///     and now it could not be inherited from one even if a reader wanted to.
 ///   * **RANGE READS USE THE DURABLE MAPS.** `zset_members_in_score_range` and `zset_ordered_members`
 ///     read `shard.zsets`, which is keyed by MEMBER and not by score -- `state.rs` says so directly:
 ///     "is derived per query -- V1 accepts the per-range sort". `ListRange` reads `shard.lists`, keyed
@@ -2181,24 +2340,43 @@ fn what_a_component_costs_an_element_at_five_member_widths() {
 ///     `bucket_index_component_block_addresses` sorts before returning;
 ///     `ObjectBlockRefs::position` binary-searches; `storage_reporting` sorts for a stable report.
 ///     Any total order satisfies all three, and an ordinal has one.
-///   * **AND OF ITS THREE CALLERS, ONE DISCARDS THE COMPONENT AND ONE READS ONLY `len()`.**
-///     `SetMembers` takes `|(_, address)|`; `HashLen` takes `.len()`; `HashGetAll` keeps the field
-///     name, which is the caller's own text and is not a kind an ordinal touches.
+///   * **AND THE SET LISTING CONSUMES IT NOW, WHICH REVERSES THIS SECTION.** This bullet read "OF
+///     ITS THREE CALLERS, ONE DISCARDS THE COMPONENT AND ONE READS ONLY `len()`. `SetMembers` takes
+///     `|(_, address)|`", and that was the last leg the "consumed by nobody" conclusion stood on.
+///     `SetMembers` does not walk index entries at all now: an entry naming no element "can only be
+///     answered by a page that names no element either", so that arm was deleted and the command
+///     folds the object's PAGES through `container_membership::derive_membership` -- whose map is
+///     KEYED BY THE COMPONENT SPELLING. The listing therefore comes back in component order.
+///     Measured in the arm below, on one population: write order [07, 01, 09, 03, 05, 00, 08, 02,
+///     06, 04], the whole-object door's walk in address order [01, 04, 00, 06, 05, 08, 09, 02, 03,
+///     07], and the listing [00 .. 09].
 ///
-/// So the ordering property costs sixteen characters of score prefix on every zset element and buys
-/// nothing any reader on this revision consumes. **That is a finding in favour of the ordinal on this
-/// axis**, recorded because the refutation is about non-reuse and should not be allowed to collect
-/// support it has not earned.
+/// SO THE CONCLUSION OF THIS SECTION IS REVERSED, AND IT IS THE ONE PLACE THIS MODULE HAD BEEN
+/// COLLECTING SUPPORT FOR AN ORDINAL. It read: "the ordering property costs sixteen characters of
+/// score prefix on every zset element and buys nothing any reader on this revision consumes. That
+/// is a finding in favour of the ordinal on this axis, recorded because the refutation is about
+/// non-reuse and should not be allowed to collect support it has not earned."
+///
+/// A reader consumes it. Respelling a set's component as an ordinal would change the order
+/// `SetMembers` answers in -- from member order to ordinal order -- which is an observable change
+/// to a served answer rather than an internal one. That does not refute the ordinal by itself:
+/// `SMEMBERS` promises no order, and this module's refusal rests on non-reuse and on the fold
+/// losing a member, both of which are unchanged. What it does is remove the support, so the
+/// sentence above is withdrawn rather than left to be read as evidence.
+///
+/// THE ZSET HALF OF THE ORIGINAL CLAIM IS GONE A DIFFERENT WAY, and the two should not be confused:
+/// `zset_component` is `hex::encode(member)` alone, so there is no score prefix left to cost
+/// anything. The assertion below that the retired score-then-member claim is absent from the tree
+/// is what holds that.
 ///
 /// rust-internal: reads the crate's own source and drives one reload
 #[test]
-fn the_component_ordering_property_is_consumed_by_no_reader() {
-    // THE WALK THIS COMPARES AGAINST IS BUILT BY DECODING EACH ENTRY'S COMPONENT, through an
-    // `unwrap_or_default()` that turns an absent name into the EMPTY member -- the same
-    // defaulting the production readers were fixed to stop doing. Gated it manufactures a
-    // phantom empty member in the expectation while the LISTING answers correctly, so the
-    // instrument fails, not the read. The gated listing's order is
-    // `gated_listing_folds_the_pages`' subject.
+fn the_component_ordering_property_is_consumed_by_the_set_listing() {
+    // THE WALK THIS COMPARES AGAINST WAS BUILT BY DECODING EACH ENTRY'S COMPONENT, through an
+    // `unwrap_or_default()` that turns an absent name into the EMPTY member -- the same defaulting
+    // the production readers were fixed to stop doing. With no element name on an entry it yielded
+    // ten empty members, so the instrument failed and not the read. It is read off the walk's
+    // ADDRESS order joined through `shard.sets` now; see the re-attribution at the walk itself.
     let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/engine");
     let internals = std::fs::read_to_string(root.join("storage_bucket_internals.rs"))
         .expect("storage_bucket_internals.rs is readable");
@@ -2237,21 +2415,50 @@ fn the_component_ordering_property_is_consumed_by_no_reader() {
          component"
     );
 
-    // RECOVERY re-keys by the decoded value. The `set` arm inserts the decoded MEMBER; the `list`
-    // arm inserts the decoded i64 SEQUENCE. Neither is the component.
-    assert!(
-        internals.contains(".insert(member, entry.address);"),
-        "the set reconcile arm no longer keys by the decoded member; if it has started relying on \
-         the walk's order, component order IS load-bearing and this whole arm is wrong"
-    );
-    assert!(
-        internals.contains(".insert(seq, entry.address);"),
-        "the list reconcile arm no longer keys by the decoded sequence"
-    );
-    assert!(
-        internals.contains(".insert(member, (score, entry.address));"),
-        "the zset reconcile arm no longer keys by the decoded member"
-    );
+    // RECOVERY DERIVES NO ELEMENT FROM A COMPONENT AT ALL, AND THAT IS A FOURTH PROXY RETIRED.
+    //
+    // This asserted three literals -- `.insert(member, entry.address);`,
+    // `.insert(seq, entry.address);` and `.insert(member, (score, entry.address));` -- as evidence
+    // that the reconcile re-keyed by the DECODED value rather than inheriting the walk's order.
+    // They are gone, and not because the arm changed shape this time: the derivation itself was
+    // removed. `rebuild_unserialized_model_maps_from_bucket_index` passes an EMPTY derived map and
+    // keeps only its live-address filter, because an entry has no element-name field to derive a
+    // member, a sequence or a field name from.
+    //
+    // SO THE PROPERTY IS NO LONGER "NO READER TAKES ITS ORDER FROM THE COMPONENT". It is that
+    // there is no component on an entry for an order to be taken from -- the defect is
+    // UNREACHABLE rather than merely absent, which is the stronger of the two things a guard can
+    // say.
+    //
+    // AND IT IS ASSERTED BY THE COMPILER, NOT BY A TEXT MATCH. This arm's own history is why: it
+    // records three text proxies that each "died of the arm changing shape", the third on a
+    // COMMENT whose wording the ban matched. A fourth absence check would be defeated by a rename.
+    // The literal below names every field of `BlockIndex` with no `..`, so a component field
+    // returning to the entry is a COMPILE ERROR here rather than a silently passing grep.
+    let _no_component_field_exists = crate::engine::state::BlockIndex {
+        kind: crate::index_log::IndexItemKind::Page,
+        routing_bucket: 0,
+        object_key: std::sync::Arc::from("eo-ordering-guard"),
+        model_id: crate::engine::storage_bucket_internals::StoredModelKind::Set,
+        address: crate::block_store::ElementEntry::from_parts(1, 0, 1, Some(0), Some(0)),
+        dirty: false,
+        deleted: false,
+    };
+
+    // AND THE WEAK HALF, KEPT AND LABELLED AS SUCH. A rename defeats it, which is exactly why it
+    // is not carrying the claim on its own. What it adds to the literal above is the direction: the
+    // literal says no component CAN be read, these say nothing in the reconcile still tries.
+    for retired in [
+        ".insert(member, entry.address);",
+        ".insert(seq, entry.address);",
+        ".insert(member, (score, entry.address));",
+    ] {
+        assert!(
+            !internals.contains(retired),
+            "the reconcile still carries {retired:?}, so a container element is being derived from \
+             something again -- if that something is an entry's component, this whole arm is wrong"
+        );
+    }
 
     // RANGE READS use the durable maps, not the component.
     assert!(
@@ -2306,17 +2513,54 @@ fn the_component_ordering_property_is_consumed_by_no_reader() {
         }
 
         // THE WALK'S OWN ORDER, read from the door the listing is built on.
+        //
+        // RE-ATTRIBUTED, AND THIS ARM'S OWN DOC PREDICTED THE RED. It decoded each entry's
+        // component through `hex::decode(component.as_deref().unwrap_or_default())`, and the
+        // comment above this test already said what that would do: "an `unwrap_or_default()` that
+        // turns an absent name into the EMPTY member -- the same defaulting the production readers
+        // were fixed to stop doing". With no element name on an entry it yielded ten EMPTY members
+        // and compared them against a correct listing, so the instrument failed and not the read.
+        //
+        // WHAT THE DOOR STILL GIVES IS THE ORDER, which is the only thing this comparison is about.
+        // `bucket_index_component_block_addresses` returns the object's pages sorted, and
+        // `SetMembers` is built by walking exactly that. So the walk is taken as its ADDRESS
+        // sequence and each address is turned back into its member through `shard.sets` -- the same
+        // address join the engine makes on the write path. The property is unchanged: the listing
+        // INHERITS this order and imposes none of its own.
         let walked: Vec<Vec<u8>> = {
             let shards = engine.shards.read().expect("engine lock poisoned");
             let shard = shards.get(&1).expect("shard 1 is loaded");
+            let mut member_at: std::collections::BTreeMap<(u64, u64, u64), Vec<u8>> =
+                std::collections::BTreeMap::new();
+            for (member, address) in shard
+                .sets
+                .get("eo-set-order")
+                .expect("the fixture's set is resident")
+                .iter()
+            {
+                member_at.insert(
+                    (
+                        address.block_slab_id(),
+                        address.offset(),
+                        address.length(),
+                    ),
+                    member.clone(),
+                );
+            }
             crate::engine::bucket_store::bucket_index_component_block_addresses(
                 shard,
                 "set",
                 "eo-set-order",
             )
             .into_iter()
-            .filter_map(|(component, _address)| {
-                hex::decode(component.as_deref().unwrap_or_default()).ok()
+            .filter_map(|(_component, address)| {
+                member_at
+                    .get(&(
+                        address.block_slab_id(),
+                        address.offset(),
+                        address.length(),
+                    ))
+                    .cloned()
             })
             .collect()
         };
@@ -2340,18 +2584,47 @@ fn the_component_ordering_property_is_consumed_by_no_reader() {
             crate::types::CommandResponse::Members { members } => members,
             other => panic!("expected Members, got {other:?}"),
         };
+        // AND THIS IS WHERE THE SECTION'S CONCLUSION REVERSED. MEASURED, NOT ARGUED.
+        //
+        // This asserted `walked == listed`: that `SetMembers` INHERITS the whole-object door's
+        // order and imposes none of its own, which is what made component order free to respell.
+        // It is false now, and the mechanism is the landed change. `SetMembers` no longer walks
+        // index entries and answers each from the page it named -- that arm was deleted, because an
+        // entry naming no element "can only be answered by a page that names no element either"
+        // and it returned an EMPTY listing. It asks the PAYLOAD through
+        // `container_membership::derive_membership`, which folds every page of the object into a
+        // `BTreeMap` KEYED BY THE COMPONENT SPELLING.
+        //
+        // So the listing's order IS component order, and a reader does consume it. Measured here:
+        // the walk came back [01, 04, 00, 06, 05, 08, 09, 02, 03, 07] and the listing [00 .. 09].
+        //
+        // THE THREE ORDERS ARE ALL DISTINGUISHABLE, which is what stops this being one tautology
+        // replacing another: the write order is [07, 01, 09, 03, 05, 00, 08, 02, 06, 04], the walk
+        // is address order, and the listing is component order. The assertion below can be failed
+        // by the listing matching either of the other two.
+        let by_component: Vec<Vec<u8>> = {
+            let mut sorted = members.clone();
+            sorted.sort_by_key(|member| hex::encode(member));
+            sorted
+        };
         assert_eq!(
-            walked, listed,
-            "the set listing's order is not the order the whole-object door walked in. It must \
-             INHERIT that order and impose none of its own; if it sorts or keys by anything else, \
-             respelling the component changes the walk without changing the listing and the two \
-             stop agreeing"
+            listed, by_component,
+            "the set listing is not in component order. It is built by folding the object's pages \
+             in `derive_membership`, whose map is keyed by the component spelling, so this is the \
+             order it must come back in -- if it has stopped being, find out what imposed the new \
+             one before trusting anything else in this section"
         );
-        // AND THE WALK IS NOT THE WRITE ORDER, so the assertion above is a real comparison rather
-        // than two orders that happen to coincide.
+        assert_ne!(
+            listed, walked,
+            "the listing and the whole-object door's walk are in the SAME order, so this fixture \
+             cannot tell an inherited order from an imposed one and the reversal recorded above \
+             cannot be read off it"
+        );
+        // AND THE WALK IS NOT THE WRITE ORDER, so neither comparison above is two orders that
+        // happen to coincide.
         assert_ne!(
             members, walked,
-            "the fixture's write order and the walk's order are the same, so the comparison above \
+            "the fixture's write order and the walk's order are the same, so the comparisons above \
              cannot tell an inherited order from an insertion order"
         );
     }

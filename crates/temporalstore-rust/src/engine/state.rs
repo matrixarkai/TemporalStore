@@ -4319,22 +4319,33 @@ pub(super) struct BlockIndex {
 }
 
 /// One per stored block. TWO shared names, a one-byte model spelling, an address, and three
-/// flags -- 56 bytes of field in 56, WITH NO SLACK LEFT.
+/// flags -- 40 bytes of field in 40, WITH NO SLACK LEFT.
 ///
-/// It was 52 of field in 56 before the entry absorbed the index-log row's two locating fields and
-/// shed the flag nothing maintained. The width did not move; the slack did, from four bytes to
-/// none. SO THE NEXT FIELD ADDED HERE COSTS EIGHT BYTES, NOT NONE -- every field decision in this
-/// structure's history was priced against slack that no longer exists.
+/// THE DECOMPOSITION IN THIS PARAGRAPH WAS STALE AND THE CONST ASSERT BELOW WAS NOT. It read "56
+/// bytes of field in 56 ... It was 52 of field in 56 before the entry absorbed the index-log row's
+/// two locating fields and shed the flag nothing maintained", and at the flags it read "at 60 four
+/// again -- and at 56 it is ZERO". The element-name field has since been removed: the entry is 40
+/// of field in 40, the const assert thirty lines below reconstructs that sum FROM THE TYPES, and a
+/// prose decomposition is the one form of this that nothing can fail. It is corrected here rather
+/// than deleted, because the history is what tells the next reader that every field decision in
+/// this structure was priced against slack it no longer has.
 ///
-/// 64, not 72, since the address inside it is 24 bytes and not 32: it shed the `routing_bucket`
-/// the read path now derives from the key, and narrowed its `block_id` to the sixteen bits the
-/// record encoder has always refused to exceed. That is the fourth whole eight-byte step out of
-/// this structure: 72, not 88, since the model spelling stopped being a sixteen-byte fat pointer
-/// to a string drawn from a seventeen-element set; 88, not 96, since the address merged its slab
-/// id and its offset into one word; 96, not 104, since it shed its derived `generation` before
-/// that.
+/// 40, NOT 56, SINCE THE ELEMENT NAME LEFT: `Option<Arc<str>>` is a sixteen-byte fat pointer with a
+/// niche, so the field set went 56 -> 40 and the width with it -- a whole two words rather than one
+/// word and some rounding. SO THE NEXT FIELD ADDED HERE STILL COSTS EIGHT BYTES, NOT NONE: 40 is a
+/// multiple of eight, so the field set packs exactly and the first addition rounds the type up by a
+/// full word. `element_ordinal_reuse::the_width_an_element_ordinal_would_take_and_the_ceiling_that_
+/// implies` prices both candidate ordinal widths at 48 for that reason.
 ///
-/// THE FOURTH STEP IS TWO NARROWINGS AND NEITHER IS WORTH ANYTHING ALONE. The address carried 29
+/// 56, not 64, since the address inside it is 16 bytes and not 24; 64, not 72, before that, since
+/// the address shed the `routing_bucket` the read path now derives from the key and narrowed its
+/// `block_id` to the sixteen bits the record encoder has always refused to exceed. That is one
+/// whole eight-byte step out of this structure among several: 72, not 88, since the model spelling
+/// stopped being a sixteen-byte fat pointer to a string drawn from a seventeen-element set; 88, not
+/// 96, since the address merged its slab id and its offset into one word; 96, not 104, since it
+/// shed its derived `generation` before that.
+///
+/// THE ADDRESS STEP WAS TWO NARROWINGS AND NEITHER WAS WORTH ANYTHING ALONE. The address carried 29
 /// bytes of payload in 32. Dropping the bucket leaves 25 and narrowing the id leaves 27; both
 /// round back to 32 and this structure would have stayed 72 for either one. Together they leave
 /// 23, the address is 24, and the step lands. `block_store`'s width assert carries both
@@ -4342,13 +4353,13 @@ pub(super) struct BlockIndex {
 /// reading of it that declared this blocked.
 ///
 /// AND THE FLAGS STILL DO NOT PAY, THOUGH NO LONGER BECAUSE OF SLACK. At 99 bytes of field the
-/// slack was five, at 91 five, at 83 five, at 68 four, at 60 four again -- and at 56 it is ZERO:
-/// the two locating fields absorbed from the index-log row filled the tail exactly. Packing the
-/// TWO flags that remain would still reclaim nothing, because the tail rounds to one word with or
-/// without them, and it would still move the stored index, which spells each of them as its own
-/// key. What changed is that the slack this claim used to be READ OFF is gone, so the claim is
-/// asserted directly in `pages_per_bucket::every_byte_of_the_page_index_is_accounted_for` instead
-/// of through the room left over beside it.
+/// slack was five, at 91 five, at 83 five, at 68 four, at 60 four again, at 56 it was ZERO -- and
+/// at 40 it is ZERO still, because 40 packs exactly as 56 did. Packing the TWO flags that remain
+/// would reclaim nothing, because the tail rounds to one word with or without them, and it would
+/// still move the stored index, which spells each of them as its own key. What changed is that the
+/// slack this claim used to be READ OFF is gone, so the claim is asserted directly in
+/// `pages_per_bucket::every_byte_of_the_page_index_is_accounted_for` instead of through the room
+/// left over beside it.
 ///
 /// AND THE WIRE DID MOVE, IN EXACTLY ONE SLOT. This paragraph said "WHAT DID NOT MOVE IS THE WIRE
 /// -- the spelling is still written and read as the string it always was; only the in-memory width
