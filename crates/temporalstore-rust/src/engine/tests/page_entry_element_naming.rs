@@ -848,12 +848,12 @@ fn a_hash_page_naming_no_field_is_skipped_while_a_genuine_empty_field_name_is_ke
     );
     println!("[leg B] the fold filed 1 hash page naming no field, under `{nameless_key}`");
 
-    // THE COUNTS, TAKEN BEFORE ANY DERIVE RUNS. `HashLen` and `HashGetAll` resolve through
-    // `bucket_index_component_block_addresses` and NOT through `shard.hashes`, so neither can move
-    // when the derive changes -- measured as a BEFORE/AFTER pair rather than asserted as an
-    // absolute, because the absolute is a property of the page index this test builds and the claim
-    // is about the DELTA. A sibling is landing a guard on exactly this pair, and this change has to
-    // be visibly clear of it.
+    // THE COUNTS, TAKEN BEFORE ANY DERIVE RUNS, as a BEFORE/AFTER pair rather than as an absolute,
+    // because the absolute is a property of the page index this test builds and the claim is about
+    // the DELTA. Under `container_index_files_one_entry_a_page` the two commands no longer read the
+    // same structure -- `HashLen` counts the fields in `shard.hashes`, `HashGetAll` serves the
+    // union of that map and the page index -- so the pair spans BOTH sources the derive touches,
+    // which is what makes a zero delta worth asserting over a derive that rebuilds one of them.
     let hash_len_before = hash_len_of(&engine, nameless_key);
     let listed_before = hash_entries_of(&engine, nameless_key).len();
     println!(
@@ -963,32 +963,74 @@ fn a_hash_page_naming_no_field_is_skipped_while_a_genuine_empty_field_name_is_ke
     }
 
     // ---------------------------------------------------------------------------------------------
-    // AND NEITHER COUNT MOVED. Both derive arms have now run over this index.
+    // AND NEITHER COUNT MOVED ACROSS THE DERIVE. Both derive arms have now run over this index.
     // ---------------------------------------------------------------------------------------------
     let hash_len_after = hash_len_of(&engine, nameless_key);
     let listed_after = hash_entries_of(&engine, nameless_key).len();
     assert_eq!(
         hash_len_before, hash_len_after,
-        "HashLen moved {hash_len_before} -> {hash_len_after} across the derive. It resolves through \
-         `bucket_index_component_block_addresses` and never reads `shard.hashes`, so a move here \
-         means this change reached further than the derive it is about"
+        "HashLen moved {hash_len_before} -> {hash_len_after} across the derive. Under the gate it \
+         counts the fields in `shard.hashes`, which is the map both arms clear and rebuild, so a \
+         move here means an arm rebuilt a different population than the one the writes put there"
     );
     assert_eq!(
         listed_before, listed_after,
         "HashGetAll's listing moved {listed_before} -> {listed_after} across the derive, which it \
          cannot do by reading the page index alone"
     );
-    // THE DENOMINATOR for the pair: a count of zero would satisfy both equalities above.
+
+    // THE DENOMINATOR for the pair: a count of zero would satisfy both equalities above. The floor
+    // used to read `hash_len_after >= 2`, and the 2 was never a property of `HashLen` as such -- it
+    // was the number of page ENTRIES this key carries, one named and one nameless, which is what
+    // `HashLen` reported while it counted index entries. Under
+    // `container_index_files_one_entry_a_page` it counts FIELDS, so the 2 is not lowered to a 1 and
+    // left there; it is asserted below OF THE INDEX, which is the structure it was always about,
+    // and the pair is floored at the field the fixture actually wrote.
+    const REAL_FIELDS_UNDER_THE_NAMELESS_KEY: i64 = 1;
+    let indexed_pages_after = {
+        let shards = engine.shards.read().expect("engine lock poisoned");
+        let shard = shards.get(&1).expect("shard is loaded");
+        collect_bucket_index_live_block_entries(shard)
+            .into_iter()
+            .filter(|entry| {
+                entry.kind.as_str() == "hash"
+                    && entry.object_key.as_ref() == nameless_key
+                    && !entry.deleted
+            })
+            .count() as i64
+    };
     assert!(
-        hash_len_after >= 2 && listed_after >= 1,
+        hash_len_after >= REAL_FIELDS_UNDER_THE_NAMELESS_KEY
+            && listed_after as i64 >= REAL_FIELDS_UNDER_THE_NAMELESS_KEY,
         "the count pair is {hash_len_after}/{listed_after}, too small for the two equalities above \
          to have measured anything"
     );
+
+    // AND WHICH STRUCTURE EACH NUMBER CAME OFF IS PINNED, because a floor alone is now satisfied by
+    // either source. The two sources hold DIFFERENT numbers here -- one real field against two live
+    // page entries -- so the number `HashLen` answered names the structure it read. Revert the
+    // gated arm and `HashLen` answers 2, and the first of these fails.
+    assert_eq!(
+        REAL_FIELDS_UNDER_THE_NAMELESS_KEY, hash_len_after,
+        "HashLen answered {hash_len_after} where `{nameless_key}` holds \
+         {REAL_FIELDS_UNDER_THE_NAMELESS_KEY} real field and {indexed_pages_after} live page \
+         entries. Under the gate it must answer the FIELD count; the page-entry number means it is \
+         still counting index entries and the nameless page is being counted as a field"
+    );
+    assert_eq!(
+        REAL_FIELDS_UNDER_THE_NAMELESS_KEY + 1,
+        indexed_pages_after,
+        "`{nameless_key}` carries {indexed_pages_after} live hash page entries, not the two this \
+         stage needs -- one named page and the one nameless page leg B filed. Without two, the \
+         field count and the entry count are the same number and the assertion above cannot say \
+         which of them HashLen read"
+    );
     println!(
         "[counts after] HashLen={hash_len_after} (was {hash_len_before}), HashGetAll listed \
-         {listed_after} (was {listed_before}) -- 0 moved, and neither reads `shard.hashes`. The two \
-         differ from each other for the reason a sibling is guarding, which this change does not \
-         touch"
+         {listed_after} (was {listed_before}) -- 0 moved. HashLen counts the \
+         {REAL_FIELDS_UNDER_THE_NAMELESS_KEY} field in `shard.hashes` against \
+         {indexed_pages_after} live page entries in the index, so the two are a discriminator and \
+         not a coincidence"
     );
 }
 

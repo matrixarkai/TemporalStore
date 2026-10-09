@@ -649,7 +649,42 @@ fn a_zset_element_page_holds_exactly_what_its_component_name_already_spells() {
 // 4. THE READ PATH, COUNTED
 // =============================================================================================
 
-/// A ZSET READ EXAMINES NO PAGE-INDEX ENTRIES, AND A HASH READ DOES.
+/// THE CONTROL THIS COUNT IS TAKEN AGAINST: one `HashGetAll` over a populated hash.
+///
+/// It is the arm where the mechanism predicts an effect. `HashGetAll` resolves the object through
+/// `bucket_index_component_block_addresses`, which asks `bucket.block_index.get` for every page of
+/// the object and so enters `find_page` -- the one door the counter sits in. It walks the INDEX by
+/// construction rather than reading a block by an address it was handed, which is what makes it
+/// hold at any fixture size and what the point read no longer does.
+///
+/// THE POPULATION IS RETURNED AND ASSERTED, not assumed. `BlockIndexMap::One` answers a
+/// single-block bucket with one comparison and never enters `find_page`, so a control over a thin
+/// object would read zero for a reason that has nothing to do with this module; and a listing that
+/// came back empty would examine entries over nothing. A count of `MEMBERS` fields served is what
+/// makes a non-zero entry count a page walk over a whole container.
+fn whole_object_hash_read_examined(engine: &TemporalEngine, hash_key: &str) -> (u64, usize) {
+    crate::engine::state::reset_page_lookup_entries_examined();
+    let response = engine.execute(ExecuteRequest {
+        shard_id: 1,
+        command: Command::HashGetAll {
+            key: hash_key.to_string(),
+        },
+    });
+    assert!(response.status.ok, "the control's whole-object read must ack");
+    let listed = match &response.response {
+        crate::types::CommandResponse::HashEntries { entries } => entries.len(),
+        other => panic!("the control's whole-object read answered {other:?}"),
+    };
+    let examined = crate::engine::state::page_lookup_entries_examined();
+    assert_eq!(
+        MEMBERS, listed,
+        "the CONTROL listed {listed} of {MEMBERS} fields, so it did not read a populated object \
+         and its entry count is not a count over a whole container"
+    );
+    (examined, listed)
+}
+
+/// A ZSET READ EXAMINES NO PAGE-INDEX ENTRIES, AND A HASH WHOLE-OBJECT READ DOES.
 ///
 /// This is the answer to "what would packing cost the read path" for a zset, and it is zero:
 /// nothing on the zset read path resolves a member through the page index, so there is no per-member
@@ -660,14 +695,40 @@ fn a_zset_element_page_holds_exactly_what_its_component_name_already_spells() {
 /// door every page lookup goes through, so this reads the copy production calls. A timing ratio on
 /// this box once read 485x idle against 11x busy off identical code.
 ///
-/// THE CONTROL IS THE HASH ARM, and it is what makes the zero mean anything. A hash read goes
-/// through `bucket_index_component_block_addresses` into the page index, so it MUST be non-zero; an
-/// instrument reading zero on both arms would be measuring nothing at all. The control is also the
-/// workload where the mechanism predicts an effect, which the zset arm is the 0.00% counterpart to.
+/// # THE CONTROL MOVED FROM THE POINT READ TO THE WHOLE-OBJECT READ
+///
+/// This test was named `..._and_a_hash_read_does`, and its control was the hash POINT read: a
+/// `HashGet` resolved a field through `bucket_index_component_block_addresses` into the page index,
+/// so it MUST be non-zero and an instrument reading zero on both arms would be measuring nothing.
+/// Under `container_index_files_one_entry_a_page` a `HashGet` answers from `shard.hashes` and hands
+/// the address it holds to `read_block_bytes`, which consults the cache, the WAL-resident redirect
+/// and the block store -- and none of those enters `find_page`. So the control read ZERO and this
+/// test refused itself, which is the instrument working: the arm that was supposed to prove the
+/// counter can see a lookup had stopped being a lookup.
+///
+/// THE POINT-READ COUNT IS NOW PRINTED AND NOT ASSERTED, and the reason is a measurement, not a
+/// choice. It is FIXTURE-DEPENDENT: on this fixture the hundred point reads examine ZERO
+/// entries, and on a fixture holding only the hash -- no zsets seeded ahead of it -- the same
+/// hundred reads examined 580, 5.8 a read, which is a bisection of this bucket per read. The same
+/// production code, two fixtures, two answers, so "a gated point read examines no page-index
+/// entries" is not a property of the engine and must not be asserted as one. Which of the three
+/// fallbacks under `read_block_frame_bytes` the lean fixture reaches, and why that one is charged,
+/// is NOT established here -- so the number is recorded rather than explained, and a change in
+/// either figure is a signal to come and find out.
+///
+/// THE WHOLE-OBJECT READ CARRIES THE CONTROL INSTEAD. `HashGetAll` is untouched by the gate and
+/// walks the index by construction -- one `bucket.block_index.get` per page of the object, not one
+/// block read by a handed address -- so it is non-zero on both fixtures above.
+///
+/// WHY A CONTROL IS KEPT AT ALL. An `assert_eq!(zset_examined, 0)` standing alone is unfailable:
+/// it reads the same zero off an instrument that had stopped counting, off a counter whose
+/// increment was deleted, and off a read path that genuinely never counted, and no suite could tell
+/// those three apart. The control is the independent artefact that has to disagree for the zero to
+/// mean anything.
 ///
 /// rust-internal: reads a cfg(test) counter inside the engine, no product behaviour
 #[test]
-fn a_zset_read_examines_no_page_index_entries_and_a_hash_read_does() {
+fn a_zset_read_examines_no_page_index_entries_and_a_hash_whole_object_read_does() {
     let dir = tempfile::tempdir().expect("tempdir");
     let engine = engine_on(dir.path());
     load_on(&engine, NARROW_END);
@@ -740,9 +801,12 @@ fn a_zset_read_examines_no_page_index_entries_and_a_hash_read_does() {
     }
     let zset_examined = crate::engine::state::page_lookup_entries_examined();
 
-    // HASH ARM, THE CONTROL. The same count over a read that does resolve through the page index.
+    // THE HASH POINT READ, MEASURED AND PRINTED. Not a control any more -- see the header. The
+    // reads are still required to FIND their field, because a point read answering `None` would
+    // examine nothing for the uninteresting reason and the number below would be a count over
+    // nothing rather than a count over a resolved read.
     crate::engine::state::reset_page_lookup_entries_examined();
-    let mut hash_reads = 0usize;
+    let mut point_reads = 0usize;
     for f in 0..MEMBERS {
         let response = engine.execute(ExecuteRequest {
             shard_id: 1,
@@ -757,11 +821,15 @@ fn a_zset_read_examines_no_page_index_entries_and_a_hash_read_does() {
                 &response.response,
                 crate::types::CommandResponse::Bytes { value: Some(_) }
             ),
-            "the CONTROL arm did not find field {f}, so a non-zero count would not be a lookup"
+            "the hash point read did not find field {f}, so it resolved nothing and its entry \
+             count below is a count over nothing"
         );
-        hash_reads += 1;
+        point_reads += 1;
     }
-    let hash_examined = crate::engine::state::page_lookup_entries_examined();
+    let point_examined = crate::engine::state::page_lookup_entries_examined();
+
+    // HASH ARM, THE CONTROL. The same count over a read that does resolve through the page index.
+    let (whole_examined, whole_listed) = whole_object_hash_read_examined(&engine, &hash_key);
 
     println!("--- entries examined, {MEMBERS}-member containers ---");
     println!(
@@ -770,9 +838,14 @@ fn a_zset_read_examines_no_page_index_entries_and_a_hash_read_does() {
         zset_examined as f64 / zset_reads as f64
     );
     println!(
-        "  hash  : {hash_examined:>6} entries over {hash_reads} field reads ({:.4} per read) \
-         [CONTROL]",
-        hash_examined as f64 / hash_reads as f64
+        "  hash point : {point_examined:>6} entries over {point_reads} field reads ({:.4} per \
+         read) -- PRINTED, NOT ASSERTED: fixture-dependent, 580 on a hash-only fixture",
+        point_examined as f64 / point_reads as f64
+    );
+    println!(
+        "  hash whole : {whole_examined:>6} entries over one read serving {whole_listed} fields \
+         ({:.4} per field) [CONTROL]",
+        whole_examined as f64 / whole_listed as f64
     );
 
     assert_eq!(
@@ -781,7 +854,7 @@ fn a_zset_read_examines_no_page_index_entries_and_a_hash_read_does() {
          resolve members through the page index and packing would cost it something"
     );
     assert!(
-        hash_examined > 0,
+        whole_examined > 0,
         "the CONTROL examined zero entries too, so this instrument cannot see a page lookup at all \
          and the zset zero means nothing"
     );
