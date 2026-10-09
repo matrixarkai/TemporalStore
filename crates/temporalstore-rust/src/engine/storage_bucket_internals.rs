@@ -3774,6 +3774,47 @@ impl ElementComponent {
     }
 }
 
+/// THE PAGE A WRITE REPLACES -- the address the element's resident map held for it before this
+/// write, and only when that write leaves the page EMPTY.
+///
+/// # WHY A TYPE AND NOT AN `Option<ElementEntry>`
+///
+/// The same reason [`FiledComponent`] and [`ElementComponent`] are two types rather than two
+/// `Option<&str>`. The filer already takes the address the write LANDS AT, so a bare
+/// `Option<ElementEntry>` beside it makes a transposition compile -- and a transposition here is
+/// silent in the worst direction: the supersede would converge on the page being vacated and leave
+/// the entry over the page just written, which reads as a container that dropped the element it
+/// had just accepted.
+///
+/// # EMPTY IS THE ORDINARY CASE
+///
+/// A first write replaces no page. A rewrite that lands back on its own page is superseded through
+/// the landing address and needs nothing extra. A rewrite off a page a SIBLING element is still on
+/// replaces nothing either -- that page is still live, and its entry is what keeps the sibling
+/// reachable. `recorded_map::RecordedMap::page_an_element_vacates` is the one producer of a
+/// non-empty one, and it asks all three questions.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub(super) struct ReplacedPage(Option<ElementEntry>);
+
+impl ReplacedPage {
+    pub(super) fn of(page: Option<ElementEntry>) -> Self {
+        Self(page)
+    }
+
+    /// NO PAGE REPLACED, SPELLED RATHER THAN DEFAULTED. A filer that cannot know -- a projection
+    /// rebuilding an object's live set from scratch, a tombstone, a whole-object restate -- says so
+    /// at its call site instead of leaving a reader to infer it from an absent argument.
+    pub(super) fn none() -> Self {
+        Self(None)
+    }
+
+    /// The page key the supersede compares against: slab, offset and length, which is what an
+    /// entry's identity is once it no longer names an element.
+    fn page_key(&self) -> Option<super::LiveBlockKey> {
+        self.0.as_ref().map(super::live_page_key)
+    }
+}
+
 /// [`upsert_bucket_index_block`], carrying one extra byte string onto the WAL outcome it stages.
 ///
 /// `value` rides `WalOutcomeItem.value` -- the same optional slot the `"bucket"` arm already
@@ -3789,9 +3830,10 @@ pub(super) fn upsert_bucket_index_block_filed(
     address: ElementEntry,
     dirty: bool,
     value: Option<Vec<u8>>,
+    replaces: ReplacedPage,
 ) -> BlockFiled {
     upsert_bucket_index_block_with_value(
-        shard, shard_id, kind, object_key, component, address, dirty, true, value,
+        shard, shard_id, kind, object_key, component, address, dirty, true, value, replaces,
     );
     BlockFiled(())
 }
@@ -3978,7 +4020,21 @@ pub(super) fn upsert_bucket_index_block_with(
     stage: bool,
 ) {
     upsert_bucket_index_block_with_value(
-        shard, shard_id, kind, object_key, component, address, dirty, stage, None,
+        shard,
+        shard_id,
+        kind,
+        object_key,
+        component,
+        address,
+        dirty,
+        stage,
+        None,
+        // NO PAGE REPLACED, AND THAT IS A STATEMENT AND NOT A DEFAULT. Every caller of this
+        // function files a block whose element it does not claim to have overwritten -- the
+        // context-node registration and the maintenance paths -- so there is no previous address
+        // for it to hand over. The element writes that DO overwrite go through
+        // `upsert_bucket_index_block_filed`, which takes one.
+        ReplacedPage::none(),
     )
 }
 
@@ -3998,6 +4054,7 @@ pub(super) fn upsert_bucket_index_block_with_value(
     dirty: bool,
     stage: bool,
     value: Option<Vec<u8>>,
+    replaces: ReplacedPage,
 ) {
     // Every single-block writer reaches the bucket index through here, so the charge sits here and
     // not at the arms. A new command arm that files a block is counted because this function counts
@@ -4013,6 +4070,7 @@ pub(super) fn upsert_bucket_index_block_with_value(
             dirty,
             stage,
             value,
+            replaces,
         )
     })
 }
@@ -4028,6 +4086,7 @@ fn upsert_bucket_index_block_inner(
     dirty: bool,
     stage: bool,
     value: Option<Vec<u8>>,
+    replaces: ReplacedPage,
 ) {
     // THE SHARD'S OWN RANGE, carried on the shard. This site PLACES: `routing_bucket` below is
     // the KEY this block is filed under, not a filter over an answer already decided. Under the
@@ -4137,6 +4196,14 @@ fn upsert_bucket_index_block_inner(
     // So under the gate this selects the refs that name the SAME PHYSICAL PAGE and removes those
     // singly, which is the uniqueness the gate establishes: the gated producer emits at most one
     // entry per distinct page, so no two of its entries share an address.
+    //
+    // AND THE PAGE THE WRITE IS LEAVING, WHICH THE LANDING ADDRESS CANNOT NAME. A rewrite in place
+    // is written to a NEW address, so keyed on the landing page alone this converges on nothing and
+    // the element's previous entry survives as a live entry over a dead page -- measured as a gated
+    // hash serving one element more than was written, and as a zset rescore leaving two live
+    // entries for one member. `ReplacedPage` is the caller's answer to which page that is, and it
+    // is empty unless the write really is a rewrite that leaves its old page empty.
+    let vacated = replaces.page_key();
     let superseded: Option<Vec<crate::engine::state::BlockLookupRef>> = match direct_block_refs {
         Some(block_refs) if names_a_page => {
             let here = super::live_page_key(&entry.address);
@@ -4148,7 +4215,10 @@ fn upsert_bucket_index_block_inner(
                         .bucket_map
                         .get(&block_ref.routing_bucket)
                         .and_then(|bucket| bucket.block_index.get(&block_ref.block_ref_key))
-                        .is_some_and(|page| super::live_page_key(&page.address) == here)
+                        .is_some_and(|page| {
+                            let key = super::live_page_key(&page.address);
+                            key == here || (!page.deleted && Some(key) == vacated)
+                        })
                 })
                 .collect();
             for block_ref in &mine {
@@ -4207,7 +4277,13 @@ fn upsert_bucket_index_block_inner(
                 !(page.object_key == entry.object_key
                     && page.model_id == entry.kind
                     && page.component.as_deref() == entry.component.as_deref()
-                    && (!names_a_page || super::live_page_key(&page.address) == here))
+                    && (!names_a_page
+                        || super::live_page_key(&page.address) == here
+                        // AND THE PAGE THIS WRITE IS LEAVING, which the landing key cannot name.
+                        // `!page.deleted` because a tombstone is not a live entry and must not be
+                        // taken by a rewrite: the sweep below is the only thing that clears one.
+                        || (!page.deleted
+                            && Some(super::live_page_key(&page.address)) == vacated)))
             });
             if !bucket
                 .block_index

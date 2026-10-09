@@ -813,3 +813,164 @@ fn gated_removals_file_one_tombstone_per_distinct_element_and_do_not_accumulate(
         "after three removals the listing does not serve exactly the nine remaining members"
     );
 }
+
+/// THE PAGE AN ELEMENT WAS ALONE ON, which is the half the landing address cannot reach.
+///
+/// `a_rewrite_after_a_fold_leaves_one_entry_per_page_today` above measures the OTHER half: a
+/// rewrite off a page SIBLINGS are still on, where the page stays live and its entry must stay
+/// with it. This one is the case that strands an entry. The member is alone on its page, the
+/// rewrite is written to a NEW address, and keyed on the landing page alone the supersede matches
+/// NO existing entry -- so the member's previous entry survives as a LIVE entry over a page
+/// nothing is on any more. Under one entry a page a live entry IS a claim of membership, so that
+/// stale entry is a phantom element: it is what served one element more than had ever been
+/// written on the kind that rewrites in place.
+///
+/// ASSERTED AS AN EXACT ONE-TO-ONE and not as a floor. `live >= pages` is satisfied by the
+/// stranding this is about, and a floor on either count passed once in this campaign over a path
+/// nothing reached -- so the fixture is first shown to have put each member on its own page and to
+/// have actually MOVED the rewritten one, and only then are the two counts compared.
+///
+/// THE MUTATION: `RecordedMap::page_an_element_vacates` returning `None` unconditionally, which is
+/// the tree before `ReplacedPage` existed. That reddens the one-to-one assertion here and leaves
+/// the fold arm above green, which is what says the two arms are about different halves.
+#[test]
+fn a_rewrite_off_a_page_the_element_was_alone_on_retires_that_pages_entry() {
+    let _gate = GateAt::value("1");
+    let dir = tempfile::tempdir().expect("tempdir");
+    let engine = engine_on(dir.path());
+    load_on(&engine);
+
+    add(&engine, member_bytes(0));
+    add(&engine, member_bytes(1));
+
+    let before = member_page(&engine, &member_bytes(0));
+    let (live_before, _, pages_before, _) = entry_census(&engine);
+    // FLOOR 1: each member is on its OWN page, or there is no alone-on-a-page case to rewrite off
+    // and this test would be measuring the fold arm's situation instead.
+    assert_eq!(
+        2,
+        pages_before.len(),
+        "the two members resolve to {} distinct page(s), so neither is alone on one",
+        pages_before.len()
+    );
+    assert_eq!(
+        2, live_before,
+        "{live_before} live entr(ies) before the rewrite, so the index did not start one-to-one \
+         and the comparison after the rewrite would not be about the rewrite"
+    );
+
+    // REWRITE the member that is alone on its page.
+    add(&engine, member_bytes(0));
+    let after = member_page(&engine, &member_bytes(0));
+    // FLOOR 2: the rewrite actually RELOCATED. If a rewrite landed back on its own page the
+    // landing key would supersede the entry by itself and there would be nothing here to fix.
+    assert_ne!(
+        before, after,
+        "the rewrite landed back on page {before:?}, so the landing address already names the \
+         entry it supersedes and this test asserts nothing about a vacated page"
+    );
+
+    let (live, named, pages, _) = entry_census(&engine);
+    let durable = durable_members(&engine);
+    let listed = listed_members(&engine);
+    println!(
+        "\n=== rewrite off a page the element was alone on: {live} live entr(ies), {named} naming \
+         an element, {} distinct page(s); vacated {before:?} -> {after:?}; durable {}, listing \
+         serves {}",
+        pages.len(),
+        durable.len(),
+        listed.len()
+    );
+
+    // FLOOR 3: nothing was lost, so the counts are about filing and not about a damaged store.
+    let expected: std::collections::BTreeSet<Vec<u8>> = (0..2).map(member_bytes).collect();
+    assert_eq!(
+        expected, durable,
+        "the durable map holds {} of {} members after the rewrite",
+        durable.len(),
+        expected.len()
+    );
+    assert_eq!(
+        expected, listed,
+        "the listing served {} member(s) of {} after the rewrite -- compared as a SET, because a \
+         wrong-member answer has the same count as a right one",
+        listed.len(),
+        expected.len()
+    );
+
+    // THE ASSERTION UNDER TEST, COMPARED AGAINST THE OTHER SOURCE.
+    //
+    // `pages` is derived FROM the entries, so `pages.len() == live` can only ever say that no two
+    // entries share a page -- it cannot see a stale entry at all, because a stale entry raises both
+    // sides of it. MEASURED: under the mutation that arm read `3 == 3` and passed while the vacated
+    // page was still named. So the live set is compared against the pages the RESIDENT MAP says are
+    // occupied, which is an independent statement of which pages exist.
+    let occupied = occupied_pages(&engine);
+    assert_eq!(
+        occupied, pages,
+        "the index names {} live page(s) and the durable map holds its members on {}. The \
+         difference is an entry over a page nothing is on -- and under this gate a live entry IS a \
+         claim of membership, so it serves a member that is not there",
+        pages.len(),
+        occupied.len()
+    );
+    assert_eq!(
+        occupied.len(),
+        live,
+        "{live} live entr(ies) for {} occupied page(s): two entries name one page, so one of them \
+         is a duplicate claim over the same bytes",
+        occupied.len()
+    );
+    assert!(
+        !pages.contains(&before),
+        "the vacated page {before:?} is still named by a live entry. The member moved to \
+         {after:?} and nothing else was on {before:?}, so that entry stands for a page with \
+         nothing on it"
+    );
+}
+
+/// The physical page the durable map currently holds this member on.
+///
+/// READ FROM THE RESIDENT MAP and not from the index, deliberately: the index is the thing under
+/// test here, so taking the before-and-after page from it would compare two values derived from
+/// the same accessor -- a shape that has already passed over broken code in this campaign.
+fn member_page(engine: &TemporalEngine, member: &[u8]) -> (u64, u64, u64) {
+    let shards = engine.shards.read().expect("engine lock poisoned");
+    let shard = shards.get(&1).expect("shard 1 loaded");
+    let address = shard
+        .sets
+        .get(KEY)
+        .and_then(|members| members.get(member))
+        .expect("the durable map holds this member");
+    (
+        address.block_slab_id(),
+        address.offset(),
+        address.length(),
+    )
+}
+
+/// The distinct physical pages the DURABLE MAP says this object's members are on.
+///
+/// The independent half of the comparison above. The index's own page set is derived from the
+/// entries being measured, so it cannot witness an entry over an empty page; this is derived from
+/// the members instead.
+fn occupied_pages(engine: &TemporalEngine) -> std::collections::BTreeSet<(u64, u64, u64)> {
+    let shards = engine.shards.read().expect("engine lock poisoned");
+    let shard = shards.get(&1).expect("shard 1 loaded");
+    shard
+        .sets
+        .get(KEY)
+        .map(|members| {
+            members
+                .iter()
+                .map(|(_, address)| {
+                    (
+                        address.block_slab_id(),
+                        address.offset(),
+                        address.length(),
+                    )
+                })
+                .collect()
+        })
+        .unwrap_or_default()
+}

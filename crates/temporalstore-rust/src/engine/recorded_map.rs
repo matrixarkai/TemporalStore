@@ -230,10 +230,27 @@ pub(super) fn install_element<K: RecordedKind>(
     value: <K::Elements as ElementMap>::Value,
     dirty: bool,
     address: ElementEntry,
-) {
+) where
+    K::Elements: AddressedElementMap,
+{
     // COMPUTED BEFORE `value` MOVES INTO THE RECORD BELOW. The only producer of a `Some` today is
     // `ZSetKind`, whose score has nowhere else to ride now that the component does not spell it.
     let outcome_value = K::outcome_value(&value);
+    // WHICH PAGE THIS WRITE REPLACES, ASKED WHILE THE MAP STILL HOLDS THE OLD ANSWER.
+    //
+    // The filer cannot derive this. Under one entry a page an entry carries no element name, so
+    // the only discriminator it has is the address -- and a rewrite lands at a NEW address, so the
+    // landing key names no existing entry and the element's previous entry is never superseded.
+    // See `AddressedElementMap` for the two measured losses that leaves.
+    //
+    // ASKED ONLY WHEN THE ENTRY IS PAGE-NAMED. While an entry names its element the filer's own
+    // component-keyed supersede already takes the predecessor, so there is nothing to tell it and
+    // nothing to pay for: the ungated path does not reach the scan at all.
+    let replaces = if super::storage_bucket_internals::index_entry_names_a_page(K::KIND) {
+        K::resident(shard).page_an_element_vacates(object_key, &element, &address)
+    } else {
+        None
+    };
     // THE RECORD FIRST. The proof below cannot be built without the witness this returns, so
     // deleting this call is a compile error rather than a silent unrecorded write.
     let filed = super::storage_bucket_internals::upsert_bucket_index_block_filed(
@@ -245,6 +262,7 @@ pub(super) fn install_element<K: RecordedKind>(
         address,
         dirty,
         outcome_value,
+        super::storage_bucket_internals::ReplacedPage::of(replaces),
     );
     // THEN THE MUTATION, through the proof.
     K::resident(shard).install(RecordedElement::<K> {
@@ -440,6 +458,46 @@ impl<K: RecordedKind> RecordedMap<K> {
     /// would have silently changed.
     pub(super) fn entries(&self) -> &HashMap<String, K::Elements> {
         &self.entries
+    }
+
+    /// THE PAGE THIS WRITE VACATES, or nothing when it vacates none.
+    ///
+    /// `Some` only when all three hold:
+    ///
+    ///   * the map already holds `element`, so this is a REWRITE and not a first write;
+    ///   * the address it holds names a DIFFERENT page from the one the write is landing on -- a
+    ///     rewrite that lands back on its own page is superseded through the landing key and needs
+    ///     nothing extra;
+    ///   * and NO OTHER element of the same object is still on the page being left, because an
+    ///     entry under the gate stands for the PAGE and a page with a sibling still on it is still
+    ///     live.
+    ///
+    /// ASKED BEFORE THE MUTATION, which is the only reason it can be asked at all: the caller files
+    /// the record first, so the map still holds the pre-write address here.
+    ///
+    /// THE SCAN IS THE SAME ORDER AS WHAT THE FILER ALREADY PAYS. The third test is a
+    /// short-circuiting `any` over ONE OBJECT's elements, where `upsert_bucket_index_block_inner`
+    /// already walks the whole BUCKET's pages twice per write -- once to decide whether the object
+    /// still has a page there and once for the tombstone probe. One object's elements are a subset
+    /// of its bucket's pages, so this does not change the order of a container write.
+    pub(super) fn page_an_element_vacates(
+        &self,
+        object_key: &str,
+        element: &<K::Elements as ElementMap>::Element,
+        landing: &ElementEntry,
+    ) -> Option<ElementEntry>
+    where
+        K::Elements: AddressedElementMap,
+    {
+        let elements = self.entries.get(object_key)?;
+        let previous = elements.element_address(element)?;
+        if super::live_page_key(previous) == super::live_page_key(landing) {
+            return None;
+        }
+        if elements.any_element_other_than_at(element, previous) {
+            return None;
+        }
+        Some(previous.clone())
     }
 }
 
@@ -693,6 +751,43 @@ pub(super) trait IterableMutElementMap: ElementMap {
     fn iter_values_mut(
         &mut self,
     ) -> impl Iterator<Item = (&Self::Element, &mut Self::Value)>;
+}
+
+/// WHICH PAGE AN ELEMENT IS MOVING OFF, read from the map that is keyed BY THE ELEMENT.
+///
+/// # WHY THE FILER CANNOT WORK THIS OUT FOR ITSELF
+///
+/// Under one entry a page an index entry carries NO element name, so the entry a rewrite
+/// supersedes cannot be picked out by naming the element. Keying the supersede on the address the
+/// write LANDS AT finds the entry over the page it lands on -- which is right for an element
+/// appended to a page that already has an entry, and finds NOTHING AT ALL for an element rewritten
+/// IN PLACE, because a rewrite is written to a NEW address.
+///
+/// MEASURED, not reasoned: with the supersede keyed on the landing address alone, a gated hash
+/// served ONE ELEMENT MORE than was ever written -- out of the stale live entry the rewrite did not
+/// supersede -- and a zset rescore left TWO live entries for one member at one score. `set` and
+/// `list` are immune only because neither can rewrite an element in place.
+///
+/// THE CALLER DOES KNOW. A write that overwrites an element has that element's PREVIOUS address in
+/// the resident map, which is keyed by the element and still holds the old address at filing time:
+/// [`install_element`] files the record BEFORE it mutates the map. This trait is how the generic
+/// emitter asks for it without naming a concrete container.
+///
+/// # AND THE PREVIOUS ADDRESS ALONE IS NOT THE ANSWER
+///
+/// An entry under the gate stands for a PAGE, not for an element. Retiring the entry over the page
+/// an element vacates is WRONG whenever a SIBLING element of the same object is still on that page:
+/// the page is still live, and its entry is what keeps the siblings reachable. So the question has
+/// two halves, and [`AddressedElementMap::any_element_other_than_at`] is the second.
+pub(super) trait AddressedElementMap: ElementMap {
+    /// The address this map currently holds for `element`, if it holds the element at all.
+    fn element_address(&self, element: &Self::Element) -> Option<&ElementEntry>;
+
+    /// Whether any element OTHER THAN `skip` currently sits on the page `page` names.
+    ///
+    /// Compared by PAGE KEY -- slab, offset and length -- and not by the whole address, because
+    /// that triple is what an index entry's identity is under the gate.
+    fn any_element_other_than_at(&self, skip: &Self::Element, page: &ElementEntry) -> bool;
 }
 
 // =============================================================================================
@@ -970,6 +1065,42 @@ where
 {
     fn iter_values_mut(&mut self) -> impl Iterator<Item = (&E, &mut V)> {
         self.iter_mut()
+    }
+}
+
+impl AddressedElementMap for super::hash_field_map::HashFieldMap {
+    fn element_address(&self, element: &String) -> Option<&ElementEntry> {
+        self.get(element.as_str())
+    }
+
+    fn any_element_other_than_at(&self, skip: &String, page: &ElementEntry) -> bool {
+        let page = super::live_page_key(page);
+        self.iter()
+            .any(|(field, address)| field != skip && super::live_page_key(address) == page)
+    }
+}
+
+/// `sets`, `zsets` and `lists`, through the one bound that tells a level-2 value where its page is.
+///
+/// `CarriedValue` is already the trait that answers "which address does this value name" -- the
+/// delta fold reads it to decide whether a carried element's block is still there. Reusing it is
+/// what keeps a zset's `(score, page)` from needing an arm of its own here: the pair already
+/// declares which half is the page.
+impl<E, V> AddressedElementMap for std::collections::BTreeMap<E, V>
+where
+    E: Ord + serde::de::DeserializeOwned,
+    V: serde::de::DeserializeOwned + super::CarriedValue,
+{
+    fn element_address(&self, element: &E) -> Option<&ElementEntry> {
+        self.get(element).map(super::CarriedValue::carried_address)
+    }
+
+    fn any_element_other_than_at(&self, skip: &E, page: &ElementEntry) -> bool {
+        let page = super::live_page_key(page);
+        self.iter().any(|(element, value)| {
+            element != skip
+                && super::live_page_key(super::CarriedValue::carried_address(value)) == page
+        })
     }
 }
 
