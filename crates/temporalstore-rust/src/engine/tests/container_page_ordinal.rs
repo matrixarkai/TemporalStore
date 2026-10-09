@@ -154,7 +154,14 @@ fn pages_of(engine: &TemporalEngine, kind: &str, key: &str) -> Vec<(Option<Strin
     held
 }
 
-/// The object's TOMBSTONE entries: the component each names and the ordinal it kept.
+/// This object's TOMBSTONE entries: the element each is about, and the ordinal its page carries.
+///
+/// THE ELEMENT NOW COMES FROM THE BUCKET'S TOMBSTONE ROWS, NOT FROM THE ENTRY. It read
+/// `page.component`, and a tombstone entry files `None` there: the element a removal is about is a
+/// per-ELEMENT fact and lives beside the entries, where only a removal pays for it. Restated rather
+/// than re-goldened -- the two arms below are about WHICH element a removal is recorded against,
+/// and that question still has an answer; what moved is where the answer is kept. Reading the
+/// entry here instead would make both of them assert `None == None`.
 fn tombstone_pages_of(
     engine: &TemporalEngine,
     kind: &str,
@@ -167,7 +174,9 @@ fn tombstone_pages_of(
         for page in bucket.block_index.values() {
             if page.deleted && page.model_id.as_str() == kind && &*page.object_key == key {
                 held.push((
-                    page.component.as_deref().map(str::to_string),
+                    bucket
+                        .tombstone_element_at(&page.address)
+                        .map(|row| row.component.to_string()),
                     page.address.block_id(),
                 ));
             }

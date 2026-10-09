@@ -2509,7 +2509,27 @@ pub(crate) fn eager_cache_warm_on_load() -> bool {
 /// keeps its slot and refuses only on length mismatch, so nothing there needed a bump to stay
 /// correct. `wal_proto` is untouched too -- the score rides the WAL outcome's existing `value` byte
 /// slot now, never the component, and that slot's presence was already optional on the wire.
-pub(super) const SHARD_INDEX_FORMAT_VERSION: u32 = 9;
+///
+/// 9 -> 11 WHEN A TOMBSTONE'S ELEMENT NAME LEFT THE ENTRY. A tombstone entry no longer carries
+/// `component` -- it files `None` -- and the element it is about is a new key on the BUCKET NODE,
+/// `tombstone_elements`. Both halves move the served index: the entry's rendered key drops the
+/// element text it used to carry (`block_index_written_key`), and the node grows a key a reader
+/// without this change does not know. The named served index DROPS an undeclared key silently, so
+/// a binary before this change reading an index written after it would load every tombstone with no
+/// element at all -- a removal nothing can identify, which is precisely the resurrection this
+/// change exists to prevent. That is what the stamp has to stop, and it stops it in both codecs:
+/// `persistence` refuses a lower stamp with `<` and falls back to WAL replay, and the msgpack
+/// container carries the stamp in its header and refuses a mismatch before a byte is decoded.
+///
+/// ELEVEN AND NOT TEN, AND THE READ IS RECORDED. `matrixark/main` holds 8, read from
+/// `git show matrixark/main:...` immediately before this commit and never from this tree -- a
+/// self-read returns the value just written and confirms itself. 9 is this branch's own carried zset
+/// change. 10 is taken by an UNCOMMITTED edit in another working tree (`/root/oi_prod`), which no
+/// ref holds and no sweep of refs can see: a previous lane swept 2,567 local and remote refs,
+/// found nothing above 9, and was wrong for exactly that reason. So the trees were read, not the
+/// refs. The direction that is lethal is TOO LOW, because `persistence` compares with `<` and a
+/// stale value falls through to Accepted.
+pub(super) const SHARD_INDEX_FORMAT_VERSION: u32 = 11;
 
 /// Serialize a shard index, stamping the current format version.
 ///
@@ -5457,24 +5477,30 @@ fn mark_bucket_index_block_deleted_recording(
             //     and a page-named entry has none -- so this arm fires on EVERY removal. Measured
             //     with a nameless tombstone: four removals of ONE member left FOUR tombstone pages
             //     and four entries, growing per removal issued rather than per element removed, on
-            //     what is a no-op from the client's side. With the name present the arm can ask
+            //     what is a no-op from the client's side. With the name recorded the arm can ask
             //     whether this element's tombstone is already filed, which is what the check below
             //     does.
             //
-            // So the gate's scope is one clause narrower than it looks: it drops the element name
-            // from LIVE entries only.
-            let already_tombstoned = shard
-                .bucket_index
-                .bucket_map
-                .get(&routing_bucket)
-                .is_some_and(|bucket| {
-                    bucket.block_index.values().any(|page| {
-                        page.deleted
-                            && &*page.object_key == key
-                            && page.model_id.as_str() == model_id
-                            && page.component.as_deref() == component
+            // SO THE NAME IS KEPT, AND IT IS KEPT OFF THE ENTRY. Both losses above are about an
+            // ELEMENT, and both are repaired by `BucketNode::tombstone_elements` -- a row per
+            // distinct element removed, filed beside the entries by
+            // `insert_container_tombstone_entry`. The gate's scope is therefore not "live entries
+            // only": NO entry names an element now, and a removal pays for its own name in a
+            // structure only removals have.
+            let already_tombstoned = component.is_some_and(|component| {
+                shard
+                    .bucket_index
+                    .bucket_map
+                    .get(&routing_bucket)
+                    .and_then(|bucket| {
+                        bucket.tombstone_element_page(
+                            key,
+                            crate::engine::storage_bucket_internals::stored_model_kind(model_id),
+                            component,
+                        )
                     })
-                });
+                    .is_some()
+            });
             if !already_tombstoned {
                 crate::engine::storage_bucket_internals::insert_container_tombstone_entry(
                     shard,

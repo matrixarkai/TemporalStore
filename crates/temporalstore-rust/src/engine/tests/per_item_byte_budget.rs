@@ -340,7 +340,7 @@ fn every_per_item_structure_states_its_width_and_its_padding() {
     assert_eq!(16, size_of::<ElementEntry>(), "ElementEntry width moved");
     assert_eq!(56, size_of::<BlockIndex>(), "BlockIndex width moved");
     assert_eq!(24, size_of::<BlockIndexMap>(), "BlockIndexMap width moved");
-    assert_eq!(88, size_of::<BucketNode>(), "BucketNode width moved");
+    assert_eq!(96, size_of::<BucketNode>(), "BucketNode width moved");
     assert_eq!(16, size_of::<BlockLookupRef>(), "BlockLookupRef width moved");
     assert_eq!(24, size_of::<BlockRefs>(), "BlockRefs width moved");
     assert_eq!(40, size_of::<ComponentBlocks>(), "ComponentBlocks width moved");
@@ -589,7 +589,14 @@ fn only_the_structures_that_hold_an_address_moved() {
         // Held an address inline until #1975 boxed the single-page arm; 24 and 88 whatever the
         // entry weighs now, so they are control rows and not holder rows.
         ("BlockIndexMap", size_of::<BlockIndexMap>(), 24, 0),
-        ("BucketNode", size_of::<BucketNode>(), 88, 0),
+        // 96 AND 96, AND THE `before` COLUMN MOVED WITH IT. This row's claim is that a structure
+        // holding no `ElementEntry` inline did not move when the address shed -- and it did not.
+        // What moved it since is a DIFFERENT change, named rather than absorbed: the node gained
+        // one word, `tombstone_elements`, when a removal's element name left the page entries. So
+        // both columns are 96 and the row still says what it was written to say; freezing the
+        // `before` at 88 would have made this arm report an address defect for a field that holds
+        // no address.
+        ("BucketNode", size_of::<BucketNode>(), 96, 0),
         ("BlockLookupRef", size_of::<BlockLookupRef>(), 16, 0),
         ("BlockRefs", size_of::<BlockRefs>(), 24, 0),
         ("ComponentBlocks", size_of::<ComponentBlocks>(), 40, 0),
@@ -1146,6 +1153,7 @@ fn bucket_node_fields() -> Vec<Field> {
         field!("object_index", ObjectIndex),
         field!("deleted_object_index", DeletedObjectIndex),
         field!("block_index", BlockIndexMap),
+        field!("tombstone_elements", TombstoneElements),
     ]
 }
 
@@ -1180,9 +1188,9 @@ fn bucket_node_fields() -> Vec<Field> {
 fn every_byte_of_the_bucket_node_is_accounted_for() {
     let fields = bucket_node_fields();
     assert_eq!(
-        10,
+        11,
         fields.len(),
-        "the field table lists {} fields; `BucketNode` has ten and a table that has drifted \
+        "the field table lists {} fields; `BucketNode` has eleven and a table that has drifted \
          from the declaration proves nothing about it",
         fields.len()
     );
@@ -1217,8 +1225,18 @@ fn every_byte_of_the_bucket_node_is_accounted_for() {
         size - eight_aligned
     );
 
-    assert_eq!(86, sum, "the fields of BucketNode add up to {sum}, not 86");
-    assert_eq!(88, size, "BucketNode is {size} bytes wide, not 88");
+    // 94 AND 96, NOT 86 AND 88, AND THE EXTRA WORD IS NAMED. `tombstone_elements` is the eleventh
+    // field: ONE WORD, holding the element name of each tombstone this bucket carries, which the
+    // page ENTRIES stopped carrying. It is `Option<Box<Vec<_>>>` rather than a `Vec` for exactly
+    // the reason this table exists -- the node's count is the bucket count, so three words a
+    // bucket to carry nothing in almost every bucket is not a trade and one word is.
+    //
+    // IT LANDED IN THE EIGHT-ALIGNED GROUP AND COST A WHOLE WORD. The tail was 6 rounded to 8 and
+    // is untouched, so the slack is still 2 and the step is the full eight bytes: this structure
+    // had no room to absorb it. Against it, `BlockIndex` -- one per PAGE, which is what the index
+    // is made of -- went 56 to 40. Eight bytes a bucket for sixteen bytes a page.
+    assert_eq!(94, sum, "the fields of BucketNode add up to {sum}, not 94");
+    assert_eq!(96, size, "BucketNode is {size} bytes wide, not 96");
     assert_eq!(2, slack, "BucketNode carries {slack} bytes of alignment slack, not 2");
 
     // The layout rule itself, asserted rather than described: the eight-aligned group packs
@@ -1233,7 +1251,11 @@ fn every_byte_of_the_bucket_node_is_accounted_for() {
     // -> 136); and then the page index stopped holding that entry INLINE at all, which took SEVEN
     // words in one step, 136 -> 80. The tail is still six because the five flags became five bits,
     // which is the other half of the structure entirely and no change to the page entry can reach it.
-    assert_eq!(80, eight_aligned, "the eight-aligned group is {eight_aligned} B, not 80");
+    // 88 AND NOT 80: the eight-aligned group gained `tombstone_elements`, one word, when a
+    // removal's element name left the page entries for the bucket that holds them. It is the only
+    // byte this structure has ever GAINED, and it came into the same group every earlier step came
+    // out of -- which is why it cost a whole word rather than disappearing into the tail's rounding.
+    assert_eq!(88, eight_aligned, "the eight-aligned group is {eight_aligned} B, not 88");
     assert_eq!(6, tail, "the tail group is {tail} B, not 6");
     assert_eq!(
         eight_aligned + tail.div_ceil(align) * align,
@@ -1337,6 +1359,11 @@ struct MirrorLive {
     object_index: ObjectIndex,
     deleted_object_index: DeletedObjectIndex,
     block_index: BlockIndexMap,
+    // CARRIED BY EVERY MIRROR, so the DISTANCES below stay the prices. This module's own
+    // rule: a mirror is the live declaration plus ONE historical difference, so a word the
+    // live node gains has to be gained here too or every price is measured against a shape
+    // this engine does not have.
+    tombstone_elements: TombstoneElements,
 }
 
 /// The node as it was before #1958, with the countdown spending a word on its discriminant AND
@@ -1357,6 +1384,11 @@ struct MirrorWideTtl {
     object_index: ObjectIndex,
     deleted_object_index: ObjectIndex,
     block_index: BlockIndexMap,
+    // CARRIED BY EVERY MIRROR, so the DISTANCES below stay the prices. This module's own
+    // rule: a mirror is the live declaration plus ONE historical difference, so a word the
+    // live node gains has to be gained here too or every price is measured against a shape
+    // this engine does not have.
+    tombstone_elements: TombstoneElements,
 }
 
 /// The node immediately before this change: the live shape with the tombstone index still held
@@ -1377,6 +1409,11 @@ struct MirrorWideTombstone {
     object_index: ObjectIndex,
     deleted_object_index: ObjectIndex,
     block_index: BlockIndexMap,
+    // CARRIED BY EVERY MIRROR, so the DISTANCES below stay the prices. This module's own
+    // rule: a mirror is the live declaration plus ONE historical difference, so a word the
+    // live node gains has to be gained here too or every price is measured against a shape
+    // this engine does not have.
+    tombstone_elements: TombstoneElements,
 }
 
 /// The five flags folded into one byte -- the shape that SHIPPED, held here as a control on the
@@ -1393,6 +1430,11 @@ struct MirrorPackedFlags {
     object_index: ObjectIndex,
     deleted_object_index: DeletedObjectIndex,
     block_index: BlockIndexMap,
+    // CARRIED BY EVERY MIRROR, so the DISTANCES below stay the prices. This module's own
+    // rule: a mirror is the live declaration plus ONE historical difference, so a word the
+    // live node gains has to be gained here too or every price is measured against a shape
+    // this engine does not have.
+    tombstone_elements: TombstoneElements,
 }
 
 /// The node immediately BEFORE this change: the same fields with the five flags as five
@@ -1413,6 +1455,11 @@ struct MirrorLooseFlags {
     object_index: ObjectIndex,
     deleted_object_index: DeletedObjectIndex,
     block_index: BlockIndexMap,
+    // CARRIED BY EVERY MIRROR, so the DISTANCES below stay the prices. This module's own
+    // rule: a mirror is the live declaration plus ONE historical difference, so a word the
+    // live node gains has to be gained here too or every price is measured against a shape
+    // this engine does not have.
+    tombstone_elements: TombstoneElements,
 }
 
 /// The two transient log claims moved out of the node into a side map of dirty buckets.
@@ -1426,6 +1473,11 @@ struct MirrorHoistedClaims {
     object_index: ObjectIndex,
     deleted_object_index: DeletedObjectIndex,
     block_index: BlockIndexMap,
+    // CARRIED BY EVERY MIRROR, so the DISTANCES below stay the prices. This module's own
+    // rule: a mirror is the live declaration plus ONE historical difference, so a word the
+    // live node gains has to be gained here too or every price is measured against a shape
+    // this engine does not have.
+    tombstone_elements: TombstoneElements,
 }
 
 /// The inline page entry held behind a pointer instead.
@@ -1467,6 +1519,11 @@ struct MirrorInlinePage {
     object_index: ObjectIndex,
     deleted_object_index: DeletedObjectIndex,
     block_index: MirrorInlineBlockIndexMap,
+    // CARRIED BY EVERY MIRROR, so the DISTANCES below stay the prices. This module's own
+    // rule: a mirror is the live declaration plus ONE historical difference, so a word the
+    // live node gains has to be gained here too or every price is measured against a shape
+    // this engine does not have.
+    tombstone_elements: TombstoneElements,
 }
 
 #[allow(dead_code)]
@@ -1481,6 +1538,11 @@ struct MirrorBoxedPage {
     object_index: ObjectIndex,
     deleted_object_index: DeletedObjectIndex,
     block_index: MirrorBoxedBlockIndexMap,
+    // CARRIED BY EVERY MIRROR, so the DISTANCES below stay the prices. This module's own
+    // rule: a mirror is the live declaration plus ONE historical difference, so a word the
+    // live node gains has to be gained here too or every price is measured against a shape
+    // this engine does not have.
+    tombstone_elements: TombstoneElements,
 }
 
 /// WHAT EACH DECLINED SHAPE WOULD ACTUALLY BUY, IN BYTES PER BUCKET.
@@ -1572,7 +1634,7 @@ fn what_each_declined_shape_of_the_bucket_node_would_cost() {
     // carries `BlockIndexMap` (or a variant of it that differs only in the arm under discussion),
     // so all of them lost the same 72 bytes and not one DIFFERENCE below moved.
     assert_eq!(
-        112, wide_ttl,
+        120, wide_ttl,
         "the shape before #1958 was 208 bytes, 200 once the address inside the inline page entry \
          shed its derived generation, 192 once the node stopped carrying a per-bucket \
          last_dump_sequence, 184 once that address merged its two slab coordinates, 168 once the \
@@ -1581,16 +1643,16 @@ fn what_each_declined_shape_of_the_bucket_node_would_cost() {
          they claim to price"
     );
     assert_eq!(
-        104, wide_tombstone,
+        112, wide_tombstone,
         "the shape before #1961 was 200 bytes, 192 once the address shed its derived generation, \
          184 once the node stopped carrying a per-bucket last_dump_sequence, 176 once that address \
          merged its two slab coordinates, 160 once the page entry's model spelling became one byte, \
          and 104 once the page index stopped holding that entry inline; it reads as \
          {wide_tombstone}, so the eight bytes that change claims are not the eight bytes it took"
     );
-    assert_eq!(88, live, "the node is {live} bytes, not 88");
+    assert_eq!(96, live, "the node is {live} bytes, not 96");
     assert_eq!(
-        96, loose,
+        104, loose,
         "the shape before the flags were packed was 184 bytes, 176 once the node stopped carrying a \
          per-bucket last_dump_sequence, 168 once the address inside the inline page entry merged \
          its two slab coordinates, 152 once that entry's model spelling became one byte, and 96 \
@@ -1732,6 +1794,10 @@ fn wire_fixture(ttl_ms: Option<u64>) -> BucketNode {
         object_index: [42u64].into_iter().collect(),
         deleted_object_index: DeletedObjectIndex::default(),
         block_index: BlockIndexMap::default(),
+        // NO TOMBSTONE IN THIS FIXTURE, so the wire tests measure the ordinary node: the key is
+        // skipped when the rows are empty, which is what keeps a bucket that has never had a
+        // removal spelling exactly what it always did.
+        tombstone_elements: TombstoneElements::default(),
     }
 }
 
@@ -3615,6 +3681,7 @@ fn the_stored_spelling_of_the_object_side_moved_in_exactly_the_live_object_list(
             object_index: live.iter().copied().collect(),
             deleted_object_index: dead.iter().copied().collect(),
             block_index: BlockIndexMap::default(),
+            tombstone_elements: TombstoneElements::default(),
         };
         if live.len() >= 2 {
             reached_multi_live += 1;
@@ -3773,4 +3840,76 @@ fn the_stored_spelling_of_the_object_side_moved_in_exactly_the_live_object_list(
          comparison above cannot report a difference and proves nothing"
     );
     assert_eq!(4, short.object_index.object_count(), "the injected spelling must hold one id fewer");
+}
+
+/// A TOMBSTONE'S ELEMENT NAME IS ON THE WIRE, AND AN ORDINARY NODE STILL SPELLS WHAT IT DID.
+///
+/// The element a removal is about moved OFF the page entry and onto the bucket, which makes it a
+/// stored format in a new place. Two things have to hold and they pull in opposite directions, so
+/// both are driven here rather than one being inferred from the other:
+///
+///   * A NODE WITH NO REMOVAL MUST NOT GROW A KEY.
+///     `the_stored_spelling_of_a_bucket_node_did_not_move` above is that half, and it asserts the
+///     exact byte string -- so the skip-when-empty is already held by a golden that fails on an
+///     added key. This arm only re-states the consequence: the key is ABSENT, not `[]`.
+///   * A NODE WITH A REMOVAL MUST CARRY THE ELEMENT AND READ IT BACK. Without this the row is
+///     written and dropped, and a removal survives a reload as a tombstone entry nothing can
+///     identify: the next re-add cannot find it to clear, so it is restated for ever, and the
+///     retention stops being bounded at one row per distinct element removed. That is the
+///     "a removal must keep working across a cold reload" property, at the layer that decides it.
+///
+/// THE ROUND TRIP IS THE ASSERTION, not the presence of the key. A key that is written and then
+/// IGNORED on the way in -- which is what an unlisted name does, because the node's field resolver
+/// maps anything it does not know to `Ignore` -- produces exactly the same serialized bytes as a
+/// key that works. So the row is read back and compared whole.
+#[test]
+fn a_bucket_nodes_tombstone_rows_survive_the_wire() {
+    let address =
+        crate::block_store::ElementEntry::from_parts(3, 128, 48, Some(2), Some(99));
+    let mut node = wire_fixture(Some(5_000));
+    node.record_tombstone_element(
+        "tw/set",
+        crate::engine::storage_bucket_internals::stored_model_kind("set"),
+        "6d2d31",
+        &address,
+    );
+    assert_eq!(
+        1,
+        node.tombstone_elements.len(),
+        "the fixture did not record a row, so the round trip below would hold vacuously"
+    );
+
+    let bytes = serde_json::to_string(&node).expect("a node serializes");
+    assert!(
+        bytes.contains("\"tombstone_elements\":"),
+        "a node holding a removal did not write the element it is about: {bytes}"
+    );
+    assert!(
+        bytes.contains("6d2d31"),
+        "the key is written but the element name is not in it: {bytes}"
+    );
+
+    // AND THE EMPTY NODE IS STILL SILENT, stated here beside its opposite so the two cannot drift.
+    let empty = serde_json::to_string(&wire_fixture(Some(5_000))).expect("a node serializes");
+    assert!(
+        !empty.contains("tombstone_elements"),
+        "a bucket that has never had a removal grew a key: {empty}"
+    );
+
+    let back: BucketNode = serde_json::from_str(&bytes).expect("a node deserializes");
+    assert_eq!(
+        node.tombstone_elements, back.tombstone_elements,
+        "the tombstone rows did not survive the wire: wrote {:?}, read {:?}",
+        node.tombstone_elements, back.tombstone_elements
+    );
+    assert_eq!(
+        Some((3, 128, 48)),
+        back.tombstone_element_page(
+            "tw/set",
+            crate::engine::storage_bucket_internals::stored_model_kind("set"),
+            "6d2d31"
+        ),
+        "the reloaded node cannot answer which page this element's tombstone is on, which is the \
+         question a re-add asks to clear it"
+    );
 }

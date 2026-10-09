@@ -476,7 +476,11 @@ fn remove(engine: &TemporalEngine, member: Vec<u8>) {
     assert!(response.status.ok, "removal failed: {response:?}");
 }
 
-/// This object's TOMBSTONED entries, and the components they name.
+/// This object's TOMBSTONED entries, and the ELEMENT each one is about.
+///
+/// READ FROM THE BUCKET'S TOMBSTONE ROWS. The element a removal records is a per-element fact and
+/// no longer sits on the entry, which files `None`; reading the entry here would make every arm
+/// below compare `None` against `None`.
 fn tombstones(engine: &TemporalEngine) -> Vec<Option<String>> {
     let shards = engine.shards.read().expect("engine lock poisoned");
     let shard = shards.get(&1).expect("shard 1 loaded");
@@ -484,7 +488,11 @@ fn tombstones(engine: &TemporalEngine) -> Vec<Option<String>> {
     for bucket in shard.bucket_index.bucket_map.values() {
         for page in bucket.block_index.values() {
             if page.deleted && page.model_id.as_str() == "set" && &*page.object_key == KEY {
-                out.push(page.component.as_deref().map(str::to_string));
+                out.push(
+                    bucket
+                        .tombstone_element_at(&page.address)
+                        .map(|row| row.component.to_string()),
+                );
             }
         }
     }
@@ -973,4 +981,103 @@ fn occupied_pages(engine: &TemporalEngine) -> std::collections::BTreeSet<(u64, u
                 .collect()
         })
         .unwrap_or_default()
+}
+
+/// A RE-ADD CLEARS ITS OWN TOMBSTONE AND NOT A SIBLING'S, WITH TWO REMOVALS OUTSTANDING.
+///
+/// `a_re_add_after_a_removal_does_not_bring_the_removed_member_back` above removes ONE member and
+/// re-adds a DIFFERENT one. That reaches the sweep's predicate only when the predicate is keyed on
+/// something the re-added element also matches -- so once the sweep asks "does THIS element have a
+/// tombstone" and answers no, the arm is never entered at all and an over-matching body inside it
+/// cannot be observed. MEASURED: widening the sweep's body to every tombstone of the object left
+/// all 24 arms of these three modules green.
+///
+/// SO THE SHAPE THAT REACHES IT IS TWO REMOVALS AND A RE-ADD OF ONE OF THEM. The sweep is entered,
+/// because the re-added element does have a tombstone, and a body that then takes every tombstone
+/// of the object takes the OTHER member's with it -- and that tombstone page is what makes the
+/// other removal win the fold by append position, so the other member comes back. That is the
+/// twelve-where-the-invariant-is-eleven shape, in the one sequence that can produce it.
+///
+/// FLOORED ON BOTH TOMBSTONES EXISTING FIRST, or the sweep has nothing to over-match and this
+/// passes without reaching anything. And asserted by MEMBERSHIP, not by count: a container
+/// answering the right number of the wrong members passes a count assertion, which this change has
+/// already been caught by once.
+#[test]
+fn a_re_add_clears_only_its_own_tombstone_when_two_removals_are_outstanding() {
+    let _gate = GateAt::value("1");
+    let dir = tempfile::tempdir().expect("tempdir");
+    let engine = engine_on(dir.path());
+    load_on(&engine);
+
+    for index in 0..FIRST_BATCH {
+        add(&engine, member_bytes(index));
+    }
+    let returning = member_bytes(1);
+    let staying_gone = member_bytes(2);
+    remove(&engine, returning.clone());
+    remove(&engine, staying_gone.clone());
+
+    // FLOOR: two distinct tombstones, each naming its own element.
+    let before = tombstones(&engine);
+    println!("\n=== two removals outstanding: tombstones {before:?}");
+    assert_eq!(
+        2,
+        before.len(),
+        "{} tombstone(s) after removing two distinct members, so the sweep below has nothing to \
+         over-match and this arm would pass without reaching it",
+        before.len()
+    );
+    let returning_component = hex::encode(&returning);
+    let staying_gone_component = hex::encode(&staying_gone);
+    assert!(
+        before.contains(&Some(returning_component.clone()))
+            && before.contains(&Some(staying_gone_component.clone())),
+        "the two tombstones name {before:?}, not the two members removed -- so they are not the \
+         two rows this arm is about"
+    );
+
+    // THE RE-ADD. Its own tombstone must go; the sibling's must stay.
+    add(&engine, returning.clone());
+
+    let after = tombstones(&engine);
+    let durable = durable_members(&engine);
+    let listed = listed_members(&engine);
+    println!(
+        "  after re-adding one: tombstones {after:?}; durable {}, listing serves {}",
+        durable.len(),
+        listed.len()
+    );
+
+    assert_eq!(
+        vec![Some(staying_gone_component.clone())],
+        after,
+        "the re-add left tombstones {after:?}. Exactly the re-added member's row should have gone \
+         and the other removal's row should still be there -- a sweep that took both has erased \
+         the record of a removal the client never undid"
+    );
+
+    // THE CONSEQUENCE, ASSERTED AS MEMBERSHIP. This is the half that says the lost tombstone is a
+    // lost REMOVAL and not merely a lost row.
+    let expected: std::collections::BTreeSet<Vec<u8>> = (0..FIRST_BATCH)
+        .map(member_bytes)
+        .filter(|member| member != &staying_gone)
+        .collect();
+    assert_eq!(
+        expected, durable,
+        "the durable map holds {:?} and should hold {:?}",
+        durable.len(),
+        expected.len()
+    );
+    assert_eq!(
+        expected, listed,
+        "the listing serves {} member(s) of an expected {} -- compared as a SET, because the \
+         resurrected member and the re-added one give the same count",
+        listed.len(),
+        expected.len()
+    );
+    assert!(
+        !listed.contains(&staying_gone),
+        "the member removed and never re-added is being served again; the re-add cleared its \
+         tombstone and the fold stopped seeing its removal"
+    );
 }

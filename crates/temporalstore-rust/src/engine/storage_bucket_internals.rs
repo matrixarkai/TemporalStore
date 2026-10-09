@@ -1367,7 +1367,11 @@ pub(super) fn rebuild_bucket_block_ownership(
     // Serialization is what makes this enough on the reload path: `block_index` carries `deleted` on
     // the wire, so a tombstone entry read back from a stored index survives, and a REPLAY re-files it
     // from the outcome's address instead. Between them the two paths cover every way an index arrives.
-    let preserved_tombstones: Vec<(u32, BlockIndex)> = shard
+    // AND THE ELEMENT ROW BESIDE EACH, because the entry no longer names its element. A tombstone
+    // carried across without its row survives as an entry nothing can identify: the next re-add
+    // cannot find it to clear, so the removal is restated for ever and the retention stops being
+    // bounded at one row per distinct element removed.
+    let preserved_tombstones: Vec<(u32, BlockIndex, Option<TombstoneElement>)> = shard
         .bucket_index
         .bucket_map
         .iter()
@@ -1376,7 +1380,13 @@ pub(super) fn rebuild_bucket_block_ownership(
                 .block_index
                 .values()
                 .filter(|page| page.deleted)
-                .map(move |page| (*routing_bucket, page.clone()))
+                .map(move |page| {
+                    (
+                        *routing_bucket,
+                        page.clone(),
+                        bucket.tombstone_element_at(&page.address).cloned(),
+                    )
+                })
         })
         .collect();
     shard.bucket_index.bucket_map.clear();
@@ -1456,19 +1466,26 @@ pub(super) fn rebuild_bucket_block_ownership(
     // state or it would resurrect a removal the store has already undone -- the mirror image of the
     // defect this whole change is about, and the one direction nothing else here would catch.
     let mut tombstones_refiled = 0usize;
-    for (routing_bucket, tombstone) in preserved_tombstones {
-        let live_again = shard
-            .bucket_index
-            .bucket_map
-            .get(&routing_bucket)
-            .is_some_and(|bucket| {
-                bucket.block_index.values().any(|page| {
-                    !page.deleted
-                        && page.model_id == tombstone.model_id
-                        && page.object_key == tombstone.object_key
-                        && page.component.as_deref() == tombstone.component.as_deref()
-                })
-            });
+    for (routing_bucket, tombstone, element) in preserved_tombstones {
+        // IS THE ELEMENT LIVE AGAIN -- ASKED OF THE RESIDENT MAP, NOT OF THE LIVE ENTRIES.
+        //
+        // This compared the tombstone's name against the names on this object's LIVE entries. A
+        // live entry carries no element name, so that test answered `Some(x) == None` for every
+        // pair and never fired: the branch read as a correctness check and was unreachable. The
+        // resident map is where the elements are named, and it is what the live entries above were
+        // just derived from, so asking it is reading the same authority one element at a time.
+        //
+        // A tombstone with NO element row cannot be asked at all. It is refiled, which is the safe
+        // direction: a refiled tombstone over a live element is still outranked by the live page's
+        // later append position, where a DROPPED tombstone over a removed element resurrects it.
+        let live_again = element.as_ref().is_some_and(|element| {
+            resident_holds_component(
+                shard,
+                tombstone.model_id,
+                &tombstone.object_key,
+                &element.component,
+            )
+        });
         if live_again {
             continue;
         }
@@ -1490,8 +1507,17 @@ pub(super) fn rebuild_bucket_block_ownership(
                     ..BucketNode::default()
                 }
             });
+        let address = tombstone.address.clone();
+        let model_id = tombstone.model_id;
+        let object_key = tombstone.object_key.clone();
         bucket
             .insert_page(tombstone, &mut shard.bucket_index.block_slab_live);
+        // AND ITS ELEMENT ROW TRAVELS WITH IT. Without this the tombstone survives the rebuild as
+        // an entry whose element nothing can name, so the next re-add cannot find it to clear and
+        // the retention bound is gone.
+        if let Some(element) = element {
+            bucket.record_tombstone_element(&object_key, model_id, &element.component, &address);
+        }
         tombstones_refiled += 1;
     }
     note_tombstones_refiled(tombstones_refiled);
@@ -1924,6 +1950,69 @@ fn released_model_kind_is_addressable(kind: &str) -> bool {
 /// The counterpart to `bucket_index_block_address`: same question, asked of the maps instead of the
 /// index. Only the kinds `released_model_kind_is_addressable` admits are answerable here, and that
 /// is not a coincidence -- it is the same list, for this reason.
+/// IS THIS ELEMENT RESIDENT -- asked of the map that is keyed BY THE ELEMENT.
+///
+/// # WHO NEEDS IT AND WHY NOTHING ELSE WILL DO
+///
+/// Both rebuilds carry an object's TOMBSTONE entries across a rebuild they cannot re-derive, and
+/// each has to decide whether a tombstone's element has since been written back -- a tombstone
+/// restated over a live element would undo a re-add the store has already accepted. They used to
+/// answer it by comparing the tombstone's name against the LIVE ENTRIES' names. A live entry does
+/// not name its element, so that comparison answers `Some(x) == None` for every pair and the test
+/// is dead: it never fires, and a rebuild restates every tombstone it ever held.
+///
+/// The resident maps DO name elements, and they are what both rebuilds derive their live entries
+/// FROM -- so this is the same source those rebuilds already trust, read one element at a time
+/// rather than in bulk.
+///
+/// # THE SPELLINGS ARE THE WRITE PATH'S, AND AN UNREADABLE ONE ANSWERS FALSE
+///
+/// `hex::encode` for a set member and for a zset member, base sixteen for a list's biased
+/// sequence, the field itself for a hash -- each the same rendering the write path files. A name
+/// this cannot parse answers FALSE rather than defaulting to element zero or to the empty member:
+/// an unreadable name names nothing, which is the rule every arm of the derived view already
+/// follows, and the direction that errs towards keeping a tombstone rather than dropping one.
+pub(super) fn resident_holds_component(
+    shard: &ShardState,
+    model_id: StoredModelKind,
+    object_key: &str,
+    component: &str,
+) -> bool {
+    match model_id.as_str() {
+        "hash" => shard
+            .hashes
+            .get(object_key)
+            .is_some_and(|fields| fields.contains_key(component)),
+        "set" => hex::decode(component).is_ok_and(|member| {
+            shard
+                .sets
+                .get(object_key)
+                .is_some_and(|members| members.contains_key(&member))
+        }),
+        "zset" => hex::decode(component).is_ok_and(|member| {
+            shard
+                .zsets
+                .get(object_key)
+                .is_some_and(|members| members.contains_key(&member))
+        }),
+        // THE BIAS IS PART OF THE SPELLING. A list's component is the UNSIGNED biased sequence in
+        // hex and the map is keyed by the signed one, so the same `wrapping_add(i64::MIN)` the
+        // derived view applies has to be applied here or every list tombstone would miss.
+        "list" => u64::from_str_radix(component, 16)
+            .map(|biased| biased.wrapping_add(i64::MIN as u64) as i64)
+            .is_ok_and(|sequence| {
+                shard
+                    .lists
+                    .get(object_key)
+                    .is_some_and(|elements| elements.contains_key(&sequence))
+            }),
+        // NOT A CONTAINER. Only the four container kinds file a per-element tombstone at all, so
+        // there is no element for any other kind to be resident under and `false` is the whole
+        // answer rather than a fallback.
+        _ => false,
+    }
+}
+
 pub(super) fn model_map_block_address(
     shard: &ShardState,
     model_id: &str,
@@ -3960,12 +4049,13 @@ pub(super) fn insert_container_tombstone_entry(
         routing_bucket: routing_bucket,
         object_key: std::sync::Arc::from(object_key),
         model_id: stored_model_kind(kind),
-        // `None` UNDER ONE ENTRY A PAGE. The tombstone entry exists to make the page
-        // REACHABLE, and under that gate identity is the page -- so naming an element here would
-        // keep `component` alive on the last path that still files one, which is exactly what
-        // step ten has to be able to delete.
-        component: component.map(std::sync::Arc::from),
-        address,
+        // `None`, AND NOW IT IS THE CODE AND NOT A PLAN. This read `component.map(...)` under a
+        // comment claiming the entry files nothing -- a comment describing an unbuilt path. The
+        // element's name is filed in the BUCKET's `tombstone_elements` below, so a tombstone still
+        // records which element was removed while the ENTRY, which is the structure the index is
+        // made of, carries no name on any path at all.
+        component: None,
+        address: address.clone(),
         dirty: true,
         deleted: true,
     };
@@ -3990,6 +4080,27 @@ pub(super) fn insert_container_tombstone_entry(
     bucket.dirty_generation = bucket.dirty_generation.saturating_add(1);
     let block_ref_key = bucket
         .insert_page(page.clone(), &mut shard.bucket_index.block_slab_live);
+    // THE ELEMENT'S NAME, FILED IN THE SAME CALL AS THE ENTRY AND AFTER IT.
+    //
+    // This is the one producer of a tombstone entry, which is what makes "a deleted entry with no
+    // row" unreachable rather than merely unlikely -- the direction the reconcile in
+    // `classify_bucket_layout_in_place` cannot repair. AFTER `insert_page`, because that reconcile
+    // derives the rows from the deleted entries and would drop a row filed before its entry
+    // existed.
+    //
+    // A removal with NO component files no row, and that is honest rather than lossy: the only
+    // caller that passes `None` here is a path with no element to name, and a row spelling one
+    // would invent an identity.
+    if let Some(component) = component {
+        if let Some(bucket) = shard.bucket_index.bucket_map.get_mut(&routing_bucket) {
+            bucket.record_tombstone_element(
+                object_key,
+                stored_model_kind(kind),
+                component,
+                &address,
+            );
+        }
+    }
     if let Some(bucket) = shard.bucket_index.bucket_map.get_mut(&routing_bucket) {
         classify_bucket_layout_in_place(bucket);
     }
@@ -4295,7 +4406,7 @@ fn upsert_bucket_index_block_inner(
             classify_bucket_layout_in_place(bucket);
         }
     }
-    // AND THE TOMBSTONE FOR THIS COMPONENT, WHICH NEITHER BRANCH ABOVE CAN REACH.
+    // AND THE TOMBSTONE FOR THIS ELEMENT, WHICH NEITHER BRANCH ABOVE CAN REACH.
     //
     // UNCONDITIONAL, AND THE CONDITIONAL VERSIONS WERE BOTH WRONG. A re-add must clear the tombstone
     // its element left, and that is what bounds the cost of retaining one at ONE ENTRY PER DISTINCT
@@ -4317,47 +4428,42 @@ fn upsert_bucket_index_block_inner(
     // Swept in the TARGET bucket only: a tombstone is filed in the bucket its live entry was removed
     // from, and that is the bucket this write routes to.
     //
+    // THE ELEMENT'S NAME COMES FROM THE BUCKET'S TOMBSTONE ROWS, NOT FROM THE ENTRY.
+    //
+    // This used to read `page.component == element` over the bucket's pages. That worked only while
+    // a tombstone entry named its element, and a tombstone entry does not: the name is a per-element
+    // fact filed beside the entries, where only a removal pays for it. Asking the rows is also
+    // STRICTLY NARROWER than the old scan -- it names one page -- where the old predicate silently
+    // widened to every tombstone of the object the moment the filed name went to `None`, which is
+    // the resurrection `a_re_add_after_a_removal_does_not_bring_the_removed_member_back` holds.
+    //
+    // The two names are separate TYPES so that reading the FILED name here does not compile.
+    //
     // ASKED BEFORE IT IS DONE, because this runs on EVERY page write. `BlockIndexMap::retain` walks
     // the bucket and then `shrink`s it, which can reallocate, and paying that per write for a
-    // tombstone that is almost never there would be a new cost on the hot path. A short-circuiting
-    // `any` is the same ORDER as the two `!any(|page| page.object_id() == ..)` scans the branches
-    // above already do over the same bucket, so the common case adds a scan and not an allocation.
-    let sweep = shard
-        .bucket_index
-        .bucket_map
-        .get(&routing_bucket)
-        .is_some_and(|bucket| {
-            bucket.block_index.values().any(|page| {
-                page.deleted
-                    && page.object_key == entry.object_key
-                    && page.model_id == entry.kind
-                    // THE ELEMENT'S OWN NAME, NOT THE ONE THE ENTRY IS FILED UNDER.
-                    //
-                    // These two predicates were going to be left textually untouched, on the
-                    // grounds that the sweep should stay element-keyed. That was not enough: they
-                    // read the FILED name, and this change sets it to `None` for a gated
-                    // container -- so leaving them alone would silently widen them from matching
-                    // ONE tombstone to matching every tombstone of the object. A re-add of member
-                    // Y would then clear member X's tombstone, and X's tombstone page is what
-                    // makes X's removal win the fold by append position, so X would come back.
-                    //
-                    // `write_after_fold::a_re_add_after_a_removal_does_not_bring_the_removed_
-                    // member_back` is green before this change and is what goes red if this reads
-                    // the wrong one of the two names. The names are separate TYPES so that reading
-                    // the wrong one does not compile.
-                    && page.component.as_deref() == element.as_deref()
+    // tombstone that is almost never there would be a new cost on the hot path. A find over the
+    // rows is bounded by the removals this bucket has seen, against the two whole-bucket page scans
+    // the branches above already do, so the common case is cheaper than the scan it replaces.
+    let sweep: Option<(u64, u64, u64)> = element.as_deref().and_then(|element| {
+        shard
+            .bucket_index
+            .bucket_map
+            .get(&routing_bucket)
+            .and_then(|bucket| {
+                bucket.tombstone_element_page(&entry.object_key, entry.kind, element)
             })
-        });
-    if sweep {
+    });
+    if let Some(tombstoned_page) = sweep {
         if let Some(bucket) = shard.bucket_index.bucket_map.get_mut(&routing_bucket) {
             bucket
                 .block_index
                 .retain(&mut shard.bucket_index.block_slab_live, |_, page| {
+                    // THE ONE PAGE THE ROW NAMED, and the deleted flag beside it so a live entry
+                    // that happens to sit at that address is never taken: a page is reachable
+                    // again once its bytes are reused.
                     !(page.deleted
-                        && page.object_key == entry.object_key
-                        && page.model_id == entry.kind
-                        // The element's own name. See the probe directly above.
-                        && page.component.as_deref() == element.as_deref())
+                        && crate::engine::state::tombstone_page_key(&page.address)
+                            == tombstoned_page)
                 });
             touched_buckets.push(routing_bucket);
             classify_bucket_layout_in_place(bucket);
@@ -4702,6 +4808,12 @@ pub(super) fn bucket_layout_name(layout: BucketLayoutState) -> &'static str {
 /// inserts, superseding overwrites, expiries and deletes. Reconstruct paths, which build
 /// `bucket_map` from block entries where nothing maintained the set, keep the full rebuild.
 fn classify_bucket_layout_in_place(bucket: &mut BucketNode) {
+    // THE TOMBSTONE ROWS ARE PUT BACK IN STEP HERE, which is the lighter of the two passes every
+    // bucket mutation funnels through. A row whose page carries no deleted entry any more
+    // describes a tombstone that is gone, and deriving that from the pages is what keeps the rows
+    // from being a second statement of the entries that can drift from them. Early-returns on an
+    // empty row list, so a bucket that has never had a removal pays one `is_empty`.
+    bucket.reconcile_tombstone_elements();
     bucket.layout = classify_bucket_layout(bucket.object_index.object_count(), bucket.block_index.len());
 }
 
@@ -4785,6 +4897,9 @@ pub(super) fn update_bucket_layout(shard_id: ShardId, bucket: &mut BucketNode) {
         .map(|page| page.object_id(shard_id))
         .collect();
     reconcile_object_index_with_live_pages(bucket, &live_object_ids);
+    // AND THE TOMBSTONE ROWS, BY THE SAME RULE AS THE OBJECT LIST ABOVE: derived back from
+    // the pages, here, rather than at each mutation site.
+    bucket.reconcile_tombstone_elements();
     bucket.layout = classify_bucket_layout(bucket.object_index.object_count(), bucket.block_index.len());
 }
 
@@ -5197,7 +5312,9 @@ pub(super) fn rebuild_bucket_first_index(
     // removal recorded that bucket because the outcome's `block_routing_bucket(key, 0, u32::MAX)` is a
     // different number from the shard's own range, and filing a tombstone under the wrong one made a
     // bucket all-tombstone and made ownership validation refuse the round.
-    let prior_tombstone_entries: Vec<(u32, BlockIndex)> = shard
+    // AND THE ELEMENT ROW BESIDE EACH, for the reason stated on the other rebuild: an entry that
+    // survives without its row is a tombstone nothing can identify.
+    let prior_tombstone_entries: Vec<(u32, BlockIndex, Option<TombstoneElement>)> = shard
         .bucket_index
         .bucket_map
         .iter()
@@ -5206,7 +5323,13 @@ pub(super) fn rebuild_bucket_first_index(
                 .block_index
                 .values()
                 .filter(|page| page.deleted)
-                .map(move |page| (*routing_bucket, page.clone()))
+                .map(move |page| {
+                    (
+                        *routing_bucket,
+                        page.clone(),
+                        bucket.tombstone_element_at(&page.address).cloned(),
+                    )
+                })
         })
         .collect();
     let mut bucket_index = CoreIndex::default();
@@ -5266,18 +5389,20 @@ pub(super) fn rebuild_bucket_first_index(
     // reach the same state or it would restate a removal the store has already undone -- the mirror
     // image of the defect this exists to prevent, and the direction nothing else here would catch.
     let mut refiled = 0usize;
-    for (routing_bucket, tombstone) in prior_tombstone_entries {
-        let live_again = bucket_index
-            .bucket_map
-            .get(&routing_bucket)
-            .is_some_and(|bucket| {
-                bucket.block_index.values().any(|page| {
-                    !page.deleted
-                        && page.model_id == tombstone.model_id
-                        && page.object_key == tombstone.object_key
-                        && page.component.as_deref() == tombstone.component.as_deref()
-                })
-            });
+    for (routing_bucket, tombstone, element) in prior_tombstone_entries {
+        // IS THE ELEMENT LIVE AGAIN -- ASKED OF THE RESIDENT MAP, NOT OF THE LIVE ENTRIES. Same
+        // correction as `rebuild_bucket_block_ownership`, and for the same reason: a live entry no
+        // longer names its element, so comparing names against the entries made this test dead.
+        // `shard` is still borrowed immutably here -- the rebuild is being assembled into the local
+        // `bucket_index` -- which is exactly the map the live entries above were derived from.
+        let live_again = element.as_ref().is_some_and(|element| {
+            resident_holds_component(
+                shard,
+                tombstone.model_id,
+                &tombstone.object_key,
+                &element.component,
+            )
+        });
         if live_again {
             continue;
         }
@@ -5290,8 +5415,14 @@ pub(super) fn rebuild_bucket_first_index(
                 ..BucketNode::default()
             });
         bucket.set_dirty(true);
+        let address = tombstone.address.clone();
+        let model_id = tombstone.model_id;
+        let object_key = tombstone.object_key.clone();
         bucket
             .insert_page(tombstone, &mut bucket_index.block_slab_live);
+        if let Some(element) = element {
+            bucket.record_tombstone_element(&object_key, model_id, &element.component, &address);
+        }
         refiled += 1;
         // THE SHARD COMES FROM THE CALLER. `rebuild_bucket_first_index` takes `shard_id`, and this
         // is a RECONSTRUCT path -- `object_index` is being rebuilt from block entries, where no

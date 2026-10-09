@@ -3541,6 +3541,149 @@ pub(super) struct BucketNode {
     pub(super) object_index: ObjectIndex,
     pub(super) deleted_object_index: DeletedObjectIndex,
     pub(super) block_index: BlockIndexMap,
+    /// WHICH ELEMENT EACH TOMBSTONE ENTRY IN THIS BUCKET IS ABOUT.
+    ///
+    /// # WHY IT IS NOT ON THE ENTRY
+    ///
+    /// A LIVE entry is a per-PAGE fact: the page's own frame names every element on it, so the
+    /// entry needs no element name and dropping it is what one entry a page means. A TOMBSTONE is
+    /// a per-ELEMENT fact -- recording WHICH element was removed is its whole content -- so a
+    /// nameless one is not smaller, it is useless. Two consequences, both measured: the re-add
+    /// sweep could not tell whose tombstone it was holding, so re-adding Y cleared X's and X came
+    /// back (a gated removal served twelve members where the invariant is eleven); and the
+    /// retention could not be bounded, so four removals of ONE member left four tombstones.
+    ///
+    /// A single struct cannot have a field only some of its instances pay for, and the entry is
+    /// the structure the index is MADE of -- one per page, millions of them, almost all live. So
+    /// the name lives beside the entries instead, where ONLY A REMOVAL PAYS for it.
+    ///
+    /// # A VEC AND NOT A MAP
+    ///
+    /// Bounded at one row per distinct element removed, and every reader of it is already walking
+    /// this bucket's whole page list in the same call -- the sweep's probe, the two rebuilds'
+    /// live-again test, the removal's already-tombstoned test. A linear find over the rows is
+    /// strictly smaller than the walk it rides along with, and a map keyed by a tuple would have
+    /// had to be given a string spelling to cross the wire.
+    ///
+    /// # AND IT IS RECONCILED, NOT MERELY MAINTAINED
+    ///
+    /// [`BucketNode::reconcile_tombstone_elements`] derives the rows back from the deleted entries
+    /// at the classification pass every bucket mutation funnels through, so a site that drops a
+    /// tombstone entry without saying so cannot leave a row describing a tombstone that is gone.
+    /// That is the same doctrine `reconcile_object_index_with_live_pages` already applies to the
+    /// object list.
+    /// NO `#[serde]` ATTRIBUTE, DELIBERATELY. `BucketNode`'s `Serialize` and `Deserialize` are
+    /// written by hand -- the five flags are five wire keys and one byte in memory -- so an
+    /// attribute here would be inert text describing behaviour it does not control. The
+    /// skip-when-empty and the default-when-absent are in those two impls, where they are real.
+    pub(super) tombstone_elements: TombstoneElements,
+}
+
+/// The element one tombstone entry is about, and the page that entry names.
+///
+/// `page` is the tombstone entry's `(slab, offset, length)` -- how a page is identified everywhere
+/// in this index now that an entry does not name its element. It is STABLE across a dump and a
+/// reload, which the handle `BlockIndexMap` assigns is not: the map re-assigns handles on every
+/// load, so a row keyed by one would point at a different entry after a restart.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub(super) struct TombstoneElement {
+    pub(super) object_key: Arc<str>,
+    pub(super) model_id: crate::engine::storage_bucket_internals::StoredModelKind,
+    pub(super) component: Arc<str>,
+    pub(super) page: (u64, u64, u64),
+}
+
+/// THE TOMBSTONE ROWS A BUCKET HOLDS, HELD INDIRECTLY SO A BUCKET WITH NO REMOVAL PAYS ONE WORD.
+///
+/// A bare `Vec` is three words, and the bucket node is the structure whose count is the BUCKET
+/// count -- so a vector that is empty in almost every bucket would cost 24 bytes a bucket to carry
+/// nothing. `pages_per_bucket` already measures this exact choice for a per-bucket vector, as
+/// `MirrorAlwaysMapped` against `MirrorAlwaysIndirect`, and the indirect form is one word.
+///
+/// THE INDIRECTION IS PAID BY REMOVALS ONLY, which is the whole shape of this change: the element
+/// name left the ENTRY -- one per page, millions of them, almost all live -- for a structure only a
+/// removal allocates. A bucket that has never had one holds `None` and dereferences nothing.
+///
+/// `None` and `Some(empty)` are the same state to every reader here, and the reconcile that can
+/// empty the vector puts it back to `None` so the two cannot both be reachable with different
+/// behaviour.
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
+pub(super) struct TombstoneElements(Option<Box<Vec<TombstoneElement>>>);
+
+impl TombstoneElements {
+    pub(super) fn is_empty(&self) -> bool {
+        self.0.as_ref().is_none_or(|rows| rows.is_empty())
+    }
+
+    pub(super) fn len(&self) -> usize {
+        self.0.as_ref().map_or(0, |rows| rows.len())
+    }
+
+    pub(super) fn iter(&self) -> impl Iterator<Item = &TombstoneElement> {
+        self.0.iter().flat_map(|rows| rows.iter())
+    }
+
+    fn iter_mut(&mut self) -> impl Iterator<Item = &mut TombstoneElement> {
+        self.0.iter_mut().flat_map(|rows| rows.iter_mut())
+    }
+
+    fn push(&mut self, row: TombstoneElement) {
+        self.0.get_or_insert_with(Box::default).push(row);
+    }
+
+    /// Retain, and DROP THE ALLOCATION when nothing is left, so `None` is the only spelling of
+    /// empty that can be observed.
+    fn retain(&mut self, keep: impl FnMut(&TombstoneElement) -> bool) {
+        if let Some(rows) = self.0.as_mut() {
+            rows.retain(keep);
+            if rows.is_empty() {
+                self.0 = None;
+            }
+        }
+    }
+}
+
+/// AS A PLAIN SEQUENCE ON THE WIRE. The indirection is an in-memory decision and must not reach the
+/// stored shape: a reader that saw `null` or a one-element wrapper here would be reading the
+/// allocation strategy instead of the rows.
+impl Serialize for TombstoneElements {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        use serde::ser::SerializeSeq;
+        let mut seq = serializer.serialize_seq(Some(self.len()))?;
+        for row in self.iter() {
+            seq.serialize_element(row)?;
+        }
+        seq.end()
+    }
+}
+
+impl<'de> Deserialize<'de> for TombstoneElements {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        let rows: Vec<TombstoneElement> = Deserialize::deserialize(deserializer)?;
+        Ok(if rows.is_empty() {
+            Self(None)
+        } else {
+            Self(Some(Box::new(rows)))
+        })
+    }
+}
+
+/// How a tombstone row and a tombstone entry agree on which page they mean.
+///
+/// The same triple `engine::live_page_key` computes, spelled here because `state` is below
+/// `engine` in the module tree and this is the one place the node itself needs it.
+pub(super) fn tombstone_page_key(address: &ElementEntry) -> (u64, u64, u64) {
+    (
+        address.block_slab_id(),
+        address.offset(),
+        address.length(),
+    )
 }
 
 /// The widest per-item structure in the engine, and the one whose count is the bucket count.
@@ -3625,7 +3768,19 @@ pub(super) struct BucketNode {
 /// `every_byte_of_the_bucket_node_is_accounted_for` states the whole of it field by field, and
 /// asserts the reconstruction -- eight-aligned group plus one rounding of the tail -- rather than
 /// a literal.
-const _: () = assert!(std::mem::size_of::<BucketNode>() == 88);
+///
+/// AND IT IS 96 NOW, NOT 88, BECAUSE A REMOVAL'S ELEMENT NAME MOVED HERE. The node gained
+/// `tombstone_elements`, which is ONE WORD -- an `Option<Box<Vec<_>>>` and not a bare `Vec`,
+/// because the bucket node's count IS the bucket count and three words a bucket to carry nothing
+/// is not a trade. There was no slack to absorb even the one word: the tail was six rounded to
+/// eight and the new field lands in a word of its own, so this is eight real bytes a bucket.
+///
+/// WHAT IT BOUGHT, AND THE DENOMINATORS ARE WHY IT IS A TRADE. `BlockIndex` -- one per PAGE, which
+/// is the structure the index is MADE of -- stopped carrying `Option<Arc<str>>` for an element name
+/// that only a tombstone ever needed, and went 56 to 40. So eight bytes a BUCKET buys sixteen
+/// bytes a PAGE, and a bucket holds many pages: at the 1023-bucket default a shard pays about 8 KiB
+/// for it and recovers sixteen bytes on every page entry it holds.
+const _: () = assert!(std::mem::size_of::<BucketNode>() == 96);
 
 impl BucketNode {
     /// Install a block in this bucket, charge it to the live tally, and return its handle.
@@ -3696,6 +3851,111 @@ impl BucketNode {
     pub(super) fn set_in_memory(&mut self, on: bool) {
         self.flags.set(BucketFlags::IN_MEMORY, on);
     }
+
+    /// RECORD WHICH ELEMENT A TOMBSTONE ENTRY IN THIS BUCKET IS ABOUT.
+    ///
+    /// Keyed on what identifies the element -- object, kind, name -- and valued by the PAGE the
+    /// tombstone entry names, so both of the questions the removal machinery asks can be answered:
+    /// "is this element already tombstoned" reads the key, and "which entry do I take when this
+    /// element is written back" reads the value.
+    ///
+    /// REPLACES rather than appends on a repeat. The retention bound is ONE ROW PER DISTINCT
+    /// ELEMENT REMOVED and not one per removal issued -- four removals of one member must leave
+    /// one row, which is the bound a nameless tombstone could not state and which was measured
+    /// growing per removal when it could not.
+    pub(super) fn record_tombstone_element(
+        &mut self,
+        object_key: &str,
+        model_id: crate::engine::storage_bucket_internals::StoredModelKind,
+        component: &str,
+        address: &ElementEntry,
+    ) {
+        let page = tombstone_page_key(address);
+        if let Some(row) = self.tombstone_elements.iter_mut().find(|row| {
+            row.model_id == model_id
+                && &*row.object_key == object_key
+                && &*row.component == component
+        }) {
+            row.page = page;
+            return;
+        }
+        self.tombstone_elements.push(TombstoneElement {
+            object_key: Arc::from(object_key),
+            model_id,
+            component: Arc::from(component),
+            page,
+        });
+    }
+
+    /// The page the tombstone for this element names, if this bucket holds one.
+    pub(super) fn tombstone_element_page(
+        &self,
+        object_key: &str,
+        model_id: crate::engine::storage_bucket_internals::StoredModelKind,
+        component: &str,
+    ) -> Option<(u64, u64, u64)> {
+        self.tombstone_elements
+            .iter()
+            .find(|row| {
+                row.model_id == model_id
+                    && &*row.object_key == object_key
+                    && &*row.component == component
+            })
+            .map(|row| row.page)
+    }
+
+    /// The element the tombstone entry over this page is about.
+    ///
+    /// The other direction, for the two rebuilds: they hold a tombstone ENTRY and have to decide
+    /// whether its element is live again, which is a question about the element and not the page.
+    pub(super) fn tombstone_element_at(&self, address: &ElementEntry) -> Option<&TombstoneElement> {
+        let page = tombstone_page_key(address);
+        self.tombstone_elements.iter().find(|row| row.page == page)
+    }
+
+    /// Forget one element's tombstone row. Paired with the retain that drops its entry.
+    pub(super) fn forget_tombstone_element(
+        &mut self,
+        object_key: &str,
+        model_id: crate::engine::storage_bucket_internals::StoredModelKind,
+        component: &str,
+    ) {
+        self.tombstone_elements.retain(|row| {
+            !(row.model_id == model_id
+                && &*row.object_key == object_key
+                && &*row.component == component)
+        });
+    }
+
+    /// Forget every tombstone row for one object, for the whole-object delete that takes its
+    /// entries.
+    pub(super) fn forget_object_tombstone_elements(&mut self, object_key: &str) {
+        self.tombstone_elements
+            .retain(|row| &*row.object_key != object_key);
+    }
+
+    /// Put the rows back in step with the entries, DERIVED from the entries rather than trusted.
+    ///
+    /// A row whose page no longer carries a deleted entry in this bucket describes a tombstone that
+    /// is not here. That is the drift direction a reconcile can fix, and it is fixed the way
+    /// `reconcile_object_index_with_live_pages` fixes the object list: by deriving from the pages,
+    /// at the pass every bucket mutation already funnels through, instead of asking each mutation
+    /// site to remember. The OTHER direction -- a deleted entry with no row -- is not repairable
+    /// here and is not left to chance either: `insert_container_tombstone_entry` is the one
+    /// producer of a tombstone entry and it files the row in the same call.
+    pub(super) fn reconcile_tombstone_elements(&mut self) {
+        if self.tombstone_elements.is_empty() {
+            return;
+        }
+        let pages: std::collections::BTreeSet<(u64, u64, u64)> = self
+            .block_index
+            .values()
+            .filter(|page| page.deleted)
+            .map(|page| tombstone_page_key(&page.address))
+            .collect();
+        self.tombstone_elements
+            .retain(|row| pages.contains(&row.page));
+    }
 }
 
 /// THE STORED SPELLING, WRITTEN OUT BY HAND BECAUSE THE DECLARATION NO LONGER MATCHES IT.
@@ -3736,7 +3996,13 @@ impl Serialize for BucketNode {
         S: serde::Serializer,
     {
         use serde::ser::SerializeStruct;
-        let mut node = serializer.serialize_struct("BucketNode", 12)?;
+        // THE COUNT IS PART OF THE ENCODING, not a hint. The served index is msgpack
+        // `with_struct_map`, so `serialize_struct` writes a MAP HEADER of exactly this length --
+        // a node that then writes a thirteenth field under a header of twelve is corrupt bytes,
+        // not a tolerated mismatch. So the optional key below is counted here rather than
+        // hard-coded, and the two cannot disagree.
+        let field_count = 12 + usize::from(!self.tombstone_elements.is_empty());
+        let mut node = serializer.serialize_struct("BucketNode", field_count)?;
         node.serialize_field("routing_slot", &self.routing_bucket)?;
         node.serialize_field("layout", &self.layout)?;
         node.serialize_field("dirty", &self.dirty())?;
@@ -3751,6 +4017,13 @@ impl Serialize for BucketNode {
         // AT THE BUCKET LEVEL, through `PageIndexAt`, so the written key is composed where the
         // node's other structures are in scope. The bytes are the ones the map's own impl wrote.
         node.serialize_field("page_index", &PageIndexAt(self))?;
+        // THE ELEMENT EACH TOMBSTONE IN THIS BUCKET IS ABOUT, which the entries themselves no
+        // longer say. Written LAST so the key is appended to the shape rather than inserted into
+        // the middle of it, and `skip_serializing_if` keeps it off every bucket that has never had
+        // a removal -- which is almost all of them, so the ordinary node's bytes do not move.
+        if !self.tombstone_elements.is_empty() {
+            node.serialize_field("tombstone_elements", &self.tombstone_elements)?;
+        }
         node.end()
     }
 }
@@ -3782,6 +4055,7 @@ enum BucketNodeField {
     ObjectIndex,
     DeletedObjectIndex,
     PageIndex,
+    TombstoneElements,
     Ignore,
 }
 
@@ -3799,6 +4073,7 @@ const BUCKET_NODE_FIELDS: &[&str] = &[
     "object_index",
     "deleted_object_index",
     "page_index",
+    "tombstone_elements",
 ];
 
 impl<'de> Deserialize<'de> for BucketNodeField {
@@ -3836,6 +4111,7 @@ impl<'de> Deserialize<'de> for BucketNodeField {
                         BucketNodeField::DeletedObjectIndex
                     }
                     "page_index" | "page_refs" => BucketNodeField::PageIndex,
+                    "tombstone_elements" => BucketNodeField::TombstoneElements,
                     _ => BucketNodeField::Ignore,
                 })
             }
@@ -3880,6 +4156,11 @@ impl<'de> Deserialize<'de> for BucketNode {
                 let mut object_index: Option<ObjectIndex> = None;
                 let mut deleted_object_index: Option<DeletedObjectIndex> = None;
                 let mut block_index: Option<BlockIndexMap> = None;
+                // DEFAULTS WHEN ABSENT, and that is not a compatibility affordance: an index
+                // written before this key existed is REFUSED by its stamp before it reaches here
+                // (`persistence` compares `<` and falls back to WAL replay), so the only node that
+                // can arrive without the key is one this engine wrote with no tombstone in it.
+                let mut tombstone_elements: Option<TombstoneElements> = None;
 
                 // Each arm refuses a SECOND statement of the same fact rather than letting the
                 // later one win. `once` names the key in the error so a store that carries both
@@ -3914,6 +4195,9 @@ impl<'de> Deserialize<'de> for BucketNode {
                             once!(deleted_object_index, "deleted_object_index")
                         }
                         BucketNodeField::PageIndex => once!(block_index, "page_index"),
+                        BucketNodeField::TombstoneElements => {
+                            once!(tombstone_elements, "tombstone_elements")
+                        }
                         BucketNodeField::Ignore => {
                             map.next_value::<serde::de::IgnoredAny>()?;
                         }
@@ -3967,6 +4251,7 @@ impl<'de> Deserialize<'de> for BucketNode {
                     object_index: object_index.unwrap_or_default(),
                     deleted_object_index: deleted_object_index.unwrap_or_default(),
                     block_index: block_index.unwrap_or_default(),
+                    tombstone_elements: tombstone_elements.unwrap_or_default(),
                 })
             }
         }
