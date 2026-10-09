@@ -5425,7 +5425,6 @@ fn installing_the_same_block_twice_replaces_it() {
         routing_bucket: 7,
         object_key: Arc::from("twice".to_string()),
         model_id: crate::engine::storage_bucket_internals::StoredModelKind::String,
-        component: None,
         address: ElementEntry::from_parts(1, 0, 4, Some(1), Some(30)),
         dirty: false,
         deleted: false,
@@ -7715,13 +7714,9 @@ fn block_index_identity_string_cardinality() {
     // report the cost as if nothing had changed -- every block still holds one, it just points at
     // a string it does not own.
     let mut model_allocations: HashSet<*const u8> = HashSet::new();
-    let mut component_allocations: HashSet<*const u8> = HashSet::new();
-    let mut distinct_components: HashSet<&str> = HashSet::new();
     let mut distinct_keys: HashSet<&str> = HashSet::new();
     let mut model_bytes = 0usize;
-    let mut component_bytes = 0usize;
     let mut key_bytes = 0usize;
-    let mut components_present = 0usize;
     for bucket in shard.bucket_index.bucket_map.values() {
         for (_ref_key, page) in bucket.block_index.iter() {
             pages += 1;
@@ -7732,24 +7727,30 @@ fn block_index_identity_string_cardinality() {
             distinct_keys.insert(page.object_key.as_ref());
             model_bytes += page.model_id.as_str().len();
             key_bytes += page.object_key.len();
-            if let Some(component) = page.component.as_deref() {
-                distinct_components.insert(component);
-                if let Some(shared) = page.component.as_ref() {
-                    component_allocations.insert(std::sync::Arc::as_ptr(shared).cast::<u8>());
-                }
-                component_bytes += component.len();
-                components_present += 1;
-            }
+            // THE COMPONENT HALF OF THIS CENSUS HAS NO SUBJECT LEFT.
+            //
+            // It measured whether an entry's element name was a SHARED allocation -- distinct
+            // names against distinct `Arc` pointers -- which only means anything while an entry
+            // carries one. `BlockIndex` has none, so there is nothing to count, nothing to share,
+            // and no bytes to attribute.
+            //
+            // AND ITS ANTI-VACUITY FLOOR IS WHAT FORCED THIS TO BE REMOVED RATHER THAN RELAXED.
+            // The assertion below read `components_present > 0`, with the stated reason that a
+            // corpus with no components "would decide the component question by construction".
+            // That is now true of EVERY corpus: the floor cannot be satisfied by any fixture, so
+            // keeping it and lowering it would have been the exact move its own comment forbids.
+            // The two halves that still have a subject -- `model_id` sharing and `object_key`
+            // copies -- are unchanged and still measured.
         }
     }
 
-    // Anti-vacuity first: an empty index would make every ratio below true for free, and a
-    // corpus with no components would decide the component question by construction.
+    // Anti-vacuity first: an empty index would make every ratio below true for free.
+    //
+    // THE SECOND FLOOR IS DELETED, NOT LOWERED. It read `components_present > 0` because "a corpus
+    // with no components would decide the component question by construction" -- and that is now
+    // true of every possible corpus, since an entry has no element name. A floor no fixture can
+    // satisfy is not a floor; lowering it to zero would have been the move its own comment forbids.
     assert!(pages > 0, "the page index is empty; nothing was measured");
-    assert!(
-        components_present > 0,
-        "no page carries a component; the component question would be decided by construction"
-    );
 
     let share = |distinct: usize, copies: usize| {
         if distinct == 0 { 0.0 } else { copies as f64 / distinct as f64 }
@@ -7758,16 +7759,12 @@ fn block_index_identity_string_cardinality() {
         "
   page index identity strings over {pages} pages:
     model_id    {:>5} distinct, {:>6} holders ({:>7.1} each), {:>4} allocations behind {:>6} B of referenced text
-    component   {:>5} distinct, {:>6} holders ({:>7.1} each), {:>4} allocations behind {:>6} B of referenced text
     object_key  {:>5} distinct, {:>6} copies  ({:>7.1} copies each, {:>6} B held)
 
     BlockIndex is {} B before its heap strings
 ",
         distinct_models.len(), pages, share(distinct_models.len(), pages),
         model_allocations.len(), model_bytes,
-        distinct_components.len(), components_present,
-        share(distinct_components.len(), components_present),
-        component_allocations.len(), component_bytes,
         distinct_keys.len(), pages, share(distinct_keys.len(), pages), key_bytes,
         std::mem::size_of::<crate::engine::state::BlockIndex>(),
     );
@@ -7997,7 +7994,7 @@ fn per_record_structure_census() {
             page.object_key.len()
                 // One byte inline and a `&'static str`: no heap text for the spelling.
                 + 0
-                + page.component.as_ref().map_or(0, |name| name.len())
+                + 0
         })
         .sum();
     // Outer keys plus the block-ref key each entry holds.
@@ -13978,7 +13975,8 @@ fn what_one_block_costs_to_index() {
             object_key_bytes += page.object_key.len();
             // One allocation across every block of that component, not one per block. The kind
             // contributes nothing at all now: one byte inline, spelled by a `&'static str`.
-            shared_bytes += page.component.as_ref().map_or(0, |name| name.len());
+            // An entry carries no element name, so it contributes no shared name bytes.
+                    shared_bytes += 0;
             heap += page.object_key.len();
         }
     }
@@ -14273,7 +14271,7 @@ fn maintaining_the_index_during_ingest_matches_rebuilding_it() {
                         (
                             page.model_id.to_string(),
                             page.object_key.to_string(),
-                            page.component.as_ref().map(|name| name.to_string()),
+                            None::<String>,
                         ),
                     )
                 })
@@ -14307,7 +14305,7 @@ fn maintaining_the_index_during_ingest_matches_rebuilding_it() {
                         (
                             page.model_id.to_string(),
                             page.object_key.to_string(),
-                            page.component.as_ref().map(|name| name.to_string()),
+                            None::<String>,
                         ),
                     )
                 })
@@ -15956,7 +15954,7 @@ fn a_no_block_command_leaves_the_index_matching_a_rebuild() {
                         "{routing_bucket}|{}|{}|{}",
                         page.model_id,
                         page.object_key,
-                        page.component.as_deref().unwrap_or("-")
+                        "-"
                     )
                 })
             })
@@ -16076,7 +16074,7 @@ fn a_no_block_command_in_a_batch_does_not_rebuild_the_index() {
                         "{routing_bucket}|{}|{}|{}",
                         page.model_id,
                         page.object_key,
-                        page.component.as_deref().unwrap_or("-")
+                        "-"
                     )
                 })
             })
@@ -19244,7 +19242,7 @@ fn a_released_bucket_reloads_the_exact_block_list_it_released() {
                         *routing_bucket,
                         page.model_id.to_string(),
                         page.object_key.to_string(),
-                        page.component.as_ref().map(|name| name.to_string()),
+                        None::<String>,
                         page.address.block_slab_id(),
                         page.address.offset(),
                         page.address.length(),

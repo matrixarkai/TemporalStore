@@ -511,7 +511,6 @@ fn page_at(component: Option<&str>, slab: u64, offset: u64, length: u64) -> Bloc
         routing_bucket: 7,
         object_key: std::sync::Arc::from("one-object"),
         model_id: crate::engine::storage_bucket_internals::StoredModelKind::Hash,
-        component: component.map(std::sync::Arc::from),
         address: crate::block_store::ElementEntry::from_parts(
             slab,
             offset,
@@ -669,17 +668,29 @@ fn the_maps_the_delta_fold_restores_do_not_include_the_container_maps() {
     });
     assert!(response.status.ok, "series seed must ack: {:?}", response.status);
 
-    // Every container element must be present as a page entry WITH a component, which is the fact
-    // the prerequisite rests on.
+    // THE CONTRAST THIS ARM WAS BUILT ON IS GONE: EVERY KIND IS NOW THE "WITHOUT" SIDE.
+    //
+    // It asserted that each of the four container kinds held exactly one page entry CARRYING a
+    // component -- "the identity-in-the-component premise" -- and that the series held exactly one
+    // entry WITHOUT one, "the shape a batched container would have to adopt". `BlockIndex` has no
+    // component field, so the first four assertions are unsatisfiable by any fixture and the fifth
+    // is satisfied by every entry in the shard. A contrast where one side cannot exist and the
+    // other is universal is not a contrast.
+    //
+    // WHAT IS KEPT IS THE HALF THAT STILL DISCRIMINATES, and it is the half the arm's conclusion
+    // actually rested on: the series has a DURABLE MODEL-MAP entry, and that is what makes its
+    // nameless page entry recoverable. The container maps are durable now too, which is the
+    // change that made the collapse safe -- so both sides are asserted, and a regression that
+    // made either map non-durable reddens here.
+    let shards = engine.shards.read().expect("engine lock poisoned");
+    let shard = shards.get(&1).expect("shard is loaded");
     for (kind, key) in [
         ("hash", "fold-h"),
         ("set", "fold-t"),
         ("zset", "fold-z"),
         ("list", "fold-l"),
     ] {
-        let shards = engine.shards.read().expect("engine lock poisoned");
-        let shard = shards.get(&1).expect("shard is loaded");
-        let named = shard
+        let entries = shard
             .bucket_index
             .bucket_map
             .values()
@@ -687,19 +698,13 @@ fn the_maps_the_delta_fold_restores_do_not_include_the_container_maps() {
             .filter(|page| {
                 !page.deleted && page.model_id.as_str() == kind && &*page.object_key == key
             })
-            .filter(|page| page.component.is_some())
             .count();
         assert_eq!(
-            named, 1,
-            "{kind} key {key} must hold exactly one page entry carrying a component -- it holds \
-             {named}, so the identity-in-the-component premise does not hold for it"
+            entries, 1,
+            "{kind} key {key} must hold exactly one live page entry -- it holds {entries}, so the \
+             one-entry-a-page shape this module contrasts against is not what is on this revision"
         );
     }
-
-    // And the series element must be present WITHOUT one, which is the shape a batched container
-    // would have to adopt.
-    let shards = engine.shards.read().expect("engine lock poisoned");
-    let shard = shards.get(&1).expect("shard is loaded");
     let anonymous = shard
         .bucket_index
         .bucket_map
@@ -708,19 +713,24 @@ fn the_maps_the_delta_fold_restores_do_not_include_the_container_maps() {
         .filter(|page| {
             !page.deleted && page.model_id.as_str() == "feature" && &*page.object_key == "fold-f"
         })
-        .filter(|page| page.component.is_none())
         .count();
     assert_eq!(
         anonymous, 1,
-        "the series must hold exactly one component-less page entry -- it holds {anonymous}, so \
-         the page-scaled shape this module contrasts against is not what is on this revision"
+        "the series must hold exactly one page entry -- it holds {anonymous}"
     );
     assert!(
         shard.features.contains_key("fold-f"),
-        "the series must also hold a durable model-map entry, because that is what makes its \
-         component-less page entry recoverable and is exactly what the container maps lack"
+        "the series must hold a durable model-map entry, because that is what makes its nameless \
+         page entry recoverable"
     );
-    println!("container elements carry a component; the series element does not");
+    assert!(
+        shard.hashes.get("fold-h").is_some(),
+        "the HASH must hold a durable model-map entry too. That is the half that changed: a \
+         container element's identity used to live on its entry, and with the entry nameless the \
+         durable map is the only source -- if this reddens, the collapse has outrun the durability \
+         that makes it safe"
+    );
+    println!("every kind files one nameless page entry; the durable maps are what name the elements");
     println!(
         "and `apply_key_states` folds `features` but none of `hashes`/`sets`/`zsets`/`lists`, so \
          the component is the container element's only fold-route copy"

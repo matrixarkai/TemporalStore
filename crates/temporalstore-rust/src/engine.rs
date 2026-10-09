@@ -3353,7 +3353,12 @@ fn collect_command_index_items_for(
                 continue;
             }
             if let Some((kind, component)) = only {
-                if page.model_id.as_str() != kind || page.component.as_deref() != component {
+                // NARROWED BY THE ENTRY'S OWN NAME, WHICH IT NO LONGER HAS. This read
+                // `page.component.as_deref() != component`; every entry's name was already `None`,
+                // so the surviving question is whether the CALLER asked for a named element at
+                // all. It did not match a named element before this change and it does not now --
+                // `component.is_some()` is the same predicate with the entry's constant folded in.
+                if page.model_id.as_str() != kind || component.is_some() {
                     continue;
                 }
             }
@@ -3365,7 +3370,12 @@ fn collect_command_index_items_for(
                 // takes the pointer instead of copying the characters per item.
                 object_key: page.object_key.clone(),
                 model_id: page.model_id.clone().to_string(),
-                component: page.component.clone(),
+                // `None`, AND READ OFF THE TYPE RATHER THAN OFF THE ENTRY. The row's component
+                // slot stays -- the index log packs it and a row written by an older binary still
+                // carries one -- but an entry has no name to put in it, which is what this
+                // emission was already writing: every entry's component was `None` before the
+                // field was removed, so the bytes this produces do not move.
+                component: None,
                 object_id: page.object_id(shard_id),
                 deleted: page.deleted,
                 // `in_log` here was `page.log_backed()` -- the accessor added when the stored
@@ -4080,14 +4090,25 @@ fn fold_delta_block_items(
                 .entry
                 .as_ref()
                 .map(|entry| live_page_key(entry));
-            // COMPARED AGAINST WHAT THE ENTRY IS FILED UNDER. The item carries the element's
-            // name; the entries it supersedes are filed under the page's. Comparing the two
-            // directly would match nothing under the gate and converge on no entry at all.
-            let filed_name = if names_a_page { None } else { item.component.as_deref() };
+            // THE FILING-NAME TERM IS DELETED AS A TAUTOLOGY, WITH THE REASON HERE RATHER THAN
+            // IN A COMMIT MESSAGE.
+            //
+            // It read `page.component.as_deref() == filed_name`, where
+            // `filed_name = if names_a_page { None } else { item.component.as_deref() }`. BOTH
+            // SIDES WERE ALREADY `None` FOR EVERY KIND: `names_a_page` answers true for all four
+            // container kinds, and the kinds it answers false for -- `string`, `control_state`,
+            // `context_node` and the timestamped series -- carry no element name to begin with, so
+            // `filed_name` was unconditionally `None` and no entry had a name to compare with it.
+            // The term asserted nothing before the field was touched, and with the field gone it
+            // cannot be written at all.
+            //
+            // WHAT STILL DECIDES THE SUPERSEDE is the page key below: keyed on `live_page_key`
+            // when a kind converges on the page, and on (kind, object key) alone when it converges
+            // on the object. That distinction is `names_a_page`'s remaining job here, which is why
+            // the binding above it is kept and only this comparison goes.
             bucket.block_index.retain(&mut bucket_index.block_slab_live, |_, page| {
                 !(page.model_id.as_str() == item.model_id
                     && page.object_key.as_ref() == item.object_key.as_ref()
-                    && page.component.as_deref() == filed_name
                     && match (names_a_page, here.as_ref()) {
                         (true, Some(here)) => live_page_key(&page.address) == *here,
                         _ => true,
@@ -4132,17 +4153,15 @@ fn fold_delta_block_items(
                 model_id: crate::engine::storage_bucket_internals::stored_model_kind(
                     &item.model_id,
                 ),
-                // THE SAME CONDITION THE WRITE PATH FILES UNDER, so the two routes compute
-                // the same written key for the same page. The item's own component is the ELEMENT
-                // -- a full record of the write, which recovery needs to restore the model map --
-                // and what the ENTRY is filed under is decided here, once, from that condition.
-                component: if crate::engine::storage_bucket_internals::index_entry_names_a_page(
-                    &item.model_id,
-                ) {
-                    None
-                } else {
-                    item.component.clone().map(Arc::from)
-                },
+                // NO NAME IS FILED, AND THERE IS NO LONGER A CONDITION DECIDING IT. This read
+                // `if index_entry_names_a_page(..) { None } else { item.component }`, on the
+                // reasoning that the two routes must compute the same written key for the same
+                // page. Both branches are gone with the field: the entry has no slot for an
+                // element name, so there is nothing for the two routes to disagree about.
+                //
+                // THE ITEM STILL CARRIES THE ELEMENT'S OWN NAME and that has not moved -- it is
+                // the full record of the write, which recovery needs to restore the model map.
+                // What stopped being derivable from it is the ENTRY's filing name.
                 // The record carries the id and the address no longer does, so there is nothing
                 // to copy across: the entry derives the id from its own terms.
                 address,
@@ -5224,9 +5243,24 @@ fn mark_bucket_index_block_deleted_recording(
         let mut bucket_removed = false;
         let mut deleted_object_ids = BTreeSet::new();
         bucket.block_index.retain(&mut shard.bucket_index.block_slab_live, |_, page| {
+            // THE THIRD COMPONENT `retain` IN THE ENGINE, AND THE ONLY ONE THAT WAS NOT VACUOUS.
+            //
+            // This read `page.component.as_deref() == component`, and with every entry's name
+            // already `None` that comparison still DECIDED something, because the other side is
+            // this function's ARGUMENT and not another entry: `None == Some(member)` is false for a
+            // container and `None == None` true for the kinds that converge on the object key. So
+            // it is translated and NOT deleted as a tautology -- deleting it would widen the
+            // removal to take a container's whole page entry, and taking that entry takes every
+            // sibling member on the page with it.
+            //
+            // `component.is_none()` is that same predicate with the entry's constant folded in,
+            // so the kinds it matches are exactly the kinds it matched before: `string`,
+            // `control_state` and `context_node` converge on the object key and are removed here;
+            // a container's removal matches nothing here and is recorded by the tombstone arm at
+            // the end of this function instead.
             let matches = page.model_id.as_str() == model_id
                 && &*page.object_key == key
-                && page.component.as_deref() == component;
+                && component.is_none();
             if matches {
                 deleted_object_ids.insert(page.object_id(shard_id));
                 bucket_removed = true;
@@ -6508,31 +6542,27 @@ fn object_manager_stats(
                     .flat_map(|bucket| bucket.block_index.values())
                     .filter(|page| !page.deleted)
                     .collect::<Vec<_>>();
+                // A THIRD TUPLE TERM THAT WAS ALREADY CONSTANT, AND IS DROPPED RATHER THAN SET
+                // TO `None`.
+                //
+                // Both of these sets carried `(kind, object_key, hash_field)`, where the third
+                // term was `(model_id == "hash").then(|| page.component.as_deref()).flatten()`.
+                // Every entry's component was `None`, so the term evaluated to `None` for every
+                // page of every kind -- a constant, which adds nothing to a set's cardinality.
+                // Spelling it `None` would have kept a tuple slot that cannot distinguish two
+                // pages; the count is identical either way, so the slot goes and this note says
+                // what it used to mean: one entry per hash FIELD, back when an entry named one.
                 let bucket_object_count = live_blocks
                     .iter()
-                    .map(|page| {
-                        (
-                            page.model_id.as_str(),
-                            page.object_key.as_ref(),
-                            (page.model_id.as_str() == "hash")
-                                .then(|| page.component.as_deref())
-                                .flatten(),
-                        )
-                    })
+                    .map(|page| (page.model_id.as_str(), page.object_key.as_ref()))
                     .collect::<BTreeSet<_>>()
                     .len();
                 let bucket_dirty_object_count = live_blocks
                     .iter()
                     .filter(|page| page.dirty || shard.dirty_objects.contains(page.object_key.as_ref()))
-                    .map(|page| {
-                        (
-                            page.model_id.as_str(),
-                            page.object_key.as_ref(),
-                            (page.model_id.as_str() == "hash")
-                                .then(|| page.component.as_deref())
-                                .flatten(),
-                        )
-                    })
+                    // The same constant third term as the count above, dropped for the same
+                    // reason and with the reason written there.
+                    .map(|page| (page.model_id.as_str(), page.object_key.as_ref()))
                     .collect::<BTreeSet<_>>()
                     .len();
                 (bucket_object_count, live_blocks.len(), bucket_dirty_object_count)

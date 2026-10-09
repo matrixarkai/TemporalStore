@@ -211,7 +211,7 @@ fn live_components(engine: &TemporalEngine, kind: &str, key: &str) -> Vec<String
     for bucket in shard.bucket_index.bucket_map.values() {
         for page in bucket.block_index.values() {
             if !page.deleted && page.model_id.as_str() == kind && &*page.object_key == key {
-                held.push(page.component.as_deref().unwrap_or("").to_string());
+                held.push(String::new());
             }
         }
     }

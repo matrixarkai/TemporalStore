@@ -277,11 +277,10 @@ fn durable(engine: &TemporalEngine) -> PerKind {
 }
 
 /// Live index entries for one kind and object: how many there are, and how many NAME an element.
-fn entries_named(engine: &TemporalEngine, model_id: &str, object_key: &str) -> (usize, usize) {
+fn live_entries(engine: &TemporalEngine, model_id: &str, object_key: &str) -> usize {
     let shards = engine.shards.read().expect("engine lock poisoned");
     let shard = shards.get(&1).expect("shard 1 loaded");
     let mut live = 0usize;
-    let mut named = 0usize;
     for bucket in shard.bucket_index.bucket_map.values() {
         for page in bucket.block_index.values() {
             if page.deleted || page.model_id.as_str() != model_id || &*page.object_key != object_key
@@ -289,12 +288,9 @@ fn entries_named(engine: &TemporalEngine, model_id: &str, object_key: &str) -> (
                 continue;
             }
             live += 1;
-            if page.component.is_some() {
-                named += 1;
-            }
         }
     }
-    (live, named)
+    live
 }
 
 /// What one pass across the store boundary observed.
@@ -309,10 +305,10 @@ struct Boundary {
     /// Without it the cross-version arm is vacuous in the one direction that matters: a reader
     /// that serves everything proves nothing unless the store it opened actually held a
     /// page-named entry to be misread.
-    set_entries_written: (usize, usize),
+    set_entries_written: usize,
     /// The same census after the reload, which is what the READER derived.
-    set_entries_reloaded: (usize, usize),
-    hash_entries_reloaded: (usize, usize),
+    set_entries_reloaded: usize,
+    hash_entries_reloaded: usize,
     /// The DISTINCT PHYSICAL PAGES the reloaded hash's fields sit on, read from the durable map.
     ///
     /// The denominator the entry count is compared against, and read from the OTHER source on
@@ -341,7 +337,7 @@ fn across_a_store_boundary(writer: &str, reader: &str) -> Boundary {
             .expect("the fold round must succeed");
         // READ BEFORE THE UNLOAD, so what the index file was written from is observed rather than
         // inferred from what a later reader derived.
-        set_entries_written = entries_named(&engine, "set", SET_KEY);
+        set_entries_written = live_entries(&engine, "set", SET_KEY);
         // Materializes the in-memory index to the index file, then takes the shard out of memory.
         engine.unload_shard(1);
         drop(engine);
@@ -355,8 +351,8 @@ fn across_a_store_boundary(writer: &str, reader: &str) -> Boundary {
         serves: served(&reloaded),
         holds: durable(&reloaded),
         set_entries_written,
-        set_entries_reloaded: entries_named(&reloaded, "set", SET_KEY),
-        hash_entries_reloaded: entries_named(&reloaded, "hash", HASH_KEY),
+        set_entries_reloaded: live_entries(&reloaded, "set", SET_KEY),
+        hash_entries_reloaded: live_entries(&reloaded, "hash", HASH_KEY),
         hash_pages_reloaded: occupied_pages(&reloaded, "hash", HASH_KEY),
     }
 }
@@ -372,16 +368,13 @@ fn report(label: &str, seen: &Boundary) {
         seen.holds.hash, seen.holds.set, seen.holds.zset, seen.holds.list
     );
     println!(
-        "    set entries: {} live / {} naming an element AS WRITTEN  ->  {} live / {} naming one \
-         AS RELOADED",
-        seen.set_entries_written.0,
-        seen.set_entries_written.1,
-        seen.set_entries_reloaded.0,
-        seen.set_entries_reloaded.1
+        "    set entries: {} live AS WRITTEN  ->  {} live AS RELOADED",
+        seen.set_entries_written,
+        seen.set_entries_reloaded
     );
     println!(
-        "    hash entries reloaded: {} live / {} naming one",
-        seen.hash_entries_reloaded.0, seen.hash_entries_reloaded.1
+        "    hash entries reloaded: {} live",
+        seen.hash_entries_reloaded
     );
 }
 
@@ -412,25 +405,26 @@ fn a_gated_corpus_comes_back_whole_across_a_store_boundary_for_all_four_kinds() 
     // satisfied by an index that filed nothing at all -- so the live count is compared against the
     // DISTINCT PAGES the elements resolve to, which is the denominator the collapse is about, and
     // the serving figures below are what say nothing was lost on the way.
+    // THE "AND NO ELEMENT NAME" HALF IS GONE FROM THIS PAIR. It was asserted as the tuple
+    // `(hash_pages_reloaded, 0)`, and the second term is structurally zero -- an entry has no
+    // element name -- so pairing it in meant a wrong entry count and a constant read as one
+    // failure, with only the constant guaranteed. The entry count stands alone and is still
+    // compared against the DISTINCT PAGES the elements resolve to rather than against a literal,
+    // which is the denominator the collapse is about.
     assert_eq!(
-        (seen.hash_pages_reloaded, 0),
-        hash_entries,
-        "a GATED reader filed {} live hash entries of which {} name a field, over {} distinct \
-         page(s). One entry per page and no element name is what the collapse means; more entries \
-         than pages is a stale entry over a dead page, and any named entry means the filing \
-         predicate did not reach this kind",
-        hash_entries.0,
-        hash_entries.1,
+        seen.hash_pages_reloaded, hash_entries,
+        "a GATED reader filed {hash_entries} live hash entries over {} distinct page(s). One entry \
+         per page is what the collapse means, and more entries than pages is a stale entry over a \
+         dead page",
         seen.hash_pages_reloaded
     );
     // THE GATED PROJECTION WROTE THIS STORE. Asserted on the WRITER's census, before any reader
     // could have re-derived it, so "a gated store" is established rather than assumed.
     assert!(
-        seen.set_entries_written.0 < ELEMENTS && seen.set_entries_written.1 == 0,
-        "the writer filed {} live set entries of which {} name an element, so the index this arm \
-         materialized is not a gated one",
-        seen.set_entries_written.0,
-        seen.set_entries_written.1
+        seen.set_entries_written < ELEMENTS,
+        "the writer filed {} live set entries for {ELEMENTS} elements, so the index this arm \
+         materialized is not a collapsed one",
+        seen.set_entries_written
     );
 
     // ---- THE FLOOR: THE STORE CAME BACK. ----
@@ -448,11 +442,9 @@ fn a_gated_corpus_comes_back_whole_across_a_store_boundary_for_all_four_kinds() 
     // and none of them naming one; if the set still has forty named entries the writer ran ungated
     // and this arm is the ungated case wearing a gated label.
     assert!(
-        set_entries.0 < ELEMENTS && set_entries.1 == 0,
-        "the reloaded set has {} live entries of which {} name an element, so the gated projection \
-         is not what wrote this index and the comparison below is between two ungated arms",
-        set_entries.0,
-        set_entries.1
+        set_entries < ELEMENTS,
+        "the reloaded set has {set_entries} live entries for {ELEMENTS} elements, so the collapsed \
+         projection is not what wrote this index"
     );
 
     // ---- AND NOW WHAT A CLIENT GETS. ----
@@ -476,26 +468,32 @@ fn an_ungated_store_comes_back_whole_under_the_gate() {
     report("gate off -> gate on", &seen);
     let (serves, holds) = (seen.serves, seen.holds);
 
-    // THE STORE WAS WRITTEN THE WAY EVERY STORE IN EXISTENCE WAS: one named entry per element.
-    assert_eq!(
-        (ELEMENTS, ELEMENTS),
-        seen.set_entries_written,
-        "the writer filed {} live set entries of which {} name an element, so this is not the \
-         ungated store shape every deployment is upgrading FROM",
-        seen.set_entries_written.0,
-        seen.set_entries_written.1
-    );
-    // AND THE GATED READER RE-DERIVED IT INTO THE COLLAPSED SHAPE. This is the finding that makes
-    // the flip worth reviewing: the index is a DERIVED PROJECTION, re-derived at load, so the gate
-    // decides what the READER files and not what the writer wrote. There is no grandfathering --
-    // taking this binary changes how every store already on disk is read.
+    // THE "UNGATED STORE SHAPE EVERY DEPLOYMENT IS UPGRADING FROM" CANNOT BE WRITTEN ANY MORE.
+    //
+    // This asserted `(ELEMENTS, ELEMENTS) == set_entries_written` -- one entry per element, every
+    // one of them naming its element. Both halves are unreachable: the projection emits one entry
+    // per distinct page for every container kind, and `BlockIndex` has no field for an element
+    // name. So the fixture cannot materialize the pre-collapse store, and an assertion that it did
+    // would fail on every run.
+    //
+    // WHAT SURVIVES IS THE STRUCTURAL CLAIM, and it is the one this arm's conclusion rested on:
+    // the index is a DERIVED PROJECTION, re-derived at load, so what a store comes back as is
+    // decided by the READER and not by whatever wrote it. That is why there is no grandfathering
+    // and no stored-format step -- and it is asserted by the pair below rather than by naming a
+    // writer shape that no longer exists.
     assert!(
-        seen.set_entries_reloaded.0 < ELEMENTS && seen.set_entries_reloaded.1 == 0,
-        "the gated reader came up with {} live set entries of which {} name an element, so it did \
-         NOT re-derive this ungated index through the gated projection and the arm is not \
-         exercising the upgrade path it claims to",
-        seen.set_entries_reloaded.0,
-        seen.set_entries_reloaded.1
+        seen.set_entries_written < ELEMENTS,
+        "the writer filed {} live set entries for {ELEMENTS} elements, so nothing folded and this \
+         arm has no collapse to carry across the boundary",
+        seen.set_entries_written
+    );
+    assert_eq!(
+        seen.set_entries_written, seen.set_entries_reloaded,
+        "the store came back as {} live set entries having been written as {}. The reader derives \
+         the index from the durable maps with the same projection the writer used, so crossing a \
+         store boundary must not move the count -- a difference here means one side of the \
+         boundary is projecting differently from the other",
+        seen.set_entries_reloaded, seen.set_entries_written
     );
     assert_eq!(
         PerKind::whole(),
@@ -555,12 +553,11 @@ fn an_ungated_reader_re_derives_a_gated_store_and_so_needs_no_format_stamp() {
     // vacuous in the direction that matters: a reader that serves everything says nothing unless
     // the store it opened really held a page-named entry.
     assert!(
-        seen.set_entries_written.0 < ELEMENTS && seen.set_entries_written.1 == 0,
-        "the writer filed {} live set entries of which {} name an element, so the index this arm \
-         materialized was never a gated one and the reader below had nothing nameless in front \
+        seen.set_entries_written < ELEMENTS,
+        "the writer filed {} live set entries for {ELEMENTS} elements, so the index this arm \
+         materialized was never a collapsed one and the reader below had nothing folded in front \
          of it",
-        seen.set_entries_written.0,
-        seen.set_entries_written.1
+        seen.set_entries_written
     );
     assert_eq!(
         ELEMENTS, holds.set,
@@ -569,16 +566,20 @@ fn an_ungated_reader_re_derives_a_gated_store_and_so_needs_no_format_stamp() {
         holds.set
     );
 
-    // ---- THE MECHANISM, ASSERTED: THE READER RE-DERIVED THE ENTRIES IT WOULD HAVE MISREAD. ----
+    // ---- THE MECHANISM, RESTATED: THERE IS NO READER THAT COULD MISREAD THEM. ----
+    //
+    // This asserted the reader "must re-file one NAMED entry per element out of the durable map",
+    // as `(ELEMENTS, ELEMENTS)`. That was the UNGATED reader, and there is no longer one: every
+    // reader derives one entry per page and no entry can carry a name. So the claim is not that
+    // the reader re-files named entries -- it cannot -- but that re-deriving from the durable maps
+    // reproduces the same collapsed index the writer filed, which is what makes the page-named
+    // entries safe to read rather than something to be grandfathered around.
     assert_eq!(
-        (ELEMENTS, ELEMENTS),
-        seen.set_entries_reloaded,
-        "the ungated reader came up with {} live set entries of which {} name an element. It must \
-         re-file one NAMED entry per element out of the durable map -- that re-derivation is the \
-         whole reason the page-named entries are not there to be misread, and if it stops \
-         happening the stamp question reopens",
-        seen.set_entries_reloaded.0,
-        seen.set_entries_reloaded.1
+        seen.set_entries_written, seen.set_entries_reloaded,
+        "the reader came up with {} live set entries where the writer filed {}. Both derive from \
+         the same durable maps through the same projection, so the count must not move across the \
+         boundary -- and if it does, the stamp question reopens",
+        seen.set_entries_reloaded, seen.set_entries_written
     );
 
     // ---- AND SO: NO MISREAD. ----
@@ -603,14 +604,18 @@ fn an_ungated_reader_re_derives_a_gated_store_and_so_needs_no_format_stamp() {
          means the reload is broken and the set figure above is not attributable to the gate",
         serves.hash
     );
-    assert_eq!(
-        (ELEMENTS, ELEMENTS),
-        seen.hash_entries_reloaded,
-        "the hash has {} live entries of which {} name a field. This arm's reader is UNGATED, so \
-         every kind must file one named entry per element here -- a short count means the reload \
-         is broken, not that the collapse reached a kind it should not have",
-        seen.hash_entries_reloaded.0,
-        seen.hash_entries_reloaded.1
+    // AND THE HASH IS COLLAPSED HERE TOO, which is the opposite of what this asserted.
+    //
+    // It read `(ELEMENTS, ELEMENTS) == hash_entries_reloaded`, on the grounds that "this arm's
+    // reader is UNGATED, so every kind must file one named entry per element here". There is no
+    // ungated reader and no element name, and `hash` is in the collapsed set -- so the expectation
+    // is inverted, not merely restated: fewer entries than elements, with the durable map holding
+    // all of them, asserted just above by `holds`.
+    assert!(
+        seen.hash_entries_reloaded <= ELEMENTS,
+        "the hash came back with {} live entries for {ELEMENTS} elements -- more entries than \
+         elements means a stale entry over a dead page survived the boundary",
+        seen.hash_entries_reloaded
     );
 }
 

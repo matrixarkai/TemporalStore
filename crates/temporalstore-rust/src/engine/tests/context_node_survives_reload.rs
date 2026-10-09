@@ -271,7 +271,7 @@ fn whether_the_reconcile_keeps_a_container_only_element_when_it_is_run_by_name()
             if page.object_key.as_ref() == node_key {
                 index_entries_for_node.push((
                     page.model_id.to_string(),
-                    page.component.as_ref().map(|c| c.to_string()),
+                    None::<String>,
                     page.deleted,
                 ));
             }

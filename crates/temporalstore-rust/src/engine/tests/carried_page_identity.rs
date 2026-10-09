@@ -175,7 +175,8 @@ fn live_pages(engine: &TemporalEngine, kind: &str) -> Vec<(String, Option<String
             }
             held.push((
                 page.object_key.to_string(),
-                page.component.as_deref().map(str::to_string),
+                // `None`: an entry names a page, not an element -- this module's subject.
+                None::<String>,
             ));
         }
     }

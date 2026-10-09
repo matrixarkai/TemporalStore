@@ -665,7 +665,6 @@ fn a_hash_page_naming_no_field_is_skipped_while_a_genuine_empty_field_name_is_ke
         routing_bucket: 7,
         object_key: Arc::from("ef-wire-probe"),
         model_id: stored_model_kind("hash"),
-        component: None,
         address: ElementEntry::default(),
         dirty: false,
         deleted: false,
@@ -683,11 +682,15 @@ fn a_hash_page_naming_no_field_is_skipped_while_a_genuine_empty_field_name_is_ke
     );
     let decoded: BlockIndex =
         serde_json::from_str(&encoded).expect("a component-less page entry decodes");
-    assert!(
-        decoded.component.is_none(),
-        "a page entry written without a component decoded with one, so the decoder is not what \
-         admits this shape -- re-read `BlockIndex::component`"
-    );
+    // THE DECODER CANNOT ADMIT A NAME INTO AN ENTRY ANY MORE, so this assertion is gone.
+    //
+    // It decoded a component-less entry and asserted the decoded value carried no component, to
+    // establish that the absent shape comes from the ENCODER rather than from the decoder. The
+    // type has no such field, so the decode cannot produce one whatever the wire says -- the same
+    // claim, held structurally. The ENCODER half above still runs and still matters: it asserts
+    // the written text carries no component key, which is what keeps the stored spelling from
+    // moving.
+    let _ = &decoded;
 
     // And the delta item, whose EVERY field carries `#[serde(default)]` by stated design, so the
     // emptiest legal record decodes to an item that names nothing.

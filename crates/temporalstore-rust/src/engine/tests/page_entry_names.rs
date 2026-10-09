@@ -150,7 +150,9 @@ fn name_spread(engine: &TemporalEngine) -> NameSpread {
             held += 1;
             keys.insert(page.object_key.as_ref());
             models.insert(page.model_id.as_str());
-            components.insert(page.component.as_deref());
+            // Every entry's name is the same absence, so this set holds one member for any
+            // non-empty bucket. The histogram it feeds is restated where it is read.
+            components.insert(None::<&str>);
         }
         *spread.pages_held.entry(held).or_default() += 1;
         *spread.object_key.entry(keys.len()).or_default() += 1;
@@ -672,7 +674,6 @@ fn capture_the_stored_spelling_of_a_page_entry() {
             routing_bucket: 7,
             object_key: Arc::from(key),
             model_id: crate::engine::storage_bucket_internals::stored_model_kind(model),
-            component: component.map(Arc::from),
             address: ElementEntry::from_parts(
                 slab,
                 offset,
@@ -740,10 +741,9 @@ fn capture_the_stored_spelling_of_a_page_entry() {
                 "        (\"{}\", \"{}\", {}, {}, {}, {}, {}, {}, {}),",
                 entry.object_key,
                 entry.model_id,
-                match entry.component.as_deref() {
-                    Some(name) => format!("Some(\"{name}\")"),
-                    None => "None".to_string(),
-                },
+                // The component column is `None` on every row now: an entry names a page. The
+                // column is kept in the printed shape so an existing golden still lines up.
+                "None".to_string(),
                 entry.address.block_slab_id(),
                 entry.address.offset(),
                 entry.address.length(),
@@ -854,7 +854,6 @@ pub(super) fn page_fixture(
         routing_bucket: 7,
         object_key: Arc::from("k"),
         model_id: crate::engine::storage_bucket_internals::StoredModelKind::String,
-        component: component.map(Arc::from),
         address: crate::block_store::ElementEntry::from_parts(
             1,
             2,
@@ -1033,7 +1032,7 @@ fn an_index_written_before_this_change_loads_page_for_page() {
             (
                 page.object_key.to_string(),
                 page.model_id.to_string(),
-                page.component.as_deref().map(str::to_string),
+                None::<String>,
                 page.address.block_slab_id(),
                 page.address.offset(),
                 page.address.length(),
@@ -1335,11 +1334,7 @@ fn fold_every_name(engine: &TemporalEngine) -> u64 {
             for byte in page.model_id.as_str().as_bytes() {
                 sum = sum.wrapping_mul(31).wrapping_add(*byte as u64);
             }
-            if let Some(component) = page.component.as_deref() {
-                for byte in component.as_bytes() {
-                    sum = sum.wrapping_mul(31).wrapping_add(*byte as u64);
-                }
-            }
+            // No element name on the entry, so nothing to fold into the sum from it.
         }
     }
     sum
@@ -1835,7 +1830,7 @@ fn page_tuples(
             (
                 page.object_key.to_string(),
                 page.model_id.to_string(),
-                page.component.as_deref().map(str::to_string),
+                None::<String>,
                 page.address.block_slab_id(),
                 page.address.offset(),
                 page.address.length(),
@@ -2381,5 +2376,5 @@ fn an_ungated_store_is_refused_before_it_is_served() {
 /// precisely the silent drop arm 1 is about -- and the assertion above compares against the golden's
 /// own recorded names rather than against whatever this returns.
 fn element_name_of(page: &BlockIndex) -> Option<String> {
-    page.component.as_deref().map(str::to_string)
+    None::<String>
 }

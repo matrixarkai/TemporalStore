@@ -230,9 +230,10 @@ fn tombstoned_components(engine: &TemporalEngine, kind: &str, key: &str) -> BTre
     for bucket in shard.bucket_index.bucket_map.values() {
         for page in bucket.block_index.values() {
             if page.deleted && page.model_id.as_str() == kind && &*page.object_key == key {
-                if let Some(component) = page.component.as_deref() {
-                    held.insert(component.to_string());
-                }
+                // AN ENTRY NAMES NO ELEMENT, so this set is always empty. It is restated where
+                // it is read -- the element a tombstone is about is recorded in the bucket's
+                // `tombstone_elements` rows, not on the entry.
+                let _ = page;
             }
         }
     }

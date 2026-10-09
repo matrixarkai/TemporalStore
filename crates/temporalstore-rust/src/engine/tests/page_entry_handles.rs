@@ -332,19 +332,17 @@ fn pages_per_object(engine: &TemporalEngine) -> PagesPerObject {
         let mut bucket_components: BTreeSet<Option<&str>> = BTreeSet::new();
         for (_, page) in bucket.block_index.iter() {
             measured.pages += 1;
-            bucket_components.insert(page.component.as_deref());
+            // One member for any non-empty bucket: every entry carries the same absence.
+            bucket_components.insert(None::<&str>);
             let slot = per_object
                 .entry((page.model_id, page.object_key.to_string()))
                 .or_default();
             slot.0 += 1;
-            if let Some(component) = page.component.as_deref() {
-                slot.1.insert(component.to_string());
-                measured.component_name_bytes += component.len();
-                if is_hex_spelling_of_numbers(component) {
-                    measured.hex_components += 1;
-                    measured.hex_component_name_bytes += component.len();
-                }
-            }
+            // NO ELEMENT NAME ON THE ENTRY, so the component columns of this census -- distinct
+            // names per object, name bytes, and the hex-spelled share of them -- are zero by
+            // construction. They are kept as columns because the arms below print them as the
+            // denominator for what a name WOULD have cost; each of those is restated where it is
+            // read.
         }
         *measured
             .components_per_bucket
@@ -624,9 +622,11 @@ fn measure_component_table(engine: &TemporalEngine) -> TableCost {
     for bucket in shard.bucket_index.bucket_map.values() {
         for (_, page) in bucket.block_index.iter() {
             pages += 1;
-            if let Some(component) = page.component.as_ref() {
-                names.push(Arc::clone(component));
-            }
+            // NOTHING TO INTERN. This measured what a candidate intern table for element names
+            // would cost, over the names the entries held. The entries hold none, so the table
+            // has no input -- and the question it was pricing is settled more cheaply than it
+            // proposed: the name did not need interning, it needed removing, and `state.rs`'s pin
+            // records the sixteen bytes a page that recovered.
         }
     }
     let probe = Probe::start();
@@ -1151,20 +1151,22 @@ fn an_ordinal_does_not_cost_the_component_list_its_tag() {
 /// AND WHAT EACH OF THE THREE NAMES WOULD BE WORTH, measured on mirrors rather than projected, so
 /// the remaining two verdicts are stated against the same arithmetic as the one that shipped.
 #[test]
-fn the_entry_is_fifty_six_bytes_and_every_one_is_accounted_for() {
+fn the_entry_is_forty_bytes_and_every_one_is_accounted_for() {
     use std::mem::{align_of, offset_of, size_of};
 
     let address = size_of::<crate::block_store::ElementEntry>();
     let model = size_of::<StoredModelKind>();
     let object_key = size_of::<Arc<str>>();
-    let component = size_of::<Option<Arc<str>>>();
+    // `component` IS NO LONGER A FIELD OF THE ENTRY. The local is kept as the WIDTH THE NAME USED
+    // TO COST, because the verdicts below are stated against that arithmetic -- what each of the
+    // three names would be worth -- and it is now a counterfactual rather than a measurement.
+    let component_when_it_was_a_field = size_of::<Option<Arc<str>>>();
     let flags = 3usize;
 
     println!("\n=== BlockIndex, field by field ===");
-    println!("  offsets: address@{} object_key@{} component@{} model_id@{} dirty@{} deleted@{} kind@{} routing_bucket@{}",
+    println!("  offsets: address@{} object_key@{} model_id@{} dirty@{} deleted@{} kind@{} routing_bucket@{}",
         offset_of!(BlockIndex, address),
         offset_of!(BlockIndex, object_key),
-        offset_of!(BlockIndex, component),
         offset_of!(BlockIndex, model_id),
         offset_of!(BlockIndex, dirty),
         offset_of!(BlockIndex, deleted),
@@ -1172,18 +1174,23 @@ fn the_entry_is_fifty_six_bytes_and_every_one_is_accounted_for() {
         offset_of!(BlockIndex, routing_bucket),
     );
     println!(
-        "  address {address} + object_key {object_key} + component {component} + model_id {model} \
-         + flags {flags} = {} bytes of field in {} B",
-        address + object_key + component + model + flags,
+        "  address {address} + object_key {object_key} + model_id {model} \
+         + flags {flags} = {} bytes of field in {} B \
+         (a name on the entry would have added {component_when_it_was_a_field} more)",
+        address + object_key + model + flags,
         size_of::<BlockIndex>()
     );
 
     assert_eq!(1, model, "the model spelling is supposed to be one byte");
     assert_eq!(8, align_of::<BlockIndex>());
 
-    // THE RECONSTRUCTION. The three 8-aligned fields form the group; the model byte and the three
+    // THE RECONSTRUCTION. The 8-aligned fields form the group; the model byte and the three
     // flag bytes are the tail, and the tail is rounded once to the alignment.
-    let eight_aligned = address + object_key + component;
+    //
+    // TWO 8-ALIGNED FIELDS NOW, NOT THREE: `component` was the third and it is gone, which is the
+    // 56 -> 40 step. The reconstruction is what proves the arithmetic rather than the comment --
+    // if the field set and this sum part, it fails here.
+    let eight_aligned = address + object_key;
     let tail = model + flags;
     let round_up = |value: usize, to: usize| (value + to - 1) / to * to;
     assert_eq!(
@@ -1200,7 +1207,14 @@ fn the_entry_is_fifty_six_bytes_and_every_one_is_accounted_for() {
     // NOTHING BUT RUNNING IT COULD HAVE SAID SO. That sentence was already here for the 72 -> 64
     // step and it earned itself again: a scan for `const _: () = assert!(size_of...)` does not see
     // an `assert_eq!` in a test body, so this pin compiled clean and failed at run time.
-    assert_eq!(56, size_of::<BlockIndex>());
+    // FORTY NOW, AND THE SENTENCE ABOVE EARNED ITSELF A THIRD TIME. It was written for the
+    // 72 -> 64 step, repeated for 64 -> 56, and this is 56 -> 40: the RECONSTRUCTION above needed
+    // no change, which is the point of reconstructing rather than totalling, and this literal did.
+    // `cargo check` cannot see an `assert_eq!` in a test body, so the pin compiled clean and only
+    // running it said so.
+    assert_eq!(40, size_of::<BlockIndex>());
+    assert_ne!(39, size_of::<BlockIndex>());
+    assert_ne!(41, size_of::<BlockIndex>());
 
     // The slack, which is why every step here is sixteen bytes and not twelve.
     let slack = size_of::<BlockIndex>() - (eight_aligned + tail);
@@ -1443,7 +1457,7 @@ fn page_triples(engine: &TemporalEngine) -> Vec<(String, String, Option<String>,
             (
                 page.model_id.as_str().to_string(),
                 page.object_key.to_string(),
-                page.component.as_deref().map(str::to_string),
+                None::<String>,
                 page.address.block_slab_id(),
                 page.address.offset(),
             )
@@ -1485,7 +1499,6 @@ fn sample_entry() -> BlockIndex {
         routing_bucket: 7,
         object_key: Arc::from("k"),
         model_id: StoredModelKind::String,
-        component: Some(Arc::from("a")),
         address: crate::block_store::ElementEntry::from_parts(1, 2, 4, Some(5), Some(6)),
         dirty: true,
         deleted: false,
@@ -1665,7 +1678,7 @@ fn the_model_spelling_did_not_move_on_the_wire_and_the_entry_lost_three_steps_in
             "{label}: the spelling did not survive the round trip"
         );
         assert_eq!(page.object_key, decoded.object_key, "{label}: object_key moved");
-        assert_eq!(page.component, decoded.component, "{label}: component moved");
+        // No component on the entry, so there is no such field to survive a round trip.
         assert_eq!(page.dirty, decoded.dirty, "{label}: dirty moved");
         assert_eq!(page.deleted, decoded.deleted, "{label}: deleted moved");
         // NOT a stored field any more, and this is the ONLY address property this loop checks --
@@ -1695,15 +1708,24 @@ fn the_model_spelling_did_not_move_on_the_wire_and_the_entry_lost_three_steps_in
     // still present, because the index log packs positionally. See
     // `per_item_byte_budget::the_stored_form_moved_in_one_slot_and_the_version_stamp_pays_for_it`,
     // which is the tripwire for that and fired on this change.
+    // A FOURTH STEP JOINS THE CHAIN, so the last link is not asked to carry two of them.
+    //
+    // The chain was 88 -> 72 -> 64 -> `size_of`, with the final link asserted at EIGHT: the
+    // address shedding its object id. The entry then stopped naming its element, which is another
+    // sixteen, and the final link measured 24 -- so the assertion failed naming the right
+    // mechanism for the wrong arithmetic. The milestone the object id left it at is written down
+    // (56) and the new step gets its own link and its own assertion, which is what keeps each
+    // claim attributable to one change.
     let in_memory_before = 88usize;
     let after_the_spelling = 72usize;
     let after_the_address_narrowing = 64usize;
+    let after_shedding_the_object_id = 56usize;
     let in_memory_after = std::mem::size_of::<BlockIndex>();
     let spelling_wire_delta = 0i64;
     println!(
         "  in memory {in_memory_before} -> {after_the_spelling} -> {after_the_address_narrowing} \
-         -> {in_memory_after} B ({:.2}% in total), model spelling on the wire \
-         {spelling_wire_delta} B (0.00%)",
+         -> {after_shedding_the_object_id} -> {in_memory_after} B ({:.2}% in total), model \
+         spelling on the wire {spelling_wire_delta} B (0.00%)",
         100.0 * (in_memory_before - in_memory_after) as f64 / in_memory_before as f64
     );
     assert_eq!(
@@ -1720,10 +1742,18 @@ fn the_model_spelling_did_not_move_on_the_wire_and_the_entry_lost_three_steps_in
     );
     assert_eq!(
         8,
-        after_the_address_narrowing - in_memory_after,
+        after_the_address_narrowing - after_shedding_the_object_id,
         "shedding the address's object id is supposed to be eight bytes, and unlike the two \
          narrowings above it pays ALONE: it is a whole eight-byte field leaving the eight-aligned \
          group, not a field getting smaller inside it"
+    );
+    assert_eq!(
+        16,
+        after_shedding_the_object_id - in_memory_after,
+        "the entry giving up its element NAME is supposed to be sixteen bytes -- a fat optional \
+         pointer leaving the eight-aligned group whole, which is why it is a step of two words \
+         and not one word and some rounding. It pays alone for the same reason the object id did, \
+         and it is the largest single step in this chain."
     );
     assert_eq!(
         0, spelling_wire_delta,
@@ -1853,7 +1883,6 @@ mod tail_layout {
     /// assertion below pins against `BlockIndex`.
     pub(super) struct F0 {
         pub(super) object_key: Arc<str>,
-        pub(super) component: Option<Arc<str>>,
         pub(super) address: [u64; 2],
         pub(super) model: u8,
         pub(super) dirty: bool,
@@ -1862,7 +1891,6 @@ mod tail_layout {
     }
     pub(super) struct F1 {
         pub(super) object_key: Arc<str>,
-        pub(super) component: Option<Arc<str>>,
         pub(super) address: [u64; 2],
         pub(super) model: u8,
         pub(super) flags: PageFlags,

@@ -1665,7 +1665,7 @@ fn a_walk_of_the_flat_list_answers_in_handle_order_not_component_order() {
         for bucket in shard.bucket_index.bucket_map.values() {
             for (_handle, page) in bucket.block_index.iter() {
                 if &*page.object_key == key.as_str() {
-                    walked.push(page.component.as_deref().unwrap_or("").to_string());
+                    walked.push(String::new());
                 }
             }
         }

@@ -98,7 +98,6 @@ fn probe_page(object: &str, component: Option<&str>, slot: u64) -> BlockIndex {
         routing_bucket: 7,
         object_key: Arc::from(object),
         model_id: crate::engine::storage_bucket_internals::StoredModelKind::String,
-        component: component.map(Arc::from),
         address: ElementEntry::from_parts(1, slot * 64, 64, Some(slot), Some(slot)),
         dirty: false,
         deleted: false,
@@ -604,9 +603,9 @@ fn walk_bucket_index_strings(
             // The page's model spelling is one byte inline and a `&'static str`, so it holds no
             // shared allocation for this walk to find. The lookup's `by_model` head below still
             // does, and is still counted -- once, which is the point of the walk.
-            if let Some(component) = page.component.as_ref() {
-                bytes += arc_str_bytes(seen, component);
-            }
+            // The ENTRY holds no element name, so it has no third shared allocation for this
+            // walk to find. The lookup's `by_component` head below still has one and is still
+            // counted.
         }
     }
     for (model_id, object_key, refs) in bucket_index.object_block_lookup.iter() {

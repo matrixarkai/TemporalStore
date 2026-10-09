@@ -342,7 +342,9 @@ fn a_u16_ordinal_would_take_the_entry_from_sixty_four_to_forty_eight_and_a_u8_ad
     let entry_fields: Vec<(&'static str, usize, usize)> = vec![
         ("object_key", offset_of!(BlockIndex, object_key), size_of::<Arc<str>>()),
         ("model_id", offset_of!(BlockIndex, model_id), size_of::<StoredModelKind>()),
-        ("component", offset_of!(BlockIndex, component), size_of::<Option<Arc<str>>>()),
+        // The `component` row is gone with the field: sixteen bytes between `model_id` and
+        // `address`, and the whole of the 56 -> 40 step. The reconstruction assertion below is
+        // what keeps this list honest against the type.
         ("address", offset_of!(BlockIndex, address), size_of::<ElementEntry>()),
         ("dirty", offset_of!(BlockIndex, dirty), size_of::<bool>()),
         ("deleted", offset_of!(BlockIndex, deleted), size_of::<bool>()),

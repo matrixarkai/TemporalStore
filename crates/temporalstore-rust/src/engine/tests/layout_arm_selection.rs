@@ -268,14 +268,14 @@ fn population(engine: &TemporalEngine) -> Population {
             // object now, which is the fact that used to be worth counting.
             let id = entry.object_id(1);
             *out.by_object_id.entry(id).or_default() += 1;
-            if entry.component.is_none() {
-                *out.component_free_by_object_id.entry(id).or_default() += 1;
-            }
+            // EVERY page is component-free now -- an entry has no element name -- so this control
+            // group is the whole population rather than a subset of it. Kept because the CONTROL
+            // it feeds still has a subject: it compares grouping by the engine's object id against
+            // grouping by (kind, key), and those two can still disagree.
+            *out.component_free_by_object_id.entry(id).or_default() += 1;
             let kind_key = format!("{:?}\u{1}{}", entry.model_id, entry.object_key);
             *out.by_kind_key.entry(kind_key.clone()).or_default() += 1;
-            if entry.component.is_none() {
-                *out.component_free_by_kind_key.entry(kind_key).or_default() += 1;
-            }
+            *out.component_free_by_kind_key.entry(kind_key).or_default() += 1;
         }
     }
     out.pages_per_bucket.sort_unstable();

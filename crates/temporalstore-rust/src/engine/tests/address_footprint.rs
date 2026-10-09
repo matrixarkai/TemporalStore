@@ -2577,7 +2577,6 @@ fn two_buckets_holding_one_object_id_are_reported_as_one_object() {
                 routing_bucket: routing_bucket,
                 object_key: std::sync::Arc::from("one-key"),
                 model_id: crate::engine::storage_bucket_internals::StoredModelKind::String,
-                component: None,
                 address: ElementEntry::from_parts(1, offset, 64, Some(0), None),
                 dirty: false,
                 deleted: false,

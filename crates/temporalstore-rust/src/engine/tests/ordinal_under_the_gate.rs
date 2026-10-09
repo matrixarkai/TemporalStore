@@ -101,9 +101,8 @@ fn entry_rows(engine: &TemporalEngine, object_key: &str) -> Vec<String> {
                 continue;
             }
             rows.push(format!(
-                "deleted={} component={:?} slab={} off={} len={} block_id={:?}",
+                "deleted={} component=None slab={} off={} len={} block_id={:?}",
                 page.deleted,
-                page.component.as_deref(),
                 page.address.block_slab_id(),
                 page.address.offset(),
                 page.address.length(),
@@ -295,7 +294,6 @@ fn a_derivation_drops_the_entry_no_element_carries_any_more() {
             routing_bucket,
             object_key: std::sync::Arc::from("heal/set"),
             model_id: crate::engine::storage_bucket_internals::stored_model_kind("set"),
-            component: None,
             address: orphan,
             dirty: false,
             deleted: false,
@@ -661,10 +659,15 @@ fn named_hash_entries(engine: &TemporalEngine, key: &str) -> usize {
         .values()
         .flat_map(|bucket| bucket.block_index.values())
         .filter(|page| {
+            // THE `component.is_some()` TERM IS GONE and this counter is structurally zero. An
+            // entry has no element name, so "how many hash entries name a field" has one answer
+            // for every fixture. It is left as a counter rather than deleted because the arms
+            // below PRINT it as a denominator beside the ordinal they are really about; each of
+            // those is restated at its own assertion.
             !page.deleted
                 && page.model_id.as_str() == "hash"
                 && &*page.object_key == key
-                && page.component.is_some()
+                && false
         })
         .count()
 }

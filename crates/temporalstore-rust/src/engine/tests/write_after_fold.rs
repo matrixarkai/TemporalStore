@@ -20,10 +20,16 @@
 //!
 //! # THE THREE THINGS ASSERTED, AND WHY COUNTS ALONE WOULD NOT DO
 //!
-//!   1. ONE ENTRY PER DISTINCT PHYSICAL PAGE, and every entry carrying no component. Not "N
-//!      entries", which means the gate did not reach the write path; and the count is checked
-//!      against the number of distinct page ADDRESSES rather than against a constant, so a fixture
-//!      that happens to fold differently cannot make this vacuous.
+//!   1. ONE ENTRY PER DISTINCT PHYSICAL PAGE. Not "N entries", which means the collapse did not
+//!      reach the write path; and the count is checked against the number of distinct page
+//!      ADDRESSES rather than against a constant, so a fixture that happens to fold differently
+//!      cannot make this vacuous.
+//!
+//!      THIS USED TO READ "and every entry carrying no component", asserted as a `named` counter
+//!      beside each entry count. `BlockIndex` has no component field, so that half is held by the
+//!      TYPE now and the counters are gone -- see `entry_census` for what enforces it instead.
+//!      Each assertion that paired the two has been narrowed to the count, because pairing a live
+//!      number with a structural constant hides which half failed.
 //!   2. EVERY ELEMENT READS BACK, BY MEMBERSHIP AND NOT BY COUNT. This is the arm that catches the
 //!      dangerous repair: filing one entry per element with NO component makes every element of one
 //!      folded page share `(kind, object_key, component, address)`, so they collapse onto one
@@ -98,13 +104,27 @@ fn add(engine: &TemporalEngine, member: Vec<u8>) {
     assert!(response.status.ok, "write failed: {response:?}");
 }
 
-/// This object's live entries: how many, how many name an element, the distinct physical pages
+/// This object's live entries: how many, the distinct physical pages
 /// they resolve to, and the written key of each.
-fn entry_census(engine: &TemporalEngine) -> (usize, usize, std::collections::BTreeSet<(u64, u64, u64)>, Vec<String>) {
+fn entry_census(engine: &TemporalEngine) -> (usize, std::collections::BTreeSet<(u64, u64, u64)>, Vec<String>) {
     let shards = engine.shards.read().expect("engine lock poisoned");
     let shard = shards.get(&1).expect("shard 1 loaded");
     let mut live = 0usize;
-    let mut named = 0usize;
+    // THE `named` TERM IS GONE FROM THIS CENSUS, AND THE CLAIM IT CARRIED IS NOW STRUCTURAL.
+    //
+    // It counted entries whose `component` was `Some`, and the arms below asserted it was zero --
+    // "no live entry of any kind is filed under an element name". `BlockIndex` has no `component`
+    // field, so the count could only ever be zero and an assertion on it could only ever pass:
+    // nothing it observes could disagree, which is the definition of the vacuity this campaign
+    // keeps deleting rather than leaving as apparent coverage.
+    //
+    // WHAT ENFORCES THE CLAIM INSTEAD, so it is not merely dropped: `state.rs` pins
+    // `size_of::<BlockIndex>() == 40` with `!= 39 && != 41` beside it AND asserts the field sum
+    // equals the width -- zero slack. Re-adding a name to the entry costs eight bytes at minimum
+    // and sixteen for an `Option<Arc<str>>`, so it fails const-evaluation at the pin rather than
+    // being caught by a counter here. The `written` keys this census still collects are the
+    // second guard: `block_index_written_key` renders the stored spelling, and a name on an entry
+    // would show up in it.
     let mut pages = std::collections::BTreeSet::new();
     let mut written = Vec::new();
     for bucket in shard.bucket_index.bucket_map.values() {
@@ -113,9 +133,6 @@ fn entry_census(engine: &TemporalEngine) -> (usize, usize, std::collections::BTr
                 continue;
             }
             live += 1;
-            if page.component.is_some() {
-                named += 1;
-            }
             pages.insert((
                 page.address.block_slab_id(),
                 page.address.offset(),
@@ -125,7 +142,7 @@ fn entry_census(engine: &TemporalEngine) -> (usize, usize, std::collections::BTr
         }
     }
     written.sort();
-    (live, named, pages, written)
+    (live, pages, written)
 }
 
 /// What the durable model map holds -- the authority for existence, independent of any entry.
@@ -176,9 +193,9 @@ fn a_write_after_a_fold_files_the_same_entry_the_projection_would() {
     engine
         .compact_shard_blocks(1)
         .expect("the fold round must succeed");
-    let (folded_live, folded_named, folded_pages, _) = entry_census(&engine);
+    let (folded_live, folded_pages, _) = entry_census(&engine);
     println!(
-        "\n=== after the fold: {folded_live} live entr(ies), {folded_named} naming an element, \
+        "\n=== after the fold: {folded_live} live entr(ies), \
          {} distinct page(s)",
         folded_pages.len()
     );
@@ -192,21 +209,28 @@ fn a_write_after_a_fold_files_the_same_entry_the_projection_would() {
          to share one and this test has no collapse to observe",
         folded_pages.len()
     );
+    // RESTATED TO THE ONE TERM THAT CAN STILL VARY. This was `(1, 0) == (folded_live,
+    // folded_named)`, pairing the entry count with the number of entries naming an element. The
+    // second term is structurally zero -- `BlockIndex` has no name to carry -- so pairing it in
+    // weakened the assertion rather than strengthening it: a wrong entry count and a constant zero
+    // read as one failure, and the zero half could never contribute one. The count stands alone,
+    // compared against the distinct page count asserted just above it rather than against a
+    // literal.
     assert_eq!(
-        (1usize, 0usize),
-        (folded_live, folded_named),
-        "after the fold the projection filed {folded_live} entr(ies) of which {folded_named} name \
-         an element; the gated projection must file exactly one per page, naming none"
+        1, folded_live,
+        "after the fold the projection filed {folded_live} entr(ies) over {} distinct page(s); it \
+         must file exactly one per page",
+        folded_pages.len()
     );
 
     // ---- NOW A WRITE AFTER THAT DERIVATION. This is the only thing that can see the two
     //      filers disagree: it is the write path filing beside what the projection just filed. ----
     add(&engine, member_bytes(FIRST_BATCH));
-    let (live, named, pages, written) = entry_census(&engine);
+    let (live, pages, written) = entry_census(&engine);
     let durable = durable_members(&engine);
     let listed = listed_members(&engine);
     println!(
-        "  after one more write: {live} live entr(ies), {named} naming an element, \
+        "  after one more write: {live} live entr(ies), \
          {} distinct page(s); durable holds {}, the listing serves {}",
         pages.len(),
         durable.len(),
@@ -243,12 +267,17 @@ fn a_write_after_a_fold_files_the_same_entry_the_projection_would() {
          rather than add one of its own",
         pages.len()
     );
-    assert_eq!(
-        0, named,
-        "{named} of {live} entries name an element after a write following a derivation, so the \
-         write path is still filing per-element identity while the projection files per-page -- \
-         the two routes then spell the same page's handle differently"
-    );
+    // THE `named == 0` ARM IS DELETED, AND ITS SUBJECT IS STILL GUARDED -- by arm 3 below.
+    //
+    // It asserted that no entry named an element after a write following a derivation, to catch
+    // the write path filing per-element identity while the projection files per-page. An entry has
+    // no field for an element name, so this could only pass.
+    //
+    // WHAT THE ARM WAS REALLY FOR SURVIVES INTACT: the consequence it was watching for is that
+    // "the two routes then spell the same page's handle differently", and the WRITTEN KEY
+    // comparison further down asserts exactly that, by comparing the write path's keys against a
+    // re-derivation's for the same pages. That arm can still fail, and it fails on the thing that
+    // matters rather than on the mechanism that used to produce it.
 
     // ---- 2. EVERY ELEMENT READS BACK, BY MEMBERSHIP. ----
     //
@@ -270,9 +299,9 @@ fn a_write_after_a_fold_files_the_same_entry_the_projection_would() {
     // `block_ref_key` is stored inside the lookup refs, so two routes that spell it differently
     // file a page under a handle the other will never compute. Re-derive and compare the keys.
     rederive(&engine);
-    let (dlive, dnamed, dpages, derived_written) = entry_census(&engine);
+    let (dlive, dpages, derived_written) = entry_census(&engine);
     println!(
-        "  after a re-derivation: {dlive} live entr(ies), {dnamed} naming an element, \
+        "  after a re-derivation: {dlive} live entr(ies), \
          {} distinct page(s)",
         dpages.len()
     );
@@ -315,7 +344,7 @@ fn a_rewrite_after_a_fold_leaves_one_entry_per_page_today() {
     engine
         .compact_shard_blocks(1)
         .expect("the fold round must succeed");
-    let (_, _, folded_pages, _) = entry_census(&engine);
+    let (_, folded_pages, _) = entry_census(&engine);
     // FLOOR: the fixture folded, or "one entry per page" below is trivially true.
     assert_eq!(
         1,
@@ -326,11 +355,11 @@ fn a_rewrite_after_a_fold_leaves_one_entry_per_page_today() {
 
     // REWRITE a member that is already on the folded page.
     add(&engine, member_bytes(0));
-    let (live, named, pages, _) = entry_census(&engine);
+    let (live, pages, _) = entry_census(&engine);
     let durable = durable_members(&engine);
     let listed = listed_members(&engine);
     println!(
-        "\n=== rewrite after a fold: {live} live entr(ies), {named} naming an element, \
+        "\n=== rewrite after a fold: {live} live entr(ies), \
          {} distinct page(s); durable {}, listing serves {}",
         pages.len(),
         durable.len(),
@@ -393,11 +422,10 @@ fn a_component_less_kind_rewritten_still_resolves_to_one_page() {
         assert!(response.status.ok, "write failed: {response:?}");
     }
 
-    let (live, named, pages) = {
+    let (live, pages) = {
         let shards = engine.shards.read().expect("engine lock poisoned");
         let shard = shards.get(&1).expect("shard 1 loaded");
         let mut live = 0usize;
-        let mut named = 0usize;
         let mut pages = std::collections::BTreeSet::new();
         for bucket in shard.bucket_index.bucket_map.values() {
             for page in bucket.block_index.values() {
@@ -405,9 +433,6 @@ fn a_component_less_kind_rewritten_still_resolves_to_one_page() {
                     continue;
                 }
                 live += 1;
-                if page.component.is_some() {
-                    named += 1;
-                }
                 pages.insert((
                     page.address.block_slab_id(),
                     page.address.offset(),
@@ -415,10 +440,10 @@ fn a_component_less_kind_rewritten_still_resolves_to_one_page() {
                 ));
             }
         }
-        (live, named, pages)
+        (live, pages)
     };
     println!(
-        "  a string rewritten 3 times: {live} live entr(ies), {named} naming an element, \
+        "  a string rewritten 3 times: {live} live entr(ies), \
          {} distinct page(s)",
         pages.len()
     );
@@ -428,11 +453,14 @@ fn a_component_less_kind_rewritten_still_resolves_to_one_page() {
         live > 0,
         "the string has no live entries, so the one-entry claim below would hold over nothing"
     );
-    assert_eq!(
-        0, named,
-        "a string entry names an element, which contradicts the premise that this kind is \
-         component-less and makes it the wrong control for the repair's condition"
-    );
+    // THE CONTROL'S PREMISE IS NOW HELD BY THE TYPE, NOT BY THIS ASSERTION.
+    //
+    // It read `0 == named`, on the grounds that a string entry naming an element "makes it the
+    // wrong control for the repair's condition". No entry of any kind can name an element, so the
+    // premise holds for every kind by construction and this could only pass. What makes `string`
+    // the right control here is the OTHER half, asserted below: it converges on the OBJECT KEY
+    // rather than on the page, so three rewrites leave ONE live entry. That is a number this
+    // fixture can get wrong.
     assert_eq!(
         1, live,
         "{live} live entries for a string rewritten three times, resolving to {} page(s). ONE is \
@@ -647,7 +675,7 @@ fn a_gated_removal_leaves_every_other_member_whole_across_a_reload() {
 
         // FLOOR: THE MEMBERS SHARE ONE PAGE. Without the fold each is its own page, the gated arm
         // is not what runs, and this test would be about the ungated path wearing a gated label.
-        let (_, _, folded_pages, _) = entry_census(&engine);
+        let (_, folded_pages, _) = entry_census(&engine);
         assert_eq!(
             1,
             folded_pages.len(),
@@ -746,7 +774,7 @@ fn gated_removals_file_one_tombstone_per_distinct_element_and_do_not_accumulate(
         .expect("the fold round must succeed");
 
     // FLOOR: one page, so the gated arm is what runs.
-    let (_, _, folded_pages, _) = entry_census(&engine);
+    let (_, folded_pages, _) = entry_census(&engine);
     assert_eq!(1, folded_pages.len(), "the fixture did not fold");
 
     // THE SAME ELEMENT REMOVED SEVERAL TIMES must not file several tombstones: only the first
@@ -826,7 +854,7 @@ fn a_rewrite_off_a_page_the_element_was_alone_on_retires_that_pages_entry() {
     add(&engine, member_bytes(1));
 
     let before = member_page(&engine, &member_bytes(0));
-    let (live_before, _, pages_before, _) = entry_census(&engine);
+    let (live_before, pages_before, _) = entry_census(&engine);
     // FLOOR 1: each member is on its OWN page, or there is no alone-on-a-page case to rewrite off
     // and this test would be measuring the fold arm's situation instead.
     assert_eq!(
@@ -852,12 +880,12 @@ fn a_rewrite_off_a_page_the_element_was_alone_on_retires_that_pages_entry() {
          entry it supersedes and this test asserts nothing about a vacated page"
     );
 
-    let (live, named, pages, _) = entry_census(&engine);
+    let (live, pages, _) = entry_census(&engine);
     let durable = durable_members(&engine);
     let listed = listed_members(&engine);
     println!(
-        "\n=== rewrite off a page the element was alone on: {live} live entr(ies), {named} naming \
-         an element, {} distinct page(s); vacated {before:?} -> {after:?}; durable {}, listing \
+        "\n=== rewrite off a page the element was alone on: {live} live entr(ies), \
+         {} distinct page(s); vacated {before:?} -> {after:?}; durable {}, listing \
          serves {}",
         pages.len(),
         durable.len(),

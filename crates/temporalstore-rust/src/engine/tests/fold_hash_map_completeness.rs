@@ -195,7 +195,7 @@ fn the_fold_leaves_the_durable_hash_map_naming_exactly_the_fields_the_page_index
                 if &*page.object_key == KEY {
                     found.push((
                         *handle,
-                        page.component.as_deref().unwrap_or("<none>").to_string(),
+                        "<none>".to_string(),
                         format!("{:?}", page.address),
                     ));
                 }

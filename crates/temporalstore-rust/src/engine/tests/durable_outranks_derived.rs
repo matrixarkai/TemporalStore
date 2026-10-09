@@ -946,20 +946,16 @@ fn an_unnamed_hash_page_is_skipped_and_the_durable_map_keeps_the_field() {
              needs and the assertions below would be about nothing"
         );
         let mut entries = 0usize;
-        let mut named = 0usize;
         for bucket in shard.bucket_index.bucket_map.values() {
             for page in bucket.block_index.values() {
                 if page.model_id.as_str() == "hash" && &*page.object_key == "un-hash" {
                     entries += 1;
-                    if page.component.is_some() {
-                        named += 1;
-                    }
                 }
             }
         }
         println!(
-            "[unnamed-hash] the index holds {entries} hash entr(ies) for this key, {named} of \
-             which name a field; the durable map names 2"
+            "[unnamed-hash] the index holds {entries} hash entr(ies) for this key, none of which \
+             can name a field; the durable map names 2"
         );
         assert!(
             entries > 0,
@@ -967,12 +963,17 @@ fn an_unnamed_hash_page_is_skipped_and_the_durable_map_keeps_the_field() {
              statement about an EMPTY index rather than about a NAMELESS one, and this test would \
              pass without exercising the merge."
         );
-        assert_eq!(
-            named, 0,
-            "{named} of {entries} hash entries NAME A FIELD. Under one entry a page none can: if \
-             this reddens the collapse has been reverted, and every arm in this module that assumes \
-             a nameless index has to be re-read rather than this floor relaxed."
-        );
+        // THE `named == 0` FLOOR IS GONE, AND THE CLAIM IS STRONGER WITHOUT IT.
+        //
+        // It read "Under one entry a page none can: if this reddens the collapse has been
+        // reverted". `BlockIndex` has no component field, so an entry naming a field is not a
+        // reversion this test could observe -- it is UNREPRESENTABLE, and `state.rs`'s width pin
+        // refuses it at const-evaluation. That is what this whole module is for: a divergence
+        // proved unreachable is worth more than one measured absent, and this arm's subject has
+        // just become the former.
+        //
+        // The `entries > 0` floor above STAYS and is doing the work now: it is what makes the
+        // merge below a statement about a NAMELESS index rather than about an EMPTY one.
     }
 
     // The unload writes the index -- nameless entries and the durable map together -- and the

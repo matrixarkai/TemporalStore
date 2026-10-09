@@ -71,12 +71,11 @@ fn member_bytes(index: usize) -> Vec<u8> {
 }
 
 /// Live pages, live entries, and entries carrying a component, for one set object.
-fn pages_entries_named(engine: &TemporalEngine, object_key: &str) -> (usize, usize, usize) {
+fn pages_and_entries(engine: &TemporalEngine, object_key: &str) -> (usize, usize) {
     let shards = engine.shards.read().expect("engine lock poisoned");
     let shard = shards.get(&1).expect("shard 1 loaded");
     let mut pages = std::collections::BTreeSet::new();
     let mut entries = 0usize;
-    let mut named = 0usize;
     for bucket in shard.bucket_index.bucket_map.values() {
         for page in bucket.block_index.values() {
             if page.model_id.as_str() != "set"
@@ -86,9 +85,6 @@ fn pages_entries_named(engine: &TemporalEngine, object_key: &str) -> (usize, usi
                 continue;
             }
             entries += 1;
-            if page.component.is_some() {
-                named += 1;
-            }
             pages.insert((
                 page.address.block_slab_id(),
                 page.address.offset(),
@@ -96,18 +92,20 @@ fn pages_entries_named(engine: &TemporalEngine, object_key: &str) -> (usize, usi
             ));
         }
     }
-    (pages.len(), entries, named)
+    (pages.len(), entries)
 }
 
-/// Run a whole sweep with the gate set BEFORE the first write, and report what survived it.
-fn sweep_under(gate_on: bool) -> (usize, usize, usize, u64, u64) {
+/// Run a whole sweep and report what survived it.
+///
+/// THE `gate_on` PARAMETER IS GONE, AND IT HAD ALREADY STOPPED DOING ANYTHING. It selected between
+/// `if gate_on { } else { }` -- two EMPTY branches, left behind when the gate itself was retired --
+/// so the two rows this test printed were two runs of identical code, and the "gate off" row's
+/// expectations (one entry per element, every one naming its element) described a path that no
+/// longer existed. A comparison between two runs of the same code is the shape this campaign calls
+/// a tautology, and it was also asserting a false half.
+fn sweep_once() -> (usize, usize, u64, u64) {
     let dir = tempfile::tempdir().expect("tempdir");
     let engine = engine_on(dir.path());
-    // BOTH DIRECTIONS AS VALUES: an unset variable now selects the GATED path.
-    if gate_on {
-    } else {
-    }
-    // The gate is set before `load_shard`, which is itself one of the projection's consumers.
     load_on(&engine);
 
     for index in 0..MEMBERS {
@@ -126,85 +124,54 @@ fn sweep_under(gate_on: bool) -> (usize, usize, usize, u64, u64) {
         .compact_shard_blocks(1)
         .expect("the sweep must succeed");
     let (batches, folded) = crate::engine::container_batch_counts();
-    let (pages, entries, named) = pages_entries_named(&engine, "sweep/set");
+    let (pages, entries) = pages_and_entries(&engine, "sweep/set");
     drop(engine);
-    (pages, entries, named, batches, folded)
+    (pages, entries, batches, folded)
 }
 
 #[test]
 fn a_whole_sweep_leaves_the_collapsed_entries_collapsed() {
-    println!("\n=== after a WHOLE sweep, gate set before the first write ===");
-    println!(
-        "  {:>5}  {:>6}  {:>8}  {:>7}  {:>8}  {:>7}",
-        "gate", "pages", "entries", "named", "batches", "folded"
+    println!("\n=== after a WHOLE sweep ===");
+
+    let (pages, entries, batches, folded) = sweep_once();
+    println!("  pages {pages}  entries {entries}  batches {batches}  folded {folded}");
+
+    // FLOORS, ON THE REACHING OF THE PATH. `entries == pages` is satisfied by 0 == 0, so a sweep
+    // that lost the object entirely would pass the claim below without these.
+    assert!(
+        batches > 0 && folded > 0,
+        "the sweep wrote {batches} batch(es) folding {folded} page(s), so it never reached the \
+         fold and the numbers above say nothing about what a sweep leaves behind"
+    );
+    assert!(
+        pages > 0 && entries > 0,
+        "{pages} page(s) and {entries} entr(ies) after the sweep, so the object did not survive it"
+    );
+    // AND THE FOLD ACTUALLY SHARED A PAGE, which is what makes one-entry-a-page a smaller number
+    // than one-entry-an-element rather than the same number by coincidence. Without this, a
+    // fixture whose members never folded would satisfy `entries == pages` with one of each.
+    assert!(
+        pages < MEMBERS,
+        "the {MEMBERS} members resolve to {pages} page(s) after the sweep, so nothing folded and \
+         `entries == pages` below would hold with or without the collapse"
     );
 
-    let mut rows: Vec<(&str, usize, usize, usize, u64, u64)> = Vec::new();
-    for (label, gate_on) in [("off", false), ("on", true)] {
-        let (pages, entries, named, batches, folded) = sweep_under(gate_on);
-        println!(
-            "  {label:>5}  {pages:>6}  {entries:>8}  {named:>7}  {batches:>8}  {folded:>7}"
-        );
-        rows.push((label, pages, entries, named, batches, folded));
-    }
-
-    // FLOORS, ON EACH ARM, ON THE REACHING OF THE PATH.
-    for (label, pages, entries, _named, batches, folded) in &rows {
-        assert!(
-            *batches > 0 && *folded > 0,
-            "gate {label}: the sweep wrote {batches} batch(es) folding {folded} page(s), so it \
-             never reached the fold and the row above says nothing about what a sweep leaves behind"
-        );
-        assert!(
-            *pages > 0 && *entries > 0,
-            "gate {label}: {pages} page(s) and {entries} entr(ies) after the sweep, so the object \
-             did not survive it at all and the comparison below is between absences"
-        );
-    }
-
-    let off = &rows[0];
-    let on = &rows[1];
-
-    // THE TWO SWEEPS AGREE ON WHICH PAGES ARE LIVE. The gate may change how many entries name a
-    // page, never the live set.
+    // THE CLAIM: THE ENTRIES STAY COLLAPSED **THROUGH** THE SWEEP, including its two internal
+    // rebuilds. The derivation is the keystone -- a filing change cannot be undone by the
+    // re-derivation, because the re-derivation is the same projection.
     assert_eq!(
-        off.1, on.1,
-        "the sweeps disagree about how many pages are live ({} off, {} on)",
-        off.1, on.1
-    );
-
-    // UNGATED: the sweep leaves one entry per element, every one named. This is the default path.
-    assert_eq!(
-        MEMBERS, off.2,
-        "gate off: the sweep left {} entries for {MEMBERS} members. The default path must be \
-         unchanged by this series at every step",
-        off.2
-    );
-    assert_eq!(
-        MEMBERS, off.3,
-        "gate off: {} of {} ungated entries carry a component; all of them must",
-        off.3, off.2
-    );
-
-    // GATED: the entries stay collapsed THROUGH the sweep, including its two internal rebuilds.
-    // This is the claim -- that the derivation is the keystone and a filing change cannot be
-    // undone by the re-derivation, because the re-derivation is the same projection.
-    assert_eq!(
-        on.1, on.2,
-        "gate on: the sweep left {} entries for {} page(s). A sweep calls \
+        pages, entries,
+        "the sweep left {entries} entries for {pages} page(s). A sweep calls \
          `rebuild_bucket_first_index` twice, so if the rebuild re-derived one entry per element \
          the collapse would be undone before the sweep returned -- which is exactly the fight this \
-         step exists to rule out",
-        on.2, on.1
+         test exists to rule out"
     );
-    assert_eq!(
-        0, on.3,
-        "gate on: {} entries still carry a component after the sweep. An entry that names a page \
-         needs no element name, so a component here means a rebuild put one back",
-        on.3
-    );
-    println!(
-        "  => entries after the sweep: {} off, {} on, for {} page(s)",
-        off.2, on.2, on.1
-    );
+
+    // THE SECOND HALF OF THIS TEST USED TO BE A `named` COUNTER asserted to zero: no entry still
+    // carrying an element name after the sweep, "a component here means a rebuild put one back".
+    // `BlockIndex` has no component field, so a rebuild has nothing to put back and the counter
+    // could only ever read zero. It is enforced by `state.rs`'s pin instead --
+    // `size_of::<BlockIndex>() == 40` with `!= 39 && != 41` and a field sum equal to the width, so
+    // re-adding a name fails const-evaluation rather than being counted here.
+    println!("  => entries after the sweep: {entries} for {pages} page(s)");
 }

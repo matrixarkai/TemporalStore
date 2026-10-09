@@ -491,7 +491,11 @@ pub(super) fn storage_physical_index_report(
             let already_present = bucket.block_indexes.iter().any(|existing| {
                 existing.object_key.as_str() == page.object_key.as_ref()
                     && existing.model_id.as_str() == page.model_id.as_str()
-                    && existing.component.as_deref() == page.component.as_deref()
+                    // THE COMPONENT TERM IS DROPPED AS A TAUTOLOGY. It compared
+                    // `existing.component` against `page.component`; the report row's component
+                    // is filled from an index entry and an index entry has no element name, so
+                    // both sides were `None` for every row and the term decided nothing. What
+                    // identifies a row here is (key, kind, slab, offset) and that has not moved.
                     && existing.block_slab_id == page.address.block_slab_id()
                     && existing.offset == page.address.offset()
             });
@@ -501,7 +505,12 @@ pub(super) fn storage_physical_index_report(
             let mut block_index = StoragePhysicalBlockIndex {
                 object_key: page.object_key.clone().to_string(),
                 model_id: page.model_id.clone().to_string(),
-                component: page.component.clone().map(|value| value.to_string()),
+                // `None`, AND THE REPORT'S SLOT IS KEPT. `StoragePhysicalBlockIndex::component` is
+                // a PUBLIC field of a serialized report, so retiring it is a schema change and not
+                // part of a width step; it is filled from an index entry, and an index entry names
+                // a page rather than an element, so the value it carried was already `None` for
+                // every row this arm produced.
+                component: None,
                 routing_bucket: *routing_bucket,
                 block_slab_id: page.address.block_slab_id(),
                 offset: page.address.offset(),

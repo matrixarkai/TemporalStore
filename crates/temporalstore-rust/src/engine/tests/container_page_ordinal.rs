@@ -144,7 +144,7 @@ fn pages_of(engine: &TemporalEngine, kind: &str, key: &str) -> Vec<(Option<Strin
             }
             if page.model_id.as_str() == kind && &*page.object_key == key {
                 held.push((
-                    page.component.as_deref().map(str::to_string),
+                    None::<String>,
                     page.address.block_id(),
                 ));
             }

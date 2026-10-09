@@ -190,11 +190,14 @@ fn zset_pages(engine: &TemporalEngine) -> Vec<ZsetBlock> {
             pages.push(ZsetBlock {
                 routing_bucket: *routing_bucket,
                 object_key: page.object_key.to_string(),
-                component: page
-                    .component
-                    .as_deref()
-                    .expect("a zset page is named by its component")
-                    .to_string(),
+                // THIS `expect` WAS THE MODULE'S OWN CONTROL AND IT CANNOT HOLD. It read
+                // `page.component.as_deref().expect("a zset page is named by its component")`.
+                // A zset page entry names no element -- that is the collapse -- so the walk
+                // panicked rather than failing an assertion. The redundancy this module measures
+                // between a component and the page payload is what the collapse DELETED, so the
+                // field is carried as the empty string and the arms that priced that redundancy
+                // are restated where they are read.
+                component: String::new(),
                 address: page.address.clone(),
                 dirty: page.dirty,
                 deleted: page.deleted,
@@ -339,7 +342,10 @@ fn every_byte_of_a_zset_members_index_shadow_is_accounted_for() {
             offset_of!(BlockIndex, model_id),
             size_of::<crate::engine::storage_bucket_internals::StoredModelKind>(),
         ),
-        ("component", offset_of!(BlockIndex, component), size_of::<Option<std::sync::Arc<str>>>()),
+        // THE `component` ROW IS GONE WITH THE FIELD -- sixteen bytes of fat pointer between
+        // `model_id` and `address`, which is the whole of the 56 -> 40 step. The reconstruction
+        // assertion below is what makes removing the row safe: a row that no longer matches a
+        // field fails there rather than silently describing a type that moved.
         ("address", offset_of!(BlockIndex, address), size_of::<crate::block_store::ElementEntry>()),
         ("dirty", offset_of!(BlockIndex, dirty), size_of::<bool>()),
         ("deleted", offset_of!(BlockIndex, deleted), size_of::<bool>()),

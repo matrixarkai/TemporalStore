@@ -4351,7 +4351,7 @@ fn deep_compare_the_index_a_reconstruct_produces() {
                     "{routing_bucket}|{field_key}|{}|{}|{:?}|{}|{}|{}|{}|{}|{}|{}|{}",
                     page.object_key,
                     page.model_id,
-                    page.component,
+                    None::<std::sync::Arc<str>>,
                     page.object_id(1),
                     page.address.block_slab_id(),
                     page.address.offset(),

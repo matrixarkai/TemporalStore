@@ -188,7 +188,6 @@ fn entry_named(object_key: &str, component: Option<&str>) -> BlockIndex {
         routing_bucket: 7,
         object_key: Arc::from(object_key),
         model_id: FIXTURE_KIND,
-        component: component.map(Arc::from),
         address: ElementEntry::from_parts(9, 4_096, 96, Some(7), Some(object_id)),
         dirty: false,
         deleted: false,
@@ -513,9 +512,24 @@ fn the_whole_object_read_path_asks_for_every_component_of_one_key() {
             FIXTURE_KIND.as_str(),
             &object_key,
         );
-        let components: BTreeSet<Option<String>> = pairs
+        // WHAT SEPARATES THE ELEMENTS OF THE ANSWER IS THE ADDRESS NOW, NOT A NAME.
+        //
+        // This collected the pairs' COMPONENTS and asserted there were `MEMBERS_PER_KEY` distinct
+        // ones -- "the COMPONENT is what separates the elements; if these collapsed too, the reader
+        // would have no way to tell one element of the answer from another". The pair's first slot
+        // is dead on both of `bucket_index_component_block_addresses`'s arms, so that set is now a
+        // single `None` for every key and the assertion could never pass again.
+        //
+        // THE CLAIM IS NOT ABANDONED, IT MOVED TO THE TERM THAT STILL CARRIES IT. The reader is
+        // handed a KEY and answers a page per element; what distinguishes those pages is the
+        // ADDRESS each one is at, and that is counted here instead. It is a claim this can still
+        // get wrong -- a filing that collapsed two elements onto one page, or a reader that
+        // returned the same address twice, drops this count below the member count -- which is
+        // exactly the failure the component set was watching for, observed through the term that
+        // still exists.
+        let separators: BTreeSet<String> = pairs
             .iter()
-            .map(|(component, _)| component.as_ref().map(|name| name.to_string()))
+            .map(|(_, address)| format!("{address:?}"))
             .collect();
         // THE IDS THESE PAIRS RESOLVE TO. One per KEY now, not one per page -- which is why
         // the loop below counts them rather than the components: the component set is what the
@@ -525,9 +539,9 @@ fn the_whole_object_read_path_asks_for_every_component_of_one_key() {
             .map(|_| stable_block_object_id(1, FIXTURE_KIND.as_str(), &object_key))
             .collect();
         println!(
-            "  {object_key:<6} pairs={:<4} distinct components={:<4} distinct ids={:<4}",
+            "  {object_key:<6} pairs={:<4} distinct addresses={:<4} distinct ids={:<4}",
             pairs.len(),
-            components.len(),
+            separators.len(),
             ids.len()
         );
         assert_eq!(
@@ -553,18 +567,18 @@ fn the_whole_object_read_path_asks_for_every_component_of_one_key() {
         );
         assert_eq!(
             MEMBERS_PER_KEY,
-            components.len(),
-            "{object_key} answered {} distinct components for {} pages. The COMPONENT is what \
-             separates the elements -- if these collapsed too, the reader would have no way to \
-             tell one element of the answer from another",
-            components.len(),
+            separators.len(),
+            "{object_key} answered {} distinct ADDRESSES for {} pages. The address is what \
+             separates the elements of this answer now -- if these collapsed, the reader would \
+             have no way to tell one element of the answer from another",
+            separators.len(),
             pairs.len()
         );
         assert!(
-            components.len() > ids.len(),
-            "{object_key}: {} components against {} ids. The whole reason this reader takes the \
-             KEY and not an id is that the id is coarser than the answer",
-            components.len(),
+            separators.len() > ids.len(),
+            "{object_key}: {} addresses against {} ids. The whole reason this reader takes the KEY \
+             and not an id is that the id is coarser than the answer",
+            separators.len(),
             ids.len()
         );
         answered += 1;
@@ -628,7 +642,9 @@ fn the_entry_is_unchanged_and_the_nodes_duplicated_slot_id_is_worth_nothing() {
     let widths = [
         ("object_key", field_width(&sample.object_key), offset_of!(BlockIndex, object_key)),
         ("model_id", field_width(&sample.model_id), offset_of!(BlockIndex, model_id)),
-        ("component", field_width(&sample.component), offset_of!(BlockIndex, component)),
+        // The `component` row is gone with the field. `field_width` infers from the field it is
+        // handed, so a row for a field that does not exist cannot be written at all -- which is
+        // the property this list was built for.
         ("address", field_width(&sample.address), offset_of!(BlockIndex, address)),
         ("dirty", field_width(&sample.dirty), offset_of!(BlockIndex, dirty)),
         ("deleted", field_width(&sample.deleted), offset_of!(BlockIndex, deleted)),
@@ -696,10 +712,24 @@ fn the_entry_is_unchanged_and_the_nodes_duplicated_slot_id_is_worth_nothing() {
     );
 
     // --- THE NODE, RECONSTRUCTED, so the tail arithmetic below is about this structure. ---
+    //
+    // A SIXTH BUCKET-NODE DECOMPOSITION THE TOMBSTONE WORD DID NOT REACH, AND IT WAS ALREADY RED.
+    //
+    // `BucketNode::tombstone_elements` was missing from this sum. The node is 96 B and this
+    // reconstructed to 88, so the assertion below failed with "the node is 96 B and its fields
+    // reconstruct to 88 B" -- and it failed on this branch BEFORE the entry stopped naming its
+    // element, because nothing here reads `BlockIndex`: `BlockIndexMap` holds the entry behind a
+    // pointer and is 24 bytes whatever the entry measures. So this is not fallout from the width
+    // step, it is a decomposition the tombstone structure's own restatement pass missed. Five
+    // decompositions were restated for it and a sixth was recorded as missed; this is a seventh.
+    //
+    // ADDED AS A TERM READ OFF THE TYPE, not as a literal 8, so a structure that stops being one
+    // indirect word fails here rather than passing on a stale number.
     let node_eight_aligned = size_of::<BucketTtl>()
         + 3 * size_of::<u64>()
         + size_of::<ObjectIndex>()
         + size_of::<DeletedObjectIndex>()
+        + size_of::<crate::engine::state::TombstoneElements>()
         + size_of::<BlockIndexMap>();
     let node_tail = size_of::<u32>() + size_of::<BucketLayoutState>() + size_of::<BucketFlags>();
     let node_tail_rounded = node_tail.div_ceil(8) * 8;

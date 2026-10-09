@@ -377,7 +377,7 @@ fn pages_of(engine: &TemporalEngine, kind: &str, key: &str) -> Vec<(Option<Strin
             }
             if page.model_id.as_str() == kind && &*page.object_key == key {
                 held.push((
-                    page.component.as_deref().map(str::to_string),
+                    None::<String>,
                     page.address.block_id(),
                 ));
             }
@@ -1681,7 +1681,7 @@ fn component_census(engine: &TemporalEngine) -> Vec<(String, String, Option<usiz
             rows.push((
                 page.model_id.as_str().to_string(),
                 page.object_key.to_string(),
-                page.component.as_deref().map(str::len),
+                None::<usize>,
             ));
         }
     }
@@ -2445,11 +2445,25 @@ fn the_component_ordering_property_is_consumed_by_no_reader() {
 ///   * So on that path the component is the only copy of the member, which is exactly what #1989's
 ///     `an_element_the_durable_map_does_not_hold_still_comes_back_from_its_name` exists to protect.
 ///
-/// # THE EXPERIMENT, WHICH IS THAT TEST'S FIXTURE WITH THE NAME MADE ORDINAL-SHAPED
+/// # THE EXPERIMENT NO LONGER HAS TO MANUFACTURE ITS STATE, AND THE PROPOSAL IS SUPERSEDED
 ///
-/// Two zset members. One is dropped from the durable map only -- the shape a fold produces. Then its
-/// page entry's component is rewritten to a SIXTEEN-CHARACTER ordinal spelling, which is what a 2-byte
-/// inline page id would leave behind: a name that identifies the page and carries no member. Reload.
+/// It read: "Two zset members. One is dropped from the durable map only -- the shape a fold
+/// produces. Then its page entry's component is rewritten to a SIXTEEN-CHARACTER ordinal spelling,
+/// which is what a 2-byte inline page id would leave behind: a name that identifies the page and
+/// carries no member. Reload."
+///
+/// THE SECOND STEP IS GONE. `BlockIndex` has no component field, so an entry already carries no
+/// member name -- there is nothing to overwrite and no width to make it. The fixture drops the
+/// member from the durable map and reloads, which is the whole of the shape a fold produces.
+///
+/// AND THE QUESTION IT WAS PRICING DOES NOT ARISE. The experiment asked whether NARROWING the name
+/// from sixteen bytes to two was safe, and answered no. The name was not narrowed, it was removed:
+/// `state.rs` pins the entry at 40 bytes against the 56 it was, so all sixteen bytes a page came
+/// back and there is no two-byte residue whose safety has to be argued.
+///
+/// WHAT THE ARM STILL ASSERTS, UNCHANGED: the dropped member does not come back and the untouched
+/// one does. That was the stop condition against the ordinal; it is now a measurement of the
+/// shipped index, and it is the same claim `durable_outranks_derived` holds from the other side.
 ///
 ///   * The untouched member comes back -- the control, so a total loss cannot pass as this finding.
 ///   * The member whose name became an ordinal **does not**, and cannot: the reconcile's zset arm
@@ -2568,11 +2582,11 @@ fn an_ordinal_loses_the_member_the_fold_delivers_without_a_durable_entry() {
         "DENOMINATOR: the fixture did not file two pages"
     );
 
-    // The shape a fold produces for ONE element: a page entry with no durable map entry. `doomed`'s
-    // CURRENT, real component is found by this name -- `zset_name` is member-only now -- and then
-    // overwritten below to the ordinal spelling: sixteen characters, carrying a page number and no
-    // member.
-    let doomed_component = zset_name(&doomed);
+    // The shape a fold produces for ONE element: a page entry with no durable map entry.
+    //
+    // The component this used to look up (`let doomed_component = zset_name(&doomed);`) was the
+    // handle by which the rewrite below found the doomed page. There is no component to look up
+    // and no rewrite to do -- see the block below for both.
     {
         let mut shards = engine.shards.write().expect("engine lock poisoned");
         let shard = shards.get_mut(&1).expect("shard 1 is loaded");
@@ -2587,40 +2601,36 @@ fn an_ordinal_loses_the_member_the_fold_delivers_without_a_durable_entry() {
              a fold produces"
         );
 
-        // Rewrite that page's component to the ordinal spelling. Remove and re-insert, because the
-        // map's handle is DERIVED from the fields -- which is the same property that makes an
-        // ordinal a legitimate key at all.
-        let CoreIndex {
-            bucket_map,
-            block_slab_live: live,
-            ..
-        } = &mut shard.bucket_index;
-        let mut rewritten = 0usize;
-        for bucket in bucket_map.values_mut() {
-            let doomed_handles: Vec<u64> = bucket
-                .block_index
-                .iter()
-                .filter(|(_, page)| page.component.as_deref() == Some(doomed_component.as_str()))
-                .map(|(handle, _)| *handle)
-                .collect();
-            for handle in doomed_handles {
-                let Some(mut page) = bucket.block_index.remove(&handle, live) else {
-                    continue;
-                };
-                // A 2-byte inline page id, spelled the width a fixed-width ordinal would be.
-                page.component = Some(std::sync::Arc::from("0000000000000001"));
-                bucket.block_index.insert(page, live);
-                rewritten += 1;
-            }
-        }
-        assert_eq!(
-            rewritten, 1,
-            "rewrote {rewritten} page components, not the one this experiment needs"
-        );
+        // THE REWRITE IS GONE, AND THE STATE IT MANUFACTURED IS THE SHIPPED STATE NOW.
+        //
+        // Thirty-five lines stood here. They removed the doomed member's page entry from
+        // `block_index`, overwrote its component with a sixteen-character ordinal spelling -- "a
+        // name that identifies the page and carries no member" -- re-inserted it, asserted exactly
+        // one entry had been rewritten, and rebuilt the object lookup. All of it existed to
+        // MANUFACTURE the state a 2-byte inline page id would leave behind.
+        //
+        // `BlockIndex` has no component field, so that state cannot be manufactured and does not
+        // need to be: an entry carries no member name of any width, ordinal or otherwise. What the
+        // fixture still builds is the half that matters -- a page entry whose element the DURABLE
+        // MAP does not hold, which is the shape a fold produces -- and that is the `remove` above,
+        // unchanged.
+        //
+        // THE FINDING BELOW IS UNCHANGED AND STILL HAS TEETH. It asserts the doomed member does
+        // NOT come back after a reload while the control does. That was the stop condition against
+        // the ordinal; it is now a statement about the shipped index, and it is the same claim the
+        // `durable_outranks_derived` arms hold from the other side -- the durable maps are the sole
+        // source, so an element they do not hold is gone from the derived view whatever its page
+        // payload still contains.
+        //
+        // AND THE PROPOSAL IT REFUSED IS SUPERSEDED RATHER THAN STILL PENDING. The experiment was
+        // pricing a NARROWING -- sixteen bytes of name down to two -- and asking whether it was
+        // safe. The name was not narrowed, it was REMOVED: `state.rs` pins the entry at 40 bytes
+        // against the 56 it was, so all sixteen came back and the question of whether two of them
+        // could be kept safely does not arise.
         shard.bucket_index.rebuild_object_block_lookup();
         println!(
-            "  [fold] dropped the doomed member from the durable map and made its name a \
-             sixteen-character ordinal"
+            "  [fold] dropped the doomed member from the durable map; the entry names no member \
+             at any width"
         );
     }
 

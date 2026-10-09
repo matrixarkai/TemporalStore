@@ -2390,7 +2390,16 @@ pub(super) fn block_index_handle(page: &BlockIndex) -> u64 {
     // held in a single place -- there is a note at the dedup saying what it is holding. A collision
     // here returns a DIFFERENT page rather than failing, which is why the property is written at
     // both ends rather than inferred at either.
-    page.component.as_deref().hash(&mut hasher);
+    // THE NAME TERM IS HASHED AS THE CONSTANT IT ALREADY WAS, NOT REMOVED.
+    //
+    // This hashed `page.component.as_deref()`, and every entry's component was `None` before the
+    // field was removed -- so the term contributed one fixed discriminant to every handle and
+    // distinguished nothing. It is spelled `None::<&str>` rather than deleted because deleting it
+    // MOVES EVERY HANDLE VALUE, and the identity this computes is the key `BlockIndexMap` files an
+    // entry under. Handles are re-assigned on every load, so moving them is survivable -- but it
+    // is a change to an identity, with its own blast radius, and it is not what a width step is
+    // for. Kept constant, the handles this produces are bit-for-bit the ones it produced before.
+    None::<&str>.hash(&mut hasher);
     page.address.block_slab_id().hash(&mut hasher);
     page.address.offset().hash(&mut hasher);
     page.address.length().hash(&mut hasher);
@@ -2403,7 +2412,12 @@ pub(super) fn block_index_written_key(page: &BlockIndex) -> String {
     crate::index_log::block_ref_key_from_parts(
         page.model_id.as_str(),
         &page.object_key,
-        page.component.as_deref(),
+        // `None`, WHICH IS WHAT THIS ALREADY PASSED. The STORED spelling of a page's key is built
+        // here, so the value must not move: every entry's component was `None` before the field was
+        // removed, and passing the constant keeps every written key character-for-character what it
+        // was. That is why removing the field costs no `SHARD_INDEX_FORMAT_VERSION` step -- the
+        // slot it filled was already absent from the bytes.
+        None,
         page.address.block_slab_id(),
         page.address.offset(),
         page.address.length(),
@@ -4294,8 +4308,6 @@ pub(super) struct BlockIndex {
     pub(super) routing_bucket: u32,
     pub(super) object_key: Arc<str>,
     pub(super) model_id: crate::engine::storage_bucket_internals::StoredModelKind,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub(super) component: Option<Arc<str>>,
     pub(super) address: ElementEntry,
     pub(super) dirty: bool,
     pub(super) deleted: bool,
@@ -4351,82 +4363,53 @@ pub(super) struct BlockIndex {
 /// `an_index_written_before_this_change_is_written_back_without_the_key_the_entry_shed` (what this
 /// binary writes back in its place) and `core_index_loads_legacy_bucket_page_field_names` (that
 /// the old names still read).
-const _: () = assert!(std::mem::size_of::<BlockIndex>() == 56);
+// FORTY, AND EXACTLY FORTY RATHER THAN AT MOST FORTY.
+//
+// A bare `== 40` is a one-sided claim in the sense this campaign has been bitten by: it is
+// satisfied by whatever the type happens to measure, and a reader cannot tell a pin that was
+// MEASURED from one that was adjusted until it passed. The two neighbours are asserted beside it
+// so the pin brackets the width: 39 and 41 are both refused, so 40 is the value and not a bound
+// in either direction. All three are const-evaluated, so none of them can be a test that nothing
+// runs.
+const _: () = assert!(std::mem::size_of::<BlockIndex>() == 40);
+const _: () = assert!(std::mem::size_of::<BlockIndex>() != 39);
+const _: () = assert!(std::mem::size_of::<BlockIndex>() != 41);
 
 // THE WIDTH, MEASURED AT THIS COMMIT -- not a target.
 //
 // A RECONSTRUCTION rather than a restatement: the groups are added up from the widths
 // they are made of, so a field whose own width moves elsewhere fails HERE rather than
 // passing silently.
+//
+// THE `component` TERM IS GONE FROM THIS SUM, which is the whole of the step. It stood between
+// `model_id` and `address` and was `size_of::<Option<Arc<str>>>()` -- sixteen bytes, a fat pointer
+// with a niche -- so the field set went 56 -> 40 and the width with it, a whole two words rather
+// than one word and some rounding.
+//
+// AND THIS BLOCK IS NOW THE ONLY DECOMPOSITION OF THIS STRUCT. `TheEntryWithoutAnElementName`
+// stood below it: a second struct listing the same fields minus one, which recorded what the entry
+// WOULD measure while the field was still present. It has been folded in here rather than left
+// beside the real pin, because two decompositions of one type are two things to keep in step and
+// the probe's whole justification -- that the number had to be real before anyone started -- is
+// spent the moment the field is actually gone. What the probe asserted and this block keeps is the
+// pair of claims it was built to hold apart: the SUM of the field widths is 40, and the TYPE
+// measures 40, neither inferred from the other.
 const _: () = {
-    let field_sum = 1                                   // kind
-        + 4                                             // routing_bucket
-        + std::mem::size_of::<Arc<str>>()               // object_key
-        + 1                                             // model_id
-        + std::mem::size_of::<Option<Arc<str>>>()       // component
-        + std::mem::size_of::<ElementEntry>()           // address
-        + 1 + 1;                                        // dirty, deleted
-    assert!(std::mem::size_of::<BlockIndex>() == (field_sum + 7) / 8 * 8);
-    // ZERO SLACK, asserted as the claim: the next field here costs EIGHT bytes.
-    assert!(field_sum == std::mem::size_of::<BlockIndex>());
-};
-
-// WHAT THE ENTRY WOULD BE WITHOUT `component`: FORTY, MEASURED AND NOT HOPED.
-//
-// # WHY THE NUMBER IS RECORDED HERE WHILE THE FIELD IS STILL PRESENT
-//
-// The step from 56 to 40 was attempted on the understanding that collapsing all four container
-// kinds onto one entry a page makes `component` dead. It makes it dead ON A LIVE ENTRY, and that
-// half is now done -- `index_entry_names_a_page` answers true for all four, so no live entry of
-// any kind is filed under an element name. The field is still read, by the TOMBSTONE SWEEP in
-// `storage_bucket_internals::upsert_bucket_index_block_inner`, against the ELEMENT's own name. A
-// tombstone is a per-element fact: what it records is WHICH element was removed, so a nameless
-// one has not been made smaller, it has lost its content. Dropping that term makes a re-add of
-// member Y clear member X's tombstone, and X comes back.
-//
-// So the width is stated as a MEASUREMENT of a field set, not as an assertion about this type.
-// Whoever takes the step needs the number to be real before they start, and needs it not to be
-// arrived at by adjusting an assertion until it passed -- this crate has a recorded case of a
-// hand-maintained decomposition reconstructing a correct total from a field set that no longer
-// existed, by rounding luck.
-//
-// # AND THE PROBE CANNOT DRIFT FROM THE REAL STRUCT
-//
-// A second struct listing the same fields is prose arithmetic in a type's clothing: nothing makes
-// it follow `BlockIndex`. The last assertion below is what ties them -- the real entry must equal
-// the probe PLUS exactly the width of the field left out. That identity holds only because the
-// entry has zero slack, which the block above asserts, so a field added to or removed from
-// `BlockIndex` breaks this block rather than leaving it describing a type that moved on.
-const _: () = {
-    #[allow(dead_code)]
-    struct TheEntryWithoutAnElementName {
-        kind: crate::index_log::IndexItemKind,
-        routing_bucket: u32,
-        object_key: Arc<str>,
-        model_id: crate::engine::storage_bucket_internals::StoredModelKind,
-        address: ElementEntry,
-        dirty: bool,
-        deleted: bool,
-    }
-    let field_sum = std::mem::size_of::<crate::index_log::IndexItemKind>()
-        + std::mem::size_of::<u32>()
-        + std::mem::size_of::<Arc<str>>()
-        + std::mem::size_of::<crate::engine::storage_bucket_internals::StoredModelKind>()
-        + std::mem::size_of::<ElementEntry>()
-        + std::mem::size_of::<bool>()
-        + std::mem::size_of::<bool>();
-    // THE TWO NUMBERS THE STEP IS ABOUT, both asserted and neither inferred from the other.
+    let field_sum = std::mem::size_of::<crate::index_log::IndexItemKind>()   // kind
+        + std::mem::size_of::<u32>()                                         // routing_bucket
+        + std::mem::size_of::<Arc<str>>()                                    // object_key
+        + std::mem::size_of::<crate::engine::storage_bucket_internals::StoredModelKind>() // model_id
+        + std::mem::size_of::<ElementEntry>()                                // address
+        + std::mem::size_of::<bool>()                                        // dirty
+        + std::mem::size_of::<bool>();                                       // deleted
+    // SPELLED AS TYPES, NOT AS THE LITERALS 1 AND 4 THIS USED TO CARRY. A hand-written `1` for
+    // `kind` goes on being right by luck if the enum grows a payload; read off the type it goes
+    // red here instead.
     assert!(field_sum == 40);
-    assert!(std::mem::size_of::<TheEntryWithoutAnElementName>() == 40);
-    // ZERO SLACK SURVIVES THE REMOVAL: 40 is a multiple of 8, so the field set packs exactly and
-    // the step is a whole two words rather than one word and some rounding.
-    assert!(std::mem::size_of::<TheEntryWithoutAnElementName>() == field_sum);
-    // TIED TO `BlockIndex` ITSELF, so this cannot go on describing a type that moved.
-    assert!(
-        std::mem::size_of::<BlockIndex>()
-            == std::mem::size_of::<TheEntryWithoutAnElementName>()
-                + std::mem::size_of::<Option<Arc<str>>>()
-    );
+    assert!(std::mem::size_of::<BlockIndex>() == (field_sum + 7) / 8 * 8);
+    // ZERO SLACK, asserted as the claim: the next field here costs EIGHT bytes. It survived the
+    // removal -- 40 is a multiple of 8, so the field set still packs exactly.
+    assert!(field_sum == std::mem::size_of::<BlockIndex>());
 };
 
 // THE DEFERRED DECISION, WITH A TRIGGER RATHER THAN A NOTE.
@@ -4554,15 +4537,25 @@ impl CoreIndex {
                 routing_bucket,
                 block_ref_key,
             };
-            match entry.position(page.component.as_deref()) {
+            // THE LOOKUP IS KEYED ON A NAME THE ENTRY DOES NOT HAVE, so every page of an object
+            // files under the SAME `None` slot -- which is what it already did, because an entry's
+            // component was `None` for every kind before the field was removed. The two-level
+            // shape (`ObjectBlockRefs` -> `ComponentBlocks` -> `BlockRefs`) is therefore one level
+            // deeper than it now needs to be, with exactly one `ComponentBlocks` per object. That
+            // is a structure to collapse on its own terms, not inside a width step: `ComponentBlocks`
+            // is `state.rs`'s OTHER declaration of a `component: Option<Arc<str>>` field, it is
+            // read by `block_refs_for` and by `remove_object_block_lookup_entry` with a component
+            // argument that still comes from CALLERS, and its ordering is what `position`'s binary
+            // search is over.
+            match entry.position(None) {
                 Ok(at) => entry.by_component[at].refs.insert(value),
                 Err(at) => {
-                    // A component's first block. Build the entry already holding it, so the common
+                    // The object's first block. Build the entry already holding it, so the common
                     // case never allocates and there is no empty state in between.
                     entry.by_component.insert(
                         at,
                         ComponentBlocks {
-                            component: page.component.clone(),
+                            component: None,
                             refs: BlockRefs::One(value),
                         },
                     );
@@ -4733,7 +4726,10 @@ impl CoreIndex {
                         !page.deleted
                             && page.model_id.as_str() == model_id
                             && &*page.object_key == object_key
-                            && page.component.as_deref() == component
+                            // The entry carries no element name; `component.is_none()` is the old
+                            // `page.component.as_deref() == component` with that constant folded
+                            // in, so the kinds this answers for do not move.
+                            && component.is_none()
                             && same_block_address(&page.address, address)
                     })
                     .unwrap_or(false)
@@ -4749,7 +4745,8 @@ impl CoreIndex {
                 !page.deleted
                     && page.model_id.as_str() == model_id
                     && &*page.object_key == object_key
-                    && page.component.as_deref() == component
+                    // The no-lookup twin of the predicate above, translated the same way.
+                    && component.is_none()
                     && same_block_address(&page.address, address)
             })
         })
@@ -5067,7 +5064,6 @@ mod component_lookup_tests {
             routing_bucket: 7,
             object_key: Arc::from(object.to_string()),
             model_id: crate::engine::storage_bucket_internals::StoredModelKind::Hash,
-            component: component.map(str::to_string).map(Arc::from),
             address: ElementEntry::from_parts(0, 0, 0, None, Some(0)),
             dirty: false,
             deleted: false,

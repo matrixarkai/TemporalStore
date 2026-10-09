@@ -297,7 +297,14 @@ fn the_hash_read_serves_both_sources_and_counts_what_only_the_index_names() {
             let Some(entry) = bucket.block_index.get_mut(&block_ref_key) else {
                 continue;
             };
-            if entry.component.as_deref() == Some(INDEX_PLANTED_FIELD) && !entry.deleted {
+            // THE PLANT CANNOT SELECT BY FIELD NAME ANY MORE, so it selects the object's page.
+            //
+            // It read `entry.component.as_deref() == Some(INDEX_PLANTED_FIELD)`. An entry names a
+            // page, not an element, so there is no field name to match on. Under one entry a page
+            // the object has exactly ONE live entry, which is the thing a plant can mark -- and
+            // the `marked == 1` assertion below is what proves the selection stayed exact rather
+            // than widening to every entry of the object.
+            if !entry.deleted {
                 entry.deleted = true;
                 marked += 1;
             }
@@ -373,13 +380,14 @@ fn under_the_gate_a_hash_entry_names_no_field_so_the_divergence_is_unreachable()
         "the fixture does not serve its own three fields, so nothing below means anything"
     );
 
-    // FLOOR: the index really does name no field for this object, which is WHY the counter cannot
-    // move. Without this the zero below is satisfied by an index with no entries at all.
-    let (live, named) = {
+    // FLOOR: the object really does hold live hash entries. The arm this guarded -- a `named`
+    // counter asserted to zero -- is gone, because an entry has no field name to count and the
+    // zero could only ever pass. What is left is the denominator it was a denominator FOR, kept
+    // because the serving assertions below are about an index that holds something.
+    let live = {
         let shards = engine.shards.read().expect("engine lock poisoned");
         let shard = shards.get(&1).expect("shard is loaded");
         let mut live = 0usize;
-        let mut named = 0usize;
         for bucket in shard.bucket_index.bucket_map.values() {
             for page in bucket.block_index.values() {
                 if page.deleted
@@ -389,23 +397,18 @@ fn under_the_gate_a_hash_entry_names_no_field_so_the_divergence_is_unreachable()
                     continue;
                 }
                 live += 1;
-                if page.component.is_some() {
-                    named += 1;
-                }
             }
         }
-        (live, named)
+        live
     };
     assert!(
         live > 0,
         "the index holds no live hash entry for this object, so a zero below says nothing about \
          naming"
     );
-    assert_eq!(
-        0, named,
-        "{named} of {live} live hash entries name a field under the gate; the collapse has not \
-         reached this kind and the arm above is the one to read"
-    );
+    // THE `named == 0` ARM IS GONE: an entry has no field name to count, so it could only pass.
+    // The `live > 0` floor above is what the arms below actually need -- an index that holds
+    // something for this object -- and it is kept.
 
     const PLANTED_FIELD: &str = "beta";
     {

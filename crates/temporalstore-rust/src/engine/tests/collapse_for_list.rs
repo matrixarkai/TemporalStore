@@ -154,12 +154,14 @@ fn list_len(engine: &TemporalEngine) -> i64 {
     )
 }
 
-/// Live index entries for one kind and object: how many there are, and how many NAME an element.
-fn entries_named(engine: &TemporalEngine, model_id: &str, object_key: &str) -> (usize, usize) {
+/// Live index entries for one kind and object.
+///
+/// THE SECOND TERM IS GONE. It counted entries that NAME an element, and `BlockIndex` has no field
+/// for a name -- so the count could only read zero and the assertions on it could only pass.
+fn live_entries(engine: &TemporalEngine, model_id: &str, object_key: &str) -> usize {
     let shards = engine.shards.read().expect("engine lock poisoned");
     let shard = shards.get(&1).expect("shard 1 loaded");
     let mut live = 0usize;
-    let mut named = 0usize;
     for bucket in shard.bucket_index.bucket_map.values() {
         for page in bucket.block_index.values() {
             if page.deleted || page.model_id.as_str() != model_id || &*page.object_key != object_key
@@ -167,12 +169,9 @@ fn entries_named(engine: &TemporalEngine, model_id: &str, object_key: &str) -> (
                 continue;
             }
             live += 1;
-            if page.component.is_some() {
-                named += 1;
-            }
         }
     }
-    (live, named)
+    live
 }
 
 /// (live entries, tombstoned entries) for one kind and object.
@@ -245,22 +244,21 @@ fn fold(engine: &TemporalEngine) {
         .expect("the fold round must succeed");
 }
 
-/// The entry floor for a collapsed kind: FEWER entries than elements, and not one naming an
-/// element. Printed before it is asserted.
+/// The entry floor for a collapsed kind: FEWER entries than elements. Printed before asserted.
+///
+/// THE SECOND HALF OF THIS FLOOR IS GONE. It also asserted that not one entry named an element,
+/// and `BlockIndex` has no field for a name -- so that half could only pass. What is left is the
+/// half that can still fail, and it is the sharper one: fewer live entries than elements means the
+/// elements actually folded onto a shared page.
 fn assert_collapsed(engine: &TemporalEngine, model_id: &str, object_key: &str) {
-    let (live, named) = entries_named(engine, model_id, object_key);
+    let live = live_entries(engine, model_id, object_key);
     println!(
-        "    {model_id:<5} entries: {live:>3} live / {named:>3} naming an element (of {ELEMENTS} elements)"
+        "    {model_id:<5} entries: {live:>3} live (of {ELEMENTS} elements)"
     );
     assert!(
         live < ELEMENTS,
         "{model_id} filed {live} live entries for {ELEMENTS} elements, so nothing folded onto a \
          shared page and every assertion in this arm is about a gate that changed nothing"
-    );
-    assert_eq!(
-        0, named,
-        "{model_id} filed {named} entries naming an element, so the collapsed arm is not what \
-         produced this index"
     );
 }
 /// A PRESENT LIST ELEMENT IS STILL SERVED UNDER THE COLLAPSE, AND A POPPED ONE IS STILL GONE.
@@ -576,24 +574,27 @@ fn the_projection_collapses_every_container_kind() {
     write_list(&engine);
     fold(&engine);
 
-    let hash = entries_named(&engine, "hash", HASH_KEY);
-    let zset = entries_named(&engine, "zset", ZSET_KEY);
-    let list = entries_named(&engine, "list", LIST_KEY);
-    println!("    hash : {:>3} live / {:>3} naming an element", hash.0, hash.1);
-    println!("    zset : {:>3} live / {:>3} naming an element", zset.0, zset.1);
-    println!("    list : {:>3} live / {:>3} naming an element", list.0, list.1);
+    let hash = live_entries(&engine, "hash", HASH_KEY);
+    let zset = live_entries(&engine, "zset", ZSET_KEY);
+    let list = live_entries(&engine, "list", LIST_KEY);
+    println!("    hash : {hash:>3} live");
+    println!("    zset : {zset:>3} live");
+    println!("    list : {list:>3} live");
 
-    // ALL THREE, THROUGH ONE HELPER. `assert_collapsed` asserts BOTH halves of the collapse per
-    // kind -- fewer live entries than elements, and not one of them naming an element -- so the
-    // three calls below are three independent measurements and not a restatement of one.
+    // ALL THREE, THROUGH ONE HELPER -- three independent measurements, not a restatement of one.
     //
-    // THE SECOND HALF IS WHAT KEEPS THIS FROM BECOMING VACUOUS. `entries_named` counts
-    // `component.is_some()`, and with every container kind collapsed that count is zero for all of
-    // them, which could be read as an assertion that can no longer fail. It can: a regression that
-    // files a container per element makes it non-zero, and that is exactly the direction the
-    // page-named set's membership can slip. The FIRST half is the one that would not notice, since
-    // a kind filing one entry per element also satisfies `live < ELEMENTS` whenever elements share
-    // no page -- which is why both are asserted and the entry count is printed beside them.
+    // AND THE PARAGRAPH THAT STOOD HERE IS REFUTED BY ITS OWN SUBJECT. It read: "THE SECOND HALF
+    // IS WHAT KEEPS THIS FROM BECOMING VACUOUS. `entries_named` counts `component.is_some()`, and
+    // with every container kind collapsed that count is zero for all of them, which could be read
+    // as an assertion that can no longer fail. It can: a regression that files a container per
+    // element makes it non-zero."
+    //
+    // IT CANNOT, ANY MORE. `BlockIndex` has no component field, so no regression in this crate can
+    // make that count non-zero -- the only way back is to re-add the field, which fails
+    // `state.rs`'s width pin at const-evaluation before any test runs. The half the paragraph
+    // dismissed as the one that "would not notice" is now the only one with a subject, and the
+    // fold floor is what stops it being vacuous: `live < ELEMENTS` is satisfied trivially when
+    // elements share no page, which is why `assert_collapsed` is only ever called after `fold`.
     assert_collapsed(&engine, "list", LIST_KEY);
     assert_collapsed(&engine, "hash", HASH_KEY);
     assert_collapsed(&engine, "zset", ZSET_KEY);
@@ -701,8 +702,8 @@ fn a_write_after_a_fold_supersedes_one_page_and_not_the_objects_siblings() {
             _ => write_zset(&engine),
         }
         fold(&engine);
-        let (folded_live, folded_named) = entries_named(&engine, model_id, object_key);
-        println!("    after the fold : {folded_live:>3} live / {folded_named:>3} naming an element");
+        let folded_live = live_entries(&engine, model_id, object_key);
+        println!("    after the fold : {folded_live:>3} live");
         assert!(
             folded_live >= 1 && folded_live < ELEMENTS,
             "{model_id} holds {folded_live} live entries for {ELEMENTS} elements after the fold, \
@@ -739,8 +740,8 @@ fn a_write_after_a_fold_supersedes_one_page_and_not_the_objects_siblings() {
                 },
             ),
         }
-        let (after_live, after_named) = entries_named(&engine, model_id, object_key);
-        println!("    after a write  : {after_live:>3} live / {after_named:>3} naming an element");
+        let after_live = live_entries(&engine, model_id, object_key);
+        println!("    after a write  : {after_live:>3} live");
 
         // THE SIBLINGS SURVIVED, AS AN EXACT COUNT AND NOT A FLOOR.
         //
@@ -759,11 +760,10 @@ fn a_write_after_a_fold_supersedes_one_page_and_not_the_objects_siblings() {
              the new page took the object's already-folded page with it, which is what the \
              page-keyed supersede term exists to prevent"
         );
-        assert_eq!(
-            0, after_named,
-            "{model_id} filed {after_named} entries naming an element after the write, so the \
-             write path did not file through the collapsed arm the projection used"
-        );
+        // THE `after_named == 0` ARM IS GONE: an entry has no element name to count, so it could
+        // only pass. What it was watching for -- the write path filing through a different arm
+        // than the projection -- is held by the count above, which is an exact `folded_live + 1`
+        // and not a floor.
 
         // AND THE ELEMENTS ARE STILL SERVED, which is the half a count cannot stand in for: an
         // entry count is the index's own bookkeeping, and the question a client asks is whether
@@ -888,45 +888,52 @@ fn no_zset_entry_spells_a_score_now_that_the_collapse_drops_the_name() {
     write_zset(&engine);
     fold(&engine);
 
-    // NOT ONE live zset entry names an element, and so not one of them can spell a score. Both
-    // counts are taken rather than only the first, because "no entry carries a score" is
-    // satisfied vacuously by "no entry carries a name" -- and the vacuous reading is the one
-    // this arm would pass under if the collapse silently stopped happening and the components
-    // came back WITHOUT the score prefix. The named count is what tells those two apart, and
-    // `the_projection_collapses_every_container_kind` is what pins it from the other side.
-    let shards = engine.shards.read().expect("engine lock poisoned");
-    let shard = shards.get(&1).expect("shard 1 loaded");
-    let mut named = 0usize;
-    let mut score_bearing = 0usize;
-    for bucket in shard.bucket_index.bucket_map.values() {
-        for page in bucket.block_index.values() {
-            if page.deleted || page.model_id.as_str() != "zset" || &*page.object_key != ZSET_KEY {
-                continue;
-            }
-            if let Some(component) = page.component.as_deref() {
-                named += 1;
-                if component.len() >= 16 && u64::from_str_radix(&component[..16], 16).is_ok() {
-                    score_bearing += 1;
-                }
-            }
-        }
-    }
-    println!("    zset entries naming an element: {named}, of which {score_bearing} carry a decodable score");
-    assert_eq!(
-        0, named,
-        "zset filed {named} entries naming an element for {ELEMENTS} members. Zset is in the \
-         page-named set now, so a live zset entry carries no element name at all -- see \
-         `index_entry_names_a_page`"
+    // THE TRIPWIRE IS MOVED OFF THE ENTRIES AND ONTO THE RENDERER, because the entries can no
+    // longer carry the shape it was watching for.
+    //
+    // It walked the live zset entries and asserted two counts were zero: how many named an element
+    // at all, and how many of those spelled sixteen leading hex characters that decode as a biased
+    // score. Its own comment explained why both were taken -- "no entry carries a score" is
+    // satisfied vacuously by "no entry carries a name", and the named count is what tells those
+    // apart. `BlockIndex` has no component field now, so BOTH counts are structurally zero and
+    // neither can tell anything apart: the arm it was built to be, a tripwire on a data loss,
+    // cannot be served by counting entries any more.
+    //
+    // WHAT CAN STILL REGRESS IS THE RENDERER, and that is what this now asserts.
+    // `container_pages::component_from_element_key` is the function that turns a page's item key
+    // back into a component string, and its `ScoreThenMember` arm is the one that used to spell
+    // the score: it returns `hex::encode(key[8..])`, the member alone, deliberately skipping the
+    // eight score bytes. A change that dropped the `8..` would put the score straight back into
+    // every derived name -- which is the data-deletion risk the old arm was watching -- and it
+    // would do it without any entry carrying a component at all. So the key is built WITH a known
+    // score in its first eight bytes and the render is asserted not to contain it.
+    //
+    // AND THE ROUND TRIP IS ASSERTED IN BOTH DIRECTIONS, because a renderer that returned the
+    // empty string would also "not contain the score" and would be a worse loss than the one
+    // guarded against.
+    let member = b"zs-member-01".to_vec();
+    let score_bytes: [u8; 8] = 0x0123_4567_89ab_cdefu64.to_be_bytes();
+    let mut page_key = score_bytes.to_vec();
+    page_key.extend_from_slice(&member);
+    let rendered = crate::engine::container_pages::component_from_element_key(
+        crate::engine::container_pages::ElementKeySpelling::ScoreThenMember,
+        &page_key,
+    )
+    .expect("a score-then-member key renders a component");
+    let score_hex = hex::encode(score_bytes);
+    println!("    key = {} -> component {rendered}", hex::encode(&page_key));
+    assert!(
+        !rendered.contains(&score_hex),
+        "the zset component renderer spelled the score back into the name: {rendered} contains \
+         {score_hex}. The score rides the WAL outcome's `value` slot and `shard.zsets` now, so a \
+         score in a rendered name is the data the collapse deletes being put back where it will \
+         be dropped"
     );
-    // THE TRIPWIRE, AND IT IS NOT THE SAME CLAIM AS THE LINE ABOVE. A score can only be spelled
-    // by a component that exists, so this is implied today -- it is written separately because
-    // the implication runs the other way the moment the component comes back for any reason:
-    // whoever brings one back has to come past this line and say whether a score is in it.
     assert_eq!(
-        0, score_bearing,
-        "{score_bearing} zset component(s) decoded a biased score out of their first sixteen \
-         characters. The score rides the WAL outcome's `value` slot now, so a score spelled into \
-         an entry's name is either a regression that puts data back where the collapse deletes \
-         it, or a member whose own hex has been read as one"
+        hex::encode(&member),
+        rendered,
+        "the zset component renderer must return the MEMBER alone. It returned {rendered}, which \
+         is neither the member nor the member behind a score -- a renderer that lost the member \
+         would satisfy the score assertion above while losing more than the score ever was"
     );
 }

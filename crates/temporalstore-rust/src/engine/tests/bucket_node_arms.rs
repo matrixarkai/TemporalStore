@@ -720,7 +720,6 @@ fn page_fixture() -> BlockIndex {
         // Was `"m"`, a spelling no arm of the walk emits and the registry does not declare.
         // The field's type could not say so when it was a free-form string.
         model_id: crate::engine::storage_bucket_internals::StoredModelKind::String,
-        component: None,
         address: crate::block_store::ElementEntry::from_parts(
             1,
             64,
