@@ -644,10 +644,29 @@ fn the_shared_predicate_names_every_container_kind_and_nothing_else() {
             );
         }
     }
-    for kind in ["set", "zset", "list", "hash", "string", "feature"] {
+    // AND THERE IS NO SECOND POSITION TO CHECK, WHICH IS WHY THIS ARM IS INVERTED RATHER THAN
+    // DELETED.
+    //
+    // This held the gate explicitly OFF and asserted that NO kind answered page-named -- the
+    // escape hatch's own behaviour. The gate is retired, so that arm was left asserting something
+    // FALSE the moment its holder was deleted: a line removed from a guard can leave the
+    // assertion beside it reading the opposite of the truth, which is worse than deleting both.
+    //
+    // Restated as the claim that replaces it: the four container kinds answer page-named with NO
+    // variable set anywhere, because there is no variable. Asserted over the same list, so the
+    // non-container kinds are still checked in the same breath.
+    for kind in ["set", "zset", "list", "hash"] {
+        assert!(
+            index_entry_names_a_page(kind),
+            "{kind} is a container kind and did not answer page-named. There is no gate left to \
+             turn off, so the only way this can be false is the predicate's own kind list"
+        );
+    }
+    for kind in ["string", "feature"] {
         assert!(
             !index_entry_names_a_page(kind),
-            "{kind} answered page-named with the gate explicitly off"
+            "{kind} answered page-named, and it holds ONE page per object: the page-keyed term \
+             would leave its relocated pages behind as stale live entries"
         );
     }
 }
