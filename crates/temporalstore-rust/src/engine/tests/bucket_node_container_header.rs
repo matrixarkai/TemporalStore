@@ -681,6 +681,109 @@ fn the_object_containers_are_refused_at_eight_by_the_same_one_niche_rule() {
 }
 
 // =============================================================================================
+// WHETHER THERE IS A COMMON SINGLE-ENTRY BUCKET TO INLINE AT ALL.
+// =============================================================================================
+
+/// THE COMMON BUCKET DOES NOT HOLD ONE ENTRY, AT THE RANGE WE ACTUALLY RUN.
+///
+/// Every inline route for this node needs the common bucket to hold ONE entry, the way a narrow
+/// per-item descriptor holds one address. Whether it does is decided by the ROUTING RANGE rather
+/// than by the workload, and the range that ships is [`crate::DEFAULT_END_ROUTING_BUCKET`].
+///
+/// MEASURED IN THIS TREE by `engine::tests::routing_range_default::
+/// the_pages_a_bucket_holds_at_every_candidate_range_as_percentiles_and_max`, routed keys at one
+/// page a record, on 0..1023:
+///
+///   *  4,000 records: 1,024 occupied buckets over 4,000 pages. mean 3.9062, min 1, p50 4, p90 6,
+///      p99 7, MAX 8. Buckets holding exactly one page: 54 of 1,024 = 5.273%. Buckets holding more
+///      than one: 970 of 1,024 = 94.727%.
+///   * 40,000 records: 1,024 occupied buckets over 40,000 pages. mean 39.0625, MIN 29, p50 39,
+///      p90 44, p99 48, MAX 50. Buckets holding exactly one page: 0 of 1,024 = 0.000%. Buckets
+///      holding more than one: 1,024 of 1,024 = 100.000%.
+///
+/// At ten times the corpus the single-entry bucket is not rare, it is ABSENT, and the NARROWEST
+/// bucket in the store holds twenty-nine entries. There is no common single-entry shape to inline,
+/// so the handle's width is set by the many-entry arm -- which is what the ladder above measures.
+///
+/// WHY THIS IS ASSERTED HERE RATHER THAN CITED FROM THERE. That module prints its `u32::MAX` arm
+/// as `0..u32::MAX (shipped default)` and says "the shipped default" in its module doc and in its
+/// assertion messages, twenty-five times in all -- and `u32::MAX` is the OLD default. The module
+/// predates the move and is the module that CHOSE 1023; its own constant for the wide arm is
+/// named `OLD_DEFAULT_END_ROUTING_BUCKET` and its docstring says "before the default moved", while
+/// `crate::DEFAULT_END_ROUTING_BUCKET` is 1023. At `u32::MAX` every key lands alone by
+/// construction and the fill is exactly 1.000 page a bucket at every percentile, so a reader of
+/// that output concludes the shipped default IS the single-entry case. It is the opposite case.
+/// This test asserts the live constant and the arithmetic that follows from it, so the premise
+/// cannot be read off a stale label.
+///
+/// NOT A TAUTOLOGY, and the control is what makes it one or not. `records / buckets` is arithmetic
+/// either way; what is being asserted is its DIRECTION, and the direction REVERSES between the two
+/// ranges. The old default is carried as that control: above 1 at the range that ships, far below 1
+/// at the range that used to, from the same formula.
+#[test]
+fn the_common_bucket_does_not_hold_one_entry_at_the_range_that_ships() {
+    /// The end bucket a shard loads with today, read from the shipped constant.
+    const SHIPPED_END: u32 = crate::DEFAULT_END_ROUTING_BUCKET;
+    /// What `load_shard` defaulted to before the default moved. The control.
+    const OLD_END: u32 = u32::MAX;
+
+    // The constant itself, bracketed.
+    assert_eq!(1023, SHIPPED_END, "the shipped end bucket is {SHIPPED_END} and not 1023");
+    assert!(
+        SHIPPED_END != 1022 && SHIPPED_END != 1024,
+        "the shipped end bucket is {SHIPPED_END}"
+    );
+    assert_ne!(
+        OLD_END, SHIPPED_END,
+        "the shipped default is back at the whole keyspace, where every key lands alone and the \
+         single-entry bucket IS the common case. Everything this module concludes about the \
+         many-entry arm being the common one is then wrong and must be re-measured"
+    );
+
+    let shipped_buckets = SHIPPED_END as f64 + 1.0;
+    let old_buckets = OLD_END as f64 + 1.0;
+
+    println!("\n=== entries a bucket holds, by routing range, at one page a record ===");
+    println!("  {:<34} {:>12} {:>14} {:>16}", "range", "buckets", "4,000 recs", "40,000 recs");
+    for (label, buckets) in
+        [("0..1023 (ships today)", shipped_buckets), ("0..u32::MAX (the old default)", old_buckets)]
+    {
+        println!(
+            "  {label:<34} {buckets:>12.0} {:>14.4} {:>16.4}",
+            4_000.0 / buckets,
+            40_000.0 / buckets
+        );
+    }
+
+    for records in [4_000.0_f64, 40_000.0_f64] {
+        let shipped_mean = records / shipped_buckets;
+        let old_mean = records / old_buckets;
+        // THE CLAIM: at the range that ships, a bucket holds more than one entry on average.
+        assert!(
+            shipped_mean > 1.0,
+            "at {records} records over {shipped_buckets} buckets a bucket holds {shipped_mean:.4} \
+             entries, which is not more than one -- the single-entry bucket would be the common \
+             case and an inline arm would be carrying the common shape, not the rare one"
+        );
+        // THE CONTROL: the same formula at the old default goes the OTHER way, so the assertion
+        // above is about the range and not about the formula.
+        assert!(
+            old_mean < 1.0,
+            "at {records} records over {old_buckets} buckets a bucket holds {old_mean:.4} entries. \
+             The control is supposed to fall on the other side of one; if it does not, the \
+             assertion above is satisfied by arithmetic rather than by the range"
+        );
+    }
+
+    println!(
+        "  so the many-entry arm is the common arm at the range that ships, and the handle's {} B \
+         is set by it. The single-entry arm is the rare one, and the measured narrowest bucket at \
+         40,000 records holds 29 entries.",
+        size_of::<BlockIndexMap>()
+    );
+}
+
+// =============================================================================================
 // THE TAIL, as a refusal with a number behind it.
 // =============================================================================================
 
