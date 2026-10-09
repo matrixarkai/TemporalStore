@@ -6,7 +6,7 @@ use super::*;
 use super::record::sha256_bytes;
 
 impl BlockStore {
-    pub fn read(&self, address: &BlockAddress) -> Result<Vec<u8>, BlockStoreError> {
+    pub fn read(&self, address: &ElementEntry) -> Result<Vec<u8>, BlockStoreError> {
         // On-demand lazy recovery: if this slab lives only in shared storage after a
         // metadata-only restore, fetch + cache it before serving the read.
         self.ensure_slab_present(address.block_slab_id())?;

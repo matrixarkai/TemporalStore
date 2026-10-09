@@ -11,7 +11,7 @@
 
 use std::collections::BTreeMap;
 
-use crate::block_store::{BlockAddress, BlockStore};
+use crate::block_store::{ElementEntry, BlockStore};
 use crate::types::{
     FeatureFilter, FeatureFilterOp, ControlStateFamily,
     ControlStateSelectionType, SequenceFeatureRow, ShardId,
@@ -27,7 +27,7 @@ pub(super) fn read_sequence_row(
     block_store: &BlockStore,
     shard_id: ShardId,
     timestamp_ms: u64,
-    address: &BlockAddress,
+    address: &ElementEntry,
     // WHICH PAGE, stated by the caller. A packed series page holds many points and is not an
     // element of its object, so the element half is `None` -- but the OBJECT half cannot be
     // recovered here: this function is handed an address and a timestamp, and neither names a key.

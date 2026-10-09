@@ -301,7 +301,7 @@ fn one_real_page_free_standing() -> BlockIndex {
         object_key: std::sync::Arc::from("free-standing"),
         model_id: crate::engine::storage_bucket_internals::StoredModelKind::String,
         component: None,
-        address: crate::block_store::BlockAddress::from_parts(1, 64, 32, Some(7), Some(11)),
+        address: crate::block_store::ElementEntry::from_parts(1, 64, 32, Some(7), Some(11)),
         dirty: false,
         deleted: false,
     }

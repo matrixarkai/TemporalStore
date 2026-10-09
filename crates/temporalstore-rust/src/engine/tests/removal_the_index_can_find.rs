@@ -48,7 +48,7 @@
 
 #![allow(clippy::all)]
 use super::*;
-use crate::block_store::BlockAddress;
+use crate::block_store::ElementEntry;
 use crate::engine::TS_CONTAINER_ONE_ENTRY_A_PAGE;
 use std::collections::BTreeSet;
 
@@ -117,7 +117,7 @@ fn write(engine: &TemporalEngine, command: Command) {
 
 /// Every page address THE INDEX NAMES for this object, live entries and tombstoned alike, with the
 /// two counted separately so the shape of the index is visible and not merely its size.
-fn addresses_the_index_names(engine: &TemporalEngine) -> (Vec<BlockAddress>, usize, usize) {
+fn addresses_the_index_names(engine: &TemporalEngine) -> (Vec<ElementEntry>, usize, usize) {
     let shards = engine.shards.read().expect("engine lock poisoned");
     let shard = shards.get(&1).expect("shard 1 is loaded");
     let mut addresses = Vec::new();

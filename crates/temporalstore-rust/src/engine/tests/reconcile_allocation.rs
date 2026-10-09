@@ -37,16 +37,16 @@ use super::*;
 use std::collections::BTreeMap;
 use std::collections::HashMap;
 
-use crate::block_store::BlockAddress;
+use crate::block_store::ElementEntry;
 
 #[cfg(feature = "alloc-probe")]
 use crate::alloc_probe::Probe;
 
-type Series = BTreeMap<u64, BlockAddress>;
+type Series = BTreeMap<u64, ElementEntry>;
 type SeriesMap = HashMap<String, Series>;
 
-fn address(id: u64) -> BlockAddress {
-    BlockAddress::from_parts(id, 0, 64, Some(1), Some(id))
+fn address(id: u64) -> ElementEntry {
+    ElementEntry::from_parts(id, 0, 64, Some(1), Some(id))
 }
 
 /// The shape the function had before this change, transcribed so both can be measured at once.

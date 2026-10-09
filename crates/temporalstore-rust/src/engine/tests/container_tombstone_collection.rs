@@ -39,7 +39,7 @@
 //! rule that was wrong.
 
 #![allow(clippy::all)]
-use crate::block_store::BlockAddress;
+use crate::block_store::ElementEntry;
 use crate::engine::container_membership::{append_position, derive_membership, may_drop_tombstones};
 use crate::engine::container_pages::{
     decode_container_page, encode_container_page_items, ContainerPageDecode, ContainerPageShape,
@@ -51,8 +51,8 @@ use crate::engine::container_pages::{
 /// The block id and object id are set because a real page carries both, and a fixture that left them
 /// absent would be exercising a shape the write path does not produce. Neither participates in the
 /// ordering, which is the point being driven.
-fn at(slab: u64, offset: u64, len: u32) -> BlockAddress {
-    BlockAddress::from_parts(slab, offset, u64::from(len), Some(0), Some(7))
+fn at(slab: u64, offset: u64, len: u32) -> ElementEntry {
+    ElementEntry::from_parts(slab, offset, u64::from(len), Some(0), Some(7))
 }
 
 /// rust-internal: operates on the page codec directly
@@ -182,8 +182,8 @@ fn an_older_page_is_not_outranked_by_a_page_that_merely_does_not_mention_the_ele
         (silent_at.clone(), silent.clone()),
         (tomb_at.clone(), tomb.clone()),
     ];
-    let read = |set: Vec<(BlockAddress, Vec<u8>)>| {
-        move |address: &BlockAddress| -> Option<Vec<u8>> {
+    let read = |set: Vec<(ElementEntry, Vec<u8>)>| {
+        move |address: &ElementEntry| -> Option<Vec<u8>> {
             set.iter()
                 .find(|(candidate, _)| append_position(candidate) == append_position(address))
                 .map(|(_, page)| page.clone())
@@ -385,7 +385,7 @@ fn the_fold_orders_pages_by_append_position_and_not_by_the_order_it_was_handed_t
     let read = || {
         let live = live.clone();
         let tomb = tomb.clone();
-        move |address: &BlockAddress| -> Option<Vec<u8>> {
+        move |address: &ElementEntry| -> Option<Vec<u8>> {
             if append_position(address) == earlier_position {
                 Some(live.clone())
             } else {
@@ -451,8 +451,8 @@ fn a_tombstone_dropped_while_an_older_page_survives_resurrects_its_element() {
         (tomb_at.clone(), tomb.clone()),
         (folded_at.clone(), folded_without_tombstone.clone()),
     ];
-    let read_from = |set: Vec<(BlockAddress, Vec<u8>)>| {
-        move |address: &BlockAddress| -> Option<Vec<u8>> {
+    let read_from = |set: Vec<(ElementEntry, Vec<u8>)>| {
+        move |address: &ElementEntry| -> Option<Vec<u8>> {
             set.iter()
                 .find(|(candidate, _)| append_position(candidate) == append_position(address))
                 .map(|(_, bytes)| bytes.clone())

@@ -120,7 +120,7 @@ use super::*;
 use std::collections::BTreeSet;
 use std::sync::Arc;
 
-use crate::block_store::BlockAddress;
+use crate::block_store::ElementEntry;
 use crate::engine::hashing::stable_block_object_id;
 use crate::engine::state::{BlockIndex, ObjectIndex};
 use crate::engine::storage_bucket_internals::StoredModelKind;
@@ -275,7 +275,7 @@ struct OrdinalEntryU16 {
     object_ordinal: u16,
     model_id: StoredModelKind,
     component: Option<Arc<str>>,
-    address: BlockAddress,
+    address: ElementEntry,
     dirty: bool,
     deleted: bool,
     log_backed: bool,
@@ -286,7 +286,7 @@ struct OrdinalEntryU8 {
     object_ordinal: u8,
     model_id: StoredModelKind,
     component: Option<Arc<str>>,
-    address: BlockAddress,
+    address: ElementEntry,
     dirty: bool,
     deleted: bool,
     log_backed: bool,
@@ -343,7 +343,7 @@ fn a_u16_ordinal_would_take_the_entry_from_sixty_four_to_forty_eight_and_a_u8_ad
         ("object_key", offset_of!(BlockIndex, object_key), size_of::<Arc<str>>()),
         ("model_id", offset_of!(BlockIndex, model_id), size_of::<StoredModelKind>()),
         ("component", offset_of!(BlockIndex, component), size_of::<Option<Arc<str>>>()),
-        ("address", offset_of!(BlockIndex, address), size_of::<BlockAddress>()),
+        ("address", offset_of!(BlockIndex, address), size_of::<ElementEntry>()),
         ("dirty", offset_of!(BlockIndex, dirty), size_of::<bool>()),
         ("deleted", offset_of!(BlockIndex, deleted), size_of::<bool>()),
         ("kind", offset_of!(BlockIndex, kind), size_of::<crate::index_log::IndexItemKind>()),
@@ -380,7 +380,7 @@ fn a_u16_ordinal_would_take_the_entry_from_sixty_four_to_forty_eight_and_a_u8_ad
         ("object_ordinal", offset_of!(OrdinalEntryU16, object_ordinal), size_of::<u16>()),
         ("model_id", offset_of!(OrdinalEntryU16, model_id), size_of::<StoredModelKind>()),
         ("component", offset_of!(OrdinalEntryU16, component), size_of::<Option<Arc<str>>>()),
-        ("address", offset_of!(OrdinalEntryU16, address), size_of::<BlockAddress>()),
+        ("address", offset_of!(OrdinalEntryU16, address), size_of::<ElementEntry>()),
         ("dirty", offset_of!(OrdinalEntryU16, dirty), size_of::<bool>()),
         ("deleted", offset_of!(OrdinalEntryU16, deleted), size_of::<bool>()),
         ("log_backed", offset_of!(OrdinalEntryU16, log_backed), size_of::<bool>()),

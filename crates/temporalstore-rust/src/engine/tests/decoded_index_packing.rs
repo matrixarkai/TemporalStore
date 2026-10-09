@@ -23,7 +23,7 @@ use std::collections::BTreeMap;
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use crate::block_store::BlockAddress;
+use crate::block_store::ElementEntry;
 
 #[cfg(feature = "alloc-probe")]
 use crate::alloc_probe::Probe;
@@ -133,8 +133,8 @@ fn encoded_index(
 /// The same entries, packed in one go: `collect` into a `BTreeMap` sorts and bulk-builds, so every
 /// leaf is filled.
 fn packed_like(
-    map: &HashMap<String, BTreeMap<u64, BlockAddress>>,
-) -> HashMap<String, BTreeMap<u64, BlockAddress>> {
+    map: &HashMap<String, BTreeMap<u64, ElementEntry>>,
+) -> HashMap<String, BTreeMap<u64, ElementEntry>> {
     map.iter()
         .map(|(key, series)| {
             (
@@ -142,7 +142,7 @@ fn packed_like(
                 series
                     .iter()
                     .map(|(at, address)| (*at, address.clone()))
-                    .collect::<BTreeMap<u64, BlockAddress>>(),
+                    .collect::<BTreeMap<u64, ElementEntry>>(),
             )
         })
         .collect()

@@ -163,7 +163,7 @@ pub(super) fn bucket_dump_entries_by_key(
     shard: &ShardState,
     selected_buckets: &BTreeSet<u32>,
     routing_bucket_for_key: impl Fn(&str) -> u32,
-) -> BTreeMap<String, BlockAddress> {
+) -> BTreeMap<String, ElementEntry> {
     collect_live_block_entries(shard)
         .into_iter()
         .filter(|entry| {
@@ -319,7 +319,7 @@ pub(super) fn bucket_storage_summaries(
 const NATIVE_PACKED_BLOCK_INDEX_SIZE: usize = 17;
 const NATIVE_PACKED_BUCKET_NODE_SIZE: usize = 24;
 
-pub(super) fn physical_address_word(address: &BlockAddress) -> u64 {
+pub(super) fn physical_address_word(address: &ElementEntry) -> u64 {
     address.block_slab_id().wrapping_shl(32) | (address.offset() & u32::MAX as u64)
 }
 
@@ -333,7 +333,7 @@ pub(super) fn native_packed_block_index_bytes(
     bytes[4] = u8::from(page.dirty) | (u8::from(page.log_backed) << 1);
     let page_size = if page.deleted { 0 } else { page.length as u32 };
     bytes[5..9].copy_from_slice(&page_size.to_le_bytes());
-    let address = physical_address_word(&BlockAddress::from_parts(page.block_slab_id, page.offset, page.length, page.block_id, page.object_id));
+    let address = physical_address_word(&ElementEntry::from_parts(page.block_slab_id, page.offset, page.length, page.block_id, page.object_id));
     bytes[9..17].copy_from_slice(&address.to_le_bytes());
     bytes
 }
@@ -913,14 +913,14 @@ pub(super) fn bucket_generation_fingerprints_by_bucket(
     by_bucket
 }
 
-pub(super) fn collect_live_block_addresses(shard: &ShardState) -> Vec<BlockAddress> {
+pub(super) fn collect_live_block_addresses(shard: &ShardState) -> Vec<ElementEntry> {
     collect_live_block_entries(shard)
         .into_iter()
         .map(|entry| entry.address)
         .collect()
 }
 
-pub(super) fn unique_timestamped_kv_block_addresses(series: &BTreeMap<u64, BlockAddress>) -> Vec<BlockAddress> {
+pub(super) fn unique_timestamped_kv_block_addresses(series: &BTreeMap<u64, ElementEntry>) -> Vec<ElementEntry> {
     let mut addresses = series
         .values()
         .cloned()
@@ -936,13 +936,13 @@ pub(super) fn unique_timestamped_kv_block_addresses(series: &BTreeMap<u64, Block
     addresses
 }
 
-pub(super) fn unique_feature_block_addresses(series: &BTreeMap<u64, BlockAddress>) -> Vec<BlockAddress> {
+pub(super) fn unique_feature_block_addresses(series: &BTreeMap<u64, ElementEntry>) -> Vec<ElementEntry> {
     unique_timestamped_kv_block_addresses(series)
 }
 
 pub(super) fn timestamped_kv_series<'a>(
     shard: &'a ShardState,
-) -> Vec<(&'static str, &'a str, std::borrow::Cow<'a, BTreeMap<u64, BlockAddress>>)> {
+) -> Vec<(&'static str, &'a str, std::borrow::Cow<'a, BTreeMap<u64, ElementEntry>>)> {
     use std::borrow::Cow;
     let mut series = Vec::new();
     for (key, timeline) in &shard.features {
@@ -956,7 +956,7 @@ pub(super) fn timestamped_kv_series<'a>(
         let Some(by_id) = shard.context_events.get(key) else {
             continue;
         };
-        let timeline: BTreeMap<u64, BlockAddress> = ids_by_time
+        let timeline: BTreeMap<u64, ElementEntry> = ids_by_time
             .iter()
             .filter_map(|(timeline_key, event_id)| {
                 by_id
@@ -990,7 +990,7 @@ pub(super) fn storage_feature_block_layout_report(
 ) -> StorageFeatureBlockLayoutReport {
     let mut report = StorageFeatureBlockLayoutReport::default();
     let mut family_reports = BTreeMap::<String, StorageTimestampedBlockFamilyReport>::new();
-    let mut inspected_addresses = HashSet::<BlockAddress>::new();
+    let mut inspected_addresses = HashSet::<ElementEntry>::new();
     for (kind, key, series) in timestamped_kv_series(shard) {
         report.indexed_timestamped_points = report
             .indexed_timestamped_points
@@ -1006,7 +1006,7 @@ pub(super) fn storage_feature_block_layout_report(
             }
         });
         family.indexed_points = family.indexed_points.saturating_add(series.len());
-        let mut timestamps_by_address = HashMap::<BlockAddress, BTreeSet<u64>>::new();
+        let mut timestamps_by_address = HashMap::<ElementEntry, BTreeSet<u64>>::new();
         for (timestamp_ms, address) in series.iter() {
             timestamps_by_address
                 .entry(address.clone())
@@ -1204,7 +1204,7 @@ pub(super) fn storage_feature_block_layout_report(
 pub(super) fn feature_block_error(
     kind: &str,
     key: &str,
-    address: &BlockAddress,
+    address: &ElementEntry,
     error: impl Into<String>,
 ) -> StorageFeatureBlockError {
     StorageFeatureBlockError {
@@ -1221,7 +1221,7 @@ pub(super) fn feature_block_timestamp_mismatch(
     kind: &str,
     key: &str,
     timestamp_ms: u64,
-    address: &BlockAddress,
+    address: &ElementEntry,
 ) -> StorageFeatureBlockTimestampMismatch {
     StorageFeatureBlockTimestampMismatch {
         kind: kind.to_string(),

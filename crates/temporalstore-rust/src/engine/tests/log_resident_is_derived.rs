@@ -75,16 +75,16 @@ const OPERATOR_END: u32 = crate::DEFAULT_END_ROUTING_BUCKET;
 /// rust-internal: constructs one entry, no product behaviour
 #[test]
 fn the_log_resident_fact_is_derived_from_the_address_alone() {
-    use crate::block_store::BlockAddress;
+    use crate::block_store::ElementEntry;
 
     // A log-resident address: no block id. This is the shape a staged page has before a dump.
-    let in_log = BlockAddress::from_parts(42, 1_048_576, 4096, None, None);
+    let in_log = ElementEntry::from_parts(42, 1_048_576, 4096, None, None);
     assert!(
         in_log.block_id().is_none(),
         "VACUITY: this fixture's address must be log-resident or neither assertion says anything",
     );
     // And a slab-backed control, so a fixture that made every address log-resident cannot pass.
-    let in_slab = BlockAddress::from_parts(42, 1_048_576, 4096, Some(7), None);
+    let in_slab = ElementEntry::from_parts(42, 1_048_576, 4096, Some(7), None);
     assert!(in_slab.block_id().is_some(), "the control address must be slab-backed");
 
     // The entry the tombstone path builds. It no longer carries a log-resident flag to get wrong.
@@ -148,7 +148,6 @@ fn the_log_resident_fact_is_derived_from_the_address_alone() {
 /// rust-internal: serializes one entry, no product behaviour
 #[test]
 fn the_stored_entry_has_dropped_the_flag_and_gained_no_key() {
-    use crate::block_store::BlockAddress;
 
     let page = BlockIndex {
         kind: crate::index_log::IndexItemKind::Page,
@@ -156,7 +155,7 @@ fn the_stored_entry_has_dropped_the_flag_and_gained_no_key() {
         object_key: std::sync::Arc::from("tenant/7/object/1"),
         model_id: crate::engine::storage_bucket_internals::StoredModelKind::Hash,
         component: Some(std::sync::Arc::from("field-0")),
-        address: BlockAddress::from_parts(42, 1_048_576, 4096, Some(7), None),
+        address: ElementEntry::from_parts(42, 1_048_576, 4096, Some(7), None),
         dirty: false,
         deleted: false,
     };

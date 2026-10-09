@@ -293,7 +293,7 @@ pub(super) struct LiveBlockEntry {
     pub(super) object_key: Arc<str>,
     pub(super) kind: StoredModelKind,
     pub(super) component: Option<Arc<str>>,
-    pub(super) address: BlockAddress,
+    pub(super) address: ElementEntry,
     pub(super) dirty: bool,
     pub(super) deleted: bool,
     pub(super) log_backed: bool,
@@ -350,7 +350,7 @@ pub(super) fn live_block_entry(
     object_key: impl Into<String>,
     kind: impl AsRef<str>,
     component: Option<String>,
-    address: BlockAddress,
+    address: ElementEntry,
 ) -> LiveBlockEntry {
     LiveBlockEntry {
         object_key: Arc::from(object_key.into()),
@@ -381,7 +381,7 @@ pub(super) fn live_block_entry_filed(
     object_key: impl Into<String>,
     kind: impl AsRef<str>,
     component: Option<String>,
-    address: BlockAddress,
+    address: ElementEntry,
     routing_bucket: u32,
 ) -> LiveBlockEntry {
     let mut entry = live_block_entry(object_key, kind, component, address);
@@ -392,7 +392,7 @@ pub(super) fn live_block_entry_filed(
 
 pub(super) fn storage_page_address_sample(
     shard_id: ShardId,
-    address: &BlockAddress,
+    address: &ElementEntry,
 ) -> StoragePageAddressSample {
     StoragePageAddressSample {
         shard_id,
@@ -407,7 +407,7 @@ pub(super) fn storage_page_address_sample(
 
 pub(super) fn storage_block_address_sample(
     shard_id: ShardId,
-    address: &BlockAddress,
+    address: &ElementEntry,
 ) -> StorageBlockAddressSample {
     StorageBlockAddressSample {
         shard_id,
@@ -1860,7 +1860,7 @@ fn released_block_identity(
     model_id: &str,
     object_key: &str,
     component: Option<&str>,
-    address: &BlockAddress,
+    address: &ElementEntry,
 ) -> ReleasedBlockIdentity {
     released_block_identity_owned(
         model_id.to_string(),
@@ -1879,7 +1879,7 @@ fn released_block_identity_owned(
     model_id: String,
     object_key: String,
     component: Option<String>,
-    address: &BlockAddress,
+    address: &ElementEntry,
 ) -> ReleasedBlockIdentity {
     (
         model_id,
@@ -1929,7 +1929,7 @@ pub(super) fn model_map_block_address(
     model_id: &str,
     object_key: &str,
     component: Option<&str>,
-) -> Option<BlockAddress> {
+) -> Option<ElementEntry> {
     match (model_id, component) {
         ("string", None) => shard.strings.get(object_key).cloned(),
         ("context_node", None) => shard.context_nodes.get(object_key).cloned(),
@@ -1947,7 +1947,7 @@ pub(super) fn released_bucket_block_address(
     model_id: &str,
     object_key: &str,
     component: Option<&str>,
-) -> Option<BlockAddress> {
+) -> Option<ElementEntry> {
     if shard.bucket_index.released_buckets.is_empty() {
         return None;
     }
@@ -2642,7 +2642,7 @@ pub(super) fn sync_context_blocks_for_object(
 ) -> bool {
     // Read every kind's live addresses first, so the shared borrow ends before the sync below
     // takes a mutable one.
-    let mut groups: Vec<(&'static str, String, Vec<BlockAddress>)> = Vec::new();
+    let mut groups: Vec<(&'static str, String, Vec<ElementEntry>)> = Vec::new();
 
     if let Some(address) = shard.context_nodes.get(object_key) {
         groups.push(("context_node", object_key.to_string(), vec![address.clone()]));
@@ -2731,7 +2731,7 @@ pub(super) fn sync_context_blocks_for_object(
         .hashes
         .get(object_key)
         .is_some_and(|fields| !fields.is_empty());
-    let hash_fields: Vec<(String, BlockAddress)> = shard
+    let hash_fields: Vec<(String, ElementEntry)> = shard
         .hashes
         .get(object_key)
         .map(|fields| {
@@ -3159,8 +3159,8 @@ pub(super) fn model_report_code(model_id: &str) -> u8 {
 fn visit_model_live_blocks(
     shard: &ShardState,
     tally: ModelWalkTally,
-    accept: impl Fn(&str, &BlockAddress) -> bool,
-    mut emit: impl FnMut(ModelKind, &str, Option<&str>, &BlockAddress),
+    accept: impl Fn(&str, &ElementEntry) -> bool,
+    mut emit: impl FnMut(ModelKind, &str, Option<&str>, &ElementEntry),
 ) {
     // THE ARM LIST. Nested so that `visit_model_live_blocks` is the only thing in the tree that
     // can reach it, and so the count wraps all fifteen arms at once instead of being repeated
@@ -3198,9 +3198,9 @@ fn visit_model_live_blocks(
     fn emit_one_entry_a_page<'addr>(
         kind: ModelKind,
         key: &str,
-        addresses: impl Iterator<Item = &'addr BlockAddress>,
-        accept: &impl Fn(&str, &BlockAddress) -> bool,
-        emit: &mut impl FnMut(ModelKind, &str, Option<&str>, &BlockAddress),
+        addresses: impl Iterator<Item = &'addr ElementEntry>,
+        accept: &impl Fn(&str, &ElementEntry) -> bool,
+        emit: &mut impl FnMut(ModelKind, &str, Option<&str>, &ElementEntry),
     ) {
         let mut emitted_pages: std::collections::BTreeSet<(u64, u64, u64)> =
             std::collections::BTreeSet::new();
@@ -3219,8 +3219,8 @@ fn visit_model_live_blocks(
 
     fn arms(
         shard: &ShardState,
-        accept: impl Fn(&str, &BlockAddress) -> bool,
-        mut emit: impl FnMut(ModelKind, &str, Option<&str>, &BlockAddress),
+        accept: impl Fn(&str, &ElementEntry) -> bool,
+        mut emit: impl FnMut(ModelKind, &str, Option<&str>, &ElementEntry),
     ) {
         for (key, address) in &shard.strings {
             if accept(key, address) {
@@ -3401,7 +3401,7 @@ fn visit_model_live_blocks(
     // three tallies below track what came out. Counted in a local cell and charged once, so the
     // walk pays one atomic rather than one per address.
     let visited = std::cell::Cell::new(0u64);
-    let counting_accept = |object_key: &str, address: &BlockAddress| {
+    let counting_accept = |object_key: &str, address: &ElementEntry| {
         visited.set(visited.get().saturating_add(1));
         accept(object_key, address)
     };
@@ -3435,10 +3435,10 @@ fn visit_model_live_blocks(
 /// first costs a field read per point and no allocation, and the answer it gates on is exactly the
 /// answer the caller would otherwise reach after allocating.
 fn visit_timestamped_series(
-    map: &HashMap<String, BTreeMap<u64, BlockAddress>>,
+    map: &HashMap<String, BTreeMap<u64, ElementEntry>>,
     kind: ModelKind,
-    accept: &impl Fn(&str, &BlockAddress) -> bool,
-    emit: &mut impl FnMut(ModelKind, &str, Option<&str>, &BlockAddress),
+    accept: &impl Fn(&str, &ElementEntry) -> bool,
+    emit: &mut impl FnMut(ModelKind, &str, Option<&str>, &ElementEntry),
 ) {
     for (key, series) in map {
         if !series.values().any(|address| accept(key, address)) {
@@ -3564,7 +3564,7 @@ fn derive_released_block_identities(
 /// publish, and every address of one key routes to one bucket. A term equal across every element of
 /// the set it partitions cannot split it.
 pub(super) fn block_physical_identity_key(
-    address: &BlockAddress,
+    address: &ElementEntry,
 ) -> (u64, u64, u64, Option<u64>, Option<u64>) {
     (
         address.block_slab_id(),
@@ -3719,7 +3719,7 @@ pub(super) fn upsert_bucket_index_block_filed(
     kind: &str,
     object_key: &str,
     component: Option<String>,
-    address: BlockAddress,
+    address: ElementEntry,
     dirty: bool,
 ) -> BlockFiled {
     upsert_bucket_index_block(shard, shard_id, kind, object_key, component, address, dirty);
@@ -3741,7 +3741,7 @@ pub(super) fn upsert_bucket_index_block(
     kind: &str,
     object_key: &str,
     component: Option<String>,
-    address: BlockAddress,
+    address: ElementEntry,
     dirty: bool,
 ) {
     upsert_bucket_index_block_with(shard, shard_id, kind, object_key, component, address, dirty, true)
@@ -3834,7 +3834,7 @@ pub(super) fn insert_container_tombstone_entry(
     kind: &str,
     object_key: &str,
     component: Option<&str>,
-    address: BlockAddress,
+    address: ElementEntry,
     routing_bucket: u32,
 ) {
     // THE ADDRESS NO LONGER CARRIES AN IDENTITY TO STAMP. This stood here as
@@ -3903,7 +3903,7 @@ pub(super) fn upsert_bucket_index_block_with(
     kind: &str,
     object_key: &str,
     component: Option<String>,
-    address: BlockAddress,
+    address: ElementEntry,
     dirty: bool,
     stage: bool,
 ) {
@@ -3931,7 +3931,7 @@ fn upsert_bucket_index_block_inner(
     kind: &str,
     object_key: &str,
     component: Option<String>,
-    address: BlockAddress,
+    address: ElementEntry,
     dirty: bool,
     stage: bool,
 ) {
@@ -4251,7 +4251,7 @@ pub(super) fn sync_bucket_index_object_blocks(
     shard_id: ShardId,
     kind: &str,
     object_key: &str,
-    addresses: Vec<BlockAddress>,
+    addresses: Vec<ElementEntry>,
     dirty: bool,
 ) {
     sync_bucket_index_object_blocks_with_mode(shard, shard_id, kind, object_key, addresses, dirty, true)
@@ -4279,7 +4279,7 @@ pub(super) fn sync_bucket_index_object_blocks_with_mode(
     shard_id: ShardId,
     kind: &str,
     object_key: &str,
-    addresses: Vec<BlockAddress>,
+    addresses: Vec<ElementEntry>,
     dirty: bool,
     replace_existing: bool,
 ) {
@@ -4377,7 +4377,7 @@ pub(super) fn sync_bucket_index_object_blocks_with_mode(
 
     let mut unique_addresses = BTreeMap::<
         (u64, u64, u64, Option<u64>, Option<u64>),
-        BlockAddress,
+        ElementEntry,
     >::new();
     for address in addresses {
         unique_addresses.insert(block_physical_identity_key(&address), address);
@@ -5172,8 +5172,8 @@ pub(super) fn rebuild_bucket_first_index(
 /// transcription of it. The arm that no longer exists in the tree has to be transcribed there;
 /// this one does not, and a fixture that copied it could drift from it silently.
 pub(super) fn reconcile_timestamped_series_membership_in_place(
-    target: &mut HashMap<String, BTreeMap<u64, BlockAddress>>,
-    block_derived: HashMap<String, BTreeMap<u64, BlockAddress>>,
+    target: &mut HashMap<String, BTreeMap<u64, ElementEntry>>,
+    block_derived: HashMap<String, BTreeMap<u64, ElementEntry>>,
 ) {
     for (key, block_series) in block_derived {
         match target.get_mut(&key) {
@@ -5366,20 +5366,20 @@ pub(super) fn reconcile_secondary_views_from_bucket_index(
 
     let mut strings = HashMap::new();
     let mut hashes = HashMap::<String, super::hash_field_map::HashFieldMap>::new();
-    let mut sets = HashMap::<String, BTreeMap<Vec<u8>, BlockAddress>>::new();
-    let mut lists = HashMap::<String, BTreeMap<i64, BlockAddress>>::new();
-    let mut zsets = HashMap::<String, BTreeMap<Vec<u8>, (u64, BlockAddress)>>::new();
-    let mut features = HashMap::<String, BTreeMap<u64, BlockAddress>>::new();
+    let mut sets = HashMap::<String, BTreeMap<Vec<u8>, ElementEntry>>::new();
+    let mut lists = HashMap::<String, BTreeMap<i64, ElementEntry>>::new();
+    let mut zsets = HashMap::<String, BTreeMap<Vec<u8>, (u64, ElementEntry)>>::new();
+    let mut features = HashMap::<String, BTreeMap<u64, ElementEntry>>::new();
     let mut control_state = HashMap::<String, BTreeMap<u64, i64>>::new();
     let mut control_state_blocks = HashMap::new();
-    let mut context_events = HashMap::<String, BTreeMap<u64, BlockAddress>>::new();
+    let mut context_events = HashMap::<String, BTreeMap<u64, ElementEntry>>::new();
     let mut context_event_timeline = HashMap::<String, BTreeMap<u64, u64>>::new();
-    let mut context_indexes = HashMap::<String, BTreeMap<u64, BlockAddress>>::new();
-    let mut context_audits = HashMap::<String, BTreeMap<u64, BlockAddress>>::new();
-    let mut context_entities = HashMap::<String, BTreeMap<u64, BlockAddress>>::new();
-    let mut context_children = HashMap::<String, BTreeMap<u64, BlockAddress>>::new();
-    let mut context_summaries = HashMap::<String, BTreeMap<u64, BlockAddress>>::new();
-    let mut context_compressions = HashMap::<String, BTreeMap<u64, BlockAddress>>::new();
+    let mut context_indexes = HashMap::<String, BTreeMap<u64, ElementEntry>>::new();
+    let mut context_audits = HashMap::<String, BTreeMap<u64, ElementEntry>>::new();
+    let mut context_entities = HashMap::<String, BTreeMap<u64, ElementEntry>>::new();
+    let mut context_children = HashMap::<String, BTreeMap<u64, ElementEntry>>::new();
+    let mut context_summaries = HashMap::<String, BTreeMap<u64, ElementEntry>>::new();
+    let mut context_compressions = HashMap::<String, BTreeMap<u64, ElementEntry>>::new();
 
     for entry in entries {
         match entry.kind.as_str() {
@@ -5933,7 +5933,7 @@ pub fn reset_view_rebuild_page_failure_counts() {
 /// reads through the seam and nothing exercised the arm that runs in production. A torn block is
 /// producible on demand -- truncate the slab files the store was written into -- so the seam was
 /// buying a `cfg(test)` hook to cover a path it is not on. The guards tear the files instead.
-fn read_page_for_view_rebuild(block_store: &BlockStore, address: &BlockAddress) -> Option<Vec<u8>> {
+fn read_page_for_view_rebuild(block_store: &BlockStore, address: &ElementEntry) -> Option<Vec<u8>> {
     match block_store.read(address) {
         Ok(bytes) => Some(bytes),
         Err(_) => {
@@ -5948,9 +5948,9 @@ pub(super) fn insert_timestamped_secondary_view(
     block_store: &BlockStore,
     warm_shard: Option<ShardId>,
     warm_batch: &mut Vec<(CacheKey, Vec<u8>)>,
-    target: &mut HashMap<String, BTreeMap<u64, BlockAddress>>,
+    target: &mut HashMap<String, BTreeMap<u64, ElementEntry>>,
     object_key: String,
-    address: BlockAddress,
+    address: ElementEntry,
     routing_bucket: Option<u32>,
 ) {
     // THROUGH THE SEAM, AND A FAILURE IS COUNTED RATHER THAN DEFAULTED TO AN EMPTY SERIES.
@@ -6050,10 +6050,10 @@ pub(super) fn insert_context_event_views(
     block_store: &BlockStore,
     warm_shard: Option<ShardId>,
     warm_batch: &mut Vec<(CacheKey, Vec<u8>)>,
-    events: &mut HashMap<String, BTreeMap<u64, BlockAddress>>,
+    events: &mut HashMap<String, BTreeMap<u64, ElementEntry>>,
     timeline: &mut HashMap<String, BTreeMap<u64, u64>>,
     object_key: String,
-    address: BlockAddress,
+    address: ElementEntry,
     routing_bucket: Option<u32>,
 ) {
     // Through the same seam, counted the same way, and for the sharper reason: `context_events`
@@ -6405,7 +6405,7 @@ mod release_refusal_guards {
     use super::{
         release_bucket_blocks, released_model_kind_is_addressable, BucketReleaseRefusals,
     };
-    use crate::block_store::BlockAddress;
+    use crate::block_store::ElementEntry;
     use crate::engine::state::{BlockIndex, BlockIndexMap, BucketFlags, BucketNode, ObjectIndex, ShardState};
     use std::sync::Arc;
 
@@ -6444,8 +6444,8 @@ mod release_refusal_guards {
         panic!("no key with prefix {prefix} routes to bucket {routing_bucket} in 100,000 tries");
     }
 
-    fn address(routing_bucket: u32, length: u64) -> BlockAddress {
-        BlockAddress::from_parts(
+    fn address(routing_bucket: u32, length: u64) -> ElementEntry {
+        ElementEntry::from_parts(
             3,
             128,
             length,
@@ -6454,7 +6454,7 @@ mod release_refusal_guards {
         )
     }
 
-    fn block(key: &str, model_id: &str, component: Option<&str>, address: BlockAddress) -> BlockIndex {
+    fn block(key: &str, model_id: &str, component: Option<&str>, address: ElementEntry) -> BlockIndex {
         BlockIndex {
             kind: crate::index_log::IndexItemKind::Page,
             routing_bucket: 7,
@@ -7304,12 +7304,12 @@ mod model_kind_registry_guards {
         collect_model_live_block_entries, model_report_code, ModelKind,
         RETIRED_MODEL_REPORT_CODES,
     };
-    use crate::block_store::BlockAddress;
+    use crate::block_store::ElementEntry;
     use crate::engine::state::ShardState;
     use std::collections::{BTreeMap, BTreeSet};
 
-    fn address(routing_bucket: u32) -> BlockAddress {
-        BlockAddress::from_parts(3, 128, 64, Some(11), Some(22))
+    fn address(_routing_bucket: u32) -> ElementEntry {
+        ElementEntry::from_parts(3, 128, 64, Some(11), Some(22))
     }
 
     /// ONE BLOCK IN EVERY MAP THE WALK READS.

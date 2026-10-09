@@ -358,7 +358,7 @@ impl CompactionRewriteStats {
     /// `skipped_by_budget`, because that is what `left_work_behind` reads to keep a round
     /// open for the next one -- and a round kept open by pages nobody will ever want moved never
     /// closes.
-    pub(super) fn should_relocate(&mut self, address: &BlockAddress) -> bool {
+    pub(super) fn should_relocate(&mut self, address: &ElementEntry) -> bool {
         if address.block_slab_id() == self.target_block_slab_id {
             return false;
         }
@@ -431,7 +431,7 @@ impl CompactionRewriteStats {
 pub(super) fn block_memory_resident(
     cache: &MultiLayerCache,
     shard_id: ShardId,
-    address: &BlockAddress,
+    address: &ElementEntry,
     routing_bucket: Option<u32>,
 ) -> bool {
     // Compaction asking the serving cache a question is still a read of it, and it is charged the
@@ -563,10 +563,10 @@ pub(super) fn compaction_model_layout_reports(
 
 pub(super) fn compaction_timestamped_layout(
     kind: &str,
-    timelines: &HashMap<String, BTreeMap<u64, BlockAddress>>,
+    timelines: &HashMap<String, BTreeMap<u64, ElementEntry>>,
     slab_page_counts: &BTreeMap<u64, u64>,
 ) -> ShardCompactionModelLayoutReport {
-    let mut ref_counts = HashMap::<BlockAddress, usize>::new();
+    let mut ref_counts = HashMap::<ElementEntry, usize>::new();
     for address in timelines
         .values()
         .flat_map(|series| series.values().cloned())
@@ -587,7 +587,7 @@ pub(super) fn compaction_timestamped_layout(
 pub(super) fn compaction_layout_from_addresses(
     kind: &str,
     object_count: usize,
-    addresses: impl IntoIterator<Item = BlockAddress>,
+    addresses: impl IntoIterator<Item = ElementEntry>,
     slab_page_counts: &BTreeMap<u64, u64>,
     packed_blocks: Option<usize>,
 ) -> ShardCompactionModelLayoutReport {
@@ -666,7 +666,7 @@ fn read_block_bytes_for_compaction(
     cache: &MultiLayerCache,
     block_store: &BlockStore,
     shard_id: ShardId,
-    address: &BlockAddress,
+    address: &ElementEntry,
     // WHICH PAGE, which this function could not say and now must. The element stays `None` for the
     // reason spelled out below; what changed is that the OBJECT is stated from the key rather than
     // recovered from the address, so a relocation cannot read a page it cannot name.
@@ -746,7 +746,7 @@ fn container_batch_target_bytes() -> usize {
 /// originals." There is a renderer now, so the caller hands over key bytes and this asks it.
 pub(super) struct ContainerElementRef<'a> {
     pub(super) key: Vec<u8>,
-    pub(super) address: &'a mut BlockAddress,
+    pub(super) address: &'a mut ElementEntry,
 }
 
 /// Rewrite a container's pages as FEWER, LARGER pages that each hold several elements.
@@ -832,7 +832,7 @@ pub(super) fn compact_container_pages_batched<'a>(
     // of its pages was cold. Held as owned bytes because the frame is built from all of them at
     // once, after the last one is read.
     let mut items: Vec<(Vec<u8>, Vec<u8>)> = Vec::new();
-    let mut destinations: Vec<&mut BlockAddress> = Vec::new();
+    let mut destinations: Vec<&mut ElementEntry> = Vec::new();
     let mut batch_bytes = 0usize;
     let mut cold_in_batch = false;
     let mut batches = 0usize;
@@ -947,7 +947,7 @@ fn read_block_bytes_for_container_element(
     cache: &MultiLayerCache,
     block_store: &BlockStore,
     shard_id: ShardId,
-    address: &BlockAddress,
+    address: &ElementEntry,
     identity: PageIdentity<'_>,
     routing_bucket: u32,
 ) -> Option<Vec<u8>> {
@@ -983,7 +983,7 @@ fn flush_container_batch(
     object_id: Option<u64>,
     batch_ordinal: usize,
     items: &mut Vec<(Vec<u8>, Vec<u8>)>,
-    destinations: &mut Vec<&mut BlockAddress>,
+    destinations: &mut Vec<&mut ElementEntry>,
     batch_bytes: &mut usize,
     cold_in_batch: &mut bool,
     rewrite_stats: &mut CompactionRewriteStats,
@@ -1077,7 +1077,7 @@ pub(super) fn compact_block_addresses<'a>(
     cache: &MultiLayerCache,
     shard_id: ShardId,
     model_id: &str,
-    addresses: impl IntoIterator<Item = (u32, std::borrow::Cow<'a, str>, &'a mut BlockAddress)>,
+    addresses: impl IntoIterator<Item = (u32, std::borrow::Cow<'a, str>, &'a mut ElementEntry)>,
     rewrite_stats: &mut CompactionRewriteStats,
 ) -> Result<(), Status> {
     for (routing_bucket, object_key, address) in addresses {
@@ -1138,12 +1138,12 @@ pub(super) fn compact_feature_block_addresses(
     // the whole call rather than one per address -- which is why it is a parameter here and a term
     // of the iterator item in `compact_block_addresses`.
     object_key: &str,
-    series: &mut BTreeMap<u64, BlockAddress>,
+    series: &mut BTreeMap<u64, ElementEntry>,
     rewrite_stats: &mut CompactionRewriteStats,
     routing_bucket: u32,
 ) -> Result<(), Status> {
     let unique_addresses = unique_feature_block_addresses(series);
-    let mut rewritten = HashMap::<BlockAddress, BlockAddress>::new();
+    let mut rewritten = HashMap::<ElementEntry, ElementEntry>::new();
     for old_address in unique_addresses {
         if !rewrite_stats.should_relocate(&old_address) {
             continue;
@@ -1242,7 +1242,7 @@ pub fn compaction_drain_block_slab_ids(
 /// attributable when that arrives.
 pub(super) fn compaction_object_block_hint(
     model_id: &str,
-    object_blocks: &[BlockAddress],
+    object_blocks: &[ElementEntry],
     drain_block_slab_ids: &BTreeSet<u64>,
 ) -> Vec<usize> {
     let _ = model_id;
@@ -1266,7 +1266,7 @@ pub(super) fn compaction_relocation_hint_per_object(
     reclaim_candidates: &[StorageReclaimCandidate],
 ) -> ShardCompactionRelocationHint {
     let drain_block_slab_ids = compaction_drain_block_slab_ids(reclaim_candidates);
-    let mut object_blocks: BTreeMap<(String, String), Vec<BlockAddress>> = BTreeMap::new();
+    let mut object_blocks: BTreeMap<(String, String), Vec<ElementEntry>> = BTreeMap::new();
     for entry in collect_live_block_entries(shard) {
         object_blocks
             .entry((entry.kind.to_string(), entry.object_key.to_string()))
@@ -1321,8 +1321,8 @@ pub fn compaction_relocatable_block_refs(reclaim_candidates: &[StorageReclaimCan
 mod compaction_selection_tests {
     use super::*;
 
-    fn address_on(block_slab_id: u64, length: u64) -> BlockAddress {
-        BlockAddress::from_parts(block_slab_id, 0, length, Some(0), Some(1))
+    fn address_on(block_slab_id: u64, length: u64) -> ElementEntry {
+        ElementEntry::from_parts(block_slab_id, 0, length, Some(0), Some(1))
     }
 
     fn candidate(block_slab_id: u64, live_block_refs: u64) -> StorageReclaimCandidate {

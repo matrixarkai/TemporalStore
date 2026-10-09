@@ -130,7 +130,7 @@ use crate::control::{
     UnloadShardRequest, UnloadShardResponse,
 };
 use crate::index_log::LocalIndexLogStore;
-use crate::block_store::{BlockStore, BlockAddress, BlockStoreError, BlockStoreGcPolicy, BlockStoreOptions, BlockStoreSlabLive};
+use crate::block_store::{BlockStore, ElementEntry, BlockStoreError, BlockStoreGcPolicy, BlockStoreOptions, BlockStoreSlabLive};
 use crate::types::{
     BatchExecuteRequest, BatchExecuteResponse, Command, CommandResponse, ContextCompressionEvent,
     ContextEntity, ContextEvent, ContextIndexRef, ContextNode, ContextPackAudit,
@@ -358,7 +358,7 @@ impl TemporalEngine {
     /// tally without anything at this call site changing.
     pub(crate) fn read_block_counted(
         &self,
-        address: &BlockAddress,
+        address: &ElementEntry,
     ) -> Result<Vec<u8>, BlockStoreError> {
         shard_write_guard::note_block_read();
         self.block_store.read(address)
@@ -2532,7 +2532,7 @@ pub(super) fn stamp_index_format_version(shard: &ShardState) -> serde_json::Valu
 enum FastPathRead<'a> {
     String {
         key: &'a str,
-        address: Option<BlockAddress>,
+        address: Option<ElementEntry>,
         /// The bucket the page cache is keyed by, resolved while the shard guard is HELD.
         ///
         /// It has to be: the bucket is `block_routing_bucket(key, ..)` over the range the shard is
@@ -2550,7 +2550,7 @@ enum FastPathRead<'a> {
         /// the pair that tells their blocks apart. Borrowed, as `String`'s is: the plan is consumed
         /// inside the same call that built it.
         key: &'a str,
-        fields: Vec<(String, BlockAddress)>,
+        fields: Vec<(String, ElementEntry)>,
         routing_bucket: u32,
     },
 }
@@ -3243,7 +3243,7 @@ fn collect_upsert_index_items(
             // THE WHOLE PAYLOAD. The three slots this used to fill beside the address --
             // `block_id`, `size`, `in_log` -- were each a derivation OF the address, so they are
             // computed where they are written instead of restated here.
-            entry: Some(crate::block_store::ElementEntry::new(address)),
+            entry: Some(address),
         });
     }
     items
@@ -3333,7 +3333,7 @@ fn collect_command_index_items_for(
                 // `in_log` here was `page.log_backed()` -- the accessor added when the stored
                 // copy of this same fact was removed from the resident entry. One derivation,
                 // two spellings, on a row. Now neither.
-                entry: Some(crate::block_store::ElementEntry::new(page.address.clone())),
+                entry: Some(page.address.clone()),
             });
         }
     }
@@ -3785,18 +3785,18 @@ where
 /// The block a carried durable-map value points at, so [`fold_carried_container_elements`] can ask
 /// whether that block is still there without knowing which of the four maps it came from.
 trait CarriedValue {
-    fn carried_address(&self) -> &BlockAddress;
+    fn carried_address(&self) -> &ElementEntry;
 }
 
-impl CarriedValue for BlockAddress {
-    fn carried_address(&self) -> &BlockAddress {
+impl CarriedValue for ElementEntry {
+    fn carried_address(&self) -> &ElementEntry {
         self
     }
 }
 
 /// A zset's value is `(score bits, page)`.
-impl CarriedValue for (u64, BlockAddress) {
-    fn carried_address(&self) -> &BlockAddress {
+impl CarriedValue for (u64, ElementEntry) {
+    fn carried_address(&self) -> &ElementEntry {
         &self.1
     }
 }
@@ -3806,7 +3806,7 @@ impl CarriedValue for (u64, BlockAddress) {
 /// is what makes the address a usable answer to "is this element's block still here".
 type LiveBlockKey = (u64, u64, u64);
 
-fn live_page_key(address: &BlockAddress) -> LiveBlockKey {
+fn live_page_key(address: &ElementEntry) -> LiveBlockKey {
     (address.block_slab_id(), address.offset(), address.length())
 }
 
@@ -4041,7 +4041,7 @@ fn fold_delta_block_items(
             let here = item
                 .entry
                 .as_ref()
-                .map(|entry| live_page_key(entry.address()));
+                .map(|entry| live_page_key(entry));
             // COMPARED AGAINST WHAT THE ENTRY IS FILED UNDER. The item carries the element's
             // name; the entries it supersedes are filed under the page's. Comparing the two
             // directly would match nothing under the gate and converge on no entry at all.
@@ -4072,11 +4072,7 @@ fn fold_delta_block_items(
         if item.deleted {
             continue;
         }
-        let Some(address) = item
-            .entry
-            .as_ref()
-            .map(|entry| entry.address().clone())
-        else {
+        let Some(address) = item.entry.as_ref().cloned() else {
             continue;
         };
         let bucket = bucket_index
@@ -5203,7 +5199,7 @@ fn mark_bucket_index_block_deleted_recording(
     key: &str,
     component: Option<&str>,
     stage: bool,
-    tombstone: Option<BlockAddress>,
+    tombstone: Option<ElementEntry>,
 ) -> bool {
     // Removing a member IS an outcome, and it is the one a command log states worst: replay has
     // to re-run the removal and hope the state it removes from matches. Saying "this component
@@ -5645,7 +5641,7 @@ fn append_value(
     component: Option<&str>,
     routing_bucket: Option<u32>,
     async_storage: bool,
-) -> Result<BlockAddress, BlockStoreError> {
+) -> Result<ElementEntry, BlockStoreError> {
     append_value_of_object(
         cache,
         block_store,
@@ -5681,7 +5677,7 @@ fn append_value_of_object(
     routing_bucket: Option<u32>,
     async_storage: bool,
     block_ordinal: u32,
-) -> Result<BlockAddress, BlockStoreError> {
+) -> Result<ElementEntry, BlockStoreError> {
     // Both arms, and every command that stores a value, reach a slab through here. The payload's
     // own copies re-tag themselves inside -- the encode as `PageBytes`, the carried copy as
     // `CarriedPage` -- so what is left under this class is the append machinery and not the bytes.
@@ -5711,7 +5707,7 @@ fn append_value_inner(
     routing_bucket: Option<u32>,
     async_storage: bool,
     block_ordinal: u32,
-) -> Result<BlockAddress, BlockStoreError> {
+) -> Result<ElementEntry, BlockStoreError> {
     if !async_storage {
         // Carry the block in this write's record, the same as the asynchronous arm below.
         //
@@ -5745,7 +5741,7 @@ fn append_value_inner(
     // truncating does the same thing without even reaching the boundary. So the mint is checked,
     // and a process that exhausts its tickets stops minting hot addresses instead of aliasing
     // them. The counter is process-local and a reload starts it again at one.
-    let address = BlockAddress::try_from_parts(HOT_BLOCK_SLAB_ID, HOT_BLOCK_OFFSET.fetch_add(1, Ordering::Relaxed), bytes.len() as u64, None, object_id)?;
+    let address = ElementEntry::try_from_parts(HOT_BLOCK_SLAB_ID, HOT_BLOCK_OFFSET.fetch_add(1, Ordering::Relaxed), bytes.len() as u64, None, object_id)?;
     // Put the block aside for this write's record. It is often derived state rather than the
     // command's own bytes, so the record has to carry it for a read to serve it back.
     if let Some(object_id) = object_id {
@@ -6277,7 +6273,7 @@ fn read_block_frame_bytes(
     cache: &MultiLayerCache,
     block_store: &BlockStore,
     shard_id: ShardId,
-    address: &BlockAddress,
+    address: &ElementEntry,
     identity: PageIdentity<'_>,
     routing_bucket: Option<u32>,
 ) -> Option<Vec<u8>> {
@@ -6384,7 +6380,7 @@ fn read_block_bytes(
     cache: &MultiLayerCache,
     block_store: &BlockStore,
     shard_id: ShardId,
-    address: &BlockAddress,
+    address: &ElementEntry,
     identity: PageIdentity<'_>,
     routing_bucket: Option<u32>,
 ) -> Option<Vec<u8>> {
@@ -6456,7 +6452,7 @@ fn read_block_shared(
     cache: &MultiLayerCache,
     block_store: &BlockStore,
     shard_id: ShardId,
-    address: &BlockAddress,
+    address: &ElementEntry,
     identity: PageIdentity<'_>,
     routing_bucket: Option<u32>,
 ) -> Option<std::sync::Arc<[u8]>> {
@@ -6498,7 +6494,7 @@ fn read_block_shared(
         .map(std::sync::Arc::from)
 }
 
-fn read_block_bytes_cold(block_store: &BlockStore, address: &BlockAddress) -> Option<Vec<u8>> {
+fn read_block_bytes_cold(block_store: &BlockStore, address: &ElementEntry) -> Option<Vec<u8>> {
     block_store.read(address).ok()
 }
 

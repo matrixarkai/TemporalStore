@@ -47,7 +47,7 @@ use super::*;
 use std::mem::{align_of, size_of};
 use std::sync::Arc;
 
-use crate::block_store::{BlockAddress, BlockStoreSlabDescriptor};
+use crate::block_store::{ElementEntry, BlockStoreSlabDescriptor};
 use crate::engine::state::{
     BlockIndex, BlockIndexMap, BlockLookupRef, BlockRefs, BucketFlags, BucketLayoutState, BucketNode,
     BucketTtl,
@@ -95,9 +95,9 @@ fn budget() -> Vec<Budgeted> {
     let string = size_of::<String>();
     vec![
         Budgeted {
-            name: "BlockAddress",
-            size: size_of::<BlockAddress>(),
-            align: align_of::<BlockAddress>(),
+            name: "ElementEntry",
+            size: size_of::<ElementEntry>(),
+            align: align_of::<ElementEntry>(),
             // address               : u64  (slab id in the high 32 bits, offset in the low 32)
             // length                : u32
             // block_id              : u16
@@ -138,7 +138,7 @@ fn budget() -> Vec<Budgeted> {
             fields: arc_str
                 + size_of::<crate::engine::storage_bucket_internals::StoredModelKind>()
                 + opt_arc_str
-                + size_of::<BlockAddress>()
+                + size_of::<ElementEntry>()
                 + 2 * size_of::<bool>()
                 + size_of::<crate::index_log::IndexItemKind>()
                 + size_of::<u32>(),
@@ -337,7 +337,7 @@ fn every_per_item_structure_states_its_width_and_its_padding() {
     }
 
     // --- The pinned widths. ---
-    assert_eq!(16, size_of::<BlockAddress>(), "BlockAddress width moved");
+    assert_eq!(16, size_of::<ElementEntry>(), "ElementEntry width moved");
     assert_eq!(56, size_of::<BlockIndex>(), "BlockIndex width moved");
     assert_eq!(24, size_of::<BlockIndexMap>(), "BlockIndexMap width moved");
     assert_eq!(88, size_of::<BucketNode>(), "BucketNode width moved");
@@ -384,10 +384,10 @@ fn every_per_item_structure_states_its_width_and_its_padding() {
 
     // --- The two named cases, so the classification itself is guarded. ---
     // WIDTH-BOUND: the fields fill the struct, so narrowing one can move it.
-    let address = rows.iter().find(|r| r.name == "BlockAddress").expect("row");
+    let address = rows.iter().find(|r| r.name == "ElementEntry").expect("row");
     assert!(
         address.padding() < 8,
-        "BlockAddress carries {} bytes of padding; at 8 or more it is alignment-bound and the \
+        "ElementEntry carries {} bytes of padding; at 8 or more it is alignment-bound and the \
          narrowing this module justifies would not have moved it",
         address.padding()
     );
@@ -419,7 +419,7 @@ fn every_per_item_structure_states_its_width_and_its_padding() {
 /// a quarter of what the field now holds.
 #[test]
 fn a_length_that_does_not_fit_the_field_saturates_rather_than_wrapping() {
-    let just_under = BlockAddress::from_parts(1, 0, u64::from(u32::MAX) - 1, None, None);
+    let just_under = ElementEntry::from_parts(1, 0, u64::from(u32::MAX) - 1, None, None);
     assert_eq!(
         u64::from(u32::MAX) - 1,
         just_under.length(),
@@ -433,7 +433,7 @@ fn a_length_that_does_not_fit_the_field_saturates_rather_than_wrapping() {
         (1u64 << 32) + 7,
         u64::MAX,
     ] {
-        let address = BlockAddress::from_parts(1, 0, over, None, None);
+        let address = ElementEntry::from_parts(1, 0, over, None, None);
         assert_eq!(
             u64::from(u32::MAX),
             address.length(),
@@ -469,7 +469,7 @@ fn a_length_that_does_not_fit_the_field_saturates_rather_than_wrapping() {
 /// the write path allows: `encode_block_record` refuses a block id above `u16::MAX`.
 #[test]
 fn a_block_id_that_does_not_fit_the_field_saturates_rather_than_wrapping() {
-    let real = BlockAddress::from_parts(1, 0, 64, Some(u64::from(u16::MAX)), None);
+    let real = ElementEntry::from_parts(1, 0, 64, Some(u64::from(u16::MAX)), None);
     assert_eq!(
         Some(u64::from(u16::MAX)),
         real.block_id(),
@@ -487,7 +487,7 @@ fn a_block_id_that_does_not_fit_the_field_saturates_rather_than_wrapping() {
     // would confirm it against that page's own record. That is the address-word hazard one level
     // down, so it takes the address word's answer: refuse.
     for over in [u64::from(u16::MAX) + 1, 1u64 << 33, u64::MAX] {
-        let refused = BlockAddress::try_from_parts(1, 0, 64, Some(over), None)
+        let refused = ElementEntry::try_from_parts(1, 0, 64, Some(over), None)
             .expect_err("a block id of {over} must be refused, not narrowed");
         assert_eq!(
             Some(over),
@@ -511,14 +511,14 @@ fn a_block_id_that_does_not_fit_the_field_saturates_rather_than_wrapping() {
         "the probe value must distinguish truncation from a refusal, or this test cannot fail"
     );
     assert!(
-        BlockAddress::try_from_parts(1, 0, 64, Some(OVER), None).is_err(),
+        ElementEntry::try_from_parts(1, 0, 64, Some(OVER), None).is_err(),
         "the constructor must refuse a block id of {OVER}, not narrow it to {}",
         OVER as u16
     );
 
     // The setter is the second write path into the same field and has to agree with the first --
     // by panicking, which is the same doctrine `from_parts` uses for an out-of-range address word.
-    let mut address = BlockAddress::from_parts(1, 0, 64, None, None);
+    let mut address = ElementEntry::from_parts(1, 0, 64, None, None);
     address.set_block_id(Some(u64::from(u16::MAX)));
     assert_eq!(
         Some(u64::from(u16::MAX)),
@@ -538,7 +538,7 @@ fn a_block_id_that_does_not_fit_the_field_saturates_rather_than_wrapping() {
 #[test]
 #[should_panic(expected = "does not fit the block id field")]
 fn the_block_id_setter_refuses_a_value_the_encoder_would_refuse() {
-    let mut address = BlockAddress::from_parts(1, 0, 64, None, None);
+    let mut address = ElementEntry::from_parts(1, 0, 64, None, None);
     address.set_block_id(Some((1u64 << 33) + 5));
 }
 
@@ -583,7 +583,7 @@ fn only_the_structures_that_hold_an_address_moved() {
     // The step this column explains is `object_id` leaving the address: 24 -> 16, 64 -> 56,
     // 160 -> 152.
     let rows: Vec<(&str, usize, usize, usize)> = vec![
-        ("BlockAddress", size_of::<BlockAddress>(), 24, 1),
+        ("ElementEntry", size_of::<ElementEntry>(), 24, 1),
         ("BlockIndex", size_of::<BlockIndex>(), 64, 1),
         ("IndexItem", size_of::<crate::index_log::IndexItem>(), 160, 1),
         // Held an address inline until #1975 boxed the single-page arm; 24 and 88 whatever the
@@ -637,7 +637,7 @@ fn only_the_structures_that_hold_an_address_moved() {
         if *addresses == 0 {
             assert_eq!(
                 *before, *now,
-                "{name} holds no `BlockAddress` inline and moved from {before} to {now}. The \
+                "{name} holds no `ElementEntry` inline and moved from {before} to {now}. The \
                  mechanism this change claims predicts no movement here, so either the claim is \
                  wrong or this structure has started holding an address"
             );
@@ -694,7 +694,7 @@ fn only_the_structures_that_hold_an_address_moved() {
 /// record as zero-length. A mutation run found this uncovered.
 #[test]
 fn setting_a_length_after_the_fact_writes_it_and_saturates_it() {
-    let mut address = BlockAddress::from_parts(1, 0, 0, None, None);
+    let mut address = ElementEntry::from_parts(1, 0, 0, None, None);
     assert_eq!(0, address.length(), "it starts at the length it was built with");
 
     address.set_length(4_096);
@@ -753,7 +753,7 @@ fn the_stored_form_moved_in_one_slot_and_the_version_stamp_pays_for_it() {
     // pins instead.
     let slab = crate::block_store::MAX_ADDRESSABLE_BLOCK_SLAB_ID;
     let offset = crate::block_store::MAX_ADDRESSABLE_BLOCK_OFFSET;
-    let address = BlockAddress::from_parts(
+    let address = ElementEntry::from_parts(
         slab,
         offset,
         1_048_576,
@@ -792,7 +792,7 @@ fn the_stored_form_moved_in_one_slot_and_the_version_stamp_pays_for_it() {
         !json.contains("\"ps\"") && !json.contains("\"o\":"),
         "the split slab id and offset are still being written: {json}"
     );
-    let back: BlockAddress = serde_json::from_str(&json).expect("it reads back");
+    let back: ElementEntry = serde_json::from_str(&json).expect("it reads back");
     assert_eq!(address, back, "an address must round-trip through its stored form");
     assert_eq!(
         (back.block_slab_id(), back.offset()),
@@ -817,7 +817,7 @@ fn the_stored_form_moved_in_one_slot_and_the_version_stamp_pays_for_it() {
     // shape of an index written before the generation existed: an identity and no generation at all.
     // It must LOAD, and it must not acquire one.
     let wide_length = "{\"a\":4294967296,\"l\":4294967296}";
-    let read: BlockAddress =
+    let read: ElementEntry =
         serde_json::from_str(wide_length).expect("a wide stored length still loads");
     assert_eq!(u64::from(u32::MAX), read.length(), "a wide stored length saturates");
     assert_eq!(
@@ -827,7 +827,7 @@ fn the_stored_form_moved_in_one_slot_and_the_version_stamp_pays_for_it() {
     );
 
     let wide_block_id = "{\"a\":4294967296,\"l\":64,\"pi\":4294967296}";
-    let refusal = serde_json::from_str::<BlockAddress>(wide_block_id)
+    let refusal = serde_json::from_str::<ElementEntry>(wide_block_id)
         .expect_err("a stored block id above the field's ceiling must be REFUSED, not narrowed");
     assert!(
         refusal.to_string().contains("does not fit the block id field"),
@@ -836,7 +836,7 @@ fn the_stored_form_moved_in_one_slot_and_the_version_stamp_pays_for_it() {
 
     // AND THE LARGEST LEGAL ONE STILL LOADS, or the refusal above is a ceiling set too low.
     let at_ceiling = "{\"a\":4294967296,\"l\":64,\"pi\":65535}";
-    let read: BlockAddress =
+    let read: ElementEntry =
         serde_json::from_str(at_ceiling).expect("the encoder's own ceiling must load");
     assert_eq!(Some(u64::from(u16::MAX)), read.block_id());
 }
@@ -959,7 +959,7 @@ fn what_the_per_item_structures_cost_at_two_corpus_sizes() {
         );
 
         let rows: Vec<(&'static str, usize, usize)> = vec![
-            ("BlockAddress", size_of::<BlockAddress>(), counts.block_addresses()),
+            ("ElementEntry", size_of::<ElementEntry>(), counts.block_addresses()),
             ("BucketNode", size_of::<BucketNode>(), counts.bucket_nodes),
             ("BlockIndex (inside BucketNode)", size_of::<BlockIndex>(), counts.block_index_entries),
             ("BlockLookupRef", size_of::<BlockLookupRef>(), counts.block_lookup_refs),

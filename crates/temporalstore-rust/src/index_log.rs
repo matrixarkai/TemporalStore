@@ -10,7 +10,7 @@ use std::sync::{Arc, Mutex};
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
-use crate::block_store::{BlockAddress, ElementEntry};
+use crate::block_store::ElementEntry;
 use crate::types::ShardId;
 
 /// Counters for the scale probes, tests only.
@@ -746,7 +746,7 @@ struct IndexItemWire {
     #[serde(rename = "pi", alias = "page_id", default)]
     block_id: u64,
     #[serde(rename = "a", alias = "address", default)]
-    address: Option<BlockAddress>,
+    address: Option<ElementEntry>,
     #[serde(rename = "sz", alias = "size", default)]
     size: u64,
     #[serde(rename = "il", alias = "in_log", default)]
@@ -805,7 +805,7 @@ impl From<IndexItemWire> for IndexItem {
             model_id: wire.model_id,
             component: wire.component,
             object_id: wire.object_id,
-            entry: wire.address.map(ElementEntry::new),
+            entry: wire.address,
             deleted: wire.deleted,
         }
     }
@@ -936,7 +936,7 @@ impl IndexItem {
     /// free to change. Asking those two questions the other way round is what produced the error
     /// above.
     fn strip_block_ref_key_repeat(&mut self) {
-        let Some(address) = self.entry.as_ref().map(ElementEntry::address) else {
+        let Some(address) = self.entry.as_ref() else {
             return;
         };
         let derived = block_ref_key_from_parts(
@@ -962,7 +962,7 @@ impl IndexItem {
         if !self.block_ref_key.is_empty() {
             return;
         }
-        let Some(address) = self.entry.as_ref().map(ElementEntry::address) else {
+        let Some(address) = self.entry.as_ref() else {
             return;
         };
         self.block_ref_key = block_ref_key_from_parts(
@@ -1297,8 +1297,8 @@ impl serde::Serialize for IndexItem {
         // so the harvest it banked is now unconditional rather than conditional. Writing the real
         // length here instead would have undone a 4 B/row saving with every row still decoding
         // and nothing failing.
-        let address = self.entry.as_ref().map(ElementEntry::address);
-        row.serialize_element(&address.and_then(BlockAddress::block_id).unwrap_or_default())?;
+        let address = self.entry.as_ref();
+        row.serialize_element(&address.and_then(ElementEntry::block_id).unwrap_or_default())?;
         row.serialize_element(&address)?;
         row.serialize_element(&0u64)?;
         row.serialize_element(&address.map(|a| a.block_id().is_none()).unwrap_or(false))?;
@@ -5979,7 +5979,7 @@ mod tests {
         // restored the key too late would still pass -- which is what the first version of this
         // test did.
         fn item(key: &str, component: &str) -> IndexItem {
-            let address = crate::block_store::BlockAddress::from_parts(
+            let address = crate::block_store::ElementEntry::from_parts(
                 7,
                 4096,
                 832,
@@ -6006,7 +6006,7 @@ mod tests {
                 object_id: 0,
                 // The three slots this used to state were its own derivation; the codec
                 // computes them where they are written.
-                entry: Some(crate::block_store::ElementEntry::new(address)),
+                entry: Some(address),
                 deleted: false,
             }
         }
@@ -6981,8 +6981,8 @@ mod tests {
             // `sz` and `pi` non-default; `il` is then false, because a row holding a block id is
             // not log-resident. The fixture used to state `block_id: 7` and `in_log: true`
             // together, which the derivation says cannot both be true.
-            entry: Some(crate::block_store::ElementEntry::new(
-                crate::block_store::BlockAddress::from_parts(42, 1_048_576, 4096, Some(7), None),
+            entry: Some(crate::block_store::ElementEntry::from_parts(
+                42, 1_048_576, 4096, Some(7), None,
             )),
             deleted: true,
         };
@@ -7010,7 +7010,6 @@ mod tests {
                 .entry
                 .as_ref()
                 .expect("the payload survives")
-                .address()
                 .length(),
             "and the length comes back from the address"
         );
@@ -7143,7 +7142,7 @@ mod tests {
     fn the_address_repeats_round_trip() {
         let object_id = 12_345_678_901_234_567u64;
         let bucket = 8539u32;
-        let build = |address: Option<crate::block_store::BlockAddress>| IndexItem {
+        let build = |address: Option<crate::block_store::ElementEntry>| IndexItem {
             kind: IndexItemKind::Page,
             routing_bucket: bucket,
             block_ref_key: 17_665_223_918_442_101_733u64.to_string(),
@@ -7155,15 +7154,15 @@ mod tests {
             // The address arrives as the closure's parameter, so it becomes the payload directly
             // and the `None` case in the table below still builds an address-less row. The three
             // slots stated here were this address's own derivation.
-            entry: address.map(crate::block_store::ElementEntry::new),
+            entry: address,
         };
         let cases = [
             ("no address", None),
-            ("address repeats both", Some(crate::block_store::BlockAddress::from_parts(
+            ("address repeats both", Some(crate::block_store::ElementEntry::from_parts(
                 42, 1_048_576, 4096, Some(7), Some(object_id), ))),
-            ("address holds a DIFFERENT object", Some(crate::block_store::BlockAddress::from_parts(
+            ("address holds a DIFFERENT object", Some(crate::block_store::ElementEntry::from_parts(
                 42, 0, 0, None, Some(object_id + 1), ))),
-            ("address holds neither", Some(crate::block_store::BlockAddress::from_parts(
+            ("address holds neither", Some(crate::block_store::ElementEntry::from_parts(
                 42, 0, 0, None, None, ))),
         ];
 
@@ -7217,7 +7216,7 @@ mod tests {
     #[test]
     fn the_twelve_stored_slots_are_unchanged_and_the_three_derived_ones_carry_their_derivation() {
         let address =
-            crate::block_store::BlockAddress::from_parts(42, 1_048_576, 4096, Some(7), None);
+            crate::block_store::ElementEntry::from_parts(42, 1_048_576, 4096, Some(7), None);
         let item = IndexItem {
             kind: IndexItemKind::Page,
             routing_bucket: 8539,
@@ -7226,7 +7225,7 @@ mod tests {
             model_id: "string".to_string(),
             component: Some("field-0".into()),
             object_id: 12_345,
-            entry: Some(crate::block_store::ElementEntry::new(address.clone())),
+            entry: Some(address.clone()),
             deleted: false,
         };
 
@@ -7333,7 +7332,7 @@ mod tests {
     /// disagreement. That is a codec-level drive rather than a weakened assertion.
     #[test]
     fn a_size_cannot_disagree_with_the_address_and_a_stored_disagreement_is_counted() {
-        let address = crate::block_store::BlockAddress::from_parts(7, 4096, 832, Some(3), None);
+        let address = crate::block_store::ElementEntry::from_parts(7, 4096, 832, Some(3), None);
         assert_eq!(832, address.length(), "VACUITY: the fixture address states its length");
 
         let item = IndexItem {
@@ -7344,7 +7343,7 @@ mod tests {
             model_id: "feature".to_string(),
             component: Some("a".into()),
             object_id: 0,
-            entry: Some(crate::block_store::ElementEntry::new(address.clone())),
+            entry: Some(address.clone()),
             deleted: false,
         };
 
@@ -7362,7 +7361,7 @@ mod tests {
         let back: IndexItem = decode_index_payload(&encoded).expect("decode");
         assert_eq!(
             832,
-            back.entry.as_ref().expect("the payload survives").address().length(),
+            back.entry.as_ref().expect("the payload survives").length(),
             "the length must come back from the address the row carries",
         );
 
@@ -7371,7 +7370,7 @@ mod tests {
         #[derive(serde::Serialize)]
         struct PlantedRow {
             #[serde(rename = "a")]
-            address: Option<crate::block_store::BlockAddress>,
+            address: Option<crate::block_store::ElementEntry>,
             #[serde(rename = "sz")]
             size: u64,
         }
@@ -7468,7 +7467,7 @@ flag exists to say",
     fn what_the_address_repeats_costs() {
         let object_id = 12_345_678_901_234_567u64;
         let bucket = 8539u32;
-        let item = |address: Option<crate::block_store::BlockAddress>| IndexItem {
+        let item = |address: Option<crate::block_store::ElementEntry>| IndexItem {
             kind: IndexItemKind::Page,
             routing_bucket: bucket,
             block_ref_key: 17_665_223_918_442_101_733u64.to_string(),
@@ -7480,15 +7479,15 @@ flag exists to say",
             // The address arrives as the closure's parameter, so it becomes the payload directly
             // and the `None` case in the table below still builds an address-less row. The three
             // slots stated here were this address's own derivation.
-            entry: address.map(crate::block_store::ElementEntry::new),
+            entry: address,
         };
 
         // As written today: the address repeats the item's object id and routing bucket.
-        let repeats = item(Some(crate::block_store::BlockAddress::from_parts(
+        let repeats = item(Some(crate::block_store::ElementEntry::from_parts(
             42, 1_048_576, 4096, Some(7), Some(object_id),
         )));
         // The same address with the two the item already states left out.
-        let deduped = item(Some(crate::block_store::BlockAddress::from_parts(
+        let deduped = item(Some(crate::block_store::ElementEntry::from_parts(
             42, 1_048_576, 4096, Some(7), None,
         )));
 
@@ -7524,10 +7523,8 @@ flag exists to say",
             object_id: 12_345_678_901_234_567u64,
             // The three slots this used to state were its own derivation; the codec
             // computes them where they are written.
-            entry: Some(crate::block_store::ElementEntry::new(
-                crate::block_store::BlockAddress::from_parts(
-                    42, 1_048_576, 4096, Some(7), Some(12_345_678_901_234_567),
-                ),
+            entry: Some(crate::block_store::ElementEntry::from_parts(
+                42, 1_048_576, 4096, Some(7), Some(12_345_678_901_234_567),
             )),
             deleted: false,
         };
@@ -7608,8 +7605,8 @@ flag exists to say",
                 align_of::<Option<std::sync::Arc<str>>>(),
             ),
             (
-                "Option<BlockAddress>",
-                align_of::<Option<crate::block_store::BlockAddress>>(),
+                "Option<ElementEntry>",
+                align_of::<Option<crate::block_store::ElementEntry>>(),
             ),
             ("u64", align_of::<u64>()),
         ] {
@@ -7722,7 +7719,7 @@ flag exists to say",
         }
 
         let shard: ShardId = 7;
-        let address = crate::block_store::BlockAddress::from_parts(42, 1_048_576, 4096, Some(7), None);
+        let address = crate::block_store::ElementEntry::from_parts(42, 1_048_576, 4096, Some(7), None);
         let object_key = "tenant/7/object/000000123".to_string();
         let model_id = "string".to_string();
         let mut item = IndexItem {
@@ -7744,7 +7741,7 @@ flag exists to say",
             object_id: crate::engine::hashing::stable_block_object_id(shard, &model_id, &object_key),
             // The three slots this used to state were its own derivation; the codec
             // computes them where they are written.
-            entry: Some(crate::block_store::ElementEntry::new(address.clone())),
+            entry: Some(address.clone()),
             deleted: false,
         };
 
@@ -7753,16 +7750,16 @@ flag exists to say",
         fn slot_block_id(item: &IndexItem) -> u64 {
             item.entry
                 .as_ref()
-                .and_then(|entry| entry.address().block_id())
+                .and_then(|entry| entry.block_id())
                 .unwrap_or_default()
         }
-        fn slot_address(item: &IndexItem) -> Option<&crate::block_store::BlockAddress> {
-            item.entry.as_ref().map(crate::block_store::ElementEntry::address)
+        fn slot_address(item: &IndexItem) -> Option<&crate::block_store::ElementEntry> {
+            item.entry.as_ref()
         }
         fn slot_in_log(item: &IndexItem) -> bool {
             item.entry
                 .as_ref()
-                .map(|entry| entry.address().block_id().is_none())
+                .map(|entry| entry.log_resident())
                 .unwrap_or(false)
         }
         fn slot_size_written(_item: &IndexItem) -> u64 {
@@ -7892,7 +7889,7 @@ flag exists to say",
                 .map(|index| {
                     let object_key = format!("tenant/7/object/{index:09}");
                     let model_id = "string".to_string();
-                    let address = crate::block_store::BlockAddress::from_parts(
+                    let address = crate::block_store::ElementEntry::from_parts(
                         42,
                         1_048_576 + index as u64 * 4096,
                         4096,
@@ -7920,7 +7917,7 @@ flag exists to say",
                         ),
                         // The three slots this used to state were its own derivation; the codec
                         // computes them where they are written.
-                        entry: Some(crate::block_store::ElementEntry::new(address.clone())),
+                        entry: Some(address.clone()),
                         deleted: false,
                     };
                     item.strip_block_ref_key_repeat();
@@ -8007,7 +8004,7 @@ flag exists to say",
         let build = || -> Vec<IndexItem> {
             (0..8u64)
                 .map(|index| {
-                    let address = crate::block_store::BlockAddress::from_parts(
+                    let address = crate::block_store::ElementEntry::from_parts(
                         42,
                         1_048_576 + index * 4096,
                         4096,
@@ -8035,7 +8032,7 @@ flag exists to say",
                         ),
                         // The three slots this used to state were its own derivation; the codec
                         // computes them where they are written.
-                        entry: Some(crate::block_store::ElementEntry::new(address.clone())),
+                        entry: Some(address.clone()),
                         deleted: false,
                     };
                     // The writer's order, which is load-bearing: the handle strip DERIVES from
@@ -8137,7 +8134,7 @@ flag exists to say",
         let hoisted_in_log = hoisted[0]
             .entry
             .as_ref()
-            .map(|entry| entry.address().block_id().is_none())
+            .map(|entry| entry.log_resident())
             .unwrap_or(false);
         let three_slots = kind_slot
             + rmp_serde::to_vec(&hoisted_in_log).expect("l").len()
@@ -8221,7 +8218,6 @@ flag exists to say",
             live.entry
                 .as_ref()
                 .expect("a live row carries a payload")
-                .address()
                 .length(),
             "a live row's length comes back from the address, which is what makes a zero size \
              slot mean 'derivable' rather than 'deleted'",
@@ -8278,7 +8274,7 @@ flag exists to say",
             let model_id = model.to_string();
             let mut items: Vec<IndexItem> = (0..8u64)
                 .map(|index| {
-                    let address = crate::block_store::BlockAddress::from_parts(
+                    let address = crate::block_store::ElementEntry::from_parts(
                         42,
                         1_048_576 + index * 4096,
                         4096,
@@ -8306,7 +8302,7 @@ flag exists to say",
                         ),
                         // The three slots this used to state were its own derivation; the codec
                         // computes them where they are written.
-                        entry: Some(crate::block_store::ElementEntry::new(address.clone())),
+                        entry: Some(address.clone()),
                         deleted: false,
                     };
                     // The writer's order. The handle strip DERIVES from `object_key` AND from

@@ -88,7 +88,7 @@ const FOREIGN_NAME_NEEDLES: &[(&str, &str)] = &[
     ),
     (
         "MultiPageObject",
-        "Our word for a stored unit is BLOCK, not page: `BlockAddress`, `block_size`, \
+        "Our word for a stored unit is BLOCK, not page: `ElementEntry`, `block_size`, \
          `block_in_log`, and `page_segment_id` was renamed to `block_slab_id`. A new CamelCase \
          `*Page*` type name is therefore a copy rather than a coinage. Our own layout policies \
          spell this concept `single_page_object` and `component_page_object`, in snake_case, and \
@@ -96,8 +96,8 @@ const FOREIGN_NAME_NEEDLES: &[(&str, &str)] = &[
     ),
     (
         "ObjectWithId",
-        "We carry identity as a FIELD -- `object_id` on `BlockAddress` -- and name types for what \
-         they are (`BlockAddress`, `ContextNodeModel`), never for which fields they happen to \
+        "We carry identity as a FIELD -- `object_id` on `ElementEntry` -- and name types for what \
+         they are (`ElementEntry`, `ContextNodeModel`), never for which fields they happen to \
          hold.",
     ),
     (

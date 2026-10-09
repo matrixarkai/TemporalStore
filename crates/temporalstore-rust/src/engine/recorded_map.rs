@@ -65,7 +65,7 @@
 
 use std::collections::{HashMap, HashSet};
 
-use crate::block_store::BlockAddress;
+use crate::block_store::ElementEntry;
 use crate::ShardId;
 
 use super::state::ShardState;
@@ -216,7 +216,7 @@ pub(super) fn install_element<K: RecordedKind>(
     element: <K::Elements as ElementMap>::Element,
     value: <K::Elements as ElementMap>::Value,
     dirty: bool,
-    address: BlockAddress,
+    address: ElementEntry,
 ) {
     // THE RECORD FIRST. The proof below cannot be built without the witness this returns, so
     // deleting this call is a compile error rather than a silent unrecorded write.
@@ -260,7 +260,7 @@ pub(super) fn install_element_staged_only<K: RecordedKind>(
     routing_bucket: u32,
     element: <K::Elements as ElementMap>::Element,
     value: <K::Elements as ElementMap>::Value,
-    address: BlockAddress,
+    address: ElementEntry,
 ) {
     let staged = super::block_in_wal::stage_outcome_attested(crate::wal::WalOutcomeItem {
         kind: staged_kind.to_string(),
@@ -734,7 +734,7 @@ impl ReplaysInstallsUnrecorded for HashKind {}
 pub(super) struct SetKind;
 
 impl RecordedKind for SetKind {
-    type Elements = std::collections::BTreeMap<Vec<u8>, BlockAddress>;
+    type Elements = std::collections::BTreeMap<Vec<u8>, ElementEntry>;
     const KIND: &'static str = "set";
 
     /// `set_index_serde`, WHICH IS THE CODEC THIS FIELD HAS ALWAYS USED, and the one the first
@@ -789,7 +789,7 @@ impl RepacksAfterDecode for SetKind {}
 pub(super) struct ZSetKind;
 
 impl RecordedKind for ZSetKind {
-    type Elements = std::collections::BTreeMap<Vec<u8>, (u64, BlockAddress)>;
+    type Elements = std::collections::BTreeMap<Vec<u8>, (u64, ElementEntry)>;
     const KIND: &'static str = "zset";
 
     /// `zset_index_serde`, for the same reason `sets` needs its own: a member is `Vec<u8>` and a
@@ -840,7 +840,7 @@ impl RepacksAfterDecode for ZSetKind {}
 pub(super) struct ListKind;
 
 impl RecordedKind for ListKind {
-    type Elements = std::collections::BTreeMap<i64, BlockAddress>;
+    type Elements = std::collections::BTreeMap<i64, ElementEntry>;
     const KIND: &'static str = "list";
 
     /// THE PLAIN MAP, which is what this field always was -- a `#[serde(default)]` map with no
@@ -914,7 +914,7 @@ where
 }
 
 impl IterableMutElementMap for super::hash_field_map::HashFieldMap {
-    fn iter_values_mut(&mut self) -> impl Iterator<Item = (&String, &mut BlockAddress)> {
+    fn iter_values_mut(&mut self) -> impl Iterator<Item = (&String, &mut ElementEntry)> {
         self.iter_mut()
     }
 }

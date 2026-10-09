@@ -16,7 +16,7 @@ impl Default for TemporalEngine {
 fn timestamped_series_mut<'a>(
     shard: &'a mut super::state::ShardState,
     kind: &str,
-) -> Option<&'a mut std::collections::HashMap<String, std::collections::BTreeMap<u64, crate::block_store::BlockAddress>>>
+) -> Option<&'a mut std::collections::HashMap<String, std::collections::BTreeMap<u64, crate::block_store::ElementEntry>>>
 {
     Some(match kind {
         "feature" => &mut shard.features,
@@ -1965,7 +1965,7 @@ impl TemporalEngine {
         &self,
         shard_id: ShardId,
         key: &str,
-    ) -> Option<crate::block_store::BlockAddress> {
+    ) -> Option<crate::block_store::ElementEntry> {
         self.shards
             .read()
             .expect("engine lock poisoned")
@@ -2023,7 +2023,7 @@ impl TemporalEngine {
         // The range is read under the same guard as the addresses, so a block is read and
         // rewritten under the bucket the shard is actually loaded on.
         let (addresses, start_routing_bucket, end_routing_bucket): (
-            Vec<(String, crate::block_store::BlockAddress)>,
+            Vec<(String, crate::block_store::ElementEntry)>,
             u32,
             u32,
         ) = {
@@ -2133,7 +2133,7 @@ impl TemporalEngine {
             return 0;
         };
         let mut count = 0usize;
-        let mut check = |address: &crate::block_store::BlockAddress| {
+        let mut check = |address: &crate::block_store::ElementEntry| {
             if crate::wal_record::is_wal_resident(address.block_slab_id()) {
                 count += 1;
             }

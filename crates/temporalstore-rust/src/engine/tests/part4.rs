@@ -5222,7 +5222,7 @@ fn the_block_and_the_lookup_point_at_one_object_key() {
 /// address in it already carried an id.
 #[test]
 fn a_block_whose_address_carries_no_object_id_still_reports_one() {
-    use crate::block_store::BlockAddress;
+    use crate::block_store::ElementEntry;
 
     let dir = tempfile::tempdir().unwrap();
     let engine = TemporalEngine::with_local_dirs(
@@ -5238,7 +5238,7 @@ fn a_block_whose_address_carries_no_object_id_still_reports_one() {
         let shard = shards.get_mut(&1).expect("shard 1 loaded");
         // Deliberately no object id, and no routing slot either -- which is now EVERY address,
         // since the field is gone. What is under test is that the ENTRY still reports one.
-        let address = BlockAddress::from_parts(0, 0, 16, Some(7), None);
+        let address = ElementEntry::from_parts(0, 0, 16, Some(7), None);
         crate::engine::storage_bucket_internals::upsert_bucket_index_block(
             shard,
             1,
@@ -5426,7 +5426,7 @@ fn installing_the_same_block_twice_replaces_it() {
         object_key: Arc::from("twice".to_string()),
         model_id: crate::engine::storage_bucket_internals::StoredModelKind::String,
         component: None,
-        address: BlockAddress::from_parts(1, 0, 4, Some(1), Some(30)),
+        address: ElementEntry::from_parts(1, 0, 4, Some(1), Some(30)),
         dirty: false,
         deleted: false,
     };
@@ -5441,7 +5441,7 @@ fn installing_the_same_block_twice_replaces_it() {
 
     // A block differing in one identity field is a different block and keeps its own slot.
     let mut moved = page();
-    moved.address = BlockAddress::from_parts(1, 64, 4, Some(1), Some(30));
+    moved.address = ElementEntry::from_parts(1, 64, 4, Some(1), Some(30));
     let third = map.insert(moved, &mut live);
     assert_ne!(first, third, "a page at another offset is not the same page");
     assert_eq!(map.len(), 2);
@@ -13937,7 +13937,7 @@ fn what_one_block_costs_to_index() {
     use crate::engine::state::BlockIndex;
 
     let inline = std::mem::size_of::<BlockIndex>();
-    let address_inline = std::mem::size_of::<crate::block_store::BlockAddress>();
+    let address_inline = std::mem::size_of::<crate::block_store::ElementEntry>();
     let string_inline = std::mem::size_of::<String>();
     let option_string_inline = std::mem::size_of::<Option<String>>();
 
@@ -13993,7 +13993,7 @@ fn what_one_block_costs_to_index() {
         "
   one page's index entry
     inline struct                {inline:>5} B
-      of which BlockAddress      {address_inline:>5} B
+      of which ElementEntry      {address_inline:>5} B
       String is                  {string_inline:>5} B inline, Option<String> {option_string_inline} B
     heap owned, measured         {per_entry_heap:>7.1} B over {entries} pages
     total per page               {total:>7.1} B

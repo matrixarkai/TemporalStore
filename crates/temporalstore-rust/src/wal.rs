@@ -219,7 +219,7 @@ impl WalOutcomeItem {
     /// because what it names is still a distinction worth reading: `address` is an `Option` that is
     /// `None` for an item that recorded no page, and "the address this item installs at, if it
     /// installs one" is the question every caller is asking.
-    pub fn resolved_address(&self) -> Option<crate::block_store::BlockAddress> {
+    pub fn resolved_address(&self) -> Option<crate::block_store::ElementEntry> {
         self.address.clone()
     }
 }
@@ -399,10 +399,10 @@ fn outcome_not_deleted(deleted: &bool) -> bool {
 /// The page checksum stays too: the read path verifies it whenever it is present, and a rebuilt
 /// index entry without one would quietly stop being integrity-checked.
 mod outcome_address_serde {
-    use crate::block_store::BlockAddress;
+    use crate::block_store::ElementEntry;
     use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
-    pub fn serialize<S>(value: &Option<BlockAddress>, serializer: S) -> Result<S::Ok, S::Error>
+    pub fn serialize<S>(value: &Option<ElementEntry>, serializer: S) -> Result<S::Ok, S::Error>
     where
         S: Serializer,
     {
@@ -413,11 +413,11 @@ mod outcome_address_serde {
         value.serialize(serializer)
     }
 
-    pub fn deserialize<'de, D>(deserializer: D) -> Result<Option<BlockAddress>, D::Error>
+    pub fn deserialize<'de, D>(deserializer: D) -> Result<Option<ElementEntry>, D::Error>
     where
         D: Deserializer<'de>,
     {
-        Option::<BlockAddress>::deserialize(deserializer)
+        Option::<ElementEntry>::deserialize(deserializer)
     }
 }
 
@@ -454,7 +454,7 @@ pub struct WalOutcomeItem {
         with = "outcome_address_serde",
         skip_serializing_if = "Option::is_none"
     )]
-    pub address: Option<crate::block_store::BlockAddress>,
+    pub address: Option<crate::block_store::ElementEntry>,
     /// The bytes themselves, for an outcome with no page behind it.
     ///
     /// A coverage probe over twelve accepted writes found four that recorded nothing --

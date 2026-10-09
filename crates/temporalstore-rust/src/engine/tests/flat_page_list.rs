@@ -314,7 +314,7 @@ fn page(object_key: &str, component: Option<&str>, slab: u64, offset: u64) -> Bl
         object_key: std::sync::Arc::from(object_key),
         model_id: crate::engine::storage_bucket_internals::StoredModelKind::String,
         component: component.map(std::sync::Arc::from),
-        address: crate::block_store::BlockAddress::from_parts(
+        address: crate::block_store::ElementEntry::from_parts(
             slab,
             offset,
             32,

@@ -11,7 +11,7 @@ use crate::types::{
     ContextExtractedEventIndexes, ContextSummary, ContextWire, FeatureFilter, FeatureFilterOp,
     ReplicatedCommand,
 };
-use crate::{BlockAddress, BlockStoreOptions, BlockStore};
+use crate::{ElementEntry, BlockStoreOptions, BlockStore};
 
 /// Holds the one-entry-a-page gate OFF for as long as it lives, putting back whatever was there --
 /// on a normal drop AND during unwinding.

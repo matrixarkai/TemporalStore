@@ -2079,7 +2079,7 @@ fn rebuild_bucket_block_ownership_preserves_dirty_watermarks() {
     let derived_bucket = crate::engine::hashing::bucket_for_object("k", 0, u32::MAX);
     shard.strings.insert(
         "k".into(),
-        BlockAddress::from_parts(1, 0, 4, Some(1), Some(30)),
+        ElementEntry::from_parts(1, 0, 4, Some(1), Some(30)),
     );
     shard.bucket_index.bucket_map.insert(
         derived_bucket,
@@ -2310,7 +2310,7 @@ fn storage_recovery_uses_bucket_index_not_stale_secondary_model_maps() {
         // The slab id is half of one packed word now, so it is planted by rebuilding the address
         // through the checked constructor rather than by assigning a field. Every other part is
         // carried across unchanged, which is what makes this a STALE address and not a new one.
-        *stale = BlockAddress::from_parts(
+        *stale = ElementEntry::from_parts(
             stale.block_slab_id().wrapping_add(999),
             stale.offset(),
             stale.length(),
@@ -2618,7 +2618,7 @@ fn bucket_store_reports_all_layout_states_and_runtime_flags() {
                     object_key: Arc::from("k".to_string()),
                     model_id: crate::engine::storage_bucket_internals::StoredModelKind::String,
                     component: None,
-                    address: BlockAddress::from_parts(1, 0, 4, Some(1), Some(30)),
+                    address: ElementEntry::from_parts(1, 0, 4, Some(1), Some(30)),
                     dirty: false,
                     deleted: false,
                 },
@@ -2645,7 +2645,7 @@ fn bucket_store_reports_all_layout_states_and_runtime_flags() {
                         object_key: Arc::from("feature-key".to_string()),
                         model_id: crate::engine::storage_bucket_internals::StoredModelKind::Feature,
                         component: None,
-                        address: BlockAddress::from_parts(2, 0, 4, Some(2), Some(40)),
+                        address: ElementEntry::from_parts(2, 0, 4, Some(2), Some(40)),
                         dirty: false,
                         deleted: false,
                     },
@@ -2658,7 +2658,7 @@ fn bucket_store_reports_all_layout_states_and_runtime_flags() {
                         object_key: Arc::from("feature-key".to_string()),
                         model_id: crate::engine::storage_bucket_internals::StoredModelKind::Feature,
                         component: None,
-                        address: BlockAddress::from_parts(2, 4, 4, Some(3), Some(40)),
+                        address: ElementEntry::from_parts(2, 4, 4, Some(3), Some(40)),
                         dirty: false,
                         deleted: false,
                     },
@@ -2686,7 +2686,7 @@ fn bucket_store_reports_all_layout_states_and_runtime_flags() {
                         object_key: Arc::from("hash-key".to_string()),
                         model_id: crate::engine::storage_bucket_internals::StoredModelKind::Hash,
                         component: Some(Arc::from("a".to_string())),
-                        address: BlockAddress::from_parts(3, 0, 1, Some(4), Some(50)),
+                        address: ElementEntry::from_parts(3, 0, 1, Some(4), Some(50)),
                         dirty: false,
                         deleted: false,
                     },
@@ -2699,7 +2699,7 @@ fn bucket_store_reports_all_layout_states_and_runtime_flags() {
                         object_key: Arc::from("hash-key".to_string()),
                         model_id: crate::engine::storage_bucket_internals::StoredModelKind::Hash,
                         component: Some(Arc::from("b".to_string())),
-                        address: BlockAddress::from_parts(3, 1, 1, Some(5), Some(51)),
+                        address: ElementEntry::from_parts(3, 1, 1, Some(5), Some(51)),
                         dirty: false,
                         deleted: false,
                     },

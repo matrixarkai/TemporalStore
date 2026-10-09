@@ -263,7 +263,7 @@ pub fn storage_production_posture_report() -> StorageProductionPostureReport {
             .to_string(),
         "slot ownership validation reports missing owner refs, owner mismatches, and model-map fallback refs"
             .to_string(),
-        "BlockAddress carries segment/offset/length plus optional page id, object id, routing slot, band id, and checksum"
+        "ElementEntry carries segment/offset/length plus optional page id, object id, routing slot, band id, and checksum"
             .to_string(),
     ];
     let native_object_manager_runtime_ready = true;
@@ -356,7 +356,7 @@ pub fn storage_production_posture_report() -> StorageProductionPostureReport {
             .to_string(),
         "compaction preserves model layout, tombstones, stale page density, and slot transition counts"
             .to_string(),
-        "cache pressure/refill validates cold page reads through BlockAddress and cache refill"
+        "cache pressure/refill validates cold page reads through ElementEntry and cache refill"
             .to_string(),
     ];
 

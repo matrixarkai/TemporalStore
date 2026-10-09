@@ -124,7 +124,7 @@ struct AddressCensus {
 }
 
 impl AddressCensus {
-    fn observe(&mut self, address: &BlockAddress) {
+    fn observe(&mut self, address: &ElementEntry) {
         self.total += 1;
         self.widest[0] = self.widest[0].max(address.block_slab_id());
         self.widest[1] = self.widest[1].max(address.offset());
@@ -195,7 +195,7 @@ impl AddressCensus {
         }
         // Read off the type rather than written down. A hand-written width here went stale the
         // moment the struct moved, and this line would have kept reporting the old figure.
-        let width = std::mem::size_of::<BlockAddress>();
+        let width = std::mem::size_of::<ElementEntry>();
         println!(
             "  address payload resident: {} x {} = {} bytes ({:.2} MiB)",
             self.total,
@@ -473,9 +473,9 @@ fn the_optional_payload_is_paid_for_on_every_live_address() {
         println!(
             "{label}: packing the optional payload away entirely would reclaim at most {} of {} resident address bytes ({:.1}%)",
             c.dead_optional_bytes(),
-            c.total * std::mem::size_of::<BlockAddress>(),
+            c.total * std::mem::size_of::<ElementEntry>(),
             100.0 * c.dead_optional_bytes() as f64
-                / (c.total * std::mem::size_of::<BlockAddress>()) as f64,
+                / (c.total * std::mem::size_of::<ElementEntry>()) as f64,
         );
     }
 }
@@ -510,32 +510,32 @@ fn a_btree_entry_costs_more_than_the_address_it_holds() {
     // is a fixed width whatever value it holds) and keeps every value legal, which is what the
     // refusal is for. `the_container_shapes_priced_against_the_population_each_one_pays_in` carries
     // the same fixture at 200,000 and the same mask.
-    fn address(i: u64) -> BlockAddress {
-        BlockAddress::from_parts(1, i * 64, 64, Some(i & u64::from(u16::MAX)), Some(i))
+    fn address(i: u64) -> ElementEntry {
+        ElementEntry::from_parts(1, i * 64, 64, Some(i & u64::from(u16::MAX)), Some(i))
     }
 
     let control_before = resident_bytes();
-    let control: Vec<(u64, BlockAddress)> = (0..N as u64).map(|i| (i, address(i))).collect();
+    let control: Vec<(u64, ElementEntry)> = (0..N as u64).map(|i| (i, address(i))).collect();
     let control_after = resident_bytes();
     let control_per_entry = (control_after - control_before) as f64 / N as f64;
     assert_eq!(N, control.len(), "denominator: the control really holds N entries");
     println!(
-        "CONTROL Vec<(u64, BlockAddress)>: {:.1} bytes/entry over {N} entries (size_of is {})",
+        "CONTROL Vec<(u64, ElementEntry)>: {:.1} bytes/entry over {N} entries (size_of is {})",
         control_per_entry,
-        std::mem::size_of::<(u64, BlockAddress)>()
+        std::mem::size_of::<(u64, ElementEntry)>()
     );
     // THE FLOOR IS DERIVED FROM THE ELEMENT, not written down. It read `> 40.0` beside a doc
     // comment claiming 56 bytes an element, and the element is now 32 -- so the literal was already
     // describing a shape this engine did not have, and would have turned a narrower address into a
     // blind-harness report. Half the element width is the vacuity guard: a near-zero reading fails,
     // and a correct reading cannot.
-    let control_floor = size_of::<(u64, BlockAddress)>() as f64 / 2.0;
+    let control_floor = size_of::<(u64, ElementEntry)>() as f64 / 2.0;
     assert!(
         control_per_entry > control_floor,
         "positive control must see the Vec it just built: {control_per_entry:.1} bytes/entry \
          against a floor of {control_floor:.1} for a {} B element -- if this is near zero the RSS \
          harness is blind and every arm below is meaningless",
-        size_of::<(u64, BlockAddress)>()
+        size_of::<(u64, ElementEntry)>()
     );
 
     // Packed widths FIRST, fat value last: if the allocator were recycling anything, the fat arm
@@ -559,7 +559,7 @@ fn a_btree_entry_costs_more_than_the_address_it_holds() {
     assert_eq!(N, word.len(), "denominator: the word map really holds N entries");
 
     let before_fat = resident_bytes();
-    let mut fat: BTreeMap<u64, BlockAddress> = BTreeMap::new();
+    let mut fat: BTreeMap<u64, ElementEntry> = BTreeMap::new();
     for i in 0..N as u64 {
         fat.insert(i, address(i));
     }
@@ -572,7 +572,7 @@ fn a_btree_entry_costs_more_than_the_address_it_holds() {
 
     println!("--- BTreeMap cost per entry, {N} ascending inserts, measured by RSS delta ---");
     for (label, value_width, per) in [
-        ("BTreeMap<u64, BlockAddress> (the 56-byte value we have)", 56.0, fat_per),
+        ("BTreeMap<u64, ElementEntry> (the 56-byte value we have)", 56.0, fat_per),
         ("BTreeMap<u64, [u8; 17]>     (the packed width already written down)", 17.0, packed_per),
         ("BTreeMap<u64, u128>         (a 16-byte value)", 16.0, word_per),
     ] {
@@ -966,8 +966,8 @@ fn an_address_is_sixteen_bytes_and_two_of_them_are_optional() {
     // The presence bitmask.
     const BITMASK: usize = 1;
 
-    assert_eq!(16, std::mem::size_of::<BlockAddress>(), "the address width moved");
-    assert_eq!(8, std::mem::align_of::<BlockAddress>());
+    assert_eq!(16, std::mem::size_of::<ElementEntry>(), "the address width moved");
+    assert_eq!(8, std::mem::align_of::<ElementEntry>());
     assert_eq!(12, ALWAYS);
     assert_eq!(2, OPTIONAL);
     assert_eq!(
@@ -983,14 +983,14 @@ fn an_address_is_sixteen_bytes_and_two_of_them_are_optional() {
     // quantity separately, because a share moves when either half does.
     assert_eq!(
         12,
-        100 * OPTIONAL / std::mem::size_of::<BlockAddress>(),
+        100 * OPTIONAL / std::mem::size_of::<ElementEntry>(),
         "the optional payload is 12% of the address"
     );
 
     // An address built with no optional field is the same 16 bytes as one built with both.
     // This is the fact that makes the question worth asking at all.
-    let bare = BlockAddress::from_parts(1, 0, 64, None, None);
-    let full = BlockAddress::from_parts(1, 0, 64, Some(1), Some(2));
+    let bare = ElementEntry::from_parts(1, 0, 64, None, None);
+    let full = ElementEntry::from_parts(1, 0, 64, Some(1), Some(2));
     assert_eq!(std::mem::size_of_val(&bare), std::mem::size_of_val(&full));
     assert!(bare.block_id().is_none() && full.block_id().is_some());
 
@@ -1018,11 +1018,11 @@ fn an_address_is_sixteen_bytes_and_two_of_them_are_optional() {
 #[derive(Default)]
 struct DuplicationCensus {
     /// How many times each distinct address VALUE is stored anywhere on the shard.
-    stores_per_value: std::collections::HashMap<BlockAddress, usize>,
+    stores_per_value: std::collections::HashMap<ElementEntry, usize>,
     /// The distinct address values a model map holds for one physical location.
-    model_values_at: std::collections::HashMap<(u64, u64), std::collections::HashSet<BlockAddress>>,
+    model_values_at: std::collections::HashMap<(u64, u64), std::collections::HashSet<ElementEntry>>,
     /// The address the bucket index holds for one physical location.
-    bucket_value_at: std::collections::HashMap<(u64, u64), BlockAddress>,
+    bucket_value_at: std::collections::HashMap<(u64, u64), ElementEntry>,
     /// How many physical locations the bucket index named twice with different values. Nonzero
     /// would mean "the bucket-index address" is not well defined and the pairing below is wrong.
     bucket_location_collisions: usize,
@@ -1031,7 +1031,7 @@ struct DuplicationCensus {
 }
 
 impl DuplicationCensus {
-    fn observe_model(&mut self, address: &BlockAddress) {
+    fn observe_model(&mut self, address: &ElementEntry) {
         self.model_total += 1;
         *self.stores_per_value.entry(address.clone()).or_default() += 1;
         self.model_values_at
@@ -1040,7 +1040,7 @@ impl DuplicationCensus {
             .insert(address.clone());
     }
 
-    fn observe_bucket(&mut self, address: &BlockAddress) {
+    fn observe_bucket(&mut self, address: &ElementEntry) {
         self.bucket_total += 1;
         *self.stores_per_value.entry(address.clone()).or_default() += 1;
         let key = (address.block_slab_id(), address.offset());
@@ -1062,7 +1062,7 @@ impl DuplicationCensus {
 }
 
 /// Which fields two addresses for the same physical location disagree on.
-fn differing_fields(a: &BlockAddress, b: &BlockAddress) -> Vec<&'static str> {
+fn differing_fields(a: &ElementEntry, b: &ElementEntry) -> Vec<&'static str> {
     let mut out = Vec::new();
     if a.length() != b.length() {
         out.push("length");
@@ -1348,12 +1348,12 @@ fn series_lengths(engine: &TemporalEngine, shard_id: ShardId) -> SeriesLengthCen
 enum PricedSeries {
     #[allow(dead_code)]
     Empty,
-    One(u64, BlockAddress),
-    Many(BTreeMap<u64, BlockAddress>),
+    One(u64, ElementEntry),
+    Many(BTreeMap<u64, ElementEntry>),
 }
 
 impl PricedSeries {
-    fn insert(&mut self, key: u64, value: BlockAddress) {
+    fn insert(&mut self, key: u64, value: ElementEntry) {
         match self {
             PricedSeries::Empty => *self = PricedSeries::One(key, value),
             PricedSeries::One(existing, _) if *existing == key => {
@@ -1404,13 +1404,13 @@ fn the_container_shapes_priced_against_the_population_each_one_pays_in() {
     const LONG_SERIES: usize = 200;
     const LONG_POINTS: usize = 1_000;
 
-    fn address(i: u64) -> BlockAddress {
-        BlockAddress::from_parts(1, i * 64, 64, Some(i & u64::from(u16::MAX)), Some(i))
+    fn address(i: u64) -> ElementEntry {
+        ElementEntry::from_parts(1, i * 64, 64, Some(i & u64::from(u16::MAX)), Some(i))
     }
 
     // POSITIVE CONTROL first.
     let control_before = resident_bytes();
-    let control: Vec<(u64, BlockAddress)> = (0..SHORT_SERIES as u64).map(|i| (i, address(i))).collect();
+    let control: Vec<(u64, ElementEntry)> = (0..SHORT_SERIES as u64).map(|i| (i, address(i))).collect();
     let control_after = resident_bytes();
     let control_per = (control_after - control_before) as f64 / SHORT_SERIES as f64;
     assert_eq!(SHORT_SERIES, control.len(), "denominator: the control holds every element");
@@ -1419,11 +1419,11 @@ fn the_container_shapes_priced_against_the_population_each_one_pays_in() {
         "positive control must see the Vec it just built: {control_per:.1} bytes/entry -- \
          if this reads near zero the RSS harness is blind and every arm below is noise"
     );
-    println!("CONTROL Vec<(u64, BlockAddress)>: {control_per:.1} bytes/entry");
+    println!("CONTROL Vec<(u64, ElementEntry)>: {control_per:.1} bytes/entry");
 
     // --- SHORT: one entry per series, which is the population `One` pays in. ---
     let short_btree_before = resident_bytes();
-    let short_btree: Vec<BTreeMap<u64, BlockAddress>> = (0..SHORT_SERIES as u64)
+    let short_btree: Vec<BTreeMap<u64, ElementEntry>> = (0..SHORT_SERIES as u64)
         .map(|i| {
             let mut map = BTreeMap::new();
             map.insert(i, address(i));
@@ -1456,7 +1456,7 @@ fn the_container_shapes_priced_against_the_population_each_one_pays_in() {
     let long_entries = LONG_SERIES * LONG_POINTS;
 
     let long_btree_before = resident_bytes();
-    let long_btree: Vec<BTreeMap<u64, BlockAddress>> = (0..LONG_SERIES as u64)
+    let long_btree: Vec<BTreeMap<u64, ElementEntry>> = (0..LONG_SERIES as u64)
         .map(|s| {
             let mut map = BTreeMap::new();
             for t in 0..LONG_POINTS as u64 {
@@ -1478,9 +1478,9 @@ fn the_container_shapes_priced_against_the_population_each_one_pays_in() {
     // NOTE the lifetime: the table is owned BY the series, so an index cannot outlive the table
     // that gives it meaning -- there is no shard-wide handle here and nothing to free separately.
     let long_table_before = resident_bytes();
-    let long_table: Vec<(BTreeMap<u64, u32>, Vec<BlockAddress>)> = (0..LONG_SERIES as u64)
+    let long_table: Vec<(BTreeMap<u64, u32>, Vec<ElementEntry>)> = (0..LONG_SERIES as u64)
         .map(|s| {
-            let mut pages: Vec<BlockAddress> = Vec::new();
+            let mut pages: Vec<ElementEntry> = Vec::new();
             let mut map = BTreeMap::new();
             for t in 0..LONG_POINTS as u64 {
                 let wanted = address(s * 16 + t / 500);
@@ -1514,7 +1514,7 @@ fn the_container_shapes_priced_against_the_population_each_one_pays_in() {
     std::hint::black_box((&control, &short_btree, &short_split, &long_btree, &long_table));
 
     println!("--- SHORT population: {SHORT_SERIES} series of ONE entry ---");
-    println!("  BTreeMap<u64, BlockAddress>: {short_btree_per:.1} bytes/entry");
+    println!("  BTreeMap<u64, ElementEntry>: {short_btree_per:.1} bytes/entry");
     println!("  Empty/One/Many split:        {short_split_per:.1} bytes/entry");
     println!(
         "  the One shape saves {:.1} bytes/entry ({:.1}%) on a single-entry series",
@@ -1523,7 +1523,7 @@ fn the_container_shapes_priced_against_the_population_each_one_pays_in() {
     );
 
     println!("--- LONG population: {LONG_SERIES} series of {LONG_POINTS} entries ---");
-    println!("  BTreeMap<u64, BlockAddress>:          {long_btree_per:.1} bytes/entry");
+    println!("  BTreeMap<u64, ElementEntry>:          {long_btree_per:.1} bytes/entry");
     println!(
         "  BTreeMap<u64, u32> + per-series pages: {long_table_per:.1} bytes/entry \
          ({distinct_pages} distinct pages over {long_entries} entries)"
@@ -1636,11 +1636,11 @@ fn the_bucket_index_holds_one_page_out_of_line_and_the_series_maps_hold_none() {
     // (1) The split shape is no wider than the CONTAINER HEADER it has to carry anyway, and a
     // single block costs one allocation of the entry rather than a node sized for eleven.
     let split = std::mem::size_of::<BlockIndexMap>();
-    let map = std::mem::size_of::<BTreeMap<u64, BlockAddress>>();
+    let map = std::mem::size_of::<BTreeMap<u64, ElementEntry>>();
     let page = std::mem::size_of::<BlockIndex>();
     let list = std::mem::size_of::<Vec<(u64, BlockIndex)>>();
     println!(
-        "BlockIndexMap is {split} B, BTreeMap<u64, BlockAddress> is {map} B, a page list header is \
+        "BlockIndexMap is {split} B, BTreeMap<u64, ElementEntry> is {map} B, a page list header is \
          {list} B, BlockIndex is {page} B"
     );
     assert_eq!(
@@ -1685,7 +1685,7 @@ fn the_bucket_index_holds_one_page_out_of_line_and_the_series_maps_hold_none() {
 
     // (2) All six timestamped series maps are one container. This binding is the guard: it is a
     // compile-time proof, and the count below is its denominator.
-    fn one_container(_: &std::collections::HashMap<String, BTreeMap<u64, BlockAddress>>) {}
+    fn one_container(_: &std::collections::HashMap<String, BTreeMap<u64, ElementEntry>>) {}
     let dir = tempfile::tempdir().expect("tempdir");
     let engine = new_engine(dir.path());
     let shards = engine.shards.read().expect("engine lock poisoned");
@@ -1903,23 +1903,23 @@ fn the_capacity_ceilings_each_narrowing_would_impose() {
     // byte.
     const ADDRESS_PAYLOAD_BYTES: usize = 8 + 8 + 4 + 2 + 1;
     assert!(
-        std::mem::size_of::<BlockAddress>() >= ADDRESS_PAYLOAD_BYTES,
-        "the derived payload {ADDRESS_PAYLOAD_BYTES} exceeds size_of BlockAddress {}, so a field \
+        std::mem::size_of::<ElementEntry>() >= ADDRESS_PAYLOAD_BYTES,
+        "the derived payload {ADDRESS_PAYLOAD_BYTES} exceeds size_of ElementEntry {}, so a field \
          has changed width and the derivation above has to change with it",
-        std::mem::size_of::<BlockAddress>()
+        std::mem::size_of::<ElementEntry>()
     );
     println!(
-        "  size_of BlockAddress = {} (payload 2*8 + 4 + 2 + 1 = {ADDRESS_PAYLOAD_BYTES}, so {} \
+        "  size_of ElementEntry = {} (payload 2*8 + 4 + 2 + 1 = {ADDRESS_PAYLOAD_BYTES}, so {} \
          bytes are padding)",
-        std::mem::size_of::<BlockAddress>(),
-        std::mem::size_of::<BlockAddress>() - ADDRESS_PAYLOAD_BYTES
+        std::mem::size_of::<ElementEntry>(),
+        std::mem::size_of::<ElementEntry>() - ADDRESS_PAYLOAD_BYTES
     );
     println!(
-        "  align_of BlockAddress = {}",
-        std::mem::align_of::<BlockAddress>()
+        "  align_of ElementEntry = {}",
+        std::mem::align_of::<ElementEntry>()
     );
     println!(
-        "  size_of BlockIndex = {} (it holds a BlockAddress, an Arc<str>, an Option<Arc<str>>, a \
+        "  size_of BlockIndex = {} (it holds a ElementEntry, an Arc<str>, an Option<Arc<str>>, a \
          one-byte model spelling and 3 bools)",
         std::mem::size_of::<BlockIndex>()
     );
@@ -2578,7 +2578,7 @@ fn two_buckets_holding_one_object_id_are_reported_as_one_object() {
                 object_key: std::sync::Arc::from("one-key"),
                 model_id: crate::engine::storage_bucket_internals::StoredModelKind::String,
                 component: None,
-                address: BlockAddress::from_parts(1, offset, 64, Some(0), None),
+                address: ElementEntry::from_parts(1, offset, 64, Some(0), None),
                 dirty: false,
                 deleted: false,
             },
@@ -2732,7 +2732,7 @@ impl DerivationCensus {
 fn the_stored_against_derived_census_is_retired_because_its_other_side_is_gone() {
     // Asserted rather than narrated, so it cannot quietly stop being true: if an object id ever
     // returns to a block address, `generation()` starts answering `Some(42)` here and this fires.
-    let address = crate::block_store::BlockAddress::from_parts(1, 0, 16, Some(7), Some(42));
+    let address = crate::block_store::ElementEntry::from_parts(1, 0, 16, Some(7), Some(42));
     assert_eq!(
         address.generation(),
         Some(7),
@@ -2953,281 +2953,212 @@ fn the_page_identity_has_no_constructor_that_takes_an_id() {
     );
 }
 
-/// THE PRICED SHAPES FOR AN ADDRESS AND ITS SIBLINGS, and the measured finding that the siblings
-/// are NOT SEPARABLE at the population that holds them.
+/// THE PRICED SHAPES FOR AN ADDRESS AND ITS SIBLINGS, measured over the REAL types now that the
+/// siblings have moved.
 ///
-/// # WHAT WAS PRICED
+/// # WHAT THIS WAS, AND WHAT IT IS
 ///
-/// [`BlockAddress`] is one 64-bit address word plus three siblings -- `length` (4), `block_id` (2)
-/// and the `present` byte (1). The shape priced here is the word ALONE at eight bytes, with those
-/// three carried by whatever holds the address instead. Every structure below is measured twice:
-/// as the tree has it, and as a replica of that shape after the move.
+/// This landed as the price of a PROPOSAL: `BlockAddress` still held `length`, `block_id` and
+/// `present`, and the shapes measured here were replicas standing in for what moving them onto the
+/// holder would cost. The move has happened, so the rows below name the real types and this is a
+/// guard on the result rather than a price for a plan.
+///
+/// THE NUMBERS DID NOT CHANGE, WHICH IS THE WHOLE POINT. The measurement said the move was worth
+/// zero at every holder, and the move landed, and it is still zero. The pre-move widths are kept
+/// as named constants so each row is a comparison rather than an assertion that a type equals
+/// itself.
 ///
 /// # THE MEASURED ANSWER IS ZERO, AND THE ARITHMETIC IS WHY
 ///
-/// THE ADDRESS WORD IS ALREADY EXACTLY FULL -- the slab id in the high 32 bits and the offset in
-/// the low 32, with no spare bit (see [`make_block_address_word`]). So the three siblings have
-/// nowhere to go but BESIDE the word, and 8 + 4 + 2 + 1 = 15 rounds straight back to the 16 a
-/// `BlockAddress` costs today. The eight bytes the word sheds reappear as seven of sibling and one
-/// of alignment at every holder. The address alone would be 8; the HOLDER is 16, which is what it
-/// already is.
+/// The address word was already exactly full -- the slab id in the high 32 bits and the offset in
+/// the low 32, with no spare bit -- so the three siblings had nowhere to go but BESIDE it, and
+/// 8 + 4 + 2 + 1 = 15 rounds straight back to the 16 a held address cost. The word sheds eight
+/// bytes and the holder takes eight back. That is a RELOCATION, not a deletion, and only the
+/// readers tell the two apart -- a struct diff cannot.
 ///
-/// This is the difference between a deletion and a RELOCATION, and only the readers tell the two
-/// apart -- a struct diff cannot. Nothing here says a field is redundant; it says the field moves.
+/// # THE INDEX ENTRY DOES NOT MOVE AT ALL ON THIS BASE, WHICH IS WORTH SAYING PRECISELY
 ///
-/// # WHY THE LENGTH CANNOT SIMPLY NOT TRAVEL, WHICH IS THE FACT THIS GUARD EXISTS TO RECORD
+/// `BlockIndex` holds its address by value, and that field goes from a 16-byte `BlockAddress` to a
+/// 16-byte [`ElementEntry`] -- the same width, so not one byte of the entry changes. Since the
+/// merged entry the address sits in carries 56 bytes of field in 56 with NO SLACK, there is also no
+/// slack for a change to hide in: the width is unmoved because the field widths are unmoved, not
+/// because a difference was absorbed.
 ///
-/// [`crate::block_store::BlockStore::read`] passes `address.length()` into `read_range` to SIZE the
-/// read: the length is what says how many bytes to pull, so it is needed BEFORE the block can be
-/// read at all, not recovered from it afterwards. And the chain from the most numerous holder to
-/// that call is closed:
+/// THAT IS A DIFFERENT CLAIM FROM THE ONE THIS TEST FIRST SHIPPED, and the difference is the reason
+/// it is restated rather than re-goldened. On the base this was written against, the entry held 52
+/// bytes of field in 56 and the shed took it to 51 in 56 -- a one-byte reduction that `size_of`
+/// could not see, which is what CONTROL A was there to explain. On this base the shed removes no
+/// byte from the entry at all, so CONTROL A no longer explains this change; it states a property of
+/// the STRUCTURE, which is still worth pinning and is now labelled as that and nothing more.
 ///
-///   the model map level-2 value (`BTreeMap<u64, BlockAddress>`)
+/// # WHY THE LENGTH COULD NOT SIMPLY NOT TRAVEL
+///
+/// [`crate::block_store::BlockStore::read`] passes the length into `read_range` to SIZE the read,
+/// so it is needed before the block can be read at all rather than recovered from it afterwards.
+/// And the chain from the most numerous holder to that call is closed:
+///
+///   the model map level-2 value (`BTreeMap<u64, ElementEntry>`)
 ///     -> `packed_pages::read_feature_point`
 ///     -> `engine::read_block_bytes`
 ///     -> `BlockStore::read`
 ///     -> `read_range(slab, offset, length)`
 ///
-/// So the population named as the one that would pay is exactly the population that reads blocks,
-/// and every address in it needs its length beside it. The same holds for all three
-/// `Option<BlockAddress>` holders -- `FastPathRead::String`, the `tombstone` argument of
-/// `mark_bucket_index_block_deleted_recording`, and `wal::WalOutcomeItem::address` -- each of which
-/// feeds either that read or an index re-insert. `block_id` travels for the same reason one level
-/// up: `BlockIndex::log_backed` and the live filter read it precisely SO THAT they answer with no
+/// So the population that would have paid is exactly the population that reads blocks, and every
+/// address in it needs its length beside it. `block_id` travels for the same reason one level up:
+/// the live filter and `ElementEntry::log_resident` read it precisely SO THAT they answer with no
 /// I/O.
 ///
-/// # AND THE WIRE SLOTS EXIST BUT NOTHING COULD FILL THEM
+/// # THE FIELD SET IS NOT POLICED HERE, AND DELIBERATELY SO
 ///
-/// `length` and `block_id` already have their own wire slots (`l` and `pi`) and `present` is
-/// in-memory only and never a wire field, so it would be easy to read this as a change the stored
-/// form does not notice. It is not. `From<BlockAddress> for BlockAddressWire` is handed AN ADDRESS
-/// AND NOTHING ELSE and fills those two slots from the address itself; with the fields moved out it
-/// has no values to write. The slots cannot be dropped either -- the index log packs that struct
-/// POSITIONALLY with a plain `rmp_serde::Serializer` and carries no struct version, so a shortened
-/// array refuses every row already on disk. And `BlockAddress` rides `#[serde(into)]` through
-/// fifteen nested `ShardState` maps where the holder is not in scope at the point the slot is
-/// written. Supplying the siblings there is A SERIALIZER REWRITE, NOT A CONSTRUCTOR CHANGE, which
-/// is the thing that makes the move larger than it looks -- the same constraint this tree already
-/// recorded when `object_id` left.
+/// This test pins WIDTHS. A width comparison cannot see a change that REPLACES fields while holding
+/// the total -- it would leave a stale mirror passing, which is the failure a guard like this exists
+/// to prevent. So the entry's field set is left to the two places that already check it properly,
+/// each with `offset_of!` AND a reconstruction:
 ///
-/// # THE OPPOSITE MOVE ALREADY SHIPPED, DELIBERATELY
+///   * `engine::tests::container_member_shadow::every_byte_of_a_zset_members_index_shadow_is_accounted_for`
+///   * `block_store::address_size_tests::every_byte_of_an_address_and_of_the_holder_that_carries_it_is_accounted_for`
 ///
-/// `index_log::IndexItem` used to carry `address`, `size`, `in_log` and `block_id` side by side.
-/// They were CONSOLIDATED into one `ElementEntry` holding the address, because all three are
-/// derivations of it: `size` is `address.length()`, `block_id` is `address.block_id()` and `in_log`
-/// is `address.block_id().is_none()`. Splitting them back out would re-create the two spellings of
-/// one derivation that consolidation removed, and would undo the `sz` strip/restore harvest and the
-/// `DERIVED_SLOT_DISAGREEMENTS` counter built on it -- with no test failing, because a disagreeing
-/// row is counted and accepted rather than refused. A guard that records why the opposite was
-/// chosen is worth more than one that records a number.
+/// BOTH HALVES ARE NEEDED AND NEITHER SUFFICES. `offset_of!(T, field)` fails to COMPILE when a
+/// field is removed or renamed, which a width check never notices; and a wrong type in the width
+/// column still compiles, so only the reconstruction catches that. An earlier version of this test
+/// carried a replica of the entry and compared its width -- that replica is GONE rather than
+/// completed, because two structures describing one fact drift, and the one that drifts silently is
+/// the copy nobody reads.
 ///
 /// # THE SHAPE THAT CAN PAY, NAMED BUT NOT PURSUED HERE
 ///
 /// Width at the long-series population is reachable by a PER-SERIES BLOCK TABLE -- the
-/// `BTreeMap<u64, u32>` beside a `Vec<BlockAddress>` that
+/// `BTreeMap<u64, u32>` beside a `Vec<ElementEntry>` that
 /// `the_container_shapes_priced_against_the_population_each_one_pays_in` already writes out and
-/// prices. It pays for the reason this move does not: it amortises the key AND the siblings across
-/// a whole series instead of relocating them once per address. That is a separate change and is
-/// scoped separately; nothing here measures it.
-///
-/// # THE REPLICAS ARE HELD HONEST BY THE ASSERTS, NOT BY INSPECTION
-///
-/// A replica of a structure is not that structure, so every replica below is compared against the
-/// real type it mirrors. If a field is added to `BlockIndex` or to `BlockAddress`, the replica does
-/// not move with it and the comparison FAILS -- which is the point. A stale replica is a red test
-/// here rather than a quietly wrong number.
+/// prices. It pays for the reason this move did not: it amortises the key AND the siblings across a
+/// whole series instead of relocating them once per address. That is scoped separately; nothing
+/// here measures it.
 #[test]
 fn the_priced_shapes_for_an_address_and_its_siblings() {
     use crate::block_store::{BlockAddress, ElementEntry};
     use crate::engine::state::{BlockIndex, BlockIndexMap};
     use std::mem::size_of;
 
-    // The address word alone: slab in the high 32 bits, offset in the low 32, exactly full.
-    #[allow(dead_code)]
-    #[derive(Clone, Copy)]
-    struct ShedAddress {
-        address: u64,
-    }
-    // What any holder of that word must then carry, because the read path needs the length and
-    // the live filter needs the block id.
-    #[allow(dead_code)]
-    #[derive(Clone, Copy)]
-    struct ShedHolder {
-        address: ShedAddress,
-        length: u32,
-        block_id: u16,
-        present: u8,
-    }
-    // `BlockIndex` with the siblings pulled out of its address and set beside them.
-    #[allow(dead_code)]
-    struct ShedEntry {
-        object_key: std::sync::Arc<str>,
-        model_id: u8,
-        component: Option<std::sync::Arc<str>>,
-        address: ShedAddress,
-        length: u32,
-        block_id: u16,
-        present: u8,
-        dirty: bool,
-        deleted: bool,
-        log_backed: bool,
-    }
+    // THE WIDTHS BEFORE THE SIBLINGS MOVED, as constants rather than prose, so every row below is
+    // a comparison and not a restatement of the current value.
+    const WAS_ADDRESS: usize = 16;
+    const WAS_OPTION_ADDRESS: usize = 24;
+    const WAS_MAP_VALUE: usize = 16;
+    const WAS_STRIDE: usize = 24;
+    const WAS_OPTION_VALUE: usize = 24;
+    const WAS_ENTRY: usize = 56;
+    const WAS_ENTRY_MAP: usize = 24;
 
-    // CONTROL A -- SLACK ABSORPTION. The entry above MINUS one byte of field. It is still the same
-    // width, which says `size_of` is BLIND to a one-byte change at this structure. That cuts both
-    // ways on purpose: nobody may later read an unmoved entry width as evidence that the move did
-    // nothing, NOR as evidence that it worked. The entry width is not the claim either way.
-    #[allow(dead_code)]
-    struct ControlSlack {
-        object_key: std::sync::Arc<str>,
-        model_id: u8,
-        component: Option<std::sync::Arc<str>>,
-        address: ShedAddress,
-        length: u32,
-        block_id: u16,
-        dirty: bool,
-        deleted: bool,
-        log_backed: bool,
-    }
-    // CONTROL B -- THE INSTRUMENT IS ALIVE. The same entry plus a whole eight-byte field. If this
-    // does not move, `size_of` is measuring nothing and every row above is noise.
-    #[allow(dead_code)]
-    struct ControlAlive {
-        object_key: std::sync::Arc<str>,
-        model_id: u8,
-        component: Option<std::sync::Arc<str>>,
-        address: ShedAddress,
-        length: u32,
-        block_id: u16,
-        present: u8,
-        extra: u64,
-        dirty: bool,
-        deleted: bool,
-        log_backed: bool,
-    }
-
-    println!("\n=== an address, and the same address with its siblings beside it ===");
-    println!("{:<48} {:>4}  {:>4}", "", "held", "moved");
+    println!("\n=== the address word itself ===");
+    println!("{:<48} {:>4} -> {:>4}", "BlockAddress", WAS_ADDRESS, size_of::<BlockAddress>());
     println!(
-        "{:<48} {:>4}  {:>4}",
-        "BlockAddress / the word alone",
-        size_of::<BlockAddress>(),
-        size_of::<ShedAddress>()
+        "{:<48} {:>4} -> {:>4}",
+        "Option<BlockAddress>",
+        WAS_OPTION_ADDRESS,
+        size_of::<Option<BlockAddress>>()
     );
-    println!(
-        "{:<48} {:>4}  {:>4}",
-        "Option<..>",
+    assert_eq!(8, size_of::<BlockAddress>(), "one word: slab in the high half, offset in the low");
+    assert_eq!(
+        2 * size_of::<BlockAddress>(),
         size_of::<Option<BlockAddress>>(),
-        size_of::<Option<ShedAddress>>()
+        "a bare word has NO niche, so the optional form pays a whole discriminant word: 16, not 8"
     );
-
-    println!("\n=== the holders, which is where the siblings land ===");
-    for (label, held, moved) in [
-        ("model map level-2 value", size_of::<BlockAddress>(), size_of::<ShedHolder>()),
-        (
-            "(u64, value) -- the BTreeMap stride",
-            size_of::<(u64, BlockAddress)>(),
-            size_of::<(u64, ShedHolder)>(),
-        ),
-        (
-            "Option<value>",
-            size_of::<Option<BlockAddress>>(),
-            size_of::<Option<ShedHolder>>(),
-        ),
-        ("BlockIndex", size_of::<BlockIndex>(), size_of::<ShedEntry>()),
-        ("BlockIndexMap", size_of::<BlockIndexMap>(), size_of::<BlockIndexMap>()),
-        ("ElementEntry", size_of::<ElementEntry>(), size_of::<ShedHolder>()),
-        (
-            "Option<ElementEntry>",
-            size_of::<Option<ElementEntry>>(),
-            size_of::<Option<ShedHolder>>(),
-        ),
-    ] {
-        let verdict = if held == moved { "zero" } else { "MOVED" };
-        println!("{label:<48} {held:>4}  {moved:>4}   {verdict}");
-    }
-
-    // THE WORD SHEDS EIGHT AND THE HOLDER SHEDS NOTHING. Reconstructed rather than restated, so a
-    // width moving cannot leave the arithmetic adding up to the right answer for the wrong reason.
-    let word = size_of::<ShedAddress>();
-    let siblings = 4 + 2 + 1; // length, block id, presence byte
-    assert_eq!(8, word, "the address word alone is one eight-byte word");
-    assert_eq!(
-        (word + siblings + 7) / 8 * 8,
-        size_of::<BlockAddress>(),
-        "the word plus its siblings rounds back to what a held address already costs"
-    );
-
-    // THE FINDING, one assert per population that was expected to pay.
     assert_eq!(
         size_of::<BlockAddress>(),
-        size_of::<ShedHolder>(),
-        "a model map level-2 value does not shrink: the siblings relocate into it"
-    );
-    assert_eq!(
-        size_of::<(u64, BlockAddress)>(),
-        size_of::<(u64, ShedHolder)>(),
-        "the BTreeMap stride over that value does not move either"
-    );
-    assert_eq!(
-        size_of::<Option<BlockAddress>>(),
-        size_of::<Option<ShedHolder>>(),
-        "nor does the optional holder"
-    );
-    assert_eq!(
-        size_of::<ElementEntry>(),
-        size_of::<ShedHolder>(),
-        "nor the row payload, which holds the same struct the model map does"
-    );
-    assert_eq!(
-        size_of::<BlockIndex>(),
-        size_of::<ShedEntry>(),
-        "nor the index entry -- and if this fails because a field was ADDED to BlockIndex, the \
-         replica beside it is stale and is what needs restating"
-    );
-
-    println!("\n=== controls ===");
-    println!(
-        "{:<48} {:>4}",
-        "CONTROL A  the entry minus one byte of field",
-        size_of::<ControlSlack>()
-    );
-    println!(
-        "{:<48} {:>4}",
-        "CONTROL B  the entry plus a whole u64",
-        size_of::<ControlAlive>()
-    );
-    assert_eq!(
-        size_of::<ShedEntry>(),
-        size_of::<ControlSlack>(),
-        "CONTROL A: a byte off this entry is absorbed by slack, so `size_of` cannot see it -- \
-         which is why the entry width is evidence for nothing in either direction"
-    );
-    assert_eq!(
-        size_of::<ShedEntry>() + 8,
-        size_of::<ControlAlive>(),
-        "CONTROL B: the instrument must move when the width really moves, or every row above is \
-         noise"
-    );
-
-    println!("\n=== whether a niche is on offer ===");
-    println!("{:<48} {:>4}", "Option<u64>", size_of::<Option<u64>>());
-    println!(
-        "{:<48} {:>4}",
-        "Option<NonZeroU64>",
-        size_of::<Option<std::num::NonZeroU64>>()
-    );
-    // A BARE WORD HAS NO NICHE, and the one that would is not available: a `NonZeroU64` would make
-    // the optional form eight bytes, but the all-zero word is a LEGAL address -- slab 0, offset 0 --
-    // so zero cannot be spent as the absent case.
-    assert_eq!(
-        2 * size_of::<ShedAddress>(),
-        size_of::<Option<ShedAddress>>(),
-        "a bare address word has no niche, so the optional form pays a whole discriminant word"
-    );
-    assert_eq!(
-        size_of::<ShedAddress>(),
         size_of::<Option<std::num::NonZeroU64>>(),
-        "the niche a non-zero word WOULD give, which slab 0 offset 0 rules out"
+        "the niche a non-zero word WOULD have given -- which slab 0 offset 0, a legal address, \
+         rules out"
+    );
+
+    println!("\n=== the holders, which is where the siblings landed ===");
+    for (label, was, now) in [
+        ("model map level-2 value", WAS_MAP_VALUE, size_of::<ElementEntry>()),
+        ("(u64, value) -- the BTreeMap stride", WAS_STRIDE, size_of::<(u64, ElementEntry)>()),
+        ("Option<value>", WAS_OPTION_VALUE, size_of::<Option<ElementEntry>>()),
+        ("BlockIndex", WAS_ENTRY, size_of::<BlockIndex>()),
+        ("BlockIndexMap", WAS_ENTRY_MAP, size_of::<BlockIndexMap>()),
+    ] {
+        let verdict = if was == now { "zero" } else { "MOVED" };
+        println!("{label:<48} {was:>4} -> {now:>4}   {verdict}");
+    }
+
+    assert_eq!(
+        WAS_MAP_VALUE,
+        size_of::<ElementEntry>(),
+        "a model map level-2 value did not shrink: the siblings relocated into it"
+    );
+    assert_eq!(
+        WAS_STRIDE,
+        size_of::<(u64, ElementEntry)>(),
+        "nor did the BTreeMap stride over that value"
+    );
+    assert_eq!(WAS_OPTION_VALUE, size_of::<Option<ElementEntry>>(), "nor the optional holder");
+    assert_eq!(
+        WAS_ENTRY,
+        size_of::<BlockIndex>(),
+        "nor the index entry -- and on this base it does not change by even one byte of FIELD, \
+         because its address field is 16 wide before and after"
+    );
+    assert_eq!(WAS_ENTRY_MAP, size_of::<BlockIndexMap>(), "nor the map that holds the entries");
+
+    // THE RELOCATION, ASSERTED RATHER THAN ARGUED.
+    let siblings = 4 + 2 + 1; // length, block id, presence byte
+    assert_eq!(
+        (size_of::<BlockAddress>() + siblings + 7) / 8 * 8,
+        size_of::<ElementEntry>(),
+        "the word as an eight-aligned group plus the three siblings as its tail IS the holder"
+    );
+    assert_eq!(
+        WAS_ADDRESS,
+        size_of::<ElementEntry>(),
+        "and the holder costs exactly what the address cost while it held them, which is why the \
+         measured win is zero and no footprint claim belongs on this change"
+    );
+
+    println!("\n=== controls: what the instrument can and cannot see ===");
+    // THESE ARE NOT MIRRORS OF `BlockIndex` AND MUST NOT BE COMPLETED INTO ONE. They are
+    // deliberately perturbed shapes, and that is what a control is: each exists to show one thing
+    // about the INSTRUMENT. Making them faithful would collapse two distinguishable claims into
+    // one and leave neither demonstrated.
+    //
+    // CONTROL A -- an eight-aligned structure carrying 55 bytes of field. It comes out 56, the
+    // same as one carrying 56, which is what "`size_of` is blind to a one-byte change here" means.
+    // This is a property of the STRUCTURE and not an account of this change: on this base the shed
+    // removes no byte from the entry at all.
+    #[allow(dead_code)]
+    struct ControlFiftyFive {
+        a: std::sync::Arc<str>,
+        b: Option<std::sync::Arc<str>>,
+        c: ElementEntry,
+        d: u32,
+        e: u8,
+        f: u8,
+        g: u8,
+    }
+    // CONTROL B -- the same shape plus a whole eight-byte field. If this does not move, `size_of`
+    // is measuring nothing and every row above it is noise.
+    #[allow(dead_code)]
+    struct ControlPlusAWord {
+        a: std::sync::Arc<str>,
+        b: Option<std::sync::Arc<str>>,
+        c: ElementEntry,
+        d: u32,
+        e: u8,
+        f: u8,
+        g: u8,
+        extra: u64,
+    }
+    println!("{:<48} {:>4}", "CONTROL A  55 bytes of field, 8-aligned", size_of::<ControlFiftyFive>());
+    println!("{:<48} {:>4}", "CONTROL B  the same plus a whole u64", size_of::<ControlPlusAWord>());
+    assert_eq!(
+        56,
+        size_of::<ControlFiftyFive>(),
+        "CONTROL A: 55 bytes of field in an eight-aligned structure still measures 56, so a \
+         one-byte difference at this size is invisible to `size_of` in either direction"
+    );
+    assert_eq!(
+        64,
+        size_of::<ControlPlusAWord>(),
+        "CONTROL B: the instrument must move when the width really moves"
     );
 }

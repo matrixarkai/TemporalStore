@@ -38,7 +38,7 @@ use std::collections::HashMap;
 use std::collections::HashSet;
 use std::sync::Arc;
 
-use crate::block_store::BlockAddress;
+use crate::block_store::ElementEntry;
 
 #[cfg(feature = "alloc-probe")]
 use crate::alloc_probe::Probe;
@@ -76,7 +76,7 @@ fn shared_text_bytes(seen: &mut HashSet<usize>, value: &str) -> u64 {
 struct Row {
     key: Arc<str>,
     at: u64,
-    address: BlockAddress,
+    address: ElementEntry,
 }
 
 /// `keys` objects carrying `points_per_key` points each, on the shipped routing range.
@@ -88,7 +88,7 @@ fn rows(keys: usize, points_per_key: usize) -> Vec<Row> {
             out.push(Row {
                 key: Arc::clone(&key),
                 at: 1_700_000_000_000 + p as u64,
-                address: BlockAddress::from_parts(
+                address: ElementEntry::from_parts(
                     (k * points_per_key + p) as u64,
                     0,
                     64,
@@ -114,8 +114,8 @@ fn bucket_of(key: &str) -> u32 {
 /// the two-level arm with a saving that already landed, and the first version of this fixture did
 /// exactly that -- it read 0.815x at a thousand points a key purely because its arm A was the old
 /// shape.
-fn arm_a(rows: &[Row]) -> HashMap<String, BTreeMap<u64, BlockAddress>> {
-    let mut staged: HashMap<String, Vec<(u64, BlockAddress)>> = HashMap::new();
+fn arm_a(rows: &[Row]) -> HashMap<String, BTreeMap<u64, ElementEntry>> {
+    let mut staged: HashMap<String, Vec<(u64, ElementEntry)>> = HashMap::new();
     for row in rows {
         staged
             .entry(row.key.to_string())
@@ -130,8 +130,8 @@ fn arm_a(rows: &[Row]) -> HashMap<String, BTreeMap<u64, BlockAddress>> {
 
 /// ARM A as it was BEFORE the decode repack, kept as a third reading so the two changes are not
 /// confused with each other.
-fn arm_a_ascending(rows: &[Row]) -> HashMap<String, BTreeMap<u64, BlockAddress>> {
-    let mut map: HashMap<String, BTreeMap<u64, BlockAddress>> = HashMap::new();
+fn arm_a_ascending(rows: &[Row]) -> HashMap<String, BTreeMap<u64, ElementEntry>> {
+    let mut map: HashMap<String, BTreeMap<u64, ElementEntry>> = HashMap::new();
     for row in rows {
         map.entry(row.key.to_string())
             .or_default()
@@ -145,8 +145,8 @@ fn arm_a_ascending(rows: &[Row]) -> HashMap<String, BTreeMap<u64, BlockAddress>>
 /// The rows carry their own identity, so the entry itself carries none -- that is the part of the
 /// shape being taken. They are SORTED by (key, timestamp), so a lookup inside a bucket is a binary
 /// search and not a walk.
-fn arm_b(rows: &[Row]) -> HashMap<u32, Vec<(Arc<str>, u64, BlockAddress)>> {
-    let mut map: HashMap<u32, Vec<(Arc<str>, u64, BlockAddress)>> = HashMap::new();
+fn arm_b(rows: &[Row]) -> HashMap<u32, Vec<(Arc<str>, u64, ElementEntry)>> {
+    let mut map: HashMap<u32, Vec<(Arc<str>, u64, ElementEntry)>> = HashMap::new();
     for row in rows {
         map.entry(bucket_of(&row.key)).or_default().push((
             Arc::clone(&row.key),
@@ -171,8 +171,8 @@ fn arm_b(rows: &[Row]) -> HashMap<u32, Vec<(Arc<str>, u64, BlockAddress)>> {
 /// lives, without moving identity out of the key position. If this arm matches arm B where arm B
 /// wins, the second level is buying nothing the first level has not already bought, and the much
 /// smaller change is the right one.
-fn arm_c(rows: &[Row]) -> HashMap<String, Vec<(u64, BlockAddress)>> {
-    let mut map: HashMap<String, Vec<(u64, BlockAddress)>> = HashMap::new();
+fn arm_c(rows: &[Row]) -> HashMap<String, Vec<(u64, ElementEntry)>> {
+    let mut map: HashMap<String, Vec<(u64, ElementEntry)>> = HashMap::new();
     for row in rows {
         map.entry(row.key.to_string())
             .or_default()
@@ -192,7 +192,7 @@ fn arm_c(rows: &[Row]) -> HashMap<String, Vec<(u64, BlockAddress)>> {
 #[derive(Clone)]
 struct GroupedBucket {
     objects: Vec<(Arc<str>, u32, u32)>,
-    rows: Vec<(u64, BlockAddress)>,
+    rows: Vec<(u64, ElementEntry)>,
 }
 
 /// ARM D -- two levels, with identity stored ONCE PER OBJECT instead of once per row.
@@ -212,7 +212,7 @@ struct GroupedBucket {
 /// object's own contiguous slice of `rows` for the inner key. Nothing is walked.
 fn arm_d(rows_in: &[Row]) -> HashMap<u32, GroupedBucket> {
     // Group by bucket, then by key inside the bucket.
-    let mut staged: HashMap<u32, HashMap<Arc<str>, Vec<(u64, BlockAddress)>>> = HashMap::new();
+    let mut staged: HashMap<u32, HashMap<Arc<str>, Vec<(u64, ElementEntry)>>> = HashMap::new();
     for row in rows_in {
         staged
             .entry(bucket_of(&row.key))
@@ -223,11 +223,11 @@ fn arm_d(rows_in: &[Row]) -> HashMap<u32, GroupedBucket> {
     }
     let mut out: HashMap<u32, GroupedBucket> = HashMap::new();
     for (bucket, by_key) in staged {
-        let mut keys: Vec<(Arc<str>, Vec<(u64, BlockAddress)>)> = by_key.into_iter().collect();
+        let mut keys: Vec<(Arc<str>, Vec<(u64, ElementEntry)>)> = by_key.into_iter().collect();
         keys.sort_by(|a, b| a.0.as_ref().cmp(b.0.as_ref()));
         let total: usize = keys.iter().map(|(_, points)| points.len()).sum();
         let mut objects: Vec<(Arc<str>, u32, u32)> = Vec::with_capacity(keys.len());
-        let mut flat: Vec<(u64, BlockAddress)> = Vec::with_capacity(total);
+        let mut flat: Vec<(u64, ElementEntry)> = Vec::with_capacity(total);
         for (key, mut points) in keys {
             points.sort_by_key(|(at, _)| *at);
             let start = flat.len() as u32;
@@ -246,7 +246,7 @@ fn arm_d(rows_in: &[Row]) -> HashMap<u32, GroupedBucket> {
 ///
 /// A fixture that measured bytes without ever reading one back would be pricing a structure nobody
 /// could use. Two binary searches, no walk.
-fn arm_d_lookup(map: &HashMap<u32, GroupedBucket>, key: &str, at: u64) -> Option<BlockAddress> {
+fn arm_d_lookup(map: &HashMap<u32, GroupedBucket>, key: &str, at: u64) -> Option<ElementEntry> {
     let bucket = map.get(&bucket_of(key))?;
     let which = bucket
         .objects
@@ -285,10 +285,10 @@ fn the_instrument_reads_a_known_container_and_a_known_node() {
          and every figure below is noise"
     );
 
-    let mut one: BTreeMap<u64, BlockAddress> = BTreeMap::new();
-    one.insert(1, BlockAddress::from_parts(1, 0, 64, Some(1), Some(1)));
+    let mut one: BTreeMap<u64, ElementEntry> = BTreeMap::new();
+    one.insert(1, ElementEntry::from_parts(1, 0, 64, Some(1), Some(1)));
     let (node_bytes, node_allocs) = deep_heap(&one);
-    let value_width = std::mem::size_of::<BlockAddress>() as u64;
+    let value_width = std::mem::size_of::<ElementEntry>() as u64;
     println!(
         "control: a one-entry BTreeMap charged {node_bytes} B in {node_allocs} allocations to carry \
          {value_width} B of value ({:.1}x)",
@@ -317,9 +317,9 @@ fn the_instrument_reads_a_known_container_and_a_known_node() {
 #[ignore = "builds both shapes over three populations under the counting allocator; run by name"]
 fn what_a_two_level_resident_map_costs_against_one_container_per_key() {
     println!(
-        "BlockAddress is {} B; a two-level row is {} B",
-        std::mem::size_of::<BlockAddress>(),
-        std::mem::size_of::<(Arc<str>, u64, BlockAddress)>()
+        "ElementEntry is {} B; a two-level row is {} B",
+        std::mem::size_of::<ElementEntry>(),
+        std::mem::size_of::<(Arc<str>, u64, ElementEntry)>()
     );
     let mut summary: Vec<(&'static str, f64, f64, f64)> = Vec::new();
     let mut vector_arm: Vec<f64> = Vec::new();
@@ -598,7 +598,7 @@ fn moves_to_build_grouped(rows_in: &[Row]) -> u64 {
     // One bucket's state: objects sorted by key, and a contiguous run of rows grouped in that order.
     struct Bucket {
         objects: Vec<(Arc<str>, u32, u32)>,
-        rows: Vec<(u64, BlockAddress)>,
+        rows: Vec<(u64, ElementEntry)>,
     }
     let mut buckets: HashMap<u32, Bucket> = HashMap::new();
     let mut moves = 0u64;
@@ -826,7 +826,7 @@ fn push_workload(keys: usize, points_per_key: usize, landing: Landing) -> Vec<Ro
             out.push(Row {
                 key: Arc::clone(key),
                 at,
-                address: BlockAddress::from_parts(
+                address: ElementEntry::from_parts(
                     (index * points_per_key + point) as u64,
                     0,
                     64,

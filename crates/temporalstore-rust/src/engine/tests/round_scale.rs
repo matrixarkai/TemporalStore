@@ -775,11 +775,11 @@ fn the_recovery_report_derives_three_answers_from_one_walk_and_takes_a_second_fo
 #[test]
 fn a_live_page_entry_carries_pointers_not_text_and_the_hoist_lowered_the_peak() {
     let entry_bytes = std::mem::size_of::<LiveBlockEntry>();
-    let address_bytes = std::mem::size_of::<crate::block_store::BlockAddress>();
+    let address_bytes = std::mem::size_of::<crate::block_store::ElementEntry>();
     let arc_str_bytes = std::mem::size_of::<std::sync::Arc<str>>();
     let string_bytes = std::mem::size_of::<String>();
 
-    println!("  LiveBlockEntry {entry_bytes} B, BlockAddress {address_bytes} B");
+    println!("  LiveBlockEntry {entry_bytes} B, ElementEntry {address_bytes} B");
     println!("  Arc<str> {arc_str_bytes} B against String {string_bytes} B");
 
     // HALF ONE: the text fields are shared pointers, not owned text. Asserted FIRST because it

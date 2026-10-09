@@ -655,7 +655,7 @@ fn the_pages_of_one_object_hold_one_allocation_of_its_object_key() {
 #[test]
 #[ignore = "capture instrument; run by name and read its output"]
 fn capture_the_stored_spelling_of_a_page_entry() {
-    use crate::block_store::BlockAddress;
+    use crate::block_store::ElementEntry;
     use crate::engine::state::{BucketLayoutState, BucketNode, CoreIndex};
 
     fn page(
@@ -673,7 +673,7 @@ fn capture_the_stored_spelling_of_a_page_entry() {
             object_key: Arc::from(key),
             model_id: crate::engine::storage_bucket_internals::stored_model_kind(model),
             component: component.map(Arc::from),
-            address: BlockAddress::from_parts(
+            address: ElementEntry::from_parts(
                 slab,
                 offset,
                 length,
@@ -855,7 +855,7 @@ pub(super) fn page_fixture(
         object_key: Arc::from("k"),
         model_id: crate::engine::storage_bucket_internals::StoredModelKind::String,
         component: component.map(Arc::from),
-        address: crate::block_store::BlockAddress::from_parts(
+        address: crate::block_store::ElementEntry::from_parts(
             1,
             2,
             length,
@@ -1726,7 +1726,7 @@ fn a_store_stamped_with_the_wrong_struct_version_is_refused_before_it_is_decoded
     // at this layer. `load_index_inner` is. Saying so here keeps the two from being confused. ---
     assert_eq!(
         8, SHARD_INDEX_FORMAT_VERSION,
-         "the struct version moved; the refusal messages pinned above quote it. Moved 2 -> 3 when the object id stopped folding the component in: the stored `oi` keeps its type, so an old index decodes cleanly and serves a recomputed id that disagrees with its own `object_index`. Moved 3 -> 5 when a container page gained the ability to state that one of its items was REMOVED: the payload is opaque to every index encoder, so an old index again decodes cleanly, and what disagrees is what a tombstone item MEANS -- the previous binary reads one as an empty live value and puts the element back. Moved 6 -> 7 when the object list began storing its SLOTS rather than a sorted set of its ids: the sequence is written in slot order and spells a placeholder `null`, so a bucket holding more than one object writes different bytes, and a previous binary reading them would take a slot position for an ascending rank -- which is the same class of silent misread as the three below, arriving on the load path. Moved 5 -> 6 when `object_id` left `BlockAddress`: `generation` is the block id alone now, so a WAL-resident page's generation went from Some(object_id) to None, every ref key it resolves through moves, and an OMITTED ref key restores to a different handle entirely. 4 was skipped and its reservation is now VOID -- it was held while this constant was 3, main moved to 5, and spending 4 would LOWER the constant, which `persistence.rs`'s one-sided `<` turns into a silent accept. A stamp may only ever increase. All three bumps share one shape: the stored row decodes cleanly and the disagreement appears later, on a recovery path. The pinned assertions above resolve the constant symbolically, so they followed it -- this literal is the tripwire that made someone come and check that they did"
+         "the struct version moved; the refusal messages pinned above quote it. Moved 2 -> 3 when the object id stopped folding the component in: the stored `oi` keeps its type, so an old index decodes cleanly and serves a recomputed id that disagrees with its own `object_index`. Moved 3 -> 5 when a container page gained the ability to state that one of its items was REMOVED: the payload is opaque to every index encoder, so an old index again decodes cleanly, and what disagrees is what a tombstone item MEANS -- the previous binary reads one as an empty live value and puts the element back. Moved 6 -> 7 when the object list began storing its SLOTS rather than a sorted set of its ids: the sequence is written in slot order and spells a placeholder `null`, so a bucket holding more than one object writes different bytes, and a previous binary reading them would take a slot position for an ascending rank -- which is the same class of silent misread as the three below, arriving on the load path. Moved 5 -> 6 when `object_id` left `ElementEntry`: `generation` is the block id alone now, so a WAL-resident page's generation went from Some(object_id) to None, every ref key it resolves through moves, and an OMITTED ref key restores to a different handle entirely. 4 was skipped and its reservation is now VOID -- it was held while this constant was 3, main moved to 5, and spending 4 would LOWER the constant, which `persistence.rs`'s one-sided `<` turns into a silent accept. A stamp may only ever increase. All three bumps share one shape: the stored row decodes cleanly and the disagreement appears later, on a recovery path. The pinned assertions above resolve the constant symbolically, so they followed it -- this literal is the tripwire that made someone come and check that they did"
     );
     // --- AND THE REFUSAL IS COUNTED APART FROM AN ABSENCE, which is the whole reason the counters
     //     exist: `load_index_inner` answers `Ok(None)` for stale, undecodable and absent alike, so
@@ -1868,7 +1868,6 @@ fn page_tuples(
 /// disease, and refusing the load is the only thing standing between the two.
 #[test]
 fn an_omitted_page_handle_restores_to_a_different_key_under_the_new_generation_rule() {
-    use crate::block_store::BlockAddress;
 
     const SLAB: u64 = 3;
     const OFFSET: u64 = 4_096;
@@ -1877,7 +1876,7 @@ fn an_omitted_page_handle_restores_to_a_different_key_under_the_new_generation_r
 
     // A WAL-RESIDENT page: no block id, an object id. This is the shape every container member
     // takes -- `log_backed` is literally `address.block_id().is_none()`.
-    let address = BlockAddress::from_parts(SLAB, OFFSET, LENGTH, None, Some(OBJECT_ID));
+    let address = ElementEntry::from_parts(SLAB, OFFSET, LENGTH, None, Some(OBJECT_ID));
     assert!(
         address.block_id().is_none(),
         "the fixture must be WAL-resident, or the generation term does not move and this test is \
@@ -1967,7 +1966,6 @@ fn an_omitted_page_handle_restores_to_a_different_key_under_the_new_generation_r
 /// the FOLDING arm and makes the claim there.
 #[test]
 fn a_record_whose_page_handle_was_omitted_still_names_its_page_after_the_fold() {
-    use crate::block_store::BlockAddress;
     use crate::index_log::{IndexItem, IndexItemKind};
 
     const SHARD: ShardId = 1;
@@ -1991,7 +1989,7 @@ fn a_record_whose_page_handle_was_omitted_still_names_its_page_after_the_fold() 
 
     // WAL-RESIDENT: no block id. The only shape whose generation term moves under this change, and
     // the shape every container member takes -- `log_backed` is `address.block_id().is_none()`.
-    let address = BlockAddress::from_parts(SLAB, OFFSET, LENGTH, None, Some(OBJECT_ID));
+    let address = ElementEntry::from_parts(SLAB, OFFSET, LENGTH, None, Some(OBJECT_ID));
     assert!(
         address.block_id().is_none(),
         "the fixture must be WAL-resident or the generation term does not move"
@@ -2029,7 +2027,7 @@ fn a_record_whose_page_handle_was_omitted_still_names_its_page_after_the_fold() 
         object_id: OBJECT_ID,
         // The fixture asserts above that this address carries no block id, so the three slots
         // this used to state -- 0, LENGTH, true -- are exactly what the codec now derives.
-        entry: Some(crate::block_store::ElementEntry::new(address.clone())),
+        entry: Some(address.clone()),
         deleted: false,
     };
     // FIXTURE TWO: a handle that is not any derivation of anything.
@@ -2043,7 +2041,7 @@ fn a_record_whose_page_handle_was_omitted_still_names_its_page_after_the_fold() 
         object_id: OBJECT_ID,
         // The fixture asserts above that this address carries no block id, so the three slots
         // this used to state -- 0, LENGTH, true -- are exactly what the codec now derives.
-        entry: Some(crate::block_store::ElementEntry::new(address.clone())),
+        entry: Some(address.clone()),
         deleted: false,
     };
     engine

@@ -1258,15 +1258,15 @@ impl Default for PublicStorageContract {
 
         let mut compatibility_aliases = BTreeMap::new();
         compatibility_aliases.insert(text("page_store"), text("StorageZone"));
-        compatibility_aliases.insert(text("block_store"), text("BlockAddress"));
+        compatibility_aliases.insert(text("block_store"), text("ElementEntry"));
         compatibility_aliases.insert(text("object_index"), text("ObjectIndexEntry"));
         compatibility_aliases.insert(text("page_segment_id"), text("segment_id"));
         compatibility_aliases.insert(text("wal"), text("AppendWatermark"));
         compatibility_aliases.insert(text("stream_blob"), text("Stream"));
 
         Self {
-            page_address: text("BlockAddress"),
-            block_address: text("BlockAddress"),
+            page_address: text("ElementEntry"),
+            block_address: text("ElementEntry"),
             page_index_entry: text("PageIndexEntry"),
             block_index_entry: text("BlockIndexEntry"),
             object_index_entry: text("ObjectIndexEntry"),
@@ -2529,8 +2529,8 @@ pub fn default_storage_write_contract(
     contract.insert("shard_id".to_string(), contract_u64(0));
     contract.insert("slot".to_string(), contract_text("slot:0"));
     contract.insert("placement_key".to_string(), contract_text("storage:parity"));
-    contract.insert("page_address".to_string(), contract_text("BlockAddress"));
-    contract.insert("block_address".to_string(), contract_text("BlockAddress"));
+    contract.insert("page_address".to_string(), contract_text("ElementEntry"));
+    contract.insert("block_address".to_string(), contract_text("ElementEntry"));
     contract.insert(
         "append_watermark".to_string(),
         contract_u64(metric(metrics, "append_watermark")),
@@ -2785,11 +2785,11 @@ pub fn default_storage_index_contract(
     let mut contract = BTreeMap::new();
     contract.insert(
         "page_address_codec".to_string(),
-        contract_text("BlockAddress"),
+        contract_text("ElementEntry"),
     );
     contract.insert(
         "block_address_codec".to_string(),
-        contract_text("BlockAddress"),
+        contract_text("ElementEntry"),
     );
     contract.insert(
         "stable_order".to_string(),

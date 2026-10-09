@@ -1154,7 +1154,7 @@ fn an_ordinal_does_not_cost_the_component_list_its_tag() {
 fn the_entry_is_fifty_six_bytes_and_every_one_is_accounted_for() {
     use std::mem::{align_of, offset_of, size_of};
 
-    let address = size_of::<crate::block_store::BlockAddress>();
+    let address = size_of::<crate::block_store::ElementEntry>();
     let model = size_of::<StoredModelKind>();
     let object_key = size_of::<Arc<str>>();
     let component = size_of::<Option<Arc<str>>>();
@@ -1486,7 +1486,7 @@ fn sample_entry() -> BlockIndex {
         object_key: Arc::from("k"),
         model_id: StoredModelKind::String,
         component: Some(Arc::from("a")),
-        address: crate::block_store::BlockAddress::from_parts(1, 2, 4, Some(5), Some(6)),
+        address: crate::block_store::ElementEntry::from_parts(1, 2, 4, Some(5), Some(6)),
         dirty: true,
         deleted: false,
     }
@@ -2121,7 +2121,7 @@ fn an_empty_value_still_carries_a_length_so_the_zero_length_tombstone_is_open() 
         "  FINDING: the shortest live page this route produces is {empty_length} B, so an empty \
          value does NOT block a `length == 0` tombstone. That bounds one route, not the class -- \
          `address_footprint::the_capacity_ceilings_each_narrowing_would_impose` asks it over a \
-         wide fixture, and `length` lives in `BlockAddress`, which another thread owns."
+         wide fixture, and `length` lives in `ElementEntry`, which another thread owns."
     );
 }
 

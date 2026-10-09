@@ -135,7 +135,7 @@ fn read_back(engine: &TemporalEngine, keys: &[String]) -> usize {
 /// `BlockAddressWire` still declared `rs`, an older index was the shape WITHOUT the key and this
 /// removed it. The field is retired, so a current address has no `rs` and an older index is the
 /// shape WITH it -- the key is added here instead, and the identity it demonstrates is the same one.
-fn as_an_older_build_wrote_it(address: &BlockAddress) -> BlockAddress {
+fn as_an_older_build_wrote_it(address: &ElementEntry) -> ElementEntry {
     let mut wire = serde_json::to_value(address).expect("an address serializes to its wire shape");
     let object = wire
         .as_object_mut()
@@ -189,7 +189,7 @@ fn round_trip_every_page_through_the_wire(
 /// rust-internal: reads the address wire shape, no product behaviour
 #[test]
 fn an_older_index_decodes_to_exactly_the_same_address() {
-    let address = BlockAddress::from_parts(3, 4096, 128, Some(1), Some(2));
+    let address = ElementEntry::from_parts(3, 4096, 128, Some(1), Some(2));
 
     // (1) THE KEY REMOVED ENTIRELY -- the oldest spelling.
     assert_eq!(
@@ -204,7 +204,7 @@ fn an_older_index_decodes_to_exactly_the_same_address() {
     wire.as_object_mut()
         .expect("object")
         .insert("rs".to_string(), serde_json::json!(545_210_715_u32));
-    let with_a_bucket: BlockAddress = serde_json::from_value(wire).expect("decodes");
+    let with_a_bucket: ElementEntry = serde_json::from_value(wire).expect("decodes");
     assert_eq!(
         with_a_bucket, address,
         "an index carrying a real routing bucket in `rs` must decode to the same address as one \

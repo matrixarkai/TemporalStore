@@ -34,7 +34,7 @@ use super::*;
 use std::collections::BTreeMap;
 use std::sync::Arc;
 
-use crate::block_store::BlockAddress;
+use crate::block_store::ElementEntry;
 use crate::engine::state::{
     BlockIndex, BlockIndexMap, BlockLookupRef, BlockRefs, ComponentBlocks, ComponentList,
     ObjectIndex,
@@ -99,7 +99,7 @@ fn probe_page(object: &str, component: Option<&str>, slot: u64) -> BlockIndex {
         object_key: Arc::from(object),
         model_id: crate::engine::storage_bucket_internals::StoredModelKind::String,
         component: component.map(Arc::from),
-        address: BlockAddress::from_parts(1, slot * 64, 64, Some(slot), Some(slot)),
+        address: ElementEntry::from_parts(1, slot * 64, 64, Some(slot), Some(slot)),
         dirty: false,
         deleted: false,
     }
@@ -543,7 +543,7 @@ impl Occupancy {
 }
 
 #[cfg(feature = "alloc-probe")]
-fn series_occupancy(map: &std::collections::HashMap<String, BTreeMap<u64, BlockAddress>>) -> Occupancy {
+fn series_occupancy(map: &std::collections::HashMap<String, BTreeMap<u64, ElementEntry>>) -> Occupancy {
     let mut occ = Occupancy::default();
     for series in map.values() {
         occ.observe(series.len());
@@ -677,12 +677,12 @@ fn the_clone_probe_sees_a_container_whose_size_is_known() {
 
     // And on the shape whose node overhead is the whole question: a one-entry B-tree must cost MORE
     // than the value it carries, or the container cost reported below is being absorbed somewhere.
-    let mut one: BTreeMap<u64, BlockAddress> = BTreeMap::new();
-    one.insert(1, BlockAddress::from_parts(1, 0, 64, Some(1), Some(1)));
+    let mut one: BTreeMap<u64, ElementEntry> = BTreeMap::new();
+    one.insert(1, ElementEntry::from_parts(1, 0, 64, Some(1), Some(1)));
     let one_bytes = deep_heap_bytes(&one);
-    let value_width = std::mem::size_of::<BlockAddress>() as u64;
+    let value_width = std::mem::size_of::<ElementEntry>() as u64;
     println!(
-        "clone probe on a one-entry BTreeMap<u64, BlockAddress>: {one_bytes} B to carry \
+        "clone probe on a one-entry BTreeMap<u64, ElementEntry>: {one_bytes} B to carry \
          {value_width} B of value ({:.1}x)",
         one_bytes as f64 / value_width as f64
     );
@@ -807,7 +807,7 @@ fn what_a_live_key_costs_in_the_index_at_two_corpus_sizes() {
             shard.dirty_objects.bucket_ids().count()
         );
         let rows: Vec<(String, u64)> = vec![
-            ("strings HashMap<ModelKey, BlockAddress>".to_string(), strings_bytes),
+            ("strings HashMap<ModelKey, ElementEntry>".to_string(), strings_bytes),
             ("features HashMap<String, BTreeMap<..>>".to_string(), features_bytes),
             ("other model maps (hashes/sets/zsets/..)".to_string(), other_model_bytes),
             ("context maps (nine of them)".to_string(), context_bytes),
@@ -1221,7 +1221,7 @@ fn what_a_live_key_costs_on_the_shipped_routing_range() {
                 "  distinct shared strings: bucket index {arc_count}, dirty index {dirty_arc_count}"
             );
             let rows: [(&str, u64); 11] = [
-                ("strings HashMap<ModelKey, BlockAddress>", strings_bytes),
+                ("strings HashMap<ModelKey, ElementEntry>", strings_bytes),
                 ("features HashMap<String, BTreeMap<..>>", features_bytes),
                 ("bucket_index.bucket_map", bucket_map_bytes),
                 ("bucket_index.object_block_lookup", lookup_bytes),
