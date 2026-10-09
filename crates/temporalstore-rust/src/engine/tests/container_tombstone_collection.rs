@@ -118,11 +118,20 @@ fn a_removal_that_cannot_be_framed_is_counted_and_writes_no_page() {
     );
 
     // AND THE FOUR REAL KINDS ALL FRAME, so the counter above is a defect signal and not a tolerance.
+    //
+    // THE ZSET FIXTURE HERE WAS STALE AND PASSED ANYWAY, which is why it is called out rather than
+    // quietly corrected. It spelled the component `{score:016x}{hex(member)}` -- the spelling zset
+    // components had BEFORE the score moved to the WAL outcome's value slot. That string is still
+    // all hex characters, so `hex::decode` accepted it and the page framed, and the arm went green
+    // while exercising a component shape the engine no longer produces: the score prefix was being
+    // framed as eight leading bytes of the MEMBER. A fixture whose premise has gone stale can keep
+    // passing for the wrong reason, and only the round-trip added below would have caught it.
     crate::engine::container_pages::reset_unframed_container_removal_count();
     let components = [
         ("hash", "some-field".to_string()),
         ("set", hex::encode(b"a-member")),
-        ("zset", format!("{:016x}{}", 42u64, hex::encode(b"a-member"))),
+        // The CURRENT spelling: the member alone. The score is not in a component any more.
+        ("zset", hex::encode(b"a-member")),
         ("list", format!("{:016x}", 7u64)),
     ];
     for (kind, component) in &components {
@@ -133,6 +142,32 @@ fn a_removal_that_cannot_be_framed_is_counted_and_writes_no_page() {
                 assert_eq!(ContainerPageShape::WithRemovals, shape, "{kind}: wrong shape");
                 assert_eq!(1, items.len(), "{kind}: wrong item count");
                 assert!(items[0].deleted, "{kind}: the tombstone item is not marked removed");
+                // THE ROUND TRIP, AND IT IS THE PROPERTY A SIDE TABLE WOULD OTHERWISE HAVE TO HOLD.
+                //
+                // The tombstone page's single item carries the ELEMENT KEY as its key, so the
+                // element's identity is already stored durably in the page the entry points at.
+                // Asserting the inverse here is what makes that a measured property rather than a
+                // reading of the encoder: whatever `element_key_from_component` put in,
+                // `component_from_element_key` must give back, for every one of the four kinds.
+                //
+                // It is also the lossy arm's floor. `ScoreThenMember` drops the score on the way
+                // back -- deliberately, the resident map is the score's only copy -- so if a
+                // component ever carried a score again this assertion is what reddens, instead of
+                // the score silently becoming eight bytes of somebody's member.
+                let spelling = crate::engine::container_pages::ElementKeySpelling::for_kind(kind)
+                    .unwrap_or_else(|| panic!("{kind} has no element-key spelling"));
+                let recovered =
+                    crate::engine::container_pages::component_from_element_key(spelling, &items[0].key)
+                        .unwrap_or_else(|| {
+                            panic!("{kind}: the tombstone page's own key did not read back as a component")
+                        });
+                assert_eq!(
+                    component, &recovered,
+                    "{kind}: the element is NOT recoverable from the tombstone page. The page item's \
+                     key went in as {component} and came back as {recovered}, so the page cannot \
+                     stand in for a stored element name and a removal's identity would have to live \
+                     somewhere else."
+                );
             }
             other => panic!("{kind} tombstone did not decode: {other:?}"),
         }
@@ -147,6 +182,17 @@ fn a_removal_that_cannot_be_framed_is_counted_and_writes_no_page() {
         crate::engine::container_pages::unframed_container_removal_count(),
         "one of the four real kinds could not frame a removal"
     );
+
+    // AND NEITHER UNFRAMABLE CASE ABOVE IS REACHABLE THROUGH THE PUBLIC SURFACE, which is what
+    // decides whether the pages can be the only record of a removed element.
+    //
+    // The two that returned `None` are a kind with no element-key spelling (`string`, whose page is
+    // its whole object, so no container removal ever asks) and a set component that is not hex. A
+    // set component is `hex::encode(member)`, computed by the engine and never by a caller, so a
+    // non-hex one cannot arrive from a `SetRemove`. Both are reached here by calling the codec
+    // directly with inputs no write path produces. So there is no removal of a container element
+    // that stores no page -- stated as the conclusion it is, because "a side table is redundant
+    // with the page" is only true while that holds.
 }
 
 /// rust-internal: drives the page-derived membership fold
