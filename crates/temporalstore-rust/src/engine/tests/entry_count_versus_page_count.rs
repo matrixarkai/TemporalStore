@@ -10,12 +10,19 @@
 //! such element costs. The question here is the one before the price: if a page held many
 //! elements, would the ENTRY COUNT fall with it?
 //!
-//! THE ANSWER IS NO, NOT FROM BATCHING ALONE, AND THE REASON IS `block_index_handle`. The handle a
-//! page is filed under hashes the model spelling, the object key, the COMPONENT, and the address.
-//! Two elements that share one page share the address and differ in the component, so they hash to
-//! two handles and the page index holds two entries -- one page, two entries.
-//! `two_elements_sharing_one_page_are_still_two_entries_because_the_handle_names_the_component`
-//! drives exactly that, and it is the whole of the mechanism.
+//! THE ANSWER WAS NO AND IT IS YES NOW, AND THE REASON IS STILL `block_index_handle`. The handle a
+//! page is filed under hashed the model spelling, the object key, the ELEMENT NAME and the address.
+//! Two elements sharing one page shared the address and differed in the name, so they hashed to two
+//! handles and the page index held two entries -- one page, two entries. `BlockIndex` has no
+//! element-name field any more: the handle is the model spelling, the object key and the address,
+//! two elements over one page hash ALIKE, and the entry count is the PAGE count.
+//! `one_page_is_one_entry_because_the_handle_can_no_longer_name_an_element` drives exactly that,
+//! and it is the whole of the mechanism.
+//!
+//! THE INVERSION IS WHY THIS HEADER IS RESTATED RATHER THAN RE-NUMBERED. A reader who took the old
+//! answer from this paragraph and the new entry counts from the arms would conclude the arms had
+//! been relaxed. The old claim was true of the engine it was written against, and the arm that held
+//! it has been rewritten rather than loosened -- its own failure message asked for that.
 //!
 //! THIS ENGINE ALREADY RUNS BOTH SHAPES, WHICH IS WHY THE CONTRAST IS MEASURABLE RATHER THAN
 //! PROJECTED. The timestamped kinds take a different route to the same index:
@@ -30,31 +37,39 @@
 //! `how_many_index_entries_each_kind_files_for_the_same_element_count` measures both at two corpus
 //! sizes ten times apart, as a histogram with per-row denominators.
 //!
-//! BATCHING NEEDS BOTH HALVES, AND THE SECOND HALF IS WHERE THE COST IS. Sharing pages without
-//! dropping the component moves nothing; dropping the component moves the entry count only once
-//! pages are shared, because the deduplication is by address and one page per element leaves every
-//! address distinct. Dropping the component is what costs, because for a container the component
-//! is not decoration:
+//! BATCHING NEEDED BOTH HALVES AND IT HAS BOTH NOW, WHICH IS WHY THIS SECTION IS HISTORY RATHER
+//! THAN A PREREQUISITE. It read "Sharing pages without dropping the component moves nothing;
+//! dropping the component moves the entry count only once pages are shared ... Dropping the
+//! component is what costs, because for a container the component is not decoration", and then
+//! listed three readers for which the element name on the entry was the only copy of an element's
+//! identity. The name has been dropped and all three were moved first, so the list below is the
+//! bill that was paid and not one that is outstanding:
 //!
-//!   * `hashes` is `skip_serializing` on `ShardState` and is rebuilt FROM the bucket index on load,
-//!     so for a hash the component IS the durable spelling of the field name;
-//!   * the `"zset"` arm of `apply_outcome_item` rebuilds the member and the score out of the
-//!     component and never reads the page, so for the index-log route the component is the only
-//!     copy of the member (`container_member_shadow` establishes this and pins it); and
-//!   * `apply_key_states` folds thirteen maps -- `features`, `expires_at_ms`, four `control_state_*`
-//!     and seven `context_*` -- and `sets`, `zsets`, `lists` and `hashes` are NOT among them, while
-//!     `fold_delta_block_items` DOES restore the page items. So through the delta-fold route a
-//!     container element arrives as a page entry with no durable map entry beside it, and the
-//!     component is the only place its identity is written down.
+//!   * `hashes` WAS `skip_serializing` on `ShardState` and rebuilt FROM the bucket index on load,
+//!     which made the element name on the entry the durable spelling of a hash field. It carries
+//!     `#[serde(default)]` now, as do `sets`, `zsets` and `lists`: all four resident maps are
+//!     durable and are the authority. (The comment above `hashes` in `engine::state` that still
+//!     says "rebuildable ... do not duplicate in checkpoints" predates that and is corrected
+//!     there.)
+//!   * the `"zset"` arm of `apply_outcome_item` rebuilt the member and the score out of the
+//!     element name and never read the page. The score rides the WAL outcome's `value` slot and
+//!     the member comes from the resident map.
+//!   * `apply_key_states` folds thirteen maps -- `features`, `expires_at_ms`, four
+//!     `control_state_*` and seven `context_*` -- and `sets`, `zsets`, `lists` and `hashes` are
+//!     STILL not among them, while `fold_delta_block_items` DOES restore the page items.
 //!     `the_maps_the_delta_fold_restores_do_not_include_the_container_maps` holds that list, so a
-//!     map added to the fold shows up here by name.
+//!     map added to the fold shows up here by name. What closed this door is the other side of it:
+//!     `collect_upsert_index_items` reads the resident map, so a delta item exists only where the
+//!     map held the element, and an entry can no longer arrive naming an element nothing else
+//!     holds.
 //!
-//! THAT LAST ONE IS A PREREQUISITE AND NOT A DETAIL. A batched page would have to carry element
-//! identity in its PAYLOAD, and the fold's reconciliation deliberately does not read payloads. So
-//! the fold has to carry the element bytes before a batched container page can be recovered
-//! through it, and until it does, batching containers is a lossy migration rather than a
-//! representation change. This module measures the prize and names the prerequisite; it changes no
-//! production code.
+//! SO THE PREREQUISITE PARAGRAPH IS DISCHARGED. It said a batched page "would have to carry element
+//! identity in its PAYLOAD, and the fold's reconciliation deliberately does not read payloads", and
+//! called batching a lossy migration until the fold carried element bytes. The page payload does
+//! name its elements -- that is what makes several pages foldable into one -- and the recovery path
+//! that needed the entry's copy now reads the durable resident maps instead. This module still
+//! measures the prize and changes no production code; what it no longer does is name an outstanding
+//! blocker.
 //!
 //! WHAT THE READ SIDE WOULD PAY, measured and not projected. Today a single-element read fetches
 //! the element's own page, and the page's length is a STORED FACT read back off the index -- not a
@@ -502,10 +517,18 @@ fn how_many_index_entries_each_kind_files_for_the_same_element_count() {
 }
 
 // =================================================================================================
-// 2. THE MECHANISM. Why sharing a page does not share an entry.
+// 2. THE MECHANISM. Why sharing a page now shares an entry.
 // =================================================================================================
 
-fn page_at(component: Option<&str>, slab: u64, offset: u64, length: u64) -> BlockIndex {
+/// An entry naming one page, at the address given.
+///
+/// THIS TOOK A `component: Option<&str>` AND THE ARGUMENT WAS DEAD. The struct literal below
+/// stopped setting an element name when the field was removed from `BlockIndex`, so the parameter
+/// decided nothing: `page_at(Some("field-a"), ..)` and `page_at(Some("field-b"), ..)` returned the
+/// SAME value, which is what quietly turned the old control into a comparison of a value with
+/// itself. It is REMOVED rather than renamed to `_component`, so a caller that still tries to name
+/// an element here is a compile error and not a silent no-op.
+fn page_at(slab: u64, offset: u64, length: u64) -> BlockIndex {
     BlockIndex {
         kind: crate::index_log::IndexItemKind::Page,
         routing_bucket: 7,
@@ -523,26 +546,55 @@ fn page_at(component: Option<&str>, slab: u64, offset: u64, length: u64) -> Bloc
     }
 }
 
-/// TWO ELEMENTS SHARING ONE PAGE ARE STILL TWO ENTRIES, BECAUSE THE HANDLE NAMES THE COMPONENT.
+/// The same page shape under a different object key, for the object-key control below.
+fn page_at_for_object(object_key: &str, slab: u64, offset: u64, length: u64) -> BlockIndex {
+    BlockIndex {
+        object_key: std::sync::Arc::from(object_key),
+        ..page_at(slab, offset, length)
+    }
+}
+
+/// ONE PAGE IS ONE ENTRY, BECAUSE THE HANDLE CAN NO LONGER NAME AN ELEMENT.
 ///
-/// This is the whole mechanism, and it is why batching pages does not on its own move the number
-/// this module is about. `block_index_handle` hashes the model spelling, the object key, the
-/// component AND the address; two entries differing only in the component hash to two handles, so
-/// the page index holds both and the shared page is named twice.
+/// RESTATED FROM ITS OPPOSITE, AND THE NAME WENT WITH THE CLAIM. This arm was
+/// `two_elements_sharing_one_page_are_still_two_entries_because_the_handle_names_the_component`,
+/// and what it asserted was the refutation this whole module was built on. Its own failure message
+/// asked for this rather than for a looser assertion: "the premise of this module's refutation is
+/// then wrong and it must be rewritten, not patched".
 ///
-/// The CONTROL is the same pair with the component dropped: identical handles, one entry, and the
-/// second insert replaces the first. Without that arm the test would pass on an index that simply
-/// never deduplicates anything.
+/// `BlockIndex` has no element-name field, so `block_index_handle` hashes the model spelling, the
+/// object key and the ADDRESS and nothing else. Two entries over one page are one handle and one
+/// entry, and batching a container's pages moves the entry count with them --
+/// `container_pages_are_batched::a_compaction_round_folds_a_containers_pages_and_folds_its_entry_
+/// count_with_them` measures that end to end, 40 entries over 40 pages before a round and 1 over 1
+/// after.
+///
+/// WHAT WOULD HAVE TO DISAGREE FOR EACH ASSERTION TO FAIL, written out because "one entry" is also
+/// the answer an index that deduplicated everything unconditionally would give:
+///
+///   * SAME PAGE, ONE HANDLE, ONE ENTRY -- fails if a per-element discriminator returns to the
+///     handle.
+///   * DIFFERENT PAGE, TWO HANDLES, TWO ENTRIES -- fails if the handle stops naming the address.
+///     This is what stops the first assertion passing on a map that collapses every insert, and it
+///     is the half the OLD control could not supply: that control built both of its entries from
+///     the same effective arguments, so it compared a value with itself and held whatever the
+///     hasher did.
+///   * SAME PAGE SHAPE, DIFFERENT OBJECT, TWO HANDLES, TWO ENTRIES -- fails if the handle stops
+///     naming the object key. One entry a page is only safe while two objects' pages stay apart.
+///
+/// THE HANDLE ASSERTIONS AND THE `len` ASSERTIONS ARE NOT THE SAME ASSERTION. The first pair tests
+/// `block_index_handle`; the second tests `BlockIndexMap`'s keying. A map that ignored the handle
+/// and always replaced would satisfy every handle assertion here and fail every count.
 #[test]
-fn two_elements_sharing_one_page_are_still_two_entries_because_the_handle_names_the_component() {
+fn one_page_is_one_entry_because_the_handle_can_no_longer_name_an_element() {
     let shared_slab = 7u64;
     let shared_offset = 4_096u64;
     let shared_length = 512u64;
 
-    let first = page_at(Some("field-a"), shared_slab, shared_offset, shared_length);
-    let second = page_at(Some("field-b"), shared_slab, shared_offset, shared_length);
+    let first = page_at(shared_slab, shared_offset, shared_length);
+    let second = page_at(shared_slab, shared_offset, shared_length);
 
-    // Same page, byte for byte.
+    // Same page, byte for byte. The premise, kept: without it the arm is not about a shared page.
     assert_eq!(
         (
             first.address.block_slab_id(),
@@ -557,12 +609,11 @@ fn two_elements_sharing_one_page_are_still_two_entries_because_the_handle_names_
         "the two entries must name the SAME page for this test to be about a shared page at all"
     );
 
-    assert_ne!(
+    assert_eq!(
         block_index_handle(&first),
         block_index_handle(&second),
-        "two components on one page hashed to one handle, so the page index would hold a single \
-         entry and batching WOULD reduce the entry count -- the premise of this module's refutation \
-         is then wrong and it must be rewritten, not patched"
+        "two entries over one page hashed to two handles, so something per-element is back in \
+         `block_index_handle` and the entry count is no longer the page count"
     );
 
     let mut live = BlockSlabLiveIndex::default();
@@ -571,35 +622,53 @@ fn two_elements_sharing_one_page_are_still_two_entries_because_the_handle_names_
     index.insert(second.clone(), &mut live);
     assert_eq!(
         index.len(),
-        2,
-        "one page holding two named elements is filed as {} entries, not 2",
+        1,
+        "one page offered twice filed {} entries, not 1",
         index.len()
     );
 
-    // THE CONTROL: drop the component and the same two inserts collapse to one entry. This is the
-    // shape `sync_bucket_index_object_blocks_with_mode` already files for a timestamped series.
-    let mut live_none = BlockSlabLiveIndex::default();
-    let mut index_none = BlockIndexMap::default();
-    let anonymous_first = page_at(None, shared_slab, shared_offset, shared_length);
-    let anonymous_second = page_at(None, shared_slab, shared_offset, shared_length);
-    assert_eq!(
-        block_index_handle(&anonymous_first),
-        block_index_handle(&anonymous_second),
-        "two component-less entries on one page must hash alike, or the deduplication the series \
-         path relies on could not work"
+    // CONTROL ONE: a DIFFERENT page is still a second entry.
+    let elsewhere = page_at(shared_slab, shared_offset + shared_length, shared_length);
+    assert_ne!(
+        block_index_handle(&first),
+        block_index_handle(&elsewhere),
+        "two distinct pages hashed alike, so the handle no longer names the address and a lookup \
+         would serve one page's bytes for the other"
     );
-    index_none.insert(anonymous_first, &mut live_none);
-    index_none.insert(anonymous_second, &mut live_none);
+    let mut live_two = BlockSlabLiveIndex::default();
+    let mut index_two = BlockIndexMap::default();
+    index_two.insert(first.clone(), &mut live_two);
+    index_two.insert(elsewhere, &mut live_two);
     assert_eq!(
-        index_none.len(),
-        1,
-        "with the component gone, one page must be one entry -- it filed {}",
-        index_none.len()
+        index_two.len(),
+        2,
+        "two distinct pages filed {} entries, not 2",
+        index_two.len()
     );
 
-    println!("one page, two components  -> {} entries", index.len());
-    println!("one page, no component    -> {} entries", index_none.len());
-    println!("so the entry count falls only when the component goes AND the page is shared");
+    // CONTROL TWO: the same page shape under a different object key stays apart.
+    let other_object =
+        page_at_for_object("another-object", shared_slab, shared_offset, shared_length);
+    assert_ne!(
+        block_index_handle(&first),
+        block_index_handle(&other_object),
+        "two objects' pages hashed alike, so one object's entry would supersede another's"
+    );
+    let mut live_three = BlockSlabLiveIndex::default();
+    let mut index_three = BlockIndexMap::default();
+    index_three.insert(first, &mut live_three);
+    index_three.insert(other_object, &mut live_three);
+    assert_eq!(
+        index_three.len(),
+        2,
+        "two objects over one page shape filed {} entries, not 2",
+        index_three.len()
+    );
+
+    println!("one page, offered twice     -> {} entry", index.len());
+    println!("two pages, one object       -> {} entries", index_two.len());
+    println!("one page shape, two objects -> {} entries", index_three.len());
+    println!("so the entry count is the PAGE count, per object");
 }
 
 // =================================================================================================

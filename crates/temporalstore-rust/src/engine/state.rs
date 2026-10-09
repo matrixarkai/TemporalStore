@@ -148,7 +148,12 @@ pub(super) struct ShardState {
     #[serde(skip)]
     pub(super) expiry_by_deadline: BTreeMap<(u64, String), ()>,
     pub(super) strings: HashMap<ModelKey, ElementEntry>,
-    // Rebuildable from the durable bucket/block index on load; do not duplicate in checkpoints.
+    // DURABLE, AND THIS LINE SAID IT WAS NOT. It read "Rebuildable from the durable bucket/block
+    // index on load; do not duplicate in checkpoints", which was true while this field was
+    // `skip_serializing` and the element name on a page-index entry was the durable spelling of a
+    // hash field. The entry has no element-name field now, so nothing could rebuild this map from
+    // the index: `hashes` carries `#[serde(default)]` below, as `sets`, `zsets` and `lists` do, and
+    // the four resident maps ARE the authority rather than a derived view of one.
     //
     // THE INNER CONTAINER IS A SORTED VECTOR, NOT A TABLE AND NOT A B-TREE, and it is the only one
     // of the eighteen nested model maps that is either. Measured on the counting allocator, a hash
