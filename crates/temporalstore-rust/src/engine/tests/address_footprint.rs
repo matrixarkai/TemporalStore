@@ -3045,7 +3045,10 @@ fn the_priced_shapes_for_an_address_and_its_siblings() {
     const WAS_MAP_VALUE: usize = 16;
     const WAS_STRIDE: usize = 24;
     const WAS_OPTION_VALUE: usize = 24;
-    const WAS_ENTRY: usize = 56;
+    // 40, not 56: the entry gave up its element name, which is a LATER change than the address
+    // relocation this module prices. This module's own claim -- that the relocation changes neither
+    // the entry nor the map by one byte -- is untouched; what moved is the baseline it says it about.
+    const WAS_ENTRY: usize = 40;
     const WAS_ENTRY_MAP: usize = 24;
 
     println!("\n=== the address word itself ===");

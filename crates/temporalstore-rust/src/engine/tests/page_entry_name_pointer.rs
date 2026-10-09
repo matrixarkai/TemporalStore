@@ -381,7 +381,7 @@ struct MirrorEntryBothOrdinalsPackedOneFlagByte {
 ///
 /// rust-internal: measures declarations, no product behaviour
 #[test]
-fn two_one_word_name_slots_take_the_page_entry_from_fifty_six_to_forty() {
+fn one_remaining_name_slot_takes_the_entry_from_forty_to_thirty_two_and_the_chunk_class_refuses_it() {
     // --- THE CONTROL FIRST. A one-word `Option` is the whole reason 44 is reachable. ---
     assert_eq!(
         size_of::<usize>(),
@@ -618,22 +618,53 @@ fn two_one_word_name_slots_take_the_page_entry_from_fifty_six_to_forty() {
         size_of::<BlockIndex>() - size_of::<MirrorEntryThinNames>()
     );
 
-    // --- AND THE CHUNK CLASS MOVES WITH IT, which is the part a struct width cannot say. Since
-    //     #1975 the single-page arm holds the entry behind a BOX, so what a bucket pays for one page
-    //     is the CHUNK and not the width -- and a sibling found 64 + 8 and 72 + 8 landing in the
-    //     same 80-byte class, so a width step can round away entirely. This one does not. ---
+    // --- AND THE CHUNK CLASS DOES **NOT** MOVE WITH IT ANY MORE, WHICH REFUSES THE REMAINING
+    //     STEP ON THE COLUMN THAT DECIDES IT. ---
+    //
+    // THE SENTENCE ABOVE THIS USED TO END "This one does not", AND IT DOES NOW. It read: "a sibling
+    // found 64 + 8 and 72 + 8 landing in the same 80-byte class, so a width step can round away
+    // entirely. This one does not." That was measured while the entry was 56 and this mirror 40:
+    // `chunk(56)` is 64 and `chunk(40)` is 48, a real sixteen bytes a bucket.
+    //
+    // The entry is 40 now -- the element name left it outright rather than being thinned -- and the
+    // mirror is 32. `chunk` models the documented glibc rule, request plus a header word rounded up
+    // to sixteen: 40 + 8 = 48, and 32 + 8 = 40 which rounds to 48 as well. BOTH LAND IN THE SAME
+    // 48-BYTE CLASS, so hoisting the one remaining name recovers NOTHING for a single-page bucket,
+    // which since #1975 is where the entry lives behind a box.
+    //
+    // SO THIS IS A STOP CONDITION FOR THE REMAINING PROPOSAL, not a number to correct. The module
+    // exists to price hoisting the entry's names into one-word slots; the first name was not
+    // hoisted, it was removed, and that step DID move the chunk class (64 -> 48). The second name
+    // cannot move it at all from here. Asserted as the rounding-away rather than inverted into a
+    // "no change" check, because the direction matters: if a later change makes the entry wider or
+    // the mirror narrower this reddens, and whoever hits it has the arithmetic in front of them.
     let chunk_now = chunk(size_of::<BlockIndex>());
     let chunk_thin = chunk(size_of::<MirrorEntryThinNames>());
     println!(
         "  boxed single page: chunk {chunk_now} B -> {chunk_thin} B ({:+} B)",
         chunk_thin as isize - chunk_now as isize
     );
-    assert!(
-        chunk_thin < chunk_now,
-        "the entry narrows from {} B to {} B and the allocator serves both out of a {chunk_now} B \
-         chunk, so the step rounds away for every single-page bucket",
+    assert_eq!(
+        chunk_now, chunk_thin,
+        "the entry is {} B and the mirror {} B, and the chunk rule serves them out of {chunk_now} B \
+         and {chunk_thin} B. While those classes DIFFER the remaining name slot is worth something \
+         per single-page bucket and this module's proposal is live again -- read the arithmetic \
+         above rather than relaxing this, because the measurement that refused it is the one that \
+         just changed",
         size_of::<BlockIndex>(),
         size_of::<MirrorEntryThinNames>()
+    );
+    // AND THE STEP THAT DID PAY IS RECORDED BESIDE THE ONE THAT DOES NOT, so the refusal above is
+    // not read as "name hoisting never pays". 56 was the entry's width before it stopped naming its
+    // element; `chunk(56)` is a class above `chunk(40)`, which is the sixteen bytes a bucket that
+    // the shipped removal actually moved.
+    assert!(
+        chunk(56) > chunk_now,
+        "chunk(56) is {} and chunk({}) is {chunk_now}: the width step the entry already took did \
+         not move the chunk class either, which would mean this module's whole column is flat and \
+         the refusal above says nothing",
+        chunk(56),
+        size_of::<BlockIndex>()
     );
 }
 

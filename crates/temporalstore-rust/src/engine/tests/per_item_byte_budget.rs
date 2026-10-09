@@ -130,14 +130,16 @@ fn budget() -> Vec<Budgeted> {
             // model_id             : StoredModelKind, ONE BYTE -- it was a second `Arc<str>`
             //                        until the spelling became the one-byte discriminant of the
             //                        seventeen-element set `model_kind_registry` declares
-            // component            : Option<Arc<str>>
             // address              : BlockAddress
             // dirty/deleted       : bool x 2
             // kind                : IndexItemKind, ONE BYTE, absorbed from the index-log row
             // routing_bucket      : u32, absorbed from the same row
+            //
+            // `component: Option<Arc<str>>` STOOD BETWEEN `model_id` AND `address` AND IS GONE.
+            // Sixteen bytes, which is the whole of this row's 56 -> 40. `opt_arc_str` stays bound
+            // above because other rows in this list still hold one; it is no longer a term HERE.
             fields: arc_str
                 + size_of::<crate::engine::storage_bucket_internals::StoredModelKind>()
-                + opt_arc_str
                 + size_of::<ElementEntry>()
                 + 2 * size_of::<bool>()
                 + size_of::<crate::index_log::IndexItemKind>()
@@ -346,7 +348,11 @@ fn every_per_item_structure_states_its_width_and_its_padding() {
 
     // --- The pinned widths. ---
     assert_eq!(16, size_of::<ElementEntry>(), "ElementEntry width moved");
-    assert_eq!(56, size_of::<BlockIndex>(), "BlockIndex width moved");
+    // 40, not the 56 it was before the entry stopped naming its element. Bracketed, because a bare
+    // equality is satisfied by whatever the type measures.
+    assert_eq!(40, size_of::<BlockIndex>(), "BlockIndex width moved");
+    assert_ne!(39, size_of::<BlockIndex>(), "BlockIndex is 39, so 40 is an upper bound here");
+    assert_ne!(41, size_of::<BlockIndex>(), "BlockIndex is 41, so 40 is a lower bound here");
     assert_eq!(24, size_of::<BlockIndexMap>(), "BlockIndexMap width moved");
     assert_eq!(96, size_of::<BucketNode>(), "BucketNode width moved");
     assert_eq!(16, size_of::<BlockLookupRef>(), "BlockLookupRef width moved");
@@ -673,6 +679,14 @@ fn only_the_structures_that_hold_an_address_moved() {
                 // aligner was already padding, so the tail went 7 -> 6 of 8. None of this is
                 // the address shed, so all 32 are named and subtracted.
                 "IndexItem" => 32i64,
+                // THE ENTRY GAVE UP ITS ELEMENT NAME, SIXTEEN BYTES, AND THAT IS NOT THE ADDRESS
+                // SHED EITHER. `BlockIndex::component` was an `Option<Arc<str>>` sitting in the
+                // eight-aligned group; dropping it takes two whole words out, so this row's total
+                // delta is 24 where the address alone accounts for 8. Named and subtracted here
+                // for exactly the reason the comment above gives: without it the row would fail
+                // saying "something else moved with it unaccounted" -- true, and it would read as
+                // an address defect.
+                "BlockIndex" => 16i64,
                 _ => 0,
             };
             assert_eq!(

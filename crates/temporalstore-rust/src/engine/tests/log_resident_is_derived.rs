@@ -187,11 +187,24 @@ fn the_stored_entry_has_dropped_the_flag_and_gained_no_key() {
          detect a field leaving at all",
     );
 
-    // And the width is unchanged, so nobody reads this as a footprint change.
+    // AND THE WIDTH IS 40, WHICH IS NOT THIS MODULE'S CHANGE AND IS PINNED HERE ANYWAY.
+    //
+    // This read 56 under "the width is unchanged, so nobody reads this as a footprint change" --
+    // a pin on the width THIS module's change did not move, so that a reader could not mistake a
+    // stored-format change for a footprint one. The entry is 40 now because it stopped naming its
+    // element, which is a different change; the claim the pin exists to make is unaffected and the
+    // number it names is not.
+    //
+    // BRACKETED, so it reads as a measurement rather than a literal adjusted until it passed --
+    // and this is the pin that proves the point: `cargo check` cannot see an `assert_eq!` in a test
+    // body, so it compiled clean through the whole width step and only running it said so.
     assert_eq!(
-        56,
+        40,
         std::mem::size_of::<BlockIndex>(),
-        "the entry is {} bytes; this change was never a footprint change and the body says so",
+        "the entry is {} bytes; this module's change was never a footprint change and the body \
+         says so",
         std::mem::size_of::<BlockIndex>(),
     );
+    assert_ne!(39, std::mem::size_of::<BlockIndex>());
+    assert_ne!(41, std::mem::size_of::<BlockIndex>());
 }

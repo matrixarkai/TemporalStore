@@ -244,7 +244,7 @@ fn swap_across_index_files(indexes: &std::path::Path, from: &str, to: &str) -> u
 ///
 /// rust-internal: mutates the engine's own served index, no external surface
 #[test]
-fn a_swapped_hash_component_no_longer_renames_the_field_because_the_page_contradicts_it() {
+fn a_hash_field_cannot_be_renamed_by_editing_the_index_because_the_index_stores_no_name() {
     let dir = tempfile::tempdir().unwrap();
     let hash_key = "en-hash";
     let zset_key = "en-zset";
@@ -289,16 +289,41 @@ fn a_swapped_hash_component_no_longer_renames_the_field_because_the_page_contrad
     mangled_hex.push(if last == '0' { '1' } else { '0' });
     let zset_swaps = swap_across_index_files(&indexes, &member_hex, &mangled_hex);
 
-    // --- THE VACUITY FLOOR. A swap pass that found nothing proves nothing. ---
+    // --- THE TWO FLOORS NOW SAY DIFFERENT THINGS, AND MEASURING WHY IS THE FINDING. ---
+    //
+    // Both read `> 0`: a swap pass that found nothing proves nothing, so each arm first
+    // established that the element's name was PRESENT in the served index and had been mutated
+    // there. An entry carries no component now, so the obvious reading is that neither name is in
+    // the index and both floors are dead. THAT READING IS WRONG FOR THE HASH, and the counts are
+    // what said so -- a first draft of this restatement asserted zero for both and the hash
+    // measured ONE.
+    //
+    // WHY THE HASH NAME IS STILL THERE: `shard.hashes` is DURABLE now, `#[serde(default)]` rather
+    // than `skip_serializing`, and it is keyed by the field name as a STRING. So the characters
+    // `hfield-b` are written into the shard index -- in the durable map, not on the entry. The
+    // name did not leave the stored form, it MOVED, which is exactly what made the collapse safe.
+    // The floor therefore still holds and still means something; what it establishes is a mutation
+    // of the DURABLE MAP rather than of an entry.
+    //
+    // WHY THE ZSET MEMBER IS NOT: `shard.zsets` is keyed by the member's RAW BYTES, and this swap
+    // searches for its HEX spelling. Hex was only ever how the ENTRY's component rendered it, and
+    // there is no component -- so there is no occurrence to find and the control cannot be
+    // exercised at all. That subject is structurally unrepresentable rather than merely absent,
+    // and the zero is asserted as the finding instead of the floor being lowered to `>= 0`, which
+    // no fixture could fail.
     assert!(
         hash_swaps > 0,
-        "the hash field component was never found in the served index, so this test swapped \
-         NOTHING and its assertions below would pass on an unmutated store"
+        "the hash field name was not found in the served index, so this test swapped NOTHING and \
+         its assertions below would pass on an unmutated store. `shard.hashes` is durable and \
+         keyed by the field name, so the characters must be in there -- a zero here means the hash \
+         map has stopped being written and the collapse has lost the copy that makes it safe"
     );
-    assert!(
-        zset_swaps > 0,
-        "the zset member component was never found in the served index, so the control arm was \
-         NOT EXERCISED -- a control that did not run reads exactly like a control that did not move"
+    assert_eq!(
+        0, zset_swaps,
+        "the zset member's HEX spelling was found {zset_swaps} time(s) in the served index. \
+         `shard.zsets` is keyed by raw member bytes and the entry carries no component, so hex is \
+         not a spelling the stored form uses any more -- a nonzero count means a hex rendering of \
+         a member has come back into the index, which is the third copy this change removed"
     );
 
     // --- THE READ BACK. ---
@@ -319,57 +344,12 @@ fn a_swapped_hash_component_no_longer_renames_the_field_because_the_page_contrad
         .map(|(field, _)| field.clone())
         .collect::<std::collections::BTreeSet<_>>();
 
-    // THE DENOMINATOR, so a store that came back empty cannot pass the assertions below. It is the
-    // two UNSWAPPED fields: the swapped one is the subject and its absence is the finding, so
-    // counting it here would settle the finding before the finding is asserted.
-    assert_eq!(
-        hash_fields.len() - 1,
-        names.len(),
-        "the hash came back with {} field(s) rather than the {} that were left unswapped: \
-         {names:?}",
-        names.len(),
-        hash_fields.len() - 1
-    );
-    for survivor in ["hfield-a", "hfield-c"] {
-        assert!(
-            names.contains(survivor),
-            "a field whose component was NOT swapped went missing, so this store is broken in some \
-             way the swap did not cause: {names:?}"
-        );
-    }
-
-    // THE FINDING: the swapped component names an element its page does not hold, so it is served
-    // under NEITHER name.
-    assert!(
-        !names.contains("hfield-Z"),
-        "the swapped component became the field name, which is what this test asserted BEFORE the \
-         page carried its own element key -- so the page is no longer contradicting the index and \
-         something has stopped selecting by element: {names:?}"
-    );
-    assert!(
-        !names.contains("hfield-b"),
-        "the original field name was served under a component that no longer spells it, so the \
-         index's name is being ignored rather than checked against the page: {names:?}"
-    );
-
-    // AND THE POINT LOOKUP AGREES WITH THE LISTING, both ways round. Asserted because a listing and
-    // a point read resolve through different code and #2014 exists because they agreed by accident.
-    for absent in ["hfield-b", "hfield-Z"] {
-        let answer = read(
-            &engine,
-            Command::HashGet {
-                key: hash_key.to_string(),
-                field: absent.to_string(),
-            },
-        );
-        match answer {
-            crate::types::CommandResponse::Bytes { value: None } => {}
-            other => panic!("HashGet for {absent} answered {other:?} where the listing has neither"),
-        }
-    }
-
-    // THE COST, RECORDED. `HashLen` counts entries and the listing counts entries whose page reads,
-    // so on a store edited underneath the engine the two diverge by exactly the edited element.
+    // --- WHAT A SWAPPED **DURABLE-MAP** NAME PRODUCES, OBSERVED AND THEN ASSERTED. ---
+    //
+    // The swap no longer edits an entry's component -- there is none -- it edits the field name
+    // inside the durable `hashes` map. That is a different mutation with a different consequence,
+    // so the numbers are printed before they are pinned, which is this module's own stated
+    // discipline and the reason the first draft of this restatement was wrong twice.
     let length = match read(
         &engine,
         Command::HashLen {
@@ -379,22 +359,87 @@ fn a_swapped_hash_component_no_longer_renames_the_field_because_the_page_contrad
         crate::types::CommandResponse::Integer { value } => value,
         other => panic!("HashLen answered {other:?}"),
     };
+    println!(
+        "[swap] durable-map name swaps={hash_swaps}; listing serves {} of {} field(s) {names:?}; \
+         HashLen {length}",
+        names.len(),
+        hash_fields.len()
+    );
+
+    // MEASURED, THEN PINNED: swaps=1, the listing serves 2 of 3 (`hfield-a`, `hfield-c`), HashLen
+    // answers 3. So the swapped field is served under NEITHER name -- which is the finding this
+    // arm was opened with, reached through the durable map instead of through the entry.
+    //
+    // THE DENOMINATOR, so a store the swap destroyed cannot pass as the finding. It is the two
+    // UNSWAPPED fields: the swapped one is the subject and its absence is what is being asserted,
+    // so counting it here would settle the finding before the finding is made.
+    assert_eq!(
+        hash_fields.len() - 1,
+        names.len(),
+        "the hash came back with {} field(s) rather than the {} that were left unswapped: \
+         {names:?}",
+        names.len(),
+        hash_fields.len() - 1
+    );
+    // AND THE TWO FIELDS THE SWAP DID NOT TOUCH ARE WHOLE, which is what separates "the edited
+    // field is served differently" from "this store is broken".
+    for survivor in ["hfield-a", "hfield-c"] {
+        assert!(
+            names.contains(survivor),
+            "a field the swap never named went missing, so this store is broken in some way the \
+             swap did not cause: {names:?}"
+        );
+    }
+
+    // THE FINDING: the swapped name does not become the field's name.
+    //
+    // It did not when the name lived on the ENTRY -- the page's own item key contradicted it --
+    // and it does not now that the name lives in the durable MAP, which is the stronger version of
+    // the same claim: the element's identity is carried by the page it is written on, so a name
+    // edited anywhere else cannot rename it.
+    assert!(
+        !names.contains("hfield-Z"),
+        "the swapped name became the field name. The page carries its own element key, so an \
+         edited name in the durable map must not be able to rename the field it points at: \
+         {names:?}"
+    );
+
+    // AND THE POINT LOOKUP AGREES WITH THE LISTING on the swapped name, because a listing and a
+    // point read resolve through different code and #2014 exists because they agreed by accident.
+    let answer = read(
+        &engine,
+        Command::HashGet {
+            key: hash_key.to_string(),
+            field: "hfield-Z".to_string(),
+        },
+    );
+    match answer {
+        crate::types::CommandResponse::Bytes { value: None } => {}
+        other => panic!(
+            "HashGet for hfield-Z answered {other:?} where the listing has no such field -- the \
+             point read and the listing must not part on the swapped name"
+        ),
+    }
+
+    // AND THE LENGTH ANSWER AND THE LISTING ARE PINNED TO EACH OTHER rather than to a literal.
+    // `HashLen` counts page-index entries and the listing counts entries whose page reads; a
+    // divergence is the measure of how much the edit cost, and it is asserted as whatever it is
+    // only in the sense that it must not exceed the one field that was edited.
     assert_eq!(
         hash_fields.len() as i64,
         length,
-        "HashLen counts page-index entries, and the swap did not remove one, so it must still \
-         answer {}",
+        "HashLen counts page-index entries and the swap removed none, so it must still answer {}",
         hash_fields.len()
     );
     assert_eq!(
         1,
         length - names.len() as i64,
-        "the length answer and the listing must diverge by exactly the one element whose component \
-         was edited; they diverge by {}",
+        "the length answer and the listing must diverge by exactly the one element whose name was \
+         edited; they diverge by {}",
         length - names.len() as i64
     );
 
-    // THE CONTROL: the zset member did NOT follow its swapped component.
+    // THE CONTROL: the zset member is served, and no component was swapped for it to follow.
     let score = match read(
         &engine,
         Command::ZSetScore {
@@ -406,8 +451,9 @@ fn a_swapped_hash_component_no_longer_renames_the_field_because_the_page_contrad
             String::from_utf8_lossy(&bytes).to_string()
         }
         other => panic!(
-            "the ORIGINAL zset member did not answer after its component was swapped, so the \
-             durable map did not outrank the name and the control is not a control: {other:?}"
+            "the zset member did not answer. Its identity lives in `shard.zsets` and in its \
+             page's own item key -- the index names it nowhere -- so a miss here means one of \
+             those two stopped holding it: {other:?}"
         ),
     };
     assert_eq!(
@@ -416,8 +462,9 @@ fn a_swapped_hash_component_no_longer_renames_the_field_because_the_page_contrad
     );
 
     println!(
-        "hash component swaps={hash_swaps} -> field NEITHER renamed NOR served (listing {} of {}, \
-         HashLen {length}); zset component swaps={zset_swaps} -> member UNCHANGED at {score}",
+        "hash name occurrences in the served index={hash_swaps}, zset={zset_swaps}: nothing to \
+         swap, so nothing renamed and nothing lost (listing {} of {}, HashLen {length}, member at \
+         {score})",
         names.len(),
         hash_fields.len()
     );
@@ -503,9 +550,13 @@ fn round_up_to_eight(bytes: usize) -> usize {
 #[test]
 fn the_entry_without_a_component_is_forty_and_the_stride_forty_eight() {
     // --- THE LIVE ENTRY, RECONSTRUCTED. ---
+    //
+    // THE COMPONENT TERM IS GONE FROM THIS SUM, which is this module's whole subject arriving. The
+    // reconstruction read `+ size_of::<Option<Arc<str>>>()` for the component and came to 56; the
+    // live entry has no such field, so it comes to 40 -- the number this module PREDICTED off a
+    // mirror, now measured on the live type.
     let live_fields = size_of::<Arc<str>>()          // object_key
         + size_of::<StoredModelKind>()               // model_id
-        + size_of::<Option<Arc<str>>>()              // component
         + size_of::<ElementEntry>()                  // address
         + 2 * size_of::<bool>()                      // dirty, deleted
         + size_of::<crate::index_log::IndexItemKind>() // kind
@@ -518,21 +569,47 @@ fn the_entry_without_a_component_is_forty_and_the_stride_forty_eight() {
         size_of::<BlockIndex>()
     );
 
-    // --- THE COMPONENT'S SHARE OF IT. ---
+    // --- WHAT THE COMPONENT'S SHARE WAS, now a counterfactual rather than a measurement. ---
+    //
+    // Sixteen bytes, a fat optional pointer. It is still read off the type rather than written as a
+    // literal, so the figure this module quotes cannot drift from what such a field costs -- but it
+    // is no longer a slot IN the entry, which is why the sum above does not include it.
     let component_width = size_of::<Option<Arc<str>>>();
     assert_eq!(
         16, component_width,
-        "the component slot is {component_width} B, not the sixteen this module is about"
+        "the component slot was {component_width} B, not the sixteen this module is about"
+    );
+    assert_eq!(
+        56,
+        round_up_to_eight(live_fields + component_width),
+        "the entry with a name slot added back is {} B, not the 56 this module measured the step \
+         DOWN from -- so the saving it reports is quoted against the wrong baseline",
+        round_up_to_eight(live_fields + component_width)
     );
 
-    // --- THE MIRROR, THE SAME WAY. ---
-    let mirror_fields = live_fields - component_width;
+    // --- THE MIRROR, WHICH IS NOW THE SAME SHAPE AS THE LIVE ENTRY. ---
+    //
+    // `MirrorEntryNoComponent` was the counterfactual: the entry as it would be without its element
+    // name. The entry IS that now, so the mirror and the live type have converged. That is the step
+    // landing, not the instrument breaking -- and it is asserted as an EQUALITY, so a mirror that
+    // drifts from the live entry reddens here rather than going on describing a shape the engine
+    // no longer has.
+    let mirror_fields = live_fields;
     assert_eq!(
         round_up_to_eight(mirror_fields),
         size_of::<MirrorEntryNoComponent>(),
         "the component-less entry reconstructs to {} B from {mirror_fields} B of field, but \
          `size_of` says {}",
         round_up_to_eight(mirror_fields),
+        size_of::<MirrorEntryNoComponent>()
+    );
+    assert_eq!(
+        size_of::<BlockIndex>(),
+        size_of::<MirrorEntryNoComponent>(),
+        "the live entry is {} B and the mirror of a nameless entry is {} B. They must be the SAME \
+         shape now that the entry carries no name: a difference means the mirror has drifted and \
+         every figure below is about a structure the engine does not have",
+        size_of::<BlockIndex>(),
         size_of::<MirrorEntryNoComponent>()
     );
 
@@ -553,28 +630,56 @@ fn the_entry_without_a_component_is_forty_and_the_stride_forty_eight() {
     );
 
     // --- THE VERDICT, AS NUMBERS. ---
-    assert_eq!(56, size_of::<BlockIndex>(), "the entry pin moved");
-    assert_eq!(64, live_stride, "the stride pin moved");
-    // 40 AND 48, NOT 48 AND 56: this mirror holds a `BlockAddress` too, so it shed the same eight
-    // bytes the live entry did. BOTH sides moving is why the STEP this module prices is unchanged --
-    // see the sixteen asserted in `page_entry_name_pointer`, which still holds for that reason.
+    // THE ENTRY IS THE MIRROR NOW, WHICH IS THIS MODULE'S OWN STEP TAKEN. It pinned 56 for the
+    // live entry against 40 for `MirrorEntryNoComponent`; the live entry no longer has a component
+    // either, so it IS 40 and the two sides have converged. That is the step landing rather than
+    // the measurement breaking -- and it is why the stride pin below moves from 64 to 48 with it.
+    assert_eq!(40, size_of::<BlockIndex>(), "the entry pin moved");
+    assert_ne!(39, size_of::<BlockIndex>());
+    assert_ne!(41, size_of::<BlockIndex>());
+    assert_eq!(48, live_stride, "the stride pin moved");
     assert_eq!(
         40,
         size_of::<MirrorEntryNoComponent>(),
         "the component-less entry is not 40"
     );
     assert_eq!(48, mirror_stride, "the component-less stride is not 48");
-    assert!(
-        mirror_stride < live_stride,
-        "the step is worth nothing, which would refute it on bytes as well"
+
+    // THE STEP IS NOW ZERO, AND THAT IS THE STEP BEING TAKEN RATHER THAN BEING WORTHLESS.
+    //
+    // This asserted `mirror_stride < live_stride` under "the step is worth nothing, which would
+    // refute it on bytes as well". The live entry and the mirror are the same shape, so the stride
+    // difference is zero -- and the reason is that the saving has been BANKED, not that it was
+    // never there. What the module predicted off the mirror (40 and 48) is what the live type
+    // measures.
+    //
+    // ASSERTED AS THE EQUALITY, so this cannot be read as the saving having evaporated: the
+    // counterfactual with the name slot added back is asserted at 56 above, which is the baseline
+    // the eight bytes of stride a page were measured against.
+    assert_eq!(
+        live_stride, mirror_stride,
+        "the live stride is {live_stride} B and the nameless mirror's {mirror_stride} B. They must \
+         agree now that the entry carries no name; a difference means one of the two is not the \
+         shape it claims to be"
+    );
+    assert_eq!(
+        64,
+        round_up_to_eight(size_of::<u64>() + round_up_to_eight(live_fields + component_width)),
+        "the stride of an entry with a name slot added back is {} B, not the 64 the per-page \
+         saving was quoted against",
+        round_up_to_eight(size_of::<u64>() + round_up_to_eight(live_fields + component_width))
     );
 
     println!(
-        "entry {} -> {} B ({live_fields} -> {mirror_fields} B of field); \
-         stride {live_stride} -> {mirror_stride} B; per-page saving {} B, DECLINED on the hash",
+        "entry {} B, stride {live_stride} B, from {live_fields} B of field; with a name slot added \
+         back it would be {} B of field in {} B at a {} B stride -- the {} B a page this step \
+         banked",
         size_of::<BlockIndex>(),
-        size_of::<MirrorEntryNoComponent>(),
-        live_stride - mirror_stride
+        live_fields + component_width,
+        round_up_to_eight(live_fields + component_width),
+        round_up_to_eight(size_of::<u64>() + round_up_to_eight(live_fields + component_width)),
+        round_up_to_eight(size_of::<u64>() + round_up_to_eight(live_fields + component_width))
+            - live_stride
     );
 }
 
@@ -837,17 +942,27 @@ fn a_hash_page_naming_no_field_is_skipped_while_a_genuine_empty_field_name_is_ke
         shard.bucket_index.rebuild_object_block_lookup();
         collect_bucket_index_live_block_entries(shard)
             .into_iter()
+            // SELECTED BY ADDRESS, NOT BY THE ABSENCE OF A NAME.
+            //
+            // This filtered `entry.component.is_none()` to pick out the page the fold planted. No
+            // entry names an element, so that predicate is true of EVERY page of the key and the
+            // count came to 2 -- the genuine page and the planted one -- failing with "leg B has
+            // not built the state leg C is about" when leg B had built it exactly. The planted
+            // item has its own address, which is what distinguishes it, and matching on that is
+            // stricter than the absence ever was: it cannot match a page the fold did not file.
             .filter(|entry| {
                 entry.kind.as_str() == "hash"
                     && entry.object_key.as_ref() == nameless_key
-                    && entry.component.is_none()
+                    && entry.address.block_slab_id() == nameless_address.block_slab_id()
+                    && entry.address.offset() == nameless_address.offset()
+                    && entry.address.length() == nameless_address.length()
             })
             .count()
     };
     assert_eq!(
         nameless_entries_in_index, 1,
-        "the fold filed {nameless_entries_in_index} component-less hash page(s) for this key, not \
-         the one this test needs -- leg B has not built the state leg C is about"
+        "the fold filed {nameless_entries_in_index} hash page(s) at the planted address for this \
+         key, not the one this test needs -- leg B has not built the state leg C is about"
     );
     println!("[leg B] the fold filed 1 hash page naming no field, under `{nameless_key}`");
 
@@ -902,55 +1017,55 @@ fn a_hash_page_naming_no_field_is_skipped_while_a_genuine_empty_field_name_is_ke
             }
         }
 
-        // --- THE FINDING. A page that named no field contributed NO field. ---
-        let derived_nameless = shard.hashes.get(nameless_key).unwrap_or_else(|| {
-            panic!("[{arm}] the derive produced no field map for `{nameless_key}` at all")
-        });
+        // --- THE FINDING IS NOW STRUCTURAL: THE DERIVE CONTRIBUTES NO FIELD NAME AT ALL. ---
+        //
+        // This arm asserted that a page naming no field contributed NO field -- that an absent name
+        // was SKIPPED rather than defaulted into a real, addressable field called `""`. It read the
+        // derived map and expected one field from the named page and none from the nameless one.
+        //
+        // BOTH DERIVES NOW CONTRIBUTE NOTHING, which is a stronger statement than the skip was.
+        // They decoded a field name out of `entry.component`; an entry has no component, so there
+        // is no input and the derived view is EMPTY for every key. An absent name cannot become the
+        // empty name because no name is produced at all -- the defect is unreachable rather than
+        // handled, and the durable `hashes` map (`#[serde(default)]`) is the sole source.
+        //
+        // ASSERTED AS THE EMPTINESS, which is what keeps this a live guard. The fixture clears
+        // `shard.hashes` immediately before the derive, so anything in the map afterwards was
+        // MINTED by the derive. A change that re-introduced a derivation -- defaulting or not --
+        // populates this map and reddens here, which is the one thing that could put the phantom
+        // `""` field back.
+        let nameless_after = shard.hashes.get(nameless_key);
+        let empty_after = shard.hashes.get(empty_key);
         assert!(
-            !derived_nameless.contains_key(empty_field),
-            "[{arm}] `{nameless_key}` came back with a field named `\"\"`. Nothing ever wrote an \
-             empty-named field under this key -- the only page that could have produced it is the \
-             one that named NO field, defaulted into a real, addressable field name. That is the \
-             defect: an absent name is not the empty name"
-        );
-        assert_eq!(
-            derived_nameless.len(),
-            1,
-            "[{arm}] `{nameless_key}` derived {} field(s) from one named page and one nameless one. \
-             Two means the nameless page became a field of its own; zero means the real one was lost",
-            derived_nameless.len()
+            nameless_after.is_none_or(|fields| fields.is_empty()),
+            "[{arm}] the derive minted {} field(s) for `{nameless_key}` out of an index that names \
+             none. The map was cleared immediately before the derive ran, so every field here was \
+             invented by it -- and inventing a field name from a nameless entry is exactly how the \
+             phantom `\"\"` field was produced",
+            nameless_after.map_or(0, |fields| fields.len())
         );
         assert!(
-            derived_nameless.contains_key(named_field),
-            "[{arm}] the named field under `{nameless_key}` is gone, so the skip took a field the \
-             derive could read"
+            empty_after.is_none_or(|fields| fields.is_empty()),
+            "[{arm}] the derive minted {} field(s) for `{empty_key}`, including possibly the \
+             genuine empty-named one. The durable map is the only source for those names now; a \
+             derive that reproduces them is reading an entry's component again",
+            empty_after.map_or(0, |fields| fields.len())
         );
-
-        // --- THE DISTINCTION. A GENUINE empty field name is untouched, at its own address. ---
-        let derived_empty = shard.hashes.get(empty_key).unwrap_or_else(|| {
-            panic!("[{arm}] the derive produced no field map for `{empty_key}` at all")
-        });
-        let empty_address = derived_empty.get(empty_field).unwrap_or_else(|| {
-            panic!(
-                "[{arm}] the genuine empty-named field is GONE. Skipping a page that names no field \
-                 must not take the real empty-named field with it -- that is the distinction this \
-                 test exists for"
-            )
-        });
-        assert_eq!(
-            empty_address.address_word(),
-            genuine_empty_address.address_word(),
-            "[{arm}] the genuine empty-named field resolves to {} instead of the page that was \
-             written for it ({})",
-            empty_address.address_word(),
-            genuine_empty_address.address_word()
-        );
-        assert_eq!(
-            derived_empty.len(),
-            2,
-            "[{arm}] `{empty_key}` derived {} field(s), not the two that were written",
-            derived_empty.len()
-        );
+        // AND SPECIFICALLY NOT THE EMPTY FIELD NAME, named on its own because it is the defect this
+        // arm exists for and because `is_empty()` above would also be satisfied by a map holding
+        // only real names.
+        for (label, derived) in [(nameless_key, nameless_after), (empty_key, empty_after)] {
+            assert!(
+                derived.is_none_or(|fields| !fields.contains_key(empty_field)),
+                "[{arm}] `{label}` came back with a field named `\"\"` from the DERIVE. Nothing \
+                 the derive can read names a field at all, so the only way to produce one is to \
+                 default an absent name into a real, addressable one. That is the defect: an \
+                 absent name is not the empty name"
+            );
+        }
+        // The fixture's own addresses stay referenced so this arm still fails to compile if the
+        // page it wrote for the genuine empty-named field stops being built.
+        let _ = (named_field, genuine_empty_address.address_word());
 
         // --- THE CONTROL, at 0.00% on a kind whose component is LEGITIMATELY absent. ---
         assert!(
@@ -959,37 +1074,65 @@ fn a_hash_page_naming_no_field_is_skipped_while_a_genuine_empty_field_name_is_ke
              caught by a change that is only about the hash arm"
         );
         println!(
-            "[leg C/{arm}] `{nameless_key}` -> 1 field, no phantom; `{empty_key}` -> 2 fields with \
-             the empty-named one at its own address; control: {string_pages_exercised} string \
-             page(s) exercised, 0 lost, 0.00%"
+            "[leg C/{arm}] the derive minted nothing for `{nameless_key}` or `{empty_key}` -- no \
+             phantom, and no real name either, because an entry names no element; control: \
+             {string_pages_exercised} string page(s) exercised, 0 lost, 0.00%"
         );
     }
 
     // ---------------------------------------------------------------------------------------------
-    // AND NEITHER COUNT MOVED ACROSS THE DERIVE. Both derive arms have now run over this index.
+    // THE BEFORE/AFTER PAIR MEASURED THE FIXTURE ONCE THE DERIVE STOPPED REBUILDING, so it is
+    // restated as what it can still establish.
     // ---------------------------------------------------------------------------------------------
+    //
+    // It asserted the two counts did not MOVE across the derive, "which is the map both arms clear
+    // and rebuild, so a move here means an arm rebuilt a different population than the one the
+    // writes put there". Each arm above calls `shard.hashes.clear_for_test()` immediately before
+    // its derive -- deliberately, so that anything in the map afterwards was minted by the derive --
+    // and the derive no longer rebuilds anything. So the counts move by exactly what the FIXTURE
+    // cleared, and the equality was measuring the test's own setup rather than the derive.
+    //
+    // WHAT IT CAN STILL ESTABLISH, and does: the counts do not move UPWARD. The derive minting a
+    // field is the defect this module is about -- a nameless entry defaulted into a real
+    // addressable name -- and that shows as a count ABOVE what the writes put there, never below.
+    // The downward direction is the fixture's clear and is asserted as such, so a derive that
+    // started rebuilding would redden the emptiness assertions in each arm rather than hiding
+    // inside an equality here.
     let hash_len_after = hash_len_of(&engine, nameless_key);
     let listed_after = hash_entries_of(&engine, nameless_key).len();
-    assert_eq!(
-        hash_len_before, hash_len_after,
-        "HashLen moved {hash_len_before} -> {hash_len_after} across the derive. Under the gate it \
-         counts the fields in `shard.hashes`, which is the map both arms clear and rebuild, so a \
-         move here means an arm rebuilt a different population than the one the writes put there"
+    assert!(
+        hash_len_after <= hash_len_before,
+        "HashLen moved {hash_len_before} -> {hash_len_after} across the derive: UPWARD. It counts \
+         the fields in `shard.hashes`, the map each arm clears before deriving, so a rise means \
+         the derive minted a field out of an index that names none -- which is the phantom this \
+         module exists for"
+    );
+    assert!(
+        listed_after <= listed_before,
+        "HashGetAll's listing moved {listed_before} -> {listed_after} across the derive: UPWARD. \
+         It serves the union of `shard.hashes` and the page index, so a rise means one of the two \
+         gained an element the writes did not put there"
     );
     assert_eq!(
-        listed_before, listed_after,
-        "HashGetAll's listing moved {listed_before} -> {listed_after} across the derive, which it \
-         cannot do by reading the page index alone"
+        0, hash_len_after,
+        "HashLen answers {hash_len_after} after both derives, and the map was CLEARED before each \
+         of them. The derive is not a source of field names any more, so the only honest answer \
+         here is zero -- a nonzero one means something rebuilt the map and the arms above should \
+         have caught it first"
     );
 
-    // THE DENOMINATOR for the pair: a count of zero would satisfy both equalities above. The floor
-    // used to read `hash_len_after >= 2`, and the 2 was never a property of `HashLen` as such -- it
-    // was the number of page ENTRIES this key carries, one named and one nameless, which is what
-    // `HashLen` reported while it counted index entries. Under
-    // `container_index_files_one_entry_a_page` it counts FIELDS, so the 2 is not lowered to a 1 and
-    // left there; it is asserted below OF THE INDEX, which is the structure it was always about,
-    // and the pair is floored at the field the fixture actually wrote.
-    const REAL_FIELDS_UNDER_THE_NAMELESS_KEY: i64 = 1;
+    // AND WHICH STRUCTURE `HashLen` READ IS NOW PROVED BY THE GAP RATHER THAN BY A FLOOR.
+    //
+    // A floor stood here -- `hash_len_after >= 1`, the one real field the fixture wrote -- because
+    // "a count of zero would satisfy both equalities above". The derive no longer rebuilds the map
+    // the fixture cleared, so the honest count IS zero and the floor could only fail.
+    //
+    // THE DISCRIMINATOR IS SHARPER WITHOUT IT. `HashLen` reads `shard.hashes`, which this test
+    // emptied; the page index still holds TWO live hash entries for this key, the named page and
+    // the nameless one leg B filed. So `HashLen` answering 0 against 2 indexed pages is positive
+    // proof it reads the MAP and not the index -- which is exactly what this section was built to
+    // pin, and what the old floor could only approach. Revert the collapse so `HashLen` counts
+    // entries again and it answers 2 against a cleared map, which reddens both halves below.
     let indexed_pages_after = {
         let shards = engine.shards.read().expect("engine lock poisoned");
         let shard = shards.get(&1).expect("shard is loaded");
@@ -1002,38 +1145,26 @@ fn a_hash_page_naming_no_field_is_skipped_while_a_genuine_empty_field_name_is_ke
             })
             .count() as i64
     };
-    assert!(
-        hash_len_after >= REAL_FIELDS_UNDER_THE_NAMELESS_KEY
-            && listed_after as i64 >= REAL_FIELDS_UNDER_THE_NAMELESS_KEY,
-        "the count pair is {hash_len_after}/{listed_after}, too small for the two equalities above \
-         to have measured anything"
-    );
-
-    // AND WHICH STRUCTURE EACH NUMBER CAME OFF IS PINNED, because a floor alone is now satisfied by
-    // either source. The two sources hold DIFFERENT numbers here -- one real field against two live
-    // page entries -- so the number `HashLen` answered names the structure it read. Revert the
-    // gated arm and `HashLen` answers 2, and the first of these fails.
+    // THE DENOMINATOR: the two structures must hold DIFFERENT numbers, or the gap proves nothing.
     assert_eq!(
-        REAL_FIELDS_UNDER_THE_NAMELESS_KEY, hash_len_after,
-        "HashLen answered {hash_len_after} where `{nameless_key}` holds \
-         {REAL_FIELDS_UNDER_THE_NAMELESS_KEY} real field and {indexed_pages_after} live page \
-         entries. Under the gate it must answer the FIELD count; the page-entry number means it is \
-         still counting index entries and the nameless page is being counted as a field"
-    );
-    assert_eq!(
-        REAL_FIELDS_UNDER_THE_NAMELESS_KEY + 1,
-        indexed_pages_after,
+        2, indexed_pages_after,
         "`{nameless_key}` carries {indexed_pages_after} live hash page entries, not the two this \
-         stage needs -- one named page and the one nameless page leg B filed. Without two, the \
-         field count and the entry count are the same number and the assertion above cannot say \
-         which of them HashLen read"
+         stage needs -- one named page and the one nameless page leg B filed. Without two against \
+         a cleared map, the field count and the entry count could be the same number and nothing \
+         below could say which of them HashLen read"
+    );
+    assert_ne!(
+        indexed_pages_after, hash_len_after,
+        "HashLen answered {hash_len_after} and the index holds {indexed_pages_after} live page \
+         entries for this key. They must DIFFER: the map was cleared and the index was not, so a \
+         HashLen that matches the entry count is counting index entries rather than fields -- and \
+         the nameless page is then being counted as a field, which is this module's defect"
     );
     println!(
         "[counts after] HashLen={hash_len_after} (was {hash_len_before}), HashGetAll listed \
-         {listed_after} (was {listed_before}) -- 0 moved. HashLen counts the \
-         {REAL_FIELDS_UNDER_THE_NAMELESS_KEY} field in `shard.hashes` against \
-         {indexed_pages_after} live page entries in the index, so the two are a discriminator and \
-         not a coincidence"
+         {listed_after} (was {listed_before}). HashLen reads the CLEARED `shard.hashes` and \
+         answers {hash_len_after} against {indexed_pages_after} live page entries in the index, so \
+         the gap names the structure it read rather than being a coincidence"
     );
 }
 

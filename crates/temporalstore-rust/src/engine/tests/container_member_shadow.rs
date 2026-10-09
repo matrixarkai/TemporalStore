@@ -546,26 +546,43 @@ fn a_zset_component_name_spells_exactly_half_its_bytes_in_hex_at_every_member_wi
 // 3. THE REDUNDANCY, AT BYTE LEVEL
 // =============================================================================================
 
-/// A ZSET ELEMENT PAGE HOLDS EXACTLY WHAT ITS COMPONENT NAME ALREADY SPELLS.
+/// THE REDUNDANCY THIS ARM PRICED NO LONGER EXISTS, SO IT MEASURES WHAT CARRIES THE IDENTITY NOW.
 ///
-/// The write path stores the member as the page (`append_value(.., &member, ..)`) and names the
-/// page with the same member in hex. This decodes every component in a seeded shard back to a
-/// member and asserts the set against `shard.zsets`'s own members -- so "the payload is a second
-/// copy" is a byte-level fact about a real shard, not an inference from one call site.
+/// # WHAT IT USED TO SAY
 ///
-/// RESTATED: the component used to spell `(score, member)` and this asserted the pair; it spells
-/// the member alone now, and the score is `shard.zsets`'s own value rather than something the
-/// component and the model map could be compared against each other for. What stays provable at
-/// byte level -- the thing the title claims -- is the member half: the page's name still names
-/// nothing the model map does not also hold.
+/// "A ZSET ELEMENT PAGE HOLDS EXACTLY WHAT ITS COMPONENT NAME ALREADY SPELLS." The write path
+/// stores the member as the page and named the page with the same member in hex, so this decoded
+/// every component in a seeded shard back to a member and asserted the set against `shard.zsets`'s
+/// own members -- "the payload is a second copy", as a byte-level fact about a real shard. It had
+/// already been restated once, when the component stopped spelling `(score, member)`.
 ///
-/// IT ALSO ASSERTS THE POPULATION IT CLAIMS: every container key present, every member of every
-/// key covered, and a page count equal to keys x members. A decode loop over an empty index
-/// asserts nothing and passes.
+/// # WHY IT IS NOT RESTATED A SECOND TIME THE SAME WAY
 ///
-/// rust-internal: reads the engine's own bucket index, no product behaviour
+/// An index entry has no component. The redundancy is not smaller, mis-stated, or differently
+/// shaped -- it is STRUCTURALLY UNREPRESENTABLE: there is no second copy of the member on the
+/// entry because there is no name on the entry, and `state.rs` pins the entry at 40 bytes with
+/// zero slack so one cannot come back without failing const-evaluation. Correcting a number here
+/// would have produced a test measuring nothing.
+///
+/// # WHAT IT ASSERTS INSTEAD, AND WHY THAT IS NOT A WEAKER CLAIM
+///
+/// The member's identity lives in exactly two places now: `shard.zsets`, and the page's own item
+/// key -- written by `container_pages::element_key_from_component` precisely so a page is
+/// interpretable without the entry that names it. That key is the ONLY copy outside the model map,
+/// which makes a codec that does not round-trip a LOSS rather than a mislabelling. So the round
+/// trip is asserted, per member, over the members the model map actually holds, in both directions:
+/// a renderer returning the empty string would satisfy "no score is spelled here" while losing the
+/// member entirely.
+///
+/// The per-member record FRAMING measurement is untouched and is still the figure worth having --
+/// it is about the page payload, which is where the member's second copy always was.
+///
+/// IT STILL ASSERTS THE POPULATION IT CLAIMS: every container key present, one page per member,
+/// every member of every key covered. A loop over an empty index asserts nothing and passes.
+///
+/// rust-internal: reads the engine's own bucket index and the page codec, no product behaviour
 #[test]
-fn a_zset_element_page_holds_exactly_what_its_component_name_already_spells() {
+fn a_zset_members_identity_survives_the_page_key_that_is_now_its_only_copy() {
     let dir = tempfile::tempdir().expect("tempdir");
     let engine = engine_on(dir.path());
     load_on(&engine, NARROW_END);
@@ -581,19 +598,28 @@ fn a_zset_element_page_holds_exactly_what_its_component_name_already_spells() {
         MEMBERS
     );
 
-    let mut decoded_per_key: BTreeMap<String, BTreeSet<Vec<u8>>> = BTreeMap::new();
+    // THE COMPONENT DECODE IS GONE, AND SO IS THE REDUNDANCY IT MEASURED.
+    //
+    // This walked every page, ran `hex::decode(&page.component)`, asserted the result was
+    // `MEMBER_WIDTH` bytes, and collected the members per key to compare against `shard.zsets`.
+    // An index entry has no component, so there is nothing to decode -- and the thing the loop
+    // proved, that the entry's name was a SECOND COPY of the member, is not a fact that has become
+    // false: it has become unrepresentable. There is no second copy because there is no name.
+    //
+    // WHAT REPLACES IT IS A ROUND TRIP, not a corrected number. The member's identity now lives in
+    // exactly two places: `shard.zsets` and the page's own item key, written by
+    // `container_pages::element_key_from_component` so a page is interpretable without the entry
+    // that names it. That codec is what the identity passes through, it is the thing a change can
+    // still break, and the round trip is what catches the class this campaign has been bitten by:
+    // `hex::decode` has no opinion about what the bytes mean, so a key that framed and decoded
+    // without round-tripping would read as correct.
+    //
+    // ASSERTED IN BOTH DIRECTIONS ON PURPOSE. A renderer that returned the empty string would
+    // satisfy "the score is not spelled here" while losing the member entirely.
+    let mut pages_per_key: BTreeMap<String, usize> = BTreeMap::new();
     let mut stored_lengths: BTreeSet<usize> = BTreeSet::new();
     for page in &pages {
-        let member = hex::decode(&page.component).expect("the component is hex of the member");
-        assert_eq!(
-            member.len(),
-            MEMBER_WIDTH,
-            "the decoded member is not the width that was written"
-        );
-        decoded_per_key
-            .entry(page.object_key.clone())
-            .or_default()
-            .insert(member);
+        *pages_per_key.entry(page.object_key.clone()).or_default() += 1;
         stored_lengths.insert(page.address.length() as usize);
     }
 
@@ -620,26 +646,53 @@ fn a_zset_element_page_holds_exactly_what_its_component_name_already_spells() {
     );
 
     assert_eq!(
-        decoded_per_key.len(),
+        pages_per_key.len(),
         CONTAINER_KEYS,
-        "the decode did not cover every container key"
+        "the index does not hold pages for every container key"
     );
     let mut covered = 0usize;
     for key in &keys {
-        let decoded = decoded_per_key
+        let held = *pages_per_key
             .get(key)
-            .unwrap_or_else(|| panic!("no decoded components for {key}"));
+            .unwrap_or_else(|| panic!("no pages for {key}"));
         let model = model_members(&engine, key);
         assert_eq!(
             model.len(), MEMBERS,
             "the model map does not hold the population claimed for {key}"
         );
-        let model_members_only: BTreeSet<Vec<u8>> = model.keys().cloned().collect();
         assert_eq!(
-            decoded, &model_members_only,
-            "the component names of {key} do not decode to the members the model map holds -- \
-             the component is NOT a second copy of the member after all"
+            MEMBERS, held,
+            "{key} holds {held} pages for {MEMBERS} members, so the per-member framing figure \
+             above is a mean over the wrong population"
         );
+        // THE ROUND TRIP, PER MEMBER, over the members the model map actually holds -- so this
+        // covers the real population rather than whatever the codec happens to accept.
+        for member in model.keys() {
+            let component = hex::encode(member);
+            let page_key = crate::engine::container_pages::element_key_from_component(
+                crate::engine::container_pages::ElementKeySpelling::ScoreThenMember,
+                &component,
+            )
+            .unwrap_or_else(|| panic!("{key}: no page key for member {component}"));
+            assert_eq!(
+                MEMBER_WIDTH + 8,
+                page_key.len(),
+                "{key}: the page key for a {MEMBER_WIDTH}-byte member is {} B, not the member \
+                 behind an eight-byte score slot",
+                page_key.len()
+            );
+            let back = crate::engine::container_pages::component_from_element_key(
+                crate::engine::container_pages::ElementKeySpelling::ScoreThenMember,
+                &page_key,
+            )
+            .unwrap_or_else(|| panic!("{key}: the page key for {component} renders no component"));
+            assert_eq!(
+                component, back,
+                "{key}: the member does not survive the page key it is written into. That key is \
+                 the ONLY copy of the member outside `shard.zsets` now -- the entry carries none -- \
+                 so a codec that does not round-trip loses the element rather than mislabelling it"
+            );
+        }
         covered += model.len();
     }
     assert_eq!(
@@ -649,9 +702,9 @@ fn a_zset_element_page_holds_exactly_what_its_component_name_already_spells() {
         CONTAINER_KEYS * MEMBERS
     );
     println!(
-        "{covered} members over {CONTAINER_KEYS} keys: every component name decodes to the member \
-         the model map holds, and every page stores the same member again -- the score lives in \
-         the model map alone now"
+        "{covered} members over {CONTAINER_KEYS} keys: every member round-trips through the page \
+         key that is now its only copy outside the model map, and every page stores the member \
+         again -- the entry holds no third copy and the score lives in the model map alone"
     );
 }
 
@@ -1055,7 +1108,24 @@ fn what_one_more_member_rewrites_against_what_one_packed_buffer_would() {
 
     // TODAY: one more member is one more page, of the member's own width. Taken off the index
     // rather than from the command: the page the write actually filed.
-    let before_pages = zset_pages(&engine).len();
+    //
+    // IDENTIFIED BY SET DIFFERENCE ON THE ADDRESS, NOT BY NAME. The new page used to be found with
+    // `page.component == zset_component(&member)`, and an entry carries no component -- so that
+    // filter matched nothing and the arm failed with "the new member's page is not identifiable in
+    // the index". The addresses held before the write are recorded here and the one address that is
+    // new afterwards IS the page the write filed. That is a stricter identification than the name
+    // was, because it cannot match a page the write did not create.
+    let before_addresses: BTreeSet<(u64, u64, u64)> = zset_pages(&engine)
+        .iter()
+        .map(|page| {
+            (
+                page.address.block_slab_id(),
+                page.address.offset(),
+                page.address.length(),
+            )
+        })
+        .collect();
+    let before_pages = before_addresses.len();
     let response = engine.execute(ExecuteRequest {
         shard_id: 1,
         command: Command::ZSetAdd {
@@ -1075,10 +1145,20 @@ fn what_one_more_member_rewrites_against_what_one_packed_buffer_would() {
         .iter()
         .filter(|page| {
             page.object_key == key
-                && page.component == zset_component(&member_bytes(0, MEMBERS + 1))
+                && !before_addresses.contains(&(
+                    page.address.block_slab_id(),
+                    page.address.offset(),
+                    page.address.length(),
+                ))
         })
         .collect();
-    assert_eq!(added.len(), 1, "the new member's page is not identifiable in the index");
+    assert_eq!(
+        added.len(),
+        1,
+        "the new member's page is not identifiable in the index: {} of this key's pages are at \
+         addresses the write created, not one",
+        added.len()
+    );
     // The stored page is the member plus the per-member record framing. Taken off the index, so
     // this is the length the write actually filed rather than the width it was handed.
     let today_page_bytes = added[0].address.length() as usize;

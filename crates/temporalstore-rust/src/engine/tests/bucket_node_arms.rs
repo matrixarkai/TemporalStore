@@ -698,16 +698,21 @@ fn a_simple_bucket_holds_no_general_case_to_take_away() {
         "an address is {} bytes, not 16",
         size_of::<crate::block_store::ElementEntry>()
     );
+    // 40, not the 56 it was before the entry stopped naming its element. The proposal this arm
+    // refuses -- a page's address fitting in a tagged 64-bit word -- is refused by the ADDRESS
+    // being 16 bytes on its own, asserted just above, so the entry's width moving does not soften
+    // it: the entry is still more than twice a word, and it is now one shared name rather than
+    // three.
     assert_eq!(
-        56,
+        40,
         size_of::<BlockIndex>(),
-        "a page entry is {} bytes, not 56",
+        "a page entry is {} bytes, not 40",
         size_of::<BlockIndex>()
     );
     assert!(
         size_of::<crate::block_store::ElementEntry>() > size_of::<u64>(),
         "the whole proposal rests on a page's address fitting in a tagged 64-bit word; here the \
-         address ALONE is {} bytes, and the entry around it carries three shared names as well",
+         address ALONE is {} bytes, and the entry around it carries a shared name and an address as well",
         size_of::<crate::block_store::ElementEntry>()
     );
 }
@@ -1064,13 +1069,15 @@ fn the_tagged_node_is_fifty_six_bytes_and_every_arm_reconstructs() {
         "the tagged node is {} bytes, not 56",
         size_of::<TaggedNode>()
     );
-    // 72, not 80: this payload holds a page entry, and the entry shed eight bytes when its address
-    // shed the object id. The reconstruction above is symbolic and followed on its own; this literal
-    // did not.
+    // 56, not 72: this payload holds a page entry, and the entry has shed sixteen more bytes since
+    // -- it stopped naming its element -- on top of the eight its address shed with the object id.
+    // The reconstruction above is symbolic and followed on its own BOTH times; this literal has had
+    // to be edited both times, which is the standing argument for reconstructing rather than
+    // totalling.
     assert_eq!(
-        72,
+        56,
         size_of::<SimpleLayout>(),
-        "the simple payload is {} bytes, not 72",
+        "the simple payload is {} bytes, not 56",
         size_of::<SimpleLayout>()
     );
 
