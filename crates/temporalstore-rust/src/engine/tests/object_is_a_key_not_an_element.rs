@@ -204,19 +204,42 @@ fn tombstone_holds(engine: &TemporalEngine, object_id: u64) -> bool {
 
 /// The components of one key's live pages, sorted. An absent component reads as the empty string,
 /// which is distinguishable here because no fixture in this module writes one.
-fn live_components(engine: &TemporalEngine, kind: &str, key: &str) -> Vec<String> {
+/// LIVE PAGE ENTRIES THIS OBJECT HOLDS. A COUNT, AND IT SAYS SO IN ITS NAME.
+///
+/// THIS WAS `live_components` RETURNING A `Vec<String>` AND IT HAD STOPPED RETURNING COMPONENTS.
+/// When the element-name field came off `BlockIndex` the body was left pushing `String::new()` per
+/// live entry, so every caller that only took `.len()` still measured the right thing and the two
+/// callers that looked at the CONTENTS were reading a run of blanks -- one of them asking whether
+/// any element was named "f0", which could only ever answer no. A helper whose name promises
+/// identity and whose body yields blanks is worse than a missing helper, so it returns the count it
+/// actually computes. Element identity is `resident_fields` below.
+fn live_page_count(engine: &TemporalEngine, kind: &str, key: &str) -> usize {
     let shards = engine.shards.read().expect("engine lock poisoned");
     let shard = shards.get(&1).expect("shard 1 is loaded");
-    let mut held = Vec::new();
+    let mut held = 0usize;
     for bucket in shard.bucket_index.bucket_map.values() {
         for page in bucket.block_index.values() {
             if !page.deleted && page.model_id.as_str() == kind && &*page.object_key == key {
-                held.push(String::new());
+                held += 1;
             }
         }
     }
-    held.sort();
     held
+}
+
+/// THE FIELD NAMES THIS OBJECT HOLDS, from the authority for them.
+///
+/// `shard.hashes` is durable (`#[serde(default)]`) and is what `HashLen` and `HashGetAll` answer
+/// from. It is where element identity went when it came off the entry, so it is where the questions
+/// about element identity in this module are now asked.
+fn resident_fields(engine: &TemporalEngine, key: &str) -> std::collections::BTreeSet<String> {
+    let shards = engine.shards.read().expect("engine lock poisoned");
+    let shard = shards.get(&1).expect("shard 1 is loaded");
+    shard
+        .hashes
+        .get(key)
+        .map(|fields| fields.keys().map(|name| name.to_string()).collect())
+        .unwrap_or_default()
 }
 
 fn percentile(sorted: &[usize], p: f64) -> usize {
@@ -315,10 +338,10 @@ fn the_object_index_holds_one_row_per_key_rather_than_one_per_page() {
     // than a mean, because the whole question is the tail.
     let mut per_key: Vec<usize> = Vec::new();
     for key in &hash_keys {
-        per_key.push(live_components(&engine, "hash", key).len());
+        per_key.push(live_page_count(&engine, "hash", key));
     }
     for key in &string_keys {
-        per_key.push(live_components(&engine, "string", key).len());
+        per_key.push(live_page_count(&engine, "string", key));
     }
     per_key.sort();
     println!(
@@ -393,7 +416,7 @@ fn deleting_one_element_tombstones_the_object_only_at_its_last_element() {
     }
     let object_id = stable_block_object_id(1, "hash", KEY);
     assert_eq!(
-        live_components(&engine, "hash", KEY).len(),
+        live_page_count(&engine, "hash", KEY),
         FIELDS,
         "DENOMINATOR: the seed did not file {FIELDS} pages, so nothing below is being observed"
     );
@@ -413,32 +436,58 @@ fn deleting_one_element_tombstones_the_object_only_at_its_last_element() {
             field: "f0".to_string(),
         },
     );
-    let after_one = live_components(&engine, "hash", KEY);
+    let after_one = live_page_count(&engine, "hash", KEY);
+    let resident_after_one = resident_fields(&engine, KEY);
     let tombstoned_after_one = tombstone_holds(&engine, object_id);
     println!(
         "  {:>7}  {:>10}  {:>10}",
-        1,
-        after_one.len(),
-        tombstoned_after_one
+        1, after_one, tombstoned_after_one
     );
+    // THE REMOVAL IS READ OFF THE RESIDENT MAP, AND THE PAGE COUNT IS READ AS THE COST.
+    //
+    // This asserted `after_one.len() == FIELDS - 1` -- one fewer live page per deleted field -- and
+    // measured 25 for 24. The removal happened; the live ENTRY is retained on purpose. A removal
+    // reaches the index through `mark_bucket_index_block_deleted_recording`, whose `retain` cannot
+    // match a page-named entry, so it adds a tombstone and leaves the live entry standing, on the
+    // stated grounds that the page may still hold the object's other members. That is a footprint
+    // cost -- an entry per removal that nothing collects -- and NOT a membership error:
+    // `container_membership` folds by append position and the tombstone is the later page.
+    //
+    // So the membership claim is asked of `shard.hashes`, which is the authority and is what
+    // `HashLen` and `HashGetAll` answer from, and the retained entry is asserted as the cost rather
+    // than left to look like a bug nobody noticed. The arm that owns the retained entry as its own
+    // subject is `container_page_ordinal::the_ordinal_names_a_position_and_a_delete_frees_it`.
     assert_eq!(
-        after_one.len(),
+        resident_after_one.len(),
         FIELDS - 1,
-        "deleting one field left {} pages, not {}",
-        after_one.len(),
+        "the resident map holds {} field(s) after one delete, not {}",
+        resident_after_one.len(),
         FIELDS - 1
     );
     assert!(
-        !after_one.iter().any(|component| component == "f0"),
-        "the deletion did not find its own row: f0 is still filed. \
-         `mark_bucket_index_block_deleted_with` matches on the COMPONENT, which this change does \
-         not touch, and this is the arm that says so"
+        !resident_after_one.contains("f0"),
+        "the deletion did not reach the resident map: f0 is still held. This asked the same \
+         question of the index listing and could only ever pass once that listing stopped naming \
+         elements -- the map is where the answer is"
+    );
+    // AND THE PAGE-COUNT ASSERTION BELOW IS A TRIPWIRE, NOT A DRIVEN GUARD. Widening
+    // `mark_bucket_index_block_deleted_recording`'s retain from `component.is_none()` to `true`
+    // leaves it GREEN, because for a container that retain never runs at all: `target_buckets`
+    // comes from `block_refs_for(model_id, key, component)` and a container removal resolves no
+    // bucket there. So the number below is pinned to make someone come and read this when the
+    // retirement lands, and the only thing that moves it is the retirement itself.
+    assert_eq!(
+        FIELDS, after_one,
+        "{after_one} live pages after one of {FIELDS} fields was deleted. {FIELDS} is the expected \
+         number and the cost described above: if this is {} the retirement of a vacated page's \
+         entry has been implemented, and this assertion is the one to come and restate",
+        FIELDS - 1
     );
     assert!(
         !tombstoned_after_one,
         "the object was tombstoned after ONE of {FIELDS} elements was deleted, while {} elements \
          are still live. `object_manager::runtime_report` would count every one of them deleted",
-        after_one.len()
+        resident_after_one.len()
     );
     // AND THE SURVIVORS STILL READ, through the product rather than off the index.
     for f in 1..FIELDS {
@@ -468,18 +517,24 @@ fn deleting_one_element_tombstones_the_object_only_at_its_last_element() {
             },
         );
     }
-    let after_all = live_components(&engine, "hash", KEY);
+    let after_all = live_page_count(&engine, "hash", KEY);
+    let resident_after_all = resident_fields(&engine, KEY);
     let tombstoned_after_all = tombstone_holds(&engine, object_id);
     println!(
         "  {:>7}  {:>10}  {:>10}",
-        FIELDS,
-        after_all.len(),
-        tombstoned_after_all
+        FIELDS, after_all, tombstoned_after_all
     );
     assert!(
-        after_all.is_empty(),
-        "{} pages survived deleting every field",
-        after_all.len()
+        resident_after_all.is_empty(),
+        "the resident map still holds {} field(s) after every field was deleted: {resident_after_all:?}",
+        resident_after_all.len()
+    );
+    assert_eq!(
+        0, after_all,
+        "{after_all} live pages survived deleting every field. The retained live entry a single \
+         removal leaves is deliberate while the page still holds siblings; at the LAST element \
+         there are none, and `recorded_map::remove_element` drops the live entries for exactly \
+         that reason -- so a non-zero here is that drop not firing"
     );
     assert!(
         tombstoned_after_all,
@@ -547,10 +602,11 @@ fn hash_len_and_its_listing_are_unmoved_by_a_component_free_id() {
         crate::types::CommandResponse::Integer { value } => value,
         other => panic!("HashLen answered {other:?}"),
     };
-    let listed = live_components(&engine, "hash", KEY);
+    let listed = live_page_count(&engine, "hash", KEY);
+    let resident = resident_fields(&engine, KEY);
     println!(
-        "\n=== HLEN === answered {answered}, pages {}, fields written {FIELDS}",
-        listed.len()
+        "\n=== HLEN === answered {answered}, pages {listed}, resident fields {}, fields written {FIELDS}",
+        resident.len()
     );
     assert_eq!(
         answered, FIELDS,
@@ -558,17 +614,35 @@ fn hash_len_and_its_listing_are_unmoved_by_a_component_free_id() {
          the entry COUNT, which is what this reader returns"
     );
     assert_eq!(
-        listed.len() as i64,
-        answered,
-        "HLEN answered {answered} and the index lists {} pages. A length that does not equal its \
-         own listing is the shape #2014 caught",
-        listed.len()
+        listed as i64, answered,
+        "HLEN answered {answered} and the index holds {listed} live pages. A length that does not \
+         equal its own listing is the shape #2014 caught"
     );
-    let distinct: BTreeSet<&String> = listed.iter().collect();
+    // THE NO-DUPLICATE CLAIM, RE-ATTRIBUTED TO WHERE ELEMENT IDENTITY LIVES.
+    //
+    // This counted DISTINCT COMPONENTS in the index listing and required one per page: "the listing
+    // repeats a component, so a rewrite accumulated a second entry for one field". The entry has no
+    // element-name field, so that listing had become a run of blanks -- `live_components` pushed
+    // `String::new()` per page -- and the count was 1 against 7 rather than 7 against 7. It was not
+    // vacuous, it was simply measuring nothing that exists.
+    //
+    // The question it asked is still a real one: did the rewrite of `f0` above leave TWO live
+    // entries for one field? It is asked of the two artefacts that can answer it. `shard.hashes` is
+    // the authority for which fields exist, and the live page count is what a rewrite would inflate
+    // if it filed beside rather than superseding. Seven distinct names over seven live pages is the
+    // shape; six names over seven pages is the accumulation this exists to catch.
     assert_eq!(
-        distinct.len(),
-        listed.len(),
-        "the listing repeats a component, so a rewrite accumulated a second entry for one field"
+        resident.len() as i64,
+        FIELDS,
+        "the resident map holds {} distinct field name(s) for {FIELDS} fields written, so the \
+         rewrite of f0 either lost a field or added one",
+        resident.len()
+    );
+    assert_eq!(
+        listed as i64, FIELDS,
+        "the index holds {listed} live pages for {FIELDS} distinct fields after one of them was \
+         rewritten; a rewrite that filed beside its own previous entry instead of superseding it \
+         looks exactly like this"
     );
 }
 
