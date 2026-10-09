@@ -3935,13 +3935,75 @@ pub(super) struct ObjectDeletionFiled(());
 ///   * `entry_object_identity` x2 -- `the_whole_object_read_path_asks_for_every_component_of_one_key`
 ///     is about a read path that no longer asks by component.
 ///
-/// AND TWO REDS ARE INHERITED, not this change's:
-/// `container_member_shadow::a_zset_read_examines_no_page_index_entries_and_a_hash_read_does` and
+/// AND THE "INHERITED" HALF OF THAT CLAIM IS REFUTED, MEASURED ON THIS BRANCH'S OWN BASE.
+///
+/// This paragraph read "AND TWO REDS ARE INHERITED, not this change's" and named
 /// `length_answer_and_listing_agree::the_two_sources_of_a_hash_length_part_on_the_pre_carry_route_
-/// and_a_reload_restores_them` both fail on 9651d82fd with byte-identical messages at the same lines
-/// with `Compiling` 0. This change moves WHICH arm of the second one reddens, from line 883 to 809.
+/// and_a_reload_restores_them` as one of them, on the evidence that it fails on `9651d82fd`. That
+/// commit is not what this branch sits on. Driven on `2ae24a03d` -- the merge-base, and
+/// `matrixark/main` itself, both at tree `ea1b7ea16d` -- IN A WORKTREE OF ITS OWN WITH ITS OWN
+/// TARGET DIR: it PASSES. 2 passed, 0 failed, 2,845 filtered out, 2.58 s. The same arm run the same
+/// way on this branch FAILS, 5 passed 1 failed of 2,855, 2.83 s. Same run shape on both sides, so
+/// the difference is not the run's width or its load.
+///
+/// SO IT IS THIS BRANCH'S OWN RED AND IT IS A RESTATEMENT, not an inheritance to be stepped around.
+/// Its message says `HashGetAll` "serves the union of the two and this change does not touch it" --
+/// and this change DOES touch it: the fourth consumer moved above is `Command::HashGetAll`, whose
+/// index half now answers from `shard.hashes`. With the container a strict subset of the index the
+/// listing therefore follows the CONTAINER (5) where the arm pins it to the INDEX (6). The source
+/// moved; the assertion names the old source. An ancestor that is not your base cannot establish
+/// that a red is inherited.
+///
+/// `container_member_shadow`'s arm is main's own, as the paragraph above this list already records.
+///
+/// ## AND THE WIDTH STEP IS MEASURED NOW, FIELD REMOVED, NOT INFERRED FROM A PROBE
+///
+/// `TheEntryWithoutAnElementName` infers 40 from a field set written out beside the real struct.
+/// The field was actually REMOVED and the width read off the live type: `size_of::<BlockIndex>()`
+/// const-evaluates EQUAL TO 40, and a bracketing `!= 39 && != 41` passes with it, so 40 is exact
+/// rather than a bound. Reverted byte-exactly afterwards by CONTENT HASH -- an `mtime`-preserving
+/// restore is what makes a control run the previous mutant's binary.
+///
+/// WHAT THE REMOVAL ACTUALLY COSTS, ENUMERATED BY THE COMPILER AND NOT BY GREP: 139 error
+/// diagnostics across 45 FILES -- 101 `E0609` (no such field), 34 `E0560` (struct literal names
+/// it), 3 `E0080` (the const decompositions). THAT IS A FLOOR, for the same reason the failure
+/// count was: `E0560` SUPPRESSES `E0063` on the same literal, so the struct-literal sites are two
+/// passes and not one. Grep is no substitute here -- `component` appears about 2,000 times in this
+/// crate and `state.rs` alone declares the SAME field on a second struct, `ComponentBlocks`, whose
+/// own `component: Option<Arc<str>>` a field-text match cannot tell from this one.
+///
+/// AND THREE `retain` PREDICATES COMPARE A COMPONENT. TWO ARE ALREADY VACUOUS AND ONE IS LOAD-
+/// BEARING, which is the distinction whoever removes the field has to make site by site:
+///
+///   * `storage_bucket_internals`'s no-lookup arm compares `page.component` against
+///     `entry.component` -- two entries. Both are `None` for every kind now, so the term is
+///     ALREADY always true and asserts nothing before the field is touched.
+///   * `engine.rs`'s delta-fold arm compares `page.component` against `filed_name`, which is
+///     `None` whenever the kind names a page and `None` for the three kinds that do not file an
+///     element name at all. So `filed_name` is unconditionally `None` and this term is vacuous too.
+///   * `mark_bucket_index_block_deleted_recording`'s arm compares `page.component` against the
+///     FUNCTION ARGUMENT, and that one still decides something: `None == Some(member)` is false for
+///     a container and `None == None` true for a string. It must become `component.is_none()` and
+///     NOT be deleted as a tautology -- it is what keeps the ungated arm serving the kinds that
+///     converge on the object key.
+///
+/// THE THIRD ONE IS ALSO WHERE A REMOVAL'S OBJECT TOMBSTONE WENT. Because that argument match
+/// cannot fire for a container, `deleted_object_ids` stays empty and `bucket.deleted_object_index`
+/// is never extended -- so a container key whose LAST element is removed never reads as a deleted
+/// object, and `object_manager::runtime_report` asks `deleted_object_index.contains` per page.
+/// `container_tombstone_entry::a_keys_last_element_still_files_its_object_id` is the arm, and it
+/// passed on the base only by holding the gate OFF: all 7 of that module pass on `2ae24a03d` and 4
+/// fail here. So this is the collapse's consequence and not the width step's, and it is an ANSWER
+/// the shard gives through a public report rather than the footprint the paragraph above scopes it
+/// to. Nothing SERVED is short -- membership still folds by append position.
 ///
 /// ## AND THE WIDTH STEP THIS LEADS TO NEEDS TWO MORE PIECES, NEITHER OF WHICH IS THIS FLIP
+///
+/// OF THESE TWO, THE FIRST IS DONE AND THE SECOND IS NOT -- read this list as one remaining piece.
+/// The gate is retired, so there is no off position left to honour. The derived view still derives
+/// a container element from `entry.component` in `rebuild_unserialized_model_maps_from_bucket_index`
+/// and `reconcile_secondary_views_from_bucket_index`, and those two are inside the 45-file census
+/// above rather than ahead of it.
 ///
 /// `state`'s `TheEntryWithoutAnElementName` measures the entry at 40 bytes with zero slack, tied to
 /// the live type, so the number is in hand. Removing the field needs:
