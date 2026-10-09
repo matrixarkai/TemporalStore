@@ -2202,191 +2202,31 @@ fn the_tagged_shape_priced_on_chunks_instead_of_requests() {
 }
 
 // =============================================================================================
-// THE COMPONENT LEVEL: IS ITS `Many` ARM REAL, AND WHAT DOES THE LIST COST?
+// THE COMPONENT LEVEL IS GONE, AND THIS SECTION'S OWN CLOSING ASSERTION SAID SO FIRST
 // =============================================================================================
-
-/// THE QUESTION. `ObjectBlockRefs::by_component` is a `ComponentList` -- `Empty`, `One` held
-/// inline, or `Many` in a vector -- and its own doc says "the measured average is one component
-/// per object". A three-arm container over a population that is always one would be machinery for
-/// nothing, which is the shape #1966 found in `generation`: a field that equalled its neighbours
-/// on every one of 120,080 live addresses.
-///
-/// THE FIRST HALF OF THE ANSWER IS FREE AND IT IS IN THE DECLARATIONS. A `ComponentList` is the
-/// SAME WIDTH as the `ComponentBlocks` its `One` arm holds inline, because the tag rides a niche
-/// in the component name. The three arms therefore cost ZERO bytes over storing a single
-/// component bare. Whatever the histogram says, there are no bytes here to reclaim -- an
-/// important difference from `generation`, which was eight bytes that could actually be removed.
-/// That is asserted rather than described.
-///
-/// THE SECOND HALF IS THE DISTRIBUTION, AND IT IS MEASURED AT BOTH RANGES. A mean of one is the
-/// kind of figure this campaign has been wrong about before: #1959 published a mean of 1.98
-/// blocks a bucket over a store containing not one bucket that held two. So this reports counts
-/// per arm, percentiles and a MAXIMUM, with the per-arm sample count printed, and it reports them
-/// for the workload that can reach `Many` as well as the one that cannot.
-///
-/// THE ROUTING RANGE IS NOT THE VARIABLE HERE, AND THE MEASUREMENT SHOWS WHY. The object lookup
-/// is keyed by (kind, object key) and its component list is a per-OBJECT fact, so the routing
-/// range -- which decides which BUCKET a block lands in -- cannot move it. Both ranges are
-/// measured anyway rather than argued, because that is the premise #1962 caught being true at
-/// one range and false at the other.
-///
-/// rust-internal: reads the engine's own object lookup, no product behaviour
-#[test]
-#[ignore = "seeds four stores of 4,000 records; run by name"]
-fn the_component_level_is_not_a_list_of_one() {
-    use crate::engine::state::{ComponentBlocks, ComponentList};
-
-    // --- WHAT THE THREE ARMS COST, WHICH IS NOTHING. ---
-    assert_eq!(
-        size_of::<ComponentList>(),
-        size_of::<ComponentBlocks>(),
-        "a ComponentList is {} B and one ComponentBlocks is {} B. The three-arm shape is only \
-         free while they are equal -- the tag rides a niche in the component name -- and if they \
-         have come apart then the list IS costing bytes and is worth revisiting",
-        size_of::<ComponentList>(),
-        size_of::<ComponentBlocks>()
-    );
-    println!(
-        "\n  THE LIST IS FREE: ComponentList {} B == ComponentBlocks {} B, so the Empty/One/Many \
-         shape costs ZERO bytes over holding one component bare. There is nothing here to \
-         reclaim by removing an arm.",
-        size_of::<ComponentList>(),
-        size_of::<ComponentBlocks>()
-    );
-
-    // (label, arm counts, components per object)
-    let mut rows: Vec<(String, [usize; 3], Vec<usize>)> = Vec::new();
-    let mut path_lengths: Vec<usize> = Vec::new();
-
-    let mut measure = |label: String, engine: &TemporalEngine| {
-        let shards = engine.shards.read().expect("engine lock poisoned");
-        let shard = shards.get(&1).expect("shard 1");
-        let mut arms = [0usize; 3];
-        let mut per_object: Vec<usize> = Vec::new();
-        for (_kind, _key, entry) in shard.bucket_index.object_block_lookup.iter() {
-            let n = entry.by_component.len();
-            match &entry.by_component {
-                ComponentList::Empty => arms[0] += 1,
-                ComponentList::One(_) => arms[1] += 1,
-                ComponentList::Many(_) => arms[2] += 1,
-            }
-            per_object.push(n);
-        }
-        rows.push((label, arms, per_object));
-    };
-
-    // THE ROUTED WORKLOAD: plain keys, no component at all.
-    for end_routing_bucket in [WIDE_END, NARROW_END] {
-        let dir = tempfile::tempdir().expect("tempdir");
-        path_lengths.push(dir.path().as_os_str().len());
-        let engine = engine_on(dir.path());
-        load_on(&engine, end_routing_bucket);
-        seed_routed(&engine, SMALL);
-        let width = if end_routing_bucket == WIDE_END {
-            "the whole keyspace".to_string()
-        } else {
-            format!("0..{end_routing_bucket}")
-        };
-        measure(format!("{SMALL} routed keys on {width}"), &engine);
-    }
-
-    // THE CONTAINER WORKLOAD: one key, many fields, and a field IS a component.
-    for end_routing_bucket in [WIDE_END, NARROW_END] {
-        let dir = tempfile::tempdir().expect("tempdir");
-        path_lengths.push(dir.path().as_os_str().len());
-        let engine = engine_on(dir.path());
-        load_on(&engine, end_routing_bucket);
-        seed_container(&engine, SMALL / 100, 100);
-        let width = if end_routing_bucket == WIDE_END {
-            "the whole keyspace".to_string()
-        } else {
-            format!("0..{end_routing_bucket}")
-        };
-        measure(
-            format!("{} container keys x 100 fields on {width}", SMALL / 100),
-            &engine,
-        );
-    }
-
-    let first = path_lengths[0];
-    assert!(
-        path_lengths.iter().all(|l| *l == first),
-        "the store path length moved across arms ({path_lengths:?})"
-    );
-
-    let percentile = |sorted: &[usize], q: f64| -> usize {
-        if sorted.is_empty() {
-            return 0;
-        }
-        let rank = ((q * sorted.len() as f64).ceil() as usize).max(1);
-        sorted[rank.min(sorted.len()) - 1]
-    };
-
-    println!(
-        "\n  {:<48} {:>8} {:>8} {:>8} {:>6} {:>6} {:>6} {:>6}",
-        "corpus / range", "Empty", "One", "Many", "p50", "p90", "p99", "MAX"
-    );
-    let mut many_total = 0usize;
-    let mut one_total = 0usize;
-    for (label, arms, per_object) in &rows {
-        let mut sorted = per_object.clone();
-        sorted.sort_unstable();
-        println!(
-            "  {:<48} {:>8} {:>8} {:>8} {:>6} {:>6} {:>6} {:>6}",
-            label,
-            arms[0],
-            arms[1],
-            arms[2],
-            percentile(&sorted, 0.50),
-            percentile(&sorted, 0.90),
-            percentile(&sorted, 0.99),
-            sorted.last().copied().unwrap_or_default()
-        );
-        // THE DENOMINATOR. Every object landed in exactly one arm, or a percentage above is over
-        // part of a population rather than the population.
-        assert_eq!(
-            per_object.len(),
-            arms[0] + arms[1] + arms[2],
-            "{label}: the arm columns account for {} of {} objects",
-            arms[0] + arms[1] + arms[2],
-            per_object.len()
-        );
-        assert!(
-            !per_object.is_empty(),
-            "{label}: the lookup held NO objects, so the row above is over nothing and a store \
-             that wrote nothing reads as a beautifully simple one"
-        );
-        many_total += arms[2];
-        one_total += arms[1];
-    }
-
-    // --- THE CLAIM, DECIDED BY THE SAMPLES. ---
-    assert!(
-        one_total > 0,
-        "no object anywhere landed in the One arm, so the inline arm this shape exists for was \
-         never reached and the measurement claims nothing about it"
-    );
-    println!(
-        "\n  SAMPLES: {one_total} objects in the One arm, {many_total} in the Many arm across \
-         all four stores."
-    );
-    if many_total > 0 {
-        println!(
-            "  THE `Many` ARM IS REAL. A container key's fields are components of ONE object, so \
-             an object with many components is an ordinary write and not a corner. The component \
-             level is doing work; leave it alone."
-        );
-    } else {
-        println!(
-            "  THE `Many` ARM WAS NOT REACHED BY ANY WORKLOAD SEEDED HERE. That is a statement \
-             about this corpus and not about the engine -- and it would still not be a reason to \
-             remove the arm, because the arms cost nothing (asserted above)."
-        );
-    }
-    assert!(
-        many_total > 0,
-        "the container workload is meant to put one object under many components; if it reached \
-         ZERO Many arms then a field is not a component of its key's object and the whole reading \
-         of this level is wrong"
-    );
-}
+//
+// `the_component_level_is_not_a_list_of_one` was here. It asked whether `ComponentList`'s three
+// arms were machinery for a population that is always one, and it answered in two halves. Both
+// halves are worth keeping on the record, because one of them was RIGHT AND IRRELEVANT and the
+// other had already failed.
+//
+// THE FIRST HALF MEASURED THE WRONG DENOMINATOR. It asserted `size_of::<ComponentList>() ==
+// size_of::<ComponentBlocks>()` and concluded, in as many words, "there are no bytes here to
+// reclaim". Both were 40, so the claim was true: the three-arm WRAPPER cost nothing over the
+// payload it wrapped. But the question the level posed was not what the wrapper cost over its
+// payload -- it was what the payload cost over what it had to carry, and the payload was a
+// 24-byte `BlockRefs` behind a 16-byte `Option<Arc<str>>` holding a constant `None`. The bytes
+// were one level below where the comparison looked. Asking "is the wrapper free?" cannot find
+// them however carefully it is measured.
+//
+// THE SECOND HALF COULD ONLY EVER HAVE FAILED. Its closing assertion was `many_total > 0`, with
+// the message "if it reached ZERO Many arms then a field is not a component of its key's object
+// and the whole reading of this level is wrong". Once the element name came off the page entry,
+// `insert_object_block_lookup` filed every page of an object under one nameless slot -- so every
+// object had exactly one component, no `Many` arm could arise, and `many_total` was 0 for any
+// fixture at all. The arm carries `#[ignore]` and runs only by name, so it never reported the
+// conclusion its own failure message spelled out.
+//
+// Both levels of `ComponentList` and `ComponentBlocks` are now deleted, so there is nothing left
+// here to count arms of. The surviving distribution question -- how many refs one object's slot
+// holds -- is `index_bytes_per_key`'s.

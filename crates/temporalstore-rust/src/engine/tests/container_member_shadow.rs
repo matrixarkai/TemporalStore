@@ -66,7 +66,7 @@
 use super::*;
 use crate::engine::execute_on_shard::zset_component;
 use crate::engine::hashing::{block_routing_bucket, stable_block_object_id};
-use crate::engine::state::{BlockIndex, ComponentBlocks};
+use crate::engine::state::BlockIndex;
 use std::collections::{BTreeMap, BTreeSet};
 
 // Imported as a NAME rather than spelled out at the call site: the counting-allocator gate in
@@ -448,21 +448,18 @@ fn every_byte_of_a_zset_members_index_shadow_is_accounted_for() {
          still rounds to {index_total} -- so packing reclaims no whole byte of the struct"
     );
 
-    // ComponentBlocks: one per (object, component), so its count is also the member count.
-    let component_total = size_of::<ComponentBlocks>();
+    // THE PER-MEMBER STRUCTURE IN THE OBJECT LOOKUP IS GONE, AND THAT IS WHY NO TERM FOR IT IS
+    // BUDGETED HERE ANY MORE.
+    //
+    // This block budgeted `ComponentBlocks` at 40 bytes and charged one per MEMBER, on the reading
+    // that the lookup's second level held one entry per (object, component). It did not: every
+    // entry was filed under one nameless slot per OBJECT, so the charge was one per object all
+    // along and the per-member column overstated it by the container's member count. The level is
+    // now deleted outright -- see `ObjectBlockRefs` in `state.rs` -- so the lookup contributes
+    // nothing that scales with members.
     println!(
-        "--- ComponentBlocks, {component_total} bytes, align {} ---",
-        align_of::<ComponentBlocks>()
-    );
-    assert!(
-        component_total <= 40,
-        "ComponentBlocks grew past its budgeted ceiling: {component_total} > 40"
-    );
-
-    println!(
-        "per member, in-struct only: BlockIndex {index_total} + ComponentBlocks {component_total} \
-         = {} bytes",
-        index_total + component_total
+        "per member, in-struct only: BlockIndex {index_total} bytes. The object lookup adds no \
+         per-member structure: it holds one slot per OBJECT, not one per element."
     );
 }
 
@@ -952,7 +949,6 @@ fn what_one_block_per_member_costs_a_zset_container_at_both_routing_ranges() {
     use std::mem::size_of;
 
     let index_width = size_of::<BlockIndex>();
-    let component_width = size_of::<ComponentBlocks>();
     let address_width = size_of::<crate::block_store::ElementEntry>();
 
     let mut path_lengths: Vec<usize> = Vec::new();
@@ -995,13 +991,14 @@ fn what_one_block_per_member_costs_a_zset_container_at_both_routing_ranges() {
 
         // Per member: the structures whose count IS the member count, plus the name on the heap
         // and the address the model map holds to reach a page nothing reads.
-        let structural = index_width + component_width + address_width;
+        // No `ComponentBlocks` term: the object lookup holds one slot per OBJECT, so it adds
+        // nothing that scales with members. It used to be charged here, once per member.
+        let structural = index_width + address_width;
         let name_per_member = name_bytes as f64 / members as f64;
         let shadow_per_member = structural as f64 + name_per_member;
 
         println!("--- 0..{end_routing_bucket}: per member ---");
         println!("  BlockIndex        {index_width:>5} B");
-        println!("  ComponentBlocks   {component_width:>5} B");
         println!("  ElementEntry      {address_width:>5} B  (in the model map, points at the page)");
         println!("  component name    {name_per_member:>7.1} B  (measured; {:.1} B of it spelling)",
             spelling_bytes as f64 / members as f64);
