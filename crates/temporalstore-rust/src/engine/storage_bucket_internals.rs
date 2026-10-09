@@ -1978,39 +1978,18 @@ pub(super) fn resident_holds_component(
     object_key: &str,
     component: &str,
 ) -> bool {
-    match model_id.as_str() {
-        "hash" => shard
-            .hashes
-            .get(object_key)
-            .is_some_and(|fields| fields.contains_key(component)),
-        "set" => hex::decode(component).is_ok_and(|member| {
-            shard
-                .sets
-                .get(object_key)
-                .is_some_and(|members| members.contains_key(&member))
-        }),
-        "zset" => hex::decode(component).is_ok_and(|member| {
-            shard
-                .zsets
-                .get(object_key)
-                .is_some_and(|members| members.contains_key(&member))
-        }),
-        // THE BIAS IS PART OF THE SPELLING. A list's component is the UNSIGNED biased sequence in
-        // hex and the map is keyed by the signed one, so the same `wrapping_add(i64::MIN)` the
-        // derived view applies has to be applied here or every list tombstone would miss.
-        "list" => u64::from_str_radix(component, 16)
-            .map(|biased| biased.wrapping_add(i64::MIN as u64) as i64)
-            .is_ok_and(|sequence| {
-                shard
-                    .lists
-                    .get(object_key)
-                    .is_some_and(|elements| elements.contains_key(&sequence))
-            }),
-        // NOT A CONTAINER. Only the four container kinds file a per-element tombstone at all, so
-        // there is no element for any other kind to be resident under and `false` is the whole
-        // answer rather than a fallback.
-        _ => false,
-    }
+    // THROUGH THE ONE SPELLING TABLE. This had its own four-arm decode; `container_page_ordinal`
+    // needed the same four arms for a different question, and two copies of a decode is how two
+    // readers come to disagree about what a component means. `state::resident_component_address`
+    // is the single table, and the value it finds -- an address -- is what the other callers want
+    // anyway.
+    crate::engine::state::resident_component_address(
+        shard,
+        model_id.as_str(),
+        object_key,
+        component,
+    )
+    .is_some()
 }
 
 pub(super) fn model_map_block_address(

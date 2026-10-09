@@ -363,8 +363,7 @@ pub(super) fn remove_container_element(
             // the record header and onto the address from one value -- `decode_block_record` refuses
             // a page whose two copies disagree, which is what #2008 threaded this for.
             let block_ordinal = crate::engine::state::container_page_ordinal(
-                &shard.bucket_index,
-                routing_bucket,
+                shard,
                 model_id,
                 key,
                 component,
@@ -848,44 +847,24 @@ pub(crate) fn execute_on_shard(
             // returns from the same value -- assigning it afterwards would leave the two
             // disagreeing, which `decode_block_record` refuses as a page id mismatch.
             //
-            // UNDER ONE ENTRY A PAGE THE INDEX CANNOT SAY. `container_page_ordinal` finds an
-            // existing field's position by looking for an entry filed under this field's
-            // component; a gated entry carries none, so that branch cannot match and the walk
-            // falls through to `highest + 1` on every overwrite -- a fresh ordinal, a fresh
-            // address, a fresh page, for a write that should land on the same one. Hash is the
-            // one container kind that overwrites a field IN PLACE this way, which is exactly the
-            // case `SetAdd`'s identical gated branch exists for.
+            // AND THE QUESTION GOES TO THE MAP THAT IS KEYED BY THE FIELD, inside the function.
+            // `container_page_ordinal` used to find an existing field's position by looking for an
+            // entry filed under that field's component; a page-named entry carries none, so the
+            // walk fell through to `highest + 1` on every overwrite -- a fresh ordinal, a fresh
+            // address, a fresh page, for a write that should land on the same one. Hash is the one
+            // container kind that overwrites a field IN PLACE this way.
             //
-            // SO THE QUESTION GOES TO THE MAP THAT IS KEYED BY THE FIELD. `shard.hashes` holds
-            // this field against the address it currently occupies, and that address's
-            // `block_id` IS its position -- the same number the index would have reported, read
-            // from the structure that still knows which field is which. The ungated path is left
-            // exactly as it was.
-            let block_ordinal = if crate::engine::container_index_files_one_entry_a_page() {
-                shard
-                    .hashes
-                    .get(&key)
-                    .and_then(|fields| fields.get(&field))
-                    .and_then(|address| address.block_id())
-                    .and_then(|held| u32::try_from(held).ok())
-                    .unwrap_or_else(|| {
-                        crate::engine::state::container_page_ordinal(
-                            &shard.bucket_index,
-                            routing_bucket,
-                            "hash",
-                            &key,
-                            &field,
-                        )
-                    })
-            } else {
-                crate::engine::state::container_page_ordinal(
-                    &shard.bucket_index,
-                    routing_bucket,
-                    "hash",
-                    &key,
-                    &field,
-                )
-            };
+            // THAT IS ONE BRANCH, NOT TWO, NOW. This arm used to read `shard.hashes` itself under
+            // the gate and call the function without it; the function reads the resident map
+            // itself, so the two arms of that `if` computed the same value and the gate decided
+            // nothing. The rule lives in one place -- see `state::container_page_ordinal`, which
+            // also records why the resident map answers the high-water half as well.
+            let block_ordinal = crate::engine::state::container_page_ordinal(
+                shard,
+                "hash",
+                &key,
+                &field,
+            );
             // The block STATES which field it is, rather than leaving that to the entry that names
             // it. Same value, one frame around it -- see `container_pages`.
             let page = crate::engine::container_pages::single_element_page("hash", &field, &value);
@@ -1017,33 +996,14 @@ pub(crate) fn execute_on_shard(
                 // returns from the same value -- assigning it afterwards would leave the two
                 // disagreeing, which `decode_block_record` refuses as a page id mismatch.
                 //
-                // UNDER ONE ENTRY A PAGE THE INDEX CANNOT SAY -- see `HashSet`'s identical gated
-                // branch for why, and why the question goes to `shard.hashes` instead.
-                let block_ordinal = if crate::engine::container_index_files_one_entry_a_page() {
-                    shard
-                        .hashes
-                        .get(&key)
-                        .and_then(|fields| fields.get(&field))
-                        .and_then(|address| address.block_id())
-                        .and_then(|held| u32::try_from(held).ok())
-                        .unwrap_or_else(|| {
-                            crate::engine::state::container_page_ordinal(
-                                &shard.bucket_index,
-                                routing_bucket,
-                                "hash",
-                                &key,
-                                &field,
-                            )
-                        })
-                } else {
-                    crate::engine::state::container_page_ordinal(
-                        &shard.bucket_index,
-                        routing_bucket,
+                // AND THE POSITION COMES FROM THE RESIDENT MAP, inside the function -- see
+                // `HashSet`'s identical site and `state::container_page_ordinal`.
+                let block_ordinal = crate::engine::state::container_page_ordinal(
+                        shard,
                         "hash",
                         &key,
                         &field,
-                    )
-                };
+                );
                 // The block STATES which field it is -- see `container_pages`. Built per entry
                 // because the frame carries the field, so one frame cannot stand for two.
                 let page =
@@ -1133,33 +1093,14 @@ pub(crate) fn execute_on_shard(
             // returns from the same value -- assigning it afterwards would leave the two
             // disagreeing, which `decode_block_record` refuses as a page id mismatch.
             //
-            // UNDER ONE ENTRY A PAGE THE INDEX CANNOT SAY -- see `HashSet`'s identical gated
-            // branch for why, and why the question goes to `shard.hashes` instead.
-            let block_ordinal = if crate::engine::container_index_files_one_entry_a_page() {
-                shard
-                    .hashes
-                    .get(&key)
-                    .and_then(|fields| fields.get(&field))
-                    .and_then(|address| address.block_id())
-                    .and_then(|held| u32::try_from(held).ok())
-                    .unwrap_or_else(|| {
-                        crate::engine::state::container_page_ordinal(
-                            &shard.bucket_index,
-                            routing_bucket,
-                            "hash",
-                            &key,
-                            &field,
-                        )
-                    })
-            } else {
-                crate::engine::state::container_page_ordinal(
-                    &shard.bucket_index,
-                    routing_bucket,
-                    "hash",
-                    &key,
-                    &field,
-                )
-            };
+            // AND THE POSITION COMES FROM THE RESIDENT MAP, inside the function -- see `HashSet`'s
+            // identical site and `state::container_page_ordinal` for why the index cannot say.
+            let block_ordinal = crate::engine::state::container_page_ordinal(
+                shard,
+                "hash",
+                &key,
+                &field,
+            );
             // The block STATES which field it is -- see `container_pages`.
             let page = crate::engine::container_pages::single_element_page(
                 "hash",
@@ -1394,48 +1335,24 @@ pub(crate) fn execute_on_shard(
             // append stamps it into the record header, and read off the block index -- which is
             // where the element's own previous block, if it has one, already states its position.
             //
-            // EXCEPT THAT UNDER ONE ENTRY PER PAGE THE INDEX CANNOT SAY. `container_page_ordinal`
-            // finds an element's existing position by looking for an entry filed under this
-            // element's component; a gated entry carries none, so that branch cannot match and the
-            // walk falls through to `highest + 1`. Every rewrite of one member would then take a
-            // fresh ordinal -- a fresh `block_id`, a fresh address, and therefore a fresh page --
-            // so a member written five times would leave five pages instead of overwriting one.
-            // Measured: two pages and ordinals [0, 1] where the ungated path leaves one and [0].
+            // AND THE QUESTION GOES TO THE MAP THAT IS KEYED BY THE MEMBER, inside the function.
+            // `container_page_ordinal` used to pick an element's existing position out of the INDEX
+            // by component, which a page-named entry does not carry -- so every rewrite fell
+            // through to `highest + 1` and a member written five times left five pages instead of
+            // overwriting one (measured: two pages and ordinals [0, 1] where one and [0] are
+            // right). This arm therefore carried its own `shard.sets` lookup under the gate, with
+            // the function called only when the map had no answer.
             //
-            // SO THE QUESTION GOES TO THE MAP THAT IS KEYED BY THE MEMBER. `shard.sets` holds this
-            // member against the address it currently occupies, and that address's `block_id` IS
-            // its position -- the same number the index would have reported, read from the
-            // structure that still knows which element is which. It is authoritative rather than
-            // derived, and it needs no page read: adding a fetch to a write path inside a
-            // footprint change is scope drift this series has already declined once.
-            //
-            // The ungated path is left exactly as it was, so a deployment that has not set the
-            // gate computes this the way it always did.
-            let block_ordinal = if crate::engine::container_index_files_one_entry_a_page() {
-                shard
-                    .sets
-                    .get(&key)
-                    .and_then(|members| members.get(&member))
-                    .and_then(|address| address.block_id())
-                    .and_then(|held| u32::try_from(held).ok())
-                    .unwrap_or_else(|| {
-                        crate::engine::state::container_page_ordinal(
-                            &shard.bucket_index,
-                            routing_bucket,
-                            "set",
-                            &key,
-                            &member_component,
-                        )
-                    })
-            } else {
-                crate::engine::state::container_page_ordinal(
-                    &shard.bucket_index,
-                    routing_bucket,
-                    "set",
-                    &key,
-                    &member_component,
-                )
-            };
+            // THAT IS ONE BRANCH, NOT TWO, NOW. The function asks the resident map itself, so the
+            // gated arm here and the ungated one computed the same value and the `if` decided
+            // nothing -- a branch whose arms cannot differ, which no suite can report. The lookup
+            // lives in the one place that owns the rule; see `state::container_page_ordinal`.
+            let block_ordinal = crate::engine::state::container_page_ordinal(
+                shard,
+                "set",
+                &key,
+                &member_component,
+            );
             // The block STATES which member it is -- see `container_pages`. For a set the element
             // key IS the member and so is the value, which the frame stores once: #2017 measured
             // that redundancy and this is the stage that stops paying it twice.
@@ -1511,8 +1428,7 @@ pub(crate) fn execute_on_shard(
             // returns from the same value -- assigning it afterwards would leave the two
             // disagreeing, which `decode_block_record` refuses as a page id mismatch.
             let block_ordinal = crate::engine::state::container_page_ordinal(
-                &shard.bucket_index,
-                routing_bucket,
+                shard,
                 "zset",
                 &key,
                 &component,
@@ -1880,8 +1796,7 @@ pub(crate) fn execute_on_shard(
             // returns from the same value -- assigning it afterwards would leave the two
             // disagreeing, which `decode_block_record` refuses as a page id mismatch.
             let block_ordinal = crate::engine::state::container_page_ordinal(
-                &shard.bucket_index,
-                routing_bucket,
+                shard,
                 "zset",
                 &key,
                 &component,
@@ -2029,8 +1944,7 @@ pub(crate) fn execute_on_shard(
             // returns from the same value -- assigning it afterwards would leave the two
             // disagreeing, which `decode_block_record` refuses as a page id mismatch.
             let block_ordinal = crate::engine::state::container_page_ordinal(
-                &shard.bucket_index,
-                routing_bucket,
+                shard,
                 "list",
                 &key,
                 &component,

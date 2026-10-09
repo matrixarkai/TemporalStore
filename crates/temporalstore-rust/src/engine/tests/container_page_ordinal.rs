@@ -910,64 +910,44 @@ fn a_reloaded_container_still_reads_every_element() {
 #[test]
 fn past_the_ceiling_the_ordinal_is_left_unassigned_rather_than_panicking() {
     use crate::block_store::{ElementEntry, MAX_ADDRESSABLE_BLOCK_ID};
-    use crate::engine::state::{BlockIndex, BucketNode, CoreIndex};
+    use crate::engine::state::ShardState;
 
-    const BUCKET: u32 = 7;
     let kind = "set";
     let key = "cpo-ceiling";
 
-    let mut index = CoreIndex::default();
-    index.bucket_map.insert(
-        BUCKET,
-        BucketNode {
-            routing_bucket: BUCKET,
-            ..BucketNode::default()
-        },
-    );
+    // BUILT ON THE RESIDENT MAP AND NOT ON A HAND-MADE INDEX, which is the restatement this arm
+    // needed rather than a re-goldening. `container_page_ordinal` reads the map that is keyed by
+    // the element now: a hand-built `CoreIndex` is no longer an input it consults at all, so the
+    // old fixture would have left this test asserting the empty-object answer twice.
+    let mut shard = ShardState::default();
 
-    // One page of this object, already holding the highest ordinal the field can store.
+    // One member of this object, already holding the highest ordinal the field can store.
     let at_ceiling = ElementEntry::try_from_parts(1, 0, 16, Some(MAX_ADDRESSABLE_BLOCK_ID), None)
         .expect("an address at the ceiling is constructible");
     assert_eq!(
         at_ceiling.block_id(),
         Some(MAX_ADDRESSABLE_BLOCK_ID),
-        "the fixture page is not actually at the ceiling, so nothing below is at the boundary"
+        "the fixture member is not actually at the ceiling, so nothing below is at the boundary"
     );
-    {
-        let CoreIndex {
-            bucket_map,
-            block_slab_live,
-            ..
-        } = &mut index;
-        let bucket = bucket_map.get_mut(&BUCKET).expect("the bucket was inserted");
-        bucket.block_index.insert(
-            BlockIndex {
-                kind: crate::index_log::IndexItemKind::Page,
-                routing_bucket: 7,
-                object_key: std::sync::Arc::from(key),
-                model_id: crate::engine::storage_bucket_internals::stored_model_kind(kind),
-                component: Some(std::sync::Arc::from("already-at-the-ceiling")),
-                address: at_ceiling,
-                dirty: false,
-                deleted: false,
-            },
-            block_slab_live,
-        );
-    }
+    let resident_member = b"already-at-the-ceiling".to_vec();
+    let resident_component = hex::encode(&resident_member);
+    shard
+        .sets
+        .insert_element_for_test(key, resident_member.clone(), at_ceiling.clone());
 
-    // A NEW component on the same object: one past the ceiling.
-    let assigned = crate::engine::state::container_page_ordinal(
-        &index, BUCKET, kind, key, "a-brand-new-member",
-    );
+    // A NEW member of the same object: one past the ceiling.
+    let fresh_component = hex::encode(b"a-brand-new-member");
+    let assigned =
+        crate::engine::state::container_page_ordinal(&shard, kind, key, &fresh_component);
     println!(
-        "\n=== ceiling === a page at {MAX_ADDRESSABLE_BLOCK_ID} is held; the next new component is \
+        "\n=== ceiling === a member at {MAX_ADDRESSABLE_BLOCK_ID} is held; the next new member is \
          assigned {assigned} (saturating would say {MAX_ADDRESSABLE_BLOCK_ID})"
     );
     assert_eq!(
         assigned, 0,
-        "past the ceiling the ordinal must be left at 0 -- the value the page would carry on main \
-         -- so that an object with more than {MAX_ADDRESSABLE_BLOCK_ID} elements is served exactly \
-         as it is today. It was assigned {assigned}"
+        "past the ceiling the ordinal must be left at 0 -- the value the page would carry before \
+         any of this -- so that an object with more than {MAX_ADDRESSABLE_BLOCK_ID} elements is \
+         served exactly as it is today. It was assigned {assigned}"
     );
     assert_ne!(
         u64::from(assigned),
@@ -975,18 +955,25 @@ fn past_the_ceiling_the_ordinal_is_left_unassigned_rather_than_panicking() {
         "the ordinal saturated at the ceiling, handing a second page the id {MAX_ADDRESSABLE_BLOCK_ID}"
     );
 
-    // AND THE EXISTING COMPONENT STILL ANSWERS ITS OWN ORDINAL, at the ceiling, unharmed.
-    let held = crate::engine::state::container_page_ordinal(
-        &index,
-        BUCKET,
-        kind,
-        key,
-        "already-at-the-ceiling",
-    );
+    // AND THE EXISTING MEMBER STILL ANSWERS ITS OWN ORDINAL, at the ceiling, unharmed.
+    let held =
+        crate::engine::state::container_page_ordinal(&shard, kind, key, &resident_component);
     assert_eq!(
         u64::from(held),
         MAX_ADDRESSABLE_BLOCK_ID,
         "the element already at the ceiling was re-assigned {held} on an overwrite rather than \
          keeping the position it holds"
+    );
+
+    // AND A COMPONENT THAT WILL NOT PARSE ANSWERS THE FRESH-ELEMENT PATH, NOT THE OVERWRITE ONE.
+    //
+    // The spelling table answers `None` for a name it cannot read rather than defaulting to the
+    // empty member -- which is a real member whose ordinal it would otherwise have handed back.
+    // Driven here because this is the one arm with a hand-made fixture to drive it on.
+    let unreadable = crate::engine::state::container_page_ordinal(&shard, kind, key, "zz-not-hex");
+    assert_eq!(
+        0, unreadable,
+        "a component that is not a hex member resolved to ordinal {unreadable}; an unreadable name \
+         names nothing, and past the ceiling the fresh-element answer is 0"
     );
 }

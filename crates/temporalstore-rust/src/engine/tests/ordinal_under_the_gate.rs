@@ -201,36 +201,60 @@ fn an_overwrite_keeps_the_members_ordinal_under_either_projection() {
         );
     }
 
-    // THE ENTRY COUNTS, AS THEY ACTUALLY ARE RATHER THAN AS I FIRST ASSUMED.
+    // THE ENTRY COUNTS, AND THE GATED ONE HAS CHANGED -- IT IS NOW ONE ON BOTH ARMS.
     //
     // This engine APPENDS a page per write; it does not modify one in place. The ungated path
-    // still holds ONE entry because its replacement is scoped BY THE ELEMENT -- the write unnames
-    // the element's own previous page. A page-named entry cannot carry that scope, so under the
-    // gate the stale entry the last derivation filed is still there beside the one this write
-    // filed. Asserted rather than described, because the number surprised me.
+    // always held ONE entry because its replacement is scoped BY THE ELEMENT -- the write unnames
+    // the element's own previous page.
+    //
+    // THIS SAID A PAGE-NAMED ENTRY CANNOT CARRY THAT SCOPE, and that was true of a supersede keyed
+    // on the address the write LANDS at: a rewrite lands at a new address, matches no existing
+    // entry, and leaves the previous one behind as a stale live entry over a dead page. It was
+    // asserted here as `> 1` and described as a transient the next derivation heals.
+    //
+    // THE WRITE PATH CARRIES THE SCOPE NOW. The filer is told which page the write REPLACES -- the
+    // element's previous address, read from the resident map, which is keyed by the element and so
+    // still holds it at filing time -- and retires that page's entry when no sibling is left on
+    // it. So the gated arm leaves ONE entry, the same as the ungated one, and the transient does
+    // not exist to be healed. Asserted as an exact count in both rows, because `> 1` was satisfied
+    // by exactly the stranding the change removes and would now be satisfied by nothing at all.
     assert_eq!(
         1, rows[0].1,
         "gate off: {} entries where the element-scoped replacement should leave one",
         rows[0].1
     );
-    assert!(
-        rows[1].1 > 1,
-        "gate on: {} entries. The stale entry from the last derivation is expected to still be \
-         here -- if it is not, the per-write filer has started unnaming pages and the healing \
-         assertion below is testing nothing",
+    assert_eq!(
+        1, rows[1].1,
+        "gate on: {} entries where one live page should leave one. More than one means the \
+         supersede did not retire the page this rewrite vacated -- a live entry over a page no \
+         element is on, which under this gate is a claim of membership",
         rows[1].1
     );
 }
 
-/// AND A DERIVATION HEALS IT, WHICH IS THE PROPERTY THE SERIES RESTS ON.
+/// AND A DERIVATION DROPS AN ENTRY NO ELEMENT CARRIES, WHICH THE SERIES STILL RESTS ON.
 ///
-/// The stale entry is a TRANSIENT, not a defect: it names a page no element carries any more, so
-/// the next derivation does not emit it. The projection reads the resident map, which holds only
-/// the CURRENT address for each element -- which is exactly why one entry per live page is
-/// reachable by the derivation and not by the write.
+/// The projection reads the resident map, which holds only the CURRENT address of each element, so
+/// an entry naming a page no element is on is not emitted again. That property is what makes one
+/// entry per live page reachable by a derivation at all.
 ///
-/// Nothing else in the suite checks this, and without it the series rests on a reading rather than
-/// a test -- which is what nearly shipped an orphan three steps ago.
+/// # THE STALE ENTRY IS PLANTED NOW, BECAUSE THE WRITE PATH NO LONGER PRODUCES ONE
+///
+/// This used to produce the subject by rewriting one member several times under the gate: each
+/// rewrite landed at a new address, the supersede keyed on the landing address matched nothing, and
+/// the previous entry was left behind. It then asserted the derivation dropped it, with a floor on
+/// there being more than one entry first.
+///
+/// THAT FLOOR IS NOW UNREACHABLE, and that is the point rather than a problem: the filer is told
+/// which page a rewrite REPLACES and retires it, so five rewrites leave ONE entry and there is no
+/// transient left to heal. Restated rather than deleted, because the derivation's property is not
+/// about how the stale entry got there -- a compaction that relocates pages, a fold of a delta
+/// written by an older binary, and a bug in some future filer all produce the same state. So the
+/// entry is planted directly, at an address no element holds, and the derivation is asked the same
+/// question about it.
+///
+/// THE PLANT IS LOCATED BY WHAT IT IS, NOT BY A STRING: it is the only entry of this object whose
+/// address is absent from the resident map, and that is how the floor below finds it.
 #[test]
 fn a_derivation_drops_the_entry_no_element_carries_any_more() {
     let dir = tempfile::tempdir().expect("tempdir");
@@ -250,13 +274,53 @@ fn a_derivation_drops_the_entry_no_element_carries_any_more() {
         assert!(response.status.ok, "write failed: {response:?}");
     }
 
+    // THE WRITE PATH LEAVES ONE, asserted here so the plant below is known to be the second entry
+    // and not one of several.
+    let written = entry_rows(&engine, "heal/set");
+    assert_eq!(
+        1,
+        written.len(),
+        "the write path left {} entr(ies) for one member. This test plants the stale entry, so it \
+         first has to know the state it is planting into",
+        written.len()
+    );
+
+    // PLANT: one more live entry for the same object, over a page the resident map does not name.
+    {
+        let mut shards = engine.shards.write().expect("engine lock poisoned");
+        let shard = shards.get_mut(&1).expect("shard 1 loaded");
+        let (start, end) = shard.routing_range();
+        let routing_bucket =
+            crate::engine::block_routing_bucket("heal/set", start, end);
+        let orphan = crate::block_store::ElementEntry::from_parts(
+            4_096, 8_192, 48, Some(7), None,
+        );
+        let page = crate::engine::state::BlockIndex {
+            kind: crate::index_log::IndexItemKind::Page,
+            routing_bucket,
+            object_key: std::sync::Arc::from("heal/set"),
+            model_id: crate::engine::storage_bucket_internals::stored_model_kind("set"),
+            component: None,
+            address: orphan,
+            dirty: false,
+            deleted: false,
+        };
+        let bucket = shard
+            .bucket_index
+            .bucket_map
+            .get_mut(&routing_bucket)
+            .expect("the object's bucket exists after the writes above");
+        bucket.insert_page(page, &mut shard.bucket_index.block_slab_live);
+    }
+
     let before = entry_rows(&engine, "heal/set");
-    // FLOOR: there has to be something to heal, or the assertion after the derivation passes over
-    // a state that was already clean.
-    assert!(
-        before.len() > 1,
-        "only {} entr(ies) before the derivation, so there is no stale entry for it to drop and \
-         this test would pass without exercising the healing",
+    // FLOOR: the plant landed, or the assertion after the derivation passes over a clean state.
+    assert_eq!(
+        2,
+        before.len(),
+        "{} entr(ies) before the derivation, where the write's one plus the plant make two. \
+         Without the plant there is nothing for the derivation to drop and this test would pass \
+         over a state that was already clean",
         before.len()
     );
 

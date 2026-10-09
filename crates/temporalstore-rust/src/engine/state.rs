@@ -4797,87 +4797,164 @@ pub(super) fn next_block_index_for_object(
         })
 }
 
+/// THE ADDRESS THE RESIDENT MAP HOLDS FOR ONE ELEMENT, found by the component the index spells it
+/// under.
+///
+/// # ONE SPELLING TABLE, READ BY EVERY SITE THAT NEEDS AN ELEMENT'S IDENTITY
+///
+/// Three things in this engine need to know WHICH element a write, a removal or a tombstone is
+/// about, and none of them can ask the index any more: the filing supersede term, the tombstone
+/// sweep, and the ordinal allocator below. They all have a component STRING in hand -- the
+/// rendering the index used to be filed under -- and the resident maps are keyed by the element
+/// itself, so each of them needs the same four-arm decode. It is written here once rather than
+/// three times, because several copies of a condition is how most of them come to agree and the
+/// rest do not, which this series has already hit with two filers disagreeing.
+///
+/// `hex::encode` for a set member and for a zset member, base sixteen plus the two's-complement
+/// bias for a list sequence, the field itself for a hash -- each the SAME rendering the write path
+/// files. A component this cannot parse answers `None` rather than defaulting to the empty member
+/// or to sequence zero: an unreadable name names nothing, which is the rule every arm of the
+/// derived view already follows, and the two defaults it replaces are both real elements whose
+/// address it would have taken.
+pub(super) fn resident_component_address<'a>(
+    shard: &'a ShardState,
+    model_id: &str,
+    object_key: &str,
+    component: &str,
+) -> Option<&'a ElementEntry> {
+    match model_id {
+        "hash" => shard.hashes.get(object_key)?.get(component),
+        "set" => {
+            let member = hex::decode(component).ok()?;
+            shard.sets.get(object_key)?.get(&member)
+        }
+        "zset" => {
+            let member = hex::decode(component).ok()?;
+            shard
+                .zsets
+                .get(object_key)?
+                .get(&member)
+                .map(|(_, address)| address)
+        }
+        "list" => {
+            let biased = u64::from_str_radix(component, 16).ok()?;
+            let sequence = biased.wrapping_add(i64::MIN as u64) as i64;
+            shard.lists.get(object_key)?.get(&sequence)
+        }
+        // NOT A CONTAINER. Only the four container kinds have a level-two element at all, so there
+        // is nothing for any other kind to be resident under and `None` is the whole answer.
+        _ => None,
+    }
+}
+
+/// The highest block ordinal any LIVE element of this object holds.
+///
+/// NO COMPONENT IS RENDERED HERE, deliberately: the question is about ORDINALS, and rendering every
+/// sibling's name back to a string to ask it would allocate once per element of the object on every
+/// container write. The addresses carry the ordinals and the map's keys are not read at all.
+pub(super) fn resident_highest_block_id(
+    shard: &ShardState,
+    model_id: &str,
+    object_key: &str,
+) -> Option<u64> {
+    fn highest<'a>(addresses: impl Iterator<Item = &'a ElementEntry>) -> Option<u64> {
+        addresses.filter_map(ElementEntry::block_id).max()
+    }
+    match model_id {
+        "hash" => highest(shard.hashes.get(object_key)?.values()),
+        "set" => highest(shard.sets.get(object_key)?.values()),
+        "zset" => highest(
+            shard
+                .zsets
+                .get(object_key)?
+                .values()
+                .map(|(_, address)| address),
+        ),
+        "list" => highest(shard.lists.get(object_key)?.values()),
+        _ => None,
+    }
+}
+
 /// THE ORDINAL A CONTAINER PAGE IS FILED UNDER: STABLE ACROSS AN OVERWRITE, UNASSIGNED PAST THE
 /// CEILING.
 ///
-/// `next_block_index_for_object` above is the same derivation, and it is already the ordinal every
-/// TIMESTAMPED kind gets -- thirteen call sites covering `feature` and the six `context_*` kinds. No
-/// container kind ever called it, so a container page reached `append_block_of_object` through
-/// `append_with_block_metadata`, which passes a hardcoded `0`. That is the whole reason every
-/// container page carries block id 0: not a format limit, not a missing field, an argument nobody
-/// supplied.
-///
-/// This is that same derivation for the container kinds, and it differs from the series one in
-/// exactly two ways, both forced:
+/// `next_block_index_for_object` above is the same derivation for the TIMESTAMPED kinds, read off
+/// the index entries, and it stays there: those kinds have no level-two element and so no resident
+/// map keyed by one. This is the container form, and it differs from the series one in exactly two
+/// ways, both forced:
 ///
 ///   * AN OVERWRITE KEEPS THE ORDINAL IT ALREADY HAS. A container element is addressed by its
 ///     component, and `HashSet` or `SetAdd` on an existing member REPLACES that member's block.
 ///     Handing the replacement `max + 1` would make the ordinal climb once per WRITE rather than
 ///     once per ELEMENT, so a single member rewritten 65,536 times would reach the ceiling on a set
-///     of one. Reading the component's own block first bounds the ordinal by the object's live
+///     of one. Reading the element's own block first bounds the ordinal by the object's live
 ///     element high-water mark instead, which is what a position means.
 ///   * PAST THE CEILING IT LEAVES THE ORDINAL AT `0` RATHER THAN PANICKING OR SATURATING.
 ///     `narrow_block_id` refuses a value above `MAX_ADDRESSABLE_BLOCK_ID`, and refusing is right
 ///     for a value a caller chose -- but an object's 65,536th element is not a caller's mistake, it
 ///     is a container this store serves today with no ordinal at all. Saturating is worse still:
-///     this tree's own doctrine is that a saturated block id is a legal block id for a DIFFERENT block
-///     of the same object. So past the ceiling nothing is assigned and the block keeps the `0` it
-///     would have had on `main`, which makes this change a strict no-op for such an object. A
-///     container past the ceiling loses the ordinal, never the element.
+///     this tree's own doctrine is that a saturated block id is a legal block id for a DIFFERENT
+///     block of the same object. So past the ceiling nothing is assigned and the block keeps the
+///     `0` it would have had before any of this, which makes the ordinal a strict no-op for such
+///     an object. A container past the ceiling loses the ordinal, never the element.
 ///
 /// IT NAMES A POSITION AMONG AN OBJECT'S LIVE BLOCKS, NOT AN ELEMENT. `max` falls after a delete and
 /// the next insert is handed the ordinal that was just freed. That is correct for a position and
-/// would be silent corruption for an identity, which is why the element's identity stays in the
-/// component: nothing here reads the ordinal to find a row, and deletion still matches by component
-/// exactly as before.
+/// would be silent corruption for an identity, which is why nothing here reads the ordinal to find
+/// a row.
 ///
-/// # WHY THE WALK NOW FILTERS `deleted`, AND WHAT IT COST TO FIND OUT
+/// # IT ASKS THE RESIDENT MAP NOW, NOT THE INDEX ENTRIES, AND THE FILTER IT NEEDED IS GONE WITH THEM
 ///
-/// It used to need no filter, because every delete path REMOVED the block: an entry that existed was a
-/// live entry, so "the object's entries" and "the object's live entries" were the same set and the
-/// distinction was not expressible. A container removal now leaves a TOMBSTONE ENTRY behind so the
-/// block recording it stays reachable, and that breaks the identity in both directions at once:
+/// This walked `bucket.block_index` and compared `page.component` to pick out the element's own
+/// block. That was the THIRD consumer of a per-element name on an index entry, after the filing
+/// supersede term and the tombstone sweep -- and the one that is not about removals at all, which
+/// is why it was the hardest of the three to see. An entry under one entry a page carries no
+/// element name, so the comparison matches nothing and EVERY overwrite falls through to `max + 1`:
+/// measured as `an_overwrite_of_a_component_less_hash_entry_reuses_its_ordinal` failing at round one
+/// with `[0]` against `[1]`.
 ///
-///   * `max` would no longer FALL after a delete, so the ordinal would climb once per element ever
-///     written rather than once per live element -- and a container churning distinct members would
-///     walk to `MAX_ADDRESSABLE_BLOCK_ID` and fall off the ceiling into the no-ordinal-at-all case,
-///     for a set that never held more than a handful of members at a time; and
-///   * the component-match early return would match the TOMBSTONE, so a re-add would be handed the
-///     dead block's position instead of a free one.
+/// THE RESIDENT MAP ANSWERS BOTH HALVES AND IS THE ONLY PLACE THAT CAN. It is keyed BY the element,
+/// so the overwrite's own address is a lookup; and it holds exactly the object's LIVE elements, so
+/// the high-water mark it reports is over live blocks by construction.
 ///
-/// Neither is corruption -- the ceiling case is a documented graceful loss of the ordinal and not of
-/// the element -- and both are a real regression in headroom that nothing else would have reported.
-/// `element_ordinal_reuse` is the suite that measures the reuse and is what makes this filter
-/// attributable rather than defensive.
+/// THAT RETIRES THE `deleted` FILTER THIS WALK NEEDED, AND THE TWO HAZARDS THE FILTER EXISTED FOR
+/// ARE NOW UNREPRESENTABLE RATHER THAN GUARDED. A container removal leaves a TOMBSTONE ENTRY behind
+/// so the page recording it stays reachable, and that broke the old derivation in both directions at
+/// once: `max` stopped FALLING after a delete, so the ordinal climbed once per element ever written
+/// and a container churning distinct members walked to the ceiling for a set that never held more
+/// than a handful; and the component match found the TOMBSTONE, so a re-add was handed the dead
+/// block's position. Both were about a deleted entry being visible to a walk over entries. A removal
+/// drops its element from the resident map, so neither question arises here.
+///
+/// AND IT IS ASKED BEFORE THE APPEND, WHICH IS WHAT MAKES THE LOOKUP THE RIGHT ANSWER. Every caller
+/// computes this before writing the page, because the append stamps the ordinal into the record
+/// header AND onto the address it returns from one value and `decode_block_record` refuses a page
+/// whose two copies disagree. So the resident map still holds the element's PREVIOUS address here --
+/// which is exactly the address whose ordinal an overwrite must keep.
+///
+/// # THE BUCKET IS NOT A PARAMETER ANY MORE
+///
+/// It took a `routing_bucket` to pick the bucket to walk. An object's elements are all in the
+/// resident map under one key, so there is no bucket to choose, and leaving the argument in place
+/// would have let a caller believe the answer depended on it.
+///
+/// `element_ordinal_reuse` is the suite that measures the reuse.
 pub(super) fn container_page_ordinal(
-    bucket_index: &CoreIndex,
-    routing_bucket: u32,
+    shard: &ShardState,
     model_id: &str,
     object_key: &str,
     component: &str,
 ) -> u32 {
-    let mut highest: Option<u64> = None;
-    if let Some(bucket) = bucket_index.bucket_map.get(&routing_bucket) {
-        for page in bucket.block_index.values() {
-            if page.deleted {
-                continue;
-            }
-            if page.model_id.as_str() != model_id || page.object_key.as_ref() != object_key {
-                continue;
-            }
-            let Some(held) = page.address.block_id() else {
-                continue;
-            };
-            if page.component.as_deref() == Some(component) {
-                // This member already holds a block, and the ordinal on it IS its position. An
-                // overwrite is the same element in the same place.
-                return u32::try_from(held).unwrap_or(0);
-            }
-            highest = Some(highest.map_or(held, |current: u64| current.max(held)));
-        }
+    if let Some(held) = resident_component_address(shard, model_id, object_key, component)
+        .and_then(ElementEntry::block_id)
+    {
+        // This element already holds a block, and the ordinal on it IS its position. An overwrite
+        // is the same element in the same place.
+        return u32::try_from(held).unwrap_or(0);
     }
     // The first element of an object is 0, which is also what an object past the ceiling keeps.
-    let next = highest.map_or(0, |held| held.saturating_add(1));
+    let next = resident_highest_block_id(shard, model_id, object_key)
+        .map_or(0, |held| held.saturating_add(1));
     if next > crate::block_store::MAX_ADDRESSABLE_BLOCK_ID {
         return 0;
     }
