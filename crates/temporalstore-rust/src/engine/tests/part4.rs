@@ -4633,96 +4633,25 @@ fn dirty_objects_versus_the_blocks_own_dirty_flags() {
     }
 }
 
-/// Two components of one object stay two entries, and neither shadows the other.
-///
-/// The layout this replaced kept a SECOND map so that a (model, object, component) lookup existed
-/// at all, and a probe here established that the per-component grouping could not be rebuilt by
-/// filtering the per-object map -- which is why that second map could not simply be deleted.
-///
-/// Nesting keeps the grouping by construction rather than by a parallel map, so the property to
-/// hold on to is the one that probe was protecting: components of one object are addressable
-/// separately, they are ordered, removing one leaves the rest, and a component that was never
-/// written is absent rather than empty.
-#[test]
-fn components_of_one_object_stay_separate() {
-    let dir = tempfile::tempdir().unwrap();
-    let engine = TemporalEngine::with_local_dirs(
-        1024 * 1024,
-        dir.path().join("cache"),
-        dir.path().join("pages"),
-        dir.path().join("indexes"),
-    );
-    engine.load_shard(1);
-    for index in 0..6 {
-        engine.execute(ExecuteRequest {
-            shard_id: 1,
-            command: Command::HashSet {
-                key: "grouped".to_string(),
-                field: format!("field-{index}"),
-                value: vec![b'h'; 32],
-            },
-        });
-    }
-    engine.execute(ExecuteRequest {
-        shard_id: 1,
-        command: Command::StringSet {
-            key: "ungrouped".to_string(),
-            value: vec![b'v'; 32],
-        },
-    });
-
-    let shards = engine.shards.read().expect("shards lock poisoned");
-    let shard = shards.get(&1).expect("shard 1 loaded");
-
-    let grouped = shard
-        .bucket_index
-        .object_block_refs("hash", "grouped")
-        .expect("the hash object should be in the lookup");
-    assert_eq!(
-        grouped.by_component.len(),
-        6,
-        "six fields are six components, not one merged entry: {:?}",
-        grouped.by_component
-    );
-
-    let mut components: Vec<Option<&str>> = grouped
-        .by_component
-        .iter()
-        .map(|entry| entry.component.as_deref())
-        .collect();
-    let ordered = components.clone();
-    components.sort();
-    assert_eq!(
-        components, ordered,
-        "removal binary-searches this vector, so its order is load-bearing"
-    );
-
-    for index in 0..6 {
-        let component = format!("field-{index}");
-        assert!(
-            grouped.refs_for(Some(&component)).is_some(),
-            "component {component} should be addressable on its own"
-        );
-    }
-    assert!(
-        grouped.refs_for(Some("field-never-written")).is_none(),
-        "a component nobody wrote is absent, not empty"
-    );
-    assert!(
-        grouped.refs_for(None).is_none(),
-        "a hash object has no componentless entry"
-    );
-
-    let ungrouped = shard
-        .bucket_index
-        .object_block_refs("string", "ungrouped")
-        .expect("the string object should be in the lookup");
-    assert_eq!(ungrouped.by_component.len(), 1);
-    assert!(
-        ungrouped.refs_for(None).is_some(),
-        "a plain value is the componentless entry"
-    );
-}
+// `components_of_one_object_stay_separate` WAS HERE, AND IT WAS ALREADY RED BEFORE THIS COMMIT.
+//
+// It asserted that a six-field hash yields six separately-addressable, ordered component entries,
+// that an unwritten field is absent rather than empty, that a hash object has no componentless
+// entry, and that a string object's one entry is reachable through `refs_for(None)`.
+//
+// TWO OF THOSE WERE FALSE ON THE BASE COMMIT, 75a25910e, and in OPPOSITE directions -- which is
+// why it is recorded here rather than quietly rewritten. `refs_for(Some("field-0")).is_some()`
+// could not hold: the element name came off the page entry one commit earlier, so every page of
+// every object filed under one nameless slot and a named query had nothing to find. And
+// `grouped.refs_for(None).is_none()` -- "a hash object has no componentless entry" -- was wrong
+// the other way, because the nameless slot is now exactly where a hash object's pages live.
+//
+// WHY IT IS NOT REWRITTEN. The only claim that survives is "six written fields produce six block
+// refs", and that is a claim about `BlockRefs` accumulating, not about per-component grouping --
+// `the_insert_accumulates_an_objects_pages_into_the_one_slot` in `state.rs` holds it directly,
+// against the producer. The `Some`-misses half would restate `names_the_only_slot`, which
+// `a_named_component_resolves_nothing_while_the_unnamed_one_resolves_everything` already asserts
+// in both directions in one arm so that it cannot pass one-sided.
 
 /// The common case takes the inline arm, and the spilled arm still behaves.
 ///
@@ -4756,17 +4685,22 @@ fn single_block_components_are_held_inline() {
     let mut inline = 0usize;
     let mut spilled = 0usize;
     for entry in shard.bucket_index.object_block_lookup.values() {
-        for component in &entry.by_component {
-            match component.refs {
-                BlockRefs::One(_) => inline += 1,
-                BlockRefs::Many(_) => spilled += 1,
-            }
+        // ONE SLOT PER OBJECT NOW, so this is a census of the object's own ref list rather than of
+        // each component's. `BlockRefs` is unchanged and the question is the same one: does a
+        // single-block object spill its refs to a vector, or stay inline.
+        match entry.refs.as_ref() {
+            Some(BlockRefs::One(_)) => inline += 1,
+            Some(BlockRefs::Many(_)) => spilled += 1,
+            // An object with no slot is removed from the lookup by every remover, so this arm is
+            // unreachable through the producer -- counted in neither column rather than silently
+            // charged to one.
+            None => {}
         }
     }
-    assert!(inline + spilled > 0, "no components were recorded; nothing was measured");
+    assert!(inline + spilled > 0, "no object slots were recorded; nothing was measured");
     assert_eq!(
         spilled, 0,
-        "{spilled} of {} components allocated for a single ref",
+        "{spilled} of {} object slots allocated a vector for a single ref",
         inline + spilled
     );
 
@@ -5770,9 +5704,7 @@ fn deleting_leaves_the_lookup_a_rebuild_would_have_built() {
         .iter()
         .map(|(model, object, refs)| {
             let mut flat: Vec<(u32, u64)> = refs
-                .by_component
-                .iter()
-                .flat_map(|component| component.refs.as_slice())
+                .all_refs()
                 .map(|block_ref| (block_ref.routing_bucket, block_ref.block_ref_key))
                 .collect();
             flat.sort();
@@ -5789,9 +5721,7 @@ fn deleting_leaves_the_lookup_a_rebuild_would_have_built() {
         .iter()
         .map(|(model, object, refs)| {
             let mut flat: Vec<(u32, u64)> = refs
-                .by_component
-                .iter()
-                .flat_map(|component| component.refs.as_slice())
+                .all_refs()
                 .map(|block_ref| (block_ref.routing_bucket, block_ref.block_ref_key))
                 .collect();
             flat.sort();
@@ -5931,7 +5861,7 @@ fn how_many_blocks_does_a_wide_hash_hold() {
             .bucket_index
             .object_block_lookup
             .iter()
-            .map(|(_m, _o, refs)| refs.by_component.iter().map(|c| c.refs.as_slice().len()).sum::<usize>())
+            .map(|(_m, _o, refs)| refs.total_refs())
             .sum();
         println!("fields {fields:5}  pages {pages:6}  buckets {buckets:4}  lookup refs {lookup_refs:6}");
     }
@@ -6732,9 +6662,7 @@ fn a_reload_rebuilds_the_lookup_the_index_no_longer_writes() {
         .iter()
         .map(|(model, object, refs)| {
             let mut flat: Vec<(u32, u64)> = refs
-                .by_component
-                .iter()
-                .flat_map(|component| component.refs.as_slice())
+                .all_refs()
                 .map(|block_ref| (block_ref.routing_bucket, block_ref.block_ref_key))
                 .collect();
             flat.sort();
@@ -6754,9 +6682,7 @@ fn a_reload_rebuilds_the_lookup_the_index_no_longer_writes() {
         .iter()
         .map(|(model, object, refs)| {
             let mut flat: Vec<(u32, u64)> = refs
-                .by_component
-                .iter()
-                .flat_map(|component| component.refs.as_slice())
+                .all_refs()
                 .map(|block_ref| (block_ref.routing_bucket, block_ref.block_ref_key))
                 .collect();
             flat.sort();
@@ -7290,56 +7216,22 @@ fn an_object_index_costs_a_word_and_a_pointer() {
     );
 }
 
-/// An object with one component holds it inline, and goes back to inline when it can.
-///
-/// The measured average is 1.0 components per object, so a `Vec` here was a heap allocation and
-/// its allocator rounding spent on every object to express a list of one.
-///
-/// The demotion matters as much as the promotion: an object that briefly held two components
-/// would otherwise keep the vector for the rest of its life, which is exactly the cost being
-/// avoided and would not show up as a failure anywhere else.
-#[test]
-fn one_component_is_held_without_a_vector() {
-    use crate::engine::state::{BlockLookupRef, BlockRefs, ComponentBlocks, ComponentList};
-
-    let entry = |name: Option<&str>| ComponentBlocks {
-        component: name.map(Arc::from),
-        refs: BlockRefs::One(BlockLookupRef {
-            routing_bucket: 1,
-            block_ref_key: 7,
-        }),
-    };
-
-    let mut list = ComponentList::default();
-    assert!(list.is_empty());
-
-    // `None` sorts first, matching Option's own ordering, so it lands at 0.
-    assert_eq!(list.binary_search_by(|e| e.component.as_deref().cmp(&None)), Err(0));
-    list.insert(0, entry(None));
-    assert!(matches!(list, ComponentList::One(_)), "one component needs no vector");
-    assert_eq!(list.len(), 1);
-    assert_eq!(list.binary_search_by(|e| e.component.as_deref().cmp(&None)), Ok(0));
-
-    // A named component sorts after `None`, so the search must place it at 1, not 0.
-    let named = Some("b");
-    assert_eq!(list.binary_search_by(|e| e.component.as_deref().cmp(&named)), Err(1));
-    list.insert(1, entry(Some("b")));
-    assert!(matches!(list, ComponentList::Many(_)), "two components need the vector");
-    assert_eq!(
-        list.iter().map(|e| e.component.as_deref().map(str::to_string)).collect::<Vec<_>>(),
-        vec![None, Some("b".to_string())],
-        "order is preserved across the promotion"
-    );
-
-    // Back down to one, the vector is given up rather than kept for the object's life.
-    let removed = list.remove(0);
-    assert_eq!(removed.component, None);
-    assert!(matches!(list, ComponentList::One(_)), "one component is held inline again");
-    assert_eq!(list[0].component.as_deref(), Some("b"));
-
-    list.remove(0);
-    assert!(list.is_empty(), "the last removal empties the list");
-}
+// `one_component_is_held_without_a_vector` WAS HERE.
+//
+// It drove `ComponentList`'s promotion and demotion ladder -- `Empty` to `One` to `Many` and back
+// down -- and its doc was right that the DEMOTION was the half worth a test: an object that
+// briefly held two components would otherwise keep the vector for the rest of its life, and that
+// would not have shown up as a failure anywhere else.
+//
+// There is no ladder left. One slot per object is an `Option`, so promotion is assignment and
+// demotion is `Option::take`; a rewrite of this arm onto the new shape asserts that an `Option` is
+// `None` before you assign to it, which is `Option`'s definition and not a property of this
+// crate. Its third claim -- that `binary_search_by` places `None` at position 0 and a named
+// component after it -- has no analogue either, because there are no positions.
+//
+// The measurement in its doc, "the measured average is 1.0 components per object", is what paid
+// for the deletion. It is recorded beside `ObjectBlockRefs` in `state.rs`, where the shape it
+// justifies now lives.
 
 /// A bucket summary reads BOTH spellings, and now writes the short one.
 ///
@@ -7770,18 +7662,28 @@ fn block_index_identity_string_cardinality() {
     );
 }
 
-/// How many components an object actually has, and how many refs a component actually holds.
+/// How many block refs an object's slot actually holds.
 ///
-/// This decides whether an inline single-component shape is worth having. The inner `refs` vector
-/// already carries a measured note that 100% of them hold exactly one ref; the outer
-/// `by_component` vector has no such measurement, and it is the one that costs an allocation per
-/// object.
+/// # WHAT THIS USED TO ASK, AND WHY THE QUESTION MOVED
 ///
-/// The corpus is deliberately mixed. A string object is one componentless entry and a hash object
-/// is one entry per field, so a corpus of only one kind would decide the question by construction
-/// rather than by measurement. Both kinds are asserted present before any number is read.
+/// It was `object_block_lookup_occupancy_census`, and it asked how many COMPONENTS an object has,
+/// to decide whether an inline single-component shape was worth having. That question is answered
+/// and gone: an object has exactly one slot, the two-level shape it was sizing up is deleted, and
+/// its own anti-vacuity guard had already said so. The guard asserted `single_component > 0 &&
+/// multi_component > 0`, and once the element name came off the page entry every object had one
+/// component -- so `multi_component` was 0 and this arm was RED on 75a25910e, before the collapse
+/// touched it. Its failure message named the consequence exactly: the occupancy question "would be
+/// decided by construction, not measurement".
+///
+/// # THE AXIS THAT SURVIVES, AND WHY THE MIXED CORPUS STILL EARNS ITS KEEP
+///
+/// Refs per OBJECT is a real distribution and the corpus still has two sides of it. A string
+/// object holds one page, so its slot holds one ref and takes `BlockRefs::One` inline. An
+/// eight-field hash object holds eight pages that all file under the same slot, so its slot spills
+/// to `BlockRefs::Many`. Both are asserted present before any ratio is read, which is what the
+/// 2,000/200 mix is for -- a corpus of one kind would decide this by construction too.
 #[test]
-fn object_block_lookup_occupancy_census() {
+fn object_block_lookup_refs_per_object_census() {
     const STRING_OBJECTS: usize = 2_000;
     const HASH_OBJECTS: usize = 200;
     const FIELDS_PER_HASH: usize = 8;
@@ -7820,27 +7722,17 @@ fn object_block_lookup_occupancy_census() {
     let shard = shards.get(&1).expect("shard 1 loaded");
     let lookup = &shard.bucket_index.object_block_lookup;
 
-    let mut single_component = 0usize;
-    let mut multi_component = 0usize;
-    let mut single_ref_components = 0usize;
-    let mut multi_ref_components = 0usize;
-    let mut components_total = 0usize;
+    let mut single_ref_object = 0usize;
+    let mut multi_ref_object = 0usize;
     let mut refs_total = 0usize;
     for entry in lookup.values() {
-        if entry.by_component.len() == 1 {
-            single_component += 1;
+        let held = entry.total_refs();
+        if held == 1 {
+            single_ref_object += 1;
         } else {
-            multi_component += 1;
+            multi_ref_object += 1;
         }
-        components_total += entry.by_component.len();
-        for component in &entry.by_component {
-            if component.refs.len() == 1 {
-                single_ref_components += 1;
-            } else {
-                multi_ref_components += 1;
-            }
-            refs_total += component.refs.len();
-        }
+        refs_total += held;
     }
     let objects = lookup.len();
 
@@ -7849,34 +7741,30 @@ fn object_block_lookup_occupancy_census() {
     assert!(objects > 0, "the lookup is empty; nothing was measured");
     assert!(refs_total > 0, "no refs were recorded; nothing was measured");
     assert!(
-        single_component > 0 && multi_component > 0,
-        "corpus is one-sided ({single_component} single, {multi_component} multi) -- \
-         the occupancy question would be decided by construction, not measurement"
+        single_ref_object > 0 && multi_ref_object > 0,
+        "corpus is one-sided ({single_ref_object} single-ref, {multi_ref_object} multi-ref) -- \
+         the occupancy question would be decided by construction, not measurement. The \
+         {STRING_OBJECTS} string objects are meant to supply the first and the {HASH_OBJECTS} \
+         hash objects of {FIELDS_PER_HASH} fields the second"
     );
 
     let pct = |n: usize, d: usize| 100.0 * n as f64 / d as f64;
     println!(
         "
-  object page lookup occupancy ({objects} objects, {components_total} components, {refs_total} refs):
-    objects with exactly one component  {single_component:>6}  ({:>5.1}%)
-    objects with more than one          {multi_component:>6}  ({:>5.1}%)
-    components holding exactly one ref  {single_ref_components:>6}  ({:>5.1}%)
-    components holding more             {multi_ref_components:>6}  ({:>5.1}%)
+  object page lookup occupancy ({objects} objects, {refs_total} refs):
+    objects whose slot holds one ref    {single_ref_object:>6}  ({:>5.1}%)
+    objects whose slot holds more       {multi_ref_object:>6}  ({:>5.1}%)
 
-    sizes: ObjectBlockRefs {:>3} B, ComponentBlocks {:>3} B, BlockRefs {:>3} B, BlockLookupRef {:>3} B
-    a one-component one-ref object: {:>3} B inline + {:>3} B for the component vector,
-    and the ref itself rides inside the component rather than in an allocation of its own
+    sizes: ObjectBlockRefs {:>3} B, BlockRefs {:>3} B, BlockLookupRef {:>3} B
+    a one-ref object is {:>3} B with the ref riding inside the slot rather than in an
+    allocation of its own, and the component level that used to sit between them is gone
 ",
-        pct(single_component, objects),
-        pct(multi_component, objects),
-        pct(single_ref_components, components_total),
-        pct(multi_ref_components, components_total),
+        pct(single_ref_object, objects),
+        pct(multi_ref_object, objects),
         std::mem::size_of::<crate::engine::state::ObjectBlockRefs>(),
-        std::mem::size_of::<crate::engine::state::ComponentBlocks>(),
         std::mem::size_of::<crate::engine::state::BlockRefs>(),
         std::mem::size_of::<crate::engine::state::BlockLookupRef>(),
         std::mem::size_of::<crate::engine::state::ObjectBlockRefs>(),
-        std::mem::size_of::<crate::engine::state::ComponentBlocks>(),
     );
 }
 
@@ -7951,12 +7839,11 @@ fn per_record_structure_census() {
         .values()
         .map(crate::engine::state::ObjectBlockRefs::total_refs)
         .sum();
-    let component_lookup_keys: usize = shard
-        .bucket_index
-        .object_block_lookup
-        .values()
-        .map(|entry| entry.by_component.len())
-        .sum();
+    // `component_lookup_keys` WAS HERE AND IT WAS A SECOND COPY OF THE ROW ABOVE. It summed
+    // `by_component.len()` per object, which has been exactly 1 per object since the element name
+    // came off the page entry -- so it equalled `block_lookup_keys` by construction and printed
+    // 1.00/record beside it. The level it counted is gone; the row goes with it rather than being
+    // rewritten into a third spelling of the same number.
     let strings = shard.strings.len();
     let wal_resident = shard.wal_resident_blocks.len();
     let dirty_objects = shard.dirty_objects.len();
@@ -7970,13 +7857,12 @@ fn per_record_structure_census() {
              bucket object_index        {:>6.2}
              object_page_lookup keys    {:>6.2}
              object_page_lookup refs    {:>6.2}
-             page-lookup components     {:>6.2}
              dirty_objects              {:>6.2}
              wal_resident_pages         {:>6.2}
              (buckets: {buckets}, not per record)
 ",
         per(strings), per(page_index_entries), per(object_index_entries),
-        per(block_lookup_keys), per(block_lookup_refs), per(component_lookup_keys),
+        per(block_lookup_keys), per(block_lookup_refs),
         per(dirty_objects), per(wal_resident),
     );
 
@@ -8012,23 +7898,14 @@ fn per_record_structure_census() {
                     .sum::<usize>()
         })
         .sum();
-    // Inner keys only. The (model, object) head is NOT counted again here -- that is the whole
-    // point of nesting, and counting it twice would report the saving as if it had not happened.
-    let component_lookup_bytes: usize = shard
-        .bucket_index
-        .object_block_lookup
-        .values()
-        .map(|entry| {
-            entry
-                .by_component
-                .iter()
-                .map(|component| component.component.as_ref().map_or(0, |name| name.len()))
-                .sum::<usize>()
-        })
-        .sum();
+    // `component_lookup_bytes` WAS HERE AND IT WAS IDENTICALLY ZERO. It summed the length of each
+    // entry's component NAME, and every name had been `None` since the element name came off the
+    // page entry -- so the row printed 0.0 into a byte table that ends in "= {:.1}x the key". The
+    // name field is now deleted outright, so there is nothing left to sum. Leaving a hard zero in
+    // a measurement table is worse than removing the row.
     let dirty_bytes: usize = shard.dirty_objects.iter().map(str::len).sum();
     let total_string_bytes =
-        key_bytes + block_index_bytes + block_lookup_bytes + component_lookup_bytes + dirty_bytes;
+        key_bytes + block_index_bytes + block_lookup_bytes + dirty_bytes;
     let sample_key_len = shard.strings.keys().next().map_or(0, |name| name.len());
     let perb = |n: usize| n as f64 / RECORDS as f64;
     println!(
@@ -8036,12 +7913,11 @@ fn per_record_structure_census() {
              strings keys               {:>7.1}
              bucket page_index          {:>7.1}
              object_page_lookup         {:>7.1}
-             page-lookup components     {:>7.1}
              dirty_objects              {:>7.1}
              TOTAL                      {:>7.1}  = {:.1}x the key
 ",
         perb(key_bytes), perb(block_index_bytes), perb(block_lookup_bytes),
-        perb(component_lookup_bytes), perb(dirty_bytes), perb(total_string_bytes),
+        perb(dirty_bytes), perb(total_string_bytes),
         perb(total_string_bytes) / sample_key_len.max(1) as f64,
     );
 
@@ -13178,35 +13054,28 @@ fn nesting_the_block_lookups_saved_what_it_measured() {
     let shard = shards.get(&1).expect("shard 1 loaded");
     let lookup = &shard.bucket_index.object_block_lookup;
 
-    // Held now: the (model, object) key once, plus the component alone on each nested entry.
+    // Held now: the (model, object) key once, and nothing else. The component that used to sit on
+    // each nested entry is gone with the level that held it.
     let mut nested_keys = 0usize;
     let mut nested_map_entries = 0usize;
-    let mut nested_vec_elements = 0usize;
     // What two flat maps WOULD have held: the (model, object) key as a whole key in one map, AND
     // again as the head of every (model, object, component) key in the other. The tail of that
-    // longer key is "1|" plus a length-prefixed component, or "0|" when there is none.
+    // longer key is "0|" -- the no-component spelling, which is the only one the engine ever wrote
+    // once an entry stopped naming its element. It used to be computed from the entry's own name
+    // and is now the constant it had already become.
+    const FLAT_TAIL: usize = 2;
     let mut flat_keys = 0usize;
     let mut flat_map_entries = 0usize;
-    for (_model, object_key, entry) in lookup.iter() {
+    for (_model, object_key, _refs) in lookup.iter() {
         nested_keys += object_key.len();
         nested_map_entries += 1;
-        nested_vec_elements += entry.by_component.len();
         // The flat layout kept a whole B-tree entry per object in the second map...
         flat_keys += object_key.len();
         flat_map_entries += 1;
-        for component in &entry.by_component {
-            let tail = match component.component.as_deref() {
-                Some(name) => format!("1|{}:{}|", name.len(), name).len(),
-                None => "0|".len(),
-            };
-            nested_keys += component.component.as_ref().map_or(0, |name| name.len());
-            // ...and another per (object, component) in the first. Nesting turns the second of
-            // those into a vector element, which is why these are counted apart: a B-tree node
-            // and a vector slot are not the same object, and adding them together hides the
-            // change entirely.
-            flat_keys += object_key.len() + tail;
-            flat_map_entries += 1;
-        }
+        // ...and another per (object, component) in the first. One object had one component, so
+        // this is one more entry per object and not a loop over a list.
+        flat_keys += object_key.len() + FLAT_TAIL;
+        flat_map_entries += 1;
     }
 
     let per = |n: usize| n as f64 / RECORDS as f64;
@@ -13214,7 +13083,7 @@ fn nesting_the_block_lookups_saved_what_it_measured() {
         "
   page-lookup keys at {RECORDS} records, nested against the two flat maps it replaced:
              two flat maps                {:>8} B  ({:>6.1} B/record, {flat_map_entries} b-tree entries)
-             nested                       {:>8} B  ({:>6.1} B/record, {nested_map_entries} b-tree + {nested_vec_elements} vec)
+             nested                       {:>8} B  ({:>6.1} B/record, {nested_map_entries} b-tree entries)
              saved                        {:>8} B  ({:>6.1} B/record, {:>5.1}%)
 ",
         flat_keys,
@@ -13236,17 +13105,32 @@ fn nesting_the_block_lookups_saved_what_it_measured() {
         "nesting saved {saved:.1}% of the page-lookup key bytes; it measured 50.5% before it \
          shipped, and anything near zero means the object key is being stored twice again"
     );
-    // B-tree entries halve: the per-(object, component) map becomes vector slots inside the
-    // per-object one. Counting nodes and slots together would report no change at all, which is
-    // how this was first miscounted -- they are not the same object and do not cost the same.
-    assert!(
-        nested_map_entries < flat_map_entries,
-        "nested {nested_map_entries} b-tree entries against {flat_map_entries} flat"
+    // ENTRY COUNT, STATED DIRECTLY RATHER THAN THROUGH AN ACCOUNTING IDENTITY.
+    //
+    // Two assertions stood here and BOTH were unfalsifiable. One was
+    // `nested_map_entries < flat_map_entries` and the other
+    // `nested_map_entries + nested_vec_elements == flat_map_entries`. With one component per
+    // object -- the state since the element name came off the page entry -- `nested_map_entries`,
+    // `nested_vec_elements` and `objects` were all the same number and `flat_map_entries` was
+    // twice it, so the pair read `n < 2n` and `n + n == 2n`. Both held for every corpus including
+    // an empty one, and the second's message, "none lost", described a bookkeeping step that could
+    // not fail.
+    //
+    // What is actually claimed is that the flat layout kept TWO b-tree entries per object and the
+    // nested one keeps ONE. That is now said against the object count, which an empty corpus
+    // cannot satisfy, and the vector-slot term is gone because there are no vector slots.
+    let objects = lookup.len();
+    assert!(objects > 0, "the lookup holds no objects; nothing was counted");
+    assert_eq!(
+        nested_map_entries, objects,
+        "the nested layout should hold exactly one b-tree entry per object"
     );
     assert_eq!(
-        nested_map_entries + nested_vec_elements,
         flat_map_entries,
-        "every flat entry should become either a b-tree entry or a vector slot, none lost"
+        2 * objects,
+        "the flat layout it replaced held two b-tree entries per object -- one per (model, \
+         object) and one per (model, object, component) -- and that is the count this saving is \
+         measured against"
     );
 }
 
