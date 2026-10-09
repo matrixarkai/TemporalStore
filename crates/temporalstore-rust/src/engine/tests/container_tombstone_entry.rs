@@ -54,10 +54,17 @@
 //!  4  engine.rs:4740 mark_bucket_index_object_deleted       CORRECT  a whole-object delete takes tombstones too; the
 //!                                                                    CommonDelete arm of the five-way guard asserts zero
 //!  5  engine.rs:4931 mark_..._block_deleted_recording       CORRECT  the removal's own retain
-//!  6  engine.rs:4979 mark_..._block_deleted_recording       WRONG, FIXED HERE. `any(|page| page.object_id() == id)` would
-//!                                                                    be answered by the removed element's OWN tombstone, so a
-//!                                                                    key's last element never filed its object id. Now asks
-//!                                                                    about LIVE pages. a_keys_last_element_still_files_its_object_id
+//!  6  engine.rs:4979 mark_..._block_deleted_recording       CORRECT, AND THIS ROW WAS WRONG ABOUT IT. It read "WRONG, FIXED
+//!                                                                    HERE: `any(|page| page.object_id() == id)` would be
+//!                                                                    answered by the removed element's OWN tombstone". The
+//!                                                                    predicate asks `!page.deleted && ...`, so a tombstone
+//!                                                                    cannot answer it and never could. The last element's
+//!                                                                    object id went unfiled for a DIFFERENT reason, one level
+//!                                                                    up -- the retain deciding `removed` compares the
+//!                                                                    element's name against a page-named entry that has none,
+//!                                                                    so the arm holding this filter never runs for a
+//!                                                                    container. Filed in drop_live_object_entries instead.
+//!                                                                    a_keys_last_element_still_files_its_object_id
 //!  7  engine.rs:5384 record_exists_exact                    CORRECT  `!page.deleted`; EXISTS is one of #2025's five readers
 //!  8  engine.rs:6111 object_manager_stats                   CORRECT  `.filter(|page| !page.deleted)`
 //!  9  engine.rs:6236 object_manager_stats                   HARMLESS dirty-bucket count; a fresh tombstone IS dirty and its
@@ -551,14 +558,23 @@ fn a_keys_last_element_still_files_its_object_id() {
         );
     }
 
+    // FILED WHERE IT IS READ, NOT MERELY FILED SOMEWHERE.
+    //
+    // This asked `bucket_map.values().any(|bucket| ...contains(id))`, which any fix filing the id in
+    // some arbitrary bucket would satisfy. `object_manager::runtime_report` reads the index in the
+    // PAGE's OWN bucket -- `deleted_object_index.contains(page.object_id())` inside the loop over
+    // that bucket's pages -- so an id filed anywhere else answers nothing. Scoped to a bucket that
+    // actually holds a page of this object, which is the set the report consults.
     let filed = |engine: &TemporalEngine| -> bool {
         let shards = engine.shards.read().expect("engine lock poisoned");
         let shard = shards.get(&1).expect("shard is loaded");
-        shard
-            .bucket_index
-            .bucket_map
-            .values()
-            .any(|bucket| bucket.deleted_object_index.contains(&object_id))
+        shard.bucket_index.bucket_map.values().any(|bucket| {
+            bucket.deleted_object_index.contains(&object_id)
+                && bucket
+                    .block_index
+                    .values()
+                    .any(|page| &*page.object_key == key)
+        })
     };
 
     assert!(
@@ -610,11 +626,57 @@ fn a_keys_last_element_still_files_its_object_id() {
     );
     assert!(
         after_last,
-        "THE OBJECT ID WAS NOT FILED AT THE KEY'S LAST ELEMENT. The retained tombstone entries \
-         answered the `any(|page| page.object_id(shard_id) == id)` filter, so the object never reads as \
+        "THE OBJECT ID WAS NOT FILED AT THE KEY'S LAST ELEMENT, so the object never reads as \
          deleted -- and `object_manager::runtime_report` asks that index per page."
     );
 }
+
+// THE MESSAGE ABOVE NAMED THE WRONG MECHANISM, AND SO DID THE CLAIM THIS ARM WAS GIVEN.
+//
+// ## THE MESSAGE
+//
+// It read "The retained tombstone entries answered the `any(|page| page.object_id(shard_id) == id)`
+// filter". That filter is in `mark_bucket_index_block_deleted_recording` and it already asks
+// `!page.deleted && ...`, so a tombstone cannot answer it -- the explanation accused a predicate
+// that excludes the very thing it was accused of admitting.
+//
+// WHAT ACTUALLY HELD THE ID BACK is one level up: the `retain` that decides `removed` compares the
+// element's name against the ENTRY's, and a page-named entry carries none, so for a container
+// `removed` stays false, `bucket_removed` stays false, and the whole `if bucket_removed` arm that
+// extends `deleted_object_index` never runs. The filter is never reached. Fixed in
+// `storage_bucket_internals::drop_live_object_entries`, which is where the last-element question is
+// already answered, and answered by the resident map rather than predicted from the index.
+//
+// ## AND THE "IT REACHES A PUBLIC REPORT" HALF IS REFUTED, MEASURED
+//
+// This arm was to be joined by a second one asserting the same fact at
+// `object_manager::runtime_report`, on the claim that the missing filing makes a public report call
+// a deleted object live. THAT ARM WAS WRITTEN, DRIVEN, AND DELETED, because it PASSED ON THE
+// UNFIXED CODE -- which is the only reason the claim was checked at all.
+//
+// MEASURED, with the fix reverted to its committed parent by content hash: a fixture holding a live
+// neighbour in the subject's own routing bucket (so the bucket-level `deleted` flag is NOT what
+// carries the answer -- asserted) reported `deleted=Some(true) deleted_object_count=1` while a
+// per-bucket dump showed `deleted_flag=false in_object_index=true in_deleted_object_index=false`.
+// So the report said "deleted" with the object index empty.
+//
+// WHY: `runtime_report` has a SECOND AND INDEPENDENT ROUTE to that flag, added for this exact
+// shape -- `if object.block_ref_count > 0 && object.deleted_block_ref_count >= object.block_ref_count
+// { object.deleted = true }`. A key whose last element is removed has nothing left but tombstones,
+// so every one of its block refs is deleted and the quantifier fires on its own.
+// `deleted_object_index` is one of two inputs and the other already covers the last-element case.
+//
+// SO THE INDEX ONLY DECIDES THE REPORT WHERE `block_ref_count == 0` -- an object still named in
+// `bucket.object_index` with no page of its own left at all, which is the state AFTER its
+// tombstones are collected. Nothing in this module's reach produces it: a whole-object delete files
+// the id itself, and a compaction round preserves tombstones across the rebuild on purpose.
+//
+// A GUARD AT THE REPORT WOULD THEREFORE BE VACUOUS -- nothing it could observe would have to
+// disagree for it to fail -- so it is not left in place looking like coverage. What IS guarded is
+// the index itself, by this arm, and it is guarded WHERE THE REPORT READS IT: `filed` above is
+// scoped to a bucket that actually holds a page of the object, because an id filed in any other
+// bucket answers nothing. The fix remains right -- the index should state the fact it is named for
+// -- but it is a correctness fix to an internal index, not to a served answer.
 
 /// rust-internal: drives a SetRemove that matches nothing
 #[test]

@@ -4210,8 +4210,42 @@ pub(super) fn upsert_bucket_index_block(
 ///
 /// The lookup holds LIVE refs only -- `insert_object_block_lookup` returns early on a deleted page
 /// -- so dropping the object's refs there is the same narrowing by construction.
+///
+/// # AND IT FILES THE OBJECT TOMBSTONE, WHICH IS THE OTHER HALF OF THE SAME FACT
+///
+/// `deleted_object_index` is where the shard records that an OBJECT is gone, and
+/// `object_manager::runtime_report` -- a public report -- asks it per page. Under one entry a page
+/// nothing was filing it for a container, and the hole was not in this function but in
+/// `mark_bucket_index_block_deleted_recording`: its `retain` matched the element's name against the
+/// entry's, which a page-named entry cannot satisfy, so for a container `removed` stayed false, the
+/// `if bucket_removed` arm that extends `deleted_object_index` never ran, and a key whose LAST
+/// element was removed never read as a deleted object. MEASURED: `a_keys_last_element_still_files_
+/// its_object_id` reported `0 live, 2 tombstone entries` with the id not filed.
+///
+/// IT IS FILED HERE AND NOT THERE BECAUSE THIS IS WHERE THE LAST-ELEMENT QUESTION IS ALREADY
+/// ANSWERED, and answered by the AUTHORITY: the caller reaches this function only under
+/// `K::resident(shard).get(object_key).is_none()`, the resident map's own post-removal verdict.
+/// The removal path could only predict that condition from the index, which is the derived view --
+/// and the two halves of "this object is gone" then sit in one place rather than being talked into
+/// agreeing.
+///
+/// FILED IN EVERY BUCKET THAT HOLDS A PAGE OF THE OBJECT, live or tombstone, which is the set the
+/// report reads it against: it asks `deleted_object_index.contains(page.object_id())` for each page
+/// in that page's OWN bucket, so an id filed anywhere else answers nothing. Detected inside the
+/// `retain` rather than by a second walk -- `retain` visits every page of the bucket already, the
+/// tombstones it keeps included.
+///
+/// NOT CLEARED HERE, AND IT DOES NOT HAVE TO BE: a re-add goes through
+/// `upsert_bucket_index_block_inner`, which removes the id from `deleted_object_index` when it
+/// files a live page for it.
 pub(super) fn drop_live_object_entries(shard: &mut ShardState, kind: &str, object_key: &str) {
     let model_id = stored_model_kind(kind);
+    // READ BEFORE THE INDEX IS BORROWED, and `None` only for a state that never entered the engine
+    // -- the same condition under which `runtime_report` returns an empty report, so there is
+    // nothing for an id to be filed against either.
+    let object_id = shard
+        .shard_id()
+        .map(|shard_id| crate::engine::hashing::stable_block_object_id(shard_id, kind, object_key));
     let mut touched: Vec<u32> = Vec::new();
     {
         let CoreIndex {
@@ -4221,14 +4255,23 @@ pub(super) fn drop_live_object_entries(shard: &mut ShardState, kind: &str, objec
         } = &mut shard.bucket_index;
         for (routing_bucket, bucket) in bucket_map.iter_mut() {
             let before = bucket.block_index.len();
+            let mut holds_a_page_of_the_object = false;
             bucket
                 .block_index
                 .retain(&mut *live, |_, page| {
-                    !(!page.deleted && page.model_id == model_id && &*page.object_key == object_key)
+                    let the_objects =
+                        page.model_id == model_id && &*page.object_key == object_key;
+                    holds_a_page_of_the_object |= the_objects;
+                    !(!page.deleted && the_objects)
                 });
             if bucket.block_index.len() != before {
                 touched.push(*routing_bucket);
                 classify_bucket_layout_in_place(bucket);
+            }
+            if holds_a_page_of_the_object {
+                if let Some(object_id) = object_id {
+                    bucket.deleted_object_index.insert(object_id);
+                }
             }
         }
     }
