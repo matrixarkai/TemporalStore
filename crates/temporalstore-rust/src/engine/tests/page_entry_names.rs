@@ -2172,3 +2172,288 @@ fn a_record_whose_page_handle_was_omitted_still_names_its_page_after_the_fold() 
          authoritative any more"
     );
 }
+
+// ---------------------------------------------------------------------------------------------
+// AN UNGATED STORE MUST BE REFUSED, NOT MISREAD.
+// ---------------------------------------------------------------------------------------------
+
+/// CAPTURE. Prints a whole shard index written with the one-entry-a-page gate OFF, as plain JSON.
+///
+/// Run at a named revision, its output IS the golden below. It asserts nothing.
+///
+/// WHY A GOLDEN AND NOT A FIXTURE BUILT AT RUN TIME. The point of the guard below is what happens
+/// to a store whose ENTRIES NAME THEIR ELEMENTS, and once `BlockIndex` has no field for an element
+/// name there is no way left to build one -- not with the gate off, not by hand. A string constant
+/// is the only form of that store that outlives the field, which is what makes it the
+/// yesterday's-input kind of golden rather than the today's-output kind.
+#[test]
+#[ignore = "capture instrument; run by name and read its output"]
+fn capture_an_ungated_store_index() {
+    let restore = std::env::var(crate::engine::TS_CONTAINER_ONE_ENTRY_A_PAGE).ok();
+    std::env::set_var(crate::engine::TS_CONTAINER_ONE_ENTRY_A_PAGE, "0");
+    let dir = tempfile::tempdir().expect("tempdir");
+    let engine = crate::engine::TemporalEngine::with_local_dirs(
+        1024,
+        dir.path().join("cache"),
+        dir.path().join("pages"),
+        dir.path().join("indexes"),
+    );
+    engine.load_shard(7);
+    for (field, value) in [("f0", b"v0".to_vec()), ("f1", b"v1".to_vec())] {
+        engine.execute(crate::types::ExecuteRequest {
+            shard_id: 7,
+            command: crate::types::Command::HashSet {
+                key: "ungated/hash".to_string(),
+                field: field.to_string(),
+                value,
+            },
+        });
+    }
+    engine.execute(crate::types::ExecuteRequest {
+        shard_id: 7,
+        command: crate::types::Command::ZSetAdd {
+            key: "ungated/zset".to_string(),
+            member: b"m0".to_vec(),
+            score: 1.0,
+        },
+    });
+    engine.flush_shard_index(7);
+    let path = dir.path().join("indexes").join("shard-7.index.json");
+    let bytes = std::fs::read(&path).expect("a flushed base index exists");
+    let shard = crate::engine::decode_index_bytes(&bytes).expect("the base index decodes");
+    let named: Vec<(String, String, Option<String>)> = shard
+        .bucket_index
+        .bucket_map
+        .values()
+        .flat_map(|bucket| bucket.block_index.values())
+        .map(|page| {
+            (
+                page.object_key.to_string(),
+                page.model_id.to_string(),
+                page.component.as_deref().map(str::to_string),
+            )
+        })
+        .collect();
+    println!("\n=== entries, with the names the ungated layout files ===");
+    for row in &named {
+        println!("  {row:?}");
+    }
+    println!("\n=== the whole index as plain JSON ===");
+    println!(
+        "{}",
+        String::from_utf8(crate::engine::encode_index_bytes_as_plain_json(&shard))
+            .expect("the index is utf-8")
+    );
+    match restore {
+        Some(previous) => {
+            std::env::set_var(crate::engine::TS_CONTAINER_ONE_ENTRY_A_PAGE, previous)
+        }
+        None => std::env::remove_var(crate::engine::TS_CONTAINER_ONE_ENTRY_A_PAGE),
+    }
+}
+
+/// A WHOLE SHARD INDEX WRITTEN WITH THE GATE OFF, AT THE STAMP A PRE-CHANGE BINARY CARRIES.
+///
+/// Captured by `capture_an_ungated_store_index` from this branch's own ungated writer, with
+/// `index_format_version` set to 8 -- what `matrixark/main` holds. Three entries, each NAMING its
+/// element: `component` `f0` and `f1` on a hash and `6d30` (hex `m0`) on a zset, and the written
+/// key of each embedding that name.
+///
+/// A STRING CONSTANT, WHICH IS THE WHOLE POINT. Once `BlockIndex` has no field for an element
+/// name there is no way left to BUILD this store -- not with a gate, not by hand -- so bytes are
+/// the only form of it that outlives the field. This is the yesterday\x27s-input kind of golden: it
+/// is not what this engine writes and must never be regenerated to match what it writes.
+const UNGATED_STORE_INDEX_AT_STAMP_8: &str = r##"{"index_format_version":8,"wal_resident_blocks":{},"expires_at_ms":{},"strings":{},"hashes":{"ungated/hash":{"f1":{"a":27,"l":27,"pi":1,"oi":null,"g":1},"f0":{"a":0,"l":27,"pi":0,"oi":null,"g":0}}},"sets":{},"seen":{},"buckets":{},"zsets":{"ungated/zset":[[[109,48],[13830554455654793216,{"a":54,"l":34,"pi":0,"oi":null,"g":0}]]]},"lists":{},"features":{},"control_state":{},"control_state_blocks":{},"control_state_changes":{},"control_state_change_sketch":{},"control_state_selection":{},"control_state_uuid":{},"context_nodes":{},"context_event_timeline":{},"context_audits":{},"context_entities":{},"context_children":{},"context_summaries":{},"context_compressions":{},"slot_index":{"bucket_map":{"979707521":{"routing_slot":979707521,"layout":"SingleBlockObject","dirty":true,"deleted":false,"meta_loaded":true,"loading":false,"in_memory":true,"ttl_ms":null,"dirty_generation":1,"object_index":[3660521199139779587],"deleted_object_index":[],"page_index":{"zset:ungated/zset:6d30:0:54:34:0:0":{"object_key":"ungated/zset","model_id":"zset","component":"6d30","address":{"a":54,"l":34,"pi":0,"oi":null,"g":0},"dirty":true,"deleted":false}}},"3709665044":{"routing_slot":3709665044,"layout":"MultiBlockObject","dirty":true,"deleted":false,"meta_loaded":true,"loading":false,"in_memory":true,"ttl_ms":null,"dirty_generation":2,"object_index":[14105434925875933987],"deleted_object_index":[],"page_index":{"hash:ungated/hash:f0:0:0:27:0:0":{"object_key":"ungated/hash","model_id":"hash","component":"f0","address":{"a":0,"l":27,"pi":0,"oi":null,"g":0},"dirty":true,"deleted":false},"hash:ungated/hash:f1:0:27:27:1:1":{"object_key":"ungated/hash","model_id":"hash","component":"f1","address":{"a":27,"l":27,"pi":1,"oi":null,"g":1},"dirty":true,"deleted":false}}}}},"applied_wal_sequence":3}
+"##;
+
+/// AN UNGATED STORE IS REFUSED BEFORE IT IS SERVED, WHICH IS WHAT MAKES THE ELEMENT NAME REMOVABLE.
+///
+/// # THE QUESTION THIS SETTLES
+///
+/// Removing the element name from a page entry means a store whose entries DO name their elements
+/// becomes uninterpretable: the named decoder drops a key it has no field for, SILENTLY, so such a
+/// store would decode cleanly into an index whose container entries name nothing. If that index
+/// were then served, every element it names would be lost or mis-served -- which is not a format
+/// change, it is data loss.
+///
+/// The stamp is what has to stop it, and `persistence.rs` compares with `<`, so a value that is too
+/// LOW falls through to Accepted. That asymmetry is exactly the lethal direction, which is why this
+/// is DRIVEN rather than argued: the store is planted, the shard is loaded, and the load path is
+/// read off the engine's own counters.
+///
+/// # THE ORDER IS THE LOAD-BEARING PART
+///
+/// The refusal happens AFTER the decode and BEFORE the index is used -- `decode_index_bytes`
+/// succeeds, the dropped key is already gone by then, and `load_index_inner` refuses on the stamp
+/// and answers `Ok(None)` so the caller replays the write-ahead log instead. So the silent drop is
+/// harmless only because the refusal follows it. If that order ever inverted, this guard is what
+/// would catch it: the first arm asserts the decode SUCCEEDS and the names are gone, and the second
+/// asserts the shard nevertheless serves nothing from it.
+///
+/// # AND IT IS COUNTED BOTH WAYS
+///
+/// `stale > 0` alone is not enough: `index_load_path_counts` is four independent counters and a
+/// load that was refused AND accepted would move both. So `accepted` is asserted at zero over the
+/// same reset window. An earlier guard in this file moves `stale` and leaves `accepted` unchecked.
+#[test]
+fn an_ungated_store_is_refused_before_it_is_served() {
+    use crate::engine::persistence::{index_load_path_counts, reset_index_load_path_counts};
+
+    // --- ARM 1: THE DECODE SUCCEEDS, AND IT IS THE DECODE THAT LOSES THE NAMES. ---
+    let decoded = crate::engine::decode_index_bytes(UNGATED_STORE_INDEX_AT_STAMP_8.as_bytes())
+        .expect("an index written by a pre-change binary must still DECODE -- the stamp refuses it \
+                 one layer up, and a decode that failed here would hide that");
+    assert_eq!(
+        8, decoded.index_format_version,
+        "the golden's stamp is {} rather than 8, so it is not the pre-change store this guard is \
+         about",
+        decoded.index_format_version
+    );
+    let container_entries: Vec<(String, String, Option<String>)> = decoded
+        .bucket_index
+        .bucket_map
+        .values()
+        .flat_map(|bucket| bucket.block_index.values())
+        .filter(|page| matches!(page.model_id.as_str(), "hash" | "zset" | "set" | "list"))
+        .map(|page| {
+            (
+                page.object_key.to_string(),
+                page.model_id.as_str().to_string(),
+                element_name_of(page),
+            )
+        })
+        .collect();
+    println!("\n=== a pre-change store, decoded by this binary ===");
+    for row in &container_entries {
+        println!("  {row:?}");
+    }
+    // FLOOR: the golden really does hold container entries, or the naming claim below is about an
+    // empty set and the refusal arm is about an empty store.
+    assert_eq!(
+        3,
+        container_entries.len(),
+        "the golden decoded to {} container entries rather than 3, so it is not the store this \
+         guard was captured from",
+        container_entries.len()
+    );
+
+    // THE NAMES ARE A FACT ABOUT THE STORED BYTES, asserted there rather than on the decoded
+    // entries -- because what this binary can still READ off an entry is exactly what the change
+    // under test takes away. The bytes cannot change; the field can. So the golden is asserted to
+    // SPELL the three element names, and what the decode recovered is PRINTED beside it.
+    for spelling in [
+        "\"component\":\"f0\"",
+        "\"component\":\"f1\"",
+        "\"component\":\"6d30\"",
+    ] {
+        assert!(
+            UNGATED_STORE_INDEX_AT_STAMP_8.contains(spelling),
+            "the golden does not spell {spelling}, so it is not a store whose entries name their \
+             elements and the refusal below is about nothing"
+        );
+    }
+    let recovered = container_entries
+        .iter()
+        .filter(|(_, _, name)| name.is_some())
+        .count();
+    println!(
+        "  of 3 stored element names, this binary recovered {recovered} off the entries -- a drop \
+         to 0 is the silent key drop that the refusal below stands between a reader and"
+    );
+
+    // --- ARM 2: THE SHARD REFUSES IT, AND SERVES NOTHING FROM IT. ---
+    let dir = tempfile::tempdir().expect("tempdir");
+    let indexes = dir.path().join("indexes");
+    std::fs::create_dir_all(&indexes).expect("mkdir");
+    std::fs::write(
+        indexes.join("shard-7.index.json"),
+        UNGATED_STORE_INDEX_AT_STAMP_8.as_bytes(),
+    )
+    .expect("plant the pre-change index");
+    // AND THE ROUTING-RANGE STAMP BESIDE IT, WHICH A PRE-CHANGE STORE REALLY HAS.
+    //
+    // Without it this guard asserted nothing and did not say so: `decide_routing_range` refuses a
+    // store that has ON-DISK STATE and NO range stamp, before the index is read at all, so all four
+    // index-load counters stayed at ZERO -- not even `absent`. Measured, by driving it: a refusal
+    // arm that cannot tell "refused for the reason under test" from "never asked" is the shape of a
+    // control that passes for an unintended reason. A binary that wrote this index also wrote this
+    // file, so planting both is what makes the FORMAT stamp the thing being tested.
+    crate::engine::routing_range_stamp::write_routing_range_stamp(
+        &indexes,
+        7,
+        crate::engine::routing_range_stamp::RoutingRangeStamp {
+            start_routing_bucket: 0,
+            end_routing_bucket: u32::MAX,
+        },
+    )
+    .expect("plant the routing-range stamp the index was written under");
+
+    reset_index_load_path_counts();
+    let engine = crate::engine::TemporalEngine::with_local_dirs(
+        1024,
+        dir.path().join("cache"),
+        dir.path().join("pages"),
+        indexes,
+    );
+    // THE LOAD'S OWN STATUS, CHECKED. A first draft of this guard did not, and every counter read
+    // ZERO -- not even `absent` -- which is what a load that never reached the index looks like.
+    // A refusal arm that cannot tell "refused" from "never asked" asserts nothing.
+    engine.load_shard(7);
+    let (accepted, stale, absent, undecodable) = index_load_path_counts();
+    println!(
+        "  load path -> accepted {accepted}, stale {stale}, absent {absent}, undecodable \
+         {undecodable}"
+    );
+    assert!(
+        stale > 0,
+        "a store stamped 8 against a current {} was NOT counted as a stale-stamp refusal: accepted \
+         {accepted}, stale {stale}, absent {absent}, undecodable {undecodable}. \
+         `persistence.rs` compares with `<`, so the direction that fails silently is a stamp that \
+         is too LOW -- and this is that direction",
+        crate::engine::SHARD_INDEX_FORMAT_VERSION
+    );
+    assert_eq!(
+        0, accepted,
+        "the load counted {accepted} ACCEPTED beside {stale} refused. Four independent counters \
+         mean a load can move both, and a refusal that is also an acceptance is an acceptance"
+    );
+    assert_eq!(
+        0, undecodable,
+        "the planted index was counted UNDECODABLE, so this guard is measuring a parse failure \
+         rather than the stamp -- and a parse failure would hide the silent key drop arm 1 asserts"
+    );
+
+    // AND NOTHING IS SERVED FROM IT. There is no write-ahead log beside the planted index, so a
+    // refusal leaves an empty shard; anything served here came out of the index this binary was
+    // supposed to refuse.
+    let served = engine.execute(crate::types::ExecuteRequest {
+        shard_id: 7,
+        command: crate::types::Command::HashGetAll {
+            key: "ungated/hash".to_string(),
+        },
+    });
+    let entries = match served.response {
+        crate::types::CommandResponse::HashEntries { entries } => entries,
+        other => panic!("expected HashEntries, got {other:?}"),
+    };
+    println!("  served from the refused index: {} field(s)", entries.len());
+    assert!(
+        entries.is_empty(),
+        "the refused index served {} field(s): {:?}. A refused store must be REPLAYED, never read \
+         -- and with no log beside it the honest answer is nothing at all",
+        entries.len(),
+        entries
+    );
+}
+
+/// The element name a page entry carries, read in the one place that has to change when the field
+/// goes.
+///
+/// A HELPER AND NOT AN INLINE FIELD READ, so that removing `BlockIndex::component` leaves ONE
+/// compile error here with a comment attached rather than silently turning the naming assertion
+/// above into `None == None`. When the field goes this answers `None` for every entry, which is
+/// precisely the silent drop arm 1 is about -- and the assertion above compares against the golden's
+/// own recorded names rather than against whatever this returns.
+fn element_name_of(page: &BlockIndex) -> Option<String> {
+    page.component.as_deref().map(str::to_string)
+}
