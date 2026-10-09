@@ -304,3 +304,317 @@ fn a_derivation_drops_the_entry_no_element_carries_any_more() {
         after[0]
     );
 }
+
+// =================================================================================================
+// HASH, THE SAME PROPERTY -- AND THE ONE THING SET NEVER HAD TO FACE, DRIVEN BY A PLANT.
+// =================================================================================================
+//
+// Hash needed its OWN gated branch (`HashSet`, `HashMultiSet`, `HashIncrBy`'s ordinal lookup, and
+// `HashGet`/`HashIncrBy`/`HashLen`'s reads) because hash is the one container kind among
+// set/list/hash that rewrites an element IN PLACE under its own identity: `HSET` on a field that
+// already exists keeps the field and takes a new address, over and over, for as long as the key
+// lives. The address-keyed lookup the fix relies on
+// (`shard.hashes.get(&key).and_then(|fields| fields.get(&field))`) has to report THIS write's own
+// field's CURRENT address, not a stale one left by an earlier write to a different field of the
+// same object.
+//
+// # WHY THESE TESTS PLANT RATHER THAN JUST SETTING THE ENV VAR AND WRITING
+//
+// `index_entry_names_a_page` is the single authority deciding whether an entry is filed with NO
+// component, and today it answers `true` only for `set` and `list` (`storage_bucket_internals.rs`)
+// -- hash is deliberately NOT in that list yet; widening it is a later, separate step. So setting
+// `TS_CONTAINER_ONE_ENTRY_A_PAGE` alone does NOT make a `HashSet` write a component-less entry:
+// the filing path still writes `Some(field)` for hash regardless of the env var, and a test that
+// only sets the var and writes would pass or fail IDENTICALLY whether or not the gated branches
+// below exist -- which would make it a placebo, not a guard.
+//
+// So these tests plant the state hash's own entries will be in once that later step lands, the
+// same technique `hash_read_union_divergence.rs` already uses to drive `HashGetAll`'s union: strip
+// `component` off the field's own live entry directly, then exercise the gated branches (which key
+// on the RAW gate, `container_index_files_one_entry_a_page`, not on the kind allow-list) against
+// that planted state. That is also why the ordinal test re-plants before every round: each write
+// still files a fresh `Some(field)`-named entry regardless of the env var, because the filing path
+// itself is untouched by this step.
+
+/// Sets the gate for as long as it is held and restores it on the way out, INCLUDING on a panic.
+/// The two tests above set and clear the variable by hand; an assertion failure between those two
+/// lines would leak the gate into every test that runs after this one in the same binary. `Drop`
+/// runs during unwinding, which is the case that matters, so the new tests below do not repeat
+/// that risk.
+struct GateHeldOn {
+    restore: Option<String>,
+}
+
+impl GateHeldOn {
+    fn on() -> Self {
+        let restore = std::env::var(TS_CONTAINER_ONE_ENTRY_A_PAGE).ok();
+        std::env::set_var(TS_CONTAINER_ONE_ENTRY_A_PAGE, "1");
+        Self { restore }
+    }
+}
+
+impl Drop for GateHeldOn {
+    fn drop(&mut self) {
+        match self.restore.take() {
+            Some(previous) => std::env::set_var(TS_CONTAINER_ONE_ENTRY_A_PAGE, previous),
+            None => std::env::remove_var(TS_CONTAINER_ONE_ENTRY_A_PAGE),
+        }
+    }
+}
+
+/// Distinct block ids currently live for this hash object, over EVERY field -- the hash analogue
+/// of the `ordinals` half of `pages_and_ordinals`. A single-field fixture is deliberately read at
+/// object granularity rather than filtered to one field, so a planted entry the filing path failed
+/// to retire would show up as a second ordinal rather than being filtered out of sight.
+fn live_ordinals_hash(engine: &TemporalEngine, object_key: &str) -> Vec<u64> {
+    let shards = engine.shards.read().expect("engine lock poisoned");
+    let shard = shards.get(&1).expect("shard 1 loaded");
+    let mut ordinals = std::collections::BTreeSet::new();
+    for bucket in shard.bucket_index.bucket_map.values() {
+        for page in bucket.block_index.values() {
+            if page.model_id.as_str() != "hash" || &*page.object_key != object_key || page.deleted {
+                continue;
+            }
+            if let Some(block_id) = page.address.block_id() {
+                ordinals.insert(block_id);
+            }
+        }
+    }
+    ordinals.into_iter().collect()
+}
+
+/// Strip `component` off every LIVE, non-deleted hash page this `(key, field)` names, in place.
+/// Returns how many entries were stripped, so a caller can floor it at exactly one and know the
+/// plant landed on what it meant to -- and nowhere else.
+fn strip_hash_component(engine: &TemporalEngine, key: &str, field: &str) -> usize {
+    let mut shards = engine.shards.write().expect("engine lock poisoned");
+    let shard = shards.get_mut(&1).expect("shard 1 loaded");
+    let mut stripped = 0usize;
+    for bucket in shard.bucket_index.bucket_map.values_mut() {
+        // `blocks_mut_unaccounted`, not a plain `values_mut`: `BlockIndexMap` is not a map with
+        // one, and this name is the contract -- a mutation through it must not touch `address`,
+        // which this one does not (only `component`). Same boundary two other tests already use
+        // to corrupt a field directly for a plant.
+        for page in bucket.block_index.blocks_mut_unaccounted() {
+            if page.model_id.as_str() == "hash"
+                && &*page.object_key == key
+                && !page.deleted
+                && page.component.as_deref() == Some(field)
+            {
+                page.component = None;
+                stripped += 1;
+            }
+        }
+    }
+    stripped
+}
+
+/// THE DISCRIMINATING TEST FOR THE HASH ORDINAL FIX: writes a field, overwrites it, and checks the
+/// ordinal did not advance -- against an entry planted component-less, which is the one state
+/// `container_page_ordinal`'s identity branch cannot match.
+///
+/// # WHAT ACTUALLY CLIMBS, CORRECTED AGAINST A FIRST WRONG READING
+///
+/// A first reading of this expected stale pages to PILE UP under the gate, the way `SetAdd`'s own
+/// gated arm documents them doing. Driven, that is not what happens here: hash retires a field's
+/// previous page by the ADDRESS the resident map held for it before the overwrite, which has
+/// nothing to do with `component`, so there is still only ONE live page after every round, planted
+/// or not -- measured while writing this test as `ordinals=[0]`, never `[0, 1]`. What climbs is
+/// that ONE page's own position: with the component stripped, `container_page_ordinal`'s identity
+/// branch cannot match the single live page it is itself looking at, so `highest` is read off it
+/// anyway and the next write is handed `highest + 1` instead of reusing it -- `[0]`, then `[1]`,
+/// then `[2]`, climbing round over round rather than piling up. With the gated branch, every round
+/// reads `[0]`: the position comes from `shard.hashes[key][field].block_id()` instead, which is
+/// authoritative and needs no page read.
+#[test]
+fn an_overwrite_of_a_component_less_hash_entry_reuses_its_ordinal() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let engine = engine_on(dir.path());
+    let _gate = GateHeldOn::on();
+    load_on(&engine);
+
+    const KEY: &str = "ord/hash-planted";
+    const FIELD: &str = "the-one-field";
+
+    let seed = engine.execute(ExecuteRequest {
+        shard_id: 1,
+        command: Command::HashSet {
+            key: KEY.to_string(),
+            field: FIELD.to_string(),
+            value: b"v0".to_vec(),
+        },
+    });
+    assert!(seed.status.ok, "seed write failed: {seed:?}");
+
+    let after_seed = live_ordinals_hash(&engine, KEY);
+    assert_eq!(
+        vec![0u64],
+        after_seed,
+        "the seed write must land at ordinal 0 alone, or the rounds below are not measuring an \
+         overwrite of a known starting position"
+    );
+
+    println!("\n=== one hash field, planted component=None, overwritten {REWRITES} times ===");
+    println!("  round=seed  ordinals={after_seed:?}");
+
+    for round in 0..REWRITES {
+        let stripped = strip_hash_component(&engine, KEY, FIELD);
+        assert_eq!(
+            1, stripped,
+            "round {round}: stripped {stripped} entries, not one -- either the previous write did \
+             not land, or the filing path is leaving more than one live entry named `{FIELD}` \
+             behind, and the plant below is not landing on what this test says it is"
+        );
+
+        let response = engine.execute(ExecuteRequest {
+            shard_id: 1,
+            command: Command::HashSet {
+                key: KEY.to_string(),
+                field: FIELD.to_string(),
+                value: format!("v{}", round + 1).into_bytes(),
+            },
+        });
+        assert!(response.status.ok, "round {round} overwrite failed: {response:?}");
+
+        let ordinals = live_ordinals_hash(&engine, KEY);
+        println!("  round={round}  ordinals={ordinals:?}");
+        assert_eq!(
+            vec![0u64],
+            ordinals,
+            "round {round}: after planting component=None on the field's own live entry and \
+             overwriting the field, the live ordinal(s) are {ordinals:?}. An overwrite must reuse \
+             the field's position; a climbing ordinal is a fresh block id, a fresh address, and \
+             therefore a fresh page"
+        );
+    }
+}
+
+/// THE READ-SIDE COMPANION: a component-less entry must not hide a present field from `HashGet`,
+/// must not make `HashLen` disagree with the resident map, and must not make `HashIncrBy` read a
+/// miss and silently restart the counter at zero.
+///
+/// # WHY TWO FIELDS, AND WHY NEITHER IS THE ONE REWRITTEN
+///
+/// A FIRST DRAFT of this test wrote ONE field, stripped its only entry's component, and read it
+/// straight back -- and `HashGet` answered correctly even against the UNFIXED code. That was not
+/// the fix working: a SECOND draft then rewrote that one field across several rounds, expecting
+/// stale pages to accumulate the way the ordinal test's own history does. They do not -- driven
+/// and checked directly: hash retires the field's PREVIOUS page by the address the resident map
+/// held before the overwrite, which has nothing to do with `component`, so there is never more
+/// than one live page per field regardless of what this test plants onto it. (That is also the
+/// corrected reading behind the ordinal test above: its climbing block id is ONE live page's
+/// position advancing round over round, not an accumulating pile the way `SetAdd`'s gated arm
+/// leaves one.)
+///
+/// So a single field, rewritten or not, can never be the thing that makes `component` matter here
+/// -- there is only ever one candidate page, and nothing needs to be disambiguated FROM. What the
+/// brief's mechanism (`bucket_index_block_address` matching `page.component.as_deref() ==
+/// component` on every branch) can only get wrong is choosing AMONG SEVERAL live pages of one
+/// object -- which needs several FIELDS, not several rewrites of one. So this plants on one field
+/// of a two-field object and leaves the other untouched, as the thing the stripped field's lookup
+/// could be confused with (or lost beside).
+#[test]
+fn a_component_less_hash_entry_is_still_answered_correctly_by_get_len_and_incrby() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let engine = engine_on(dir.path());
+    let _gate = GateHeldOn::on();
+    load_on(&engine);
+
+    const KEY: &str = "ord/hash-point-read";
+    const FIELD: &str = "alpha";
+    const SIBLING: &str = "beta";
+
+    for (field, value) in [(FIELD, b"41".to_vec()), (SIBLING, b"99".to_vec())] {
+        let response = engine.execute(ExecuteRequest {
+            shard_id: 1,
+            command: Command::HashSet {
+                key: KEY.to_string(),
+                field: field.to_string(),
+                value,
+            },
+        });
+        assert!(response.status.ok, "seeding `{field}` failed: {response:?}");
+    }
+
+    // Strip ONLY `FIELD`'s entry. `SIBLING` is left exactly as written, component intact, so the
+    // object is unambiguously a two-page object and the lookup below has something real to
+    // disambiguate FROM rather than answering by elimination over an object with nothing else on
+    // it.
+    let stripped = strip_hash_component(&engine, KEY, FIELD);
+    assert_eq!(
+        1, stripped,
+        "stripped {stripped} entries, not one -- the plant did not land on exactly the seeded \
+         field, or the object is not the two-field shape this test is about"
+    );
+
+    let live_pages = {
+        let shards = engine.shards.read().expect("engine lock poisoned");
+        let shard = shards.get(&1).expect("shard 1 loaded");
+        shard
+            .bucket_index
+            .bucket_map
+            .values()
+            .flat_map(|bucket| bucket.block_index.values())
+            .filter(|page| {
+                page.model_id.as_str() == "hash" && &*page.object_key == KEY && !page.deleted
+            })
+            .count()
+    };
+    assert_eq!(
+        2, live_pages,
+        "{live_pages} live page(s) for a two-field object -- the floor below assumes exactly one \
+         planted (component=None) page and one intact (component=Some(\"{SIBLING}\")) sibling"
+    );
+
+    let get = engine.execute(ExecuteRequest {
+        shard_id: 1,
+        command: Command::HashGet {
+            key: KEY.to_string(),
+            field: FIELD.to_string(),
+        },
+    });
+    assert!(get.status.ok, "{:?}", get.status);
+    match get.response {
+        CommandResponse::Bytes { value } => assert_eq!(
+            Some(b"41".to_vec()),
+            value,
+            "HashGet answered {value:?} for `{FIELD}`, whose only entry is component-less, beside \
+             an intact sibling entry for `{SIBLING}`; the gated branch did not reach the resident \
+             map"
+        ),
+        other => panic!("expected Bytes, got {other:?}"),
+    }
+
+    let len = engine.execute(ExecuteRequest {
+        shard_id: 1,
+        command: Command::HashLen {
+            key: KEY.to_string(),
+        },
+    });
+    assert!(len.status.ok, "{:?}", len.status);
+    match len.response {
+        CommandResponse::Integer { value } => assert_eq!(
+            2, value,
+            "HashLen answered {value} for an object with exactly two fields"
+        ),
+        other => panic!("expected Integer, got {other:?}"),
+    }
+
+    let incr = engine.execute(ExecuteRequest {
+        shard_id: 1,
+        command: Command::HashIncrBy {
+            key: KEY.to_string(),
+            field: FIELD.to_string(),
+            increment: 1,
+        },
+    });
+    assert!(incr.status.ok, "{:?}", incr.status);
+    match incr.response {
+        CommandResponse::Integer { value } => assert_eq!(
+            42, value,
+            "HashIncrBy answered {value}, not 42; a miss through the component-less entry \
+             restarts the counter at zero instead of reading the present value `41`"
+        ),
+        other => panic!("expected Integer, got {other:?}"),
+    }
+}

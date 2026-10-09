@@ -844,13 +844,45 @@ pub(crate) fn execute_on_shard(
             // the append stamps the ordinal into the record header AND onto the address it
             // returns from the same value -- assigning it afterwards would leave the two
             // disagreeing, which `decode_block_record` refuses as a page id mismatch.
-            let block_ordinal = crate::engine::state::container_page_ordinal(
-                &shard.bucket_index,
-                routing_bucket,
-                "hash",
-                &key,
-                &field,
-            );
+            //
+            // UNDER ONE ENTRY A PAGE THE INDEX CANNOT SAY. `container_page_ordinal` finds an
+            // existing field's position by looking for an entry filed under this field's
+            // component; a gated entry carries none, so that branch cannot match and the walk
+            // falls through to `highest + 1` on every overwrite -- a fresh ordinal, a fresh
+            // address, a fresh page, for a write that should land on the same one. Hash is the
+            // one container kind that overwrites a field IN PLACE this way, which is exactly the
+            // case `SetAdd`'s identical gated branch exists for.
+            //
+            // SO THE QUESTION GOES TO THE MAP THAT IS KEYED BY THE FIELD. `shard.hashes` holds
+            // this field against the address it currently occupies, and that address's
+            // `block_id` IS its position -- the same number the index would have reported, read
+            // from the structure that still knows which field is which. The ungated path is left
+            // exactly as it was.
+            let block_ordinal = if crate::engine::container_index_files_one_entry_a_page() {
+                shard
+                    .hashes
+                    .get(&key)
+                    .and_then(|fields| fields.get(&field))
+                    .and_then(|address| address.block_id())
+                    .and_then(|held| u32::try_from(held).ok())
+                    .unwrap_or_else(|| {
+                        crate::engine::state::container_page_ordinal(
+                            &shard.bucket_index,
+                            routing_bucket,
+                            "hash",
+                            &key,
+                            &field,
+                        )
+                    })
+            } else {
+                crate::engine::state::container_page_ordinal(
+                    &shard.bucket_index,
+                    routing_bucket,
+                    "hash",
+                    &key,
+                    &field,
+                )
+            };
             // The block STATES which field it is, rather than leaving that to the entry that names
             // it. Same value, one frame around it -- see `container_pages`.
             let page = crate::engine::container_pages::single_element_page("hash", &field, &value);
@@ -894,15 +926,41 @@ pub(crate) fn execute_on_shard(
             }
             cached_response(cache, CacheKey::hash(shard_id, &key, &field), || {
                 CommandResponse::Bytes {
-                    value: read_bucket_index_value(
-                        cache,
-                        block_store,
-                        shard_id,
-                        shard,
-                        "hash",
-                        &key,
-                        Some(field.as_str()),
-                    ),
+                    // UNDER ONE ENTRY A PAGE THE INDEX CANNOT NAME THIS FIELD, so the index-only
+                    // read would answer `None` for a field that is there. `shard.hashes` is
+                    // durable (`#[serde(default)]`, see `RecordedMap`'s unconditional
+                    // `Serialize`) and already the address `HashMultiGet` reads a field from --
+                    // same lookup, used here as the point read's source of truth under the gate.
+                    value: if crate::engine::container_index_files_one_entry_a_page() {
+                        shard
+                            .hashes
+                            .get(&key)
+                            .and_then(|fields| fields.get(&field))
+                            .and_then(|address| {
+                                read_block_bytes(
+                                    cache,
+                                    block_store,
+                                    shard_id,
+                                    address,
+                                    PageIdentity::of(shard_id, "hash", &key, Some(field.as_str())),
+                                    Some(block_routing_bucket(
+                                        &key,
+                                        start_routing_bucket,
+                                        end_routing_bucket,
+                                    )),
+                                )
+                            })
+                    } else {
+                        read_bucket_index_value(
+                            cache,
+                            block_store,
+                            shard_id,
+                            shard,
+                            "hash",
+                            &key,
+                            Some(field.as_str()),
+                        )
+                    },
                 }
             })
         }
@@ -955,13 +1013,34 @@ pub(crate) fn execute_on_shard(
                 // the append stamps the ordinal into the record header AND onto the address it
                 // returns from the same value -- assigning it afterwards would leave the two
                 // disagreeing, which `decode_block_record` refuses as a page id mismatch.
-                let block_ordinal = crate::engine::state::container_page_ordinal(
-                    &shard.bucket_index,
-                    routing_bucket,
-                    "hash",
-                    &key,
-                    &field,
-                );
+                //
+                // UNDER ONE ENTRY A PAGE THE INDEX CANNOT SAY -- see `HashSet`'s identical gated
+                // branch for why, and why the question goes to `shard.hashes` instead.
+                let block_ordinal = if crate::engine::container_index_files_one_entry_a_page() {
+                    shard
+                        .hashes
+                        .get(&key)
+                        .and_then(|fields| fields.get(&field))
+                        .and_then(|address| address.block_id())
+                        .and_then(|held| u32::try_from(held).ok())
+                        .unwrap_or_else(|| {
+                            crate::engine::state::container_page_ordinal(
+                                &shard.bucket_index,
+                                routing_bucket,
+                                "hash",
+                                &key,
+                                &field,
+                            )
+                        })
+                } else {
+                    crate::engine::state::container_page_ordinal(
+                        &shard.bucket_index,
+                        routing_bucket,
+                        "hash",
+                        &key,
+                        &field,
+                    )
+                };
                 // The block STATES which field it is -- see `container_pages`. Built per entry
                 // because the frame carries the field, so one frame cannot stand for two.
                 let page =
@@ -1004,17 +1083,45 @@ pub(crate) fn execute_on_shard(
             increment,
         } => {
             remove_if_expired(shard, &key);
-            let current = read_bucket_index_value(
-                cache,
-                block_store,
-                shard_id,
-                shard,
-                "hash",
-                &key,
-                Some(field.as_str()),
-            )
-            .and_then(|bytes| parse_i64(&bytes))
-            .unwrap_or_default();
+            // UNDER ONE ENTRY A PAGE THE INDEX CANNOT NAME THIS FIELD, so the index-only read
+            // would miss a present counter through `unwrap_or_default()` and silently restart it
+            // at zero -- this is the one HASH surface among the four that WRITES on a miss, so
+            // the wrong answer is not just served, it is persisted. `shard.hashes` is durable and
+            // already the address `HashMultiGet`/the gated `HashGet` read a field from.
+            let current = if crate::engine::container_index_files_one_entry_a_page() {
+                shard
+                    .hashes
+                    .get(&key)
+                    .and_then(|fields| fields.get(&field))
+                    .and_then(|address| {
+                        read_block_bytes(
+                            cache,
+                            block_store,
+                            shard_id,
+                            address,
+                            PageIdentity::of(shard_id, "hash", &key, Some(field.as_str())),
+                            Some(block_routing_bucket(
+                                &key,
+                                start_routing_bucket,
+                                end_routing_bucket,
+                            )),
+                        )
+                    })
+                    .and_then(|bytes| parse_i64(&bytes))
+                    .unwrap_or_default()
+            } else {
+                read_bucket_index_value(
+                    cache,
+                    block_store,
+                    shard_id,
+                    shard,
+                    "hash",
+                    &key,
+                    Some(field.as_str()),
+                )
+                .and_then(|bytes| parse_i64(&bytes))
+                .unwrap_or_default()
+            };
             let value = current.saturating_add(increment);
             let routing_bucket =
                 block_routing_bucket(&key, start_routing_bucket, end_routing_bucket);
@@ -1022,13 +1129,34 @@ pub(crate) fn execute_on_shard(
             // the append stamps the ordinal into the record header AND onto the address it
             // returns from the same value -- assigning it afterwards would leave the two
             // disagreeing, which `decode_block_record` refuses as a page id mismatch.
-            let block_ordinal = crate::engine::state::container_page_ordinal(
-                &shard.bucket_index,
-                routing_bucket,
-                "hash",
-                &key,
-                &field,
-            );
+            //
+            // UNDER ONE ENTRY A PAGE THE INDEX CANNOT SAY -- see `HashSet`'s identical gated
+            // branch for why, and why the question goes to `shard.hashes` instead.
+            let block_ordinal = if crate::engine::container_index_files_one_entry_a_page() {
+                shard
+                    .hashes
+                    .get(&key)
+                    .and_then(|fields| fields.get(&field))
+                    .and_then(|address| address.block_id())
+                    .and_then(|held| u32::try_from(held).ok())
+                    .unwrap_or_else(|| {
+                        crate::engine::state::container_page_ordinal(
+                            &shard.bucket_index,
+                            routing_bucket,
+                            "hash",
+                            &key,
+                            &field,
+                        )
+                    })
+            } else {
+                crate::engine::state::container_page_ordinal(
+                    &shard.bucket_index,
+                    routing_bucket,
+                    "hash",
+                    &key,
+                    &field,
+                )
+            };
             // The block STATES which field it is -- see `container_pages`.
             let page = crate::engine::container_pages::single_element_page(
                 "hash",
@@ -1198,7 +1326,14 @@ pub(crate) fn execute_on_shard(
                 };
             }
             CommandResponse::Integer {
-                value: bucket_index_component_block_addresses(shard, "hash", &key).len() as i64,
+                // UNDER ONE ENTRY A PAGE THE INDEX NAMES NO FIELD, so a count of index entries is
+                // a count of PAGES, not fields -- a wrong number, not an empty answer. The
+                // resident map is durable and keyed by field, so it is the count under the gate.
+                value: if crate::engine::container_index_files_one_entry_a_page() {
+                    shard.hashes.get(&key).map(|fields| fields.len()).unwrap_or(0) as i64
+                } else {
+                    bucket_index_component_block_addresses(shard, "hash", &key).len() as i64
+                },
             }
         }
         Command::HashDelete { key, field } => {

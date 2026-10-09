@@ -473,3 +473,270 @@ fn the_gate_guard_restores_the_variable_even_when_an_assertion_panics() {
          attributed to an unrelated test"
     );
 }
+
+// =================================================================================================
+// HASH, THE SAME TWO FAILURES, DRIVEN THE SAME WAY -- BEFORE THIS, ZERO HASH MENTIONS HERE.
+// =================================================================================================
+//
+// The replay arm's hard requirement is the hash analogue of the set one named at the top of this
+// module: `apply_outcome_item`'s `"hash"` arm (`lifecycle.rs`) answers `false` when
+// `item.component` is `None`, and the caller treats that as a refusal that FAILS THE SHARD LOAD.
+// And `collect_upsert_index_items`' `"hash"` arm matches only `("hash", Some(field))`, falling to
+// `_ => None` otherwise -- a row that builds no item never reaches the index log.
+//
+// Neither fires, for the SAME reason the set case does not: both components are derived from the
+// COMMAND, not from the index entry. `command_upsert_components`'s `HashSet`/`HashMultiSet`/
+// `HashIncrBy` arms (`engine.rs`) take the field straight off the `Command`, and
+// `collect_upsert_index_items`'s `"hash"` arm resolves the address from `shard.hashes` -- the
+// resident map, not the bucket index. So the struct field and the record field are, again, two
+// different things that share a name, and collapsing the index entry's component does not reach
+// either record.
+//
+// That is a reading, same as it was for set, and this module exists because a reading is not
+// where hash's replay safety should rest. Driven below exactly the way set already is.
+//
+// ONE DIFFERENCE FROM THE SET CASE, WORTH BEING HONEST ABOUT: `index_entry_names_a_page`, the
+// single authority that decides whether a WRITTEN entry's component is actually suppressed to
+// `None`, lists only `set` and `list` today -- hash is not in it yet (steps 6-7 of this series,
+// held separately). So turning `TS_CONTAINER_ONE_ENTRY_A_PAGE` on does not, today, make a
+// `HashSet` write a component-less entry the way it already does for `SetAdd`. The test below
+// still drives the real mechanism -- `command_upsert_components` and `collect_upsert_index_items`
+// asked directly, under the gate -- which is independent of that allow-list and is exactly the
+// regression tripwire this series wants: if a later change made either function start consulting
+// the allow-list for hash, this is what would catch it before the allow-list itself ever moves.
+
+const HASH_KEY: &str = "replay-gate-hash";
+
+fn field_name(index: usize) -> String {
+    format!("field-{index:05}")
+}
+
+fn field_value(index: usize) -> Vec<u8> {
+    format!("value-{index:05}").into_bytes()
+}
+
+/// What REPLAY rebuilt, read from the durable map -- the hash analogue of `resident_members`.
+fn resident_hash_fields(engine: &TemporalEngine) -> BTreeSet<String> {
+    let shards = engine.shards.read().expect("engine lock poisoned");
+    let shard = shards.get(&1).expect("shard 1 is loaded");
+    shard
+        .hashes
+        .get(HASH_KEY)
+        .map(|fields| fields.iter().map(|(name, _)| name.clone()).collect())
+        .unwrap_or_default()
+}
+
+struct HashReplayArm {
+    load_ok: bool,
+    accepted: u64,
+    classified: u64,
+    resident: BTreeSet<String>,
+}
+
+/// Write `MEMBERS` fields with the gate in the given state, then reload WITHOUT an unload so the
+/// reload must replay. The hash analogue of `write_then_replay`.
+fn write_then_replay_hash(dir: &std::path::Path, gate_on: bool) -> HashReplayArm {
+    {
+        let engine = engine_with_cache(dir, "cache-writer-hash");
+        let _held = if gate_on { Some(GateHeldOn::on()) } else { None };
+        assert!(load_on(&engine).ok, "the fixture's first load failed");
+        for index in 0..MEMBERS {
+            let response = engine.execute(ExecuteRequest {
+                shard_id: 1,
+                command: Command::HashSet {
+                    key: HASH_KEY.to_string(),
+                    field: field_name(index),
+                    value: field_value(index),
+                },
+            });
+            assert!(response.status.ok, "write {index} failed: {response:?}");
+        }
+        assert_eq!(
+            MEMBERS,
+            resident_hash_fields(&engine).len(),
+            "the fixture does not hold its fields BEFORE the reload, so nothing below is about a \
+             replay"
+        );
+        // Deliberately NO unload, same reason as the set fixture above.
+    }
+
+    let _held = if gate_on { Some(GateHeldOn::on()) } else { None };
+    crate::engine::persistence::reset_index_load_path_counts();
+    let reloaded = engine_with_cache(dir, "cache-reloaded-hash");
+    let status = load_on(&reloaded);
+    let (accepted, refused_stale, absent, undecodable) =
+        crate::engine::persistence::index_load_path_counts();
+    let arm = HashReplayArm {
+        load_ok: status.ok,
+        accepted,
+        classified: accepted + refused_stale + absent + undecodable,
+        resident: if status.ok {
+            resident_hash_fields(&reloaded)
+        } else {
+            BTreeSet::new()
+        },
+    };
+    println!(
+        "  gate {}: load_ok={} accepted={accepted} refused_stale={refused_stale} absent={absent} \
+         undecodable={undecodable} resident={}",
+        if gate_on { "ON " } else { "OFF" },
+        arm.load_ok,
+        arm.resident.len(),
+    );
+    arm
+}
+
+/// rust-internal: drives a gate-on hash store back through replay and names every field
+#[test]
+fn a_gated_hash_write_reaches_the_log_and_every_field_comes_back_through_replay() {
+    let gated_dir = tempfile::tempdir().expect("tempdir");
+    let control_dir = tempfile::tempdir().expect("tempdir");
+
+    println!("\n=== a hash store written under the gate, brought back by replay ===");
+    let gated = write_then_replay_hash(gated_dir.path(), true);
+    let control = write_then_replay_hash(control_dir.path(), false);
+
+    for (label, arm) in [("gate on", &gated), ("control", &control)] {
+        assert!(
+            arm.classified > 0,
+            "{label}: the reload classified NO index load at all, so it never reached the index \
+             decision and the replay floor below would be satisfied by absence rather than by a \
+             replay"
+        );
+        assert_eq!(
+            0, arm.accepted,
+            "{label}: the reload ACCEPTED a persisted index (accepted={}, classified={}), so it \
+             never replayed and neither arm under test was reached",
+            arm.accepted, arm.classified
+        );
+    }
+
+    assert!(
+        gated.load_ok,
+        "THE SHARD DID NOT COME UP under the gate. `apply_outcome_item`'s hash arm answers `false` \
+         when it cannot rebuild a field -- `item.component` is `None` -- and the caller treats \
+         that as a refusal that fails the whole shard load"
+    );
+    assert!(
+        control.load_ok,
+        "the GATE-OFF control did not come up either, so this fixture is broken and says nothing \
+         about the gate"
+    );
+    assert_eq!(
+        MEMBERS,
+        control.resident.len(),
+        "the GATE-OFF control recovered {} of {MEMBERS} fields, so this fixture is not durable \
+         without an unload and a short gated arm below would be the fixture's fault rather than \
+         the gate's",
+        control.resident.len()
+    );
+
+    assert_eq!(
+        MEMBERS,
+        gated.resident.len(),
+        "{} of {MEMBERS} fields came back through replay under the gate, against {} for the \
+         gate-off control on the identical sequence",
+        gated.resident.len(),
+        control.resident.len()
+    );
+    for index in 0..MEMBERS {
+        assert!(
+            gated.resident.contains(&field_name(index)),
+            "field {index} did not come back through replay under the gate"
+        );
+    }
+    assert_eq!(
+        control.resident, gated.resident,
+        "the gate changed WHICH fields survive a replay, not merely how many"
+    );
+}
+
+/// rust-internal: asks the hash index-log item builder directly, mirroring the set version exactly
+#[test]
+fn the_gate_does_not_reach_the_component_the_hash_index_log_item_is_built_from() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let engine = engine_with_cache(dir.path(), "cache-direct-hash");
+    let _held = GateHeldOn::on();
+    assert!(load_on(&engine).ok, "the fixture's load failed");
+    for index in 0..MEMBERS {
+        let response = engine.execute(ExecuteRequest {
+            shard_id: 1,
+            command: Command::HashSet {
+                key: HASH_KEY.to_string(),
+                field: field_name(index),
+                value: field_value(index),
+            },
+        });
+        assert!(response.status.ok, "write {index} failed");
+    }
+
+    let shards = engine.shards.read().expect("engine lock poisoned");
+    let shard = shards.get(&1).expect("shard 1 is loaded");
+
+    // (1) THE MECHANISM: the component the log item is built from comes off the COMMAND for hash
+    //     too, so the collapsed index entry cannot reach it.
+    let command = Command::HashSet {
+        key: HASH_KEY.to_string(),
+        field: field_name(0),
+        value: field_value(0),
+    };
+    let named = crate::engine::command_upsert_components(&command, shard)
+        .expect("a hash set must name an upsert component");
+    println!("\n=== asked directly, under the gate (hash) ===");
+    println!("  command_upsert_components -> {named:?}");
+    assert_eq!(
+        1,
+        named.len(),
+        "a single hash set named {} components",
+        named.len()
+    );
+    let (kind, object_key, component) = named[0].clone();
+    assert_eq!("hash", kind, "the component is filed under {kind}");
+    assert_eq!(HASH_KEY, object_key.as_str(), "it names object {object_key}");
+    let component = component.expect(
+        "THE GATE REACHED THE RECORD. `command_upsert_components` no longer names a component for \
+         a hash set, so `collect_upsert_index_items` would fall to its `_ => None` arm, build no \
+         item, and the write would never reach the index log",
+    );
+    assert_eq!(
+        field_name(0),
+        component,
+        "the component is spelled {component}, not the field name `command_upsert_components` \
+         should have taken straight off the command"
+    );
+
+    // (2) GIVEN WHAT THE REAL CALLER GIVES IT, an item is built.
+    let with_component = crate::engine::collect_upsert_index_items(
+        shard,
+        1,
+        &[("hash", HASH_KEY.to_string(), Some(component.clone()))],
+        0,
+        1023,
+    );
+    println!("  with the command's component -> {} item(s)", with_component.len());
+
+    // (3) THE NEGATIVE CONTROL: the same call with no component builds NOTHING.
+    let without_component = crate::engine::collect_upsert_index_items(
+        shard,
+        1,
+        &[("hash", HASH_KEY.to_string(), None)],
+        0,
+        1023,
+    );
+    println!("  with no component    -> {} item(s)", without_component.len());
+
+    assert_eq!(
+        1,
+        with_component.len(),
+        "the builder made {} items for one component, so the counts below are not comparable",
+        with_component.len()
+    );
+    assert!(
+        without_component.is_empty(),
+        "THE NEGATIVE CONTROL DID NOT HOLD: a (\"hash\", None) component built {} item(s), so the \
+         `_ => None` fallthrough no longer drops the row and the mechanism asserted above is no \
+         longer what protects the index log. If a later step gave the builder a page-named arm, \
+         THIS is the assertion to change -- deliberately, saying so",
+        without_component.len()
+    );
+}
