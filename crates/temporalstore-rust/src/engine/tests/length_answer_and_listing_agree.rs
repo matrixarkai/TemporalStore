@@ -801,18 +801,10 @@ fn the_two_sources_of_a_hash_length_part_on_the_pre_carry_route_and_a_reload_res
     let parted = four_answers(&engine, KEY);
     parted.print("container left short, as the route leaves it");
 
-    // THE COMMANDS DO NOT MOVE, because both of them read the index.
-    parted.assert_commands_agree(
-        "with the container short: the length and the listing must still agree with each other -- \
-         that is this module's contract and it must hold through this route",
-    );
-    assert_eq!(
-        APPENDED as i64, parted.length_command,
-        "the length command answered {} rather than {APPENDED} with only the CONTAINER short. It \
-         resolves through the bucket index, so a short container must not reach it; if this moved, \
-         the reader has already been flipped and the assertion below is the one to read",
-        parted.length_command,
-    );
+    // THE COMMANDS PART ON THIS ROUTE TOO, now that one of the two readers has moved -- and that is
+    // asserted BELOW rather than here, after the two sources have been pinned, because it is the
+    // distance between the sources that gives each answer its meaning. See the block under
+    // `[sources part]`.
 
     // AND THE CONTAINER ALONE IS SHORT. This is the measured reason a reader cannot simply move.
     assert_eq!(
@@ -835,11 +827,52 @@ fn the_two_sources_of_a_hash_length_part_on_the_pre_carry_route_and_a_reload_res
          and this test should say so -- or the removal did not happen. Both are worth knowing."
     );
     println!(
-        "  [sources part] container {} vs index {} -- a length reading the CONTAINER here would \
-         under-report by {}",
+        "  [sources part] container {} vs index {} -- the length reads the CONTAINER under the \
+         gate, so it under-reports by {} for as long as this state stands",
         parted.container,
         parted.index,
         parted.index - parted.container,
+    );
+
+    // AND EACH COMMAND IS PINNED TO THE SOURCE IT READS. This is what the stage above makes
+    // possible: the two sources hold DIFFERENT numbers at this instant, so an answer equal to one
+    // of them and not the other names the structure the command went to. Neither of these is a
+    // self-read -- the expectation is the OTHER source's number, not a stamp taken from the
+    // accessor under test.
+    //
+    // THIS REPLACES THE CLAIM THAT THE COMMANDS DO NOT MOVE. That claim -- "both of them read the
+    // index" -- was true when this test was written, and it is the half of it the reader move
+    // retired. Under `container_index_files_one_entry_a_page`, `HashLen` answers from
+    // `shard.hashes.get(&key).map(|fields| fields.len())`, so on this route it tracks the
+    // container; `HashGetAll` serves the union of the container and the page index and is
+    // untouched, so it tracks the index. The header above predicted this outright -- "a `HashLen`
+    // reading the container at that moment would under-report" -- so the prediction is restated
+    // here as the measurement it became, rather than relaxed into a looser number.
+    //
+    // AND THE MODULE CONTRACT IS NOT WEAKENED BY SAYING SO. `assert_count_matches_listing` holds
+    // wherever the two sources hold the same number, which is every state a request can be served
+    // on: this one exists between `fold_index_log_deltas` and
+    // `reconcile_secondary_views_from_bucket_index`, both inside `load_shard_with` and both before
+    // the shard is installed, which is why the fixture has to reach it by mutating the resident map
+    // directly. The reload stage below is what carries that, and it is load-bearing now rather than
+    // a coda: it is the only thing standing between a moved reader and an under-report for the life
+    // of the shard.
+    assert_eq!(
+        parted.container as i64, parted.length_command,
+        "the length command answered {} with the container holding {} and the index {}. Under the \
+         gate it reads `shard.hashes`, so on this route it must answer the CONTAINER's number -- \
+         the index's number means the gated branch was not taken and this stage is measuring the \
+         engine as it was before the reader moved",
+        parted.length_command, parted.container, parted.index,
+    );
+    assert_eq!(
+        parted.index, parted.listing_command,
+        "the listing returned {} elements with the index holding {} and the container {}. \
+         `HashGetAll` serves the union of the two and this change does not touch it, so with the \
+         container a strict subset of the index it must still return the INDEX's number; the \
+         container's number would mean the listing moved too and nothing here is pinning either \
+         command to a source any more",
+        parted.listing_command, parted.index, parted.container,
     );
 
     // ---------------------------------------------------------------------------------------------
