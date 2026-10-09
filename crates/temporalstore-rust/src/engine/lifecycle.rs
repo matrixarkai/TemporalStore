@@ -1491,12 +1491,11 @@ impl TemporalEngine {
                             .lists
                             .replay_remove_element(&item.object_key, &sequence);
                     }
+                    // THE SCORE HALF IS GONE FROM THIS STRING -- a removal never needed it for
+                    // anything beyond finding the member to drop, which is still all this arm
+                    // does.
                     ("zset", Some(encoded)) => {
-                        if encoded.len() < 16 {
-                            return false;
-                        }
-                        let (_score_hex, member_hex) = encoded.split_at(16);
-                        let Ok(member) = hex::decode(member_hex) else {
+                        let Ok(member) = hex::decode(encoded) else {
                             return false;
                         };
                         shard
@@ -1674,19 +1673,26 @@ impl TemporalEngine {
                 );
                 true
             }
-            // zset: sixteen hex digits of the biased score, then the member in hex.
+            // zset: the member in hex. THE SCORE NO LONGER RIDES THE COMPONENT -- it rides
+            // `item.value`, eight big-endian bytes, which `RecordedKind::outcome_value` is the
+            // only producer of. There is no fallback to a score-shaped component: a record this
+            // old does not exist, because this replay arm and the writer that feeds it moved in
+            // the same change, and a value-less zset insert outcome is therefore always a replay
+            // this arm cannot recover -- refuse rather than install a wrong score.
             "zset" => {
                 let (Some(address), Some(component)) =
                     (item.resolved_address(), item.component.clone())
                 else {
                     return false;
                 };
-                if component.len() < 16 {
+                let Ok(member) = hex::decode(&component) else {
                     return false;
-                }
-                let (score_hex, member_hex) = component.split_at(16);
-                let (Ok(biased), Ok(member)) =
-                    (u64::from_str_radix(score_hex, 16), hex::decode(member_hex))
+                };
+                let Some(biased) = item
+                    .value
+                    .as_deref()
+                    .and_then(|bytes| <[u8; 8]>::try_from(bytes).ok())
+                    .map(u64::from_be_bytes)
                 else {
                     return false;
                 };

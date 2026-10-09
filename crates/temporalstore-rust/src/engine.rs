@@ -2497,7 +2497,19 @@ pub(crate) fn eager_cache_warm_on_load() -> bool {
 /// equality with the constant, never ordered or ranged". `engine::decode_index_bytes` does compare
 /// with `!=` -- but only in its MSGPACK arm, and `persistence.rs` compares with `<`. #2051 tracks
 /// that asymmetry and the decision it needs; nothing here depends on the equality claim.
-pub(super) const SHARD_INDEX_FORMAT_VERSION: u32 = 8;
+///
+/// 8 -> 9 WHEN A ZSET COMPONENT STOPPED SPELLING THE SCORE. `state::block_index_written_key`
+/// renders `component` into the map key the served index is serialized under, and a zset entry's
+/// `component` moved from `{biased:016x}` then the member in hex to the member alone -- so a page
+/// that used to render `"0000000000000000<member>"` now renders `"<member>"`, a different key under
+/// the same named map. The decode itself stays clean either way: `component` keeps its `String`
+/// type on both sides of the change, so an old-stamped index still deserializes, and what disagrees
+/// is what the text MEANS, on the recovery path that reads it back as a page's element -- the same
+/// shape the three bumps above this one each describe. The positional index log is untouched: it
+/// keeps its slot and refuses only on length mismatch, so nothing there needed a bump to stay
+/// correct. `wal_proto` is untouched too -- the score rides the WAL outcome's existing `value` byte
+/// slot now, never the component, and that slot's presence was already optional on the wire.
+pub(super) const SHARD_INDEX_FORMAT_VERSION: u32 = 9;
 
 /// Serialize a shard index, stamping the current format version.
 ///
@@ -3117,13 +3129,10 @@ fn command_upsert_components(
         // A zset add writes exactly one component, and it is derivable from the command. Declaring
         // it takes the O(1) delta path; without it the record snapshots every block of the object,
         // which cost 4 allocations per member already present.
-        Command::ZSetAdd { key, member, score } => Some(vec![(
+        Command::ZSetAdd { key, member, score: _ } => Some(vec![(
             "zset",
             key.clone(),
-            Some(crate::engine::execute_on_shard::zset_component(
-                crate::engine::execute_on_shard::zset_score_bits(*score),
-                member,
-            )),
+            Some(crate::engine::execute_on_shard::zset_component(member)),
         )]),
         Command::SetAdd { key, member } => {
             Some(vec![("set", key.clone(), Some(hex::encode(member)))])
@@ -3170,11 +3179,10 @@ fn collect_upsert_index_items(
                 .and_then(|fields| fields.get(field))
                 .cloned(),
             ("string", None) => shard.strings.get(object_key.as_str()).cloned(),
-            // `zset_component` is `{biased:016x}` followed by hex(member), so the member the map is
-            // keyed by is recoverable from the component it was filed under.
-            ("zset", Some(component)) => component
-                .get(16..)
-                .and_then(|member_hex| hex::decode(member_hex).ok())
+            // `zset_component` is `hex::encode(member)` -- the score no longer rides this string
+            // -- so the member the map is keyed by is recoverable from the whole of it.
+            ("zset", Some(component)) => hex::decode(component)
+                .ok()
                 .and_then(|member| {
                     shard
                         .zsets

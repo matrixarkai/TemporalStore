@@ -4,7 +4,7 @@
 //! WHAT ONE BLOCK PER CONTAINER MEMBER COSTS, AND WHY A PACKED MEMBER BUFFER IS NOT THE LEVER.
 //!
 //! A container in this engine gives every member its own page. A zset member becomes a page whose
-//! component name is `zset_component(biased, member)`, a set member's is `hex::encode(member)`, a
+//! component name is `zset_component(member)`, a set member's is `hex::encode(member)`, a
 //! list element's is the biased sequence in hex. Each page gets a `BlockIndex` in the routing
 //! bucket's page index, an entry in the object/component lookup, and an outcome staged for the
 //! index log. So a hundred-member container is a hundred page entries under one object key -- and
@@ -464,14 +464,17 @@ fn every_byte_of_a_zset_members_index_shadow_is_accounted_for() {
 // 2. THE COMPONENT NAME, AND HOW MUCH OF IT IS SPELLING
 // =============================================================================================
 
-/// A ZSET COMPONENT NAME SPELLS EXACTLY HALF ITS BYTES, AT EVERY MEMBER WIDTH.
+/// A ZSET COMPONENT NAME SPELLS EXACTLY HALF ITS BYTES, AT EVERY MEMBER WIDTH -- STILL, AFTER THE
+/// SCORE LEFT IT, BECAUSE THE PROPERTY WAS NEVER ABOUT THE SCORE.
 ///
-/// `zset_component(biased, member)` is `format!("{biased:016x}{}", hex::encode(member))`: sixteen
-/// hex digits for an eight-byte number, then two hex digits per member byte. So a name of a
-/// `W`-byte member is `16 + 2W` bytes carrying `8 + W` bytes of information, and the ratio is
-/// one half for every `W` -- the fixed score prefix doubles at the same rate the member does, so
-/// there is no width at which the spelling washes out. A twenty-byte member is the figure this
-/// module is quoted at: a 56-byte name where 28 bytes carry the same information.
+/// `zset_component(member)` is `hex::encode(member)` now: two hex digits per member byte and
+/// nothing else, where it used to be sixteen hex digits of score then two per member byte. Hex
+/// encoding doubles ANY input, so a name of a `W`-byte member is `2W` bytes carrying `W` bytes of
+/// information at every width -- the same one-half fraction the score-carrying form had, because
+/// that form was also pure hex of a fixed input size (`8 + W` bytes) and a hex doubling is one
+/// half spelling by construction, with or without a score folded into what it is hex of. What
+/// moved is the DENOMINATOR, not the fraction: a twenty-byte member's name was 56 bytes carrying
+/// 28 bytes of information: it is 40 bytes carrying 20 now.
 ///
 /// TWO DENOMINATORS, AND THEY ANSWER DIFFERENT QUESTIONS. "Half of a zset name is spelling" is
 /// per NAME and is exact. "What share of all component text in a store is hex at all" is per
@@ -491,11 +494,11 @@ fn a_zset_component_name_spells_exactly_half_its_bytes_in_hex_at_every_member_wi
     let mut fractions: Vec<f64> = Vec::new();
     for width in [1usize, 4, 8, 16, MEMBER_WIDTH, 32, 64, 256] {
         let member = vec![0xABu8; width];
-        let name = zset_component(0x0123_4567_89AB_CDEF, &member);
-        let information = 8 + width;
+        let name = zset_component(&member);
+        let information = width;
         assert_eq!(
             name.len(),
-            16 + 2 * width,
+            2 * width,
             "the zset component spelling moved at width {width}"
         );
         let fraction = (name.len() - information) as f64 / name.len() as f64;
@@ -513,9 +516,9 @@ fn a_zset_component_name_spells_exactly_half_its_bytes_in_hex_at_every_member_wi
         );
     }
     // At MEMBER_WIDTH, the figure this module is quoted at, spelled out.
-    let quoted = zset_component(0, &vec![0u8; MEMBER_WIDTH]);
-    assert_eq!(quoted.len(), 56, "a 20-byte member's name is 56 bytes");
-    assert_eq!(8 + MEMBER_WIDTH, 28, "and 28 bytes carry the same information");
+    let quoted = zset_component(&vec![0u8; MEMBER_WIDTH]);
+    assert_eq!(quoted.len(), 40, "a 20-byte member's name is 40 bytes now the score is gone");
+    assert_eq!(MEMBER_WIDTH, 20, "and 20 bytes carry the same information");
 
     // THE NEGATIVE CONTROL: the decimal producer is not a doubling and must not read as one.
     let decimal = crate::engine::packed_pages::timestamped_component(u64::MAX, None);
@@ -540,9 +543,15 @@ fn a_zset_component_name_spells_exactly_half_its_bytes_in_hex_at_every_member_wi
 /// A ZSET ELEMENT PAGE HOLDS EXACTLY WHAT ITS COMPONENT NAME ALREADY SPELLS.
 ///
 /// The write path stores the member as the page (`append_value(.., &member, ..)`) and names the
-/// page with the score and the same member in hex. This decodes every component in a seeded shard
-/// back to `(score, member)` and asserts the pair against `shard.zsets` -- so "the payload is a
-/// second copy" is a byte-level fact about a real shard, not an inference from one call site.
+/// page with the same member in hex. This decodes every component in a seeded shard back to a
+/// member and asserts the set against `shard.zsets`'s own members -- so "the payload is a second
+/// copy" is a byte-level fact about a real shard, not an inference from one call site.
+///
+/// RESTATED: the component used to spell `(score, member)` and this asserted the pair; it spells
+/// the member alone now, and the score is `shard.zsets`'s own value rather than something the
+/// component and the model map could be compared against each other for. What stays provable at
+/// byte level -- the thing the title claims -- is the member half: the page's name still names
+/// nothing the model map does not also hold.
 ///
 /// IT ALSO ASSERTS THE POPULATION IT CLAIMS: every container key present, every member of every
 /// key covered, and a page count equal to keys x members. A decode loop over an empty index
@@ -566,17 +575,10 @@ fn a_zset_element_page_holds_exactly_what_its_component_name_already_spells() {
         MEMBERS
     );
 
-    let mut decoded_per_key: BTreeMap<String, BTreeMap<Vec<u8>, u64>> = BTreeMap::new();
+    let mut decoded_per_key: BTreeMap<String, BTreeSet<Vec<u8>>> = BTreeMap::new();
     let mut stored_lengths: BTreeSet<usize> = BTreeSet::new();
     for page in &pages {
-        assert!(
-            page.component.len() >= 16,
-            "a zset component shorter than its score prefix: {:?}",
-            page.component
-        );
-        let (score_hex, member_hex) = page.component.split_at(16);
-        let biased = u64::from_str_radix(score_hex, 16).expect("the score prefix is hex");
-        let member = hex::decode(member_hex).expect("the member suffix is hex");
+        let member = hex::decode(&page.component).expect("the component is hex of the member");
         assert_eq!(
             member.len(),
             MEMBER_WIDTH,
@@ -585,7 +587,7 @@ fn a_zset_element_page_holds_exactly_what_its_component_name_already_spells() {
         decoded_per_key
             .entry(page.object_key.clone())
             .or_default()
-            .insert(member, biased);
+            .insert(member);
         stored_lengths.insert(page.address.length() as usize);
     }
 
@@ -626,10 +628,11 @@ fn a_zset_element_page_holds_exactly_what_its_component_name_already_spells() {
             model.len(), MEMBERS,
             "the model map does not hold the population claimed for {key}"
         );
+        let model_members_only: BTreeSet<Vec<u8>> = model.keys().cloned().collect();
         assert_eq!(
-            decoded, &model,
-            "the component names of {key} do not decode to what the model map holds -- the \
-             component is NOT a second copy of the member and score after all"
+            decoded, &model_members_only,
+            "the component names of {key} do not decode to the members the model map holds -- \
+             the component is NOT a second copy of the member after all"
         );
         covered += model.len();
     }
@@ -640,8 +643,9 @@ fn a_zset_element_page_holds_exactly_what_its_component_name_already_spells() {
         CONTAINER_KEYS * MEMBERS
     );
     println!(
-        "{covered} members over {CONTAINER_KEYS} keys: every component name decodes to the (score, \
-         member) pair the model map holds, and every page stores the same member again"
+        "{covered} members over {CONTAINER_KEYS} keys: every component name decodes to the member \
+         the model map holds, and every page stores the same member again -- the score lives in \
+         the model map alone now"
     );
 }
 
@@ -1065,10 +1069,7 @@ fn what_one_more_member_rewrites_against_what_one_packed_buffer_would() {
         .iter()
         .filter(|page| {
             page.object_key == key
-                && page.component == zset_component(
-                    crate::engine::execute_on_shard::zset_score_bits((MEMBERS + 1) as f64),
-                    &member_bytes(0, MEMBERS + 1),
-                )
+                && page.component == zset_component(&member_bytes(0, MEMBERS + 1))
         })
         .collect();
     assert_eq!(added.len(), 1, "the new member's page is not identifiable in the index");

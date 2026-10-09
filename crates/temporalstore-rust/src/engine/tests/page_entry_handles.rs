@@ -2146,9 +2146,14 @@ fn nested_level(components: usize) -> (ObjectBlockRefs, usize) {
     let mut refs = ObjectBlockRefs::default();
     let mut heap = 0usize;
     for index in 0..components {
-        // The name the engine would actually hold: a zset component is 16 hex characters for the
-        // biased score plus twice the member's bytes.
-        let name: Arc<str> = Arc::from(format!("{index:016x}{}", hex::encode(b"member-0000000000")).as_str());
+        // The name the engine would actually hold: a zset component is twice the member's bytes,
+        // hex, and nothing else now -- the score left this string. The member varies by `index`
+        // (not a constant, the way the retired score-prefixed form let it be) so that `components`
+        // distinct entries are still what gets measured at `components` > 1; it is sized to match
+        // the retired fixture's per-entry length so this measurement's absolute numbers move only
+        // by the sixteen score characters this change removes, not by an unrelated length change.
+        let member = format!("member-{index:010}");
+        let name: Arc<str> = Arc::from(hex::encode(member.as_bytes()).as_str());
         heap += name.len() + ARC_HEADER_BYTES;
         let entry = ComponentBlocks {
             component: Some(name),

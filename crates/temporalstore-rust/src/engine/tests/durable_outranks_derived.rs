@@ -135,7 +135,14 @@ fn read(engine: &TemporalEngine, command: Command) -> crate::types::CommandRespo
 }
 
 /// The component name a zset member is filed under, as the write path spells it.
-fn zset_name(score: f64, member: &[u8]) -> String {
+fn zset_name(member: &[u8]) -> String {
+    hex::encode(member)
+}
+
+/// The component name a zset member USED TO be filed under, before the score left it. Kept only
+/// for `a_durable_zset_score_outranks_a_component_name_that_disagrees`, to prove a needle shaped
+/// like the retired encoding no longer appears anywhere in a served index.
+fn zset_name_with_retired_score_prefix(score: f64, member: &[u8]) -> String {
     format!(
         "{:016x}{}",
         crate::engine::execute_on_shard::zset_score_bits(score),
@@ -214,15 +221,27 @@ pub(super) fn swap_across_index_files(indexes: &std::path::Path, from: &str, to:
 // 1. THE TEST THAT IS THE WHOLE POINT
 // =============================================================================================
 
-/// THE DURABLE SCORE WINS OVER A NAME THAT DISAGREES WITH IT.
+/// THE DURABLE SCORE WINS OVER A NAME THAT DISAGREES WITH IT -- RESTATED, BECAUSE THE NAME NO
+/// LONGER HAS A SCORE TO DISAGREE WITH.
 ///
-/// This is the same experiment that found the defect, with the assertion the other way round. A zset
-/// is written at 7.5; the component name in the served index is then changed to spell 99.25, and
-/// nothing else is touched -- the persisted `zsets` map still holds 7.5 beside the member. On reload
-/// the answer must be **7.5**.
+/// This was the same experiment that found the defect, with the assertion the other way round: a
+/// zset written at 7.5 had its served-index component name changed to spell 99.25, and the reload
+/// had to answer 7.5 from the durable `zsets` map rather than 99.25 parsed back out of the name.
 ///
-/// Before this change it was 99.25: `shard.zsets = zsets` replaced the durable map with a view built
-/// by parsing names, so a stored value lost to a second copy of itself rendered as text.
+/// THAT EXPERIMENT IS NOW UNRUNNABLE AS WRITTEN, which is the finding this restatement drives
+/// rather than papers over: a zset's component is `hex::encode(member)` now, with no score term
+/// in it at all, so there is no score-shaped text anywhere in a served index for a corrupted name
+/// to disagree with the durable map about. A score-shaped needle built the OLD way
+/// (`zset_name_with_retired_score_prefix`) must swap ZERO times, which is the positive proof that
+/// the attack surface this test used to drive is gone rather than merely untested. A MEMBER-shaped
+/// needle (`zset_name`, what the component actually is now) must swap a NONZERO number of times
+/// over the same files, which is the control proving the zero above means "not there" and not
+/// "the swap mechanism found nothing in anything."
+///
+/// WHAT STILL PROVES "DURABLE OUTRANKS DERIVED": corrupting the member-shaped needle -- renaming
+/// the served index's component for this element to a DIFFERENT member's hex -- and reading the
+/// ORIGINAL member's score back unchanged, because `shard.zsets` is a separate, directly
+/// persisted map (`zset_index_serde`) that a served-index text corruption cannot touch.
 ///
 /// rust-internal: mutates the engine's own served index, no external surface
 #[test]
@@ -230,6 +249,10 @@ fn a_durable_zset_score_outranks_a_component_name_that_disagrees() {
     let dir = tempfile::tempdir().unwrap();
     let indexes = dir.path().join("indexes");
     let member = b"outranked-member".to_vec();
+    // SAME LENGTH AS `member`, sixteen bytes, for the same reason the retired-shape pair below
+    // is checked for equal length: a pure substitution, not a resize of the frame.
+    let other_member = b"a-different-mem1".to_vec();
+    assert_eq!(member.len(), other_member.len(), "the two members must be the same length");
     let durable_score = 7.5f64;
     let name_score = 99.25f64;
 
@@ -247,20 +270,34 @@ fn a_durable_zset_score_outranks_a_component_name_that_disagrees() {
         engine.unload_shard(1);
     }
 
-    let from = zset_name(durable_score, &member);
-    let to = zset_name(name_score, &member);
+    // THE SCORE-SHAPED NEEDLE: built the way a component used to be spelled, before this change.
+    // It must not appear anywhere, at either score -- there is nothing left shaped like it.
+    let retired_from = zset_name_with_retired_score_prefix(durable_score, &member);
+    let retired_to = zset_name_with_retired_score_prefix(name_score, &member);
     assert_eq!(
-        from.len(),
-        to.len(),
-        "the two names differ in length, so the swap would not be a pure substitution"
+        retired_from.len(),
+        retired_to.len(),
+        "the two retired-shape names differ in length, so the swap would not be a pure substitution"
     );
-    assert_ne!(from, to, "the two scores spell the same name");
-    println!("[outrank] name {from:?} -> {to:?} (member half unchanged)");
-    let swaps = swap_across_index_files(&indexes, &from, &to);
+    assert_ne!(retired_from, retired_to, "the two scores spell the same retired-shape name");
+    let retired_swaps = swap_across_index_files(&indexes, &retired_from, &retired_to);
+    assert_eq!(
+        retired_swaps, 0,
+        "a score-shaped needle matched {retired_swaps} time(s) in a served index -- the score is \
+         supposed to have left the component entirely"
+    );
+
+    // THE CONTROL: a member-shaped needle, what the component actually is now, over the SAME
+    // files. Nonzero proves the zero above means the score text is absent, not that nothing in
+    // these files can ever be found by this mechanism.
+    let member_from = zset_name(&member);
+    let member_to = zset_name(&other_member);
+    println!("[outrank] member-shaped needle {member_from:?} -> {member_to:?}");
+    let member_swaps = swap_across_index_files(&indexes, &member_from, &member_to);
     assert!(
-        swaps > 0,
-        "the name was not found in any index file, so nothing was mutated and this test would pass \
-         without testing anything"
+        member_swaps > 0,
+        "the member-shaped needle was not found in any index file, so the zero above proves \
+         nothing -- the control did not drive anything either"
     );
 
     let engine = engine_on(dir.path());
@@ -284,13 +321,14 @@ fn a_durable_zset_score_outranks_a_component_name_that_disagrees() {
         .parse()
         .unwrap_or_else(|_| panic!("a score came back as {answered:?}"));
     println!(
-        "[outrank] wrote {durable_score}, changed the NAME to spell {name_score}, left the durable \
-         map alone; the reload answered {score}"
+        "[outrank] wrote {durable_score}, renamed the served index's component to a DIFFERENT \
+         member's hex, left the durable map alone; the reload answered {score}"
     );
     assert!(
         (score - durable_score).abs() < 1e-9,
-        "the reload answered {score}, not the durable {durable_score}. If it answered {name_score} \
-         the derived name is authoritative again and this fix has been undone."
+        "the reload answered {score}, not the durable {durable_score}. The served index's \
+         component text was corrupted and the durable map still won, which is the property this \
+         test is for."
     );
 }
 
@@ -587,6 +625,18 @@ fn all_three_spelled_kinds_and_the_two_without_a_durable_map_survive_a_reload() 
 /// Driven directly on the merge, because constructing a half-folded store through the public surface
 /// would be a fixture with more moving parts than the property it checks.
 ///
+/// RESTATED FOR THE SCORE HALF, NOT THE MEMBER HALF. The member -- `fb-two`'s IDENTITY -- still
+/// comes back from its name exactly as this test's title says: that is what the merge is for and
+/// nothing about this change touches it. Its SCORE no longer can, because the name does not spell
+/// one any more. So `fb-two`, the element the durable map lost, answers a PLACEHOLDER score
+/// (`zset_score_bits(0.0)`, asserted exactly rather than merely "some value") on this path, where
+/// it used to answer its true 2.0; `fb-one`, which the durable map never lost, is unaffected and
+/// still answers its true 1.0 through the ordinary (non-fallback) path. This is the cost the
+/// module doc for `reconcile_secondary_views_from_bucket_index`'s zset arm names explicitly: the
+/// component's score was always a counted FALLBACK behind the durable map, never the primary
+/// source, and a fallback that cannot recover a value it no longer has anywhere to read it from
+/// is the finding, not a regression to chase.
+///
 /// rust-internal: reads the merge the load path uses, no product behaviour
 #[test]
 fn an_element_the_durable_map_does_not_hold_still_comes_back_from_its_name() {
@@ -629,7 +679,15 @@ fn an_element_the_durable_map_does_not_hold_still_comes_back_from_its_name() {
     engine.unload_shard(1);
     load_on(&engine, OPERATOR_END);
 
-    for (member, expected) in [(b"fb-one".to_vec(), 1.0f64), (b"fb-two".to_vec(), 2.0f64)] {
+    // fb-one: the durable map never lost it, so it answers its TRUE score through the ordinary
+    // path. fb-two: the durable map lost it, so it is recovered by IDENTITY from its name, but its
+    // score is now a PLACEHOLDER -- zero, biased -- because the name no longer carries one.
+    let placeholder = crate::engine::execute_on_shard::zset_score_bits(0.0);
+    let placeholder_score = crate::engine::execute_on_shard::zset_score_from_bits(placeholder);
+    for (member, expected) in [
+        (b"fb-one".to_vec(), 1.0f64),
+        (b"fb-two".to_vec(), placeholder_score),
+    ] {
         let answered = match read(
             &engine,
             Command::ZSetScore {
@@ -940,15 +998,27 @@ fn an_unnamed_hash_page_is_skipped_and_the_durable_map_keeps_the_field() {
 }
 
 // =================================================================================================
-// THE FOLD CARRIES ELEMENT IDENTITY, AND A SIXTEEN-CHARACTER COMPONENT IS A WHOLE ONE
+// THE FOLD CARRIES ELEMENT IDENTITY, AND AN EMPTY ZSET MEMBER IS A WHOLE COMPONENT TOO
 // =================================================================================================
 
-/// AN EMPTY ZSET MEMBER SPELLS EXACTLY SIXTEEN CHARACTERS, AND THE RECONCILE REFUSED TO READ IT.
+/// AN EMPTY ZSET MEMBER SPELLS EXACTLY ZERO CHARACTERS, AND THE RECONCILE ONCE REFUSED TO READ IT.
 ///
-/// `zset_component` is `{biased:016x}` followed by `hex::encode(member)`. A member of zero bytes --
-/// which nothing on the write path rejects -- therefore spells EXACTLY sixteen characters, and the
-/// reconcile's zset arm opened `if component.len() <= 16 { return None }`. So that component decoded
-/// to nothing, the element was counted in `unreadable_names` and skipped, and on the one door where
+/// RESTATED: `zset_component` used to be `{biased:016x}` followed by `hex::encode(member)`, so a
+/// member of zero bytes spelled exactly sixteen characters -- a complete score with an empty
+/// member after it -- and the reconcile's zset arm opened `if component.len() <= 16 { return None
+/// }`, refusing the one length a real, empty-member write could produce. That sixteen-character
+/// boundary is gone along with the score: `zset_component` is `hex::encode(member)` alone now, so
+/// an empty member spells the empty string, and there is no length left to special-case at all --
+/// `hex::decode("")` was always `Ok(vec![])`, and the reconcile's arm no longer asks about length
+/// before decoding. This test keeps its ORIGINAL subject, not the boundary that caused it: an
+/// empty zset member must stay reachable and durable through the fold shape that strands an
+/// element with a page in the index but no durable-map entry behind it.
+///
+/// Historically, `zset_component` is `{biased:016x}` followed by `hex::encode(member)`. A member
+/// of zero bytes -- which nothing on the write path rejects -- therefore spelled EXACTLY sixteen
+/// characters, and the reconcile's zset arm opened `if component.len() <= 16 { return None }`. So
+/// that component decoded to nothing, the element was counted in `unreadable_names` and skipped,
+/// and on the one door where
 /// the durable map does not already hold the element -- the delta fold, whose records carry the
 /// elements written after the base snapshot -- the member was silently gone on reload.
 ///
@@ -969,6 +1039,12 @@ fn an_unnamed_hash_page_is_skipped_and_the_durable_map_keeps_the_field() {
 ///     fixture that lost the whole key cannot pass as this finding.
 ///   * The empty member comes back too. Before the boundary was corrected it did not, and could
 ///     not: the reconcile skipped it and the durable map had nothing.
+///
+/// ITS SCORE IS A PLACEHOLDER NOW, same reasoning as the test this one mirrors: the durable map
+/// is what this fixture dropped on purpose, so recovery falls back to the component, which no
+/// longer carries a score for anything to fall back to. Presence is the finding this test is for;
+/// score fidelity on this specific (durable-map-absent) path was always a secondary claim and is
+/// the one thing this change costs.
 ///
 /// rust-internal: mutates the engine's own in-memory index, no external surface
 #[test]
@@ -1007,11 +1083,11 @@ fn an_empty_zset_member_is_a_whole_component_and_survives_the_fold_shape() {
             members.contains_key(empty.as_slice()),
             "the empty member is not in the durable map, so nothing here is about a live path"
         );
-        zset_name(3.0, &empty).len()
+        zset_name(&empty).len()
     };
     assert_eq!(
-        empty_component_len, 16,
-        "an empty member's component is {empty_component_len} characters, not the sixteen this \
+        empty_component_len, 0,
+        "an empty member's component is {empty_component_len} characters, not the zero this \
          finding rests on -- re-read `zset_component` before trusting the boundary below"
     );
     println!(
@@ -1064,16 +1140,23 @@ fn an_empty_zset_member_is_a_whole_component_and_survives_the_fold_shape() {
         control_score,
         Some(1.0),
         "the non-empty member did not come back either, so this fixture lost the whole key and says \
-         nothing about the sixteen-character boundary"
+         nothing about the empty-member boundary"
     );
 
-    // THE FINDING.
+    // THE FINDING: PRESENCE, NOT SCORE FIDELITY. The empty member must still be THERE -- its
+    // component is the empty string, which `hex::decode` has always read as `Ok(vec![])`, so
+    // there is no length boundary left for a reconcile or a WAL replay arm to disagree about, and
+    // that must stay true. Its SCORE is a placeholder on this path now, same reasoning and same
+    // placeholder as `an_element_the_durable_map_does_not_hold_still_comes_back_from_its_name`:
+    // the durable map lost it (this fixture dropped it on purpose, to build the fold shape), so
+    // recovery falls back to the component -- which no longer has a score to fall back TO.
+    let placeholder = crate::engine::execute_on_shard::zset_score_bits(0.0);
+    let placeholder_score = crate::engine::execute_on_shard::zset_score_from_bits(placeholder);
     assert_eq!(
         empty_score,
-        Some(3.0),
-        "the empty member came back as {empty_score:?}. Its component is exactly sixteen characters, \
-         so a reconcile asking `component.len() <= 16` skips it -- and with no durable entry behind \
-         it the member is silently gone. WAL replay accepts the same component at `< 16`."
+        Some(placeholder_score),
+        "the empty member came back as {empty_score:?}, not the placeholder {placeholder_score} \
+         this path falls back to now that its component carries no score at all"
     );
 }
 

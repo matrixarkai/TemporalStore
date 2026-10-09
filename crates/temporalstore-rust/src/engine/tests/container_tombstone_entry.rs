@@ -934,30 +934,35 @@ fn run_cycles(
     );
 }
 
+/// RESTATED: A SCORE CHANGE LEFT A TOMBSTONE NAMED BY THE OLD ELEMENT KEY; NOW IT SWEEPS ITS OWN.
+///
+/// A zset's PAGE key is still the biased score followed by the member -- unchanged -- so a score
+/// change still removes the old page and writes a new one, still as two distinct physical pages.
+/// What changed is the INDEX COMPONENT each page's `BlockIndex` entry is filed under: it used to
+/// be `{biased:016x}` then the member, so the old and new entries were filed under two DIFFERENT
+/// component names and the old one's tombstone survived as its own entry. It is `hex::encode(member)`
+/// alone now, with no score in it, so a rescore's old and new entries are filed under the SAME
+/// name -- which is exactly the condition `upsert_bucket_index_block_inner`'s tombstone sweep
+/// looks for ("a re-add must clear the tombstone its own element left"): the new write's own
+/// filing sweeps the tombstone the removal just created, in the SAME write, because the two now
+/// share one name. The two pages are both still written; one live `BlockIndex` entry is what the
+/// index ends up with, which is the zset side of the same collapse set and list already have.
+///
 /// rust-internal: drives ZSetAdd twice at different scores
 #[test]
-fn a_score_change_tombstones_the_element_key_it_left() {
+fn a_rescore_sweeps_its_own_tombstone_because_the_component_no_longer_spells_the_score() {
     let dir = tempfile::tempdir().expect("tempdir");
     let engine = engine_on(dir.path());
     load_on(&engine, "cte-score");
 
-    // A SCORE CHANGE IS A REMOVAL, and it is the arm least likely to be recognised as one. A zset's
-    // element key is the biased score followed by the member, so moving a member's score REMOVES the
-    // old element key and writes a new one. Leave the old key untombstoned and a membership derived
-    // from the pages holds the member TWICE, at both scores.
     let key = "cte-score-zset";
     let member = b"the-member".to_vec();
-    let old_component = crate::engine::execute_on_shard::zset_component(
-        crate::engine::execute_on_shard::zset_score_bits(1.0),
-        &member,
-    );
-    let new_component = crate::engine::execute_on_shard::zset_component(
-        crate::engine::execute_on_shard::zset_score_bits(2.0),
-        &member,
-    );
-    assert_ne!(
+    let old_component = crate::engine::execute_on_shard::zset_component(&member);
+    let new_component = crate::engine::execute_on_shard::zset_component(&member);
+    assert_eq!(
         old_component, new_component,
-        "DENOMINATOR: the two scores spell one component, so there is no element key to leave"
+        "DENOMINATOR: the two scores no longer spell different components -- if they did, the \
+         sweep below would not fire and this test would be driving the old behaviour by accident"
     );
 
     write(
@@ -988,8 +993,7 @@ fn a_score_change_tombstones_the_element_key_it_left() {
     let tombstoned_names = tombstoned_components(&engine, "zset", key);
     println!("=== a zset score change ===");
     println!("  {live} live, {tombstoned} tombstone entries");
-    println!("  the element key it left:   {old_component}");
-    println!("  the element key it took:   {new_component}");
+    println!("  the element key it left and took (now the same name): {old_component}");
     println!("  tombstoned components:     {tombstoned_names:?}");
 
     assert_eq!(
@@ -997,19 +1001,15 @@ fn a_score_change_tombstones_the_element_key_it_left() {
         "{live} live entries after a score change, and one member at one score is one element"
     );
     assert_eq!(
-        1, tombstoned,
-        "A SCORE CHANGE LEFT {tombstoned} TOMBSTONES, NOT ONE. Zero means the old element key is \
-         still live in the pages and a page-derived membership holds this member at BOTH scores."
+        0, tombstoned,
+        "A RESCORE LEFT {tombstoned} TOMBSTONES, NOT ZERO. One would mean the sweep did not find \
+         its own tombstone -- the component the removal tombstoned and the component the new write \
+         files under must be the same string now, which is the whole premise of this test."
     );
     assert!(
-        tombstoned_names.contains(&old_component),
-        "the tombstone does not name the element key the score change LEFT ({old_component}); it \
-         names {tombstoned_names:?}"
-    );
-    assert!(
-        !tombstoned_names.contains(&new_component),
-        "the tombstone names the element key the score change TOOK, so the pages say the member is \
-         gone at the score it now holds"
+        !tombstoned_names.contains(&old_component),
+        "a tombstone named {old_component} survived the rescore that should have swept it: \
+         {tombstoned_names:?}"
     );
 
     // AND THE READERS AGREE: one member, at the new score.
@@ -1027,4 +1027,17 @@ fn a_score_change_tombstones_the_element_key_it_left() {
         1, listed,
         "ZCARD answers {listed} for one member held at one score"
     );
+    let scored = match read(
+        &engine,
+        Command::ZSetScore {
+            key: key.to_string(),
+            member: member.clone(),
+        },
+    ) {
+        crate::types::CommandResponse::Bytes { value: Some(bytes) } => {
+            String::from_utf8_lossy(&bytes).parse::<f64>().ok()
+        }
+        other => panic!("ZSetScore answered {other:?}"),
+    };
+    assert_eq!(scored, Some(2.0), "ZSCORE answered {scored:?} for a member rescored to 2.0");
 }

@@ -274,3 +274,4 @@ mod the_handle_is_computed_at_the_bucket;
 mod gated_corpus_across_a_store_boundary;
 mod write_after_fold;
 mod collapse_for_list;
+mod zset_component_drops_the_score;

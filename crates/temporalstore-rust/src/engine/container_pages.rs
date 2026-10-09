@@ -80,6 +80,15 @@
 //! edge cases each one has (an empty member, a score of exactly sixteen characters with nothing
 //! after it, a field name that is not valid UTF-8).
 //!
+//! EXCEPT ONE DIRECTION OF ONE SPELLING, SINCE THE COMPONENT STOPPED SPELLING A ZSET'S SCORE.
+//! `ScoreThenMember`'s `component_from_element_key` now drops a key's first eight bytes rather
+//! than rendering them, so `element_key_from_component` cannot get them back and returns a
+//! PLACEHOLDER there instead of the true score. The two are no longer inverses for this one
+//! spelling -- `container_page_element_key` asserts the loss explicitly rather than asserting a
+//! round trip that does not hold -- and the reason it is still safe is that nothing resolves a
+//! `ScoreThenMember` key through `element_key_from_component` and then trusts its first eight
+//! bytes: see `select_container_element`'s member-suffix comparison for that spelling.
+//!
 //! # WHAT DOES NOT MOVE
 //!
 //! No stored format is retired and no version stamp is spent. The magic DISCRIMINATES: a page
@@ -572,10 +581,31 @@ pub(super) fn select_container_element(bytes: &[u8], component: &str) -> Contain
         Ok(header) => header,
         Err(error) => return ContainerElementRead::Corrupt(error),
     };
-    let Some(wanted) = element_key_from_component(spelling, component) else {
-        // The frame is fine and this component is not one its spelling can name, so no item in it
-        // can be the one asked for. An answer, not a corruption.
-        return ContainerElementRead::Absent;
+    // A ScoreThenMember COMPONENT NO LONGER NAMES A KEY EXACTLY -- the score is gone from it, so
+    // `element_key_from_component` can only hand back a key with a PLACEHOLDER in its first eight
+    // bytes, which would miss every page a previous binary wrote with its true score there. So
+    // this spelling is matched by member suffix, decoded once, rather than by key equality: a
+    // page's own first eight bytes, real score or placeholder alike, are never examined. Every
+    // other spelling keeps the exact-key comparison, which stays correct because none of them
+    // dropped anything from what the component spells.
+    enum Wanted {
+        Key(Vec<u8>),
+        Member(Vec<u8>),
+    }
+    let wanted = if spelling == ElementKeySpelling::ScoreThenMember {
+        match hex::decode(component) {
+            Ok(member) => Wanted::Member(member),
+            // Not hex at all, so no item's member suffix can equal it. An answer, not a
+            // corruption -- the same shape the exact-key arm below answers in.
+            Err(_) => return ContainerElementRead::Absent,
+        }
+    } else {
+        match element_key_from_component(spelling, component) {
+            Some(key) => Wanted::Key(key),
+            // The frame is fine and this component is not one its spelling can name, so no item
+            // in it can be the one asked for. An answer, not a corruption.
+            None => return ContainerElementRead::Absent,
+        }
     };
     let mut cursor = CONTAINER_PAGE_MAGIC.len() + 1;
     let count = match take_varint(bytes, &mut cursor, "item count") {
@@ -585,7 +615,13 @@ pub(super) fn select_container_element(bytes: &[u8], component: &str) -> Contain
     for index in 0..count {
         match take_item(bytes, &mut cursor, index, shape) {
             Ok((key, value, deleted)) => {
-                if key == wanted.as_slice() {
+                let matched = match &wanted {
+                    Wanted::Key(key_wanted) => key == key_wanted.as_slice(),
+                    // THE MEMBER SUFFIX ONLY -- never the first eight bytes, which this spelling's
+                    // component no longer names.
+                    Wanted::Member(member) => key.get(8..) == Some(member.as_slice()),
+                };
+                if matched {
                     return if deleted {
                         ContainerElementRead::Removed
                     } else {
@@ -612,9 +648,15 @@ pub(super) fn component_from_element_key(
         ElementKeySpelling::Utf8 => String::from_utf8(key.to_vec()).ok(),
         ElementKeySpelling::Hex => Some(hex::encode(key)),
         ElementKeySpelling::ScoreThenMember => {
-            let word = key.get(..8)?;
-            let biased = u64::from_be_bytes(word.try_into().ok()?);
-            Some(format!("{biased:016x}{}", hex::encode(&key[8..])))
+            // THE SCORE IS NO LONGER SPELLED HERE. `BlockIndex.component` is what this render
+            // feeds, and the score term was 16 of its bytes with the member carrying the rest --
+            // the one thing stopping zset from collapsing to one index entry a page the way set
+            // and list already have. The resident map (`shard.zsets`) is the score's only copy
+            // now; a reader that wants it reads that map, not this string. See
+            // `element_key_from_component`'s mirror of this cut for what it costs on the way
+            // back, and `select_container_element` for why nothing here needed to change to stay
+            // correct against it.
+            Some(hex::encode(key.get(8..)?))
         }
         ElementKeySpelling::BiasedWord => {
             if key.len() != 8 {
@@ -639,17 +681,25 @@ pub(super) fn element_key_from_component(
         ElementKeySpelling::Utf8 => Some(component.as_bytes().to_vec()),
         ElementKeySpelling::Hex => hex::decode(component).ok(),
         ElementKeySpelling::ScoreThenMember => {
-            // SIXTEEN CHARACTERS IS A WHOLE COMPONENT, NOT A TRUNCATED ONE -- the same boundary
-            // `reconcile_secondary_views_from_bucket_index`'s zset arm spells, and for the same
-            // reason: a member of zero bytes spells exactly sixteen characters and `hex::decode("")`
-            // is `Ok(vec![])`. Asking `<= 16` here would make an empty member unaddressable.
-            if component.len() < 16 {
-                return None;
-            }
-            let biased = u64::from_str_radix(&component[..16], 16).ok()?;
-            let member = hex::decode(&component[16..]).ok()?;
+            // LOSSY BY DESIGN, IN THIS ONE ARM ONLY. The component used to be the score and the
+            // member both; it is the member alone now, so this direction cannot recover the score
+            // that named a PRE-EXISTING page -- there is no score left in the input to recover.
+            // What it returns is a validly-shaped key (eight bytes then the member) with a
+            // PLACEHOLDER in the first eight, not the true score.
+            //
+            // THAT IS SAFE, AND HERE IS THE WHOLE ARGUMENT WHY: every caller of this arm either
+            // builds a brand-new page (`encode_single_element_page`, `encode_tombstone_page` --
+            // the placeholder is all a fresh write needs, since nothing downstream reads it back)
+            // or does not call it at all. `select_container_element` is the one caller that used
+            // to call this and compare the result for EXACT equality against a stored key -- which
+            // would have compared this placeholder against a pre-existing page's TRUE score and
+            // missed every one of them after an upgrade -- so it no longer calls this arm: it
+            // decodes the member once and compares the key's member suffix only, blind to
+            // whatever sits in the first eight bytes, old real score or new placeholder alike.
+            // `component_from_element_key`, the other direction, never reads them back either.
+            let member = hex::decode(component).ok()?;
             let mut key = Vec::with_capacity(8 + member.len());
-            key.extend_from_slice(&biased.to_be_bytes());
+            key.extend_from_slice(&[0u8; 8]);
             key.extend_from_slice(&member);
             Some(key)
         }

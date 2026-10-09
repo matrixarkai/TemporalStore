@@ -552,10 +552,7 @@ fn the_ordinal_names_a_position_and_a_delete_frees_it() {
     );
 
     // AND THE REUSED ORDINAL NAMES THE NEW MEMBER, because identity lives in the component.
-    let m9_component = crate::engine::execute_on_shard::zset_component(
-        crate::engine::execute_on_shard::zset_score_bits(9.0),
-        b"m9",
-    );
+    let m9_component = crate::engine::execute_on_shard::zset_component(b"m9");
     let reused = ordinal_for_component(&engine, "zset", key, &m9_component)
         .expect("the new member has a page");
     assert_eq!(

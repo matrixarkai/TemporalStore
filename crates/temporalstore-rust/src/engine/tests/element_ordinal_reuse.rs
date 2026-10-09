@@ -456,11 +456,8 @@ fn durable_element_count(engine: &TemporalEngine, kind: &str, key: &str) -> usiz
     }
 }
 
-fn zset_name(score: f64, member: &[u8]) -> String {
-    crate::engine::execute_on_shard::zset_component(
-        crate::engine::execute_on_shard::zset_score_bits(score),
-        member,
-    )
+fn zset_name(member: &[u8]) -> String {
+    crate::engine::execute_on_shard::zset_component(member)
 }
 
 // =================================================================================================
@@ -864,7 +861,7 @@ fn the_element_rewrite_clears_the_tombstone_so_a_live_page_reads_as_hot() {
     load_on(&engine, OPERATOR_END);
 
     let member = b"tombstone-member".to_vec();
-    let component = zset_name(4.25, &member);
+    let component = zset_name(&member);
     let object_id = crate::engine::hashing::stable_block_object_id(
         1,
         "zset",
@@ -1277,20 +1274,26 @@ fn what_an_element_ordinal_would_mean_for_each_kind() {
     );
 
     // set and zset: the member's content, twice over -- once in the name, once in a persisted map.
+    //
+    // RESTATED FOR ZSET: it used to be the member's hex with a sixteen-character score prefix
+    // ahead of it, so this arm checked `ends_with` and a `16 +` length. The score left the
+    // component, so a zset's is now EQUAL to a set's -- both are exactly `hex::encode(member)`,
+    // nothing ahead of it and nothing after.
     let set_component = one_component("set", "eo-k-set");
     assert_eq!(
         set_component, member_hex,
         "a set component is not the member's hex"
     );
     let zset_component = one_component("zset", "eo-k-zset");
-    assert!(
-        zset_component.ends_with(&member_hex),
-        "a zset component does not end in the member's hex: {zset_component}"
+    assert_eq!(
+        zset_component, member_hex,
+        "a zset component is not exactly the member's hex any more: {zset_component}"
     );
     assert_eq!(
         zset_component.len(),
-        16 + member_hex.len(),
-        "a zset component is {} characters, not the sixteen score characters plus {} member ones",
+        member_hex.len(),
+        "a zset component is {} characters, not the {} member characters alone -- the score \
+         should have left this string entirely",
         zset_component.len(),
         member_hex.len()
     );
@@ -1309,8 +1312,8 @@ fn what_an_element_ordinal_would_mean_for_each_kind() {
     println!(
         "\n  list  {list_component}  ALREADY an ordinal ({} chars)\n  hash  {hash_component}  the \
          CALLER's field name -- an ordinal destroys it\n  set   {set_component}  the member's hex, \
-         and the durable map holds the member too\n  zset  {zset_component}  score hex + the \
-         member's hex, and the durable map holds both",
+         and the durable map holds the member too\n  zset  {zset_component}  the member's hex alone \
+         now, and the durable map holds the member AND the score",
         list_component.len()
     );
 }
@@ -1455,8 +1458,12 @@ fn the_mis_parse_rate_of_an_ordinal_against_the_names_this_store_already_holds()
     }
     rows.push(("list", list_total, list_hits));
 
-    // zset: sixteen score characters followed by the member's hex. Well-formed as an ordinal only
-    // when the member is empty, so the length is the discriminator.
+    // zset: the member's hex and nothing else now -- the score left this string. RESTATED: an
+    // empty member used to spell a score-shaped sixteen characters and was the only way to collide
+    // with an ordinal; it spells the empty string now, which is not well-formed as an ordinal at
+    // all. The collision that survives is the same one the `set` row below measures: an
+    // EIGHT-byte member spells sixteen hexadecimal characters regardless of kind, and
+    // `member-{element}` is eight bytes for every single-digit `element`.
     let mut zset_total = 0usize;
     let mut zset_hits = 0usize;
     for element in 0..NAMES {
@@ -1465,7 +1472,7 @@ fn the_mis_parse_rate_of_an_ordinal_against_the_names_this_store_already_holds()
         } else {
             format!("member-{element}").into_bytes()
         };
-        let name = zset_name(element as f64, &member);
+        let name = zset_name(&member);
         zset_total += 1;
         if parses_as_ordinal(&name).is_some() {
             zset_hits += 1;
@@ -1511,9 +1518,11 @@ fn the_mis_parse_rate_of_an_ordinal_against_the_names_this_store_already_holds()
     );
     assert!(
         zset_hits > 0,
-        "the zset row measured ZERO mis-parses over {NAMES} names, which is the assumption #1976 \
-         made and had to retract -- an empty member spells a name that is exactly sixteen \
-         characters"
+        "the zset row measured ZERO mis-parses over {NAMES} names. RESTATED since the score left \
+         the component: an empty member no longer collides (it spells the empty string, not a \
+         sixteen-character score), so this now rests on the same mechanism as the `set` row --\
+         `member-{{element}}` is eight bytes, and so sixteen hex characters, for every single-digit \
+         `element` -- and zero here means that stopped happening too"
     );
     assert!(
         set_hits > 0,
@@ -2204,12 +2213,9 @@ fn the_component_ordering_property_is_consumed_by_no_reader() {
         execute.len()
     );
 
-    // The three comments that make the claim are still there, so this arm is answering a live claim
+    // The comment that makes the list claim is still there, so this arm is answering a live claim
     // and not a remembered one.
-    let claims = [
-        "Two's-complement bias makes the hex component sort lexically in list order",
-        "The persisted component: score bits then member, so lexical order is (score, member) order",
-    ];
+    let claims = ["Two's-complement bias makes the hex component sort lexically in list order"];
     for claim in claims {
         assert!(
             execute.contains(claim),
@@ -2217,6 +2223,21 @@ fn the_component_ordering_property_is_consumed_by_no_reader() {
              nothing -- re-read the write arms before trusting it"
         );
     }
+
+    // THE ZSET CLAIM IS RETIRED, NOT RESTATED, which is the strongest form "consumed by no
+    // reader" can take: the (score, member) order this component used to carry by construction
+    // is not merely unread now, it does not exist any more -- `zset_component` is
+    // `hex::encode(member)` alone, so there is no score term left for anything to sort by. If
+    // that claim's TEXT is somehow still in the tree, something restored the old encoding and
+    // this change has been undone.
+    assert!(
+        !execute.contains(
+            "The persisted component: score bits then member, so lexical order is (score, \
+             member) order"
+        ),
+        "the retired zset ordering claim is back in the tree -- the score has returned to the \
+         component"
+    );
 
     // RECOVERY re-keys by the decoded value. The `set` arm inserts the decoded MEMBER; the `list`
     // arm inserts the decoded i64 SEQUENCE. Neither is the component.
@@ -2549,9 +2570,11 @@ fn an_ordinal_loses_the_member_the_fold_delivers_without_a_durable_entry() {
         "DENOMINATOR: the fixture did not file two pages"
     );
 
-    // The shape a fold produces for ONE element: a page entry with no durable map entry. Then the
-    // name is made ordinal-shaped -- sixteen characters, carrying a page number and no member.
-    let doomed_component = zset_name(2.0, &doomed);
+    // The shape a fold produces for ONE element: a page entry with no durable map entry. `doomed`'s
+    // CURRENT, real component is found by this name -- `zset_name` is member-only now -- and then
+    // overwritten below to the ordinal spelling: sixteen characters, carrying a page number and no
+    // member.
+    let doomed_component = zset_name(&doomed);
     {
         let mut shards = engine.shards.write().expect("engine lock poisoned");
         let shard = shards.get_mut(&1).expect("shard 1 is loaded");

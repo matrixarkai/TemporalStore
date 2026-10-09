@@ -113,6 +113,19 @@ pub(super) trait RecordedKind: Sized + 'static {
     /// hand -- and supplying it is what lets the operations below be written once for all kinds
     /// instead of once per kind.
     fn resident(shard: &mut ShardState) -> &mut RecordedMap<Self>;
+
+    /// Bytes to carry on the WAL outcome's `value` slot for one install, beside the block address
+    /// every kind already carries -- and deliberately NO DEFAULT, for the same reason
+    /// `serialize_entries` has none.
+    ///
+    /// THIS EXISTS BECAUSE A ZSET'S COMPONENT STOPPED SPELLING THE SCORE. Every other kind's level-2
+    /// value is fully named by its component and its address -- a hash field, a set member, a list
+    /// sequence -- so `None` costs them nothing. A zset's value is `(u64, BlockAddress)`, and the
+    /// `u64` had been riding the component as `{biased:016x}` until that string collapsed to the
+    /// member alone; this is where it rides instead, on replay's only remaining path to it. A kind
+    /// added later that also needs a byte string beside its address has to say so here rather than
+    /// inherit silence -- the same defect class `serialize_entries`'s own doc comment describes.
+    fn outcome_value(value: &<Self::Elements as ElementMap>::Value) -> Option<Vec<u8>>;
 }
 
 /// THIS KIND HAS A RECOVERY PATH THAT INSTALLS AN ELEMENT AND FILES NOTHING.
@@ -218,6 +231,9 @@ pub(super) fn install_element<K: RecordedKind>(
     dirty: bool,
     address: ElementEntry,
 ) {
+    // COMPUTED BEFORE `value` MOVES INTO THE RECORD BELOW. The only producer of a `Some` today is
+    // `ZSetKind`, whose score has nowhere else to ride now that the component does not spell it.
+    let outcome_value = K::outcome_value(&value);
     // THE RECORD FIRST. The proof below cannot be built without the witness this returns, so
     // deleting this call is a compile error rather than a silent unrecorded write.
     let filed = super::storage_bucket_internals::upsert_bucket_index_block_filed(
@@ -228,6 +244,7 @@ pub(super) fn install_element<K: RecordedKind>(
         component,
         address,
         dirty,
+        outcome_value,
     );
     // THEN THE MUTATION, through the proof.
     K::resident(shard).install(RecordedElement::<K> {
@@ -717,6 +734,12 @@ impl RecordedKind for HashKind {
     fn resident(shard: &mut ShardState) -> &mut RecordedMap<Self> {
         &mut shard.hashes
     }
+
+    /// A hash field's value is its address, which the outcome already carries whole. Nothing else
+    /// to say.
+    fn outcome_value(_value: &<Self::Elements as ElementMap>::Value) -> Option<Vec<u8>> {
+        None
+    }
 }
 
 /// HASH DECLARES THE REPLAY-INSTALL PATH, and it is the only kind that does.
@@ -765,6 +788,12 @@ impl RecordedKind for SetKind {
 
     fn resident(shard: &mut ShardState) -> &mut RecordedMap<Self> {
         &mut shard.sets
+    }
+
+    /// A set member's value is its address, which the outcome already carries whole. Nothing else
+    /// to say.
+    fn outcome_value(_value: &<Self::Elements as ElementMap>::Value) -> Option<Vec<u8>> {
+        None
     }
 }
 
@@ -818,6 +847,15 @@ impl RecordedKind for ZSetKind {
     fn resident(shard: &mut ShardState) -> &mut RecordedMap<Self> {
         &mut shard.zsets
     }
+
+    /// EIGHT BIG-ENDIAN BYTES OF THE BIASED SCORE -- the one kind that answers `Some` here, and
+    /// the whole reason the function exists. `component` no longer spells this; replay's only
+    /// other source for a zset insert's score, so a value-less install on that path is a replay
+    /// that cannot recover what the write did and must refuse rather than guess (see
+    /// `lifecycle`'s `"zset"` replay arm).
+    fn outcome_value(value: &<Self::Elements as ElementMap>::Value) -> Option<Vec<u8>> {
+        Some(value.0.to_be_bytes().to_vec())
+    }
 }
 
 /// A B-TREE LEVEL-2 CONTAINER, SO IT REPACKS. Declared, not inherited.
@@ -867,6 +905,12 @@ impl RecordedKind for ListKind {
 
     fn resident(shard: &mut ShardState) -> &mut RecordedMap<Self> {
         &mut shard.lists
+    }
+
+    /// A list element's value is its address, which the outcome already carries whole. Nothing
+    /// else to say.
+    fn outcome_value(_value: &<Self::Elements as ElementMap>::Value) -> Option<Vec<u8>> {
+        None
     }
 }
 

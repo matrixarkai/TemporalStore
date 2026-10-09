@@ -328,7 +328,10 @@ fn drop_if_expired(
 /// Two of the seven are not obviously removals and are the ones this must not miss: a `ZSetAdd` or
 /// `ZSetIncrement` that changes a member's score REMOVES the old `(score, member)` element key and
 /// writes a new one. Leave the old key untombstoned and a page-derived membership holds the member
-/// TWICE, at both scores. `a_score_change_tombstones_the_element_key_it_left` drives that.
+/// TWICE, at both scores. `a_rescore_sweeps_its_own_tombstone_because_the_component_no_longer_spells_the_score`
+/// drives that -- and, since the component the removal tombstones and the component the new write
+/// files under are now the same string, also drives the sweep that cleans the tombstone up again
+/// in the same write.
 ///
 /// # WHAT IT DOES WHEN IT CANNOT WRITE THE PAGE
 ///
@@ -1485,7 +1488,7 @@ pub(crate) fn execute_on_shard(
                 };
             }
             if let Some(old_biased) = existed {
-                let old_component = zset_component(old_biased, &member);
+                let old_component = zset_component(&member);
                 remove_container_element(
                     cache,
                     block_store,
@@ -1499,7 +1502,7 @@ pub(crate) fn execute_on_shard(
                     async_storage,
                 );
             }
-            let component = zset_component(biased, &member);
+            let component = zset_component(&member);
             let object_id = stable_block_object_id(shard_id, "zset", &key);
             let routing_bucket =
                 block_routing_bucket(&key, start_routing_bucket, end_routing_bucket);
@@ -1532,15 +1535,15 @@ pub(crate) fn execute_on_shard(
                 async_storage,
                 block_ordinal,
             ) {
-                upsert_bucket_index_block(
-                    shard,
-                    shard_id,
-                    "zset",
-                    &key,
-                    Some(component.clone()),
-                    address.clone(),
-                    true,
-                );
+                // THE STANDALONE UPSERT IS GONE BECAUSE THE OPERATION DOES IT -- the same
+                // correction `ZSetIncrBy` and `ListPush` already carry (see their own notes). It
+                // stood here filing the SAME block under the SAME component a second time, which
+                // staged a second WAL outcome for one write: harmless while the component carried
+                // the score twice over identically, and no longer harmless now that only
+                // `install_element`'s own filing carries the score (through
+                // `RecordedKind::outcome_value`) -- a replay of the OTHER, standalone-filed
+                // outcome would have found no score to install and refused the whole shard load.
+                // One call now does both, record first.
                 super::recorded_map::install_element::<super::recorded_map::ZSetKind>(
                     shard,
                     shard_id,
@@ -1591,7 +1594,7 @@ pub(crate) fn execute_on_shard(
             match biased {
                 None => CommandResponse::Integer { value: 0 },
                 Some(biased) => {
-                    let component = zset_component(biased, &member);
+                    let component = zset_component(&member);
                     mutated |= super::recorded_map::remove_element::<super::recorded_map::ZSetKind>(
                         cache,
                         block_store,
@@ -1854,7 +1857,7 @@ pub(crate) fn execute_on_shard(
             let score = old.map_or(0.0, zset_score_from_bits) + increment;
             let biased = zset_score_bits(score);
             if let Some(old_biased) = old {
-                let old_component = zset_component(old_biased, &member);
+                let old_component = zset_component(&member);
                 remove_container_element(
                     cache,
                     block_store,
@@ -1868,7 +1871,7 @@ pub(crate) fn execute_on_shard(
                     async_storage,
                 );
             }
-            let component = zset_component(biased, &member);
+            let component = zset_component(&member);
             let object_id = stable_block_object_id(shard_id, "zset", &key);
             let routing_bucket =
                 block_routing_bucket(&key, start_routing_bucket, end_routing_bucket);
@@ -1936,7 +1939,7 @@ pub(crate) fn execute_on_shard(
             ordered.truncate(count as usize);
             let mut members = Vec::new();
             for (member, biased) in ordered {
-                let component = zset_component(biased, &member);
+                let component = zset_component(&member);
                 remove_container_element(
                     cache,
                     block_store,
@@ -5219,9 +5222,18 @@ pub(super) fn zset_score_string(biased: u64) -> String {
     }
 }
 
-/// The persisted component: score bits then member, so lexical order is (score, member) order.
-pub(super) fn zset_component(biased: u64, member: &[u8]) -> String {
-    format!("{biased:016x}{}", hex::encode(member))
+/// The persisted component: the member alone, hex encoded.
+///
+/// USED TO BE SCORE BITS THEN MEMBER -- the comment this replaces said so, and the lexical order
+/// it bought was never built on: every zset serving arm that returns members in score order
+/// reads the score out of `shard.zsets` and sorts explicitly (`zset_members_in_score_range`,
+/// `zset_ordered_members`), so dropping the score from this string costs that ordering nothing.
+/// What it buys is the thing this change is for: `BlockIndex.component` for a zset entry is now
+/// the same shape as a set's, so zset can collapse to one index entry a page the way set and list
+/// already have. The score still rides every write -- see `RecordedKind::outcome_value` and the
+/// WAL outcome's `value` field -- it is simply no longer spelled into this string.
+pub(super) fn zset_component(member: &[u8]) -> String {
+    hex::encode(member)
 }
 
 /// The members whose score falls in `[min_bits, max_bits]`, in score order.

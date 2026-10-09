@@ -227,34 +227,121 @@ fn a_component_survives_the_round_trip_to_a_page_key_for_every_spelling() {
     println!("  round trips checked: {checked}");
 }
 
-/// SIXTEEN CHARACTERS IS A WHOLE ZSET COMPONENT AND NOT A TRUNCATED ONE.
+/// AN EMPTY ZSET COMPONENT NAMES AN EMPTY MEMBER, NOT A SIXTEEN-CHARACTER SCORE PREFIX.
 ///
-/// A member of zero bytes spells exactly sixteen characters, and `hex::decode("")` is
-/// `Ok(vec![])`. Asking `<= 16` instead of `< 16` makes that member unaddressable -- the defect
-/// #2016 fixed on the reconcile's own zset arm, recorded here because this module introduces a
-/// SECOND reader of the same encoding and two readers of one encoding disagreeing about its
-/// shortest legal form is the shape of that defect.
+/// RESTATED: the boundary this test drove used to be sixteen characters, because the component
+/// was a complete score with an empty member after it and `hex::decode("")` is `Ok(vec![])` --
+/// #2016's fix was keeping `<` rather than `<=` at that boundary. The boundary is zero now,
+/// because the component is the member alone: an empty component is `hex::encode(&[])`, which
+/// `hex::decode` reads back as the empty member it is, with no score term to be short by.
 ///
 /// rust-internal: exercises the page framing directly
 #[test]
-fn a_zset_component_of_exactly_sixteen_characters_names_an_empty_member() {
-    let component = format!("{:016x}", 0x8000_0000_0000_0000_u64);
-    assert_eq!(16, component.len());
+fn an_empty_zset_component_names_an_empty_member() {
+    let component = String::new();
     let key = element_key_from_component(ElementKeySpelling::ScoreThenMember, &component)
-        .expect("sixteen characters is a complete score with an empty member after it");
-    assert_eq!(8, key.len(), "the key is the score word and nothing else");
+        .expect("an empty component is a complete, if empty, member");
+    assert_eq!(8, key.len(), "the key is the placeholder score word and nothing else");
     assert_eq!(
         Some(component.clone()),
         component_from_element_key(ElementKeySpelling::ScoreThenMember, &key)
     );
 
-    // And fifteen is genuinely short, so the boundary is tested from both sides rather than
-    // asserted from one.
-    let short = &component[..15];
+    // Odd-length hex is genuinely not decodable, so that boundary is tested from the other side.
     assert_eq!(
         None,
-        element_key_from_component(ElementKeySpelling::ScoreThenMember, short),
-        "fifteen characters cannot be a score"
+        element_key_from_component(ElementKeySpelling::ScoreThenMember, "a"),
+        "one hex digit cannot be a member"
+    );
+}
+
+/// SCORETHENMEMBER'S KEY DOES NOT SURVIVE A ROUND TRIP THAT STARTS FROM THE KEY -- THE OTHER
+/// THREE SPELLINGS STILL DO, EXACTLY AS BEFORE.
+///
+/// THE LOST TERM IS THE SCORE. `component_from_element_key` now renders only a ScoreThenMember
+/// key's member half, so `element_key_from_component`'s way back cannot recover the score half --
+/// it fills a placeholder (asserted elsewhere to be the all-zero word) where the true score was.
+/// That is the "one real cost" this change pays, and this test drives it directly: build a key
+/// with a REAL, nonzero score, round it through both functions, and show what comes back differs
+/// from what went in -- in the score half only, never in the member half.
+///
+/// `component_from_element_key` STAYS TOTAL, asserted here rather than assumed: every key at
+/// least eight bytes long still spells a component, which is the property
+/// `select_container_element` leans on to answer `Absent` rather than `Corrupt` for a page that
+/// is merely unaddressed by a given component.
+///
+/// rust-internal: exercises the page framing directly
+#[test]
+fn a_scorethenmember_key_round_trip_is_lossy_in_its_score_half_and_bijective_in_its_member_half() {
+    // THE OTHER THREE SPELLINGS: key -> component -> key reproduces the key exactly, unchanged by
+    // this series.
+    for spelling in [
+        ElementKeySpelling::Utf8,
+        ElementKeySpelling::Hex,
+        ElementKeySpelling::BiasedWord,
+    ] {
+        for width in [0usize, 1, 8, 64] {
+            let key = match spelling {
+                ElementKeySpelling::Utf8 => format!("field-{width:04}").into_bytes(),
+                ElementKeySpelling::BiasedWord if width != 8 => continue,
+                _ => bytes_of(width, width),
+            };
+            let component = component_from_element_key(spelling, &key)
+                .unwrap_or_else(|| panic!("{spelling:?} did not spell a component at width {width}"));
+            let back = element_key_from_component(spelling, &component).unwrap_or_else(|| {
+                panic!("{spelling:?} did not read its own component back at width {width}")
+            });
+            assert_eq!(key, back, "{spelling:?} lost the key at width {width}");
+        }
+    }
+
+    // SCORETHENMEMBER, WITH A REAL SCORE: the member half survives: the score half does not.
+    let member = bytes_of(20, 1);
+    let real_score: u64 = 0x1234_5678_9abc_def0;
+    let mut key = Vec::with_capacity(8 + member.len());
+    key.extend_from_slice(&real_score.to_be_bytes());
+    key.extend_from_slice(&member);
+
+    let component = component_from_element_key(ElementKeySpelling::ScoreThenMember, &key)
+        .expect("still total for a key at least eight bytes long");
+    assert_eq!(
+        component,
+        hex::encode(&member),
+        "the component is the member alone -- the score is the lost term"
+    );
+
+    let reconstructed = element_key_from_component(ElementKeySpelling::ScoreThenMember, &component)
+        .expect("still produces a validly shaped key");
+    assert_eq!(reconstructed.len(), key.len(), "the shape survives even though the content does not");
+    assert_eq!(
+        &reconstructed[8..],
+        &key[8..],
+        "the member half is NOT lost -- this is the half every live reader depends on"
+    );
+    assert_ne!(
+        &reconstructed[..8],
+        &key[..8],
+        "the score half IS lost: a real, nonzero score does not come back"
+    );
+    assert_eq!(
+        &reconstructed[..8],
+        &[0u8; 8],
+        "the placeholder that fills the lost score half is the all-zero word"
+    );
+
+    // TOTALITY: component_from_element_key still answers for every key at or above the score
+    // word's width, and correctly declines anything shorter.
+    for len in [8usize, 9, 16, 100] {
+        let probe = vec![0xABu8; len];
+        assert!(
+            component_from_element_key(ElementKeySpelling::ScoreThenMember, &probe).is_some(),
+            "not total at length {len}"
+        );
+    }
+    assert_eq!(
+        component_from_element_key(ElementKeySpelling::ScoreThenMember, &[0u8; 7]),
+        None,
+        "a key shorter than the score word correctly has no component"
     );
 }
 
@@ -286,7 +373,8 @@ fn a_component_the_spelling_cannot_produce_is_refused() {
         None,
         element_key_from_component(ElementKeySpelling::BiasedWord, "800000000000000")
     );
-    // A zset component's score half has to be hex.
+    // A zset component is hex of the member, whole -- there is no score half left to be hex
+    // instead of the member.
     assert_eq!(
         None,
         element_key_from_component(ElementKeySpelling::ScoreThenMember, "zzzzzzzzzzzzzzzz")
@@ -983,13 +1071,10 @@ fn every_container_kind_reads_back_the_value_it_wrote_through_a_framed_page() {
         (
             "zset",
             "zset-key",
-            // Spelled by the engine's OWN two functions rather than by hand: a hand-written zset
+            // Spelled by the engine's OWN function rather than by hand: a hand-written zset
             // component is a second implementation of the encoding under test, and it would agree
             // with a write path that had stopped holding the same spelling.
-            crate::engine::execute_on_shard::zset_component(
-                crate::engine::execute_on_shard::zset_score_bits(0.0),
-                &members[0],
-            ),
+            crate::engine::execute_on_shard::zset_component(&members[0]),
         ),
         ("list", "list-key", format!("{:016x}", 1_u64 << 63)),
     ];

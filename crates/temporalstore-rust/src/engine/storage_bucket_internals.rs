@@ -3266,9 +3266,15 @@ fn visit_model_live_blocks(
                     &mut emit,
                 );
             } else {
-                for (member, (biased, address)) in members.iter() {
+                for (member, (_biased, address)) in members.iter() {
                     if accept(key, address) {
-                        let component = format!("{biased:016x}{}", hex::encode(member));
+                        // THE SCORE NO LONGER RIDES THIS STRING -- see `zset_component`, the
+                        // write path's own renderer, which this mirrors rather than calls (this
+                        // walk is over `(member, (biased, address))` pairs already in hand, not a
+                        // single member at a time). `_biased` stays bound and unused rather than
+                        // dropped from the pattern, so a future reader finds the score sitting
+                        // right beside the render that no longer spells it.
+                        let component = hex::encode(member);
                         emit(ModelKind::Zset, key, Some(component.as_str()), address);
                     }
                 }
@@ -3713,6 +3719,12 @@ impl ElementComponent {
     }
 }
 
+/// [`upsert_bucket_index_block`], carrying one extra byte string onto the WAL outcome it stages.
+///
+/// `value` rides `WalOutcomeItem.value` -- the same optional slot the `"bucket"` arm already
+/// produces-and-replays in production -- and is `None` for every kind except a zset, whose score
+/// no longer has anywhere else to go on the wire now that `component` does not spell it. See
+/// `RecordedKind::outcome_value`, which is the only producer of a `Some` here.
 pub(super) fn upsert_bucket_index_block_filed(
     shard: &mut ShardState,
     shard_id: ShardId,
@@ -3721,8 +3733,11 @@ pub(super) fn upsert_bucket_index_block_filed(
     component: Option<String>,
     address: ElementEntry,
     dirty: bool,
+    value: Option<Vec<u8>>,
 ) -> BlockFiled {
-    upsert_bucket_index_block(shard, shard_id, kind, object_key, component, address, dirty);
+    upsert_bucket_index_block_with_value(
+        shard, shard_id, kind, object_key, component, address, dirty, true, value,
+    );
     BlockFiled(())
 }
 
@@ -3907,6 +3922,28 @@ pub(super) fn upsert_bucket_index_block_with(
     dirty: bool,
     stage: bool,
 ) {
+    upsert_bucket_index_block_with_value(
+        shard, shard_id, kind, object_key, component, address, dirty, stage, None,
+    )
+}
+
+/// [`upsert_bucket_index_block_with`], carrying one extra byte string onto the staged outcome.
+///
+/// Split out rather than adding the parameter to that function directly: `upsert_bucket_index_block_with`
+/// has callers of its own that have nothing to do with a zset score, and every one of them would
+/// otherwise have had to grow a trailing `None` for a value they do not produce.
+#[allow(clippy::too_many_arguments)]
+pub(super) fn upsert_bucket_index_block_with_value(
+    shard: &mut ShardState,
+    shard_id: ShardId,
+    kind: &str,
+    object_key: &str,
+    component: Option<String>,
+    address: ElementEntry,
+    dirty: bool,
+    stage: bool,
+    value: Option<Vec<u8>>,
+) {
     // Every single-block writer reaches the bucket index through here, so the charge sits here and
     // not at the arms. A new command arm that files a block is counted because this function counts
     // it; the outcome staged in the middle re-tags itself, so the two do not overlap.
@@ -3920,6 +3957,7 @@ pub(super) fn upsert_bucket_index_block_with(
             address,
             dirty,
             stage,
+            value,
         )
     })
 }
@@ -3934,6 +3972,7 @@ fn upsert_bucket_index_block_inner(
     address: ElementEntry,
     dirty: bool,
     stage: bool,
+    value: Option<Vec<u8>>,
 ) {
     // THE SHARD'S OWN RANGE, carried on the shard. This site PLACES: `routing_bucket` below is
     // the KEY this block is filed under, not a filter over an answer already decided. Under the
@@ -3984,7 +4023,10 @@ fn upsert_bucket_index_block_inner(
                 object_id,
                 routing_bucket,
                 address: Some(address.clone()),
-                value: None,
+                // CARRIES THE SCORE FOR A ZSET, AND NOTHING FOR EVERY OTHER KIND. `None` at
+                // every call site except `install_element`'s own filing call, which is the one
+                // place `RecordedKind::outcome_value` runs -- see `upsert_bucket_index_block_filed`.
+                value,
                 ttl: None,
                 deleted: false,
                 meta: false,
@@ -5455,43 +5497,26 @@ pub(super) fn reconcile_secondary_views_from_bucket_index(
                 }
             }
             "zset" => {
-                let parsed = entry.component.as_deref().and_then(|component| {
-                    // SIXTEEN CHARACTERS IS A WHOLE COMPONENT, NOT A TRUNCATED ONE.
-                    //
-                    // `zset_component` is `{biased:016x}` followed by `hex::encode(member)`, so a
-                    // member of zero bytes -- which nothing on the write path rejects -- spells
-                    // EXACTLY sixteen characters. This read `<= 16`, so that component decoded to
-                    // nothing, the element was counted as unreadable and skipped, and on the one
-                    // door where the durable map does not already hold it (the delta fold, whose
-                    // records carry elements written after the base snapshot) the member was
-                    // silently gone on reload.
-                    //
-                    // The engine already spells the boundary the other way where it replays the
-                    // same name: both the insert and the removal arm of `apply_outcome_item` ask
-                    // `component.len() < 16`. Two readers of one encoding disagreeing about its
-                    // shortest legal form is the defect; this is the side that was wrong, because
-                    // sixteen characters is a complete score with an empty member after it and
-                    // `hex::decode("")` is `Ok(vec![])`.
-                    if component.len() < 16 {
-                        return None;
-                    }
-                    match (
-                        u64::from_str_radix(&component[..16], 16),
-                        hex::decode(&component[16..]),
-                    ) {
-                        (Ok(biased), Ok(member)) => Some((biased, member)),
-                        _ => None,
-                    }
-                });
-                match parsed {
-                    Some((named_score, member)) => {
-                        // THE DURABLE MAP OUTRANKS THE NAME FOR THE SCORE.
+                // THE COMPONENT NO LONGER SPELLS A SCORE AT ALL -- it is `hex::encode(member)`,
+                // the whole string, not sixteen characters of score followed by the member. So
+                // there is no `named_score` to parse out any more, and the member is decoded from
+                // the component's full length rather than from a slice starting at a boundary
+                // that assumed a score was there.
+                let member = entry.component.as_deref().and_then(|component| hex::decode(component).ok());
+                match member {
+                    Some(member) => {
+                        // THE DURABLE MAP IS THE ONLY SOURCE FOR THE SCORE NOW.
                         //
                         // `zset_index_serde` persists this map as (member bytes, (score, address)),
-                        // so the score is a stored value and the name is a second copy of it
-                        // rendered as text. Where the durable map holds this member its score wins;
-                        // the name's is the fallback for a member the durable map does not have,
-                        // which is how an element folded out of the delta log arrives.
+                        // so the score is a stored value the name used to carry a second, rendered
+                        // copy of. That second copy is gone, so where the durable map does not
+                        // already hold this member -- the delta-fold door, the one case this
+                        // fallback exists for -- there is no score to recover at all. ZERO rather
+                        // than a lie: a member folded out of the delta log without ever reaching
+                        // `shard.zsets` is counted here and takes a placeholder score, which a live
+                        // write always overwrites with the true one once it reconciles. `outranked`
+                        // stops being meaningable -- there is nothing left to outrank -- so it is no
+                        // longer counted here, which is the finding, not a tolerance.
                         let score = shard
                             .zsets
                             .get(entry.object_key.as_ref())
@@ -5499,11 +5524,13 @@ pub(super) fn reconcile_secondary_views_from_bucket_index(
                             .map(|(stored, _)| *stored)
                             .unwrap_or_else(|| {
                                 derived_scores += 1;
-                                named_score
+                                // THE BIASED ENCODING OF 0.0, NOT THE RAW INTEGER 0. `stored` is
+                                // read back through `zset_score_from_bits`, which maps a raw `0u64`
+                                // to NaN (bit 63 clear takes the `!bits` branch, and
+                                // `!0u64` is all-ones, the NaN bit pattern) -- measured the hard
+                                // way, as a reload answering `NaN` instead of a real score.
+                                crate::engine::execute_on_shard::zset_score_bits(0.0)
                             });
-                        if score != named_score {
-                            outranked_scores += 1;
-                        }
                         zsets
                             .entry(entry.object_key.to_string())
                             .or_default()
@@ -5794,14 +5821,20 @@ pub(super) fn reconcile_secondary_views_from_bucket_index(
              empty series"
         );
     }
-    if unreadable_names > 0 || outranked_scores > 0 {
+    if unreadable_names > 0 || outranked_scores > 0 || derived_scores > 0 {
         // SAID OUT LOUD. Each of these was silent, and each names a stored value that disagreed with
         // the name derived from it.
+        //
+        // `outranked_scores` STAYS DECLARED AND IS ALWAYS ZERO for a zset now: a name no longer
+        // carries a score for the durable map to outrank, so nothing can disagree with it any
+        // more. `derived_scores` changed what it counts alongside it -- a zset member the delta
+        // fold produced without the durable map yet holding it now gets a PLACEHOLDER score
+        // (zero), not a score read back out of its name, because the name does not have one.
         eprintln!(
             "reconcile: {unreadable_names} component name(s) could not be read and were skipped \
              rather than defaulted; {outranked_scores} score(s) came from the durable map because \
-             the name disagreed; {derived_scores} came from a name because the durable map did not \
-             hold the member"
+             the name disagreed; {derived_scores} zset member(s) took a placeholder score because \
+             the durable map did not yet hold them"
         );
     }
     if saw_features {
