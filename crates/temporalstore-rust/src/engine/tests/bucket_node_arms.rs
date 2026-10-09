@@ -1000,13 +1000,18 @@ fn the_tagged_node_is_fifty_six_bytes_and_every_arm_reconstructs() {
                 + 3 * size_of::<u64>()
                 + size_of::<ObjectIndex>()
                 + size_of::<DeletedObjectIndex>()
-                + size_of::<BlockIndexMap>(),
+                + size_of::<BlockIndexMap>()
+                // THE ELEVENTH FIELD, one word, in the eight-aligned group.
+                + size_of::<crate::engine::state::TombstoneElements>(),
             size_of::<u32>() + size_of::<BucketLayoutState>() + size_of::<BucketFlags>(),
         ),
         (
             "TaggedNode (proposed)",
             size_of::<TaggedNode>(),
-            size_of::<BucketTtl>() + 3 * size_of::<u64>() + size_of::<TaggedLayout>(),
+            size_of::<BucketTtl>()
+                + 3 * size_of::<u64>()
+                + size_of::<TaggedLayout>()
+                + size_of::<crate::engine::state::TombstoneElements>(),
             size_of::<u32>() + size_of::<BucketLayoutState>() + size_of::<BucketFlags>(),
         ),
         (
@@ -1049,10 +1054,15 @@ fn the_tagged_node_is_fifty_six_bytes_and_every_arm_reconstructs() {
     // to assume it survived: what the tagged word would replace is now a 24-byte list header, not a
     // whole inline entry.
 
+    // AND 56, NOT 48, SINCE THE NODE'S HEADER GAINED A WORD. `tombstone_elements` is a per-BUCKET
+    // fact, so the proposal has to hold it exactly where the live declaration does -- on the node,
+    // not inside the general arm's boxed payload, which would have made this proposal look one word
+    // cheaper than it is. So the header moved on BOTH sides, and the difference the verdict below
+    // turns on is unchanged by it.
     assert_eq!(
-        48,
+        56,
         size_of::<TaggedNode>(),
-        "the tagged node is {} bytes, not 48",
+        "the tagged node is {} bytes, not 56",
         size_of::<TaggedNode>()
     );
     // 72, not 80: this payload holds a page entry, and the entry shed eight bytes when its address

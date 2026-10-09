@@ -245,6 +245,15 @@ fn what_removing_the_tombstone_index_would_make_the_node() {
             field_width(&sample.block_index),
             offset_of!(BucketNode, block_index),
         ),
+        // THE ELEVENTH FIELD, one word, holding the element name of each tombstone this bucket
+        // carries -- which the page ENTRIES stopped carrying. Named in the table rather than
+        // absorbed into the total, because a reconstruction that adds up to the right number from
+        // the wrong field set is how this crate has already got a decomposition wrong.
+        (
+            "tombstone_elements",
+            field_width(&sample.tombstone_elements),
+            offset_of!(BucketNode, tombstone_elements),
+        ),
     ];
 
     println!("\n=== BucketNode, field by field at its REAL offset, each width read from the field ===");

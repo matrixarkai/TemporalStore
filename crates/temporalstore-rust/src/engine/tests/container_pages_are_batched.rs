@@ -428,10 +428,25 @@ fn every_element_reads_back_its_own_value_after_the_fold_and_after_a_reload() {
              not reading folded pages"
         );
         let (page_count, entry_count) = addresses_and_entries(&engine, "hash", "readback");
+        // THE FLOOR IS ON PAGES BEING SHARED BY ELEMENTS, NOT BY ENTRIES.
+        //
+        // This read `page_count < entry_count` -- one entry per element, so fewer pages than
+        // entries meant elements were sharing a page. The index files one entry per PAGE now, so
+        // those two counts are equal by construction and the floor could never hold again. The
+        // thing this test needs established is unchanged: that the fold really put several
+        // ELEMENTS on one page, which is what makes a selector that ignores the element
+        // distinguishable from a correct one. So the pages are compared against the ELEMENTS
+        // written, which is the other source and the one the floor was always about.
         assert!(
-            page_count < entry_count,
-            "the hash holds {page_count} pages for {entry_count} entries, so no page is shared and \
-             this test cannot distinguish a correct selector from one that ignores the component"
+            page_count < FOLDABLE_ELEMENTS,
+            "the hash holds {page_count} pages for {FOLDABLE_ELEMENTS} elements, so no page is \
+             shared and this test cannot distinguish a correct selector from one that ignores the \
+             element"
+        );
+        assert_eq!(
+            page_count, entry_count,
+            "the index filed {entry_count} entries over {page_count} page(s); one entry a page is \
+             what the collapse means, and a mismatch here is a stale or missing entry"
         );
         println!(
             "\n=== read back after the fold ===\n  hash: {entry_count} entries over {page_count} pages, {batches} batches, {folded} folded"
@@ -633,9 +648,18 @@ fn the_element_cap_binds_so_one_page_never_holds_a_whole_large_container() {
         pages_after >= smallest_possible,
         "{OVER_CAP_ELEMENTS} elements cannot fit in {pages_after} pages of at most {cap}"
     );
+    // THE ENTRY COUNT IS THE PAGE COUNT NOW, WHICH IS THE COLLAPSE AND NOT A DRIFT.
+    //
+    // This asserted `entries_after == OVER_CAP_ELEMENTS` under "the entry count must not move": one
+    // entry per element, whatever the pages did. Every container kind is page-named, so the index
+    // files one entry per distinct PAGE and the count is the page count. Asserted against
+    // `pages_after` rather than re-goldened to a literal, so the claim is still a relation between
+    // two measured things and a count that drifted from the pages would still fail.
     assert_eq!(
-        OVER_CAP_ELEMENTS, entries_after,
-        "the entry count must not move"
+        pages_after, entries_after,
+        "the index filed {entries_after} entries over {pages_after} page(s). One entry a page is \
+         what the collapse means: more entries than pages is a stale entry over a dead page, and \
+         fewer means a page nothing names"
     );
 }
 

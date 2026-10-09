@@ -164,6 +164,14 @@ fn seed(engine: &TemporalEngine, fields: &[&str]) {
 /// rust-internal: drives the engine's own served path and its own report surface
 #[test]
 fn the_hash_read_serves_both_sources_and_counts_what_only_the_index_names() {
+    // HELD AT GATE OFF, AND THAT IS THE SUBJECT RATHER THAN A WORKAROUND.
+    //
+    // This counter is about a field the PAGE INDEX names that the container does not. Under one
+    // entry a page a hash entry names NO field at all, so there is no named-only field for a plant
+    // to create and the divergence is unreachable by construction -- the arm below asserts exactly
+    // that, so the structural zero is stated rather than mistaken for a clean store. The route
+    // where the counter can still move is the ungated one, which is what this arm holds.
+    let _gate = GateHeldOff::new();
     let dir = tempfile::tempdir().expect("tempdir");
     let engine = engine_on(dir.path());
     load_on(&engine);
@@ -325,5 +333,134 @@ fn the_hash_read_serves_both_sources_and_counts_what_only_the_index_names() {
         "one read of an object with one index-only field and one container-only field counted {} \
          divergences, not 1; the container-only direction is being counted too",
         after_rescue - before_rescue
+    );
+}
+
+/// Holds the one-entry-a-page gate OFF and puts back whatever was there -- on a normal drop AND
+/// while unwinding, so a failing arm cannot leak it into every later test in the process.
+///
+/// `remove_var` IS THE CORRECT RESTORE when the variable was absent: the gate reads through
+/// `env_flag_default_on`, so UNSET MEANS ON and removing it restores the shipped default rather
+/// than turning the gate off for the rest of the binary.
+struct GateHeldOff {
+    restore: Option<String>,
+}
+
+impl GateHeldOff {
+    fn new() -> Self {
+        let restore = std::env::var(crate::engine::TS_CONTAINER_ONE_ENTRY_A_PAGE).ok();
+        std::env::set_var(crate::engine::TS_CONTAINER_ONE_ENTRY_A_PAGE, "0");
+        Self { restore }
+    }
+}
+
+impl Drop for GateHeldOff {
+    fn drop(&mut self) {
+        match self.restore.take() {
+            Some(previous) => {
+                std::env::set_var(crate::engine::TS_CONTAINER_ONE_ENTRY_A_PAGE, previous)
+            }
+            None => std::env::remove_var(crate::engine::TS_CONTAINER_ONE_ENTRY_A_PAGE),
+        }
+    }
+}
+
+/// UNDER THE GATE THERE IS NOTHING FOR THIS COUNTER TO COUNT, AND THAT IS ASSERTED.
+///
+/// The arm above holds the gate OFF because that is the only route on which a hash page entry still
+/// names a field. This states the other half: with the gate at its shipped default every hash entry
+/// is page-named, so the same plant -- a field taken off the container and left on the index --
+/// produces NO named-only field, the read serves the container's remaining fields and nothing else,
+/// and the counter cannot move.
+///
+/// WRITTEN AS A TRIPWIRE RATHER THAN A ZERO. A counter that does not move is also what a broken
+/// instrument looks like, so this does not merely assert zero: it asserts that the index names no
+/// field for this object AT ALL, which is the reason the zero is correct, and it asserts that the
+/// planted field is GONE from the served answer -- because serving it from a nameless entry is the
+/// phantom `""` field the collapse had to fix on the read path.
+///
+/// rust-internal: drives the engine's own served path and its own report surface
+#[test]
+fn under_the_gate_a_hash_entry_names_no_field_so_the_divergence_is_unreachable() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let engine = engine_on(dir.path());
+    load_on(&engine);
+
+    let fields = ["alpha", "beta", "gamma"];
+    seed(&engine, &fields);
+    assert_eq!(
+        expected(&fields),
+        served(&engine, PLANTED_KEY),
+        "the fixture does not serve its own three fields, so nothing below means anything"
+    );
+
+    // FLOOR: the index really does name no field for this object, which is WHY the counter cannot
+    // move. Without this the zero below is satisfied by an index with no entries at all.
+    let (live, named) = {
+        let shards = engine.shards.read().expect("engine lock poisoned");
+        let shard = shards.get(&1).expect("shard is loaded");
+        let mut live = 0usize;
+        let mut named = 0usize;
+        for bucket in shard.bucket_index.bucket_map.values() {
+            for page in bucket.block_index.values() {
+                if page.deleted
+                    || page.model_id.as_str() != "hash"
+                    || &*page.object_key != PLANTED_KEY
+                {
+                    continue;
+                }
+                live += 1;
+                if page.component.is_some() {
+                    named += 1;
+                }
+            }
+        }
+        (live, named)
+    };
+    assert!(
+        live > 0,
+        "the index holds no live hash entry for this object, so a zero below says nothing about \
+         naming"
+    );
+    assert_eq!(
+        0, named,
+        "{named} of {live} live hash entries name a field under the gate; the collapse has not \
+         reached this kind and the arm above is the one to read"
+    );
+
+    const PLANTED_FIELD: &str = "beta";
+    {
+        let mut shards = engine.shards.write().expect("engine lock poisoned");
+        let shard = shards.get_mut(&1).expect("shard is loaded");
+        let fields_of = shard
+            .hashes
+            .elements_mut_for_test(PLANTED_KEY)
+            .expect("the container holds the seeded object");
+        assert!(
+            fields_of.remove(PLANTED_FIELD).is_some(),
+            "the container did not hold `{PLANTED_FIELD}`, so this test plants nothing"
+        );
+    }
+
+    let before = divergences(&engine);
+    let served_after = served(&engine, PLANTED_KEY);
+    let after = divergences(&engine);
+
+    assert_eq!(
+        before, after,
+        "the counter moved by {} under the gate, where no entry names a field for it to diverge \
+         from",
+        after - before
+    );
+    assert!(
+        !served_after.iter().any(|(name, _)| name == PLANTED_FIELD),
+        "the planted field is still served after being taken off the container: {served_after:?}. \
+         Under the gate the only entry that could serve it names no field, so serving it means a \
+         nameless entry was defaulted to a name -- the phantom-field defect on the read path"
+    );
+    assert!(
+        !served_after.iter().any(|(name, _)| name.is_empty()),
+        "a field named `\"\"` is being served: {served_after:?}. That is a nameless page entry \
+         defaulted through `unwrap_or_default()`, whose value is the raw page frame"
     );
 }

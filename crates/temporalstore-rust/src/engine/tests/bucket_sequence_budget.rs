@@ -635,7 +635,11 @@ fn what_narrowing_or_removing_each_sequence_would_make_the_node() {
     // The rows below are DIFFERENCES from these two constants, so every one of them recomputes and
     // not one conclusion moves -- which is the point of pricing by difference. The tail is still
     // six, a narrowing still hands its word straight back, and a removal still crosses.
-    const EIGHT_ALIGNED: usize = 80;
+    // AND 88, NOT 80, SINCE A REMOVAL'S ELEMENT NAME MOVED ONTO THE NODE. `tombstone_elements` is
+    // one word and it landed in THIS group -- the only byte this structure has ever gained, into
+    // the same group every earlier step came out of, which is why it cost a whole word instead of
+    // disappearing into the tail's rounding.
+    const EIGHT_ALIGNED: usize = 88;
     const TAIL: usize = 6;
     let live = size_of::<BucketNode>();
     assert_eq!(

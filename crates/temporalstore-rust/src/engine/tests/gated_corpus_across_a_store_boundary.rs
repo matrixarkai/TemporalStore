@@ -341,6 +341,12 @@ struct Boundary {
     /// The same census after the reload, which is what the READER derived.
     set_entries_reloaded: (usize, usize),
     hash_entries_reloaded: (usize, usize),
+    /// The DISTINCT PHYSICAL PAGES the reloaded hash's fields sit on, read from the durable map.
+    ///
+    /// The denominator the entry count is compared against, and read from the OTHER source on
+    /// purpose: the index's own page set is derived from the entries being counted, so it cannot
+    /// witness an entry over a page no field is on. This can.
+    hash_pages_reloaded: usize,
 }
 
 /// Write the corpus under `writer`, fold it, materialize the index, DROP the engine, and open a
@@ -381,6 +387,7 @@ fn across_a_store_boundary(writer: &str, reader: &str) -> Boundary {
         set_entries_written,
         set_entries_reloaded: entries_named(&reloaded, "set", SET_KEY),
         hash_entries_reloaded: entries_named(&reloaded, "hash", HASH_KEY),
+        hash_pages_reloaded: occupied_pages(&reloaded, "hash", HASH_KEY),
     }
 }
 
@@ -424,17 +431,27 @@ fn a_gated_corpus_comes_back_whole_across_a_store_boundary_for_all_four_kinds() 
         seen.set_entries_reloaded,
         seen.hash_entries_reloaded,
     );
-    // THE CONTROL, ASSERTED. Both reader and writer are GATED in this arm, so this is the one
-    // place in the module that observes what a gated binary files for a kind held OUT of the
-    // collapse. It must still be one NAMED entry per field: if hash collapses here, the set and
-    // zset/list figures below stop being attributable to the gate's kind list and the four
-    // index-by-component hash readers have to have moved in the same change.
+    // THE CONTROL, ASSERTED, AND IT IS THE OTHER WAY ROUND NOW. This said hash was held OUT of the
+    // collapse, so a gated binary had to file one NAMED entry per field, and it asserted
+    // `(ELEMENTS, ELEMENTS)` -- forty entries, forty naming a field. Hash is IN the page-named set,
+    // so the same measurement is the collapse itself: the forty fields fold onto the pages they
+    // share and NO entry names a field.
+    //
+    // STATED AS AN EXACT PAIR AND NOT AS A FLOOR, because the number is the claim. `< ELEMENTS`
+    // would be satisfied by an index that filed almost nothing, and `named == 0` alone is
+    // satisfied by an index that filed nothing at all -- so the live count is compared against the
+    // DISTINCT PAGES the elements resolve to, which is the denominator the collapse is about, and
+    // the serving figures below are what say nothing was lost on the way.
     assert_eq!(
-        (ELEMENTS, ELEMENTS),
+        (seen.hash_pages_reloaded, 0),
         hash_entries,
-        "a GATED reader filed {} live hash entries of which {} name a field. Hash is held out of          the page-named set on purpose -- see `index_entry_names_a_page` -- so one named entry per          field is what a gated binary must still derive for it",
+        "a GATED reader filed {} live hash entries of which {} name a field, over {} distinct \
+         page(s). One entry per page and no element name is what the collapse means; more entries \
+         than pages is a stale entry over a dead page, and any named entry means the filing \
+         predicate did not reach this kind",
         hash_entries.0,
-        hash_entries.1
+        hash_entries.1,
+        seen.hash_pages_reloaded
     );
     // THE GATED PROJECTION WROTE THIS STORE. Asserted on the WRITER's census, before any reader
     // could have re-derived it, so "a gated store" is established rather than assumed.
@@ -625,4 +642,33 @@ fn an_ungated_reader_re_derives_a_gated_store_and_so_needs_no_format_stamp() {
         seen.hash_entries_reloaded.0,
         seen.hash_entries_reloaded.1
     );
+}
+
+/// The distinct physical pages the DURABLE map says this object's elements are on.
+///
+/// The independent half of the entry-count comparison: the index's own page set is derived from the
+/// entries under test, so it cannot see an entry over a page nothing is on.
+fn occupied_pages(engine: &TemporalEngine, model_id: &str, object_key: &str) -> usize {
+    let shards = engine.shards.read().expect("engine lock poisoned");
+    let shard = shards.get(&1).expect("shard 1 loaded");
+    let pages: std::collections::BTreeSet<(u64, u64, u64)> = match model_id {
+        "hash" => shard
+            .hashes
+            .get(object_key)
+            .map(|fields| {
+                fields
+                    .iter()
+                    .map(|(_, address)| {
+                        (
+                            address.block_slab_id(),
+                            address.offset(),
+                            address.length(),
+                        )
+                    })
+                    .collect()
+            })
+            .unwrap_or_default(),
+        other => panic!("occupied_pages has no arm for {other}"),
+    };
+    pages.len()
 }

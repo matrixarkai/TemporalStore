@@ -3794,6 +3794,97 @@ pub(super) struct ObjectDeletionFiled(());
 /// WRITTEN ONCE AND READ BY EVERY SITE THAT NEEDS IT. Several copies of a condition is how most of
 /// them come to agree and the rest do not, which is the shape this series has already hit once with
 /// two filers disagreeing.
+/// # THE FLIP IS DONE AND WHAT IS LEFT IS NAMED HERE, ARM BY ARM
+///
+/// Hash and zset are IN the set now. Three consumers of a per-element name on a live entry had to
+/// move first, and a fourth turned out to be on the read path:
+///
+///  1. THE FILING SUPERSEDE TERM. Keyed on the landing address it finds nothing for a rewrite in
+///     place. `ReplacedPage` carries the element's previous address, read from the resident map,
+///     and the filer retires that page's entry when no sibling is left on it.
+///  2. THE TOMBSTONE SWEEP. A tombstone is a per-ELEMENT fact; its name lives in
+///     `BucketNode::tombstone_elements` now, where only a removal pays for it.
+///  3. THE ORDINAL ALLOCATOR. `state::container_page_ordinal` picked an element's existing position
+///     out of the index BY COMPONENT; it asks the resident map, which answers the overwrite's own
+///     address and the live high-water mark alike.
+///  4. `Command::HashGetAll`. Its index half read a nameless entry's component through
+///     `unwrap_or_default()`, so every page was served as a field called `""` whose value was the
+///     raw page FRAME. That -- not a stale entry -- is what served `hash: 41` of 40.
+///
+/// MEASURED AFTER ALL FOUR: the two product defects that refused this before are gone. The upgrade
+/// arm serves `hash 40 set 40 zset 40 list 40 of 40`, `conformance_oracle_matches_reference_model`
+/// and `a_command_of_one_type_answers_empty_for_a_key_of_another` pass, and no zset rescore leaves
+/// two live entries.
+///
+/// ## ONE THING IS STILL ASYMMETRIC, AND IT IS A DEFECT OF FOOTPRINT RATHER THAN OF ANSWERS
+///
+/// A gated REMOVAL does not retire the live entry over the page its element vacates.
+/// `mark_bucket_index_block_deleted_recording`'s `retain` matches `page.component == component`,
+/// which a page-named entry cannot satisfy, so the live entry stays and a tombstone is added beside
+/// it. That is deliberate where the page still holds siblings -- dropping it would take them with
+/// it -- and it is a STALE LIVE ENTRY over a dead page where it does not. Membership is still right,
+/// because `container_membership` folds by append position and the tombstone is the later page:
+/// `a_gated_corpus_comes_back_whole_across_a_store_boundary_for_all_four_kinds` serves every element
+/// and `a_gated_removal_leaves_every_other_member_whole_across_a_reload` holds across a reload.
+/// What it costs is an entry per removal that nothing collects.
+///
+/// THE FIX IS THE ONE THE WRITE PATH ALREADY HAS: ask the resident map whether any sibling is still
+/// on the vacated page -- `RecordedMap::page_an_element_vacates` is that question -- and retire the
+/// entry when none is. It is not done here because a removal reaches the index through a different
+/// door and that door takes no element type. `container_page_ordinal::the_ordinal_names_a_position_
+/// and_a_delete_frees_it` is the arm that reads the retained live entry.
+///
+/// ## AND EIGHTEEN GUARDS STILL ASSERT THE PRE-COLLAPSE STATE
+///
+/// Listed so they are restatement work someone can pick up rather than a red count to be rediscovered.
+/// Each was DRIVEN and its message read; none is a demonstrated loss of served data.
+///
+///   * `carried_page_identity` x2 -- both recover a hash field's name FROM THE ENTRY. "key h0
+///     recovered 0 of 25 field names after a reload" is the collapse; the module's subject is
+///     whether the name is independently recoverable, and under the collapse it is recoverable from
+///     the PAGE's own frame and from `shard.hashes`, not from the entry.
+///   * `container_member_shadow` x3 -- its zset page walk does
+///     `.expect("a zset page is named by its component")`. The redundancy it measures between a
+///     component and the page payload is what the collapse DELETED, so two arms are measuring a
+///     cost that is gone; the third is an inherited red (below).
+///   * `durable_outranks_derived` x4 -- these plant a state where the index names an element the
+///     durable map does not hold, and assert it comes back FROM ITS NAME. A collapsed index names
+///     no element, so that recovery is gone BY DESIGN: the four resident maps are all durable
+///     (`#[serde(default)]`) and are the authority, and an index written before the collapse is
+///     refused by `SHARD_INDEX_FORMAT_VERSION` and rebuilt from the WAL. The delta-fold door those
+///     arms were written for is closed from the other side too, because
+///     `collect_upsert_index_items` reads the resident map, so an item exists only where the map
+///     held the element.
+///   * `element_ordinal_reuse` x4 -- the high-water mark and the freed-ordinal arms drive the
+///     allocator by blanking or reading INDEX entries. The allocator reads the resident map now.
+///   * `fold_hash_map_completeness` x2 -- both floor on "the page index names N fields".
+///   * `container_page_ordinal::the_ordinal_names_a_position_and_a_delete_frees_it` -- the retained
+///     live entry described above.
+///   * `entry_object_identity` x2 -- `the_whole_object_read_path_asks_for_every_component_of_one_key`
+///     is about a read path that no longer asks by component.
+///
+/// AND TWO REDS ARE INHERITED, not this change's:
+/// `container_member_shadow::a_zset_read_examines_no_page_index_entries_and_a_hash_read_does` and
+/// `length_answer_and_listing_agree::the_two_sources_of_a_hash_length_part_on_the_pre_carry_route_
+/// and_a_reload_restores_them` both fail on 9651d82fd with byte-identical messages at the same lines
+/// with `Compiling` 0. This change moves WHICH arm of the second one reddens, from line 883 to 809.
+///
+/// ## AND THE WIDTH STEP THIS LEADS TO NEEDS TWO MORE PIECES, NEITHER OF WHICH IS THIS FLIP
+///
+/// `state`'s `TheEntryWithoutAnElementName` measures the entry at 40 bytes with zero slack, tied to
+/// the live type, so the number is in hand. Removing the field needs:
+///
+///   * THE GATE'S OFF POSITION RETIRED. `BlockIndex::component` is the only place an element name
+///     can live on an entry, so with the field gone `index_entry_names_a_page` returning false
+///     cannot be honoured: nothing could file a name, and the ungated readers that match
+///     `page.component == component` -- `bucket_store::bucket_index_block_address` and its
+///     component walk -- would answer wrongly. `TS_CONTAINER_ONE_ENTRY_A_PAGE` becomes a ONE-WAY
+///     door. Seven non-test sites read it.
+///   * THE DERIVED VIEW'S ELEMENT DERIVATION RETIRED. `rebuild_unserialized_model_maps_from_bucket_
+///     index` and `reconcile_secondary_views_from_bucket_index` rebuild the resident maps from
+///     `entry.component`; with no field they can derive NO container element and the durable maps
+///     become the sole source. That is the direction this campaign has been heading, and it is what
+///     the four `durable_outranks_derived` arms above are about.
 pub(super) fn index_entry_names_a_page(kind: &str) -> bool {
     if !super::container_index_files_one_entry_a_page() {
         return false;

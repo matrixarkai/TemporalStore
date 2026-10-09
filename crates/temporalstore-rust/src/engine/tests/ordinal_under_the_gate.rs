@@ -447,31 +447,6 @@ fn live_ordinals_hash(engine: &TemporalEngine, object_key: &str) -> Vec<u64> {
     ordinals.into_iter().collect()
 }
 
-/// Strip `component` off every LIVE, non-deleted hash page this `(key, field)` names, in place.
-/// Returns how many entries were stripped, so a caller can floor it at exactly one and know the
-/// plant landed on what it meant to -- and nowhere else.
-fn strip_hash_component(engine: &TemporalEngine, key: &str, field: &str) -> usize {
-    let mut shards = engine.shards.write().expect("engine lock poisoned");
-    let shard = shards.get_mut(&1).expect("shard 1 loaded");
-    let mut stripped = 0usize;
-    for bucket in shard.bucket_index.bucket_map.values_mut() {
-        // `blocks_mut_unaccounted`, not a plain `values_mut`: `BlockIndexMap` is not a map with
-        // one, and this name is the contract -- a mutation through it must not touch `address`,
-        // which this one does not (only `component`). Same boundary two other tests already use
-        // to corrupt a field directly for a plant.
-        for page in bucket.block_index.blocks_mut_unaccounted() {
-            if page.model_id.as_str() == "hash"
-                && &*page.object_key == key
-                && !page.deleted
-                && page.component.as_deref() == Some(field)
-            {
-                page.component = None;
-                stripped += 1;
-            }
-        }
-    }
-    stripped
-}
 
 /// THE DISCRIMINATING TEST FOR THE HASH ORDINAL FIX: writes a field, overwrites it, and checks the
 /// ordinal did not advance -- against an entry planted component-less, which is the one state
@@ -522,12 +497,17 @@ fn an_overwrite_of_a_component_less_hash_entry_reuses_its_ordinal() {
     println!("  round=seed  ordinals={after_seed:?}");
 
     for round in 0..REWRITES {
-        let stripped = strip_hash_component(&engine, KEY, FIELD);
+        // NO PLANT: a hash entry is nameless by construction now, so the strip that used to
+        // manufacture this state removes nothing. Asserted directly instead, per round, because
+        // what this test needs established is that the overwrite below is an overwrite of a
+        // NAMELESS entry -- which is the case `container_page_ordinal` could not resolve from the
+        // index and now resolves from the resident map.
         assert_eq!(
-            1, stripped,
-            "round {round}: stripped {stripped} entries, not one -- either the previous write did \
-             not land, or the filing path is leaving more than one live entry named `{FIELD}` \
-             behind, and the plant below is not landing on what this test says it is"
+            0,
+            named_hash_entries(&engine, KEY),
+            "round {round}: {} live hash entries name a field, so this round is not overwriting a \
+             nameless entry",
+            named_hash_entries(&engine, KEY)
         );
 
         let response = engine.execute(ExecuteRequest {
@@ -604,11 +584,21 @@ fn a_component_less_hash_entry_is_still_answered_correctly_by_get_len_and_incrby
     // object is unambiguously a two-page object and the lookup below has something real to
     // disambiguate FROM rather than answering by elimination over an object with nothing else on
     // it.
-    let stripped = strip_hash_component(&engine, KEY, FIELD);
+    // NO PLANT IS NEEDED ANY MORE, AND THAT IS WHAT IS ASSERTED INSTEAD.
+    //
+    // This stripped the component off `FIELD`'s entry to manufacture the nameless entry the test is
+    // about. Hash is in the page-named set, so the entry is nameless BY CONSTRUCTION and the strip
+    // removes nothing -- measured as "stripped 0 entries, not one". A plant that plants nothing is
+    // the shape that makes a guard read as a tree fact while asserting only its own fixture, so it
+    // is replaced by the direct statement: this object's entries carry no field name at all, and
+    // `SIBLING` is still a separate page, so the lookup below has something real to disambiguate
+    // from rather than answering by elimination.
     assert_eq!(
-        1, stripped,
-        "stripped {stripped} entries, not one -- the plant did not land on exactly the seeded \
-         field, or the object is not the two-field shape this test is about"
+        0,
+        named_hash_entries(&engine, KEY),
+        "{} of this object's live hash entries name a field, so the nameless-entry case this test \
+         is about is not the state it is in",
+        named_hash_entries(&engine, KEY)
     );
 
     let live_pages = {
@@ -681,4 +671,26 @@ fn a_component_less_hash_entry_is_still_answered_correctly_by_get_len_and_incrby
         ),
         other => panic!("expected Integer, got {other:?}"),
     }
+}
+
+/// How many of this object's LIVE hash entries name a field.
+///
+/// Replaces the strip-plant two arms above used to manufacture a nameless entry with. Under the
+/// collapse the entry is nameless already, so the honest statement is a count of named ones -- and
+/// a count of zero over an object that HAS entries is a stronger claim than a plant that lands.
+fn named_hash_entries(engine: &TemporalEngine, key: &str) -> usize {
+    let shards = engine.shards.read().expect("engine lock poisoned");
+    let shard = shards.get(&1).expect("shard 1 loaded");
+    shard
+        .bucket_index
+        .bucket_map
+        .values()
+        .flat_map(|bucket| bucket.block_index.values())
+        .filter(|page| {
+            !page.deleted
+                && page.model_id.as_str() == "hash"
+                && &*page.object_key == key
+                && page.component.is_some()
+        })
+        .count()
 }
