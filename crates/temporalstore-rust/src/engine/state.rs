@@ -4086,6 +4086,64 @@ const _: () = {
     assert!(field_sum == std::mem::size_of::<BlockIndex>());
 };
 
+// WHAT THE ENTRY WOULD BE WITHOUT `component`: FORTY, MEASURED AND NOT HOPED.
+//
+// # WHY THE NUMBER IS RECORDED HERE WHILE THE FIELD IS STILL PRESENT
+//
+// The step from 56 to 40 was attempted on the understanding that collapsing all four container
+// kinds onto one entry a page makes `component` dead. It makes it dead ON A LIVE ENTRY, and that
+// half is now done -- `index_entry_names_a_page` answers true for all four, so no live entry of
+// any kind is filed under an element name. The field is still read, by the TOMBSTONE SWEEP in
+// `storage_bucket_internals::upsert_bucket_index_block_inner`, against the ELEMENT's own name. A
+// tombstone is a per-element fact: what it records is WHICH element was removed, so a nameless
+// one has not been made smaller, it has lost its content. Dropping that term makes a re-add of
+// member Y clear member X's tombstone, and X comes back.
+//
+// So the width is stated as a MEASUREMENT of a field set, not as an assertion about this type.
+// Whoever takes the step needs the number to be real before they start, and needs it not to be
+// arrived at by adjusting an assertion until it passed -- this crate has a recorded case of a
+// hand-maintained decomposition reconstructing a correct total from a field set that no longer
+// existed, by rounding luck.
+//
+// # AND THE PROBE CANNOT DRIFT FROM THE REAL STRUCT
+//
+// A second struct listing the same fields is prose arithmetic in a type's clothing: nothing makes
+// it follow `BlockIndex`. The last assertion below is what ties them -- the real entry must equal
+// the probe PLUS exactly the width of the field left out. That identity holds only because the
+// entry has zero slack, which the block above asserts, so a field added to or removed from
+// `BlockIndex` breaks this block rather than leaving it describing a type that moved on.
+const _: () = {
+    #[allow(dead_code)]
+    struct TheEntryWithoutAnElementName {
+        kind: crate::index_log::IndexItemKind,
+        routing_bucket: u32,
+        object_key: Arc<str>,
+        model_id: crate::engine::storage_bucket_internals::StoredModelKind,
+        address: ElementEntry,
+        dirty: bool,
+        deleted: bool,
+    }
+    let field_sum = std::mem::size_of::<crate::index_log::IndexItemKind>()
+        + std::mem::size_of::<u32>()
+        + std::mem::size_of::<Arc<str>>()
+        + std::mem::size_of::<crate::engine::storage_bucket_internals::StoredModelKind>()
+        + std::mem::size_of::<ElementEntry>()
+        + std::mem::size_of::<bool>()
+        + std::mem::size_of::<bool>();
+    // THE TWO NUMBERS THE STEP IS ABOUT, both asserted and neither inferred from the other.
+    assert!(field_sum == 40);
+    assert!(std::mem::size_of::<TheEntryWithoutAnElementName>() == 40);
+    // ZERO SLACK SURVIVES THE REMOVAL: 40 is a multiple of 8, so the field set packs exactly and
+    // the step is a whole two words rather than one word and some rounding.
+    assert!(std::mem::size_of::<TheEntryWithoutAnElementName>() == field_sum);
+    // TIED TO `BlockIndex` ITSELF, so this cannot go on describing a type that moved.
+    assert!(
+        std::mem::size_of::<BlockIndex>()
+            == std::mem::size_of::<TheEntryWithoutAnElementName>()
+                + std::mem::size_of::<Option<Arc<str>>>()
+    );
+};
+
 // THE DEFERRED DECISION, WITH A TRIGGER RATHER THAN A NOTE.
 //
 // This type holds the address DIRECTLY instead of the shared payload value the row
