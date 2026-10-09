@@ -245,6 +245,7 @@ mod length_answer_and_listing_agree;
 mod set_listing_page_reads;
 mod object_is_a_key_not_an_element;
 mod container_page_element_key;
+mod the_entry_cannot_name_its_object_by_slot;
 mod the_entry_cannot_point_at_the_object_list;
 mod resident_map_readers;
 mod container_pages_are_batched;
