@@ -3837,10 +3837,14 @@ pub(super) struct ObjectDeletionFiled(());
 /// ## AND THE GUARDS THAT STILL ASSERT THE PRE-COLLAPSE STATE, BY MODULE
 ///
 /// The retirement of the gate turned every UNGATED-path test into a gated-path test, so this
-/// surface grew rather than shrank: seventeen before it, and 49 of 914 after -- measured with the
-/// `_scale`, `campaign_end_to_end` and `bucket_fill` measurement families excluded, which is stated
-/// because a failure count with no denominator cannot be checked.
+/// surface grew rather than shrank: seventeen before it, and AT LEAST 53 after.
 ///
+/// THE COUNT IS A FLOOR AND IS WRITTEN AS ONE, because the run that produced it had not finished:
+/// 53 failures at 810 of 914 arms, with the `_scale`, `campaign_end_to_end` and `bucket_fill`
+/// measurement families excluded. An earlier draft of this paragraph wrote 49 as a FINAL figure
+/// from the same run four minutes earlier, and it had already risen to 53 by the time the paragraph
+/// was committed -- which is the whole reason a count needs its denominator AND the state of the
+/// run that produced it. Re-measure before quoting a total; the SHAPES below are what is stable.
 /// NONE IS A DEMONSTRATED LOSS OF SERVED DATA. Each was driven and its message read, and they fall
 /// into four shapes:
 ///
