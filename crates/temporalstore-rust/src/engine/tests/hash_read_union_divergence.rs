@@ -148,115 +148,148 @@ fn seed(engine: &TemporalEngine, fields: &[&str]) {
     }
 }
 
-/// THE WHOLE CLAIM, IN THE ORDER THAT MAKES IT EVIDENCE.
+/// A FIELD THE PAGE INDEX NO LONGER NAMES IS STILL SERVED, AND NOTHING IS COUNTED.
 ///
-/// One test and not three, because the three arms share a store and the second and third arms are
-/// only meaningful against the first: a counter that moves on a planted divergence proves nothing
-/// unless it stayed still when there was none. Split across `#[test]`s they would be three
-/// separate readings of a PROCESS-WIDE counter, and the deltas would be at the mercy of whichever
-/// order the harness chose.
+/// RESTATED DOWN TO ITS ONE REMAINING DIRECTION, AND THE OTHER TWO WERE NOT DROPPED -- THEY ARE
+/// HELD ELSEWHERE. This was `the_hash_read_serves_both_sources_and_counts_what_only_the_index_names`
+/// and it ran three arms over one store: a negative control, a plant that takes a field off the
+/// CONTAINER and leaves it on the index, and a plant in the opposite direction. The first two are
+/// both about a field the INDEX names that the container lacks, and an entry has no field to name.
+/// So the divergence is unreachable BY CONSTRUCTION rather than absent by circumstance: the
+/// control's "the counter did not move" could only ever pass, and the plant's "the counter moved"
+/// could only ever fail -- which is how it failed, at "the divergence counter did not move (0 ->
+/// 0); a counter that is never seen to move is not evidence". Its own in-function comment had
+/// already diagnosed that and held the arm on "the ungated route". The one-entry-a-page flag is
+/// retired, so there is no ungated route left to hold it on.
 ///
-/// WHY THE COUNTER IS READ AS A DELTA AND ASSERTED AS A BOUND. It is process-wide and monotonic,
-/// so another test in the same binary that served a hash read contributes to it. A delta removes
-/// the history; a `>=` rather than `==` on the planted arm removes the last of the coupling, and
-/// what pins the delta to THIS test is `last_divergence` naming this module's own key and field.
+/// THOSE TWO ARE HELD, WITH THE REASONS THAT MAKE THEM MEAN SOMETHING, BY
+/// `under_the_gate_a_hash_entry_names_no_field_so_the_divergence_is_unreachable` below: it asserts
+/// the zero TOGETHER WITH a live-entry floor, so the zero cannot be read as an empty store; that
+/// the field taken off the container is GONE from the served answer; and that no field named `""`
+/// is served, which is the phantom the collapse had to fix on the read path. Repeating them here
+/// would be two arms making one structural claim, one of them framed around a retired flag.
+///
+/// WHAT IS LEFT IS THE DIRECTION THAT STILL HAS TWO OUTCOMES, and it matters more now than it did.
+/// With the container the sole source of a hash's field names, an index entry marked deleted must
+/// lose NOTHING -- and this arm marks EVERY live entry of the object deleted, so the index names
+/// nothing live for it at all and the container is answering alone. It is not counted either,
+/// because this direction loses no read and counting it would make the figure unreadable as a risk
+/// number.
+///
+/// THE UNION IS ONE-SIDED NOW, AND THAT IS THE FINDING THIS ARM CARRIES. The module header still
+/// describes `HashGetAll` as serving the union of two sources. Its index half answers from
+/// `shard.hashes` -- it was one of the four consumers that had to move before the element name
+/// could come off the entry -- so the index contributes no NAMES, only the divergence observation
+/// that can no longer observe anything. What protects the single remaining source is
+/// `fold_hash_map_completeness`, which compares the durable map against the pages' own payloads.
 ///
 /// rust-internal: drives the engine's own served path and its own report surface
 #[test]
-fn the_hash_read_serves_both_sources_and_counts_what_only_the_index_names() {
-    // HELD AT GATE OFF, AND THAT IS THE SUBJECT RATHER THAN A WORKAROUND.
-    //
-    // This counter is about a field the PAGE INDEX names that the container does not. Under one
-    // entry a page a hash entry names NO field at all, so there is no named-only field for a plant
-    // to create and the divergence is unreachable by construction -- the arm below asserts exactly
-    // that, so the structural zero is stated rather than mistaken for a clean store. The route
-    // where the counter can still move is the ungated one, which is what this arm holds.
+fn an_index_entry_marked_deleted_loses_no_field_and_is_not_counted() {
     let dir = tempfile::tempdir().expect("tempdir");
     let engine = engine_on(dir.path());
     load_on(&engine);
 
     let fields = ["alpha", "beta", "gamma"];
     seed(&engine, &fields);
-
-    // -------------------------------------------------------------------------------------------
-    // ARM 1 -- THE NEGATIVE CONTROL. The two sources agree, so the counter must not move. Without
-    // this arm, arm 2 cannot tell a counter that detects a divergence from one that counts reads.
-    // -------------------------------------------------------------------------------------------
-    let before_control = divergences(&engine);
     assert_eq!(
         expected(&fields),
         served(&engine, PLANTED_KEY),
         "the fixture does not serve its own three fields, so nothing below means anything"
     );
-    let after_control = divergences(&engine);
+
+    // THE DENOMINATOR, BEFORE THE PLANT. A plant that marked nothing would leave the answer
+    // trivially unchanged, and this arm would then be measuring an untouched store.
+    let live_before = live_hash_entries(&engine, PLANTED_KEY);
     assert_eq!(
-        before_control, after_control,
-        "a read of an object whose two sources AGREE moved the divergence counter by {}; the \
-         counter is counting something other than a disagreement",
-        after_control - before_control
+        fields.len(),
+        live_before,
+        "the object holds {live_before} live index entries for {} fields written; every element \
+         gets its own page on the write path, so this arm is not in the state it says",
+        fields.len()
     );
 
-    // -------------------------------------------------------------------------------------------
-    // ARM 2 -- THE PLANT THE COUNTER EXISTS FOR. One field is taken off the CONTAINER and left on
-    // the page index, which is exactly the state that would lose a read once the index stops being
-    // consulted.
-    // -------------------------------------------------------------------------------------------
-    const PLANTED_FIELD: &str = "beta";
-    {
+    // THE PLANT: every live entry of the object marked deleted, so the index names nothing live for
+    // it. The blocks are untouched, so the container's own addresses still resolve.
+    //
+    // IT CANNOT SELECT BY FIELD NAME, AND IT NO LONGER NEEDS TO. It read
+    // `entry.component.as_deref() == Some(INDEX_PLANTED_FIELD)` and then, after the field left the
+    // entry, selected "the object's one live entry" on the belief that one entry a page meant one
+    // entry an OBJECT. It does not: each element is written to its own page, so this object holds
+    // three. Marking all of them is the stronger plant anyway -- it leaves the container answering
+    // with no help from the index at all -- and the count below pins it to exactly the three above
+    // rather than to whatever the walk happened to find.
+    let marked = {
         let mut shards = engine.shards.write().expect("engine lock poisoned");
         let shard = shards.get_mut(&1).expect("shard is loaded");
-        let fields_of = shard
-            .hashes
-            .elements_mut_for_test(PLANTED_KEY)
-            .expect("the container holds the seeded object");
-        let removed = fields_of.remove(PLANTED_FIELD);
-        assert!(
-            removed.is_some(),
-            "the container did not hold `{PLANTED_FIELD}` to begin with, so this test plants \
-             nothing and its green is vacuous"
-        );
-        assert_eq!(
-            2,
-            fields_of.len(),
-            "the container should hold the other two fields after the plant"
-        );
-    }
-
-    let before_plant = divergences(&engine);
-    let served_after_plant = served(&engine, PLANTED_KEY);
-    let after_plant = divergences(&engine);
-
-    // (a) THE COUNTER MOVED.
-    assert!(
-        after_plant > before_plant,
-        "the page index names `{PLANTED_FIELD}` and the container no longer holds it, and the \
-         divergence counter did not move ({before_plant} -> {after_plant}); a counter that is \
-         never seen to move is not evidence"
-    );
-
-    // (b) IT MOVED FOR THIS FIELD, which is what ties the delta to this test rather than to
-    //     whatever else the binary served.
-    let sample = engine
-        .hash_read_divergence_report()
-        .last_divergence
-        .expect("a divergence was counted, so a sample must have been recorded");
+        // THE HANDLES FIRST, THEN THE MARK. `BlockIndexMap` has no `values_mut` -- it is an enum
+        // over an inline entry and a sorted vector -- so the matching handles are collected under
+        // the read side of the walk and marked through `get_mut` one at a time.
+        let targets: Vec<(u32, u64)> = shard
+            .bucket_index
+            .bucket_map
+            .iter()
+            .flat_map(|(routing_bucket, bucket)| {
+                bucket
+                    .block_index
+                    .iter()
+                    .filter(|(_, page)| {
+                        !page.deleted
+                            && page.model_id.as_str() == "hash"
+                            && &*page.object_key == PLANTED_KEY
+                    })
+                    .map(|(handle, _)| (*routing_bucket, *handle))
+                    .collect::<Vec<_>>()
+            })
+            .collect();
+        let mut marked = 0usize;
+        for (routing_bucket, handle) in targets {
+            let Some(bucket) = shard.bucket_index.bucket_map.get_mut(&routing_bucket) else {
+                continue;
+            };
+            let Some(page) = bucket.block_index.get_mut(&handle) else {
+                continue;
+            };
+            if !page.deleted {
+                page.deleted = true;
+                marked += 1;
+            }
+        }
+        marked
+    };
     assert_eq!(
-        (PLANTED_KEY.to_string(), PLANTED_FIELD.to_string()),
-        (sample.object_key.clone(), sample.field.clone()),
-        "the counter moved but the sample names {sample:?}, not the planted field"
+        live_before, marked,
+        "the plant marked {marked} of {live_before} live entries; a partial plant leaves the index \
+         naming some of the object and this arm would not be about the container answering alone"
+    );
+    assert_eq!(
+        0,
+        live_hash_entries(&engine, PLANTED_KEY),
+        "the object still holds live index entries after the plant"
     );
 
-    // (c) AND THE UNION STILL SERVED THE RIGHT ANSWER -- all three fields with their own values,
-    //     the planted one answered from the index. This is what makes observing the divergence
-    //     safe: it is observed rather than suffered.
+    let before = divergences(&engine);
+    let served_after = served(&engine, PLANTED_KEY);
+    let after = divergences(&engine);
+
+    // THE CONTAINER ANSWERS ALONE, AND IT ANSWERS IN FULL.
     assert_eq!(
         expected(&fields),
-        served_after_plant,
-        "a field missing from the container alone changed what the read serves; the union is \
-         supposed to make a divergence observable WITHOUT losing a read"
+        served_after,
+        "with no live index entry for the object the read served {served_after:?}. The container \
+         holds all three fields and their addresses, so it must answer all three -- a short answer \
+         here means the read still depends on the index naming something"
     );
 
-    // (d) THE DENOMINATOR IS PUBLISHED AND NON-ZERO, because a count without it is unreadable.
+    // AND NOTHING WAS COUNTED, because the container-side direction loses no read.
+    assert_eq!(
+        before, after,
+        "the container-only direction counted {} divergences; the counter is for a field the INDEX \
+         names that the container lacks, and mixing the two makes it unreadable as a risk figure",
+        after - before
+    );
+
+    // THE DENOMINATOR IS PUBLISHED AND NON-ZERO, because a count without one is unreadable.
     let report = engine.hash_read_divergence_report();
     assert!(
         report.reads_served >= 2,
@@ -265,81 +298,21 @@ fn the_hash_read_serves_both_sources_and_counts_what_only_the_index_names() {
         report.reads_served,
         report.index_named_fields_the_container_lacked
     );
+}
 
-    // -------------------------------------------------------------------------------------------
-    // ARM 3 -- THE OPPOSITE DIRECTION, which the union rescues and which is deliberately NOT
-    // counted. A field is taken off the PAGE INDEX and left in the container. Marking the index
-    // entry deleted is how the index stops naming it; the block itself is untouched, so the
-    // container's address still resolves.
-    // -------------------------------------------------------------------------------------------
-    const INDEX_PLANTED_FIELD: &str = "gamma";
-    {
-        let mut shards = engine.shards.write().expect("engine lock poisoned");
-        let shard = shards.get_mut(&1).expect("shard is loaded");
-        let located: Vec<(u32, u64)> = shard
-            .bucket_index
-            .object_block_refs("hash", PLANTED_KEY)
-            .map(|refs| {
-                refs.all_refs()
-                    .map(|block_ref| (block_ref.routing_bucket, block_ref.block_ref_key))
-                    .collect()
-            })
-            .unwrap_or_default();
-        assert!(
-            !located.is_empty(),
-            "the object lookup names no blocks for the seeded object, so this arm cannot plant"
-        );
-        let mut marked = 0usize;
-        for (routing_bucket, block_ref_key) in located {
-            let Some(bucket) = shard.bucket_index.bucket_map.get_mut(&routing_bucket) else {
-                continue;
-            };
-            let Some(entry) = bucket.block_index.get_mut(&block_ref_key) else {
-                continue;
-            };
-            // THE PLANT CANNOT SELECT BY FIELD NAME ANY MORE, so it selects the object's page.
-            //
-            // It read `entry.component.as_deref() == Some(INDEX_PLANTED_FIELD)`. An entry names a
-            // page, not an element, so there is no field name to match on. Under one entry a page
-            // the object has exactly ONE live entry, which is the thing a plant can mark -- and
-            // the `marked == 1` assertion below is what proves the selection stayed exact rather
-            // than widening to every entry of the object.
-            if !entry.deleted {
-                entry.deleted = true;
-                marked += 1;
+/// The live hash page entries this object holds.
+fn live_hash_entries(engine: &TemporalEngine, key: &str) -> usize {
+    let shards = engine.shards.read().expect("engine lock poisoned");
+    let shard = shards.get(&1).expect("shard is loaded");
+    let mut live = 0usize;
+    for bucket in shard.bucket_index.bucket_map.values() {
+        for page in bucket.block_index.values() {
+            if !page.deleted && page.model_id.as_str() == "hash" && &*page.object_key == key {
+                live += 1;
             }
         }
-        assert_eq!(
-            1, marked,
-            "the plant marked {marked} index entries for `{INDEX_PLANTED_FIELD}`, not one; the \
-             arm below would be measuring a different store than it says"
-        );
     }
-
-    let before_rescue = divergences(&engine);
-    let served_after_rescue = served(&engine, PLANTED_KEY);
-    let after_rescue = divergences(&engine);
-
-    // The container still holds `gamma`, so the union must still serve it. `beta` is still missing
-    // from the container and still named by the index, so it is still served from there: the
-    // answer is unchanged in BOTH directions at once, which is the union doing its whole job.
-    assert_eq!(
-        expected(&fields),
-        served_after_rescue,
-        "a field the page index no longer names was not served from the container; the union is \
-         not serving both sources"
-    );
-
-    // AND IT COUNTED ONLY THE OTHER DIRECTION. `beta` is still divergent index-side and still
-    // counted; `gamma` is divergent container-side and must not be, because the union already
-    // answers it and mixing the two would make the count unreadable as a risk figure.
-    assert_eq!(
-        1,
-        after_rescue - before_rescue,
-        "one read of an object with one index-only field and one container-only field counted {} \
-         divergences, not 1; the container-only direction is being counted too",
-        after_rescue - before_rescue
-    );
+    live
 }
 
 /// Holds the one-entry-a-page gate OFF and puts back whatever was there -- on a normal drop AND
