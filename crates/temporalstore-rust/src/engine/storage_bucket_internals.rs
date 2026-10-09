@@ -3891,9 +3891,11 @@ pub(super) struct ObjectDeletionFiled(());
 ///     become the sole source. That is the direction this campaign has been heading, and it is what
 ///     the four `durable_outranks_derived` arms above are about.
 pub(super) fn index_entry_names_a_page(kind: &str) -> bool {
-    if !super::container_index_files_one_entry_a_page() {
-        return false;
-    }
+    // NO GATE. Every container kind files one entry a page, unconditionally: the entry has no field
+    // for an element name, so there is no other position to be in. What this function still decides
+    // is which KINDS converge on the PAGE rather than on the object -- a real distinction, because
+    // `string`, `control_state` and `context_node` hold one page per object and converge on the
+    // object key instead.
     // Spelled against `ModelKind::as_str` rather than against string literals so a kind renamed in
     // the registry cannot leave this list silently matching nothing.
     kind == ModelKind::Set.as_str()

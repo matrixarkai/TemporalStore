@@ -627,7 +627,6 @@ fn the_maps_the_delta_fold_restores_do_not_include_the_container_maps() {
     // ITS PREMISE IS SPELLED OUT IN ITS OWN FLOOR: "must hold exactly one page entry carrying a
     // component ... so the identity-in-the-component premise". That premise is the ungated one.
     // The gated delta-fold replay is `replay_under_the_gate`'s subject.
-    let _gate_off = super::GateOff::held();
     let dir = tempfile::tempdir().expect("tempdir");
     let engine = engine_on(dir.path());
     load_on(&engine, NARROW_END);

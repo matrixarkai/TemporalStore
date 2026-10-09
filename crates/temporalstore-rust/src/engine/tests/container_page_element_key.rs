@@ -876,7 +876,6 @@ fn every_container_kind_reads_back_the_value_it_wrote_through_a_framed_page() {
     // store boundary, by `container_pages_are_batched::every_element_reads_back_its_own_value_
     // after_the_fold_and_after_a_reload`, and by `container_page_ordinal::a_reloaded_container_
     // still_reads_every_element`.
-    let _gate_off = super::GateOff::held();
     let dir = tempfile::tempdir().expect("tempdir");
     println!(
         "\n=== container kinds through the product path ===\n  store path {} characters",

@@ -389,7 +389,6 @@ fn an_overwrite_keeps_the_members_ordinal_rather_than_climbing() {
     // under the collapsed projection is asserted by
     // `ordinal_under_the_gate::an_overwrite_keeps_the_members_ordinal_under_either_projection`,
     // which drives BOTH arms, so pinning this one loses nothing.
-    let _gate_off = super::GateOff::held();
     let dir = tempfile::tempdir().expect("tempdir");
     let engine = engine_on(dir.path());
     load_on(&engine, OPERATOR_END);
@@ -638,7 +637,6 @@ fn deletion_still_finds_its_row_by_component() {
     // asks which entry NAMES a component; gated, no entry carries one, so it reports every
     // member as missing -- including ones that are present and served. The gated removal is
     // covered by `gated_removal` and `removal_the_index_can_find`.
-    let _gate_off = super::GateOff::held();
     let dir = tempfile::tempdir().expect("tempdir");
     let engine = engine_on(dir.path());
     load_on(&engine, OPERATOR_END);

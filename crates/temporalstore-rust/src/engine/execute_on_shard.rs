@@ -913,36 +913,24 @@ pub(crate) fn execute_on_shard(
                     // durable (`#[serde(default)]`, see `RecordedMap`'s unconditional
                     // `Serialize`) and already the address `HashMultiGet` reads a field from --
                     // same lookup, used here as the point read's source of truth under the gate.
-                    value: if crate::engine::container_index_files_one_entry_a_page() {
-                        shard
-                            .hashes
-                            .get(&key)
-                            .and_then(|fields| fields.get(&field))
-                            .and_then(|address| {
-                                read_block_bytes(
-                                    cache,
-                                    block_store,
-                                    shard_id,
-                                    address,
-                                    PageIdentity::of(shard_id, "hash", &key, Some(field.as_str())),
-                                    Some(block_routing_bucket(
-                                        &key,
-                                        start_routing_bucket,
-                                        end_routing_bucket,
-                                    )),
-                                )
-                            })
-                    } else {
-                        read_bucket_index_value(
-                            cache,
-                            block_store,
-                            shard_id,
-                            shard,
-                            "hash",
-                            &key,
-                            Some(field.as_str()),
-                        )
-                    },
+                    value: shard
+                        .hashes
+                        .get(&key)
+                        .and_then(|fields| fields.get(&field))
+                        .and_then(|address| {
+                            read_block_bytes(
+                                cache,
+                                block_store,
+                                shard_id,
+                                address,
+                                PageIdentity::of(shard_id, "hash", &key, Some(field.as_str())),
+                                Some(block_routing_bucket(
+                                    &key,
+                                    start_routing_bucket,
+                                    end_routing_bucket,
+                                )),
+                            )
+                        }),
                 }
             })
         }
@@ -1051,40 +1039,26 @@ pub(crate) fn execute_on_shard(
             // at zero -- this is the one HASH surface among the four that WRITES on a miss, so
             // the wrong answer is not just served, it is persisted. `shard.hashes` is durable and
             // already the address `HashMultiGet`/the gated `HashGet` read a field from.
-            let current = if crate::engine::container_index_files_one_entry_a_page() {
-                shard
-                    .hashes
-                    .get(&key)
-                    .and_then(|fields| fields.get(&field))
-                    .and_then(|address| {
-                        read_block_bytes(
-                            cache,
-                            block_store,
-                            shard_id,
-                            address,
-                            PageIdentity::of(shard_id, "hash", &key, Some(field.as_str())),
-                            Some(block_routing_bucket(
-                                &key,
-                                start_routing_bucket,
-                                end_routing_bucket,
-                            )),
-                        )
-                    })
-                    .and_then(|bytes| parse_i64(&bytes))
-                    .unwrap_or_default()
-            } else {
-                read_bucket_index_value(
-                    cache,
-                    block_store,
-                    shard_id,
-                    shard,
-                    "hash",
-                    &key,
-                    Some(field.as_str()),
-                )
+            let current = shard
+                .hashes
+                .get(&key)
+                .and_then(|fields| fields.get(&field))
+                .and_then(|address| {
+                    read_block_bytes(
+                        cache,
+                        block_store,
+                        shard_id,
+                        address,
+                        PageIdentity::of(shard_id, "hash", &key, Some(field.as_str())),
+                        Some(block_routing_bucket(
+                            &key,
+                            start_routing_bucket,
+                            end_routing_bucket,
+                        )),
+                    )
+                })
                 .and_then(|bytes| parse_i64(&bytes))
-                .unwrap_or_default()
-            };
+                .unwrap_or_default();
             let value = current.saturating_add(increment);
             let routing_bucket =
                 block_routing_bucket(&key, start_routing_bucket, end_routing_bucket);
@@ -1285,13 +1259,12 @@ pub(crate) fn execute_on_shard(
             }
             CommandResponse::Integer {
                 // UNDER ONE ENTRY A PAGE THE INDEX NAMES NO FIELD, so a count of index entries is
-                // a count of PAGES, not fields -- a wrong number, not an empty answer. The
-                // resident map is durable and keyed by field, so it is the count under the gate.
-                value: if crate::engine::container_index_files_one_entry_a_page() {
-                    shard.hashes.get(&key).map(|fields| fields.len()).unwrap_or(0) as i64
-                } else {
-                    bucket_index_component_block_addresses(shard, "hash", &key).len() as i64
-                },
+                // THE INDEX NAMES NO FIELD, so a count of index entries is a count of PAGES, not
+                // fields -- a wrong number rather than an empty answer. The resident map is durable
+                // and keyed by field, so it is the count. The entry-counting arm this replaces is
+                // deleted rather than left behind a condition: there is no state in which an entry
+                // names a field for it to count.
+                value: shard.hashes.get(&key).map(|fields| fields.len()).unwrap_or(0) as i64,
             }
         }
         Command::HashDelete { key, field } => {
@@ -2151,180 +2124,69 @@ pub(crate) fn execute_on_shard(
                 };
             }
             cached_response(cache, CacheKey::set_members(shard_id, &key), || {
-                // ---- UNDER ONE ENTRY A PAGE, IDENTITY IS IN THE PAYLOAD ----
+                // IDENTITY IS IN THE PAYLOAD, AND THERE IS NO LONGER ANOTHER WAY.
                 //
-                // The walk below answers each ENTRY from the page it names, and its `None` arm
-                // says why that cannot work here: "an entry naming no component can only be
-                // answered by a page that names no element either". Under this gate every entry
-                // names no component and every page IS framed, so that arm drops every member and
-                // the listing returns EMPTY -- measured as `listed=0` against 40 ungated.
+                // This was the gated arm of an `if`, and the ungated arm walked the entries and
+                // answered each from the page it named. That walk's own `None` arm said why it
+                // cannot work once an entry names no element -- "an entry naming no component can
+                // only be answered by a page that names no element either" -- so with every entry
+                // nameless it dropped every member and the listing returned EMPTY, measured as
+                // `listed=0` against 40. It is deleted rather than left unreachable: an entry
+                // cannot name an element any more, so there is no state in which it would be right.
                 //
-                // So the gated listing asks the PAYLOAD instead. That is the direction that
-                // resurrected a removed member once, and the two things that make it safe now are
-                // both recent and both driven: the tombstone page is REACHABLE from the index
-                // (step 8a), and `derive_membership` folds every page of the object by
+                // Asking the PAYLOAD is the direction that resurrected a removed member once, and
+                // the two things that make it safe are both driven: the tombstone page is REACHABLE
+                // from the index, and `derive_membership` folds every page of the object by
                 // `append_position` with a value and a tombstone as the same kind of statement, so
                 // the later page wins. A hand-rolled loop over the payload lacks exactly that
                 // precedence, which is why one resurrected a member before.
                 //
                 // THE ENUMERATOR IS THE ONE THAT KEEPS TOMBSTONE ENTRIES, because withholding them
                 // would hand the fold only the pages that say "present".
-                if crate::engine::container_index_files_one_entry_a_page() {
-                    let routing_bucket =
-                        block_routing_bucket(&key, start_routing_bucket, end_routing_bucket);
-                    let addresses =
-                        super::bucket_store::bucket_index_all_block_addresses_with_tombstones(
-                            shard, "set", &key,
-                        );
-                    let derived = crate::engine::container_membership::derive_membership(
-                        "set",
-                        addresses,
-                        |address| {
-                            read_block_bytes(
-                                cache,
-                                block_store,
-                                shard_id,
-                                address,
-                                PageIdentity::of(shard_id, "set", &key, None),
-                                Some(routing_bucket),
-                            )
-                        },
-                    );
-                    if derived.is_complete() {
-                        GATED_LISTING_DERIVED
-                            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-                        return CommandResponse::Members {
-                            members: derived.live.into_values().collect(),
-                        };
-                    }
-                    // AN INCOMPLETE DERIVATION MUST NOT BE SERVED, and the reason is not
-                    // squeamishness: a page that could not be read may have been the one carrying
-                    // a tombstone, so an incomplete fold can be OVER-complete as easily as under,
-                    // and there is no direction to fail safely in. The durable member map is the
-                    // authority -- `reconcile_from_durable` treats it as such, and a gated removal
-                    // was already shown to survive a reload in it -- so the answer comes from
-                    // there and the decline is counted rather than hidden.
-                    GATED_LISTING_DECLINED.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-                    return CommandResponse::Members {
-                        members: shard
-                            .sets
-                            .get(&key)
-                            .map(|members| {
-                                members.iter().map(|(member, _)| member.clone()).collect()
-                            })
-                            .unwrap_or_default(),
-                    };
-                }
-                // ONE DECODE PER DISTINCT PAGE, AND IDENTITY STAYS WITH THE ENTRIES.
-                //
-                // The walk below is unchanged: it names the members that exist, and a removed
-                // member's entry is filtered out of it exactly as before. What changes is that a
-                // page is read ONCE rather than once per entry naming it -- and after a fold every
-                // entry of an object names the SAME page, so a forty-member set read one page forty
-                // times, each read a linear walk of that page's packed keys.
-                //
-                // WHY IDENTITY DOES NOT MOVE, which is the whole reason this is safe. An earlier
-                // attempt enumerated the members out of the payload and dropped the walk. It read
-                // one page instead of forty and it RESURRECTED A REMOVED MEMBER: a fold followed by
-                // a removal leaves the folded page still naming the member as live, while the
-                // removal lives in a separate tombstone page and a deleted entry. Enumerating the
-                // payload saw neither. Asking the entries WHICH members exist, and the page only
-                // WHAT each one holds, cannot reach that state: an element with no live entry is
-                // never asked for.
                 let routing_bucket =
                     block_routing_bucket(&key, start_routing_bucket, end_routing_bucket);
-                let walk = bucket_index_component_block_addresses(shard, "set", &key);
-
-                // Decoded once per distinct page. The key is the PHYSICAL page -- the same three
-                // terms `live_page_key` uses -- because several entries of one object resolve to
-                // one page and reading it again would decode the same items again.
-                let mut by_component: std::collections::BTreeMap<String, Vec<u8>> =
-                    std::collections::BTreeMap::new();
-                // An unframed page is one value and the entry beside it names the element, which is
-                // every page written before `container_pages`. Its payload IS the member, so it is
-                // kept against its address rather than contributed to the component map -- there is
-                // no frame to render a component out of.
-                let mut unframed: std::collections::BTreeMap<(u64, u64, u64), Vec<u8>> =
-                    std::collections::BTreeMap::new();
-                let mut decoded: std::collections::BTreeSet<(u64, u64, u64)> =
-                    std::collections::BTreeSet::new();
-
-                for (_component, address) in &walk {
-                    let page = (
-                        address.block_slab_id(),
-                        address.offset(),
-                        address.length(),
+                let addresses =
+                    super::bucket_store::bucket_index_all_block_addresses_with_tombstones(
+                        shard, "set", &key,
                     );
-                    if !decoded.insert(page) {
-                        continue;
-                    }
-                    // `None`, so the funnel hands back the WHOLE payload: naming an element here
-                    // would select one out of a frame about to be read in full.
-                    let Some(bytes) = read_block_bytes(
-                        cache,
-                        block_store,
-                        shard_id,
-                        address,
-                        PageIdentity::of(shard_id, "set", &key, None),
-                        Some(routing_bucket),
-                    ) else {
-                        continue;
+                let derived = crate::engine::container_membership::derive_membership(
+                    "set",
+                    addresses,
+                    |address| {
+                        read_block_bytes(
+                            cache,
+                            block_store,
+                            shard_id,
+                            address,
+                            PageIdentity::of(shard_id, "set", &key, None),
+                            Some(routing_bucket),
+                        )
+                    },
+                );
+                if derived.is_complete() {
+                    GATED_LISTING_DERIVED
+                        .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                    return CommandResponse::Members {
+                        members: derived.live.into_values().collect(),
                     };
-                    match crate::engine::container_pages::decode_container_page(&bytes) {
-                        crate::engine::container_pages::ContainerPageDecode::Framed {
-                            spelling,
-                            items,
-                            ..
-                        } => {
-                            for item in items {
-                                // An item stating its own removal yields no value, which is the
-                                // same answer the per-element selector gave: it answered `Removed`
-                                // and the listing dropped it.
-                                if item.deleted {
-                                    continue;
-                                }
-                                if let Some(component) =
-                                    crate::engine::container_pages::component_from_element_key(
-                                        spelling, &item.key,
-                                    )
-                                {
-                                    by_component.insert(component, item.value);
-                                }
-                            }
-                        }
-                        crate::engine::container_pages::ContainerPageDecode::NotFramed => {
-                            unframed.insert(page, bytes);
-                        }
-                        // The bytes CLAIM to be a frame and will not walk. Handing them back would
-                        // serve framing bytes as a member, which is the outcome `container_pages`
-                        // exists to make impossible, so this page contributes nothing.
-                        crate::engine::container_pages::ContainerPageDecode::Corrupt(_) => {}
-                    }
                 }
-
-                // ANSWERED ENTRY BY ENTRY, IN THE WALK'S OWN ORDER. The walk is sorted by
-                // component, so this is the order the listing has always returned -- there is
-                // nothing to sort back.
-                let members = walk
-                    .into_iter()
-                    .filter_map(|(component, address)| {
-                        let page = (
-                            address.block_slab_id(),
-                            address.offset(),
-                            address.length(),
-                        );
-                        match component.as_deref() {
-                            Some(component) => by_component
-                                .get(component)
-                                .cloned()
-                                .or_else(|| unframed.get(&page).cloned()),
-                            // An entry naming no component can only be answered by a page that
-                            // names no element either.
-                            None => unframed.get(&page).cloned(),
-                        }
-                    })
-                    .collect();
-                CommandResponse::Members { members }
+                // AN INCOMPLETE DERIVATION MUST NOT BE SERVED, and the reason is not
+                // squeamishness: a page that could not be read may have been the one carrying
+                // a tombstone, so an incomplete fold can be OVER-complete as easily as under,
+                // and there is no direction to fail safely in. The durable member map is the
+                // authority -- `reconcile_from_durable` treats it as such, and a gated removal
+                // was already shown to survive a reload in it -- so the answer comes from
+                // there and the decline is counted rather than hidden.
+                GATED_LISTING_DECLINED.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                CommandResponse::Members {
+                    members: shard
+                        .sets
+                        .get(&key)
+                        .map(|members| {
+                            members.iter().map(|(member, _)| member.clone()).collect()
+                        })
+                        .unwrap_or_default(),
+                }
             })
         }
         Command::SetRemove { key, member } => {

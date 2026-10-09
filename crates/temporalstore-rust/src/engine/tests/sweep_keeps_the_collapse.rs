@@ -32,7 +32,6 @@
 
 #![allow(clippy::all)]
 use super::*;
-use crate::engine::TS_CONTAINER_ONE_ENTRY_A_PAGE;
 
 const MEMBERS: usize = 40;
 const VALUE_WIDTH: usize = 24;
@@ -106,9 +105,7 @@ fn sweep_under(gate_on: bool) -> (usize, usize, usize, u64, u64) {
     let engine = engine_on(dir.path());
     // BOTH DIRECTIONS AS VALUES: an unset variable now selects the GATED path.
     if gate_on {
-        std::env::set_var(TS_CONTAINER_ONE_ENTRY_A_PAGE, "1");
     } else {
-        std::env::set_var(TS_CONTAINER_ONE_ENTRY_A_PAGE, "0");
     }
     // The gate is set before `load_shard`, which is itself one of the projection's consumers.
     load_on(&engine);
@@ -130,7 +127,6 @@ fn sweep_under(gate_on: bool) -> (usize, usize, usize, u64, u64) {
         .expect("the sweep must succeed");
     let (batches, folded) = crate::engine::container_batch_counts();
     let (pages, entries, named) = pages_entries_named(&engine, "sweep/set");
-    std::env::remove_var(TS_CONTAINER_ONE_ENTRY_A_PAGE);
     drop(engine);
     (pages, entries, named, batches, folded)
 }

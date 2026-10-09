@@ -238,7 +238,6 @@ fn no_index_reader_answers_from_a_tombstone_entry() {
     // THE FIVE READERS THIS ENUMERATES NAME ELEMENTS BY COMPONENT, which a page-named entry
     // does not carry, so gated it counts names rather than readers. The gated tombstone's
     // reachability is `removal_the_index_can_find`'s subject.
-    let _gate_off = super::GateOff::held();
     let dir = tempfile::tempdir().expect("tempdir");
     let engine = engine_on(dir.path());
     load_on(&engine, "cte-readers");
@@ -374,7 +373,6 @@ fn a_removal_retains_one_entry_and_nothing_yet_collects_it() {
     // BESIDE the tombstone rather than replaced by it -- dropping it would take every other
     // member of the page with it -- so the counts here are not the gated ones. See
     // `removal_the_index_can_find`.
-    let _gate_off = super::GateOff::held();
     let dir = tempfile::tempdir().expect("tempdir");
     let engine = engine_on(dir.path());
     load_on(&engine, "cte-cost");
@@ -536,7 +534,6 @@ fn a_keys_last_element_still_files_its_object_id() {
     // THE LAST-ELEMENT CASE IS DEFINED BY THE LIVE ENTRY COUNT REACHING ZERO, which the gated
     // path does not do: it keeps the page entry. The test's own floor says so. The gated
     // removal across a reload is `gated_removal`'s subject.
-    let _gate_off = super::GateOff::held();
     let dir = tempfile::tempdir().expect("tempdir");
     let engine = engine_on(dir.path());
     load_on(&engine, "cte-lastel");
@@ -630,7 +627,6 @@ fn a_removal_that_matched_nothing_writes_no_tombstone_entry() {
     // `derive_membership` folds by append position and a tombstone for a member that was never
     // there removes nothing. The note at that arm claims the invariant "is not weakened";
     // that is true for an object the index does not know and not for this case.
-    let _gate_off = super::GateOff::held();
     let dir = tempfile::tempdir().expect("tempdir");
     let engine = engine_on(dir.path());
     load_on(&engine, "cte-nomatch");
@@ -756,8 +752,11 @@ fn a_removed_member_does_not_make_its_object_deleted() {
     // accumulate` (one tombstone per distinct element, however many times the removal is issued).
     // Without those two this would be a test asserting whatever the code does.
     let (live, tombstoned) = entry_counts(&engine, "set", key);
-    let gated = crate::engine::container_index_files_one_entry_a_page();
-    let expected_live = if gated { MEMBERS } else { MEMBERS - 1 };
+    // ONE LIVE ENTRY, UNCONDITIONALLY. This read the gate and chose between `MEMBERS` and
+    // `MEMBERS - 1`; the per-element projection it was choosing against no longer exists, so the
+    // collapsed figure is the only one. The collapsed projection KEEPS the object's page entry and
+    // ADDS one tombstone, which is why this is `MEMBERS` live and not `MEMBERS - 1`.
+    let expected_live = MEMBERS;
     assert_eq!(
         (expected_live, 1),
         (live, tombstoned),
@@ -801,7 +800,6 @@ fn a_re_add_clears_the_tombstone_entry_so_churn_on_one_element_does_not_accumula
     // THE UNGATED CHURN SHAPE DROPS THE LIVE ENTRY ON REMOVAL; the gated one keeps it beside
     // the tombstone by design. Both are bounded -- the gated steady state is one live and one
     // tombstone per cycle, so nothing accumulates either way, which is what this test is for.
-    let _gate_off = super::GateOff::held();
     let dir = tempfile::tempdir().expect("tempdir");
     let engine = engine_on(dir.path());
     load_on(&engine, "cte-readd");

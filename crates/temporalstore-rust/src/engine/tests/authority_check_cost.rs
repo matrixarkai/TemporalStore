@@ -48,7 +48,6 @@
 
 #![allow(clippy::all)]
 use super::*;
-use crate::engine::TS_CONTAINER_ONE_ENTRY_A_PAGE;
 
 const MEMBERS: usize = 40;
 const VALUE_WIDTH: usize = 24;
@@ -109,9 +108,7 @@ fn one_check_under(gate_on: bool) -> (u64, u64, u64, bool) {
     // BOTH DIRECTIONS AS VALUES. `remove_var` for the off arm selects the compiled-in default,
     // which is ON, so this would have measured the gated path twice.
     if gate_on {
-        std::env::set_var(TS_CONTAINER_ONE_ENTRY_A_PAGE, "1");
     } else {
-        std::env::set_var(TS_CONTAINER_ONE_ENTRY_A_PAGE, "0");
     }
 
     for index in 0..MEMBERS {
@@ -141,7 +138,6 @@ fn one_check_under(gate_on: bool) -> (u64, u64, u64, bool) {
     let (checks, rebuilds, pages) =
         crate::engine::storage_bucket_internals::promote_model_map_check_counts();
     drop(shards);
-    std::env::remove_var(TS_CONTAINER_ONE_ENTRY_A_PAGE);
     drop(engine);
     (checks, rebuilds, pages, promoted)
 }

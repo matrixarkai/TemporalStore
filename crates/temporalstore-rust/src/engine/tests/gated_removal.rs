@@ -41,7 +41,6 @@
 
 #![allow(clippy::all)]
 use super::*;
-use crate::engine::TS_CONTAINER_ONE_ENTRY_A_PAGE;
 
 const MEMBERS: usize = 40;
 const VALUE_WIDTH: usize = 24;
@@ -168,7 +167,6 @@ fn a_gated_removal_stays_removed_across_a_reload() {
             &pages,
             &indexes,
         );
-        std::env::set_var(TS_CONTAINER_ONE_ENTRY_A_PAGE, "1");
         load_on(&engine);
 
         for index in 0..MEMBERS {
@@ -238,13 +236,11 @@ fn a_gated_removal_stays_removed_across_a_reload() {
         );
 
         engine.flush_shard_index(1);
-        std::env::remove_var(TS_CONTAINER_ONE_ENTRY_A_PAGE);
     }
 
     // ---- AND IT SURVIVES A RELOAD, which is the durable question. ----
     //
     // Its own cache directory, so nothing is answered out of a page the first engine left warm.
-    std::env::set_var(TS_CONTAINER_ONE_ENTRY_A_PAGE, "1");
     let reloaded = TemporalEngine::with_local_dirs(
         64 * 1024 * 1024,
         dir.path().join("cache-reloaded"),
@@ -260,7 +256,6 @@ fn a_gated_removal_stays_removed_across_a_reload() {
         resident.len(),
         stated.len()
     );
-    std::env::remove_var(TS_CONTAINER_ONE_ENTRY_A_PAGE);
 
     // FLOOR: the object has to have come back at all, or "the member is absent" is true for the
     // wrong reason.

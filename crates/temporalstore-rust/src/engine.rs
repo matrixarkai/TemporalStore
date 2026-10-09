@@ -4503,140 +4503,46 @@ fn env_flag_on(name: &str) -> bool {
     crate::env_flag::env_bool(name, false)
 }
 
-/// The name of the gate below, written ONCE so the gate and the test that pins it cannot come to
-/// disagree about which variable an operator has to set. A hand-copied name is a gate nobody can
-/// turn on and a test that still passes.
-///
-/// READ BY THE SET ARM OF `visit_model_live_blocks` SINCE STEP TWO. The step-one suppression that
-/// stood here is gone, and its absence is the evidence the gate is wired: a dead-code allow would
-/// now be hiding the fact that nothing reads it.
-pub(crate) const TS_CONTAINER_ONE_ENTRY_A_PAGE: &str = "TS_CONTAINER_ONE_ENTRY_A_PAGE";
 
-/// Whether the page index files ONE ENTRY PER PAGE for a container, rather than one per ELEMENT.
+/// THE ONE-ENTRY-A-PAGE GATE IS RETIRED, AND THIS IS WHERE IT WAS.
 ///
-/// # WHAT IT IS FOR
+/// `TS_CONTAINER_ONE_ENTRY_A_PAGE` and `container_index_files_one_entry_a_page()` stood here. Every
+/// container kind files one index entry per PAGE, carrying no element name, and there is no longer
+/// a position in which it does otherwise.
 ///
-/// A container's index holds one entry per element: per hash field, set member, zset scored member
-/// and list index. Measured on this tree, that is **~152 bytes per element, flat whatever the
-/// occupancy** -- 6,120 bytes for an object of forty elements on one compacted page, against 104
-/// for one entry per page. The page already carries each element's key in its payload, because
-/// `container_pages` writes it there precisely so a page is interpretable without the entry that
-/// names it. So the entries restate what the page already says.
+/// # WHY IT COULD NOT STAY
 ///
-/// # WHY A GATE AND NOT A CHANGE
+/// `BlockIndex` is the structure the index is MADE of -- one per page, millions of them -- and
+/// `component` was the only place on it an element name could live. Taking that field out is the
+/// whole point of this series, and with it gone the gate's OFF position is not a slower layout, it
+/// is an UNIMPLEMENTABLE one: nothing could file a name, and every reader that resolved an element
+/// by matching `page.component == component` would answer wrongly rather than slowly. A flag whose
+/// two positions are "correct" and "silently wrong" is not a flag.
 ///
-/// The index is a DERIVED PROJECTION of the model maps: `visit_model_live_blocks` emits one entry
-/// per member from `shard.sets` and friends, and `rebuild_bucket_first_index` re-derives the whole
-/// thing -- twice inside one compaction sweep. So the filing and the derivation cannot be changed
-/// in separate commits: whichever lands first is undone by the other. A projection can, however,
-/// be computed two ways behind one switch, and that is what this is for. Each edit in the series
-/// landed conditional on this gate, with the old path intact beside it. While the default was off
-/// that meant nothing changed for a deployment that had not set it; the default is ON now, so what
-/// an unset variable selects has MOVED -- see the grandfathering section below.
+/// # WHAT IT WAS, MEASURED, SO THE DECISION IS NOT TAKEN ON A RECOLLECTION
 ///
-/// # ITS DEFAULT IS ON NOW, AND IT IS STILL MEANT TO BE DELETED
+/// It shipped ON by default (`env_flag_default_on`) from the set and list collapses onward, so the
+/// OFF position was a development affordance and never a deployed configuration. And its coverage
+/// was partly an accident of test ORDER: four arms -- `resident_map_readers` x2 and
+/// `set_listing_page_reads` x2 -- passed in a full suite only because
+/// `replay_under_the_gate::the_gate_guard_restores_the_variable_even_when_an_assertion_panics` set
+/// the variable to `"0"` and never put it back. Driven both ways before the retirement: those four
+/// FAIL when run alone (6 passed, 4 failed) and PASS when the leaking arm runs first (15 of 15).
 ///
-/// This section used to say the opposite, and it is restated rather than deleted because the
-/// reason it said so is the reason to read the rest of this comment: the gated path WAS incomplete
-/// by construction, and a reader who remembers that has to be told it no longer is.
+/// # AND THE STORED SIDE IS A ONE-WAY DOOR, WHICH IS A SEPARATE CLAIM
 ///
-/// The default is ON. Every consumer the series set out to bring along has landed -- the authority
-/// check, the ordinal source, the removal representation, the replay arm, the index-log emitter,
-/// the reconcile and, last, the LISTING, which was the one that mattered: until it landed, turning
-/// this on made a folded container's listing return nothing at all. The env var remains in both
-/// directions as an operator escape hatch (`=0|false|no|off` turns it off), through the same shared
-/// boolean vocabulary every other flag uses.
+/// A store written with the gate OFF has entries that name their elements, and this binary cannot
+/// read one. It must be REFUSED rather than misread, and that is the stamp's job --
+/// `an_ungated_store_is_refused_before_it_is_served` drives it on a stored golden and reads the
+/// engine's own load-path counters: accepted 0, stale 1, and nothing served. The named decoder drops
+/// a key it has no field for SILENTLY, so the refusal is what stands between that drop and an
+/// answer.
 ///
-/// This is still scaffolding with a planned demolition: the step after this one REMOVES both the
-/// gate and the per-element path, so that the two ways of computing the projection do not become a
-/// permanent fork. A gate that ships off and is never flipped strands the feature behind it, and
-/// this repository is carrying another lever that way; this one is no longer in that state.
-///
-/// # THERE IS NO GRANDFATHERING, BECAUSE THE INDEX IS RE-DERIVED AT LOAD
-///
-/// The most important consequence of moving this default, and the one that is easy to get wrong:
-/// the index is a DERIVED PROJECTION of the model maps, recomputed on the way in. So this gate
-/// decides what the READER files, not what some earlier writer wrote. A store written by an
-/// ungated binary, opened by a binary with this default, comes up with the COLLAPSED entry shape.
-///
-/// Measured across a real store boundary -- write, fold, `unload_shard`, drop the engine, reopen
-/// over the same directories with a separate cache -- at forty elements in each of the four
-/// container kinds, by
-/// `engine::tests::gated_corpus_across_a_store_boundary`:
-///
-/// | store written | read with | set members served | durable |
-/// |---|---|---|---|
-/// | gated | gated | 40 of 40 | 40 |
-/// | UNGATED | gated | 40 of 40 | 40 |
-/// | gated | UNGATED | 40 of 40 | 40 |
-///
-/// The middle row is the upgrade every existing deployment takes, and it is whole. The last row is
-/// why `SHARD_INDEX_FORMAT_VERSION` is NOT bumped for this change: an ungated reader re-derives the
-/// index through the ungated arm and re-files one NAMED entry per element, so the page-named
-/// entries never survive into its view and there is nothing for it to misread. A projection
-/// recomputed at load carries no durable shape to disagree about. If a later step makes the
-/// collapsed shape survive a load -- an authoritative index that is persisted rather than
-/// re-derived -- the stamp question reopens then, and that test is the tripwire for it.
-///
-/// One further measured caution: the `reconcile: N component name(s) could not be read and were
-/// skipped` line fires whenever a gated store is loaded, INCLUDING when every element is served
-/// correctly, and it was silent in the case that served nothing. It is not an alarm for this class
-/// of failure and nothing should be built on it.
-///
-/// # WHAT IT DOES TODAY
-///
-/// SIX readers, not the one this said when it was written and not the five it said after that:
-/// `index_entry_names_a_page` (the shared predicate that decides WHICH KINDS this applies to, and
-/// the one every filing predicate asks), the container arms of `visit_model_live_blocks` (the
-/// projection that derives the page index from the model maps), the block ordinal and the set
-/// listing in `execute_on_shard`, and the two removal arms here.
-///
-/// THE KIND LIST IS NO LONGER "SET". `set` and `list` emit one entry per distinct page address and
-/// no component with the gate on, and one entry per element with it off. Do not read the kind list
-/// out of this paragraph: `index_entry_names_a_page` is the authority and this is a description of
-/// it.
-///
-/// `hash` AND `zset` ARE HELD OUT, both on measurement rather than on sequencing, and for
-/// different reasons -- a zset component carries the SCORE, so dropping it deletes data rather
-/// than a name, while four hash readers resolve through the index BY COMPONENT with no
-/// resident-map fallback, so a nameless hash entry makes a present field unreachable. The full
-/// statement of each, with the numbers, is on `index_entry_names_a_page`. That leaves hash and
-/// zset as the control the three non-set kinds used to be between them: a short answer for either
-/// is a broken reload rather than anything this gate did.
-///
-/// # AND IT DROPS THE NAME FROM LIVE ENTRIES ONLY. TOMBSTONES KEEP IT.
-///
-/// The precise scope, written here because it is a design decision with two independent reasons
-/// and neither is visible from a diff. A LIVE entry under this gate is a per-PAGE fact: the page's
-/// payload already names every element on it, so the entry needs no element name, and dropping it
-/// is the collapse. A TOMBSTONE is a per-ELEMENT fact -- recording WHICH element was removed is its
-/// entire content -- so a nameless tombstone is not a smaller one, it is one that has lost what it
-/// was for. Both reasons were measured rather than argued:
-///
-///   * THE SWEEP CANNOT TELL WHOSE IT IS. A re-add clears the tombstone its own element left; against
-///     a nameless tombstone it matches every tombstone of the object, so re-adding Y clears X's and
-///     X comes back.
-///   * AND THE RETENTION CANNOT BE BOUNDED. `removed` is always false under this gate, so the gated
-///     arm fires on every removal: with a nameless tombstone, four removals of ONE member left FOUR
-///     tombstone pages, growing per removal issued rather than per element removed -- on what is a
-///     no-op from the client's side. Named, it is 1 / 1 / 3 for one removal, four of the same
-///     member, and three distinct members.
-///
-/// There is a THIRD consequence that is not about this gate at all, and it is why "nameless" was
-/// never an option rather than merely a worse one: on the outcome wire, a removal's absent component
-/// is load-bearing semantics. `wal_proto` encodes `object_deleted: item.deleted &&
-/// item.component.is_none()`, and `lifecycle` acts on it by dropping the whole object or series. So
-/// `None` there is not an empty field, it is a different instruction.
-///
-/// NO STORED SHAPE MOVES FOR ANY OF THIS. The tombstone's component field already existed and the
-/// ungated path already filled it, so `SHARD_INDEX_FORMAT_VERSION` does not change.
-///
-/// Observed, per OBJECT, at one page in every row: forty elements emit **forty entries ungated and
-/// one gated**, four emit four against one, and one emits one against one -- with every ungated
-/// entry carrying a component and no gated entry carrying one.
-pub(crate) fn container_index_files_one_entry_a_page() -> bool {
-    env_flag_default_on(TS_CONTAINER_ONE_ENTRY_A_PAGE)
-}
+/// The argument that a store from before a change may be refused rather than guessed at is the
+/// tree's own, at `engine/routing_range_stamp.rs:50`: "The adoption existed to keep existing
+/// deployments starting; before the first milestone there are none to keep, so the honest answer
+/// replaces the convenient one." Refusing is the honest answer; serving a store whose element names
+/// were dropped on the way in is the convenient one.
 
 /// Tuning for sampled eviction, read from the environment with defaults that mirror the
 /// established policy: sample several buckets per wanted victim, keep a bounded candidate pool
@@ -5270,7 +5176,7 @@ fn mark_bucket_index_block_deleted_recording(
     let mut tombstone_bucket: Option<u32> = None;
     // Kept for the gated branch at the end, because the ungated `if let` below MOVES `tombstone`
     // out of scope when it builds its tuple.
-    let tombstone_for_gate = tombstone.clone();
+    let tombstone_for_the_page_named_arm = tombstone.clone();
     // THE BUCKET A GATED TOMBSTONE MUST BE FILED IN, read off the object's existing LIVE entry
     // rather than recomputed.
     //
@@ -5282,22 +5188,16 @@ fn mark_bucket_index_block_deleted_recording(
     //
     // Computed before the mutable walk below, both to keep the borrow simple and so it describes
     // the index as it was BEFORE this removal touched it.
-    let gated_tombstone_bucket: Option<u32> = if container_index_files_one_entry_a_page() {
-        shard
-            .bucket_index
-            .bucket_map
-            .iter()
-            .find(|(_, bucket)| {
-                bucket.block_index.values().any(|page| {
-                    !page.deleted
-                        && page.model_id.as_str() == model_id
-                        && &*page.object_key == key
-                })
+    let tombstone_bucket_for_a_page_named_kind: Option<u32> = shard
+        .bucket_index
+        .bucket_map
+        .iter()
+        .find(|(_, bucket)| {
+            bucket.block_index.values().any(|page| {
+                !page.deleted && page.model_id.as_str() == model_id && &*page.object_key == key
             })
-            .map(|(routing_bucket, _)| *routing_bucket)
-    } else {
-        None
-    };
+        })
+        .map(|(routing_bucket, _)| *routing_bucket);
     let target_buckets = if shard.bucket_index.object_block_lookup.is_empty() {
         shard
             .bucket_index
@@ -5463,11 +5363,11 @@ fn mark_bucket_index_block_deleted_recording(
     //
     // AND ONLY WHERE THE OBJECT ACTUALLY HAS AN ENTRY. The invariant the ungated path states just
     // above -- a removal that matched nothing must not file a tombstone, because that would state a
-    // removal that never happened -- is not weakened here: `gated_tombstone_bucket` is `None`
+    // removal that never happened -- is not weakened here: `tombstone_bucket_for_a_page_named_kind` is `None`
     // unless the object already holds a live page entry, so a removal against an object the index
     // does not know files nothing.
-    if !removed && container_index_files_one_entry_a_page() {
-        if let (Some(address), Some(routing_bucket)) = (tombstone_for_gate, gated_tombstone_bucket) {
+    if !removed {
+        if let (Some(address), Some(routing_bucket)) = (tombstone_for_the_page_named_arm, tombstone_bucket_for_a_page_named_kind) {
             // THE TOMBSTONE KEEPS THE ELEMENT'S NAME EVEN THOUGH THE LIVE ENTRY DOES NOT, and the
             // asymmetry is the point rather than an exception.
             //

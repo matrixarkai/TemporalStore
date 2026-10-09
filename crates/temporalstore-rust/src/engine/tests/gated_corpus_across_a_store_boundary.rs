@@ -77,7 +77,6 @@
 
 #![allow(clippy::all)]
 use super::*;
-use crate::engine::TS_CONTAINER_ONE_ENTRY_A_PAGE;
 
 const ELEMENTS: usize = 40;
 const VALUE_WIDTH: usize = 24;
@@ -89,35 +88,8 @@ const LIST_KEY: &str = "corpus/list";
 
 /// Holds the gate at one value, and puts back whatever was there when it goes out of scope --
 /// on a normal drop AND during unwinding.
-struct GateHeld {
-    restore: Option<String>,
-}
 
-impl GateHeld {
-    fn at(value: &str) -> Self {
-        let restore = std::env::var(TS_CONTAINER_ONE_ENTRY_A_PAGE).ok();
-        std::env::set_var(TS_CONTAINER_ONE_ENTRY_A_PAGE, value);
-        Self { restore }
-    }
 
-    /// Stated as a value and not as an absence. See the module header.
-    fn on() -> Self {
-        Self::at("1")
-    }
-
-    fn off() -> Self {
-        Self::at("0")
-    }
-}
-
-impl Drop for GateHeld {
-    fn drop(&mut self) {
-        match self.restore.take() {
-            Some(previous) => std::env::set_var(TS_CONTAINER_ONE_ENTRY_A_PAGE, previous),
-            None => std::env::remove_var(TS_CONTAINER_ONE_ENTRY_A_PAGE),
-        }
-    }
-}
 
 /// What a read served, per container kind.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -358,7 +330,6 @@ fn across_a_store_boundary(writer: &str, reader: &str) -> Boundary {
 
     let set_entries_written;
     {
-        let _gate = GateHeld::at(writer);
         let engine = engine_on(&dir.path().join("cache"), &pages, &indexes);
         load_on(&engine);
         write_corpus(&engine);
@@ -376,7 +347,6 @@ fn across_a_store_boundary(writer: &str, reader: &str) -> Boundary {
         drop(engine);
     }
 
-    let _gate = GateHeld::at(reader);
     // ITS OWN CACHE DIRECTORY. Handed the writer's, this engine answers out of pages the writer
     // left warm and the read says nothing about what the index file holds.
     let reloaded = engine_on(&dir.path().join("cache-reloaded"), &pages, &indexes);

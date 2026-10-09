@@ -43,7 +43,6 @@
 
 #![allow(clippy::all)]
 use super::*;
-use crate::engine::TS_CONTAINER_ONE_ENTRY_A_PAGE;
 
 const FIRST_BATCH: usize = 4;
 const VALUE_WIDTH: usize = 24;
@@ -51,26 +50,8 @@ const KEY: &str = "waf/set";
 
 /// Holds the gate at one value and puts back whatever was there -- on a normal drop AND while
 /// unwinding, so a failing arm cannot leak it into every later test in the process.
-struct GateAt {
-    restore: Option<String>,
-}
 
-impl GateAt {
-    fn value(value: &str) -> Self {
-        let restore = std::env::var(TS_CONTAINER_ONE_ENTRY_A_PAGE).ok();
-        std::env::set_var(TS_CONTAINER_ONE_ENTRY_A_PAGE, value);
-        Self { restore }
-    }
-}
 
-impl Drop for GateAt {
-    fn drop(&mut self) {
-        match self.restore.take() {
-            Some(previous) => std::env::set_var(TS_CONTAINER_ONE_ENTRY_A_PAGE, previous),
-            None => std::env::remove_var(TS_CONTAINER_ONE_ENTRY_A_PAGE),
-        }
-    }
-}
 
 fn member_bytes(index: usize) -> Vec<u8> {
     let mut bytes = vec![0u8; VALUE_WIDTH];
@@ -184,7 +165,6 @@ fn rederive(engine: &TemporalEngine) {
 /// THE WRITE PATH AND THE PROJECTION MUST FILE THE SAME ENTRY FOR THE SAME PAGE.
 #[test]
 fn a_write_after_a_fold_files_the_same_entry_the_projection_would() {
-    let _gate = GateAt::value("1");
     let dir = tempfile::tempdir().expect("tempdir");
     let engine = engine_on(dir.path());
     load_on(&engine);
@@ -325,7 +305,6 @@ fn a_write_after_a_fold_files_the_same_entry_the_projection_would() {
 /// to compute the ordinal.
 #[test]
 fn a_rewrite_after_a_fold_leaves_one_entry_per_page_today() {
-    let _gate = GateAt::value("1");
     let dir = tempfile::tempdir().expect("tempdir");
     let engine = engine_on(dir.path());
     load_on(&engine);
@@ -398,7 +377,6 @@ fn a_rewrite_after_a_fold_leaves_one_entry_per_page_today() {
 /// rather than from a list of kind names someone remembers.
 #[test]
 fn a_component_less_kind_rewritten_still_resolves_to_one_page() {
-    let _gate = GateAt::value("1");
     let dir = tempfile::tempdir().expect("tempdir");
     let engine = engine_on(dir.path());
     load_on(&engine);
@@ -530,7 +508,6 @@ fn tombstones(engine: &TemporalEngine) -> Vec<Option<String>> {
 /// swept anything, which is the same shape as a guard over a path nothing reached.
 #[test]
 fn a_re_add_after_a_removal_does_not_bring_the_removed_member_back() {
-    let _gate = GateAt::value("1");
     let dir = tempfile::tempdir().expect("tempdir");
     let pages = dir.path().join("pages");
     let indexes = dir.path().join("indexes");
@@ -647,7 +624,6 @@ const CROWD: usize = 12;
 /// anything, and a removed member came back.
 #[test]
 fn a_gated_removal_leaves_every_other_member_whole_across_a_reload() {
-    let _gate = GateAt::value("1");
     let dir = tempfile::tempdir().expect("tempdir");
     let pages = dir.path().join("pages");
     let indexes = dir.path().join("indexes");
@@ -759,7 +735,6 @@ fn a_gated_removal_leaves_every_other_member_whole_across_a_reload() {
 /// measured against the number of distinct elements removed rather than against a constant.
 #[test]
 fn gated_removals_file_one_tombstone_per_distinct_element_and_do_not_accumulate() {
-    let _gate = GateAt::value("1");
     let dir = tempfile::tempdir().expect("tempdir");
     let engine = engine_on(dir.path());
     load_on(&engine);
@@ -843,7 +818,6 @@ fn gated_removals_file_one_tombstone_per_distinct_element_and_do_not_accumulate(
 /// the fold arm above green, which is what says the two arms are about different halves.
 #[test]
 fn a_rewrite_off_a_page_the_element_was_alone_on_retires_that_pages_entry() {
-    let _gate = GateAt::value("1");
     let dir = tempfile::tempdir().expect("tempdir");
     let engine = engine_on(dir.path());
     load_on(&engine);
@@ -1004,7 +978,6 @@ fn occupied_pages(engine: &TemporalEngine) -> std::collections::BTreeSet<(u64, u
 /// already been caught by once.
 #[test]
 fn a_re_add_clears_only_its_own_tombstone_when_two_removals_are_outstanding() {
-    let _gate = GateAt::value("1");
     let dir = tempfile::tempdir().expect("tempdir");
     let engine = engine_on(dir.path());
     load_on(&engine);

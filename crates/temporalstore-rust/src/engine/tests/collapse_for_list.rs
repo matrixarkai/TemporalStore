@@ -52,7 +52,6 @@
 
 #![allow(clippy::all)]
 use super::*;
-use crate::engine::TS_CONTAINER_ONE_ENTRY_A_PAGE;
 
 const ELEMENTS: usize = 40;
 const LIST_KEY: &str = "collapse/list";
@@ -60,34 +59,8 @@ const HASH_KEY: &str = "collapse/hash";
 const ZSET_KEY: &str = "collapse/zset";
 
 /// Holds the gate at an explicit value and puts back whatever was there, panic or not.
-struct GateHeld {
-    restore: Option<String>,
-}
 
-impl GateHeld {
-    fn at(value: &str) -> Self {
-        let restore = std::env::var(TS_CONTAINER_ONE_ENTRY_A_PAGE).ok();
-        std::env::set_var(TS_CONTAINER_ONE_ENTRY_A_PAGE, value);
-        Self { restore }
-    }
 
-    fn on() -> Self {
-        Self::at("1")
-    }
-
-    fn off() -> Self {
-        Self::at("0")
-    }
-}
-
-impl Drop for GateHeld {
-    fn drop(&mut self) {
-        match self.restore.take() {
-            Some(previous) => std::env::set_var(TS_CONTAINER_ONE_ENTRY_A_PAGE, previous),
-            None => std::env::remove_var(TS_CONTAINER_ONE_ENTRY_A_PAGE),
-        }
-    }
-}
 
 fn engine_on(
     cache: &std::path::Path,
@@ -294,7 +267,6 @@ fn assert_collapsed(engine: &TemporalEngine, model_id: &str, object_key: &str) {
 #[test]
 fn a_list_keeps_its_present_elements_and_loses_its_popped_one_under_the_collapse() {
     println!("\n=== list, gate on, folded ===");
-    let _gate = GateHeld::on();
     let dir = tempfile::tempdir().expect("tempdir");
     let engine = engine_on(
         &dir.path().join("cache"),
@@ -374,7 +346,6 @@ fn a_list_keeps_its_present_elements_and_loses_its_popped_one_under_the_collapse
 #[test]
 fn a_popped_list_element_does_not_come_back_when_the_index_is_re_derived() {
     println!("\n=== list, gate on, popped, then reopened ===");
-    let _gate = GateHeld::on();
     let dir = tempfile::tempdir().expect("tempdir");
     let pages = dir.path().join("pages");
     let indexes = dir.path().join("indexes");
@@ -454,7 +425,6 @@ fn a_gated_list_comes_back_through_wal_replay() {
     let pages = dir.path().join("pages");
     let indexes = dir.path().join("indexes");
     {
-        let _gate = GateHeld::on();
         let engine = engine_on(&dir.path().join("cache-writer"), &pages, &indexes);
         load_on(&engine);
         write_list(&engine);
@@ -468,7 +438,6 @@ fn a_gated_list_comes_back_through_wal_replay() {
         // Deliberately NO unload. The engine is dropped here.
     }
 
-    let _gate = GateHeld::on();
     crate::engine::persistence::reset_index_load_path_counts();
     let reloaded = engine_on(&dir.path().join("cache-reloaded"), &pages, &indexes);
     let response = reloaded.load_shard_with(load_request());
@@ -524,7 +493,6 @@ fn a_gated_list_comes_back_through_wal_replay() {
 #[test]
 fn a_gated_removal_keeps_the_live_entry_and_adds_a_tombstone_instead_of_reducing_the_count() {
     println!("\n=== what a gated per-element removal does to the entry census ===");
-    let _gate = GateHeld::on();
     let dir = tempfile::tempdir().expect("tempdir");
     let engine = engine_on(
         &dir.path().join("cache"),
@@ -596,7 +564,6 @@ fn a_gated_removal_keeps_the_live_entry_and_adds_a_tombstone_instead_of_reducing
 #[test]
 fn the_projection_collapses_every_container_kind() {
     println!("\n=== all three kinds in one gated store, folded ===");
-    let _gate = GateHeld::on();
     let dir = tempfile::tempdir().expect("tempdir");
     let engine = engine_on(
         &dir.path().join("cache"),
@@ -650,7 +617,6 @@ fn the_projection_collapses_every_container_kind() {
 fn the_shared_predicate_names_every_container_kind_and_nothing_else() {
     use crate::engine::storage_bucket_internals::index_entry_names_a_page;
     {
-        let _gate = GateHeld::on();
         for kind in ["set", "list", "hash", "zset"] {
             assert!(
                 index_entry_names_a_page(kind),
@@ -678,7 +644,6 @@ fn the_shared_predicate_names_every_container_kind_and_nothing_else() {
             );
         }
     }
-    let _gate = GateHeld::off();
     for kind in ["set", "zset", "list", "hash", "string", "feature"] {
         assert!(
             !index_entry_names_a_page(kind),
@@ -702,7 +667,6 @@ fn the_shared_predicate_names_every_container_kind_and_nothing_else() {
 /// per kind worth the engine starts.
 #[test]
 fn a_write_after_a_fold_supersedes_one_page_and_not_the_objects_siblings() {
-    let _gate = GateHeld::on();
     for (model_id, object_key) in [("list", LIST_KEY), ("hash", HASH_KEY), ("zset", ZSET_KEY)] {
         println!("\n=== {model_id}: one more element written after the fold ===");
         let dir = tempfile::tempdir().expect("tempdir");
@@ -831,7 +795,6 @@ fn a_write_after_a_fold_supersedes_one_page_and_not_the_objects_siblings() {
 #[test]
 fn hashs_index_readers_still_answer_per_field_over_a_collapsed_hash() {
     println!("\n=== hash readers under the gate, hash held out of the collapse ===");
-    let _gate = GateHeld::on();
     let dir = tempfile::tempdir().expect("tempdir");
     let engine = engine_on(
         &dir.path().join("cache"),
@@ -896,7 +859,6 @@ fn hashs_index_readers_still_answer_per_field_over_a_collapsed_hash() {
 #[test]
 fn no_zset_entry_spells_a_score_now_that_the_collapse_drops_the_name() {
     println!("\n=== zset entries under the gate, zset in the collapse ===");
-    let _gate = GateHeld::on();
     let dir = tempfile::tempdir().expect("tempdir");
     let engine = engine_on(
         &dir.path().join("cache"),

@@ -748,7 +748,6 @@ fn an_unreadable_component_name_is_skipped_and_the_durable_map_keeps_the_element
     // The gated equivalent -- a derived view that cannot name an element while the durable map
     // still holds it -- is held by `gated_corpus_across_a_store_boundary`, whose durable floor is
     // asserted before any served count is read.
-    let _gate_off = super::GateOff::held();
     let dir = tempfile::tempdir().unwrap();
     let indexes = dir.path().join("indexes");
     let kept = b"kept-member".to_vec();

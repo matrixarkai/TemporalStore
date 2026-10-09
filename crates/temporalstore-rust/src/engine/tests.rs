@@ -32,28 +32,8 @@ use crate::{ElementEntry, BlockStoreOptions, BlockStore};
 /// A guard rather than a `set_var` and a matching `remove_var`: `Drop` runs while unwinding, so a
 /// FAILING test cannot leak the gate into every test after it in the process. That contamination
 /// has already happened once in this series, and it is ordered and silent rather than a flake.
-struct GateOff {
-    restore: Option<String>,
-}
 
-impl GateOff {
-    fn held() -> Self {
-        let restore = std::env::var(crate::engine::TS_CONTAINER_ONE_ENTRY_A_PAGE).ok();
-        std::env::set_var(crate::engine::TS_CONTAINER_ONE_ENTRY_A_PAGE, "0");
-        Self { restore }
-    }
-}
 
-impl Drop for GateOff {
-    fn drop(&mut self) {
-        match self.restore.take() {
-            Some(previous) => {
-                std::env::set_var(crate::engine::TS_CONTAINER_ONE_ENTRY_A_PAGE, previous)
-            }
-            None => std::env::remove_var(crate::engine::TS_CONTAINER_ONE_ENTRY_A_PAGE),
-        }
-    }
-}
 
 fn wait_for_fresh_admission_second() {
     loop {
@@ -260,7 +240,6 @@ mod reconcile_allocation;
 mod hash_read_union_divergence;
 mod packed_element_scan_cost;
 mod set_listing_source;
-mod one_entry_a_page_gate;
 mod projection_names_a_page;
 mod authority_check_cost;
 mod sweep_keeps_the_collapse;

@@ -236,7 +236,6 @@ fn a_compaction_round_folds_a_containers_pages_and_leaves_its_entry_count_alone(
     // with none named at occupancies 1, 4 and 40, and `gated_corpus_across_a_store_boundary`
     // holds it across a reload. So this is pinned, not re-goldened: both invariants are stated,
     // each on the path it belongs to.
-    let _gate_off = super::GateOff::held();
     let dir = tempfile::tempdir().expect("tempdir");
     println!(
         "\n=== pages and entries per container, before and after one round ===\n  store path {} characters",

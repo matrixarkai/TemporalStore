@@ -1193,7 +1193,6 @@ fn what_an_element_ordinal_would_mean_for_each_kind() {
     // gate creates. Pinned rather than restated because its subject is the per-element ordinal,
     // and the ordinal under the collapsed projection is `ordinal_under_the_gate`'s subject, which
     // drives both arms.
-    let _gate_off = super::GateOff::held();
     let dir = tempfile::tempdir().expect("tempdir");
     let engine = engine_on(dir.path());
     load_on(&engine, OPERATOR_END);
@@ -2200,7 +2199,6 @@ fn the_component_ordering_property_is_consumed_by_no_reader() {
     // phantom empty member in the expectation while the LISTING answers correctly, so the
     // instrument fails, not the read. The gated listing's order is
     // `gated_listing_folds_the_pages`' subject.
-    let _gate_off = super::GateOff::held();
     let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/engine");
     let internals = std::fs::read_to_string(root.join("storage_bucket_internals.rs"))
         .expect("storage_bucket_internals.rs is readable");

@@ -36,7 +36,6 @@
 
 #![allow(clippy::all)]
 use super::*;
-use crate::engine::TS_CONTAINER_ONE_ENTRY_A_PAGE;
 
 const REWRITES: usize = 5;
 
@@ -122,9 +121,7 @@ fn rewrites_under(gate_on: bool) -> (usize, Vec<u64>, usize, Vec<String>) {
     let engine = engine_on(dir.path());
     // BOTH DIRECTIONS AS VALUES: an unset variable now selects the GATED path.
     if gate_on {
-        std::env::set_var(TS_CONTAINER_ONE_ENTRY_A_PAGE, "1");
     } else {
-        std::env::set_var(TS_CONTAINER_ONE_ENTRY_A_PAGE, "0");
     }
     load_on(&engine);
 
@@ -149,7 +146,6 @@ fn rewrites_under(gate_on: bool) -> (usize, Vec<u64>, usize, Vec<String>) {
         shard.sets.get("ord/set").map(|m| m.len()).unwrap_or(0)
     };
     let rows_detail = entry_rows(&engine, "ord/set");
-    std::env::remove_var(TS_CONTAINER_ONE_ENTRY_A_PAGE);
     drop(engine);
     (pages, ordinals, resident, rows_detail)
 }
@@ -259,7 +255,6 @@ fn an_overwrite_keeps_the_members_ordinal_under_either_projection() {
 fn a_derivation_drops_the_entry_no_element_carries_any_more() {
     let dir = tempfile::tempdir().expect("tempdir");
     let engine = engine_on(dir.path());
-    std::env::set_var(TS_CONTAINER_ONE_ENTRY_A_PAGE, "1");
     load_on(&engine);
 
     let member = b"the-one-member".to_vec();
@@ -345,7 +340,6 @@ fn a_derivation_drops_the_entry_no_element_carries_any_more() {
         let shard = shards.get(&1).expect("shard 1 loaded");
         shard.sets.get("heal/set").map(|m| m.len()).unwrap_or(0)
     };
-    std::env::remove_var(TS_CONTAINER_ONE_ENTRY_A_PAGE);
 
     assert_eq!(
         1, resident,
@@ -405,26 +399,8 @@ fn a_derivation_drops_the_entry_no_element_carries_any_more() {
 /// lines would leak the gate into every test that runs after this one in the same binary. `Drop`
 /// runs during unwinding, which is the case that matters, so the new tests below do not repeat
 /// that risk.
-struct GateHeldOn {
-    restore: Option<String>,
-}
 
-impl GateHeldOn {
-    fn on() -> Self {
-        let restore = std::env::var(TS_CONTAINER_ONE_ENTRY_A_PAGE).ok();
-        std::env::set_var(TS_CONTAINER_ONE_ENTRY_A_PAGE, "1");
-        Self { restore }
-    }
-}
 
-impl Drop for GateHeldOn {
-    fn drop(&mut self) {
-        match self.restore.take() {
-            Some(previous) => std::env::set_var(TS_CONTAINER_ONE_ENTRY_A_PAGE, previous),
-            None => std::env::remove_var(TS_CONTAINER_ONE_ENTRY_A_PAGE),
-        }
-    }
-}
 
 /// Distinct block ids currently live for this hash object, over EVERY field -- the hash analogue
 /// of the `ordinals` half of `pages_and_ordinals`. A single-field fixture is deliberately read at
@@ -469,7 +445,6 @@ fn live_ordinals_hash(engine: &TemporalEngine, object_key: &str) -> Vec<u64> {
 fn an_overwrite_of_a_component_less_hash_entry_reuses_its_ordinal() {
     let dir = tempfile::tempdir().expect("tempdir");
     let engine = engine_on(dir.path());
-    let _gate = GateHeldOn::on();
     load_on(&engine);
 
     const KEY: &str = "ord/hash-planted";
@@ -561,7 +536,6 @@ fn an_overwrite_of_a_component_less_hash_entry_reuses_its_ordinal() {
 fn a_component_less_hash_entry_is_still_answered_correctly_by_get_len_and_incrby() {
     let dir = tempfile::tempdir().expect("tempdir");
     let engine = engine_on(dir.path());
-    let _gate = GateHeldOn::on();
     load_on(&engine);
 
     const KEY: &str = "ord/hash-point-read";

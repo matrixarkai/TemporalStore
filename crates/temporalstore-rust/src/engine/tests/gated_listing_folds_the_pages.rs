@@ -35,32 +35,13 @@
 
 #![allow(clippy::all)]
 use super::*;
-use crate::engine::TS_CONTAINER_ONE_ENTRY_A_PAGE;
 use std::collections::BTreeSet;
 
 const MEMBERS: usize = 40;
 const KEY: &str = "gated-listing-set";
 
-struct GateHeldOn {
-    restore: Option<String>,
-}
 
-impl GateHeldOn {
-    fn on() -> Self {
-        let restore = std::env::var(TS_CONTAINER_ONE_ENTRY_A_PAGE).ok();
-        std::env::set_var(TS_CONTAINER_ONE_ENTRY_A_PAGE, "1");
-        Self { restore }
-    }
-}
 
-impl Drop for GateHeldOn {
-    fn drop(&mut self) {
-        match self.restore.take() {
-            Some(previous) => std::env::set_var(TS_CONTAINER_ONE_ENTRY_A_PAGE, previous),
-            None => std::env::remove_var(TS_CONTAINER_ONE_ENTRY_A_PAGE),
-        }
-    }
-}
 
 fn engine_on(dir: &std::path::Path) -> TemporalEngine {
     TemporalEngine::with_local_dirs(
@@ -153,7 +134,6 @@ fn a_gated_listing_folds_the_pages_and_the_removed_member_stays_gone() {
 
     // ---- THE GATED ARM ----
     let expected = {
-        let _held = GateHeldOn::on();
         let engine = engine_on(gated_dir.path());
         let (expected, victim) = seed_fold_remove(&engine);
         crate::engine::execute_on_shard::reset_gated_listing_counts();

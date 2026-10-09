@@ -61,7 +61,6 @@
 
 #![allow(clippy::all)]
 use super::*;
-use crate::engine::TS_CONTAINER_ONE_ENTRY_A_PAGE;
 use std::collections::BTreeSet;
 
 const MEMBERS: usize = 40;
@@ -75,26 +74,8 @@ const MEMBERS: usize = 40;
 /// between the set and the remove leaks the gate just as thoroughly, and a failing gated test would
 /// then turn later tests red and bury its own message. `Drop` runs during unwinding, which is the
 /// case that matters.
-struct GateHeldOn {
-    restore: Option<String>,
-}
 
-impl GateHeldOn {
-    fn on() -> Self {
-        let restore = std::env::var(TS_CONTAINER_ONE_ENTRY_A_PAGE).ok();
-        std::env::set_var(TS_CONTAINER_ONE_ENTRY_A_PAGE, "1");
-        Self { restore }
-    }
-}
 
-impl Drop for GateHeldOn {
-    fn drop(&mut self) {
-        match self.restore.take() {
-            Some(previous) => std::env::set_var(TS_CONTAINER_ONE_ENTRY_A_PAGE, previous),
-            None => std::env::remove_var(TS_CONTAINER_ONE_ENTRY_A_PAGE),
-        }
-    }
-}
 
 const KEY: &str = "replay-gate-set";
 
@@ -169,7 +150,10 @@ fn write_then_replay(dir: &std::path::Path, gate_on: bool) -> ReplayArm {
     {
         let engine = engine_with_cache(dir, "cache-writer");
         // Held, not set: an assertion below must not leak the gate into the next test.
-        let _held = if gate_on { Some(GateHeldOn::on()) } else { None };
+        // NO GATE TO HOLD. `gate_on` is kept as the arm LABEL -- the two arms differ only in what
+        // they are named now -- so the caller still says which it drove and the printed table still
+        // has two rows. See this module s header for why the rows are identical.
+        let _ = gate_on;
         assert!(load_on(&engine).ok, "the fixture's first load failed");
         for index in 0..MEMBERS {
             let response = engine.execute(ExecuteRequest {
@@ -191,7 +175,10 @@ fn write_then_replay(dir: &std::path::Path, gate_on: bool) -> ReplayArm {
         // `_held` restores the gate as this scope ends.
     }
 
-    let _held = if gate_on { Some(GateHeldOn::on()) } else { None };
+    // NO GATE TO HOLD. `gate_on` survives as the arm LABEL -- both arms now drive the same
+    // single path -- so the caller still says which arm it asked for and the printed table
+    // still has two rows. The rows being IDENTICAL is the point of keeping them.
+    let _ = gate_on;
     crate::engine::persistence::reset_index_load_path_counts();
     let reloaded = engine_with_cache(dir, "cache-reloaded");
     let status = load_on(&reloaded);
@@ -331,7 +318,6 @@ fn the_gate_does_not_reach_the_component_the_index_log_item_is_built_from() {
     let engine = engine_with_cache(dir.path(), "cache-direct");
     // THIS TEST PREVIOUSLY LEAKED THE GATE: it set the variable and never removed it, so every
     // test after it in this process ran gated. Held now, and restored even on a panic.
-    let _held = GateHeldOn::on();
     assert!(load_on(&engine).ok, "the fixture's load failed");
     for index in 0..MEMBERS {
         let response = engine.execute(ExecuteRequest {
@@ -414,65 +400,6 @@ fn the_gate_does_not_reach_the_component_the_index_log_item_is_built_from() {
     );
 }
 
-/// rust-internal: the gate guard restores the variable on a normal drop AND during unwinding
-///
-/// This exists because the version of this module that went to a suite run set the gate in one
-/// test and never removed it. The suite is ONE process, so every test after it would have run
-/// gated -- an ordered, silent contamination rather than a flake, and the kind of thing that gets
-/// blamed on whichever unrelated test hangs first.
-///
-/// The panic arm is the one that matters: a bare `remove_var` at the end of a test covers only the
-/// happy path, so a FAILING gated test would leak the gate into every later test and bury its own
-/// message under theirs. `Drop` runs during unwinding; the assertion below is what proves it.
-///
-/// The "deliberate" panic message in this test's output is expected.
-#[test]
-fn the_gate_guard_restores_the_variable_even_when_an_assertion_panics() {
-    // THE GATE IS PUT OFF EXPLICITLY, and this test is about the guard rather than the default,
-    // so the starting state is established rather than assumed. It used to say this by removing
-    // the variable; the default is ON now, so that would have started this test GATED and every
-    // "restored" assertion below would have been satisfied by the default rather than by the
-    // guard. `GateHeldOn` puts back whatever it found, so a `"0"` is restored as `"0"`.
-    std::env::set_var(TS_CONTAINER_ONE_ENTRY_A_PAGE, "0");
-    assert!(
-        !crate::engine::container_index_files_one_entry_a_page(),
-        "the gate did not start off, so neither arm below is about the guard"
-    );
-
-    // Dropped normally.
-    {
-        let _held = GateHeldOn::on();
-        assert!(
-            crate::engine::container_index_files_one_entry_a_page(),
-            "the guard did not turn the gate ON, so the restore below would pass vacuously"
-        );
-    }
-    assert!(
-        !crate::engine::container_index_files_one_entry_a_page(),
-        "the guard did not restore the gate on a normal drop"
-    );
-
-    // Dropped by a PANIC.
-    let outcome = std::panic::catch_unwind(|| {
-        let _held = GateHeldOn::on();
-        assert!(
-            crate::engine::container_index_files_one_entry_a_page(),
-            "the guard did not turn the gate on inside the unwinding arm"
-        );
-        panic!("deliberate");
-    });
-    assert!(
-        outcome.is_err(),
-        "the deliberate panic did not happen, so the assertion below is satisfied by the absence \
-         of unwinding rather than by the guard surviving it"
-    );
-    assert!(
-        !crate::engine::container_index_files_one_entry_a_page(),
-        "THE GUARD DID NOT RESTORE THE GATE DURING UNWINDING. A failing gated test would leave \
-         every test after it in this process running gated, which is how a contamination gets \
-         attributed to an unrelated test"
-    );
-}
 
 // =================================================================================================
 // HASH, THE SAME TWO FAILURES, DRIVEN THE SAME WAY -- BEFORE THIS, ZERO HASH MENTIONS HERE.
@@ -538,7 +465,10 @@ struct HashReplayArm {
 fn write_then_replay_hash(dir: &std::path::Path, gate_on: bool) -> HashReplayArm {
     {
         let engine = engine_with_cache(dir, "cache-writer-hash");
-        let _held = if gate_on { Some(GateHeldOn::on()) } else { None };
+        // NO GATE TO HOLD. `gate_on` is kept as the arm LABEL -- the two arms differ only in what
+        // they are named now -- so the caller still says which it drove and the printed table still
+        // has two rows. See this module s header for why the rows are identical.
+        let _ = gate_on;
         assert!(load_on(&engine).ok, "the fixture's first load failed");
         for index in 0..MEMBERS {
             let response = engine.execute(ExecuteRequest {
@@ -560,7 +490,10 @@ fn write_then_replay_hash(dir: &std::path::Path, gate_on: bool) -> HashReplayArm
         // Deliberately NO unload, same reason as the set fixture above.
     }
 
-    let _held = if gate_on { Some(GateHeldOn::on()) } else { None };
+    // NO GATE TO HOLD. `gate_on` survives as the arm LABEL -- both arms now drive the same
+    // single path -- so the caller still says which arm it asked for and the printed table
+    // still has two rows. The rows being IDENTICAL is the point of keeping them.
+    let _ = gate_on;
     crate::engine::persistence::reset_index_load_path_counts();
     let reloaded = engine_with_cache(dir, "cache-reloaded-hash");
     let status = load_on(&reloaded);
@@ -656,7 +589,6 @@ fn a_gated_hash_write_reaches_the_log_and_every_field_comes_back_through_replay(
 fn the_gate_does_not_reach_the_component_the_hash_index_log_item_is_built_from() {
     let dir = tempfile::tempdir().expect("tempdir");
     let engine = engine_with_cache(dir.path(), "cache-direct-hash");
-    let _held = GateHeldOn::on();
     assert!(load_on(&engine).ok, "the fixture's load failed");
     for index in 0..MEMBERS {
         let response = engine.execute(ExecuteRequest {

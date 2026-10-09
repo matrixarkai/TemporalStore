@@ -171,7 +171,6 @@ fn the_hash_read_serves_both_sources_and_counts_what_only_the_index_names() {
     // to create and the divergence is unreachable by construction -- the arm below asserts exactly
     // that, so the structural zero is stated rather than mistaken for a clean store. The route
     // where the counter can still move is the ungated one, which is what this arm holds.
-    let _gate = GateHeldOff::new();
     let dir = tempfile::tempdir().expect("tempdir");
     let engine = engine_on(dir.path());
     load_on(&engine);
@@ -342,28 +341,8 @@ fn the_hash_read_serves_both_sources_and_counts_what_only_the_index_names() {
 /// `remove_var` IS THE CORRECT RESTORE when the variable was absent: the gate reads through
 /// `env_flag_default_on`, so UNSET MEANS ON and removing it restores the shipped default rather
 /// than turning the gate off for the rest of the binary.
-struct GateHeldOff {
-    restore: Option<String>,
-}
 
-impl GateHeldOff {
-    fn new() -> Self {
-        let restore = std::env::var(crate::engine::TS_CONTAINER_ONE_ENTRY_A_PAGE).ok();
-        std::env::set_var(crate::engine::TS_CONTAINER_ONE_ENTRY_A_PAGE, "0");
-        Self { restore }
-    }
-}
 
-impl Drop for GateHeldOff {
-    fn drop(&mut self) {
-        match self.restore.take() {
-            Some(previous) => {
-                std::env::set_var(crate::engine::TS_CONTAINER_ONE_ENTRY_A_PAGE, previous)
-            }
-            None => std::env::remove_var(crate::engine::TS_CONTAINER_ONE_ENTRY_A_PAGE),
-        }
-    }
-}
 
 /// UNDER THE GATE THERE IS NOTHING FOR THIS COUNTER TO COUNT, AND THAT IS ASSERTED.
 ///
