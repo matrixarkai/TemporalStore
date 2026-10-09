@@ -2509,7 +2509,43 @@ pub(crate) fn eager_cache_warm_on_load() -> bool {
 /// keeps its slot and refuses only on length mismatch, so nothing there needed a bump to stay
 /// correct. `wal_proto` is untouched too -- the score rides the WAL outcome's existing `value` byte
 /// slot now, never the component, and that slot's presence was already optional on the wire.
-pub(super) const SHARD_INDEX_FORMAT_VERSION: u32 = 9;
+///
+/// 9 -> 11 WHEN HASH AND ZSET JOINED THE ONE-ENTRY-A-PAGE SET, AND 10 IS NOT A HOLE -- IT IS
+/// SPOKEN FOR. Read from `matrixark/main` immediately before this commit, the constant there is 8;
+/// the zset change carried on this branch takes 9; and 10 is claimed by work in another tree that
+/// has not committed it yet. That claim is invisible to every sweep over refs -- a sweep of all
+/// 2,567 local and `matrixark` refs finds nothing above 9 -- and was found only by reading the
+/// WORKING TREES. So the rule "read the constant from the tree immediately before committing" is
+/// not sufficient on its own: a value can be taken by an edit no ref holds, and the only way to
+/// see it is to look at the uncommitted trees as well.
+///
+/// WHAT MOVED THE STORED SHAPE THIS TIME. `index_entry_names_a_page` now answers true for `hash`
+/// and `zset` as well as `set` and `list`, so under the gate a hash object writes ONE entry per
+/// distinct page with NO component where it used to write one named entry per field. Two things
+/// change in the served index: the entry COUNT for a container object, and the map key each entry
+/// is serialized under, since `state::block_index_written_key` renders `component` into it.
+///
+/// AND THIS BUMP IS NOT THE SAME CLASS AS THE SET AND LIST COLLAPSE, which took no bump at all.
+/// That collapse is load-compatible in both directions: the reconcile's live filter keys on
+/// `(slab, offset, length)` and carries no component, so a previous binary reading a collapsed set
+/// index keeps every member of the folded page live. HASH IS NOT LIKE THAT. A binary without "A
+/// hash answers from its resident map" resolves `HashGet`, `HashIncrBy` and `HashLen` through
+/// `bucket_index_block_address`, which requires `page.component.as_deref() == component` on every
+/// branch -- so against a collapsed hash index it answers MISSING for a field that is present,
+/// restarts a counter at zero, and reports the PAGE count as the field count. That is a silent
+/// misread of a store, by the binary that does not have the reader change, which is exactly what
+/// this constant exists to refuse. Bumping makes an older binary decline the whole index and
+/// re-derive instead.
+///
+/// THE OTHER TWO ENCODERS, STATED BECAUSE ONLY ONE OF THE THREE IS GATED BY THIS CONSTANT. The
+/// positional index log is untouched: no field was added or removed from the row, so its length is
+/// unchanged and the length mismatch it refuses on cannot arise -- what changes is only how many
+/// rows a container object contributes and whether the `component` slot holds a string or a null,
+/// both of which it already encodes. `wal_proto` is untouched: the OUTCOME still carries the
+/// ELEMENT's own name, which `upsert_bucket_index_block_inner` keeps separate from what the entry
+/// is filed under precisely so that collapsing the entry does not make a removal's absent
+/// component -- which `wal_proto` encodes as `object_deleted` -- mean something different.
+pub(super) const SHARD_INDEX_FORMAT_VERSION: u32 = 11;
 
 /// Serialize a shard index, stamping the current format version.
 ///
