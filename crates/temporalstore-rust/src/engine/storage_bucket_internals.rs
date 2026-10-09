@@ -3952,8 +3952,11 @@ pub(super) struct ObjectDeletionFiled(());
 /// it), 3 `E0080` (the const decompositions). THAT IS A FLOOR, for the same reason the failure
 /// count was: `E0560` SUPPRESSES `E0063` on the same literal, so the struct-literal sites are two
 /// passes and not one. Grep is no substitute here -- `component` appears about 2,000 times in this
-/// crate and `state.rs` alone declares the SAME field on a second struct, `ComponentBlocks`, whose
-/// own `component: Option<Arc<str>>` a field-text match cannot tell from this one.
+/// crate and `state.rs` ALONE DECLARED THE SAME FIELD ON A SECOND STRUCT, `ComponentBlocks`, whose
+/// own `component: Option<Arc<str>>` a field-text match could not tell from this one. That second
+/// declaration is gone: `ComponentBlocks`, `ComponentList` and `ObjectBlockRefs` were deleted when
+/// the object lookup collapsed onto `BlockRefs`, so the entry below is the only place in the crate
+/// an element name could live.
 ///
 /// AND THREE `retain` PREDICATES COMPARE A COMPONENT. TWO ARE ALREADY VACUOUS AND ONE IS LOAD-
 /// BEARING, which is the distinction whoever removes the field has to make site by site:
