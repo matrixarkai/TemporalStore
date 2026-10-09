@@ -5029,6 +5029,19 @@ mod component_lookup_tests {
     /// refs go in, and a count below is not a count of one ref filed repeatedly.
     fn core_with(object: &str, pages: u32) -> CoreIndex {
         let mut index = CoreIndex::default();
+        // ESTABLISH THE REF COUNTER FIRST, WHICH IS WHAT A REBUILD DOES AND WHAT A DEFAULT
+        // `CoreIndex` DOES NOT.
+        //
+        // `object_component_block_refs` is `None` on a default index, and `None` means UNKNOWN
+        // rather than zero: `insert_object_block_lookup` increments only `if let Some(total)`, so
+        // on an unestablished counter every increment is dropped on purpose -- a count that starts
+        // at "unknown" cannot be incremented into a right answer. `rebuild_object_block_lookup`
+        // sets it to `Some(0)` before it re-inserts, and that is the state every arm below is
+        // about, so the fixture reaches it the same way instead of asserting over `None`.
+        //
+        // CAUGHT BY ITS OWN FAILURE: three arms here asserted `Some(n)` without this line and read
+        // back `None`. The fixture was wrong, not the counter.
+        index.object_component_block_refs = Some(0);
         for i in 0..pages {
             index.insert_object_block_lookup(i, u64::from(i), &page(object));
         }
