@@ -2443,9 +2443,24 @@ pub(super) fn block_index_written_key(page: &BlockIndex) -> String {
 ///
 /// The value was `ObjectBlockRefs { by_component: ComponentList }`, where `ComponentList` was
 /// `Empty | One(ComponentBlocks) | Many(Vec<ComponentBlocks>)` and `ComponentBlocks` was
-/// `{ component: Option<Arc<str>>, refs: BlockRefs }`. Three types at 40 bytes each in front of
-/// the 24-byte `BlockRefs` that holds the answer, and every one of them existed to map a
+/// `{ component: Option<Arc<str>>, refs: BlockRefs }`. Every one of them existed to map a
 /// CALLER-SUPPLIED ELEMENT NAME onto blocks.
+///
+/// # THE WRAPPERS WERE FREE IN BYTES AND THE NAME WAS NOT -- 16 PER OBJECT, NOT 96
+///
+/// WRITTEN DOWN BECAUSE THE PLAN THIS WAS BUILT FROM HAD IT WRONG, and so did the first commit
+/// message of the change: "120 bytes of nesting before you reach the 24 that holds anything". That
+/// adds up four DECLARATION widths for types that occupy THE SAME BYTES. `ObjectBlockRefs` had one
+/// field, `ComponentList::One` held its `ComponentBlocks` INLINE, and `ComponentBlocks` was 16 of
+/// name plus 24 of refs with no padding -- so all four were 40 bytes because they WERE the same 40
+/// bytes. Each of the base's own const assertions said 40, 40, 40 and 24, and reading them as a sum
+/// is the field-sum-against-`size_of` mistake in its most inviting form.
+///
+/// So the per-object cost was 40 and is now 24. The saving is the 16-byte `Option<Arc<str>>` that
+/// held a constant `None`, and the three wrappers around it cost nothing -- which is exactly what
+/// `bucket_node_arms::the_component_level_is_not_a_list_of_one` measured and said in as many words,
+/// "there are no bytes here to reclaim". That arm was right about the wrapper and looking one level
+/// too high: the bytes were in what the wrapper wrapped.
 ///
 /// There is no name left to map. `insert_object_block_lookup` was the only site in the crate that
 /// ever built a `ComponentBlocks`, and it wrote `component: None` as a literal because the page
@@ -2728,9 +2743,11 @@ pub(super) enum BlockRefs {
 /// THE LOOKUP'S PER-OBJECT VALUE, AND WHAT IT REPLACED.
 ///
 /// `BlockRefs` is now the value `ObjectBlockLookup` holds for each object, which is where the
-/// collapse's saving lands. The value was a 40-byte `ObjectBlockRefs` wrapping a 40-byte
-/// `ComponentList` wrapping a 40-byte `ComponentBlocks` wrapping this 24 -- 120 bytes of nesting
-/// in front of the one that holds the answer. 40 bytes per object become 24.
+/// collapse's saving lands. The value was an `ObjectBlockRefs` holding a `ComponentList` holding a
+/// `ComponentBlocks` holding this -- and all four were 40, 40, 40 and 24 because the first three
+/// WERE THE SAME 40 BYTES, nested inline. The step is 40 to 24 per object: the 16 bytes of the
+/// always-`None` `Option<Arc<str>>`, and nothing for the wrappers. See [`ObjectBlockLookup`] on why
+/// reading those four declarations as a 120-byte sum is the mistake it looks like.
 ///
 /// HOW IT IS HELD, which is what decides whether that step is worth anything. This is a
 /// `BTreeMap` VALUE, and `std`'s B-tree leaf holds eleven entries in one allocation whatever the
@@ -2757,6 +2774,19 @@ const _: () = assert!(
 const _: () = assert!(
     std::mem::size_of::<BlockLookupRef>() < std::mem::size_of::<Vec<BlockLookupRef>>()
 );
+
+/// AND THE WIDTH THIS REPLACED, DECOMPOSED IN TERMS OF TYPES THAT STILL EXIST.
+///
+/// `ComponentBlocks` was `Option<Arc<str>>` plus `BlockRefs` with no padding, so its 40 is still
+/// checkable with the type itself deleted -- which is the point: a "before" number quoted in a
+/// comment goes stale silently, and this one cannot. If the name's width or the refs' width moves,
+/// this goes red and the 40-to-24 claim above has to be restated rather than left wrong.
+const _: () = assert!(
+    std::mem::size_of::<Option<Arc<str>>>() + std::mem::size_of::<BlockRefs>() == 40
+);
+/// The half of that sum the collapse removed, named on its own so the saving is not inferred from
+/// a subtraction: the element name was 16 bytes and held a constant `None`.
+const _: () = assert!(std::mem::size_of::<Option<Arc<str>>>() == 16);
 
 impl BlockRefs {
     pub(super) fn as_slice(&self) -> &[BlockLookupRef] {
@@ -4423,9 +4453,11 @@ impl CoreIndex {
             // component was `None` for every kind before the field was removed.
             //
             // THAT SLOT USED TO SIT UNDER THREE WRAPPERS. `ObjectBlockRefs` -> `ComponentList` ->
-            // `ComponentBlocks` -> `BlockRefs` was 120 bytes of nesting in front of the 24 that
-            // holds the answer, and all of it existed to map a caller-supplied ELEMENT NAME onto
-            // blocks. This was the only site in the crate that ever built a `ComponentBlocks`, and
+            // `ComponentBlocks` -> `BlockRefs` was three wrappers in front of the 24 that holds
+            // the answer, and all of it existed to map a caller-supplied ELEMENT NAME onto blocks.
+            // THE WRAPPERS COST NOTHING -- all three were the same 40 bytes, nested inline -- and
+            // the 16 the step recovers is the always-`None` name inside the innermost one.
+            // This was the only site in the crate that ever built a `ComponentBlocks`, and
             // the name it wrote was a literal `None`. All three wrappers are gone and the object
             // maps straight to its refs -- see [`ObjectBlockLookup`] on what each one carried, and
             // on the one piece that had to stay, because the component ARGUMENT on the readers and
@@ -4487,7 +4519,8 @@ impl CoreIndex {
         let removed = self
             .object_block_lookup
             .remove(model_id, object_key)
-            .map_or(0, BlockRefs::len);
+            // By value, so the closure form: `remove` hands back an owned `BlockRefs`.
+            .map_or(0, |refs| refs.len());
         if removed > 0 {
             if let Some(total) = self.object_component_block_refs.as_mut() {
                 *total = total.saturating_sub(removed);

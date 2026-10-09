@@ -4688,13 +4688,9 @@ fn single_block_components_are_held_inline() {
         // ONE SLOT PER OBJECT NOW, so this is a census of the object's own ref list rather than of
         // each component's. `BlockRefs` is unchanged and the question is the same one: does a
         // single-block object spill its refs to a vector, or stay inline.
-        match entry.refs.as_ref() {
-            Some(BlockRefs::One(_)) => inline += 1,
-            Some(BlockRefs::Many(_)) => spilled += 1,
-            // An object with no slot is removed from the lookup by every remover, so this arm is
-            // unreachable through the producer -- counted in neither column rather than silently
-            // charged to one.
-            None => {}
+        match entry {
+            BlockRefs::One(_) => inline += 1,
+            BlockRefs::Many(_) => spilled += 1,
         }
     }
     assert!(inline + spilled > 0, "no object slots were recorded; nothing was measured");
