@@ -61,7 +61,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 
 use crate::control::LoadShardRequest;
-use crate::engine::state::{BlockIndex, BlockRefs, ObjectBlockRefs};
+use crate::engine::state::{BlockIndex, BlockRefs};
 use crate::engine::storage_bucket_internals::StoredModelKind;
 
 // Imported as a NAME rather than spelled out at the call site: the counting-allocator gate in

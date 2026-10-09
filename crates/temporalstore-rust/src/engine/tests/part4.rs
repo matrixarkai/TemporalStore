@@ -5704,7 +5704,7 @@ fn deleting_leaves_the_lookup_a_rebuild_would_have_built() {
         .iter()
         .map(|(model, object, refs)| {
             let mut flat: Vec<(u32, u64)> = refs
-                .all_refs()
+                .iter()
                 .map(|block_ref| (block_ref.routing_bucket, block_ref.block_ref_key))
                 .collect();
             flat.sort();
@@ -5721,7 +5721,7 @@ fn deleting_leaves_the_lookup_a_rebuild_would_have_built() {
         .iter()
         .map(|(model, object, refs)| {
             let mut flat: Vec<(u32, u64)> = refs
-                .all_refs()
+                .iter()
                 .map(|block_ref| (block_ref.routing_bucket, block_ref.block_ref_key))
                 .collect();
             flat.sort();
@@ -5861,7 +5861,7 @@ fn how_many_blocks_does_a_wide_hash_hold() {
             .bucket_index
             .object_block_lookup
             .iter()
-            .map(|(_m, _o, refs)| refs.total_refs())
+            .map(|(_m, _o, refs)| refs.len())
             .sum();
         println!("fields {fields:5}  pages {pages:6}  buckets {buckets:4}  lookup refs {lookup_refs:6}");
     }
@@ -6662,7 +6662,7 @@ fn a_reload_rebuilds_the_lookup_the_index_no_longer_writes() {
         .iter()
         .map(|(model, object, refs)| {
             let mut flat: Vec<(u32, u64)> = refs
-                .all_refs()
+                .iter()
                 .map(|block_ref| (block_ref.routing_bucket, block_ref.block_ref_key))
                 .collect();
             flat.sort();
@@ -6682,7 +6682,7 @@ fn a_reload_rebuilds_the_lookup_the_index_no_longer_writes() {
         .iter()
         .map(|(model, object, refs)| {
             let mut flat: Vec<(u32, u64)> = refs
-                .all_refs()
+                .iter()
                 .map(|block_ref| (block_ref.routing_bucket, block_ref.block_ref_key))
                 .collect();
             flat.sort();
@@ -7726,7 +7726,7 @@ fn object_block_lookup_refs_per_object_census() {
     let mut multi_ref_object = 0usize;
     let mut refs_total = 0usize;
     for entry in lookup.values() {
-        let held = entry.total_refs();
+        let held = entry.len();
         if held == 1 {
             single_ref_object += 1;
         } else {
@@ -7755,16 +7755,15 @@ fn object_block_lookup_refs_per_object_census() {
     objects whose slot holds one ref    {single_ref_object:>6}  ({:>5.1}%)
     objects whose slot holds more       {multi_ref_object:>6}  ({:>5.1}%)
 
-    sizes: ObjectBlockRefs {:>3} B, BlockRefs {:>3} B, BlockLookupRef {:>3} B
-    a one-ref object is {:>3} B with the ref riding inside the slot rather than in an
-    allocation of its own, and the component level that used to sit between them is gone
+    sizes: the lookup's per-object value is BlockRefs {:>3} B over BlockLookupRef {:>3} B
+    a one-ref object is {:>3} B with the ref riding inside the value rather than in an
+    allocation of its own, and the three wrappers that used to sit between them are gone
 ",
         pct(single_ref_object, objects),
         pct(multi_ref_object, objects),
-        std::mem::size_of::<crate::engine::state::ObjectBlockRefs>(),
         std::mem::size_of::<crate::engine::state::BlockRefs>(),
         std::mem::size_of::<crate::engine::state::BlockLookupRef>(),
-        std::mem::size_of::<crate::engine::state::ObjectBlockRefs>(),
+        std::mem::size_of::<crate::engine::state::BlockRefs>(),
     );
 }
 
@@ -7837,7 +7836,7 @@ fn per_record_structure_census() {
         .bucket_index
         .object_block_lookup
         .values()
-        .map(crate::engine::state::ObjectBlockRefs::total_refs)
+        .map(crate::engine::state::BlockRefs::len)
         .sum();
     // `component_lookup_keys` WAS HERE AND IT WAS A SECOND COPY OF THE ROW ABOVE. It summed
     // `by_component.len()` per object, which has been exactly 1 per object since the element name
@@ -7893,7 +7892,7 @@ fn per_record_structure_census() {
             // per-object cost here.
             object.len()
                 + entry
-                    .all_refs()
+                    .iter()
                     .map(|_block_ref| 0usize)
                     .sum::<usize>()
         })
@@ -8113,7 +8112,7 @@ fn maintained_component_block_ref_total_matches_the_walk() {
         .bucket_index
         .object_block_lookup
         .values()
-        .map(crate::engine::state::ObjectBlockRefs::total_refs)
+        .map(crate::engine::state::BlockRefs::len)
         .sum();
     let maintained = shard
         .bucket_index

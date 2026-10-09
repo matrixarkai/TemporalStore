@@ -51,7 +51,7 @@ use crate::block_store::{ElementEntry, BlockStoreSlabDescriptor};
 use crate::engine::state::{
     BlockIndex, BlockIndexMap, BlockLookupRef, BlockRefs, BucketFlags, BucketLayoutState, BucketNode,
     BucketTtl,
-    ComponentBlocks, ComponentList, DeletedObjectIndex, DirtyKeySet, ObjectBlockRefs, ObjectIndex,
+    DeletedObjectIndex, DirtyKeySet, ObjectIndex,
     WalResidentBlock,
 };
 
@@ -90,7 +90,6 @@ impl Budgeted {
 /// declaration adds up to today.
 fn budget() -> Vec<Budgeted> {
     let arc_str = size_of::<Arc<str>>();
-    let opt_arc_str = size_of::<Option<Arc<str>>>();
     let opt_u64 = size_of::<Option<u64>>();
     let string = size_of::<String>();
     vec![
@@ -136,8 +135,8 @@ fn budget() -> Vec<Budgeted> {
             // routing_bucket      : u32, absorbed from the same row
             //
             // `component: Option<Arc<str>>` STOOD BETWEEN `model_id` AND `address` AND IS GONE.
-            // Sixteen bytes, which is the whole of this row's 56 -> 40. `opt_arc_str` stays bound
-            // above because other rows in this list still hold one; it is no longer a term HERE.
+            // Sixteen bytes, which is the whole of this row's 56 -> 40. The `opt_arc_str` binding is
+            // gone from the top of this function too: no row in this list holds one any more.
             fields: arc_str
                 + size_of::<crate::engine::storage_bucket_internals::StoredModelKind>()
                 + size_of::<ElementEntry>()
@@ -201,28 +200,13 @@ fn budget() -> Vec<Budgeted> {
             fields: size_of::<Vec<BlockLookupRef>>(),
             per_item: true,
         },
-        Budgeted {
-            name: "ComponentBlocks",
-            size: size_of::<ComponentBlocks>(),
-            align: align_of::<ComponentBlocks>(),
-            fields: opt_arc_str + size_of::<BlockRefs>(),
-            per_item: true,
-        },
-        Budgeted {
-            name: "ComponentList",
-            size: size_of::<ComponentList>(),
-            align: align_of::<ComponentList>(),
-            // Widest arm: One(ComponentBlocks).
-            fields: size_of::<ComponentBlocks>(),
-            per_item: true,
-        },
-        Budgeted {
-            name: "ObjectBlockRefs",
-            size: size_of::<ObjectBlockRefs>(),
-            align: align_of::<ObjectBlockRefs>(),
-            fields: size_of::<ComponentList>(),
-            per_item: true,
-        },
+        // `ComponentBlocks`, `ComponentList` AND `ObjectBlockRefs` HAD ROWS HERE, ALL THREE AT 40.
+        //
+        // They were the three wrappers between an object and its block refs, and all three are
+        // deleted: the lookup now holds a `BlockRefs` per object directly, which is the row above.
+        // `ComponentBlocks` was the one row in this list that still had an `opt_arc_str` term --
+        // the always-`None` element name -- which is why that binding is gone from the top of this
+        // function with it.
         Budgeted {
             name: "ObjectIndex",
             size: size_of::<ObjectIndex>(),
@@ -357,9 +341,13 @@ fn every_per_item_structure_states_its_width_and_its_padding() {
     assert_eq!(96, size_of::<BucketNode>(), "BucketNode width moved");
     assert_eq!(16, size_of::<BlockLookupRef>(), "BlockLookupRef width moved");
     assert_eq!(24, size_of::<BlockRefs>(), "BlockRefs width moved");
-    assert_eq!(40, size_of::<ComponentBlocks>(), "ComponentBlocks width moved");
-    assert_eq!(40, size_of::<ComponentList>(), "ComponentList width moved");
-    assert_eq!(40, size_of::<ObjectBlockRefs>(), "ObjectBlockRefs width moved");
+    // THE THREE 40s THAT STOOD HERE ARE GONE WITH THEIR TYPES. `ComponentBlocks`, `ComponentList`
+    // and `ObjectBlockRefs` were the wrappers between an object and its refs; the lookup now holds
+    // a `BlockRefs` per object, so that is the width to pin, and it is bracketed on both sides
+    // rather than left as a bare `==` that tells you the value but not whether the value is an
+    // artefact of the comparison.
+    assert_ne!(23, size_of::<BlockRefs>(), "BlockRefs is 23, so 24 is an upper bound here");
+    assert_ne!(25, size_of::<BlockRefs>(), "BlockRefs is 25, so 24 is a lower bound here");
     assert_eq!(16, size_of::<ObjectIndex>(), "ObjectIndex width moved");
     assert_eq!(8, size_of::<DeletedObjectIndex>(), "DeletedObjectIndex width moved");
     assert_eq!(24, size_of::<DirtyKeySet>(), "DirtyKeySet width moved");
@@ -613,9 +601,6 @@ fn only_the_structures_that_hold_an_address_moved() {
         ("BucketNode", size_of::<BucketNode>(), 96, 0),
         ("BlockLookupRef", size_of::<BlockLookupRef>(), 16, 0),
         ("BlockRefs", size_of::<BlockRefs>(), 24, 0),
-        ("ComponentBlocks", size_of::<ComponentBlocks>(), 40, 0),
-        ("ComponentList", size_of::<ComponentList>(), 40, 0),
-        ("ObjectBlockRefs", size_of::<ObjectBlockRefs>(), 40, 0),
         ("ObjectIndex", size_of::<ObjectIndex>(), 16, 0),
         ("DeletedObjectIndex", size_of::<DeletedObjectIndex>(), 8, 0),
         ("DirtyKeySet", size_of::<DirtyKeySet>(), 24, 0),
@@ -882,7 +867,6 @@ struct ItemCounts {
     block_index_entries: usize,
     model_map_addresses: usize,
     object_block_refs: usize,
-    component_blocks: usize,
     block_lookup_refs: usize,
     dirty_key_sets: usize,
     wal_resident_blocks: usize,
@@ -914,17 +898,11 @@ fn count_items(shard: &crate::engine::state::ShardState) -> ItemCounts {
         .map(|bucket| bucket.block_index.len())
         .sum();
     counts.object_block_refs = shard.bucket_index.object_block_lookup.len();
-    counts.component_blocks = shard
-        .bucket_index
-        .object_block_lookup
-        .values()
-        .map(|entry| entry.by_component.len())
-        .sum();
     counts.block_lookup_refs = shard
         .bucket_index
         .object_block_lookup
         .values()
-        .map(|entry| entry.total_refs())
+        .map(|entry| entry.len())
         .sum();
     // One `DirtyKeySet` per dirty BUCKET, and the measured distribution is one key per bucket at
     // both corpus sizes -- `every_dirty_bucket_holds_its_one_key_inline` walks the shard and
@@ -992,8 +970,7 @@ fn what_the_per_item_structures_cost_at_two_corpus_sizes() {
             ("BucketNode", size_of::<BucketNode>(), counts.bucket_nodes),
             ("BlockIndex (inside BucketNode)", size_of::<BlockIndex>(), counts.block_index_entries),
             ("BlockLookupRef", size_of::<BlockLookupRef>(), counts.block_lookup_refs),
-            ("ComponentBlocks", size_of::<ComponentBlocks>(), counts.component_blocks),
-            ("ObjectBlockRefs", size_of::<ObjectBlockRefs>(), counts.object_block_refs),
+            ("BlockRefs (one per object in the lookup)", size_of::<BlockRefs>(), counts.object_block_refs),
             ("DirtyKeySet", size_of::<DirtyKeySet>(), counts.dirty_key_sets),
             ("WalResidentBlock", size_of::<WalResidentBlock>(), counts.wal_resident_blocks),
         ];

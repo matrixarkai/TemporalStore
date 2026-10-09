@@ -280,7 +280,7 @@ fn the_hash_read_serves_both_sources_and_counts_what_only_the_index_names() {
             .bucket_index
             .object_block_refs("hash", PLANTED_KEY)
             .map(|refs| {
-                refs.all_refs()
+                refs.iter()
                     .map(|block_ref| (block_ref.routing_bucket, block_ref.block_ref_key))
                     .collect()
             })

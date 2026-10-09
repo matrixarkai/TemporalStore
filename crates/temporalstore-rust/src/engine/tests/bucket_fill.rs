@@ -1421,7 +1421,7 @@ fn an_objects_bucket_cannot_be_recomputed_from_its_key_once_the_range_has_moved(
     let mut checked = 0usize;
     for (_model, object, refs) in shard.bucket_index.object_block_lookup.iter() {
         let sits_in = actual.get(object.as_ref()).copied();
-        for block_ref in refs.all_refs() {
+        for block_ref in refs.iter() {
             assert_eq!(
                 Some(block_ref.routing_bucket),
                 sits_in,
@@ -1916,7 +1916,7 @@ fn the_loaded_range_is_reachable_from_the_state_the_bucket_set_reader_already_ta
         let mut reported: BTreeSet<u32> = BTreeSet::new();
         for kind in crate::engine::storage_model_kinds() {
             if let Some(entry) = shard.bucket_index.object_block_refs(kind, key) {
-                reported.extend(entry.all_refs().map(|block_ref| block_ref.routing_bucket));
+                reported.extend(entry.iter().map(|block_ref| block_ref.routing_bucket));
             }
         }
         if reported.is_empty() {
@@ -2092,7 +2092,7 @@ fn a_pre_stamp_store_built_narrow_is_adopted_onto_a_range_that_cannot_compute_it
                 bucket.block_index.values().any(|page| &*page.object_key == object.as_ref())
             })
             .map(|(routing_bucket, _)| *routing_bucket);
-        if refs.all_refs().all(|block_ref| Some(block_ref.routing_bucket) == sits_in) {
+        if refs.iter().all(|block_ref| Some(block_ref.routing_bucket) == sits_in) {
             lookup_correct += 1;
         }
     }

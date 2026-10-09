@@ -5063,7 +5063,7 @@ fn bucket_index_target_buckets_for_object_key(shard: &ShardState, key: &str) -> 
     let mut buckets = BTreeSet::new();
     for kind in storage_model_kinds() {
         if let Some(entry) = shard.bucket_index.object_block_refs(kind, key) {
-            buckets.extend(entry.all_refs().map(|block_ref| block_ref.routing_bucket));
+            buckets.extend(entry.iter().map(|block_ref| block_ref.routing_bucket));
         }
     }
     buckets
@@ -5822,7 +5822,7 @@ fn record_exists_exact(shard: &ShardState, key: &str) -> bool {
                 .bucket_index
                 .object_block_refs(kind, key)
                 .map(|block_refs| {
-                    block_refs.all_refs().any(|block_ref| {
+                    block_refs.iter().any(|block_ref| {
                         shard
                             .bucket_index
                             .bucket_map
@@ -6529,7 +6529,7 @@ fn object_manager_stats(
                             .bucket_index
                             .object_block_lookup
                             .values()
-                            .map(crate::engine::state::ObjectBlockRefs::total_refs)
+                            .map(crate::engine::state::BlockRefs::len)
                             .sum::<usize>()
                     }),
                     shard.dirty_objects.len(),

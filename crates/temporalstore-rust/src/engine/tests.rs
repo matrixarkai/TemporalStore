@@ -238,7 +238,31 @@ mod decoded_index_packing;
 mod two_level_resident_shape;
 mod reconcile_allocation;
 mod hash_read_union_divergence;
-mod packed_element_scan_cost;
+// `packed_element_scan_cost` WAS DECLARED HERE AND THE FILE IS DELETED.
+//
+// It priced two arms in nanoseconds at occupancies from one element to four hundred: ARM A, the
+// per-element level of the resident lookup -- `ObjectBlockRefs::position`, a binary search whose
+// comparison dereferenced an `Option<Arc<str>>` into a separate allocation and compared the name
+// -- against ARM B, `select_container_element`'s packed linear scan. Its own words: "Arm A is the
+// cost that goes; arm B is the cost that stays."
+//
+// ARM A IS GONE, so the trade it measured is settled rather than open. `ObjectBlockRefs`,
+// `ComponentList` and `ComponentBlocks` are deleted and an object maps straight to its
+// `BlockRefs`; there is no per-element level left to price and no `position` to call.
+//
+// IT COULD NOT BE REPAIRED MECHANICALLY, AND ITS OWN DOC SAID NOT TO TRY. The fixture built the
+// per-element level BY HAND -- `occupancy` distinct `Some(name)` entries under one object, a state
+// the producer could not reach even before the collapse, since `insert_object_block_lookup` wrote
+// `component: None` as a literal. And on keeping arm B alone it is explicit: "A measurement that
+// priced B alone would be pricing the status quo." Arm B is the shipped selector and both read
+// doors already call it unconditionally, so nothing it measured about the scan has changed.
+//
+// WHAT IT ESTABLISHED, KEPT ON THE RECORD because it is the reasoning the collapse rests on: the
+// recorded 3.0-17.8x that read as a refutation was a ratio over a different denominator -- a scan
+// of one of 1,024 fixed routing buckets, whose length grows with the corpus -- while the scan it
+// was being compared against walks the elements of ONE OBJECT, whose length is a property of the
+// data shape and not of the corpus. The two numbers answer different questions and the first never
+// bounded the second.
 mod set_listing_source;
 mod projection_names_a_page;
 mod authority_check_cost;

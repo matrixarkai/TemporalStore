@@ -4853,7 +4853,7 @@ pub(super) fn sync_bucket_index_object_blocks_with_mode(
             .object_block_refs(kind, object_key)
             .map(|block_refs| {
                 block_refs
-                    .all_refs()
+                    .iter()
                     .map(|block_ref| block_ref.routing_bucket)
                     .collect::<BTreeSet<_>>()
             })

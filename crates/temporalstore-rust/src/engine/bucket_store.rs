@@ -264,7 +264,7 @@ pub(super) fn bucket_index_component_block_addresses(
 ) -> Vec<(Option<Arc<str>>, ElementEntry)> {
     if let Some(object_refs) = shard.bucket_index.object_block_refs(model_id, object_key) {
         let mut refs = object_refs
-            .all_refs()
+            .iter()
             .filter_map(|block_ref| {
                 let bucket = shard.bucket_index.bucket_map.get(&block_ref.routing_bucket)?;
                 let page = bucket.block_index.get(&block_ref.block_ref_key)?;

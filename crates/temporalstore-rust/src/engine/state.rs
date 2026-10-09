@@ -2425,7 +2425,7 @@ pub(super) fn block_index_written_key(page: &BlockIndex) -> String {
         page.address.generation().unwrap_or_default(),
     )
 }
-/// One entry per OBJECT, with its components nested inside.
+/// One entry per OBJECT, holding that object's block refs directly.
 ///
 /// This replaced two maps keyed by overlapping composites -- (model, object) and
 /// (model, object, component) -- where the shorter key was a byte-for-byte prefix of the longer
@@ -2438,25 +2438,85 @@ pub(super) fn block_index_written_key(page: &BlockIndex) -> String {
 /// reports. That question is precisely why the per-component map could not simply be dropped in
 /// favour of a range scan over the other: a scan of a map keyed by (object, component) cannot
 /// count distinct objects without walking every entry.
-/// Blocks by object, nested under the model that owns them.
 ///
-/// Flat, this was keyed by a `model|object` concatenation: a string built for every stored object
-/// and rebuilt for every lookup. Measured at 37 B per object -- more than either copy of the object
-/// key itself -- and unshareable, because it is a different string from the key it contains.
+/// # THE THREE WRAPPERS THAT USED TO SIT BETWEEN THE OBJECT AND ITS REFS
 ///
-/// Nested, the outer key is the model, which is already a shared pointer, and nothing is
-/// concatenated. A lookup walks two maps instead of building a string.
+/// The value was `ObjectBlockRefs { by_component: ComponentList }`, where `ComponentList` was
+/// `Empty | One(ComponentBlocks) | Many(Vec<ComponentBlocks>)` and `ComponentBlocks` was
+/// `{ component: Option<Arc<str>>, refs: BlockRefs }`. Three types at 40 bytes each in front of
+/// the 24-byte `BlockRefs` that holds the answer, and every one of them existed to map a
+/// CALLER-SUPPLIED ELEMENT NAME onto blocks.
+///
+/// There is no name left to map. `insert_object_block_lookup` was the only site in the crate that
+/// ever built a `ComponentBlocks`, and it wrote `component: None` as a literal because the page
+/// entry it files from has no element name to give it. So the list held exactly one entry, that
+/// entry's name was a constant, and `ObjectBlockRefs` was a struct with one field. All three are
+/// deleted and an object now maps straight to its `BlockRefs`.
+///
+/// WHAT EACH ONE TURNED OUT TO CARRY, since "it is only nesting" is a claim and not an
+/// observation:
+///
+///   * `ObjectBlockRefs` carried `position`, `refs_for`, `all_refs` and `total_refs`. Every one
+///     was a forwarding method over the list; `all_refs` and `total_refs` ARE `BlockRefs::iter`
+///     and `BlockRefs::len` once the list is gone.
+///   * `ComponentList` carried the most: `iter`, `binary_search_by`, `insert`, `remove`, `Index`,
+///     `IndexMut`, `IntoIterator` and a hand-written `Serialize`/`Deserialize` pair. All of it is
+///     machinery for holding SEVERAL components -- the inline/spilled trade so a list of one costs
+///     no allocation, the demotion on removal so an object that briefly held two does not keep the
+///     vector, and the binary search the removals used to find a named slot. At one slot whose
+///     name is a constant, each of those is machinery for nothing. The one piece worth keeping is
+///     the inline/spilled trade itself, and `BlockRefs` already has it for the refs, which is the
+///     level where it now applies.
+///   * `ComponentBlocks` carried the name field and nothing else.
+///
+/// THE EMPTY SLOT STOPPED BEING REPRESENTABLE, AND THAT IS A SIMPLIFICATION AND NOT A LOSS. The
+/// list could hold a slot with no refs -- `BlockRefs::remove` leaves `Many(vec![])` behind -- and
+/// that state was transient by contract with one holder. The object's absence from this map is now
+/// the only way to express "no refs", so the contract has nowhere left to be broken.
+///
+/// # NO FORMAT STAMP IS OWED, AND IT IS CHECKED RATHER THAN ASSUMED
+///
+/// The field holding this is `#[serde(default, skip_serializing)]` on `CoreIndex` and is rebuilt
+/// by a full bucket walk on load (`persistence`'s two `rebuild_object_block_lookup` calls). An
+/// index stamped with the current `SHARD_INDEX_FORMAT_VERSION` cannot carry it, because the writer
+/// skips it; an index stamped lower is refused by `persistence`'s `<` comparison. So the wire
+/// shape below has no reader a stamp could protect. The one observable difference for a
+/// pre-version index that DOES carry the old shape is which counter it lands in --
+/// `IndexLoadPath::Undecodable` rather than `RefusedStaleStamp` -- and both return `Ok(None)` and
+/// fall back to WAL replay.
 #[derive(Debug, Default, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(
-    from = "BTreeMap<String, ObjectBlockRefs>",
-    into = "BTreeMap<String, ObjectBlockRefs>"
+    from = "BTreeMap<String, BlockRefs>",
+    into = "BTreeMap<String, BlockRefs>"
 )]
 pub(super) struct ObjectBlockLookup {
-    by_model: BTreeMap<Arc<str>, BTreeMap<Arc<str>, ObjectBlockRefs>>,
+    by_model: BTreeMap<Arc<str>, BTreeMap<Arc<str>, BlockRefs>>,
+}
+
+/// Whether this component argument names THE ONLY SLOT THERE IS.
+///
+/// # THIS IS THE ONE PIECE OF THE DELETED LEVELS THAT HAD TO STAY
+///
+/// The component argument on this lookup's readers and removers is NOT always `None`, and
+/// believing otherwise is the way to get this collapse wrong. Two production sites reach it with a
+/// real `Some`: `bucket_store::bucket_index_block_address`, which passes a caller's component
+/// straight through from the slow read path, and [`CoreIndex::contains_object_block_address`],
+/// which `storage_bucket_internals`'s hash-field sync asks `Some(field)` once per field.
+///
+/// What made the levels dead is the other half of the pair: the one slot was keyed `None`, so a
+/// binary search for `Some(x)` always ran off the front and answered nothing. This is that search
+/// with the entry's constant folded in -- `None.cmp(&Some(x))` is `Less` for every `x`, so the
+/// search returned `Err` and every caller took its miss branch.
+///
+/// Spelled once, because the consequence of the three callers drifting apart on it is not a bigger
+/// index: a `Some` that started hitting would serve an object's whole page as the answer to a
+/// field lookup that has always, correctly, found nothing.
+fn names_the_only_slot(component: Option<&str>) -> bool {
+    component.is_none()
 }
 
 impl ObjectBlockLookup {
-    pub(super) fn get(&self, model_id: &str, object_key: &str) -> Option<&ObjectBlockRefs> {
+    pub(super) fn get(&self, model_id: &str, object_key: &str) -> Option<&BlockRefs> {
         self.by_model.get(model_id)?.get(object_key)
     }
 
@@ -2464,26 +2524,36 @@ impl ObjectBlockLookup {
         &mut self,
         model_id: &str,
         object_key: &str,
-    ) -> Option<&mut ObjectBlockRefs> {
+    ) -> Option<&mut BlockRefs> {
         self.by_model.get_mut(model_id)?.get_mut(object_key)
     }
 
-    /// The entry for this object, created empty if absent. Takes the model by shared pointer so
-    /// the outer key costs nothing to store.
-    /// Takes both keys by shared pointer. The object key is the one the block entry already
-    /// holds, so filing a block adds a pointer rather than a second copy of its identity.
-    pub(super) fn entry(
+    /// File one ref under this object, opening the object's entry if it is absent. Reports whether
+    /// anything was added, which is what the ref counter is kept from.
+    ///
+    /// Takes both keys by shared pointer. The object key is the one the block entry already holds,
+    /// so filing a block adds a pointer rather than a second copy of its identity.
+    ///
+    /// REPLACES `entry()`, WHICH CANNOT EXIST ANY MORE AND IS BETTER FOR IT. That method handed
+    /// back an empty `ObjectBlockRefs` for the caller to fill, so the "object present, nothing
+    /// filed" state had to be representable. `BlockRefs` has no empty arm to default to, so the
+    /// first ref is built INTO the entry that holds it and the intermediate state is gone.
+    pub(super) fn file(
         &mut self,
         model_id: &Arc<str>,
         object_key: &Arc<str>,
-    ) -> &mut ObjectBlockRefs {
+        value: BlockLookupRef,
+    ) -> bool {
         let objects = self.by_model.entry(Arc::clone(model_id)).or_default();
-        if !objects.contains_key(object_key.as_ref()) {
-            objects.insert(Arc::clone(object_key), ObjectBlockRefs::default());
+        match objects.get_mut(object_key.as_ref()) {
+            Some(refs) => refs.insert(value),
+            None => {
+                // The object's first block. Built already holding it, so the common case never
+                // allocates and there is no empty state in between.
+                objects.insert(Arc::clone(object_key), BlockRefs::One(value));
+                true
+            }
         }
-        objects
-            .get_mut(object_key.as_ref())
-            .expect("just inserted")
     }
 
     /// The allocation this map already holds for an object's key, for a block about to be filed
@@ -2512,7 +2582,7 @@ impl ObjectBlockLookup {
         Some(stored.as_ptr())
     }
 
-    pub(super) fn remove(&mut self, model_id: &str, object_key: &str) -> Option<ObjectBlockRefs> {
+    pub(super) fn remove(&mut self, model_id: &str, object_key: &str) -> Option<BlockRefs> {
         let objects = self.by_model.get_mut(model_id)?;
         let removed = objects.remove(object_key);
         if objects.is_empty() {
@@ -2534,12 +2604,12 @@ impl ObjectBlockLookup {
         self.by_model.clear();
     }
 
-    pub(super) fn values(&self) -> impl Iterator<Item = &ObjectBlockRefs> {
+    pub(super) fn values(&self) -> impl Iterator<Item = &BlockRefs> {
         self.by_model.values().flat_map(BTreeMap::values)
     }
 
     /// Model and object for every entry, for the places that used to read the composite key.
-    pub(super) fn iter(&self) -> impl Iterator<Item = (&Arc<str>, &Arc<str>, &ObjectBlockRefs)> {
+    pub(super) fn iter(&self) -> impl Iterator<Item = (&Arc<str>, &Arc<str>, &BlockRefs)> {
         self.by_model.iter().flat_map(|(model, objects)| {
             objects.iter().map(move |(object, refs)| (model, object, refs))
         })
@@ -2559,9 +2629,9 @@ fn take_lookup_part(input: &str) -> Option<(&str, &str)> {
     Some((&input[start..end], &input[end + 1..]))
 }
 
-impl From<BTreeMap<String, ObjectBlockRefs>> for ObjectBlockLookup {
-    fn from(flat: BTreeMap<String, ObjectBlockRefs>) -> Self {
-        let mut nested: BTreeMap<Arc<str>, BTreeMap<Arc<str>, ObjectBlockRefs>> = BTreeMap::new();
+impl From<BTreeMap<String, BlockRefs>> for ObjectBlockLookup {
+    fn from(flat: BTreeMap<String, BlockRefs>) -> Self {
+        let mut nested: BTreeMap<Arc<str>, BTreeMap<Arc<str>, BlockRefs>> = BTreeMap::new();
         for (key, refs) in flat {
             // A key that does not parse is skipped rather than guessed at: inventing a model for
             // it would file the object somewhere no lookup would ever look.
@@ -2583,7 +2653,7 @@ impl From<BTreeMap<String, ObjectBlockRefs>> for ObjectBlockLookup {
     }
 }
 
-impl From<ObjectBlockLookup> for BTreeMap<String, ObjectBlockRefs> {
+impl From<ObjectBlockLookup> for BTreeMap<String, BlockRefs> {
     fn from(nested: ObjectBlockLookup) -> Self {
         let mut flat = BTreeMap::new();
         for (model, objects) in nested.by_model {
@@ -2592,136 +2662,6 @@ impl From<ObjectBlockLookup> for BTreeMap<String, ObjectBlockRefs> {
             }
         }
         flat
-    }
-}
-
-/// The block refs of one object.
-///
-/// # THE SECOND LEVEL THAT USED TO BE HERE, AND WHY IT WENT
-///
-/// This was two levels: object -> `by_component` -> refs, where the middle level was a sorted
-/// `ComponentList` of `ComponentBlocks { component: Option<Arc<str>>, refs: BlockRefs }`. Both of
-/// those types are gone, because the list could only ever hold ONE entry and that entry's name
-/// could only ever be `None`: [`CoreIndex::insert_object_block_lookup`] was the only thing in the
-/// crate that ever built a `ComponentBlocks`, and it wrote `component: None` as a literal -- the
-/// entry it files from has no element name to give it. So the level spent a 16-byte
-/// `Option<Arc<str>>` per object holding a constant, plus a three-arm wrapper to express a list of
-/// one, and a binary search to find the only element.
-///
-/// # THE QUERY CONTRACT THE LEVEL CARRIED, WHICH DID NOT GO WITH IT
-///
-/// The component argument on this lookup's readers and removers is NOT always `None`, and that is
-/// the tempting and wrong reason to delete the level. Two production sites reach it with a real
-/// `Some`: `bucket_store::bucket_index_block_address`, which passes a caller's component straight
-/// through, and [`CoreIndex::contains_object_block_address`], which
-/// `storage_bucket_internals`'s hash-field sync asks `Some(field)` once per field.
-///
-/// What made the level dead is the other half of the pair: the one slot is keyed `None`, so a
-/// binary search for `Some(x)` always ran off the front and answered nothing. So a `Some` query
-/// must GO ON answering nothing and a `Some` removal must GO ON being a no-op. That is now a
-/// predicate on the ARGUMENT rather than a search over a list, and it is spelled exactly once, in
-/// [`ObjectBlockRefs::names_the_only_slot`].
-///
-/// # NO FORMAT STAMP IS OWED, AND THAT IS CHECKED RATHER THAN ASSUMED
-///
-/// The field holding this is `#[serde(default, skip_serializing)]` on `CoreIndex` and is rebuilt
-/// by a full bucket walk on load (`persistence`'s two `rebuild_object_block_lookup` calls). So an
-/// index stamped with the current `SHARD_INDEX_FORMAT_VERSION` cannot carry it -- the writer skips
-/// it -- and an index stamped lower is refused by `persistence`'s `<` comparison before anything
-/// reads it. The wire shape below therefore has no reader that a stamp could protect.
-#[derive(Debug, Default, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub(super) struct ObjectBlockRefs {
-    /// `None` is an ABSENT slot, `Some` a present one, and the difference is load-bearing rather
-    /// than tidiness -- see [`CoreIndex::remove_object_block_lookup_ref`] on the re-add case that
-    /// is distinguished by it. It is the `Empty`/`One` distinction the list expressed with a tag,
-    /// held in `Option`'s instead.
-    ///
-    /// A PRESENT SLOT ALWAYS HOLDS AT LEAST ONE REF. The list could represent a slot with none --
-    /// `BlockRefs::remove` leaves `Many(vec![])` behind -- and that state was transient by
-    /// contract, with one holder. It is now not representable at all: [`Self::drop_ref`] is that
-    /// holder and it takes the slot in the same statement.
-    #[serde(default)]
-    pub(super) refs: Option<BlockRefs>,
-}
-
-impl ObjectBlockRefs {
-    /// Whether this component argument names THE ONLY SLOT THERE IS.
-    ///
-    /// The whole of what the vector's binary search decided, with the entry's constant folded in:
-    /// the only entry's name is `None`, `None.cmp(&Some(x))` is `Less` for every `x`, so the
-    /// search answered `Err` and every caller took its miss branch. Spelled once so the three
-    /// callers below cannot drift apart on it.
-    fn names_the_only_slot(component: Option<&str>) -> bool {
-        component.is_none()
-    }
-
-    pub(super) fn refs_for(&self, component: Option<&str>) -> Option<&[BlockLookupRef]> {
-        if !Self::names_the_only_slot(component) {
-            return None;
-        }
-        self.refs.as_ref().map(BlockRefs::as_slice)
-    }
-
-    /// File one ref under the only slot, opening it if it is absent. Reports whether anything was
-    /// added, which is what the ref counter is kept from.
-    pub(super) fn file(&mut self, value: BlockLookupRef) -> bool {
-        match self.refs.as_mut() {
-            Some(refs) => refs.insert(value),
-            None => {
-                // The object's first block. Built already holding it, so the common case never
-                // allocates and there is no empty state in between.
-                self.refs = Some(BlockRefs::One(value));
-                true
-            }
-        }
-    }
-
-    /// Drop the whole slot this component names, answering how many refs went with it.
-    ///
-    /// Answers 0 for a `Some` component without touching anything, which is what the binary
-    /// search over a list of one already did.
-    pub(super) fn drop_slot(&mut self, component: Option<&str>) -> usize {
-        if !Self::names_the_only_slot(component) {
-            return 0;
-        }
-        self.refs.take().map_or(0, BlockRefs::len)
-    }
-
-    /// Drop ONE ref from the slot this component names, taking the slot itself when that was its
-    /// last. Answers whether a ref was removed, so a caller cannot mistake "nothing was there"
-    /// for "something was dropped" -- the ref counter is advanced from that answer.
-    pub(super) fn drop_ref(
-        &mut self,
-        component: Option<&str>,
-        block_ref: &BlockLookupRef,
-    ) -> bool {
-        if !Self::names_the_only_slot(component) {
-            return false;
-        }
-        let Some(refs) = self.refs.as_mut() else {
-            return false;
-        };
-        let removed = refs.remove(block_ref);
-        // THE SLOT GOES WHEN ITS LAST REF DOES. `BlockRefs::remove` turns the inline arm into an
-        // empty spilled one rather than panicking, and this is the single holder of the contract
-        // that the empty state is transient -- which is why it is the same statement.
-        if refs.is_empty() {
-            self.refs = None;
-        }
-        removed
-    }
-
-    pub(super) fn is_empty(&self) -> bool {
-        self.refs.is_none()
-    }
-
-    /// Every block ref of this object.
-    pub(super) fn all_refs(&self) -> impl Iterator<Item = &BlockLookupRef> {
-        self.refs.iter().flat_map(BlockRefs::iter)
-    }
-
-    pub(super) fn total_refs(&self) -> usize {
-        self.refs.as_ref().map_or(0, BlockRefs::len)
     }
 }
 
@@ -2785,8 +2725,38 @@ pub(super) enum BlockRefs {
     Many(Vec<BlockLookupRef>),
 }
 
-/// As wide as its `Many` arm's vector; the tag rides the padding of the inline ref.
+/// THE LOOKUP'S PER-OBJECT VALUE, AND WHAT IT REPLACED.
+///
+/// `BlockRefs` is now the value `ObjectBlockLookup` holds for each object, which is where the
+/// collapse's saving lands. The value was a 40-byte `ObjectBlockRefs` wrapping a 40-byte
+/// `ComponentList` wrapping a 40-byte `ComponentBlocks` wrapping this 24 -- 120 bytes of nesting
+/// in front of the one that holds the answer. 40 bytes per object become 24.
+///
+/// HOW IT IS HELD, which is what decides whether that step is worth anything. This is a
+/// `BTreeMap` VALUE, and `std`'s B-tree leaf holds eleven entries in one allocation whatever the
+/// value type -- so the 16-byte step is multiplied by eleven before it meets an allocator size
+/// class, and the class is irrelevant. That is the opposite of a structure held ONE PER
+/// ALLOCATION, where `chunk(40)` and `chunk(32)` fall in the same 48-byte class and a step
+/// between them moves nothing at all. Same arithmetic, opposite conclusion, and which one applies
+/// is a property of the holder rather than of the width.
+///
+/// BRACKETED, because a single `==` that compiles tells you the value while the pair tells you
+/// the value is not an artefact of the comparison chosen.
 const _: () = assert!(std::mem::size_of::<BlockRefs>() == 24);
+const _: () = assert!(std::mem::size_of::<BlockRefs>() != 23);
+const _: () = assert!(std::mem::size_of::<BlockRefs>() != 25);
+/// AND THE DECOMPOSITION, not merely the width -- a width test in this tree once printed a wrong
+/// field sum and passed because it asserted only the total. The widest arm is the spilled vector,
+/// and the enum is exactly as wide as it, so the tag costs nothing. If the tag ever stops being
+/// free this goes red rather than silently adding a word.
+const _: () = assert!(
+    std::mem::size_of::<BlockRefs>() == std::mem::size_of::<Vec<BlockLookupRef>>()
+);
+/// The inline arm fits inside that same width with room for the tag, which is the other half of
+/// the decomposition: the arm is a `BlockLookupRef` and it is strictly narrower than the vector.
+const _: () = assert!(
+    std::mem::size_of::<BlockLookupRef>() < std::mem::size_of::<Vec<BlockLookupRef>>()
+);
 
 impl BlockRefs {
     pub(super) fn as_slice(&self) -> &[BlockLookupRef] {
@@ -2819,12 +2789,13 @@ impl BlockRefs {
     /// `One` cannot represent zero refs. Removing the only ref therefore has to change the arm, and
     /// it becomes `Many(vec![])` rather than panicking or leaving the ref behind. That state is
     /// transient by contract: the holder drops the slot when this leaves it empty, and
-    /// [`ObjectBlockRefs::drop_ref`] is the only caller precisely so that contract has one holder.
+    /// [`CoreIndex::remove_object_block_lookup_ref`] is the only caller precisely so that contract
+    /// has one holder.
     /// Representing it anyway is what keeps the transition from being a panic.
     ///
     /// SINCE THE SECOND LEVEL COLLAPSED THE EMPTY STATE IS NOT EVEN REPRESENTABLE ABOVE. The slot
-    /// is an `Option` on [`ObjectBlockRefs`], so `drop_ref` takes it in the same statement that
-    /// sees it empty -- there is no longer a list position that could be left holding this.
+    /// is the object's presence in `ObjectBlockLookup`, so the remover drops the object in the same
+    /// breath that sees the refs empty -- there is no longer a slot that could be left holding this.
     pub(super) fn remove(&mut self, value: &BlockLookupRef) -> bool {
         match self {
             Self::One(existing) => {
@@ -4443,9 +4414,6 @@ impl CoreIndex {
                 &mut self.kind_pool,
                 page.model_id.as_str(),
             );
-            let entry = self
-                .object_block_lookup
-                .entry(&kind, &page.object_key);
             let value = BlockLookupRef {
                 routing_bucket,
                 block_ref_key,
@@ -4454,14 +4422,15 @@ impl CoreIndex {
             // files under the SAME single slot -- which is what it already did, because an entry's
             // component was `None` for every kind before the field was removed.
             //
-            // THAT SLOT USED TO SIT INSIDE A LIST. `ObjectBlockRefs` -> `ComponentList` ->
-            // `ComponentBlocks` -> `BlockRefs` was one level deeper than it needed to be: the list
-            // held exactly one `ComponentBlocks` per object, this was the only site in the crate
-            // that ever built one, and the name it wrote was the literal `None` below. The level is
-            // gone and this is the same filing without it -- see [`ObjectBlockRefs`] on the query
-            // contract that stayed behind, because the component ARGUMENT on the readers and the
-            // removers still comes from callers and is still sometimes `Some`.
-            entry.file(value)
+            // THAT SLOT USED TO SIT UNDER THREE WRAPPERS. `ObjectBlockRefs` -> `ComponentList` ->
+            // `ComponentBlocks` -> `BlockRefs` was 120 bytes of nesting in front of the 24 that
+            // holds the answer, and all of it existed to map a caller-supplied ELEMENT NAME onto
+            // blocks. This was the only site in the crate that ever built a `ComponentBlocks`, and
+            // the name it wrote was a literal `None`. All three wrappers are gone and the object
+            // maps straight to its refs -- see [`ObjectBlockLookup`] on what each one carried, and
+            // on the one piece that had to stay, because the component ARGUMENT on the readers and
+            // the removers still comes from callers and is still sometimes `Some`.
+            self.object_block_lookup.file(&kind, &page.object_key, value)
         };
         if added {
             if let Some(total) = self.object_component_block_refs.as_mut() {
@@ -4471,23 +4440,28 @@ impl CoreIndex {
     }
 
     /// Every block ref this object holds, for one component.
+    ///
+    /// A named component resolves nothing and never did -- see [`names_the_only_slot`].
     pub(super) fn block_refs_for(
         &self,
         model_id: &str,
         object_key: &str,
         component: Option<&str>,
     ) -> Option<&[BlockLookupRef]> {
+        if !names_the_only_slot(component) {
+            return None;
+        }
         self.object_block_lookup
             .get(model_id, object_key)
-            .and_then(|entry| entry.refs_for(component))
+            .map(BlockRefs::as_slice)
     }
 
-    /// Every component of this object, and the blocks holding each.
+    /// Every block ref of this object, whatever its component.
     pub(super) fn object_block_refs(
         &self,
         model_id: &str,
         object_key: &str,
-    ) -> Option<&ObjectBlockRefs> {
+    ) -> Option<&BlockRefs> {
         self.object_block_lookup.get(model_id, object_key)
     }
 
@@ -4498,20 +4472,22 @@ impl CoreIndex {
         component: Option<&str>,
     ) {
 
-        // ONE SLOT IS THIS OBJECT'S ENTIRE SET OF REFS. What this replaces had to seek a range
-        // with an empty-string sentinel and take_while on the component, because the
-        // per-component map flattened every component of an object into one ordered set -- so a
-        // component's refs could only be found by range, not by index. Nesting deleted that; the
-        // collapse then deleted the index too, because there is only ever the one slot.
-        let mut removed = 0usize;
-        let mut now_empty = false;
-        if let Some(entry) = self.object_block_lookup.get_mut(model_id, object_key) {
-            removed = entry.drop_slot(component);
-            now_empty = entry.is_empty();
+        // ONE SLOT IS THIS OBJECT'S ENTIRE SET OF REFS, so dropping the slot is dropping the
+        // object's entry. What this replaces had to seek a range with an empty-string sentinel and
+        // take_while on the component, because the per-component map flattened every component of
+        // an object into one ordered set -- so a component's refs could only be found by range,
+        // not by index. Nesting deleted the range; the collapse deleted the index too, because
+        // there is only ever the one slot.
+        //
+        // A NAMED COMPONENT REMOVES NOTHING, which is what the binary search over a list of one
+        // already did -- see [`names_the_only_slot`].
+        if !names_the_only_slot(component) {
+            return;
         }
-        if now_empty {
-            self.object_block_lookup.remove(model_id, object_key);
-        }
+        let removed = self
+            .object_block_lookup
+            .remove(model_id, object_key)
+            .map_or(0, BlockRefs::len);
         if removed > 0 {
             if let Some(total) = self.object_component_block_refs.as_mut() {
                 *total = total.saturating_sub(removed);
@@ -4554,15 +4530,22 @@ impl CoreIndex {
         component: Option<&str>,
         block_ref: &BlockLookupRef,
     ) -> bool {
+        // A NAMED COMPONENT REMOVES NOTHING -- see [`names_the_only_slot`].
+        if !names_the_only_slot(component) {
+            return false;
+        }
         let mut removed = false;
         let mut now_empty = false;
-        if let Some(entry) = self.object_block_lookup.get_mut(model_id, object_key) {
-            removed = entry.drop_ref(component, block_ref);
-            now_empty = entry.is_empty();
+        if let Some(refs) = self.object_block_lookup.get_mut(model_id, object_key) {
+            removed = refs.remove(block_ref);
+            // THE SLOT GOES WHEN ITS LAST REF DOES, AND THE EMPTY STATE IS NOT REPRESENTABLE
+            // ABOVE ANY MORE. `BlockRefs::remove` turns the inline arm into an empty spilled one
+            // rather than panicking, and this is the single holder of the contract that the state
+            // is transient -- which is why the object's removal is decided in the same breath.
+            now_empty = refs.is_empty();
         }
-        // The object's whole entry goes when its last component does, which is what the whole-slot
-        // removal above does and for the same reason: an object present in the lookup with no
-        // components is a `get` that succeeds and answers nothing.
+        // The object's whole entry goes when its last ref does: an object present in the lookup
+        // holding nothing is a `get` that succeeds and answers nothing.
         if now_empty {
             self.object_block_lookup.remove(model_id, object_key);
         }
@@ -4591,7 +4574,7 @@ impl CoreIndex {
         let Some(entry) = self.object_block_lookup.remove(model_id, object_key) else {
             return 0;
         };
-        let removed = entry.total_refs();
+        let removed = entry.len();
         if removed > 0 {
             if let Some(total) = self.object_component_block_refs.as_mut() {
                 *total = total.saturating_sub(removed);
@@ -5028,7 +5011,7 @@ mod component_lookup_tests {
     /// THE HALF OF THE TRIPWIRE THAT HAS A DISCRIMINATOR, and it can still fail.
     ///
     /// Three inserts for one object must ACCUMULATE into the one slot, which is `BlockRefs::One`
-    /// growing into `Many` under [`ObjectBlockRefs::file`]. The count is what makes this bite: a
+    /// growing into `Many` under [`ObjectBlockLookup::file`]. The count is what makes this bite: a
     /// `file` that replaced instead of inserting -- the obvious way to write it once there is only
     /// one slot, and what the whole-slot removal next door does -- would leave ONE ref here, and
     /// every other arm in this module, which asks whether something is there rather than how much,
@@ -5052,7 +5035,7 @@ mod component_lookup_tests {
             3,
             index
                 .object_block_refs("hash", "k")
-                .map_or(0, ObjectBlockRefs::total_refs),
+                .map_or(0, BlockRefs::len),
             "the object's refs are not all reachable through its single slot"
         );
     }
@@ -5062,7 +5045,7 @@ mod component_lookup_tests {
     ///
     /// # WHAT CAN MAKE THIS FAIL, STATED PLAINLY BECAUSE IT IS NOT A STRUCTURAL DRIFT
     ///
-    /// With the second level gone this is [`ObjectBlockRefs::names_the_only_slot`]'s single
+    /// With the second level gone this is [`names_the_only_slot`]'s single
     /// predicate and nothing else's, so the only thing that can redden it is an edit to that
     /// predicate. It is kept anyway, and asserted BOTH WAYS in one arm, for two reasons. A
     /// one-sided check is satisfied on whichever side an edit moves -- loosening the predicate so
@@ -5149,7 +5132,7 @@ mod component_lookup_tests {
         index
             .object_block_lookup
             .values()
-            .map(ObjectBlockRefs::total_refs)
+            .map(BlockRefs::len)
             .sum()
     }
 
@@ -5210,7 +5193,7 @@ mod component_lookup_tests {
     /// behind would send the re-add down the wrong branch.
     ///
     /// THE COLLAPSE MADE THE EMPTY STATE UNREPRESENTABLE rather than merely wrong, because the
-    /// slot is an `Option` and [`ObjectBlockRefs::drop_ref`] takes it in the statement that sees
+    /// slot is an `Option` and [`CoreIndex::remove_object_block_lookup_ref`] takes it in the statement that sees
     /// it empty. This arm keeps its teeth anyway, because what it asserts is the OBSERVABLE --
     /// that `block_refs_for` goes from `Some` to `None` and not to `Some(&[])` -- and that is a
     /// claim about the answer rather than about which type expresses it.
