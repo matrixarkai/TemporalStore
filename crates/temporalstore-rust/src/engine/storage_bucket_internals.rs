@@ -3834,12 +3834,45 @@ pub(super) struct ObjectDeletionFiled(());
 /// door and that door takes no element type. `container_page_ordinal::the_ordinal_names_a_position_
 /// and_a_delete_frees_it` is the arm that reads the retained live entry.
 ///
-/// ## AND SEVENTEEN GUARDS STILL ASSERT THE PRE-COLLAPSE STATE
+/// ## AND THE GUARDS THAT STILL ASSERT THE PRE-COLLAPSE STATE, BY MODULE
 ///
-/// MEASURED, as 19 red over the whole affected surface -- 149 passed, 19 failed, 25 ignored, 2,664
-/// filtered out of 2,857 -- of which TWO are inherited (named at the end) and seventeen are this
-/// change's restatement work. The count is the measurement's and not an estimate: a first draft of
-/// this paragraph said eighteen by counting one inherited arm twice.
+/// The retirement of the gate turned every UNGATED-path test into a gated-path test, so this
+/// surface grew rather than shrank: seventeen before it, and 49 of 914 after -- measured with the
+/// `_scale`, `campaign_end_to_end` and `bucket_fill` measurement families excluded, which is stated
+/// because a failure count with no denominator cannot be checked.
+///
+/// NONE IS A DEMONSTRATED LOSS OF SERVED DATA. Each was driven and its message read, and they fall
+/// into four shapes:
+///
+///   * THEY IDENTIFY AN ELEMENT IN THE INDEX BY ITS COMPONENT, to establish a population that still
+///     exists and is simply no longer identifiable that way. `resident_map_readers` x2,
+///     `set_listing_page_reads` x1, `fold_hash_map_completeness` x2, `carried_page_identity` x2,
+///     `folded_page_membership`, `container_page_element_key`, `entry_object_identity` x2.
+///   * THEY ASSERT ONE ENTRY PER ELEMENT, which is the collapse written down as an expectation:
+///     `part4` x5 (`components_of_one_object_stay_separate`,
+///     `every_field_of_a_hash_is_filed_in_the_bucket_index`,
+///     `block_index_identity_string_cardinality`, `object_block_lookup_occupancy_census`,
+///     `a_bucket_holding_one_block_holds_no_node`), `entry_count_versus_page_count`,
+///     `pages_per_bucket` x2, `page_entry_element_naming` x2, `object_is_a_key_not_an_element` x2,
+///     `container_pages_are_batched` x1.
+///   * THEIR SUBJECT NO LONGER EXISTS AT ALL, which is the case for RESTATEMENT INTO A TRIPWIRE
+///     rather than deletion: `set_listing_page_reads::every_member_a_set_listing_returns_is_
+///     already_spelled_by_its_component` (the redundancy the collapse deleted),
+///     `container_member_shadow` x2 (the same redundancy, priced), `gated_corpus_across_a_store_
+///     boundary` x2 (both arms are about an UNGATED reader or writer, and there is neither),
+///     `hash_read_union_divergence` x1.
+///   * THEY RECOVER AN ELEMENT FROM ITS NAME -- `durable_outranks_derived` x5, the one group whose
+///     subject becomes structurally UNREPRESENTABLE rather than merely absent. A test proving a
+///     defect unreachable is worth more than one proving it currently absent, so these are the ones
+///     to restate with their doc saying the divergence can no longer be REPRESENTED. The durable
+///     maps are the sole source now -- all four carry `#[serde(default)]` -- and the stamp is what
+///     bounds it: `page_entry_names::an_ungated_store_is_refused_before_it_is_served`.
+///
+/// AND TWO OF THE ORIGINAL INHERITED REDS ARE GONE, taken by the rebase onto `matrixark/main`
+/// `2ae24a03d`: PR #2123 gained three restatements after this branch copied its commit, and
+/// `container_member_shadow::a_zset_read_examines_no_page_index_entries_and_a_hash_whole_object_
+/// read_does` and `length_answer_and_listing_agree` are main's own now. `length_answer` still
+/// reddens, at a different arm.
 ///
 /// Listed so they are restatement work someone can pick up rather than a red count to be rediscovered.
 /// Each was DRIVEN and its message read; none is a demonstrated loss of served data.
