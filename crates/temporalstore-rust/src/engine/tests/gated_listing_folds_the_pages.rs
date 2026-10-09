@@ -261,11 +261,11 @@ fn a_gated_listing_folds_the_pages_and_the_removed_member_stays_gone() {
 /// nine's reload corpus exists to cover, and it is the reason the fallback is not dead code.
 #[test]
 fn an_unframed_page_makes_the_fold_decline_rather_than_answer_short() {
-    use crate::block_store::BlockAddress;
+    use crate::block_store::ElementEntry;
     use crate::engine::container_membership::{append_position, derive_membership};
 
-    fn at(slab: u64, offset: u64, len: u32) -> BlockAddress {
-        BlockAddress::from_parts(slab, offset, u64::from(len), Some(0), Some(7))
+    fn at(slab: u64, offset: u64, len: u32) -> ElementEntry {
+        ElementEntry::from_parts(slab, offset, u64::from(len), Some(0), Some(7))
     }
 
     let member = b"member-000".to_vec();
@@ -287,7 +287,7 @@ fn an_unframed_page_makes_the_fold_decline_rather_than_answer_short() {
     let read = || {
         let framed = framed.clone();
         let bare = bare.clone();
-        move |address: &BlockAddress| -> Option<Vec<u8>> {
+        move |address: &ElementEntry| -> Option<Vec<u8>> {
             if append_position(address) == framed_position {
                 Some(framed.clone())
             } else {

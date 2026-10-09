@@ -64,7 +64,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use super::container_pages::{
     component_from_element_key, decode_container_page, ContainerPageDecode, ContainerPageShape,
 };
-use crate::block_store::BlockAddress;
+use crate::block_store::ElementEntry;
 
 /// What the pages of one container say its membership is.
 #[derive(Debug, Default, Clone)]
@@ -116,7 +116,7 @@ impl DerivedMembership {
 /// A TUPLE AND NOT A DERIVED SCALAR. Packing the two into one `u64` is what `BlockAddress` does
 /// internally for storage, and doing it again here would invite the reader to wonder whether the
 /// offset can overflow into the slab id. The tuple cannot.
-pub(super) fn append_position(address: &BlockAddress) -> (u64, u64) {
+pub(super) fn append_position(address: &ElementEntry) -> (u64, u64) {
     (address.block_slab_id(), address.offset())
 }
 
@@ -132,11 +132,11 @@ pub(super) fn append_position(address: &BlockAddress) -> (u64, u64) {
 /// a guard measures the fold with -- #2028's own check deduplicated for exactly this reason.
 pub(super) fn derive_membership<F>(
     kind: &str,
-    pages: impl IntoIterator<Item = BlockAddress>,
+    pages: impl IntoIterator<Item = ElementEntry>,
     mut read_page: F,
 ) -> DerivedMembership
 where
-    F: FnMut(&BlockAddress) -> Option<Vec<u8>>,
+    F: FnMut(&ElementEntry) -> Option<Vec<u8>>,
 {
     let mut derived = DerivedMembership::default();
     if super::container_pages::ElementKeySpelling::for_kind(kind).is_none() {
@@ -149,7 +149,7 @@ where
 
     // ORDER FIRST, THEN READ. The sort is over addresses and costs nothing per page; doing it after
     // reading would mean holding every page's bytes at once.
-    let mut ordered: Vec<BlockAddress> = pages.into_iter().collect();
+    let mut ordered: Vec<ElementEntry> = pages.into_iter().collect();
     ordered.sort_by_key(append_position);
     ordered.dedup_by_key(|address| append_position(address));
 

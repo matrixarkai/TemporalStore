@@ -39,7 +39,7 @@
 
 use prost::Message;
 
-use crate::block_store::BlockAddress;
+use crate::block_store::ElementEntry;
 pub use crate::record_framing::{decode_framed_at, encode_framed, RecordFramingError as WalFramingError};
 
 /// Record format version, mirroring the log version.
@@ -117,10 +117,10 @@ pub fn block_address_from_item(
     log_id: u64,
     log_size: u64,
     item: &WalItem,
-) -> Result<BlockAddress, crate::block_store::BlockAddressOutOfRange> {
+) -> Result<ElementEntry, crate::block_store::BlockAddressOutOfRange> {
     // The item's own `routing_bucket` is not stamped onto the address any more: the WAL item IS the
     // container that holds it, and every reader of this address reaches it through that item.
-    BlockAddress::try_from_parts(
+    ElementEntry::try_from_parts(
         WAL_LOG_SLAB_ID,
         log_id,
         log_size,

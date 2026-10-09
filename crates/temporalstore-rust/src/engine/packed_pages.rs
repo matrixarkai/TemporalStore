@@ -3,7 +3,7 @@
 
 use std::collections::{BTreeMap, HashMap};
 
-use crate::block_store::{BlockAddress, BlockStoreError, BlockStore};
+use crate::block_store::{ElementEntry, BlockStoreError, BlockStore};
 use crate::types::{FeaturePoint, ShardId};
 use matrixcache::{CacheKey, MultiLayerCache};
 
@@ -104,7 +104,7 @@ fn stage_timestamped_outcomes(
     kind: &str,
     key: &str,
     routing_bucket: u32,
-    refs: &[(u64, BlockAddress)],
+    refs: &[(u64, ElementEntry)],
     identity: Option<u64>,
 ) {
     if refs.is_empty() {
@@ -162,7 +162,7 @@ pub(super) fn drop_timestamped_points(
     kind: &str,
     key: &str,
     routing_bucket: u32,
-    series: &mut BTreeMap<u64, BlockAddress>,
+    series: &mut BTreeMap<u64, ElementEntry>,
     timestamps: &[u64],
 ) -> bool {
     let mut dropped = false;
@@ -185,7 +185,7 @@ pub(super) fn trim_timestamped_series(
     kind: &str,
     key: &str,
     routing_bucket: u32,
-    series: &mut BTreeMap<u64, BlockAddress>,
+    series: &mut BTreeMap<u64, ElementEntry>,
     max_size: usize,
 ) -> bool {
     let mut trimmed = false;
@@ -211,7 +211,7 @@ pub(super) fn append_timestamped_kv_blocks(
     async_storage: bool,
     promote_sync_writes: bool,
     first_block_ordinal: u32,
-) -> Result<Vec<(u64, BlockAddress)>, BlockStoreError> {
+) -> Result<Vec<(u64, ElementEntry)>, BlockStoreError> {
     append_timestamped_kv_blocks_inner(
         cache,
         block_store,
@@ -244,7 +244,7 @@ pub(super) fn append_timestamped_kv_blocks_keyed(
     promote_sync_writes: bool,
     identity: u64,
     first_block_ordinal: u32,
-) -> Result<Vec<(u64, BlockAddress)>, BlockStoreError> {
+) -> Result<Vec<(u64, ElementEntry)>, BlockStoreError> {
     append_timestamped_kv_blocks_inner(
         cache,
         block_store,
@@ -273,7 +273,7 @@ fn append_timestamped_kv_blocks_inner(
     promote_sync_writes: bool,
     identity: Option<u64>,
     first_block_ordinal: u32,
-) -> Result<Vec<(u64, BlockAddress)>, BlockStoreError> {
+) -> Result<Vec<(u64, ElementEntry)>, BlockStoreError> {
     let object_id = stable_block_object_id(shard_id, kind, key);
     let mut refs = Vec::new();
     let chunks = chunk_timestamped_kv_points(points);
@@ -499,7 +499,7 @@ pub(super) fn read_feature_point(
     block_store: &BlockStore,
     shard_id: ShardId,
     timestamp_ms: u64,
-    address: &BlockAddress,
+    address: &ElementEntry,
     // WHICH PAGE, stated by the caller. A packed series page holds many points and is not an
     // element of its object, so the element half is `None` -- but the OBJECT half cannot be
     // recovered here: this function is handed an address and a timestamp, and neither names a key.
@@ -523,7 +523,7 @@ pub(super) fn read_feature_point(
 pub(super) fn read_feature_point_cold(
     block_store: &BlockStore,
     timestamp_ms: u64,
-    address: &BlockAddress,
+    address: &ElementEntry,
 ) -> Option<FeaturePoint> {
     let bytes = read_block_bytes_cold(block_store, address)?;
     match decode_feature_block_strict(&bytes) {
@@ -543,13 +543,13 @@ pub(super) fn read_feature_point_cached(
     block_store: &BlockStore,
     shard_id: ShardId,
     timestamp_ms: u64,
-    address: &BlockAddress,
+    address: &ElementEntry,
     // WHICH PAGE, stated by the caller. A packed series page holds many points and is not an
     // element of its object, so the element half is `None` -- but the OBJECT half cannot be
     // recovered here: this function is handed an address and a timestamp, and neither names a key.
     // See [`PageIdentity`] for why it is the terms rather than an id that cross.
     identity: PageIdentity<'_>,
-    packed_block_cache: &mut HashMap<BlockAddress, Option<Vec<FeaturePoint>>>,
+    packed_block_cache: &mut HashMap<ElementEntry, Option<Vec<FeaturePoint>>>,
     routing_bucket: Option<u32>,
 ) -> Option<FeaturePoint> {
     if let Some(points) = packed_block_cache.get(address) {

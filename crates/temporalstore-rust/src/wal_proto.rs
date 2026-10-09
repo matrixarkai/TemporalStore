@@ -20,7 +20,7 @@
 
 use prost::Message;
 
-use crate::block_store::BlockAddress;
+use crate::block_store::ElementEntry;
 use crate::sdk::v1;
 use crate::wal::{StagedBlock, WalOutcomeItem, WriteAheadLogRecord, WriteAheadLogRecordMetadata};
 
@@ -353,7 +353,7 @@ pub(crate) fn implied_block_length(record: &WriteAheadLogRecord) -> Option<u64> 
     None
 }
 
-fn address_to_proto(address: &BlockAddress, implied_length: Option<u64>) -> v1::WalBlockAddress {
+fn address_to_proto(address: &ElementEntry, implied_length: Option<u64>) -> v1::WalBlockAddress {
     v1::WalBlockAddress {
         block_slab_id: address.block_slab_id(),
         offset: address.offset(),
@@ -386,7 +386,7 @@ fn address_to_proto(address: &BlockAddress, implied_length: Option<u64>) -> v1::
     }
 }
 
-fn address_from_proto(address: v1::WalBlockAddress, implied_length: Option<u64>) -> BlockAddress {
+fn address_from_proto(address: v1::WalBlockAddress, implied_length: Option<u64>) -> ElementEntry {
     let length = if address.length == 0 {
         implied_length.unwrap_or_default()
     } else {
@@ -394,7 +394,7 @@ fn address_from_proto(address: v1::WalBlockAddress, implied_length: Option<u64>)
     };
     // `address.routing_bucket` is not passed on: a `BlockAddress` no longer holds one. The proto
     // still carries it, and the WAL item it came from is the container that answers for it.
-    BlockAddress::from_parts(
+    ElementEntry::from_parts(
         address.block_slab_id,
         address.offset,
         length,
@@ -1607,11 +1607,11 @@ mod tests {
         let addresses = [
             None,
             // object_id repeats the item's, so `item_to_proto` drops it from the address.
-            Some(crate::block_store::BlockAddress::from_parts(
+            Some(crate::block_store::ElementEntry::from_parts(
                 42, 1_048_576, 4096, Some(7), Some(9),
             )),
             // and one that does not repeat it, so it stays.
-            Some(crate::block_store::BlockAddress::from_parts(
+            Some(crate::block_store::ElementEntry::from_parts(
                 42, 0, 0, None, Some(4_242),
             )),
         ];
@@ -2067,7 +2067,7 @@ mod tests {
         // The address says the item's own object id, which is the shape that round trips: an
         // address holding NONE is given the item's on read, by the rule above this one.
         record.outcomes = vec![crate::wal::WalOutcomeItem {
-            address: Some(crate::block_store::BlockAddress::from_parts(
+            address: Some(crate::block_store::ElementEntry::from_parts(
                 0,
                 4096,
                 stored,

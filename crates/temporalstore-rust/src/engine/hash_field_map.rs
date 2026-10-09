@@ -61,7 +61,7 @@ use std::collections::HashMap;
 
 use serde::{Deserialize, Serialize};
 
-use crate::block_store::{BlockAddress, ElementEntry};
+use crate::block_store::ElementEntry;
 
 /// Up to this many entries the vector is grown to EXACTLY what it holds; at or above it, it doubles
 /// like any other `Vec`.
@@ -80,7 +80,7 @@ const EXACT_GROWTH_BELOW: usize = 8;
 /// container be reconsidered again later without another fifty-site rewrite -- and what stops a
 /// caller reaching in and leaving the entries unsorted, which every lookup here assumes.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(from = "HashMap<String, BlockAddress>", into = "HashMap<String, BlockAddress>")]
+#[serde(from = "HashMap<String, ElementEntry>", into = "HashMap<String, ElementEntry>")]
 pub(super) struct HashFieldMap {
     entries: Vec<(String, ElementEntry)>,
 }
@@ -92,8 +92,13 @@ impl HashFieldMap {
             .binary_search_by(|(name, _)| name.as_str().cmp(field))
     }
 
-    pub(super) fn get(&self, field: &str) -> Option<&BlockAddress> {
-        self.slot(field).ok().map(|at| self.entries[at].1.address())
+    /// THE SAME ANSWER AS [`HashFieldMap::entry`] NOW, and that is the migration arriving rather
+    /// than a duplicate left behind. This used to unwrap the level-two value to hand back the bare
+    /// address inside it; the level-two value IS the thing callers want, so there is nothing to
+    /// unwrap. Both names are kept because both are called, and this one delegates so there is one
+    /// body.
+    pub(super) fn get(&self, field: &str) -> Option<&ElementEntry> {
+        self.entry(field)
     }
 
     /// The whole level-two value, for the steps that move the entry here.
@@ -101,9 +106,9 @@ impl HashFieldMap {
         self.slot(field).ok().map(|at| &self.entries[at].1)
     }
 
-    pub(super) fn get_mut(&mut self, field: &str) -> Option<&mut BlockAddress> {
+    pub(super) fn get_mut(&mut self, field: &str) -> Option<&mut ElementEntry> {
         match self.slot(field) {
-            Ok(at) => Some(self.entries[at].1.address_mut()),
+            Ok(at) => Some(&mut self.entries[at].1),
             Err(_) => None,
         }
     }
@@ -139,11 +144,11 @@ impl HashFieldMap {
     ///
     /// Both columns are reported, at both corpus sizes, in
     /// `what_the_engine_resident_field_maps_cost_against_the_container_they_replaced`.
-    pub(super) fn insert(&mut self, field: String, address: BlockAddress) -> Option<BlockAddress> {
+    pub(super) fn insert(&mut self, field: String, address: ElementEntry) -> Option<ElementEntry> {
         match self.slot(&field) {
             Ok(at) => Some(
-                std::mem::replace(&mut self.entries[at].1, ElementEntry::new(address))
-                    .into_address(),
+                std::mem::replace(&mut self.entries[at].1, address)
+                    ,
             ),
             Err(at) => {
                 if self.entries.len() == self.entries.capacity()
@@ -151,15 +156,15 @@ impl HashFieldMap {
                 {
                     self.entries.reserve_exact(1);
                 }
-                self.entries.insert(at, (field, ElementEntry::new(address)));
+                self.entries.insert(at, (field, address));
                 None
             }
         }
     }
 
-    pub(super) fn remove(&mut self, field: &str) -> Option<BlockAddress> {
+    pub(super) fn remove(&mut self, field: &str) -> Option<ElementEntry> {
         match self.slot(field) {
-            Ok(at) => Some(self.entries.remove(at).1.into_address()),
+            Ok(at) => Some(self.entries.remove(at).1),
             Err(_) => None,
         }
     }
@@ -172,8 +177,8 @@ impl HashFieldMap {
         self.entries.is_empty()
     }
 
-    pub(super) fn iter(&self) -> impl Iterator<Item = (&String, &BlockAddress)> {
-        self.entries.iter().map(|(name, entry)| (name, entry.address()))
+    pub(super) fn iter(&self) -> impl Iterator<Item = (&String, &ElementEntry)> {
+        self.entries()
     }
 
     /// The level-two values themselves, for the steps that move the entry here.
@@ -181,27 +186,27 @@ impl HashFieldMap {
         self.entries.iter().map(|(name, entry)| (name, entry))
     }
 
-    pub(super) fn iter_mut(&mut self) -> impl Iterator<Item = (&String, &mut BlockAddress)> {
+    pub(super) fn iter_mut(&mut self) -> impl Iterator<Item = (&String, &mut ElementEntry)> {
         self.entries
             .iter_mut()
-            .map(|(name, entry)| (&*name, entry.address_mut()))
+            .map(|(name, entry)| (&*name, entry))
     }
 
     pub(super) fn keys(&self) -> impl Iterator<Item = &String> {
         self.entries.iter().map(|(name, _)| name)
     }
 
-    pub(super) fn values(&self) -> impl Iterator<Item = &BlockAddress> {
-        self.entries.iter().map(|(_, entry)| entry.address())
+    pub(super) fn values(&self) -> impl Iterator<Item = &ElementEntry> {
+        self.entries.iter().map(|(_, entry)| entry)
     }
 
-    pub(super) fn values_mut(&mut self) -> impl Iterator<Item = &mut BlockAddress> {
-        self.entries.iter_mut().map(|(_, entry)| entry.address_mut())
+    pub(super) fn values_mut(&mut self) -> impl Iterator<Item = &mut ElementEntry> {
+        self.entries.iter_mut().map(|(_, entry)| entry)
     }
 
-    pub(super) fn retain(&mut self, mut keep: impl FnMut(&String, &mut BlockAddress) -> bool) {
+    pub(super) fn retain(&mut self, mut keep: impl FnMut(&String, &mut ElementEntry) -> bool) {
         self.entries
-            .retain_mut(|(name, entry)| keep(name, entry.address_mut()));
+            .retain_mut(|(name, entry)| keep(name, entry));
     }
 
     /// The exact-sized shape this container exists for: no spare capacity to carry.
@@ -218,9 +223,9 @@ impl HashFieldMap {
 /// like any other and the fold cannot leave the entries unsorted.
 impl super::ElementMap for HashFieldMap {
     type Element = String;
-    type Value = BlockAddress;
+    type Value = ElementEntry;
 
-    fn insert_element(&mut self, element: String, value: BlockAddress) {
+    fn insert_element(&mut self, element: String, value: ElementEntry) {
         self.insert(element, value);
     }
 
@@ -230,18 +235,18 @@ impl super::ElementMap for HashFieldMap {
     /// vector and not a table: there is no `entry` API to hand back an occupied slot. Both halves
     /// binary-search, so this is two log n probes and not a scan, and the second runs only on the
     /// absent path where an insert was going to shift the tail anyway.
-    fn insert_element_if_absent(&mut self, element: String, value: BlockAddress) {
+    fn insert_element_if_absent(&mut self, element: String, value: ElementEntry) {
         if !self.contains_key(element.as_str()) {
             self.insert(element, value);
         }
     }
 }
 
-impl FromIterator<(String, BlockAddress)> for HashFieldMap {
-    fn from_iter<I: IntoIterator<Item = (String, BlockAddress)>>(iter: I) -> Self {
+impl FromIterator<(String, ElementEntry)> for HashFieldMap {
+    fn from_iter<I: IntoIterator<Item = (String, ElementEntry)>>(iter: I) -> Self {
         let mut entries: Vec<(String, ElementEntry)> = iter
             .into_iter()
-            .map(|(name, address)| (name, ElementEntry::new(address)))
+            .map(|(name, address)| (name, address))
             .collect();
         // Sort, then drop earlier duplicates of a field so the result matches what repeated
         // `insert` would have left: the LAST value for a field wins, as it does in a table.
@@ -260,30 +265,30 @@ impl FromIterator<(String, BlockAddress)> for HashFieldMap {
 }
 
 impl<'a> IntoIterator for &'a HashFieldMap {
-    type Item = (&'a String, &'a BlockAddress);
+    type Item = (&'a String, &'a ElementEntry);
     type IntoIter = std::iter::Map<
         std::slice::Iter<'a, (String, ElementEntry)>,
-        fn(&'a (String, ElementEntry)) -> (&'a String, &'a BlockAddress),
+        fn(&'a (String, ElementEntry)) -> (&'a String, &'a ElementEntry),
     >;
 
     fn into_iter(self) -> Self::IntoIter {
-        fn split<'b>(pair: &'b (String, ElementEntry)) -> (&'b String, &'b BlockAddress) {
-            (&pair.0, pair.1.address())
+        fn split<'b>(pair: &'b (String, ElementEntry)) -> (&'b String, &'b ElementEntry) {
+            (&pair.0, &pair.1)
         }
         self.entries.iter().map(split as fn(_) -> _)
     }
 }
 
 impl IntoIterator for HashFieldMap {
-    type Item = (String, BlockAddress);
+    type Item = (String, ElementEntry);
     type IntoIter = std::iter::Map<
         std::vec::IntoIter<(String, ElementEntry)>,
-        fn((String, ElementEntry)) -> (String, BlockAddress),
+        fn((String, ElementEntry)) -> (String, ElementEntry),
     >;
 
     fn into_iter(self) -> Self::IntoIter {
-        fn split(pair: (String, ElementEntry)) -> (String, BlockAddress) {
-            (pair.0, pair.1.into_address())
+        fn split(pair: (String, ElementEntry)) -> (String, ElementEntry) {
+            (pair.0, pair.1)
         }
         self.entries.into_iter().map(split as fn(_) -> _)
     }
@@ -293,18 +298,18 @@ impl IntoIterator for HashFieldMap {
 /// carried this field before it became `skip_serializing` still decodes, and anything that
 /// serializes a `ShardState` through a path that does not skip it writes the same map it always
 /// wrote.
-impl From<HashMap<String, BlockAddress>> for HashFieldMap {
-    fn from(map: HashMap<String, BlockAddress>) -> Self {
+impl From<HashMap<String, ElementEntry>> for HashFieldMap {
+    fn from(map: HashMap<String, ElementEntry>) -> Self {
         map.into_iter().collect()
     }
 }
 
-impl From<HashFieldMap> for HashMap<String, BlockAddress> {
+impl From<HashFieldMap> for HashMap<String, ElementEntry> {
     fn from(fields: HashFieldMap) -> Self {
         fields
             .entries
             .into_iter()
-            .map(|(name, entry)| (name, entry.into_address()))
+            .map(|(name, entry)| (name, entry))
             .collect()
     }
 }

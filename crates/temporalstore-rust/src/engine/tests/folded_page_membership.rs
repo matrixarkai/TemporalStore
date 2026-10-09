@@ -163,7 +163,7 @@ fn a_folded_pages_membership_now_states_the_member_the_live_index_no_longer_name
     // tombstone entry is precisely a deleted entry, so a walk that filtered them would read the page
     // set as it was before this change and would resurrect the member -- which is what makes the
     // absence of that filter the subject here rather than an incidental difference.
-    let mut addresses: Vec<crate::block_store::BlockAddress> = Vec::new();
+    let mut addresses: Vec<crate::block_store::ElementEntry> = Vec::new();
     let mut live_entries = 0usize;
     let mut tombstone_entries = 0usize;
     for bucket in shard.bucket_index.bucket_map.values() {

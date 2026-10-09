@@ -171,7 +171,7 @@ struct ZsetBlock {
     routing_bucket: u32,
     object_key: String,
     component: String,
-    address: crate::block_store::BlockAddress,
+    address: crate::block_store::ElementEntry,
     dirty: bool,
     deleted: bool,
     log_backed: bool,
@@ -340,7 +340,7 @@ fn every_byte_of_a_zset_members_index_shadow_is_accounted_for() {
             size_of::<crate::engine::storage_bucket_internals::StoredModelKind>(),
         ),
         ("component", offset_of!(BlockIndex, component), size_of::<Option<std::sync::Arc<str>>>()),
-        ("address", offset_of!(BlockIndex, address), size_of::<crate::block_store::BlockAddress>()),
+        ("address", offset_of!(BlockIndex, address), size_of::<crate::block_store::ElementEntry>()),
         ("dirty", offset_of!(BlockIndex, dirty), size_of::<bool>()),
         ("deleted", offset_of!(BlockIndex, deleted), size_of::<bool>()),
         ("kind", offset_of!(BlockIndex, kind), size_of::<crate::index_log::IndexItemKind>()),
@@ -817,7 +817,7 @@ fn what_one_block_per_member_costs_a_zset_container_at_both_routing_ranges() {
 
     let index_width = size_of::<BlockIndex>();
     let component_width = size_of::<ComponentBlocks>();
-    let address_width = size_of::<crate::block_store::BlockAddress>();
+    let address_width = size_of::<crate::block_store::ElementEntry>();
 
     let mut path_lengths: Vec<usize> = Vec::new();
     let mut per_member: Vec<(u32, f64, usize, usize)> = Vec::new();
@@ -866,7 +866,7 @@ fn what_one_block_per_member_costs_a_zset_container_at_both_routing_ranges() {
         println!("--- 0..{end_routing_bucket}: per member ---");
         println!("  BlockIndex        {index_width:>5} B");
         println!("  ComponentBlocks   {component_width:>5} B");
-        println!("  BlockAddress      {address_width:>5} B  (in the model map, points at the page)");
+        println!("  ElementEntry      {address_width:>5} B  (in the model map, points at the page)");
         println!("  component name    {name_per_member:>7.1} B  (measured; {:.1} B of it spelling)",
             spelling_bytes as f64 / members as f64);
         println!("  ------------------------");

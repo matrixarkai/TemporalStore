@@ -1386,7 +1386,7 @@ fn the_point_read_path_is_three_call_sites_and_not_one_of_them_is_a_container() 
          not three"
     );
     assert!(
-        store.contains("pub(super) fn bucket_index_component_block_addresses(\n    shard: &ShardState,\n    model_id: &str,\n    object_key: &str,\n) -> Vec<(Option<Arc<str>>, BlockAddress)>"),
+        store.contains("pub(super) fn bucket_index_component_block_addresses(\n    shard: &ShardState,\n    model_id: &str,\n    object_key: &str,\n) -> Vec<(Option<Arc<str>>, ElementEntry)>"),
         "bucket_index_component_block_addresses no longer takes exactly (shard, model_id, \
          object_key) -- if it has gained a component argument, the reason it is NOT the obstacle \
          here has changed"
@@ -1895,7 +1895,7 @@ fn at_the_ceiling_the_address_refuses_rather_than_truncating() {
     // The stored width is sixteen bits whatever the accessor's type says.
     const CEILING: u64 = u16::MAX as u64;
 
-    let mut fits = crate::block_store::BlockAddress::try_from_parts(1, 0, 16, Some(CEILING), None)
+    let mut fits = crate::block_store::ElementEntry::try_from_parts(1, 0, 16, Some(CEILING), None)
         .expect("an address at the ceiling is constructible");
     assert_eq!(
         fits.block_id(),

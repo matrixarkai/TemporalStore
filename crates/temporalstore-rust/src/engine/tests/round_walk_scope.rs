@@ -314,7 +314,7 @@ fn routing_range(engine: &TemporalEngine) -> (u32, u32) {
 ///
 /// Deliberately NOT `set_routing_bucket(None)`: a test that reaches for the setter proves only
 /// that the setter works. This proves the DECODER produces the state.
-fn as_an_older_build_wrote_it(address: &BlockAddress) -> BlockAddress {
+fn as_an_older_build_wrote_it(address: &ElementEntry) -> ElementEntry {
     let mut wire = serde_json::to_value(address).expect("an address serializes to its wire shape");
     let object = wire
         .as_object_mut()
@@ -594,7 +594,7 @@ fn dropping_the_routing_bucket_from_the_wire_decodes_to_the_same_address() {
     // refused rather than read, which `a_split_address_is_refused_and_a_merged_one_round_trips`
     // drives directly. What is being tested here is the OPTIONAL fields defaulting, so the
     // location is written in the shape the engine writes today.
-    let older: BlockAddress =
+    let older: ElementEntry =
         serde_json::from_slice(br#"{"a":30064771200,"l":64}"#)
             .expect("the decoder takes an address record with no optional fields");
     assert_eq!(older.block_slab_id(), 7, "the rest of the record still decoded");
@@ -608,7 +608,7 @@ fn dropping_the_routing_bucket_from_the_wire_decodes_to_the_same_address() {
     );
 
     // And a REAL address, round-tripped through the same shape with the key removed.
-    let current = BlockAddress::from_parts(3, 64, 128, Some(1), Some(2));
+    let current = ElementEntry::from_parts(3, 64, 128, Some(1), Some(2));
     let older = as_an_older_build_wrote_it(&current);
     assert_eq!(
         older, current,
@@ -623,7 +623,7 @@ fn dropping_the_routing_bucket_from_the_wire_decodes_to_the_same_address() {
     wire.as_object_mut()
         .expect("object")
         .insert("rs".to_string(), serde_json::json!(909_u32));
-    let with_a_bucket: BlockAddress = serde_json::from_value(wire).expect("decodes");
+    let with_a_bucket: ElementEntry = serde_json::from_value(wire).expect("decodes");
     assert_eq!(
         with_a_bucket, current,
         "an index carrying a real routing bucket in `rs` must decode to the same address as one \

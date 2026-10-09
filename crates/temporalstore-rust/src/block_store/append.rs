@@ -23,7 +23,7 @@ impl BlockStore {
         Ok(())
     }
 
-    pub fn append(&self, bytes: &[u8]) -> Result<BlockAddress, BlockStoreError> {
+    pub fn append(&self, bytes: &[u8]) -> Result<ElementEntry, BlockStoreError> {
         self.append_with_object_id(bytes, None)
     }
 
@@ -31,7 +31,7 @@ impl BlockStore {
         &self,
         bytes: &[u8],
         object_id: Option<u64>,
-    ) -> Result<BlockAddress, BlockStoreError> {
+    ) -> Result<ElementEntry, BlockStoreError> {
         self.append_with_block_metadata(bytes, object_id, None)
     }
 
@@ -40,7 +40,7 @@ impl BlockStore {
         bytes: &[u8],
         object_id: Option<u64>,
         routing_bucket: Option<u32>,
-    ) -> Result<BlockAddress, BlockStoreError> {
+    ) -> Result<ElementEntry, BlockStoreError> {
         self.append_block_of_object(bytes, object_id, routing_bucket, 0)
     }
 
@@ -56,7 +56,7 @@ impl BlockStore {
         object_id: Option<u64>,
         routing_bucket: Option<u32>,
         block_ordinal: u32,
-    ) -> Result<BlockAddress, BlockStoreError> {
+    ) -> Result<ElementEntry, BlockStoreError> {
         let mut inner = self.inner.lock().expect("block store lock poisoned");
         std::fs::create_dir_all(&inner.root)?;
         let slab_target_bytes = effective_block_slab_target_bytes();
@@ -87,7 +87,7 @@ impl BlockStore {
         // length), and the very next append would record an offset that does not fit. Refusing
         // the write turns that into a failed append; truncating it would turn it into a page
         // that reads back as a different page.
-        let address = BlockAddress::try_from_parts(inner.block_slab_id, inner.write_offset, record.bytes.len() as u64, Some(block_id), object_id)?;
+        let address = ElementEntry::try_from_parts(inner.block_slab_id, inner.write_offset, record.bytes.len() as u64, Some(block_id), object_id)?;
         file.write_all(&record.bytes)?;
         file.flush()?;
         // Two INDEPENDENT relaxations:
@@ -134,7 +134,7 @@ impl BlockStore {
     pub fn append_batch_with_block_metadata(
         &self,
         records: Vec<BlockAppendRecord<'_>>,
-    ) -> Result<Vec<BlockAddress>, BlockStoreError> {
+    ) -> Result<Vec<ElementEntry>, BlockStoreError> {
         let mut inner = self.inner.lock().expect("block store lock poisoned");
         if records.is_empty() {
             return Ok(Vec::new());
@@ -170,7 +170,7 @@ impl BlockStore {
                 file = Some(OpenOptions::new().create(true).append(true).open(path)?);
             }
             // Checked, not saturated -- see the single-record path.
-            let address = BlockAddress::try_from_parts(inner.block_slab_id, inner.write_offset, record.bytes.len() as u64, Some(block_id), object_id)?;
+            let address = ElementEntry::try_from_parts(inner.block_slab_id, inner.write_offset, record.bytes.len() as u64, Some(block_id), object_id)?;
             if let Some(current) = file.as_mut() {
                 current.write_all(&record.bytes)?;
             }

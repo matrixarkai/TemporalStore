@@ -97,7 +97,7 @@ pub mod wal_record;
 mod foreign_type_name_guard;
 
 pub use block_store::{
-    BlockAddress, BlockStoreSlabDescriptor, BlockStoreSlabState, BlockStoreSlabSummary,
+    ElementEntry, BlockStoreSlabDescriptor, BlockStoreSlabState, BlockStoreSlabSummary,
     BlockStoreOptions, BlockStoreSlabReport, BlockStoreStats, BlockStore, SharedSlabSource,
 };
 pub use client::{

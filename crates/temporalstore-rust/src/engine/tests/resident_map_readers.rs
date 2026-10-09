@@ -563,7 +563,7 @@ struct Divergence {
     key: String,
     members: Vec<Vec<u8>>,
     removed: Vec<Vec<u8>>,
-    persisted_before_removal: BTreeMap<Vec<u8>, BlockAddress>,
+    persisted_before_removal: BTreeMap<Vec<u8>, ElementEntry>,
 }
 
 fn build_divergence(
@@ -807,7 +807,7 @@ fn the_resident_map_readers_asked_in_the_over_complete_state() {
     let mut named_by_map = 0usize;
     let mut named_but_not_live: Vec<String> = Vec::new();
     {
-        let mut check = |model: &str, key: &str, address: &BlockAddress| {
+        let mut check = |model: &str, key: &str, address: &ElementEntry| {
             named_by_map += 1;
             let identity = (
                 address.block_slab_id(),
@@ -1022,7 +1022,7 @@ fn both_inputs_to_the_merge_now_answer_the_same_live_page_question() {
     // (`try_from_parts` refuses an out-of-range slab or offset, and a refusal here would read as a
     // test bug rather than as the state being modelled). Only the slab id moves, far past anything
     // this fixture rolled: this is the shape of a persisted entry whose page has been removed.
-    let dead_address = BlockAddress::try_from_parts(
+    let dead_address = ElementEntry::try_from_parts(
         live_control_address.block_slab_id().saturating_add(4_096),
         live_control_address.offset(),
         live_control_address.length(),

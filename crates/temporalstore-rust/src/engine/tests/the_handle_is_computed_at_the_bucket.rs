@@ -31,7 +31,7 @@
 
 #![allow(clippy::all)]
 use super::*;
-use crate::block_store::BlockAddress;
+use crate::block_store::ElementEntry;
 use crate::engine::state::{
     block_index_handle, BlockIndex, BlockIndexMap, BlockSlabLiveIndex, BucketNode,
 };
@@ -45,7 +45,7 @@ fn page(object: &str, component: Option<&str>, slab: u64, offset: u32, length: u
         object_key: Arc::from(object),
         model_id: stored_model_kind("hash"),
         component: component.map(Arc::from),
-        address: BlockAddress::from_parts(slab, offset as u64, length as u64, Some(7), Some(11)),
+        address: ElementEntry::from_parts(slab, offset as u64, length as u64, Some(7), Some(11)),
         dirty: false,
         deleted: false,
     }
@@ -117,7 +117,7 @@ fn the_hoisted_handle_is_byte_identical_to_the_one_the_map_used_to_compute() {
     //     reading the address at all and the equality above is insensitive to it. ---
     let base = &entries[0];
     let mut longer = base.clone();
-    longer.address = BlockAddress::from_parts(7, 0, 65, Some(7), Some(11));
+    longer.address = ElementEntry::from_parts(7, 0, 65, Some(7), Some(11));
     assert_ne!(
         block_index_handle(base),
         block_index_handle(&longer),
@@ -125,7 +125,7 @@ fn the_hoisted_handle_is_byte_identical_to_the_one_the_map_used_to_compute() {
          address terms this hoist exists to free are not actually pinned by it"
     );
     let mut elsewhere = base.clone();
-    elsewhere.address = BlockAddress::from_parts(7, 1, 64, Some(7), Some(11));
+    elsewhere.address = ElementEntry::from_parts(7, 1, 64, Some(7), Some(11));
     assert_ne!(
         block_index_handle(base),
         block_index_handle(&elsewhere),

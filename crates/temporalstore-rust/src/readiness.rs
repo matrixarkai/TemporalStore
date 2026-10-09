@@ -1314,7 +1314,7 @@ mod tests {
         assert!(report
             .first_class_bucket_object_block_index_evidence
             .iter()
-            .any(|item| item.contains("BlockAddress carries segment/offset/length")));
+            .any(|item| item.contains("ElementEntry carries segment/offset/length")));
         assert!(report.native_object_manager_runtime_ready);
         assert!(report
             .native_object_manager_runtime_evidence

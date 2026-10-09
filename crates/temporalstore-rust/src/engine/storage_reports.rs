@@ -541,7 +541,7 @@ impl TemporalEngine {
         // of bytes that are still on disk, not a claim that the page is live, and nothing reads
         // the cache to decide what is live. This is a REPORT and a cache fill; it decides no
         // reclaim, so a stale answer costs at most one wasted cache slot.
-        let mut plan: Vec<(CacheKey, BlockAddress)> = Vec::new();
+        let mut plan: Vec<(CacheKey, ElementEntry)> = Vec::new();
         let held_across_io = {
             let shards = self.shards_read_marked();
             let Some(shard) = shards.get(&shard_id) else {

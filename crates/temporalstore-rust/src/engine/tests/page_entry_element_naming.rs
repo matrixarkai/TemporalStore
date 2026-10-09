@@ -130,7 +130,7 @@ use super::*;
 use std::mem::size_of;
 use std::sync::Arc;
 
-use crate::block_store::BlockAddress;
+use crate::block_store::ElementEntry;
 use crate::engine::state::{BlockIndex, ShardState};
 use crate::engine::storage_bucket_internals::StoredModelKind;
 
@@ -484,7 +484,7 @@ fn the_shard_index_writes_a_durable_map_for_all_four_container_kinds() {
 struct MirrorEntryNoComponent {
     object_key: Arc<str>,
     model_id: StoredModelKind,
-    address: BlockAddress,
+    address: ElementEntry,
     dirty: bool,
     deleted: bool,
     log_backed: bool,
@@ -506,7 +506,7 @@ fn the_entry_without_a_component_is_forty_and_the_stride_forty_eight() {
     let live_fields = size_of::<Arc<str>>()          // object_key
         + size_of::<StoredModelKind>()               // model_id
         + size_of::<Option<Arc<str>>>()              // component
-        + size_of::<BlockAddress>()                  // address
+        + size_of::<ElementEntry>()                  // address
         + 2 * size_of::<bool>()                      // dirty, deleted
         + size_of::<crate::index_log::IndexItemKind>() // kind
         + size_of::<u32>();                          // routing_bucket
@@ -666,7 +666,7 @@ fn a_hash_page_naming_no_field_is_skipped_while_a_genuine_empty_field_name_is_ke
         object_key: Arc::from("ef-wire-probe"),
         model_id: stored_model_kind("hash"),
         component: None,
-        address: BlockAddress::default(),
+        address: ElementEntry::default(),
         dirty: false,
         deleted: false,
     };
@@ -785,7 +785,7 @@ fn a_hash_page_naming_no_field_is_skipped_while_a_genuine_empty_field_name_is_ke
     // A DISTINCT address -- one slab further on -- so the phantom is traceable to this page and not
     // to the real one. The fold is the real one: this is the shape a delta record carrying no
     // component produces on reload.
-    let nameless_address = BlockAddress::from_compact_slab_address(
+    let nameless_address = ElementEntry::from_compact_slab_address(
         nameless_key_address.address_word().wrapping_add(1u64 << 32),
         nameless_key_address.length(),
     );
@@ -813,7 +813,7 @@ fn a_hash_page_naming_no_field_is_skipped_while_a_genuine_empty_field_name_is_ke
         // here said `false`. It now encodes the honest value. All three such sites are tests --
         // both production builders fill these from the address -- so nothing production writes
         // ever carried the disagreeing value.
-        entry: Some(crate::block_store::ElementEntry::new(nameless_address.clone())),
+        entry: Some(nameless_address.clone()),
         deleted: false,
     };
 

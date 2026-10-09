@@ -113,7 +113,7 @@ fn stage_component_outcome(
     object_key: &str,
     component: Option<String>,
     routing_bucket: u32,
-    address: Option<crate::block_store::BlockAddress>,
+    address: Option<crate::block_store::ElementEntry>,
     value: Option<Vec<u8>>,
 ) {
     super::block_in_wal::stage_outcome(crate::wal::WalOutcomeItem {
@@ -1104,7 +1104,7 @@ pub(crate) fn execute_on_shard(
             let indexed = bucket_index_component_block_addresses(shard, "hash", &key);
             // Copied out before the block reads: those borrow the cache and the block store while
             // this borrows the shard, and the addresses are what both halves of the union need.
-            let contained: Vec<(String, crate::block_store::BlockAddress)> = shard
+            let contained: Vec<(String, crate::block_store::ElementEntry)> = shard
                 .hashes
                 .get(&key)
                 .map(|fields| {
@@ -1125,7 +1125,7 @@ pub(crate) fn execute_on_shard(
             let mut resolved: Vec<(
                 String,
                 Option<std::sync::Arc<str>>,
-                crate::block_store::BlockAddress,
+                crate::block_store::ElementEntry,
             )> = Vec::with_capacity(indexed.len() + contained.len());
             let mut named_by_index: std::collections::HashSet<String> =
                 std::collections::HashSet::with_capacity(indexed.len());
@@ -2297,7 +2297,7 @@ pub(crate) fn execute_on_shard(
             let routing_bucket =
                 block_routing_bucket(&key, start_routing_bucket, end_routing_bucket);
             let points = sorted_feature_points(points);
-            let mut published: Vec<BlockAddress> = Vec::new();
+            let mut published: Vec<ElementEntry> = Vec::new();
             let mut replaced_any = false;
             // feature_append_chunks_and_persists_timestamped_kv_blocks: append each
             // timestamped feature point through the block-backed KV layout, then
@@ -4500,7 +4500,7 @@ pub(crate) fn execute_on_shard(
             // key and this map is keyed by the node's collection key. The "every entity" arm below
             // therefore iterates `iter()` rather than `values()`: the hash it was discarding is
             // what names the block.
-            let read_entity = |entity_hash: u64, address: &BlockAddress| {
+            let read_entity = |entity_hash: u64, address: &ElementEntry| {
                 read_block_bytes(
                     cache,
                     block_store,

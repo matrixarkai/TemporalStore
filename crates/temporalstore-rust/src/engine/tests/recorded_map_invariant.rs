@@ -345,8 +345,8 @@ fn shard_for_records() -> ShardState {
     shard
 }
 
-fn an_address() -> crate::BlockAddress {
-    crate::BlockAddress::from_parts(3, 128, 64, Some(11), Some(22))
+fn an_address() -> crate::ElementEntry {
+    crate::ElementEntry::from_parts(3, 128, 64, Some(11), Some(22))
 }
 
 fn drain_records() {
@@ -558,7 +558,7 @@ fn reading_any_kind_hands_back_borrows_and_not_copies() {
         shard.hashes.get("borrowed").expect("installed");
     let hash_walk: &crate::engine::hash_field_map::HashFieldMap =
         shard.hashes.values().next().expect("one key");
-    let set_point: &std::collections::BTreeMap<Vec<u8>, crate::BlockAddress> =
+    let set_point: &std::collections::BTreeMap<Vec<u8>, crate::ElementEntry> =
         shard.sets.get("borrowed").expect("installed");
     let set_walk = shard.sets.values().next().expect("one key");
 

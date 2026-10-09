@@ -169,8 +169,8 @@ fn report_histogram(label: &str, samples: &[usize]) {
 #[test]
 #[ignore = "seeds 4,000 then 40,000 records at two routing ranges; run by name"]
 fn what_a_block_address_costs_per_record_at_two_ranges_and_two_corpus_sizes() {
-    let width = size_of::<BlockAddress>();
-    println!("\n=== size_of::<BlockAddress>() = {width} bytes ===");
+    let width = size_of::<ElementEntry>();
+    println!("\n=== size_of::<ElementEntry>() = {width} bytes ===");
     #[cfg(not(feature = "alloc-probe"))]
     println!(
         "  NOTE: built WITHOUT --features alloc-probe, so the allocation columns are not \

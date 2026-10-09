@@ -67,8 +67,8 @@ const END: u32 = SPREAD - 1;
 /// address carrying none comes back from a rebuild carrying one -- and `same_block_address`
 /// compares object ids exactly. Supplying it keeps "the same page" the same page on both sides of
 /// a rebuild, which is what the positive arm has to assert.
-fn address_at(index: u64) -> BlockAddress {
-    BlockAddress::from_parts(
+fn address_at(index: u64) -> ElementEntry {
+    ElementEntry::from_parts(
         7,
         index * 128,
         128,

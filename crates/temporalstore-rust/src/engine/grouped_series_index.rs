@@ -54,7 +54,7 @@ use std::sync::Arc;
 
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
-use crate::block_store::BlockAddress;
+use crate::block_store::ElementEntry;
 
 /// Where one object's rows sit inside its bucket's run.
 ///
@@ -75,7 +75,7 @@ struct BucketRun {
     /// Sorted by key, so an object is found by binary search.
     objects: Vec<ObjectRun>,
     /// Grouped by object in `objects` order, and sorted by timestamp inside each group.
-    rows: Vec<(u64, BlockAddress)>,
+    rows: Vec<(u64, ElementEntry)>,
 }
 
 /// What an insert did, so a caller and a guard can both see it without a global counter.
@@ -156,7 +156,7 @@ impl GroupedSeriesIndex {
 
     /// One object's rows, as a contiguous slice. The slice IS the storage -- no copy, no
     /// materialised map.
-    fn run(&self, key: &str) -> Option<&[(u64, BlockAddress)]> {
+    fn run(&self, key: &str) -> Option<&[(u64, ElementEntry)]> {
         let (bucket_id, at) = self.locate(key)?;
         let bucket = self.buckets.get(&bucket_id)?;
         let object = &bucket.objects[at];
@@ -170,14 +170,14 @@ impl GroupedSeriesIndex {
 
     /// One point, by its timestamp. TWO BINARY SEARCHES AND NO WALK: the objects array for the key,
     /// then the object's own run for the timestamp.
-    pub(super) fn get_point(&self, key: &str, at: u64) -> Option<&BlockAddress> {
+    pub(super) fn get_point(&self, key: &str, at: u64) -> Option<&ElementEntry> {
         let run = self.run(key)?;
         let index = run.binary_search_by(|(existing, _)| existing.cmp(&at)).ok()?;
         Some(&run[index].1)
     }
 
     /// Every point of one object, in timestamp order.
-    pub(super) fn points(&self, key: &str) -> impl Iterator<Item = (u64, &BlockAddress)> + '_ {
+    pub(super) fn points(&self, key: &str) -> impl Iterator<Item = (u64, &ElementEntry)> + '_ {
         self.run(key)
             .unwrap_or(&[])
             .iter()
@@ -193,7 +193,7 @@ impl GroupedSeriesIndex {
         key: &str,
         start_at: u64,
         end_at: u64,
-    ) -> impl Iterator<Item = (u64, &BlockAddress)> + '_ {
+    ) -> impl Iterator<Item = (u64, &ElementEntry)> + '_ {
         let run = self.run(key).unwrap_or(&[]);
         let from = run.partition_point(|(at, _)| *at < start_at);
         let to = run.partition_point(|(at, _)| *at < end_at);
@@ -208,7 +208,7 @@ impl GroupedSeriesIndex {
     }
 
     /// Every object with its points, for the callers that walk the whole map.
-    pub(super) fn iter(&self) -> impl Iterator<Item = (&str, &[(u64, BlockAddress)])> + '_ {
+    pub(super) fn iter(&self) -> impl Iterator<Item = (&str, &[(u64, ElementEntry)])> + '_ {
         self.buckets.values().flat_map(|bucket| {
             bucket.objects.iter().map(move |object| {
                 (
@@ -228,7 +228,7 @@ impl GroupedSeriesIndex {
     /// sparsest occupancy falling to 0.0 at the densest; #2081 measured the opposite landing, a left
     /// push, at 499.5 and growing with the key's length, which is why a list map is not given this
     /// shape.
-    pub(super) fn insert(&mut self, key: &str, at: u64, address: BlockAddress) -> InsertOutcome {
+    pub(super) fn insert(&mut self, key: &str, at: u64, address: ElementEntry) -> InsertOutcome {
         let bucket_id = self.bucket_of(key);
         let bucket = self.buckets.entry(bucket_id).or_default();
         match bucket
@@ -348,7 +348,7 @@ impl GroupedSeriesIndex {
         // Collect every object once, then rebuild bucket by bucket so each bucket's run is built in
         // one piece rather than grown by insert -- the same reason a decoded B-tree is repacked
         // rather than refilled.
-        let mut by_bucket: BTreeMap<u32, Vec<(Arc<str>, Vec<(u64, BlockAddress)>)>> =
+        let mut by_bucket: BTreeMap<u32, Vec<(Arc<str>, Vec<(u64, ElementEntry)>)>> =
             BTreeMap::new();
         for (_, bucket) in drained {
             let BucketRun { objects, rows } = bucket;
@@ -379,7 +379,7 @@ impl GroupedSeriesIndex {
 
     /// The historical shape, materialised. Used by the wire adapter and by nothing else -- a caller
     /// that wants an object's points should ask for them rather than build this.
-    fn to_plain(&self) -> BTreeMap<&str, BTreeMap<u64, &BlockAddress>> {
+    fn to_plain(&self) -> BTreeMap<&str, BTreeMap<u64, &ElementEntry>> {
         self.iter()
             .map(|(key, run)| {
                 (
@@ -404,9 +404,9 @@ impl GroupedSeriesIndex {
     /// itself had to change. This places, so it reads the range this container carries, which
     /// `rebucket` can correct. Spelling `0, u32::MAX` here would have been a bucket no caller could
     /// put right.
-    fn from_plain(plain: HashMap<String, BTreeMap<u64, BlockAddress>>) -> Self {
+    fn from_plain(plain: HashMap<String, BTreeMap<u64, ElementEntry>>) -> Self {
         let mut index = GroupedSeriesIndex::new();
-        let mut by_bucket: BTreeMap<u32, Vec<(Arc<str>, Vec<(u64, BlockAddress)>)>> =
+        let mut by_bucket: BTreeMap<u32, Vec<(Arc<str>, Vec<(u64, ElementEntry)>)>> =
             BTreeMap::new();
         for (key, series) in plain {
             let bucket_id = index.bucket_of(&key);
@@ -458,7 +458,7 @@ impl<'de> Deserialize<'de> for GroupedSeriesIndex {
     where
         D: Deserializer<'de>,
     {
-        let plain = HashMap::<String, BTreeMap<u64, BlockAddress>>::deserialize(deserializer)?;
+        let plain = HashMap::<String, BTreeMap<u64, ElementEntry>>::deserialize(deserializer)?;
         Ok(GroupedSeriesIndex::from_plain(plain))
     }
 }
@@ -467,12 +467,12 @@ impl<'de> Deserialize<'de> for GroupedSeriesIndex {
 mod tests {
     use super::*;
 
-    fn address(id: u64) -> BlockAddress {
-        BlockAddress::from_parts(id, 0, 64, Some(1), Some(id))
+    fn address(id: u64) -> ElementEntry {
+        ElementEntry::from_parts(id, 0, 64, Some(1), Some(id))
     }
 
     /// The historical shape, for comparing against.
-    fn plain(entries: &[(&str, &[u64])]) -> HashMap<String, BTreeMap<u64, BlockAddress>> {
+    fn plain(entries: &[(&str, &[u64])]) -> HashMap<String, BTreeMap<u64, ElementEntry>> {
         entries
             .iter()
             .map(|(key, times)| {
@@ -654,7 +654,7 @@ mod tests {
 
         // Encoding this container and decoding it as the OLD type must give the old value.
         let bytes = serde_json::to_vec(&index).expect("the container serializes");
-        let as_old: HashMap<String, BTreeMap<u64, BlockAddress>> =
+        let as_old: HashMap<String, BTreeMap<u64, ElementEntry>> =
             serde_json::from_slice(&bytes).expect("and decodes as the shape it replaces");
         assert_eq!(expected, as_old, "the encoding is not the historical value");
 

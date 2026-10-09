@@ -7,7 +7,7 @@ use std::num::NonZeroU64;
 
 use serde::{Deserialize, Serialize};
 
-use crate::block_store::BlockAddress;
+use crate::block_store::ElementEntry;
 use crate::types::{CommandResponse, ControlStateSelectionType, FeaturePoint, ShardId};
 
 use super::control_rollup::RollupEntry;
@@ -147,7 +147,7 @@ pub(super) struct ShardState {
     /// an ordered index here.
     #[serde(skip)]
     pub(super) expiry_by_deadline: BTreeMap<(u64, String), ()>,
-    pub(super) strings: HashMap<ModelKey, BlockAddress>,
+    pub(super) strings: HashMap<ModelKey, ElementEntry>,
     // Rebuildable from the durable bucket/block index on load; do not duplicate in checkpoints.
     //
     // THE INNER CONTAINER IS A SORTED VECTOR, NOT A TABLE AND NOT A B-TREE, and it is the only one
@@ -225,17 +225,17 @@ pub(super) struct ShardState {
     // explicitly instead of defaulting to it.
     #[serde(default)]
     pub(super) lists: super::recorded_map::RecordedMap<super::recorded_map::ListKind>,
-    pub(super) features: HashMap<String, BTreeMap<u64, BlockAddress>>,
+    pub(super) features: HashMap<String, BTreeMap<u64, ElementEntry>>,
     // Sequence data is now stored in `features` (thin-layer fold: Sequence is Feature
     // with a typed row codec over identical timestamped-KV storage). This field is
     // retained only to fold a pre-fold on-disk index that still carries a `sequences`
     // map into `features` at load time (see load_index); new code never writes it, so
     // it serializes away once empty.
     #[serde(default, skip_serializing_if = "HashMap::is_empty")]
-    pub(super) sequences: HashMap<String, BTreeMap<u64, BlockAddress>>,
+    pub(super) sequences: HashMap<String, BTreeMap<u64, ElementEntry>>,
     pub(super) control_state: HashMap<String, BTreeMap<u64, i64>>,
     #[serde(default)]
-    pub(super) control_state_blocks: HashMap<ModelKey, BlockAddress>,
+    pub(super) control_state_blocks: HashMap<ModelKey, ElementEntry>,
     #[serde(default)]
     pub(super) control_state_changes: HashMap<String, BTreeMap<u64, BTreeSet<Vec<u8>>>>,
     // Bounded distinct: per (key, bucket) HyperLogLog sketch. A bucket lives in EITHER
@@ -278,12 +278,12 @@ pub(super) struct ShardState {
     #[serde(skip)]
     pub(super) feature_rollups: HashMap<String, RollupEntry>,
     #[serde(default)]
-    pub(super) context_nodes: HashMap<ModelKey, BlockAddress>,
+    pub(super) context_nodes: HashMap<ModelKey, ElementEntry>,
     // Keyed by EVENT ID HASH, aligning events with entities/embeddings so update and delete
     // address one event directly in log n instead of scanning the node's whole series (mem0
     // delete carries the event id, not the time, so it previously had no way to locate one).
     #[serde(default, skip_serializing)]
-    pub(super) context_events: HashMap<String, BTreeMap<u64, BlockAddress>>,
+    pub(super) context_events: HashMap<String, BTreeMap<u64, ElementEntry>>,
     // Time index over the same events: timeline_key -> event_id_hash, where timeline_key stays
     // timestamp_ms * CONTEXT_TIMELINE_FANOUT + (id % FANOUT). The primary map above is ordered
     // by hash, which is effectively random, so a time window is no longer a contiguous range in
@@ -297,9 +297,9 @@ pub(super) struct ShardState {
     #[serde(default)]
     pub(super) context_event_timeline: HashMap<String, BTreeMap<u64, u64>>,
     #[serde(default, skip_serializing)]
-    pub(super) context_indexes: HashMap<String, BTreeMap<u64, BlockAddress>>,
+    pub(super) context_indexes: HashMap<String, BTreeMap<u64, ElementEntry>>,
     #[serde(default)]
-    pub(super) context_audits: HashMap<String, BTreeMap<u64, BlockAddress>>,
+    pub(super) context_audits: HashMap<String, BTreeMap<u64, ElementEntry>>,
     // Summary-dirty tracking is intentionally in-memory only. Instead of appending a
     // persisted `ctx:dirty` block per event (which produced one dirty node per write and
     // unbounded dirty-block growth: a real e2e capture stored 47 dirty records for only 6
@@ -333,18 +333,18 @@ pub(super) struct ShardState {
     // per-entity key shape could not do: a HashMap cannot prefix-scan, so ContextQueryEntities
     // had to be handed every entity_hash by its caller.
     #[serde(default)]
-    pub(super) context_entities: HashMap<String, BTreeMap<u64, BlockAddress>>,
+    pub(super) context_entities: HashMap<String, BTreeMap<u64, ElementEntry>>,
     // No migration field is needed: the PERSISTED entry still carries the per-entity key
     // `ctx:entity:{tenant}:{node}:{entity_hash}`, which the load path splits back into
     // (collection key, entity hash). The on-disk shape is unchanged in both directions, so an
     // index written before this fold loads natively and one written after it stays readable by
     // an older binary.
     #[serde(default)]
-    pub(super) context_children: HashMap<String, BTreeMap<u64, BlockAddress>>,
+    pub(super) context_children: HashMap<String, BTreeMap<u64, ElementEntry>>,
     #[serde(default)]
-    pub(super) context_summaries: HashMap<String, BTreeMap<u64, BlockAddress>>,
+    pub(super) context_summaries: HashMap<String, BTreeMap<u64, ElementEntry>>,
     #[serde(default)]
-    pub(super) context_compressions: HashMap<String, BTreeMap<u64, BlockAddress>>,
+    pub(super) context_compressions: HashMap<String, BTreeMap<u64, ElementEntry>>,
     #[serde(default)]
     #[serde(rename = "slot_index")]
     pub(super) bucket_index: CoreIndex,
@@ -1796,14 +1796,14 @@ impl BlockSlabLiveIndex {
         self.ready = false;
     }
 
-    pub(super) fn add_address(&mut self, address: &BlockAddress) {
+    pub(super) fn add_address(&mut self, address: &ElementEntry) {
         BLOCK_SLAB_LIVE_CHARGES.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         let tally = self.by_slab.entry(address.block_slab_id()).or_default();
         tally.block_refs = tally.block_refs.saturating_add(1);
         tally.bytes = tally.bytes.saturating_add(address.length());
     }
 
-    pub(super) fn remove_address(&mut self, address: &BlockAddress) {
+    pub(super) fn remove_address(&mut self, address: &ElementEntry) {
         BLOCK_SLAB_LIVE_CHARGES.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         let Some(tally) = self.by_slab.get_mut(&address.block_slab_id()) else {
             return;
@@ -1986,7 +1986,7 @@ impl BlockIndexMap {
     /// the same block must compute the same handle or those refs point at nothing, which is what a
     /// counter did silently until a reload lost an object.
     /// `the_hoisted_handle_is_byte_identical_to_the_one_the_map_used_to_compute` is the check.
-    fn insert_unaccounted(&mut self, handle: u64, page: BlockIndex) -> (u64, Option<BlockAddress>) {
+    fn insert_unaccounted(&mut self, handle: u64, page: BlockIndex) -> (u64, Option<ElementEntry>) {
         let displaced = match self {
             BlockIndexMap::Empty => {
                 // THE ONE ALLOCATION THE INLINE ENTRY DID NOT TAKE, and it is taken here. ONE ENTRY
@@ -4011,7 +4011,7 @@ pub(super) struct BlockIndex {
     pub(super) model_id: crate::engine::storage_bucket_internals::StoredModelKind,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(super) component: Option<Arc<str>>,
-    pub(super) address: BlockAddress,
+    pub(super) address: ElementEntry,
     pub(super) dirty: bool,
     pub(super) deleted: bool,
 }
@@ -4079,7 +4079,7 @@ const _: () = {
         + std::mem::size_of::<Arc<str>>()               // object_key
         + 1                                             // model_id
         + std::mem::size_of::<Option<Arc<str>>>()       // component
-        + std::mem::size_of::<BlockAddress>()           // address
+        + std::mem::size_of::<ElementEntry>()           // address
         + 1 + 1;                                        // dirty, deleted
     assert!(std::mem::size_of::<BlockIndex>() == (field_sum + 7) / 8 * 8);
     // ZERO SLACK, asserted as the claim: the next field here costs EIGHT bytes.
@@ -4114,7 +4114,7 @@ const _: () = {
 // inherit the answer.
 const _: () = assert!(
     std::mem::size_of::<crate::block_store::ElementEntry>()
-        == std::mem::size_of::<BlockAddress>()
+        == std::mem::size_of::<ElementEntry>()
 );
 
 impl BlockIndex {
@@ -4379,7 +4379,7 @@ impl CoreIndex {
         model_id: &str,
         object_key: &str,
         component: Option<&str>,
-        address: &BlockAddress,
+        address: &ElementEntry,
     ) -> bool {
         if let Some(block_refs) = self.block_refs_for(model_id, object_key, component) {
             return block_refs.iter().any(|block_ref| {
@@ -4566,7 +4566,7 @@ fn push_lookup_part(buffer: &mut String, value: &str) {
     buffer.push('|');
 }
 
-fn same_block_address(left: &BlockAddress, right: &BlockAddress) -> bool {
+fn same_block_address(left: &ElementEntry, right: &ElementEntry) -> bool {
     left.block_slab_id() == right.block_slab_id()
         && left.offset() == right.offset()
         && left.length() == right.length()
@@ -4648,7 +4648,7 @@ mod component_lookup_tests {
             object_key: Arc::from(object.to_string()),
             model_id: crate::engine::storage_bucket_internals::StoredModelKind::Hash,
             component: component.map(str::to_string).map(Arc::from),
-            address: BlockAddress::from_parts(0, 0, 0, None, Some(0)),
+            address: ElementEntry::from_parts(0, 0, 0, None, Some(0)),
             dirty: false,
             deleted: false,
         }

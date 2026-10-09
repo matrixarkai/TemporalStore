@@ -5,7 +5,7 @@ use std::sync::Arc;
 
 use serde::{Deserialize, Serialize};
 
-use crate::block_store::{BlockStore, BlockAddress};
+use crate::block_store::{BlockStore, ElementEntry};
 use crate::types::ShardId;
 use matrixcache::MultiLayerCache;
 
@@ -166,7 +166,7 @@ pub(super) fn bucket_index_block_address(
     model_id: &str,
     object_key: &str,
     component: Option<&str>,
-) -> Option<BlockAddress> {
+) -> Option<ElementEntry> {
     if let Some(block_refs) = shard
         .bucket_index
         .block_refs_for(model_id, object_key, component)
@@ -236,7 +236,7 @@ pub(super) fn bucket_index_all_block_addresses_with_tombstones(
     shard: &ShardState,
     model_id: &str,
     object_key: &str,
-) -> Vec<BlockAddress> {
+) -> Vec<ElementEntry> {
     let mut addresses = Vec::new();
     for bucket in shard.bucket_index.bucket_map.values() {
         for page in bucket.block_index.values() {
@@ -252,7 +252,7 @@ pub(super) fn bucket_index_component_block_addresses(
     shard: &ShardState,
     model_id: &str,
     object_key: &str,
-) -> Vec<(Option<Arc<str>>, BlockAddress)> {
+) -> Vec<(Option<Arc<str>>, ElementEntry)> {
     if let Some(object_refs) = shard.bucket_index.object_block_refs(model_id, object_key) {
         let mut refs = object_refs
             .all_refs()
@@ -298,7 +298,7 @@ fn released_component_block_addresses(
     shard: &ShardState,
     model_id: &str,
     object_key: &str,
-) -> Vec<(Option<Arc<str>>, BlockAddress)> {
+) -> Vec<(Option<Arc<str>>, ElementEntry)> {
     super::storage_bucket_internals::released_bucket_block_address(shard, model_id, object_key, None)
         .map(|address| vec![(None, address)])
         .unwrap_or_default()

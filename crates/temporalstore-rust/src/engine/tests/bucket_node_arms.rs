@@ -694,9 +694,9 @@ fn a_simple_bucket_holds_no_general_case_to_take_away() {
     // THE ONE FACT THAT DECIDES THE SHAPE: what a simple bucket's data actually is.
     assert_eq!(
         16,
-        size_of::<crate::block_store::BlockAddress>(),
+        size_of::<crate::block_store::ElementEntry>(),
         "an address is {} bytes, not 16",
-        size_of::<crate::block_store::BlockAddress>()
+        size_of::<crate::block_store::ElementEntry>()
     );
     assert_eq!(
         56,
@@ -705,10 +705,10 @@ fn a_simple_bucket_holds_no_general_case_to_take_away() {
         size_of::<BlockIndex>()
     );
     assert!(
-        size_of::<crate::block_store::BlockAddress>() > size_of::<u64>(),
+        size_of::<crate::block_store::ElementEntry>() > size_of::<u64>(),
         "the whole proposal rests on a page's address fitting in a tagged 64-bit word; here the \
          address ALONE is {} bytes, and the entry around it carries three shared names as well",
-        size_of::<crate::block_store::BlockAddress>()
+        size_of::<crate::block_store::ElementEntry>()
     );
 }
 
@@ -721,7 +721,7 @@ fn page_fixture() -> BlockIndex {
         // The field's type could not say so when it was a free-form string.
         model_id: crate::engine::storage_bucket_internals::StoredModelKind::String,
         component: None,
-        address: crate::block_store::BlockAddress::from_parts(
+        address: crate::block_store::ElementEntry::from_parts(
             1,
             64,
             32,

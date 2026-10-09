@@ -341,7 +341,7 @@ fn the_widths_and_the_container_stride_at_this_end_of_the_campaign() {
     let node = size_of::<BucketNode>();
     let entry = size_of::<BlockIndex>();
     let map = size_of::<BlockIndexMap>();
-    let address = size_of::<crate::BlockAddress>();
+    let address = size_of::<crate::ElementEntry>();
     let stride = size_of::<(u64, BlockIndex)>();
 
     println!("WIDTHS AT THIS END");
@@ -358,8 +358,8 @@ fn the_widths_and_the_container_stride_at_this_end_of_the_campaign() {
         align_of::<BlockIndexMap>()
     );
     println!(
-        "  BlockAddress    {address:>4} B  (align {})   PER PAGE, inside the entry",
-        align_of::<crate::BlockAddress>()
+        "  ElementEntry    {address:>4} B  (align {})   PER PAGE, inside the entry",
+        align_of::<crate::ElementEntry>()
     );
     println!("CONTAINER STRIDE");
     println!(

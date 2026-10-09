@@ -8,7 +8,7 @@ use std::io::{BufReader, Cursor, Read, Seek};
 use sha2::{Digest, Sha256};
 
 use super::{
-    BlockAddress, BlockStoreBlockIndexReport, BlockStoreError, BlockStoreOptions,
+    ElementEntry, BlockStoreBlockIndexReport, BlockStoreError, BlockStoreOptions,
     BlockStoreSlabReport,
 };
 
@@ -114,7 +114,7 @@ fn put_block_record_varint(out: &mut Vec<u8>, mut value: u64) {
 fn read_block_record_varint(
     record: &[u8],
     cursor: &mut usize,
-    address: &BlockAddress,
+    address: &ElementEntry,
     what: &str,
 ) -> Result<u64, BlockStoreError> {
     let mut value = 0_u64;
@@ -222,7 +222,7 @@ pub(super) fn encode_block_record(
     let block_size = stored_payload.len();
     if block_size as u64 > u64::from(BLOCK_RECORD_LENGTH_MASK) {
         return Err(corrupt_block_envelope(
-            &BlockAddress::default(),
+            &ElementEntry::default(),
             format!("block of {block_size} bytes does not fit a block size field"),
         ));
     }
@@ -242,7 +242,7 @@ pub(super) fn encode_block_record(
     record.extend_from_slice(&sized.to_le_bytes());
     if block_id > u64::from(u16::MAX) {
         return Err(corrupt_block_envelope(
-            &BlockAddress::default(),
+            &ElementEntry::default(),
             format!("block index {block_id} does not fit a block id field"),
         ));
     }
@@ -310,7 +310,7 @@ fn encode_block_record_payload_inner(
 
 pub(super) fn decode_block_record(
     record: &[u8],
-    address: &BlockAddress,
+    address: &ElementEntry,
 ) -> Result<DecodedBlockRecord, BlockStoreError> {
     if record.len() < BLOCK_RECORD_HEADER_LEN || !record.starts_with(BLOCK_RECORD_MAGIC) {
         return Ok(DecodedBlockRecord {
@@ -429,7 +429,7 @@ pub(super) fn logical_range_from_slab(
 
     while physical_offset < slab.len() && out.len() < size as usize {
         let remaining = &slab[physical_offset..];
-        let address = BlockAddress::from_parts(block_slab_id, physical_offset as u64, 0, None, None);
+        let address = ElementEntry::from_parts(block_slab_id, physical_offset as u64, 0, None, None);
         if remaining.len() < BLOCK_RECORD_HEADER_LEN || !remaining.starts_with(BLOCK_RECORD_MAGIC) {
             return Err(corrupt_block_envelope(
                 &address,
@@ -447,7 +447,7 @@ pub(super) fn logical_range_from_slab(
                 "payload length mismatch".to_string(),
             ));
         }
-        let address = BlockAddress::from_parts(0, 0, record_len as u64, header.block_id, header.object_id);
+        let address = ElementEntry::from_parts(0, 0, record_len as u64, header.block_id, header.object_id);
         let payload = decode_block_record_payload(
             &remaining[header.header_len..record_len],
             &header,
@@ -482,7 +482,7 @@ pub(super) fn logical_range_from_slab(
 /// There is no declared header length to check against: the header ends where the walk ends.
 fn parse_block_record_header(
     record: &[u8],
-    address: &BlockAddress,
+    address: &ElementEntry,
 ) -> Result<BlockRecordHeader, BlockStoreError> {
     if !record.starts_with(BLOCK_RECORD_MAGIC) {
         return Err(corrupt_block_envelope(address, "not a block record"));
@@ -572,7 +572,7 @@ thread_local! {
 fn decode_block_record_payload(
     stored_payload: &[u8],
     header: &BlockRecordHeader,
-    address: &BlockAddress,
+    address: &ElementEntry,
 ) -> Result<Vec<u8>, BlockStoreError> {
     match header.compression {
         BlockRecordCompression::None => Ok(stored_payload.to_vec()),
@@ -648,7 +648,7 @@ fn block_record_checksum_field(payload: &[u8]) -> [u8; BLOCK_RECORD_CHECKSUM_LEN
 fn verify_block_record_checksum(
     payload: &[u8],
     expected_checksum: &[u8; BLOCK_RECORD_CHECKSUM_LEN],
-    address: &BlockAddress,
+    address: &ElementEntry,
 ) -> Result<(), BlockStoreError> {
     let stored = u32::from_le_bytes(*expected_checksum);
     let actual = crate::checksum::crc32c(payload);
@@ -665,7 +665,7 @@ fn verify_block_record_checksum(
 }
 
 pub(super) fn corrupt_block_envelope(
-    address: &BlockAddress,
+    address: &ElementEntry,
     reason: impl Into<String>,
 ) -> BlockStoreError {
     BlockStoreError::CorruptBlockEnvelope {
@@ -709,7 +709,7 @@ pub(super) fn summarize_slab(
     let mut summary = SlabSummary::default();
     while physical_offset < slab.len() {
         let remaining = &slab[physical_offset..];
-        let address = BlockAddress::from_parts(block_slab_id, physical_offset as u64, 0, None, None);
+        let address = ElementEntry::from_parts(block_slab_id, physical_offset as u64, 0, None, None);
         if remaining.len() < BLOCK_RECORD_HEADER_LEN || !remaining.starts_with(BLOCK_RECORD_MAGIC) {
             return Err(corrupt_block_envelope(
                 &address,
@@ -820,7 +820,7 @@ pub(super) fn count_slab_blocks(slab: &[u8], block_slab_id: u64) -> (u64, u64) {
             break;
         }
         let address =
-            BlockAddress::from_parts(block_slab_id, physical_offset as u64, 0, None, None);
+            ElementEntry::from_parts(block_slab_id, physical_offset as u64, 0, None, None);
         let Ok(header) = parse_block_record_header(remaining, &address) else {
             break;
         };
@@ -855,7 +855,7 @@ pub(super) fn inspect_slab(slab: &[u8], block_slab_id: u64) -> BlockStoreSlabRep
     let mut physical_offset = 0usize;
     while physical_offset < slab.len() {
         let remaining = &slab[physical_offset..];
-        let mut address = BlockAddress::from_parts(block_slab_id, physical_offset as u64, 0, None, None);
+        let mut address = ElementEntry::from_parts(block_slab_id, physical_offset as u64, 0, None, None);
         if remaining.len() < BLOCK_RECORD_HEADER_LEN || !remaining.starts_with(BLOCK_RECORD_MAGIC) {
             record_slab_inspection_error(
                 &mut report,
@@ -976,8 +976,8 @@ fn record_slab_inspection_error(
 mod block_record_format_tests {
     use super::*;
 
-    fn address() -> BlockAddress {
-        BlockAddress::from_parts(1, 0, 0, None, None)
+    fn address() -> ElementEntry {
+        ElementEntry::from_parts(1, 0, 0, None, None)
     }
 
     /// What the record carries comes back; what the index carries does not.
@@ -1037,7 +1037,7 @@ mod block_record_format_tests {
 
         // DENOMINATOR: the record really was built, and really carries the BLOCK ID it was handed --
         // so "the header carries nothing" is not what is being asserted.
-        let at = crate::block_store::BlockAddress::from_parts(
+        let at = crate::block_store::ElementEntry::from_parts(
             0,
             0,
             encoded.bytes.len() as u64,
@@ -1081,11 +1081,11 @@ mod block_record_format_tests {
             .expect("the record encodes");
         let len = encoded.bytes.len() as u64;
 
-        let honest = crate::block_store::BlockAddress::from_parts(0, 0, len, Some(3), None);
+        let honest = crate::block_store::ElementEntry::from_parts(0, 0, len, Some(3), None);
         let decoded = decode_block_record(&encoded.bytes, &honest).expect("the honest read");
         assert_eq!(payload, decoded.payload, "denominator: the honest address reads its record");
 
-        let mismatched = crate::block_store::BlockAddress::from_parts(0, 0, len, Some(4), None);
+        let mismatched = crate::block_store::ElementEntry::from_parts(0, 0, len, Some(4), None);
         let refusal = decode_block_record(&encoded.bytes, &mismatched)
             .expect_err("a record stating block 3 must not read through an address claiming 4");
         assert!(
@@ -1096,7 +1096,7 @@ mod block_record_format_tests {
         // AND AN ADDRESS THAT OMITS THE BLOCK ID READS THROUGH UNCHECKED, which is what
         // "presence-gated" means and why dropping the field would disable the detector silently
         // rather than loudly.
-        let stripped = crate::block_store::BlockAddress::from_parts(0, 0, len, None, None);
+        let stripped = crate::block_store::ElementEntry::from_parts(0, 0, len, None, None);
         assert!(
             decode_block_record(&encoded.bytes, &stripped).is_ok(),
             "an address carrying no block id must read through: the check is gated on presence"
@@ -1211,8 +1211,8 @@ mod reused_zstd_context_tests {
         out
     }
 
-    fn address_for(payload_len: usize) -> BlockAddress {
-        BlockAddress::from_parts(1, 0, payload_len as u64, Some(1), Some(1))
+    fn address_for(payload_len: usize) -> ElementEntry {
+        ElementEntry::from_parts(1, 0, payload_len as u64, Some(1), Some(1))
     }
 
     /// Round-trip at several sizes through the shared thread-local context.

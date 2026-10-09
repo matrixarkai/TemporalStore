@@ -143,7 +143,7 @@ fn read_back(engine: &TemporalEngine, keys: &[String]) -> usize {
 /// THE SLOT IS RETIRED FROM `BlockAddressWire`, so the two shapes have swapped: an older index is
 /// the one CARRYING `rs`, and a current address is the one without it. The key is added here rather
 /// than removed, and the address it decodes to is the same either way.
-fn as_an_older_build_wrote_it(address: &BlockAddress) -> BlockAddress {
+fn as_an_older_build_wrote_it(address: &ElementEntry) -> ElementEntry {
     let mut wire = serde_json::to_value(address).expect("an address serializes to its wire shape");
     let object = wire
         .as_object_mut()

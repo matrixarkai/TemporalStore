@@ -587,11 +587,11 @@ struct Reading {
 /// Pre-built field-name/address pairs, one batch per instance. Built OUTSIDE every probe window so
 /// the name text is charged to none of the arms and the comparison is of containers only.
 #[cfg(feature = "alloc-probe")]
-fn pairs_for(instances: usize, occupancy: usize) -> Vec<Vec<(String, BlockAddress)>> {
+fn pairs_for(instances: usize, occupancy: usize) -> Vec<Vec<(String, ElementEntry)>> {
     (0..instances)
         .map(|i| {
             (0..occupancy)
-                .map(|f| (format!("f-{i:05}-{f:05}"), BlockAddress::default()))
+                .map(|f| (format!("f-{i:05}-{f:05}"), ElementEntry::default()))
                 .collect()
         })
         .collect()
@@ -659,7 +659,7 @@ fn what_a_hash_field_map_costs_per_instance_and_per_field() {
         {
             let batches = pairs_for(INSTANCES, occupancy);
             let probe = Probe::start();
-            let built: Vec<HashMap<String, BlockAddress>> = batches
+            let built: Vec<HashMap<String, ElementEntry>> = batches
                 .into_iter()
                 .map(|batch| batch.into_iter().collect())
                 .collect();
@@ -689,7 +689,7 @@ fn what_a_hash_field_map_costs_per_instance_and_per_field() {
         {
             let batches = pairs_for(INSTANCES, occupancy);
             let probe = Probe::start();
-            let built: Vec<BTreeMap<String, BlockAddress>> = batches
+            let built: Vec<BTreeMap<String, ElementEntry>> = batches
                 .into_iter()
                 .map(|batch| batch.into_iter().collect())
                 .collect();
@@ -717,10 +717,10 @@ fn what_a_hash_field_map_costs_per_instance_and_per_field() {
             // and calling `shrink_to_fit` on it read 0.00 B at every occupancy -- the buffer had
             // been allocated by `pairs_for`, outside the window, and the arm was charged for
             // nothing. The vacuity guard at the end of this test is what caught it.
-            let built: Vec<Vec<(String, BlockAddress)>> = batches
+            let built: Vec<Vec<(String, ElementEntry)>> = batches
                 .into_iter()
                 .map(|batch| {
-                    let mut exact: Vec<(String, BlockAddress)> = Vec::with_capacity(occupancy);
+                    let mut exact: Vec<(String, ElementEntry)> = Vec::with_capacity(occupancy);
                     exact.extend(batch);
                     exact.sort_by(|l, r| l.0.cmp(&r.0));
                     exact
@@ -748,14 +748,14 @@ fn what_a_hash_field_map_costs_per_instance_and_per_field() {
          MOVED in, so these are container allocations only."
     );
     println!(
-        "entry width: String {} B + BlockAddress {} B = {} B inline",
+        "entry width: String {} B + ElementEntry {} B = {} B inline",
         std::mem::size_of::<String>(),
-        std::mem::size_of::<BlockAddress>(),
-        std::mem::size_of::<String>() + std::mem::size_of::<BlockAddress>()
+        std::mem::size_of::<ElementEntry>(),
+        std::mem::size_of::<String>() + std::mem::size_of::<ElementEntry>()
     );
-    report_shape("TODAY: HashMap<String, BlockAddress> per hash key", &hashed);
-    report_shape("CANDIDATE A: BTreeMap<String, BlockAddress>", &ordered);
-    report_shape("CANDIDATE B: sorted Vec<(String, BlockAddress)>", &flat);
+    report_shape("TODAY: HashMap<String, ElementEntry> per hash key", &hashed);
+    report_shape("CANDIDATE A: BTreeMap<String, ElementEntry>", &ordered);
+    report_shape("CANDIDATE B: sorted Vec<(String, ElementEntry)>", &flat);
 
     println!("--- chunk bytes per hash INSTANCE, by occupancy, all three shapes ---");
     println!(
@@ -908,18 +908,18 @@ fn what_the_outer_model_maps_cost_per_map_and_per_key() {
 
     for keys in [SMALL_KEYS, LARGE_KEYS] {
         // Keys built OUTSIDE the window and moved in, so both shapes are charged the same text.
-        let built: Vec<(String, BlockAddress)> = (0..keys)
-            .map(|k| (format!("ctx:node:7:{k:012}"), BlockAddress::default()))
+        let built: Vec<(String, ElementEntry)> = (0..keys)
+            .map(|k| (format!("ctx:node:7:{k:012}"), ElementEntry::default()))
             .collect();
 
         let hashed_input = built.clone();
         let probe = Probe::start();
-        let hashed: HashMap<String, BlockAddress> = hashed_input.into_iter().collect();
+        let hashed: HashMap<String, ElementEntry> = hashed_input.into_iter().collect();
         let hashed_counts = probe.stop();
 
         let ordered_input = built.clone();
         let probe = Probe::start();
-        let ordered: BTreeMap<String, BlockAddress> = ordered_input.into_iter().collect();
+        let ordered: BTreeMap<String, ElementEntry> = ordered_input.into_iter().collect();
         let ordered_counts = probe.stop();
 
         assert_eq!(keys, hashed.len(), "the hashed outer arm did not reach {keys}");
@@ -956,8 +956,8 @@ fn what_the_outer_model_maps_cost_per_map_and_per_key() {
             hashed.capacity(),
             hashed.len(),
             hashed.capacity() - hashed.len(),
-            std::mem::size_of::<(String, BlockAddress)>(),
-            (hashed.capacity() - hashed.len()) * std::mem::size_of::<(String, BlockAddress)>()
+            std::mem::size_of::<(String, ElementEntry)>(),
+            (hashed.capacity() - hashed.len()) * std::mem::size_of::<(String, ElementEntry)>()
         );
         println!(
             "      ordered vs hashed on the chunk column: {:>+.2}%",
@@ -967,7 +967,7 @@ fn what_the_outer_model_maps_cost_per_map_and_per_key() {
 
     // THE PER-MAP FIXED COST, separated from the per-key cost: an EMPTY map of each shape.
     let probe = Probe::start();
-    let empty_hashed: Vec<HashMap<String, BlockAddress>> =
+    let empty_hashed: Vec<HashMap<String, ElementEntry>> =
         (0..INSTANCES).map(|_| HashMap::new()).collect();
     let empty_counts = probe.stop();
     assert_eq!(INSTANCES, empty_hashed.len(), "the empty arm did not build");
@@ -980,7 +980,7 @@ fn what_the_outer_model_maps_cost_per_map_and_per_key() {
         "  an empty HashMap allocates NOTHING; the per-map cost is {} B INLINE in ShardState and \
          appears on the heap only at the first insert, which is why the per-instance figure in the \
          inner-container table above is the one that matters.",
-        std::mem::size_of::<HashMap<String, BlockAddress>>()
+        std::mem::size_of::<HashMap<String, ElementEntry>>()
     );
 }
 
@@ -1167,17 +1167,17 @@ fn what_a_field_lookup_costs_in_probe_counts_at_every_measured_occupancy() {
             .map(|f| CountingKey(format!("f-{f:05}")))
             .collect();
 
-        let hashed: HashMap<CountingKey, BlockAddress> = names
+        let hashed: HashMap<CountingKey, ElementEntry> = names
             .iter()
-            .map(|n| (n.clone(), BlockAddress::default()))
+            .map(|n| (n.clone(), ElementEntry::default()))
             .collect();
-        let ordered: BTreeMap<CountingKey, BlockAddress> = names
+        let ordered: BTreeMap<CountingKey, ElementEntry> = names
             .iter()
-            .map(|n| (n.clone(), BlockAddress::default()))
+            .map(|n| (n.clone(), ElementEntry::default()))
             .collect();
-        let mut flat: Vec<(CountingKey, BlockAddress)> = names
+        let mut flat: Vec<(CountingKey, ElementEntry)> = names
             .iter()
-            .map(|n| (n.clone(), BlockAddress::default()))
+            .map(|n| (n.clone(), ElementEntry::default()))
             .collect();
         flat.sort_by(|l, r| l.0.cmp(&r.0));
 
@@ -1282,7 +1282,7 @@ fn what_the_engine_resident_field_maps_cost_against_the_container_they_replaced(
         let (pairs, set_pairs, fields_total) = {
             let shards = engine.shards.read().expect("engine lock poisoned");
             let shard = shards.get(&1).expect("shard is loaded");
-            let pairs: Vec<Vec<(String, BlockAddress)>> = shard
+            let pairs: Vec<Vec<(String, ElementEntry)>> = shard
                 .hashes
                 .values()
                 .map(|fields| {
@@ -1292,7 +1292,7 @@ fn what_the_engine_resident_field_maps_cost_against_the_container_they_replaced(
                         .collect()
                 })
                 .collect();
-            let set_pairs: Vec<Vec<(Vec<u8>, BlockAddress)>> = shard
+            let set_pairs: Vec<Vec<(Vec<u8>, ElementEntry)>> = shard
                 .sets
                 .values()
                 .map(|members| {
@@ -1328,7 +1328,7 @@ fn what_the_engine_resident_field_maps_cost_against_the_container_they_replaced(
         // `shard.hashes.entry(key).or_default().insert(field, address)` exactly.
         let before_input = pairs.clone();
         let probe = Probe::start();
-        let before: Vec<HashMap<String, BlockAddress>> = before_input
+        let before: Vec<HashMap<String, ElementEntry>> = before_input
             .into_iter()
             .map(|batch| {
                 let mut map = HashMap::new();
@@ -1376,7 +1376,7 @@ fn what_the_engine_resident_field_maps_cost_against_the_container_they_replaced(
         // on both sides, so it must read 0.00%.
         let control_a_input = set_pairs.clone();
         let probe = Probe::start();
-        let control_a: Vec<BTreeMap<Vec<u8>, BlockAddress>> = control_a_input
+        let control_a: Vec<BTreeMap<Vec<u8>, ElementEntry>> = control_a_input
             .into_iter()
             .map(|batch| {
                 let mut map = BTreeMap::new();
@@ -1390,7 +1390,7 @@ fn what_the_engine_resident_field_maps_cost_against_the_container_they_replaced(
 
         let control_b_input = set_pairs.clone();
         let probe = Probe::start();
-        let control_b: Vec<BTreeMap<Vec<u8>, BlockAddress>> = control_b_input
+        let control_b: Vec<BTreeMap<Vec<u8>, ElementEntry>> = control_b_input
             .into_iter()
             .map(|batch| {
                 let mut map = BTreeMap::new();
@@ -1480,11 +1480,11 @@ fn what_the_engine_resident_field_maps_cost_against_the_container_they_replaced(
 fn why_a_single_field_inline_arm_was_measured_and_not_taken() {
     /// The shape an inline arm would take: one field held in place, a vector once it spills.
     enum InlineArm {
-        One((String, BlockAddress)),
-        Many(Vec<(String, BlockAddress)>),
+        One((String, ElementEntry)),
+        Many(Vec<(String, ElementEntry)>),
     }
     let _ = InlineArm::Many(Vec::new());
-    let _ = InlineArm::One((String::new(), BlockAddress::default()));
+    let _ = InlineArm::One((String::new(), ElementEntry::default()));
 
     let shipped = std::mem::size_of::<crate::engine::hash_field_map::HashFieldMap>();
     let inline = std::mem::size_of::<InlineArm>();
@@ -1500,8 +1500,8 @@ fn why_a_single_field_inline_arm_was_measured_and_not_taken() {
     // The capacity a table of this many keys actually reserved, measured in
     // `what_the_outer_model_maps_cost_per_map_and_per_key`: 57,344 slots for 40,000 keys.
     let outer_capacity = {
-        let map: HashMap<String, BlockAddress> = (0..keys)
-            .map(|k| (format!("ctx:node:7:{k:012}"), BlockAddress::default()))
+        let map: HashMap<String, ElementEntry> = (0..keys)
+            .map(|k| (format!("ctx:node:7:{k:012}"), ElementEntry::default()))
             .collect();
         map.capacity()
     };
@@ -1565,10 +1565,10 @@ fn the_hash_field_map_holds_the_contract_the_table_held() {
     assert_eq!(None, fields.remove("absent"));
 
     // Inserted out of order, deliberately: end, front, middle.
-    assert_eq!(None, fields.insert("m".to_string(), BlockAddress::default()));
-    assert_eq!(None, fields.insert("a".to_string(), BlockAddress::default()));
-    assert_eq!(None, fields.insert("z".to_string(), BlockAddress::default()));
-    assert_eq!(None, fields.insert("n".to_string(), BlockAddress::default()));
+    assert_eq!(None, fields.insert("m".to_string(), ElementEntry::default()));
+    assert_eq!(None, fields.insert("a".to_string(), ElementEntry::default()));
+    assert_eq!(None, fields.insert("z".to_string(), ElementEntry::default()));
+    assert_eq!(None, fields.insert("n".to_string(), ElementEntry::default()));
     assert_eq!(4, fields.len());
     assert_eq!(
         vec!["a", "m", "n", "z"],
@@ -1577,7 +1577,7 @@ fn the_hash_field_map_holds_the_contract_the_table_held() {
     );
 
     // A replace returns what was there and does not change the population.
-    let replaced = fields.insert("m".to_string(), BlockAddress::default());
+    let replaced = fields.insert("m".to_string(), ElementEntry::default());
     assert!(replaced.is_some(), "a replace did not return the old value");
     assert_eq!(4, fields.len(), "a replace changed the population");
 
@@ -1591,13 +1591,13 @@ fn the_hash_field_map_holds_the_contract_the_table_held() {
     assert!(fields.contains_key("n"));
 
     // `FromIterator` keeps the LAST value for a repeated field, which is what the table did.
-    let mut first = BlockAddress::default();
-    let second = BlockAddress::default();
+    let mut first = ElementEntry::default();
+    let second = ElementEntry::default();
     // Distinguish them through the only public difference available on a defaulted address.
     let _ = &mut first;
     let built: HashFieldMap = vec![
         ("dup".to_string(), first.clone()),
-        ("other".to_string(), BlockAddress::default()),
+        ("other".to_string(), ElementEntry::default()),
         ("dup".to_string(), second.clone()),
     ]
     .into_iter()
@@ -1613,9 +1613,9 @@ fn the_hash_field_map_holds_the_contract_the_table_held() {
     );
 
     // And the same population through a real HashMap, so the two constructions agree.
-    let via_table: std::collections::HashMap<String, BlockAddress> = vec![
+    let via_table: std::collections::HashMap<String, ElementEntry> = vec![
         ("dup".to_string(), first),
-        ("other".to_string(), BlockAddress::default()),
+        ("other".to_string(), ElementEntry::default()),
         ("dup".to_string(), second),
     ]
     .into_iter()
@@ -1641,18 +1641,18 @@ fn the_hash_field_map_wire_shape_is_still_the_table_shape() {
     use crate::engine::hash_field_map::HashFieldMap;
 
     let pairs = vec![
-        ("beta".to_string(), BlockAddress::default()),
-        ("alpha".to_string(), BlockAddress::default()),
+        ("beta".to_string(), ElementEntry::default()),
+        ("alpha".to_string(), ElementEntry::default()),
     ];
-    let table: std::collections::HashMap<String, BlockAddress> = pairs.clone().into_iter().collect();
+    let table: std::collections::HashMap<String, ElementEntry> = pairs.clone().into_iter().collect();
     let container: HashFieldMap = pairs.into_iter().collect();
 
     // A map encoding is order-independent, so the comparison is made through a canonical form
     // rather than by comparing two byte strings a table may have emitted in either order.
-    let from_table: std::collections::BTreeMap<String, BlockAddress> =
+    let from_table: std::collections::BTreeMap<String, ElementEntry> =
         serde_json::from_str(&serde_json::to_string(&table).expect("table encodes"))
             .expect("a table decodes as a map");
-    let from_container: std::collections::BTreeMap<String, BlockAddress> =
+    let from_container: std::collections::BTreeMap<String, ElementEntry> =
         serde_json::from_str(&serde_json::to_string(&container).expect("container encodes"))
             .expect("the container encodes AS A MAP, not as a sequence");
     assert_eq!(
@@ -1718,7 +1718,7 @@ fn what_a_durable_hash_map_costs_the_compressed_checkpoint() {
         shard.hashes.insert_element_for_test(
             &format!("ctx:node:{i}"),
             "meta".to_string(),
-            BlockAddress::from_parts(1, (i as u64) * 512, 384, None, None),
+            ElementEntry::from_parts(1, (i as u64) * 512, 384, None, None),
         );
     }
     // The wide arm, with field names that are not all one string.
@@ -1727,7 +1727,7 @@ fn what_a_durable_hash_map_costs_the_compressed_checkpoint() {
         for f in 0..WIDE_FIELDS {
             entry.insert(
                 format!("field-{h}-{f}"),
-                BlockAddress::from_parts(2, ((h * WIDE_FIELDS + f) as u64) * 512, 384, None, None),
+                ElementEntry::from_parts(2, ((h * WIDE_FIELDS + f) as u64) * 512, 384, None, None),
             );
         }
         shard
@@ -1768,7 +1768,7 @@ fn what_a_durable_hash_map_costs_the_compressed_checkpoint() {
     );
     println!(
         "  = {per_field:.2} compressed B per hash field, against {} B per field RESIDENT",
-        std::mem::size_of::<(String, BlockAddress)>()
+        std::mem::size_of::<(String, ElementEntry)>()
     );
 
     // THE BAR, STATED AS A BAR RATHER THAN AS WHATEVER CAME OUT. A durable map is affordable if the

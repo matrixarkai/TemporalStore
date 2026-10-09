@@ -76,7 +76,7 @@ use std::collections::BTreeMap;
 use std::mem::size_of;
 use std::sync::Arc;
 
-use crate::block_store::BlockAddress;
+use crate::block_store::ElementEntry;
 use crate::engine::state::{
     BlockIndex, BlockIndexMap, BlockSlabLiveIndex, BucketLayoutState, BucketNode, BucketTtl,
     DeletedObjectIndex,
@@ -487,7 +487,7 @@ fn every_byte_of_the_page_index_is_accounted_for() {
     // all. A field-width subtraction would have predicted nothing here twice over. ---
     let arc_str = size_of::<Arc<str>>();
     let opt_arc_str = size_of::<Option<Arc<str>>>();
-    let index_eight_aligned = arc_str + opt_arc_str + size_of::<BlockAddress>();
+    let index_eight_aligned = arc_str + opt_arc_str + size_of::<ElementEntry>();
     let index_tail = size_of::<crate::engine::storage_bucket_internals::StoredModelKind>()
         + 2 * size_of::<bool>()
         + size_of::<crate::index_log::IndexItemKind>()
@@ -684,7 +684,7 @@ enum MirrorOneWordInline {
 #[derive(Clone)]
 enum MirrorInlineAddress {
     Empty,
-    One(u64, BlockAddress),
+    One(u64, ElementEntry),
     Many(Box<Vec<(u64, BlockIndex)>>),
 }
 
@@ -695,7 +695,7 @@ struct MirrorPageNoDeleted {
     object_key: Arc<str>,
     model_id: crate::engine::storage_bucket_internals::StoredModelKind,
     component: Option<Arc<str>>,
-    address: BlockAddress,
+    address: ElementEntry,
     dirty: bool,
     log_backed: bool,
 }
@@ -706,7 +706,7 @@ struct MirrorPageOneFlagByte {
     object_key: Arc<str>,
     model_id: crate::engine::storage_bucket_internals::StoredModelKind,
     component: Option<Arc<str>>,
-    address: BlockAddress,
+    address: ElementEntry,
     flags: u8,
 }
 
@@ -716,7 +716,7 @@ struct MirrorPageNoFlags {
     object_key: Arc<str>,
     model_id: crate::engine::storage_bucket_internals::StoredModelKind,
     component: Option<Arc<str>>,
-    address: BlockAddress,
+    address: ElementEntry,
 }
 
 /// The block entry with the flags gone AND the model spelling with them -- an EMPTY tail.
@@ -727,13 +727,13 @@ struct MirrorPageNoFlags {
 struct MirrorPageEmptyTail {
     object_key: Arc<str>,
     component: Option<Arc<str>>,
-    address: BlockAddress,
+    address: ElementEntry,
 }
 
 /// The block entry with its three shared names gone -- the largest group in it.
 #[allow(dead_code)]
 struct MirrorPageAddressOnly {
-    address: BlockAddress,
+    address: ElementEntry,
     dirty: bool,
     deleted: bool,
     log_backed: bool,
@@ -974,8 +974,8 @@ fn what_the_common_case_could_hold_inline_and_what_this_engines_page_entry_forbi
     println!("\n=== what a single page's entry cannot do without ===");
     println!(
         "  the address alone                     : {:>4} B  ({} words)",
-        size_of::<BlockAddress>(),
-        size_of::<BlockAddress>() / word
+        size_of::<ElementEntry>(),
+        size_of::<ElementEntry>() / word
     );
     println!(
         "  the address plus its three flags      : {:>4} B",
@@ -986,7 +986,7 @@ fn what_the_common_case_could_hold_inline_and_what_this_engines_page_entry_forbi
         size_of::<BlockIndex>()
     );
     assert!(
-        size_of::<BlockAddress>() > word,
+        size_of::<ElementEntry>() > word,
         "the address fits in one word, so the one-word tiering IS available here and this test is \
          arguing against a shape that is not blocked"
     );
@@ -1003,7 +1003,7 @@ fn what_the_common_case_could_hold_inline_and_what_this_engines_page_entry_forbi
          STORED address format, which is 13 of the node's 15 fields' problem and not a resident \
          layout decision.",
         word,
-        size_of::<BlockAddress>() / word,
+        size_of::<ElementEntry>() / word,
         size_of::<BlockIndex>() / word
     );
 
@@ -1782,7 +1782,7 @@ fn page_for(seed: u64) -> BlockIndex {
         // fixture typo that a free-form string field could not catch.
         model_id: crate::engine::storage_bucket_internals::StoredModelKind::String,
         component: None,
-        address: BlockAddress::from_parts(
+        address: ElementEntry::from_parts(
             7,
             seed * 128,
             64,
@@ -1802,7 +1802,7 @@ fn component_page(seed: u64, component: &str) -> BlockIndex {
         // Was `"hashes"`, likewise not a declared spelling.
         model_id: crate::engine::storage_bucket_internals::StoredModelKind::Hash,
         component: Some(Arc::from(component)),
-        address: BlockAddress::from_parts(
+        address: ElementEntry::from_parts(
             9,
             seed * 256,
             96,
@@ -2353,12 +2353,12 @@ fn the_page_entry_and_not_the_bucket_node_is_the_next_dominant_term() {
     // this sum is checked against `size_of`, and it reconstructed to the right total by
     // ROUNDING rather than by being complete before they were added.
     let locating = size_of::<crate::index_log::IndexItemKind>() + size_of::<u32>();
-    let field_sum = names + size_of::<BlockAddress>() + flags + locating;
+    let field_sum = names + size_of::<ElementEntry>() + flags + locating;
     println!(
         "\n=== inside the {} B page entry ===",
         size_of::<BlockIndex>()
     );
-    println!("  address                       : {:>4} B", size_of::<BlockAddress>());
+    println!("  address                       : {:>4} B", size_of::<ElementEntry>());
     println!("  object_key                    : {object_key:>4} B  (a fat pointer; the length rides beside it)");
     println!("  model_id                      : {model_id:>4} B  (a one-byte spelling since #1994, NOT a pointer)");
     println!("  component                     : {component:>4} B  (a fat optional pointer)");
@@ -2399,11 +2399,11 @@ fn the_page_entry_and_not_the_bucket_node_is_the_next_dominant_term() {
     // group -- the old form counted `model_id` as a third fat pointer, and at 48 against 24 it
     // passed for the wrong reason.
     assert!(
-        object_key + component > size_of::<BlockAddress>(),
+        object_key + component > size_of::<ElementEntry>(),
         "the two name pointers are {} B against the address's {} B; if the address has become the \
          larger group, the next step named here is the wrong one",
         object_key + component,
-        size_of::<BlockAddress>()
+        size_of::<ElementEntry>()
     );
     assert_eq!(
         1, model_id,

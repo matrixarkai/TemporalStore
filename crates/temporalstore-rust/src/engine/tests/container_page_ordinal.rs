@@ -903,7 +903,7 @@ fn a_reloaded_container_still_reads_every_element() {
 /// rust-internal: drives the assignment helper on a hand-built index, no engine
 #[test]
 fn past_the_ceiling_the_ordinal_is_left_unassigned_rather_than_panicking() {
-    use crate::block_store::{BlockAddress, MAX_ADDRESSABLE_BLOCK_ID};
+    use crate::block_store::{ElementEntry, MAX_ADDRESSABLE_BLOCK_ID};
     use crate::engine::state::{BlockIndex, BucketNode, CoreIndex};
 
     const BUCKET: u32 = 7;
@@ -920,7 +920,7 @@ fn past_the_ceiling_the_ordinal_is_left_unassigned_rather_than_panicking() {
     );
 
     // One page of this object, already holding the highest ordinal the field can store.
-    let at_ceiling = BlockAddress::try_from_parts(1, 0, 16, Some(MAX_ADDRESSABLE_BLOCK_ID), None)
+    let at_ceiling = ElementEntry::try_from_parts(1, 0, 16, Some(MAX_ADDRESSABLE_BLOCK_ID), None)
         .expect("an address at the ceiling is constructible");
     assert_eq!(
         at_ceiling.block_id(),

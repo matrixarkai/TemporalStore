@@ -41,7 +41,7 @@
 
 #![allow(clippy::all)]
 use super::*;
-use crate::block_store::BlockAddress;
+use crate::block_store::ElementEntry;
 use crate::engine::state::{block_index_handle, BlockIndex};
 use crate::engine::storage_bucket_internals::StoredModelKind;
 
@@ -66,11 +66,11 @@ fn mirrored_handle(page: &BlockIndex, include_component: bool) -> u64 {
 }
 
 /// One batched page: every element shares this address.
-fn batched_page_address() -> BlockAddress {
-    BlockAddress::from_parts(42, 1_048_576, 4096, Some(7), None)
+fn batched_page_address() -> ElementEntry {
+    ElementEntry::from_parts(42, 1_048_576, 4096, Some(7), None)
 }
 
-fn sibling(object_key: &str, field: &str, address: BlockAddress) -> BlockIndex {
+fn sibling(object_key: &str, field: &str, address: ElementEntry) -> BlockIndex {
     BlockIndex {
         kind: crate::index_log::IndexItemKind::Page,
         routing_bucket: 7,

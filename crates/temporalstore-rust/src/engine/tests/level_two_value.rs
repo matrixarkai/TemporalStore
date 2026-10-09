@@ -37,12 +37,11 @@
 
 #![allow(clippy::all)]
 use super::*;
-use crate::block_store::BlockAddress;
 use crate::block_store::ElementEntry;
 use crate::engine::hash_field_map::HashFieldMap;
 
-fn address(slab: u64, offset: u64, length: u64, block: u64) -> BlockAddress {
-    BlockAddress::from_parts(slab, offset, length, Some(block), None)
+fn address(slab: u64, offset: u64, length: u64, block: u64) -> ElementEntry {
+    ElementEntry::from_parts(slab, offset, length, Some(block), None)
 }
 
 fn populated() -> HashFieldMap {
@@ -87,7 +86,7 @@ fn the_level_two_value_is_a_type_and_the_stored_shape_did_not_move() {
     assert_eq!(3, fields.len(), "VACUITY: the container must hold something");
 
     // THE SAME CONTENT AS THE SHAPE THE FIELD ALWAYS STORED.
-    let bare: std::collections::HashMap<String, BlockAddress> = fields
+    let bare: std::collections::HashMap<String, ElementEntry> = fields
         .iter()
         .map(|(name, addr)| (name.clone(), addr.clone()))
         .collect();
@@ -150,7 +149,7 @@ fn the_level_two_value_is_a_type_and_the_stored_shape_did_not_move() {
 /// rust-internal: reads type widths, no product behaviour
 #[test]
 fn the_level_two_value_adds_nothing_yet_and_its_end_state_is_twenty_four() {
-    let address_width = std::mem::size_of::<BlockAddress>();
+    let address_width = std::mem::size_of::<ElementEntry>();
     let value_width = std::mem::size_of::<ElementEntry>();
     let pair_width = std::mem::size_of::<(String, ElementEntry)>();
 

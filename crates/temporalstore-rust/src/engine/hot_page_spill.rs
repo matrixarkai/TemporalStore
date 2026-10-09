@@ -30,13 +30,13 @@ use std::sync::{Mutex, OnceLock};
 
 use matrixcache::{CacheEvictionRecord, MultiLayerCache};
 
-use crate::block_store::{BlockAddress, BlockStore};
+use crate::block_store::{ElementEntry, BlockStore};
 use crate::types::ShardId;
 
 use super::constants::HOT_BLOCK_SLAB_ID;
 
-fn redirects() -> &'static Mutex<HashMap<(ShardId, u64), BlockAddress>> {
-    static REDIRECTS: OnceLock<Mutex<HashMap<(ShardId, u64), BlockAddress>>> = OnceLock::new();
+fn redirects() -> &'static Mutex<HashMap<(ShardId, u64), ElementEntry>> {
+    static REDIRECTS: OnceLock<Mutex<HashMap<(ShardId, u64), ElementEntry>>> = OnceLock::new();
     REDIRECTS.get_or_init(|| Mutex::new(HashMap::new()))
 }
 
@@ -128,7 +128,7 @@ fn spill_evicted_hot_block(
 
 /// Look up the real slab address a spilled hot page was written to, if any. Keyed by the synthetic
 /// address's `(shard_id, offset)`.
-pub(super) fn lookup_spilled(shard_id: ShardId, offset: u64) -> Option<BlockAddress> {
+pub(super) fn lookup_spilled(shard_id: ShardId, offset: u64) -> Option<ElementEntry> {
     redirects()
         .lock()
         .ok()

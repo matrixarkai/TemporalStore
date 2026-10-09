@@ -435,7 +435,7 @@ fn a_container_only_element_survives_the_reconcile_when_its_page_is_still_live()
     shard.hashes.replay_install_element(
         "orphan-dead-page",
         "meta".to_string(),
-        crate::engine::BlockAddress::from_parts(9_999, 1_234_567, 64, None, None),
+        crate::engine::ElementEntry::from_parts(9_999, 1_234_567, 64, None, None),
     );
     assert!(
         shard
@@ -484,8 +484,8 @@ fn a_container_only_element_survives_the_reconcile_when_its_page_is_still_live()
 fn the_live_filter_keeps_an_unnamed_element_on_a_live_page_for_every_kind() {
     use std::collections::{BTreeMap, HashMap, HashSet};
 
-    let live_address = crate::engine::BlockAddress::from_parts(1, 4_096, 64, None, None);
-    let dead_address = crate::engine::BlockAddress::from_parts(9_999, 1_234_567, 64, None, None);
+    let live_address = crate::engine::ElementEntry::from_parts(1, 4_096, 64, None, None);
+    let dead_address = crate::engine::ElementEntry::from_parts(9_999, 1_234_567, 64, None, None);
     let live: HashSet<(u64, u64, u64)> = [crate::engine::live_page_key(&live_address)]
         .into_iter()
         .collect();
@@ -529,7 +529,7 @@ fn the_live_filter_keeps_an_unnamed_element_on_a_live_page_for_every_kind() {
 
     // SETS -- a B-tree keyed by member bytes, the kind the per-element collapse is being built on.
     {
-        let mut persisted: HashMap<String, BTreeMap<Vec<u8>, crate::engine::BlockAddress>> =
+        let mut persisted: HashMap<String, BTreeMap<Vec<u8>, crate::engine::ElementEntry>> =
             HashMap::new();
         let members = persisted.entry("obj".to_string()).or_default();
         members.insert(b"on-live-page".to_vec(), live_address.clone());
@@ -562,7 +562,7 @@ fn the_live_filter_keeps_an_unnamed_element_on_a_live_page_for_every_kind() {
     {
         let mut persisted: HashMap<
             String,
-            BTreeMap<Vec<u8>, (u64, crate::engine::BlockAddress)>,
+            BTreeMap<Vec<u8>, (u64, crate::engine::ElementEntry)>,
         > = HashMap::new();
         let members = persisted.entry("obj".to_string()).or_default();
         members.insert(b"on-live-page".to_vec(), (7, live_address.clone()));
@@ -594,7 +594,7 @@ fn the_live_filter_keeps_an_unnamed_element_on_a_live_page_for_every_kind() {
 
     // LISTS -- a B-tree keyed by an `i64` sequence rather than by bytes.
     {
-        let mut persisted: HashMap<String, BTreeMap<i64, crate::engine::BlockAddress>> =
+        let mut persisted: HashMap<String, BTreeMap<i64, crate::engine::ElementEntry>> =
             HashMap::new();
         let seqs = persisted.entry("obj".to_string()).or_default();
         seqs.insert(1, live_address.clone());

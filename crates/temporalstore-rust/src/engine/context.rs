@@ -5,7 +5,7 @@ use std::collections::HashMap;
 
 use crate::engine::constants::*;
 use crate::block_store::BlockStore;
-use crate::block_store::BlockAddress;
+use crate::block_store::ElementEntry;
 use crate::types::{
     ContextAuditRef, ContextChildRef, ContextCompressionEvent, ContextEntity,
     ContextEvent, ContextExtractedEventIndexes, ContextIndexLookup, ContextIndexRef, ContextNode,
@@ -306,7 +306,7 @@ pub(super) fn context_event_time_range<'a>(
     object_key: &str,
     start_time_ms: u64,
     end_time_ms: u64,
-) -> impl DoubleEndedIterator<Item = (u64, &'a BlockAddress)> + 'a {
+) -> impl DoubleEndedIterator<Item = (u64, &'a ElementEntry)> + 'a {
     let series = shard.context_events.get(object_key);
     let start = context_timeline_start(start_time_ms);
     let end = context_timeline_end(end_time_ms);
@@ -366,7 +366,7 @@ pub(super) fn read_context_value<T: ContextWire>(
     block_store: &BlockStore,
     shard_id: ShardId,
     timeline_key: u64,
-    address: &BlockAddress,
+    address: &ElementEntry,
     // Which page, stated by the caller: the timeline series this record sits in. The kind differs
     // per caller -- a child ref, a summary and a compression event are three kinds over three maps
     // -- and neither the address nor the timeline key names it.
@@ -388,7 +388,7 @@ pub(super) fn read_context_value<T: ContextWire>(
 pub(super) fn read_context_value_cold<T: ContextWire>(
     block_store: &BlockStore,
     timeline_key: u64,
-    address: &BlockAddress,
+    address: &ElementEntry,
 ) -> Option<T> {
     let point = read_feature_point_cold(block_store, timeline_key, address)?;
     context_from_bytes(&point.value)
@@ -399,10 +399,10 @@ pub(super) fn read_context_value_cached<T: ContextWire>(
     block_store: &BlockStore,
     shard_id: ShardId,
     timeline_key: u64,
-    address: &BlockAddress,
+    address: &ElementEntry,
     // As `read_context_value` above.
     identity: PageIdentity<'_>,
-    packed_block_cache: &mut HashMap<BlockAddress, Option<Vec<FeaturePoint>>>,
+    packed_block_cache: &mut HashMap<ElementEntry, Option<Vec<FeaturePoint>>>,
     routing_bucket: Option<u32>,
 ) -> Option<T> {
     let point = read_feature_point_cached(

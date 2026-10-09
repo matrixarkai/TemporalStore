@@ -109,7 +109,7 @@ use std::ptr::NonNull;
 use std::sync::Arc;
 
 use crate::alloc_probe::documented_glibc_chunk;
-use crate::block_store::BlockAddress;
+use crate::block_store::ElementEntry;
 use crate::engine::state::{BlockIndex, BucketNode, ObjectIndex};
 use crate::engine::storage_bucket_internals::StoredModelKind;
 
@@ -205,7 +205,7 @@ struct MirrorEntryThinNames {
     object_key: NonNull<u8>,
     model_id: StoredModelKind,
     component: Option<NonNull<u8>>,
-    address: BlockAddress,
+    address: ElementEntry,
     dirty: bool,
     deleted: bool,
     kind: crate::index_log::IndexItemKind,
@@ -217,7 +217,7 @@ struct MirrorEntryThinNames {
 struct MirrorEntryNoKey {
     model_id: StoredModelKind,
     component: Option<Arc<str>>,
-    address: BlockAddress,
+    address: ElementEntry,
     dirty: bool,
     deleted: bool,
     log_backed: bool,
@@ -1403,7 +1403,7 @@ fn an_arc_str_allocation_is_two_header_words_and_the_characters() {
 /// The premise the refutation rested on is gone, and with it the conclusion.
 #[test]
 fn an_entry_names_its_object_from_its_own_terms() {
-    use crate::block_store::BlockAddress;
+    use crate::block_store::ElementEntry;
     use crate::engine::state::BlockIndex;
     use crate::engine::storage_bucket_internals::stored_model_kind;
     use std::sync::Arc;
@@ -1414,7 +1414,7 @@ fn an_entry_names_its_object_from_its_own_terms() {
         object_key: Arc::from("named-key"),
         model_id: stored_model_kind("string"),
         component: None,
-        address: BlockAddress::from_parts(1, 2, 3, Some(4), None),
+        address: ElementEntry::from_parts(1, 2, 3, Some(4), None),
         dirty: false,
         deleted: false,
     };
@@ -1502,19 +1502,19 @@ fn the_object_ordinal_and_the_packing_do_not_follow_and_here_is_what_they_would_
     // `block_store::address_size_tests::every_byte_of_a_block_address_is_accounted_for` states the
     // same two facts as arithmetic over its measured payload, and the two must agree.
     assert_eq!(
-        size_of::<BlockAddress>() + 8,
+        size_of::<ElementEntry>() + 8,
         size_of::<MirrorAddressSixteenBitObject>(),
         "a sixteen-bit object ordinal is supposed to cost one whole word now that the address holds \
          no object id to replace: the address is {} B and the mirror {} B",
-        size_of::<BlockAddress>(),
+        size_of::<ElementEntry>(),
         size_of::<MirrorAddressSixteenBitObject>()
     );
     assert_eq!(
         size_of::<MirrorAddressEightBitObject>(),
-        size_of::<BlockAddress>(),
+        size_of::<ElementEntry>(),
         "an eight-bit ordinal is supposed to fit inside the address's existing {} B with no slack \
          left; the mirror is {} B",
-        size_of::<BlockAddress>(),
+        size_of::<ElementEntry>(),
         size_of::<MirrorAddressEightBitObject>()
     );
 

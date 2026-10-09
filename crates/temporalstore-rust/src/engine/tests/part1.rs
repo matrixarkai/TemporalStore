@@ -1461,17 +1461,17 @@ fn live_block_slab_ids_scan_all_index_backed_data_models() {
     let mut shard = ShardState::default();
     shard.strings.insert(
         "string".into(),
-        BlockAddress::from_parts(7, 0, 1, None, None),
+        ElementEntry::from_parts(7, 0, 1, None, None),
     );
     shard.hashes.insert_element_for_test(
         "hash",
         "field".to_string(),
-        BlockAddress::from_parts(8, 0, 1, None, None),
+        ElementEntry::from_parts(8, 0, 1, None, None),
     );
     shard.sets.insert_element_for_test(
         "set",
         b"member".to_vec(),
-        BlockAddress::from_parts(9, 0, 1, None, None),
+        ElementEntry::from_parts(9, 0, 1, None, None),
     );
     shard
         .features
@@ -1479,7 +1479,7 @@ fn live_block_slab_ids_scan_all_index_backed_data_models() {
         .or_default()
         .insert(
             10,
-            BlockAddress::from_parts(10, 0, 1, None, None),
+            ElementEntry::from_parts(10, 0, 1, None, None),
         );
     shard
         .features
@@ -1487,7 +1487,7 @@ fn live_block_slab_ids_scan_all_index_backed_data_models() {
         .or_default()
         .insert(
             11,
-            BlockAddress::from_parts(11, 0, 1, None, None),
+            ElementEntry::from_parts(11, 0, 1, None, None),
         );
     shard
         .control_state
@@ -3563,7 +3563,7 @@ fn served_index_container_round_trips_and_still_reads_plain_json() {
     let mut shard = ShardState::default();
     shard.strings.insert(
         "container-probe".into(),
-        BlockAddress::from_parts(7, 11, 13, None, None),
+        ElementEntry::from_parts(7, 11, 13, None, None),
     );
 
     // Raw JSON, which is what an older binary wrote. Nothing in production produces this any
@@ -3602,13 +3602,13 @@ fn binary_index_payload_round_trips_and_refuses_a_shape_it_cannot_read() {
     for i in 0..64u64 {
         shard.strings.insert(
             format!("object-{i}").into_boxed_str(),
-            BlockAddress::from_parts(i, i * 7, i + 1, Some(i), Some(i * 3)),
+            ElementEntry::from_parts(i, i * 7, i + 1, Some(i), Some(i * 3)),
         );
     }
     shard.hashes.insert_element_for_test(
         "hash-object",
         "component".to_string(),
-        BlockAddress::from_parts(9, 1, 2, None, None),
+        ElementEntry::from_parts(9, 1, 2, None, None),
     );
     shard.applied_wal_sequence = Some(4242);
 
@@ -3820,7 +3820,7 @@ fn what_reading_one_summary_actually_costs() {
         // reason given at the first probe in this test: the derivation allocates nothing, so it
         // cannot move an allocation count, and hoisting it keeps the numbers comparable with the
         // runs taken before the bucket became an argument.
-        let addresses_with_buckets: Vec<(u32, String, crate::block_store::BlockAddress)> = {
+        let addresses_with_buckets: Vec<(u32, String, crate::block_store::ElementEntry)> = {
             let shards = engine.shards.read().expect("engine lock poisoned");
             let shard = shards.get(&1).expect("loaded shard");
             let (start, end) = shard.routing_range();
@@ -3841,7 +3841,7 @@ fn what_reading_one_summary_actually_costs() {
                 })
                 .collect()
         };
-        let addresses: Vec<crate::block_store::BlockAddress> = addresses_with_buckets
+        let addresses: Vec<crate::block_store::ElementEntry> = addresses_with_buckets
             .iter()
             .map(|(_, _, address)| address.clone())
             .collect();
@@ -5010,7 +5010,7 @@ fn how_many_map_entries_is_one_record() {
 
     // The floor: the same key and the same address, in a map of their own.
     let probe = crate::alloc_probe::Probe::start();
-    let mut bare: HashMap<String, crate::block_store::BlockAddress> =
+    let mut bare: HashMap<String, crate::block_store::ElementEntry> =
         HashMap::with_capacity(RECORDS as usize);
     for index in 0..RECORDS {
         bare.insert(format!("floor-{index:08}"), address.clone());
@@ -5023,7 +5023,7 @@ fn how_many_map_entries_is_one_record() {
     const RECORD_RESIDENT: f64 = 1040.0;   // measured by what_a_records_kind_costs_resident
 
     println!();
-    println!("  one HashMap<String, BlockAddress> entry   {per_entry:>8.0} bytes");
+    println!("  one HashMap<String, ElementEntry> entry   {per_entry:>8.0} bytes");
     println!("  a record resident in the engine           {RECORD_RESIDENT:>8.0} bytes");
     println!("  ratio                                     {:>8.1}x",
              RECORD_RESIDENT / per_entry);
@@ -5618,7 +5618,7 @@ fn where_a_block_read_miss_allocates() {
         });
         assert!(response.status.ok, "write {index}: {:?}", response.status);
     }
-    let addresses: Vec<(Option<u32>, String, crate::block_store::BlockAddress)> = {
+    let addresses: Vec<(Option<u32>, String, crate::block_store::ElementEntry)> = {
         let shards = engine.shards.read().expect("engine lock poisoned");
         let shard = shards.get(&1).expect("loaded shard");
         let (start, end) = shard.routing_range();
@@ -5781,7 +5781,7 @@ fn what_a_block_read_costs_hit_against_miss() {
         dir.path().join("indexes"),
     );
     small.load_shard(1);
-    let addresses: Vec<(Option<u32>, String, crate::block_store::BlockAddress)> = {
+    let addresses: Vec<(Option<u32>, String, crate::block_store::ElementEntry)> = {
         let shards = small.shards.read().expect("engine lock poisoned");
         let shard = shards.get(&1).expect("loaded shard");
         let (start, end) = shard.routing_range();
@@ -7350,7 +7350,7 @@ fn what_resizing_a_shard_map_costs() {
 
     let build = |capacity: Option<usize>| -> (u64, u64) {
         let probe = crate::alloc_probe::Probe::start();
-        let mut map: HashMap<String, crate::block_store::BlockAddress> = match capacity {
+        let mut map: HashMap<String, crate::block_store::ElementEntry> = match capacity {
             Some(n) => HashMap::with_capacity(n),
             None => HashMap::new(),
         };
@@ -7804,8 +7804,8 @@ fn what_a_bucket_costs() {
         ("  BlockIndexMap", std::mem::size_of::<state::BlockIndexMap>()),
         ("    BlockIndex", std::mem::size_of::<state::BlockIndex>()),
         (
-            "      BlockAddress",
-            std::mem::size_of::<crate::block_store::BlockAddress>(),
+            "      ElementEntry",
+            std::mem::size_of::<crate::block_store::ElementEntry>(),
         ),
     ] {
         eprintln!("  size_of::<{name}>() = {bytes}");

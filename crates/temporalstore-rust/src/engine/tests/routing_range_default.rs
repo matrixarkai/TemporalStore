@@ -1962,7 +1962,7 @@ fn what_the_narrower_address_is_worth_a_record_at_both_ranges_and_in_both_column
     }
 
     const OLD_WIDTH: usize = 32;
-    let width = std::mem::size_of::<BlockAddress>();
+    let width = std::mem::size_of::<ElementEntry>();
     assert_eq!(
         24, width,
         "this measurement prices the step from {OLD_WIDTH} to 24; the address is {width} bytes"

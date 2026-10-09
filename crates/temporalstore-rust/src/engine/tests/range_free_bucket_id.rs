@@ -119,7 +119,7 @@
 
 use super::*;
 use crate::engine::hashing::{block_routing_bucket, routing_bucket_count, stable_object_hash};
-use crate::block_store::BlockAddress;
+use crate::block_store::ElementEntry;
 use crate::engine::state::{BlockLookupRef, BucketNode};
 use std::collections::BTreeMap;
 
@@ -522,8 +522,8 @@ fn removing_the_routing_bucket_recovers_no_bytes_alone_and_eight_in_combination(
     // --- passes straight over it and `cargo check` cannot see it either. It failed on the first
     // --- run of the suite, which is the only thing that could have found it.
     const ADDRESS_PAYLOAD: usize = 8 + 4 + 2 + 1;
-    let address_width = size_of::<BlockAddress>();
-    let address_align = align_of::<BlockAddress>();
+    let address_width = size_of::<ElementEntry>();
+    let address_align = align_of::<ElementEntry>();
     assert_eq!(
         15, ADDRESS_PAYLOAD,
         "the derived address payload is {ADDRESS_PAYLOAD}, not the 15 bytes \
@@ -561,7 +561,7 @@ fn removing_the_routing_bucket_recovers_no_bytes_alone_and_eight_in_combination(
     let without_narrow_id = ADDRESS_PAYLOAD_BEFORE - 2;
     let without_both = ADDRESS_PAYLOAD_BEFORE - size_of::<u32>() - 2;
     println!(
-        "  BlockAddress  {address_width} B now, {WIDTH_BEFORE} B before (payload \
+        "  ElementEntry  {address_width} B now, {WIDTH_BEFORE} B before (payload \
          {ADDRESS_PAYLOAD_BEFORE} B)"
     );
     println!(
