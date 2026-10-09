@@ -3834,7 +3834,12 @@ pub(super) struct ObjectDeletionFiled(());
 /// door and that door takes no element type. `container_page_ordinal::the_ordinal_names_a_position_
 /// and_a_delete_frees_it` is the arm that reads the retained live entry.
 ///
-/// ## AND EIGHTEEN GUARDS STILL ASSERT THE PRE-COLLAPSE STATE
+/// ## AND SEVENTEEN GUARDS STILL ASSERT THE PRE-COLLAPSE STATE
+///
+/// MEASURED, as 19 red over the whole affected surface -- 149 passed, 19 failed, 25 ignored, 2,664
+/// filtered out of 2,857 -- of which TWO are inherited (named at the end) and seventeen are this
+/// change's restatement work. The count is the measurement's and not an estimate: a first draft of
+/// this paragraph said eighteen by counting one inherited arm twice.
 ///
 /// Listed so they are restatement work someone can pick up rather than a red count to be rediscovered.
 /// Each was DRIVEN and its message read; none is a demonstrated loss of served data.
