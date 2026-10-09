@@ -165,7 +165,14 @@ fn budget() -> Vec<Budgeted> {
             size: size_of::<BucketNode>(),
             align: align_of::<BucketNode>(),
             // routing_bucket u32, layout, the packed flag byte, ttl_ms BucketTtl, THREE u64
-            // sequences, the live object index, the tombstone index, one BlockIndexMap
+            // sequences, the live object index, the tombstone index, one BlockIndexMap, and the
+            // ELEVENTH FIELD -- the tombstone element rows, one word.
+            //
+            // THE ELEVENTH WAS MISSING HERE WHILE THE WIDTH PIN BESIDE IT WAS CORRECT, which is the
+            // shape this crate has a recorded case of: this row's own `slack` column printed 10 for
+            // a structure whose real slack is 2, and it PASSED, because the arm asserts the WIDTH
+            // and prints the field sum. A field set that is short by a word and a slack that is
+            // long by a word add up to the same total.
             fields: size_of::<u32>()
                 + size_of::<BucketLayoutState>()
                 + size_of::<BucketFlags>()
@@ -173,7 +180,8 @@ fn budget() -> Vec<Budgeted> {
                 + 3 * size_of::<u64>()
                 + size_of::<ObjectIndex>()
                 + size_of::<DeletedObjectIndex>()
-                + size_of::<BlockIndexMap>(),
+                + size_of::<BlockIndexMap>()
+                + size_of::<TombstoneElements>(),
             per_item: true,
         },
         Budgeted {
