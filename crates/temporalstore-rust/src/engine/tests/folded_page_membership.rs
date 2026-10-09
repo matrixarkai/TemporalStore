@@ -31,7 +31,11 @@
 //!
 //!   1. the PAGES name the removed member as REMOVED -- not merely absent from a page, which is a
 //!      different and much weaker fact;
-//!   2. the membership DERIVED from the pages equals what the live index names, element for element;
+//!   2. the membership DERIVED from the pages equals what the RESIDENT MAP holds, element for
+//!      element. That side was the page index's element names until the width step took the
+//!      element-name field off the entry; `shard.sets` is the durable authority and the served
+//!      answer now, and the pair is stronger for it -- the entry name and the page payload were
+//!      both written by one append, while the map and the pages are maintained by different paths;
 //!   3. and the derivation is COMPLETE -- no page failed to read, none failed to walk, none was
 //!      unframed. An incomplete derivation that happened to agree would agree by luck, and #2028's
 //!      own fix to `insert_timestamped_secondary_view` is the recorded case of a read failure
@@ -86,9 +90,11 @@ fn write(engine: &TemporalEngine, command: Command) {
 /// rust-internal: drives the engine's own command surface
 #[test]
 fn a_folded_pages_membership_now_states_the_member_the_live_index_no_longer_names() {
-    // THE FIXTURE COUNTS MEMBERS THE LIVE INDEX NAMES, which is zero once entries name pages
-    // instead of elements -- its floor says the removal "did not do what this fixture assumes".
-    // The gated equivalent is `removal_the_index_can_find`.
+    // THE FIXTURE'S SERVED SIDE IS THE RESIDENT MAP, NOT THE PAGE INDEX. This comment predicted
+    // the red rather than fixing it: "THE FIXTURE COUNTS MEMBERS THE LIVE INDEX NAMES, which is
+    // zero once entries name pages instead of elements -- its floor says the removal did not do
+    // what this fixture assumes." It is zero, and the fix is to read the side where membership
+    // actually lives. See the re-attribution at SIDE 1 below.
     let dir = tempfile::tempdir().expect("tempdir");
     let engine = engine_on(dir.path());
     load_on(&engine);
@@ -148,13 +154,26 @@ fn a_folded_pages_membership_now_states_the_member_the_live_index_no_longer_name
     let shards = engine.shards.read().expect("engine lock poisoned");
     let shard = shards.get(&1).expect("shard is loaded");
 
-    // SIDE 1: what the live page INDEX names for this object. Unchanged from the refutation: this is
-    // the reader every serving path uses, and the point of the whole change is that it does not move.
-    let named: BTreeSet<Vec<u8>> =
-        crate::engine::bucket_store::bucket_index_component_block_addresses(shard, "set", "folded")
-            .iter()
-            .filter_map(|(component, _)| component.as_deref().and_then(|c| hex::decode(c).ok()))
-            .collect();
+    // SIDE 1: what the engine SERVES as this object's membership -- the resident map.
+    //
+    // RE-ATTRIBUTED, AND THAT IS THE ONE EDIT THE WIDTH STEP FORCED IN THIS ARM. This side read
+    // `bucket_index_component_block_addresses` and recovered each member from the page entry's own
+    // element name. `BlockIndex` has no element-name field now, so that walk answers for NO
+    // members, and this arm's floor is what said so: "the live index names 0 of 12 members after
+    // one removal, so the removal did not do what this fixture assumes". The removal was fine; the
+    // SOURCE moved.
+    //
+    // `shard.sets` is where it moved to. It is durable (`#[serde(default)]`) and it is what
+    // `SetMembers` and `SetLen` answer from, so it is the served membership in the same sense the
+    // index walk used to be. THE PAIR IS STRONGER THAN IT WAS, not weaker: the entry's element name
+    // and the page's payload were both written by the same append, so agreeing told you little
+    // about either, whereas the resident map is maintained by the command path and the pages by the
+    // append path. Two artefacts that can disagree.
+    let served: BTreeSet<Vec<u8>> = shard
+        .sets
+        .get("folded")
+        .map(|members| members.keys().cloned().collect())
+        .unwrap_or_default();
 
     // SIDE 2: every page this object resolves to, TOMBSTONE ENTRIES INCLUDED.
     //
@@ -199,15 +218,15 @@ fn a_folded_pages_membership_now_states_the_member_the_live_index_no_longer_name
         derived.pages_read, derived.live_only_pages
     );
     println!(
-        "  the live index names {} member(s); the pages derive {} live and {} removed",
-        named.len(),
+        "  the resident map holds {} member(s); the pages derive {} live and {} removed",
+        served.len(),
         derived.live.len(),
         derived.removed.len()
     );
     println!(
-        "  the removed member: named by the index = {}, derived live from the pages = {}, \
+        "  the removed member: held by the resident map = {}, derived live from the pages = {}, \
          NAMED REMOVED by the pages = {}",
-        named.contains(&victim),
+        served.contains(&victim),
         derived.live.contains_key(&victim_component),
         derived.removed.contains(&victim_component)
     );
@@ -223,14 +242,18 @@ fn a_folded_pages_membership_now_states_the_member_the_live_index_no_longer_name
     );
     assert_eq!(
         MEMBERS - 1,
-        named.len(),
-        "the live index names {} of {MEMBERS} members after one removal, so the removal did not do \
-         what this fixture assumes",
-        named.len()
+        served.len(),
+        "the resident map holds {} of {MEMBERS} members after one removal, so the removal did not \
+         do what this fixture assumes",
+        served.len()
     );
+    // NOT VACUOUS, AND IT WAS ON ITS WAY TO BEING SO. Against the index walk this read
+    // `!named.contains(&victim)` over a set that had become EMPTY for every kind, so it could only
+    // ever pass. Against the resident map the set holds eleven real members and this asks a
+    // question that can be answered either way.
     assert!(
-        !named.contains(&victim),
-        "the live index still names the removed member"
+        !served.contains(&victim),
+        "the resident map still holds the removed member"
     );
 
     // COMPLETE, AND THEREFORE WORTH COMPARING. Asserted before the agreement rather than after: an
@@ -238,7 +261,7 @@ fn a_folded_pages_membership_now_states_the_member_the_live_index_no_longer_name
     // of four ways it fell short rather than only that it did.
     assert!(
         derived.is_complete(),
-        "the derivation is incomplete ({} failure(s)), so its agreement with the index below would \
+        "the derivation is incomplete ({} failure(s)), so its agreement with the map below would \
          be luck: {} read, {} undecodable, {} unframed, {} unrenderable",
         derived.failures(),
         derived.read_failures,
@@ -271,8 +294,8 @@ fn a_folded_pages_membership_now_states_the_member_the_live_index_no_longer_name
         .filter_map(|component| hex::decode(component).ok())
         .collect();
     assert_eq!(
-        named, derived_members,
-        "the membership derived from the pages is not the membership the live index names"
+        served, derived_members,
+        "the membership derived from the pages is not the membership the resident map holds"
     );
 
     // AND THE DERIVED VALUES ARE THE MEMBERS THEMSELVES, which for a set is what #2017 measured the

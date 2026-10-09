@@ -60,39 +60,101 @@ fn served_hash_fields(engine: &TemporalEngine, key: &str) -> usize {
 }
 
 /// The two sources, read the way each is read in production.
+///
+/// THE SECOND SOURCE IS RE-ATTRIBUTED, AND THAT IS THIS MODULE'S WHOLE EDIT. It was
+/// `bucket_index_component_block_addresses`, which recovered each field's name from the page
+/// entry's element-name field. `BlockIndex` has no such field now, so that walk answers for NO
+/// fields and both arms failed on their own vacuity floors -- "the page index names 0 field(s) ...
+/// so the comparison below would be vacuous". The floors were right to fire: with one side empty
+/// the set equality would have passed on nothing.
+///
+/// THE NAMES DID NOT LEAVE STORAGE, THEY MOVED. A container page SPELLS its elements in its
+/// payload -- that is what makes several of them foldable into one page at all -- so the pages
+/// themselves are the second source, derived with the engine's own
+/// `container_membership::derive_membership`, which is what `folded_page_membership` reads.
+///
+/// AND THE PAIR IS STRONGER THAN THE ONE IT REPLACES, which is worth saying because a
+/// re-attribution usually is not. The entry's element name and the page's payload were written by
+/// the SAME append, so their agreement said little about either. The durable map is maintained by
+/// the command path and the pages by the append path, so these two can genuinely disagree -- which
+/// is the property that makes this module's claim, that the map is complete, worth asserting at
+/// all. The module header's "prove the map is complete FIRST, because the removal is what makes
+/// the map load-bearing" is now the past tense: the removal has landed and the map is load-bearing.
+///
+/// COMPLETENESS IS ENFORCED HERE RATHER THAN RETURNED, so neither arm can compare a derivation that
+/// fell short. An incomplete derivation that happened to agree would agree by luck.
 fn both_sources(
     engine: &TemporalEngine,
     key: &str,
 ) -> (std::collections::BTreeSet<String>, std::collections::BTreeSet<String>) {
-    let shards = engine.shards.write().expect("engine lock poisoned");
-    let shard = shards.get(&1).expect("shard is loaded");
-    let durable: std::collections::BTreeSet<String> = shard
-        .hashes
-        .get(key)
-        .map(|fields| fields.keys().map(|name| name.to_string()).collect())
-        .unwrap_or_default();
-    let derived: std::collections::BTreeSet<String> =
-        crate::engine::bucket_store::bucket_index_component_block_addresses(shard, "hash", key)
-            .into_iter()
-            .filter_map(|(component, _address)| component.map(|name| name.to_string()))
-            .collect();
-    (durable, derived)
+    let (durable, addresses) = {
+        let shards = engine.shards.write().expect("engine lock poisoned");
+        let shard = shards.get(&1).expect("shard is loaded");
+        let durable: std::collections::BTreeSet<String> = shard
+            .hashes
+            .get(key)
+            .map(|fields| fields.keys().map(|name| name.to_string()).collect())
+            .unwrap_or_default();
+        // TOMBSTONE ENTRIES INCLUDED, no `page.deleted` skip. A tombstone is how a page STATES a
+        // removal, so a walk that filtered them would read the page set as it stood before the
+        // removal and would derive the removed field as live.
+        let mut addresses: Vec<crate::block_store::ElementEntry> = Vec::new();
+        for bucket in shard.bucket_index.bucket_map.values() {
+            for page in bucket.block_index.values() {
+                if page.model_id.as_str() == "hash" && &*page.object_key == key {
+                    addresses.push(page.address.clone());
+                }
+            }
+        }
+        (durable, addresses)
+    };
+    assert!(
+        !addresses.is_empty(),
+        "DENOMINATOR: no page entries at all for {key}, so the derived side below would be empty \
+         for a reason that has nothing to do with what the fold restored"
+    );
+    let derived = crate::engine::container_membership::derive_membership("hash", addresses, |address| {
+        engine.block_store.read(address).ok()
+    });
+    assert!(
+        derived.is_complete(),
+        "the derivation from the pages is incomplete ({} failure(s)), so its agreement with the \
+         durable map would be luck: {} read, {} undecodable, {} unframed, {} unrenderable",
+        derived.failures(),
+        derived.read_failures,
+        derived.undecodable,
+        derived.unframed,
+        derived.unrenderable_items
+    );
+    let derived_fields: std::collections::BTreeSet<String> = derived.live.keys().cloned().collect();
+    (durable, derived_fields)
 }
 
 /// THE QUESTION, AND WHY IT IS NOT "IS THE FIELD READABLE".
 ///
-/// `HashGetAll` resolves through `bucket_index_component_block_addresses`, which is keyed BY THE
-/// COMPONENT -- it reads each field's name off the page entry. The fold installs page entries. So a
-/// folded hash field is readable today whether the durable map received it or not, and a test
-/// asserting "readable through the served path" would go green while proving nothing about the map.
-/// That is the assertion this module deliberately does NOT make.
+/// RESTATED, BECAUSE THE READER IT NAMED HAS MOVED. This read "`HashGetAll` resolves through
+/// `bucket_index_component_block_addresses`, which is keyed BY THE COMPONENT -- it reads each
+/// field's name off the page entry. The fold installs page entries. So a folded hash field is
+/// readable today whether the durable map received it or not, and a test asserting 'readable
+/// through the served path' would go green while proving nothing about the map."
 ///
-/// THE DEPENDENCY ON THE MAP DOES NOT EXIST YET -- IT IS CREATED BY REMOVING THE COMPONENT. Today
-/// the entry carries the field name and the map is a second copy. Take `component` off the entry --
-/// 16 of the 56 bytes a resident entry weighs -- and `HashGetAll` has nowhere left to read a name
-/// FROM except `shard.hashes`. So the order is not "reroute the readers, then remove the field". It
-/// is: prove the map is complete FIRST, because the removal is what makes the map load-bearing.
-/// This module is that proof, or its refutation.
+/// `HashGetAll`'s index half answers from `shard.hashes` now -- it was one of the four consumers
+/// that had to move before the element name could come off the entry -- so "readable through the
+/// served path" and "in the durable map" have become the SAME statement. That is why this module
+/// still does not make that assertion: it would now be circular rather than merely weak, which is
+/// a different reason for the same restraint and worth having written down.
+///
+/// THE DEPENDENCY ON THE MAP EXISTS NOW -- IT WAS CREATED BY REMOVING THE ELEMENT NAME. This read
+/// "DOES NOT EXIST YET ... Today the entry carries the field name and the map is a second copy.
+/// Take `component` off the entry -- 16 of the 56 bytes a resident entry weighs -- and
+/// `HashGetAll` has nowhere left to read a name FROM except `shard.hashes`. So the order is not
+/// 'reroute the readers, then remove the field'. It is: prove the map is complete FIRST, because
+/// the removal is what makes the map load-bearing. This module is that proof, or its refutation."
+///
+/// The entry went from 56 bytes to 40, `HashGetAll` answers from `shard.hashes`, and the map IS
+/// load-bearing. So this module is no longer the proof that clears a step -- it is the standing
+/// guard on a map the engine now depends on, and its second source had to move off the entry with
+/// everything else. See `both_sources` for where it moved and why the pair is stronger for it.
 ///
 /// WHAT IS ASSERTED, THEREFORE: that the two sources name THE SAME SET of fields after a fold.
 /// Set equality in both directions and not a count, because a count cannot tell a missing field
@@ -101,7 +163,7 @@ fn both_sources(
 ///
 /// rust-internal: reads the engine's own resident maps after a reload, no external surface
 #[test]
-fn the_fold_leaves_the_durable_hash_map_naming_exactly_the_fields_the_page_index_names() {
+fn the_fold_leaves_the_durable_hash_map_naming_exactly_the_fields_the_pages_derive() {
     const KEY: &str = "fold-hash";
     const FIELDS: usize = 6;
 
@@ -140,14 +202,14 @@ fn the_fold_leaves_the_durable_hash_map_naming_exactly_the_fields_the_page_index
     let (durable, derived) = both_sources(&engine, KEY);
 
     println!("[fold-hash] durable map names {} field(s): {durable:?}", durable.len());
-    println!("[fold-hash] page index names {} field(s): {derived:?}", derived.len());
+    println!("[fold-hash] the pages derive {} live field(s): {derived:?}", derived.len());
 
     // THE DENOMINATOR AGAIN, AFTER THE RELOAD, on the side that cannot be empty if the fold ran at
     // all. Without this the set comparison passes on two empty sets.
     assert_eq!(
         FIELDS,
         derived.len(),
-        "the page index names {} field(s) after the fold rather than {FIELDS}, so the fold did not \
+        "the pages derive {} live field(s) after the fold rather than {FIELDS}, so the fold did not \
          install what this fixture is about and the comparison below would be vacuous",
         derived.len(),
     );
@@ -156,9 +218,10 @@ fn the_fold_leaves_the_durable_hash_map_naming_exactly_the_fields_the_page_index
     let missing: Vec<&String> = derived.difference(&durable).collect();
     assert!(
         missing.is_empty(),
-        "{} field(s) the page index names are ABSENT from the durable map: {missing:?}. Taking \
-         `component` off the entry would lose exactly these -- the page would carry no name and the \
-         map would not hold one either.",
+        "{} field(s) the pages derive are ABSENT from the durable map: {missing:?}. With the \
+         element name off the entry this is the shape that loses data -- the map is the only place \
+         a reader can get a field name from, and a field the pages hold and the map does not is one \
+         `HashGetAll` cannot name.",
         missing.len(),
     );
     let extra: Vec<&String> = durable.difference(&derived).collect();
@@ -175,16 +238,18 @@ fn the_fold_leaves_the_durable_hash_map_naming_exactly_the_fields_the_page_index
     );
 
     // ---------------------------------------------------------------------------------------
-    // AND THE COMPONENT'S SECOND JOB, WHICH THE SET EQUALITY ABOVE DOES NOT TOUCH.
+    // AND WHAT THE HANDLE DISCRIMINATES NOW, WHICH THE SET EQUALITY ABOVE DOES NOT TOUCH.
     //
-    // `block_index_handle` hashes the component along with `model_id`, `object_key` and five
-    // address fields, and `index_log.rs` calls it "the only discriminator" between two elements of
-    // ONE folded page -- which share model id, object key AND address -- so dropping it would
-    // collapse them onto one slot.
+    // RESTATED: this read "`block_index_handle` hashes the component along with `model_id`,
+    // `object_key` and five address fields, and `index_log.rs` calls it 'the only discriminator'
+    // between two elements of ONE folded page ... so dropping it would collapse them onto one
+    // slot." It was dropped. The handle is the model spelling, the object key and the address, and
+    // the collapse that paragraph warned about is the shape the engine now files on purpose -- one
+    // entry a page.
     //
-    // But the handle hashes the ADDRESS too, so that collapse needs the entries to share one.
-    // Whether these six do is a fact about what the fold produced, not something to argue from the
-    // doc, so it is read here: the map is KEYED by the handle, so its keys are the handles.
+    // SO THE QUESTION HERE IS NO LONGER "WOULD REMOVING IT COLLAPSE THESE". It is what the write
+    // and fold paths leave behind for a hash of six fields, read off the index rather than argued
+    // from the doc: the map is KEYED by the handle, so its keys are the handles.
     // ---------------------------------------------------------------------------------------
     let pages: Vec<(u64, String, String)> = {
         let shards = engine.shards.write().expect("engine lock poisoned");
@@ -244,17 +309,17 @@ fn the_fold_leaves_the_durable_hash_map_naming_exactly_the_fields_the_page_index
         // for a COMPACTED batched page -- which is the case the campaign already recorded
         // collapsing, forty hash fields on one page arriving as one entry with thirty-nine lost.
         println!(
-            "[fold-hash] VERDICT: each field sits at its OWN address, so the address alone \
-             discriminates these six and the component is not load-bearing as a map key HERE. \
-             The write and fold paths give every element its own page; elements share a page only \
-             after COMPACTION batches them, so removing the component is safe for this route and \
-             unsafe for a compacted batched page. The blocker is batching, not hash reads."
+            "[fold-hash] MEASURED: each field sits at its OWN address, so these six entries are \
+             six pages and the index files one entry for each. That is what the write and fold \
+             paths produce -- every element gets its own page, and pages are shared only after \
+             COMPACTION batches them, where one entry a page is now the intended shape rather \
+             than a collapse to guard against."
         );
     } else {
         println!(
-            "[fold-hash] VERDICT: {} field(s) share {} address(es), so the component IS the only \
-             discriminator for them and removing it would collapse them onto one slot. This is the \
-             counter-example, in a fixture rather than in an argument.",
+            "[fold-hash] MEASURED: {} field(s) share {} address(es). These entries have no \
+             element name to tell them apart, so entries converge on pages here -- which is the \
+             intended shape and is what `container_pages_are_batched` measures through a round.",
             pages.len(),
             addresses.len()
         );
@@ -326,19 +391,19 @@ fn a_field_whose_page_the_fold_removed_is_in_neither_source() {
     assert_eq!(
         2,
         derived.len(),
-        "the page index names {} field(s) rather than the 2 that survived, so this fixture is not \
+        "the pages derive {} live field(s) rather than the 2 that survived, so this fixture is not \
          exercising a removal",
         derived.len(),
     );
     assert!(
         !derived.contains("field-1"),
-        "field-1's page is still in the index, so the removal did not happen and the gate is untested",
+        "field-1's page still derives as live, so the removal did not happen and the gate is untested",
     );
     assert!(
         !durable.contains("field-1"),
-        "field-1 is in the durable map and NOT in the page index: the merge restored an element \
-         whose page the fold removed. That is the resurrection the `live` gate exists to prevent, \
-         and it is the defect the other test's `extra` assertion would report.",
+        "field-1 is in the durable map and is NOT derived from any page: the merge restored an \
+         element whose page the fold removed. That is the resurrection the `live` gate exists to \
+         prevent, and it is the defect the other test's `extra` assertion would report.",
     );
     assert_eq!(
         derived, durable,
