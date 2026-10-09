@@ -203,6 +203,12 @@ fn the_recorded_map_exposes_no_way_to_mutate_any_kind_without_a_record() {
         "values",
         "iter",
         "entries",
+        // A READ, AND IT CANNOT MUTATE A MAP. `page_an_element_vacates` takes `&self` and returns a
+        // CLONE of an address the map already holds -- the page an element is moving off, which the
+        // filer needs because an index entry no longer names its element. There is no `&mut` on it
+        // and nothing it returns can be written through, so it is on the same footing as the reads
+        // above rather than on the exception list below.
+        "page_an_element_vacates",
         // The five shared exceptions.
         "from_decoded",
         "reconcile_from_durable",
@@ -217,6 +223,12 @@ fn the_recorded_map_exposes_no_way_to_mutate_any_kind_without_a_record() {
         "ElementValuesMut",
         "iter_mut",
         "IterableMutElementMap",
+        // READ-ONLY BY DECLARATION, both of its methods. `AddressedElementMap` is what lets the
+        // generic emitter ask a concrete level-two container which address it holds for one element
+        // and whether any OTHER element sits on a given page. Both take `&self`; neither can insert,
+        // remove or retain, so a kind declaring it gains no way to change what its map holds. It is
+        // the fourth of these small traits and the only one that is purely a read.
+        "AddressedElementMap",
         // NOTE on what this list does and does not contain: the matcher collects items carrying an
         // explicit `pub(super)`, so a TRAIT METHOD declaration -- which has no visibility modifier
         // of its own -- is not collected. `RemovableElementMap::remove_element`,
