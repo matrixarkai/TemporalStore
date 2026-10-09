@@ -295,9 +295,12 @@ fn resident_bytes_per_object(occupancy: usize, mean_name_bytes: usize) -> (usize
     assert_eq!(std::mem::size_of::<ObjectBlockRefs>(), 40);
     assert_eq!(std::mem::size_of::<BlockLookupRef>(), 16);
     assert_eq!(std::mem::size_of::<BlockRefs>(), 24);
+    // 40 since the entry stopped naming its element: a fat optional pointer left the eight-aligned
+    // group, which is two whole words. The arithmetic below MULTIPLIES this by the occupancy, so a
+    // stale width here scales the whole column rather than shifting it.
     assert_eq!(
         std::mem::size_of::<crate::engine::state::BlockIndex>(),
-        56,
+        40,
         "the entry width this arithmetic multiplies"
     );
 

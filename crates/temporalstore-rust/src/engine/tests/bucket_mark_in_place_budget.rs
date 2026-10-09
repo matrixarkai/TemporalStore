@@ -111,19 +111,20 @@ fn the_break_even_compaction_cap_is_under_one_entry_per_bucket() {
     // The control. These are the widths this module's whole argument rests on.
     assert_eq!(node, 96, "the node moved; every figure in this module's header is stale");
     assert_eq!(saving, 8, "the tombstone field is no longer 8 bytes; re-price the saving");
-    // 56, NOT 64: the object id left the address the entry holds inline, so the entry lost a
-    // whole word and the `(u64, BlockIndex)` stride printed above went 72 -> 64 with it. The
-    // module's argument is a RATIO -- `saving` against `stride` -- so it survives the move
-    // untouched, and that is worth saying rather than leaving the reader to check: 8 against 64 is
-    // the same refutation 8 against 72 was.
+    // 40, NOT 56: the entry stopped naming its element, so it lost a fat optional pointer -- two
+    // whole words out of the eight-aligned group -- and the `(u64, BlockIndex)` stride printed
+    // above went 64 -> 48 with it. The module's argument is a RATIO, `saving` against `stride`, so
+    // it survives the move untouched, and that is worth saying rather than leaving the reader to
+    // check: 8 against 48 is the same refutation 8 against 64 and 8 against 72 both were. THREE
+    // widths now and one ratio, which is the standing argument for pricing a ratio.
     //
     // THIS ASSERTION IS WHY THE WIDTH SWEEP WAS NOT ENOUGH. It names no literal beside
     // `size_of::<BlockAddress>()`, so a scan for a stale address width could not see it, and
     // `cargo check` cannot see an `assert_eq!` in a test body. It failed on the first run of the
     // suite, which is the only thing that could have found it.
-    assert_eq!(entry, 56, "the page entry moved; re-price the retained-entry cost");
+    assert_eq!(entry, 40, "the page entry moved; re-price the retained-entry cost");
     assert_eq!(
-        stride, 64,
+        stride, 48,
         "the retained-entry stride is {stride}; the cap arithmetic below prices one retained entry \
          at the stride and not at the entry, so a stride that moves without the entry means the \
          pair above has drifted"
