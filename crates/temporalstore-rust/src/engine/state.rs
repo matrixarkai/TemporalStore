@@ -2595,224 +2595,133 @@ impl From<ObjectBlockLookup> for BTreeMap<String, ObjectBlockRefs> {
     }
 }
 
-/// The block refs of one object, grouped by component and ordered by it.
+/// The block refs of one object.
 ///
-/// A sorted vector rather than a map because the measured average is 1.0 components per object: a
-/// B-tree holding a single entry is a node and an allocation spent to express a list of one.
+/// # THE SECOND LEVEL THAT USED TO BE HERE, AND WHY IT WENT
+///
+/// This was two levels: object -> `by_component` -> refs, where the middle level was a sorted
+/// `ComponentList` of `ComponentBlocks { component: Option<Arc<str>>, refs: BlockRefs }`. Both of
+/// those types are gone, because the list could only ever hold ONE entry and that entry's name
+/// could only ever be `None`: [`CoreIndex::insert_object_block_lookup`] was the only thing in the
+/// crate that ever built a `ComponentBlocks`, and it wrote `component: None` as a literal -- the
+/// entry it files from has no element name to give it. So the level spent a 16-byte
+/// `Option<Arc<str>>` per object holding a constant, plus a three-arm wrapper to express a list of
+/// one, and a binary search to find the only element.
+///
+/// # THE QUERY CONTRACT THE LEVEL CARRIED, WHICH DID NOT GO WITH IT
+///
+/// The component argument on this lookup's readers and removers is NOT always `None`, and that is
+/// the tempting and wrong reason to delete the level. Two production sites reach it with a real
+/// `Some`: `bucket_store::bucket_index_block_address`, which passes a caller's component straight
+/// through, and [`CoreIndex::contains_object_block_address`], which
+/// `storage_bucket_internals`'s hash-field sync asks `Some(field)` once per field.
+///
+/// What made the level dead is the other half of the pair: the one slot is keyed `None`, so a
+/// binary search for `Some(x)` always ran off the front and answered nothing. So a `Some` query
+/// must GO ON answering nothing and a `Some` removal must GO ON being a no-op. That is now a
+/// predicate on the ARGUMENT rather than a search over a list, and it is spelled exactly once, in
+/// [`ObjectBlockRefs::names_the_only_slot`].
+///
+/// # NO FORMAT STAMP IS OWED, AND THAT IS CHECKED RATHER THAN ASSUMED
+///
+/// The field holding this is `#[serde(default, skip_serializing)]` on `CoreIndex` and is rebuilt
+/// by a full bucket walk on load (`persistence`'s two `rebuild_object_block_lookup` calls). So an
+/// index stamped with the current `SHARD_INDEX_FORMAT_VERSION` cannot carry it -- the writer skips
+/// it -- and an index stamped lower is refused by `persistence`'s `<` comparison before anything
+/// reads it. The wire shape below therefore has no reader that a stamp could protect.
 #[derive(Debug, Default, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub(super) struct ObjectBlockRefs {
+    /// `None` is an ABSENT slot, `Some` a present one, and the difference is load-bearing rather
+    /// than tidiness -- see [`CoreIndex::remove_object_block_lookup_ref`] on the re-add case that
+    /// is distinguished by it. It is the `Empty`/`One` distinction the list expressed with a tag,
+    /// held in `Option`'s instead.
+    ///
+    /// A PRESENT SLOT ALWAYS HOLDS AT LEAST ONE REF. The list could represent a slot with none --
+    /// `BlockRefs::remove` leaves `Many(vec![])` behind -- and that state was transient by
+    /// contract, with one holder. It is now not representable at all: [`Self::drop_ref`] is that
+    /// holder and it takes the slot in the same statement.
     #[serde(default)]
-    pub(super) by_component: ComponentList,
+    pub(super) refs: Option<BlockRefs>,
 }
-
-/// One per object in the lookup.
-const _: () = assert!(std::mem::size_of::<ObjectBlockRefs>() == 40);
-
-/// The components of one object: none, one, or a sorted vector.
-///
-/// The measured average is 1.0 components per object, and a `Vec` holding a single element is a
-/// heap allocation and its allocator rounding spent to express a list of one. The shape
-/// `BlockIndexMap`, `BlockRefs` and `ObjectIndex` already use, for the same reason.
-///
-/// It carries the slice of `Vec`'s surface the lookup actually uses, so the call sites read as
-/// they did.
-#[derive(Debug, Default, Clone, PartialEq, Eq)]
-pub(super) enum ComponentList {
-    #[default]
-    Empty,
-    One(ComponentBlocks),
-    Many(Vec<ComponentBlocks>),
-}
-
-/// Its `One` arm is a whole `ComponentBlocks`; the tag rides a niche in the shared name.
-const _: () = assert!(std::mem::size_of::<ComponentList>() == 40);
-
-impl ComponentList {
-    pub(super) fn len(&self) -> usize {
-        match self {
-            ComponentList::Empty => 0,
-            ComponentList::One(_) => 1,
-            ComponentList::Many(list) => list.len(),
-        }
-    }
-
-    pub(super) fn is_empty(&self) -> bool {
-        matches!(self, ComponentList::Empty)
-    }
-
-    pub(super) fn iter(&self) -> std::slice::Iter<'_, ComponentBlocks> {
-        match self {
-            // A const-promoted empty slice, so the iterator does not borrow a temporary.
-            ComponentList::Empty => (&[] as &[ComponentBlocks]).iter(),
-            ComponentList::One(entry) => std::slice::from_ref(entry).iter(),
-            ComponentList::Many(list) => list.iter(),
-        }
-    }
-
-    /// `Vec::binary_search_by`'s contract: `f` orders the ELEMENT against the target, `Ok` is the
-    /// position of a match and `Err` the position it would be inserted at.
-    pub(super) fn binary_search_by<F>(&self, mut f: F) -> Result<usize, usize>
-    where
-        F: FnMut(&ComponentBlocks) -> std::cmp::Ordering,
-    {
-        match self {
-            ComponentList::Empty => Err(0),
-            ComponentList::One(entry) => match f(entry) {
-                std::cmp::Ordering::Equal => Ok(0),
-                // The held entry sorts before the target, so the target goes after it.
-                std::cmp::Ordering::Less => Err(1),
-                std::cmp::Ordering::Greater => Err(0),
-            },
-            ComponentList::Many(list) => list.binary_search_by(f),
-        }
-    }
-
-    pub(super) fn insert(&mut self, at: usize, value: ComponentBlocks) {
-        match self {
-            ComponentList::Empty => {
-                assert_eq!(at, 0, "the only position in an empty list is 0");
-                *self = ComponentList::One(value);
-            }
-            ComponentList::One(_) => {
-                let held = match std::mem::replace(self, ComponentList::Empty) {
-                    ComponentList::One(held) => held,
-                    _ => unreachable!("just matched One"),
-                };
-                let mut list = Vec::with_capacity(2);
-                list.push(held);
-                list.insert(at, value);
-                *self = ComponentList::Many(list);
-            }
-            ComponentList::Many(list) => list.insert(at, value),
-        }
-    }
-
-    /// Removes and returns the entry at `at`, giving up the vector once it no longer earns one so
-    /// an object that briefly held two components does not keep it for the rest of its life.
-    pub(super) fn remove(&mut self, at: usize) -> ComponentBlocks {
-        match self {
-            ComponentList::Empty => panic!("removal from an empty component list"),
-            ComponentList::One(_) => {
-                assert_eq!(at, 0, "the only position in a list of one is 0");
-                match std::mem::replace(self, ComponentList::Empty) {
-                    ComponentList::One(held) => held,
-                    _ => unreachable!("just matched One"),
-                }
-            }
-            ComponentList::Many(list) => {
-                let removed = list.remove(at);
-                match list.len() {
-                    0 => *self = ComponentList::Empty,
-                    1 => *self = ComponentList::One(list.pop().expect("length is one")),
-                    _ => {}
-                }
-                removed
-            }
-        }
-    }
-}
-
-impl std::ops::Index<usize> for ComponentList {
-    type Output = ComponentBlocks;
-    fn index(&self, at: usize) -> &ComponentBlocks {
-        match self {
-            ComponentList::Empty => panic!("index {at} into an empty component list"),
-            ComponentList::One(entry) => {
-                assert_eq!(at, 0, "the only position in a list of one is 0");
-                entry
-            }
-            ComponentList::Many(list) => &list[at],
-        }
-    }
-}
-
-impl std::ops::IndexMut<usize> for ComponentList {
-    fn index_mut(&mut self, at: usize) -> &mut ComponentBlocks {
-        match self {
-            ComponentList::Empty => panic!("index {at} into an empty component list"),
-            ComponentList::One(entry) => {
-                assert_eq!(at, 0, "the only position in a list of one is 0");
-                entry
-            }
-            ComponentList::Many(list) => &mut list[at],
-        }
-    }
-}
-
-impl<'a> IntoIterator for &'a ComponentList {
-    type Item = &'a ComponentBlocks;
-    type IntoIter = std::slice::Iter<'a, ComponentBlocks>;
-    fn into_iter(self) -> Self::IntoIter {
-        self.iter()
-    }
-}
-
-impl Serialize for ComponentList {
-    /// The same sequence it has always written, in the same order.
-    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
-    where
-        S: serde::Serializer,
-    {
-        use serde::ser::SerializeSeq;
-        let mut seq = serializer.serialize_seq(Some(self.len()))?;
-        for entry in self.iter() {
-            seq.serialize_element(entry)?;
-        }
-        seq.end()
-    }
-}
-
-impl<'de> Deserialize<'de> for ComponentList {
-    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
-    where
-        D: serde::Deserializer<'de>,
-    {
-        // A loaded object takes the shape a written one does: one component comes back held
-        // inline rather than in a vector.
-        let mut list = Vec::<ComponentBlocks>::deserialize(deserializer)?;
-        Ok(match list.len() {
-            0 => ComponentList::Empty,
-            1 => ComponentList::One(list.pop().expect("length is one")),
-            _ => ComponentList::Many(list),
-        })
-    }
-}
-
-/// One component of one object, and the blocks holding it.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub(super) struct ComponentBlocks {
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub(super) component: Option<Arc<str>>,
-    /// Sorted and deduplicated, and held inline when there is only one -- which is all of them.
-    /// Insertion goes through `BlockRefs::insert`, which keeps both invariants.
-    #[serde(default)]
-    pub(super) refs: BlockRefs,
-}
-
-/// One per (object, component), and the measured average is one component per object.
-const _: () = assert!(std::mem::size_of::<ComponentBlocks>() == 40);
 
 impl ObjectBlockRefs {
-    /// Where this component sits, or where it would be inserted. `None` sorts first, matching
-    /// `Option`'s own ordering, so the vector's order is the order a caller would expect.
-    pub(super) fn position(&self, component: Option<&str>) -> Result<usize, usize> {
-        self.by_component
-            .binary_search_by(|entry| entry.component.as_deref().cmp(&component))
+    /// Whether this component argument names THE ONLY SLOT THERE IS.
+    ///
+    /// The whole of what the vector's binary search decided, with the entry's constant folded in:
+    /// the only entry's name is `None`, `None.cmp(&Some(x))` is `Less` for every `x`, so the
+    /// search answered `Err` and every caller took its miss branch. Spelled once so the three
+    /// callers below cannot drift apart on it.
+    fn names_the_only_slot(component: Option<&str>) -> bool {
+        component.is_none()
     }
 
     pub(super) fn refs_for(&self, component: Option<&str>) -> Option<&[BlockLookupRef]> {
-        self.position(component)
-            .ok()
-            .map(|at| self.by_component[at].refs.as_slice())
+        if !Self::names_the_only_slot(component) {
+            return None;
+        }
+        self.refs.as_ref().map(BlockRefs::as_slice)
     }
 
-    /// Every block ref of this object, across every component, in component order.
+    /// File one ref under the only slot, opening it if it is absent. Reports whether anything was
+    /// added, which is what the ref counter is kept from.
+    pub(super) fn file(&mut self, value: BlockLookupRef) -> bool {
+        match self.refs.as_mut() {
+            Some(refs) => refs.insert(value),
+            None => {
+                // The object's first block. Built already holding it, so the common case never
+                // allocates and there is no empty state in between.
+                self.refs = Some(BlockRefs::One(value));
+                true
+            }
+        }
+    }
+
+    /// Drop the whole slot this component names, answering how many refs went with it.
+    ///
+    /// Answers 0 for a `Some` component without touching anything, which is what the binary
+    /// search over a list of one already did.
+    pub(super) fn drop_slot(&mut self, component: Option<&str>) -> usize {
+        if !Self::names_the_only_slot(component) {
+            return 0;
+        }
+        self.refs.take().map_or(0, BlockRefs::len)
+    }
+
+    /// Drop ONE ref from the slot this component names, taking the slot itself when that was its
+    /// last. Answers whether a ref was removed, so a caller cannot mistake "nothing was there"
+    /// for "something was dropped" -- the ref counter is advanced from that answer.
+    pub(super) fn drop_ref(
+        &mut self,
+        component: Option<&str>,
+        block_ref: &BlockLookupRef,
+    ) -> bool {
+        if !Self::names_the_only_slot(component) {
+            return false;
+        }
+        let Some(refs) = self.refs.as_mut() else {
+            return false;
+        };
+        let removed = refs.remove(block_ref);
+        // THE SLOT GOES WHEN ITS LAST REF DOES. `BlockRefs::remove` turns the inline arm into an
+        // empty spilled one rather than panicking, and this is the single holder of the contract
+        // that the empty state is transient -- which is why it is the same statement.
+        if refs.is_empty() {
+            self.refs = None;
+        }
+        removed
+    }
+
+    pub(super) fn is_empty(&self) -> bool {
+        self.refs.is_none()
+    }
+
+    /// Every block ref of this object.
     pub(super) fn all_refs(&self) -> impl Iterator<Item = &BlockLookupRef> {
-        self.by_component.iter().flat_map(|entry| entry.refs.iter())
+        self.refs.iter().flat_map(BlockRefs::iter)
     }
 
     pub(super) fn total_refs(&self) -> usize {
-        self.by_component.iter().map(|entry| entry.refs.len()).sum()
+        self.refs.as_ref().map_or(0, BlockRefs::len)
     }
 }
 
@@ -2909,9 +2818,13 @@ impl BlockRefs {
     ///
     /// `One` cannot represent zero refs. Removing the only ref therefore has to change the arm, and
     /// it becomes `Many(vec![])` rather than panicking or leaving the ref behind. That state is
-    /// transient by contract: the caller drops the component slot when this leaves it empty, and
-    /// [`CoreIndex::remove_object_block_lookup_ref`] is the only caller precisely so that contract
-    /// has one holder. Representing it anyway is what keeps the transition from being a panic.
+    /// transient by contract: the holder drops the slot when this leaves it empty, and
+    /// [`ObjectBlockRefs::drop_ref`] is the only caller precisely so that contract has one holder.
+    /// Representing it anyway is what keeps the transition from being a panic.
+    ///
+    /// SINCE THE SECOND LEVEL COLLAPSED THE EMPTY STATE IS NOT EVEN REPRESENTABLE ABOVE. The slot
+    /// is an `Option` on [`ObjectBlockRefs`], so `drop_ref` takes it in the same statement that
+    /// sees it empty -- there is no longer a list position that could be left holding this.
     pub(super) fn remove(&mut self, value: &BlockLookupRef) -> bool {
         match self {
             Self::One(existing) => {
@@ -3051,7 +2964,7 @@ pub(super) struct DirtyObjectIndex {
 /// second largest structure in the shard, larger than the `strings` map holding the addresses the
 /// reads actually resolve through.
 ///
-/// The shape `ObjectIndex`, `BlockIndexMap`, `ComponentList` and `BlockRefs` already use, for the
+/// The shape `ObjectIndex`, `BlockIndexMap` and `BlockRefs` already use, for the
 /// same reason. `Many` is boxed on the same grounds `ObjectIndex` boxes its own: an enum is as wide
 /// as its widest arm, the set arm is the rare one, and this value sits in eleven slots of every
 /// node of the map above.
@@ -4538,30 +4451,17 @@ impl CoreIndex {
                 block_ref_key,
             };
             // THE LOOKUP IS KEYED ON A NAME THE ENTRY DOES NOT HAVE, so every page of an object
-            // files under the SAME `None` slot -- which is what it already did, because an entry's
-            // component was `None` for every kind before the field was removed. The two-level
-            // shape (`ObjectBlockRefs` -> `ComponentBlocks` -> `BlockRefs`) is therefore one level
-            // deeper than it now needs to be, with exactly one `ComponentBlocks` per object. That
-            // is a structure to collapse on its own terms, not inside a width step: `ComponentBlocks`
-            // is `state.rs`'s OTHER declaration of a `component: Option<Arc<str>>` field, it is
-            // read by `block_refs_for` and by `remove_object_block_lookup_entry` with a component
-            // argument that still comes from CALLERS, and its ordering is what `position`'s binary
-            // search is over.
-            match entry.position(None) {
-                Ok(at) => entry.by_component[at].refs.insert(value),
-                Err(at) => {
-                    // The object's first block. Build the entry already holding it, so the common
-                    // case never allocates and there is no empty state in between.
-                    entry.by_component.insert(
-                        at,
-                        ComponentBlocks {
-                            component: None,
-                            refs: BlockRefs::One(value),
-                        },
-                    );
-                    true
-                }
-            }
+            // files under the SAME single slot -- which is what it already did, because an entry's
+            // component was `None` for every kind before the field was removed.
+            //
+            // THAT SLOT USED TO SIT INSIDE A LIST. `ObjectBlockRefs` -> `ComponentList` ->
+            // `ComponentBlocks` -> `BlockRefs` was one level deeper than it needed to be: the list
+            // held exactly one `ComponentBlocks` per object, this was the only site in the crate
+            // that ever built one, and the name it wrote was the literal `None` below. The level is
+            // gone and this is the same filing without it -- see [`ObjectBlockRefs`] on the query
+            // contract that stayed behind, because the component ARGUMENT on the readers and the
+            // removers still comes from callers and is still sometimes `Some`.
+            entry.file(value)
         };
         if added {
             if let Some(total) = self.object_component_block_refs.as_mut() {
@@ -4598,17 +4498,16 @@ impl CoreIndex {
         component: Option<&str>,
     ) {
 
-        // One vector element IS this component's entire set of refs. What this replaces had to
-        // seek a range with an empty-string sentinel and take_while on the component, because the
+        // ONE SLOT IS THIS OBJECT'S ENTIRE SET OF REFS. What this replaces had to seek a range
+        // with an empty-string sentinel and take_while on the component, because the
         // per-component map flattened every component of an object into one ordered set -- so a
-        // component's refs could only be found by range, not by index. Nesting deletes that.
+        // component's refs could only be found by range, not by index. Nesting deleted that; the
+        // collapse then deleted the index too, because there is only ever the one slot.
         let mut removed = 0usize;
         let mut now_empty = false;
         if let Some(entry) = self.object_block_lookup.get_mut(model_id, object_key) {
-            if let Ok(at) = entry.position(component) {
-                removed = entry.by_component.remove(at).refs.len();
-            }
-            now_empty = entry.by_component.is_empty();
+            removed = entry.drop_slot(component);
+            now_empty = entry.is_empty();
         }
         if now_empty {
             self.object_block_lookup.remove(model_id, object_key);
@@ -4658,13 +4557,8 @@ impl CoreIndex {
         let mut removed = false;
         let mut now_empty = false;
         if let Some(entry) = self.object_block_lookup.get_mut(model_id, object_key) {
-            if let Ok(at) = entry.position(component) {
-                removed = entry.by_component[at].refs.remove(block_ref);
-                if entry.by_component[at].refs.is_empty() {
-                    entry.by_component.remove(at);
-                }
-            }
-            now_empty = entry.by_component.is_empty();
+            removed = entry.drop_ref(component, block_ref);
+            now_empty = entry.is_empty();
         }
         // The object's whole entry goes when its last component does, which is what the whole-slot
         // removal above does and for the same reason: an object present in the lookup with no
@@ -4697,11 +4591,7 @@ impl CoreIndex {
         let Some(entry) = self.object_block_lookup.remove(model_id, object_key) else {
             return 0;
         };
-        let removed: usize = entry
-            .by_component
-            .iter()
-            .map(|component| component.refs.len())
-            .sum();
+        let removed = entry.total_refs();
         if removed > 0 {
             if let Some(total) = self.object_component_block_refs.as_mut() {
                 *total = total.saturating_sub(removed);
@@ -5055,10 +4945,55 @@ pub(super) struct SeenSet {
 
 #[cfg(test)]
 mod component_lookup_tests {
+    //! WHAT HAPPENED TO THE NINE ARMS THIS MODULE HELD, so the collapse is auditable rather than
+    //! merely smaller. Recorded here because six of them were deleted, and a deletion leaves
+    //! nothing for a reviewer to read.
+    //!
+    //! GONE, SUBJECT UNREPRESENTABLE -- there is one slot per object now, so there is no second
+    //! component to order against, none to sort first, and no sibling to disturb:
+    //!
+    //!   * `removing_one_component_leaves_the_others`
+    //!   * `removing_the_first_and_last_components_works`
+    //!   * `a_none_component_is_removable_and_does_not_take_the_others`
+    //!   * `every_ref_sharing_a_component_goes` -- its surviving half, that a whole-slot removal
+    //!     takes every ref the slot held, is carried by
+    //!     `the_running_ref_total_is_decremented_by_what_the_slot_held` below.
+    //!
+    //! RESTATED, SUBJECT MOVED:
+    //!
+    //!   * `removing_an_absent_component_changes_nothing` becomes
+    //!     `a_removal_by_a_named_component_is_a_no_op`. Same call; the subject is now the
+    //!     predicate rather than a binary search that ran off the front of a list.
+    //!   * `emptying_the_set_drops_the_key_entirely` becomes
+    //!     `dropping_the_only_slot_drops_the_objects_key`, with `Some("only")` replaced by `None`,
+    //!     because a removal by a named component is a no-op and the old form would assert over a
+    //!     removal that correctly did nothing.
+    //!
+    //! KEPT, FULL TEETH -- three of them, and their claim is that the hand-maintained
+    //! `object_component_block_refs` counter agrees with the refs actually present, which is
+    //! independent of how many slots exist. Their FIXTURES still had to move from `Some(x)` to
+    //! `None`: left as they were, each one's first `assert!(index.remove_...)` would fail on a
+    //! removal that correctly did nothing.
+    //!
+    //!   * `a_single_ref_removal_keeps_the_counter_equal_to_what_is_present`
+    //!   * `the_last_ref_of_the_slot_takes_the_slot_and_the_objects_key`
+    //!   * `the_running_ref_total_is_decremented_by_what_the_slot_held`
+
     use super::*;
 
     /// A block carrying nothing but the identity the lookup keys on.
-    fn page(object: &str, component: Option<&str>) -> BlockIndex {
+    ///
+    /// THE COMPONENT PARAMETER THIS USED TO TAKE IS GONE, AND IT WAS ALREADY DEAD. It was accepted
+    /// and then never mentioned in the `BlockIndex` built below, because the field it used to fill
+    /// came off the entry in this branch's previous commit. Keeping it would make the arms below
+    /// read as though they varied something they did not.
+    ///
+    /// IT IS ALSO WHY ONE TRIPWIRE IS NOT WRITTEN HERE. "The insert files every page under one
+    /// slot WHATEVER THE PAGE CARRIED" cannot fail against this tree: no page can carry an element
+    /// name to file, so the clause after "whatever" has no values to range over and the assertion
+    /// would pass on any insert at all. The half that can still move is asserted instead -- see
+    /// [`the_insert_accumulates_an_objects_pages_into_the_one_slot`].
+    fn page(object: &str) -> BlockIndex {
         BlockIndex {
             kind: crate::index_log::IndexItemKind::Page,
             routing_bucket: 7,
@@ -5070,100 +5005,137 @@ mod component_lookup_tests {
         }
     }
 
-    /// Built through the real insert rather than assembled by hand. These tests turn on the
-    /// component ordering that removal binary-searches, and that ordering is the insert's to
-    /// maintain -- a fixture that imitates it can agree with an insert that has stopped holding it.
-    fn core_with(object: &str, components: &[Option<&str>]) -> CoreIndex {
+    /// Built through the real insert rather than assembled by hand, and that is deliberate rather
+    /// than convenient: these arms turn on what the insert does with an object's second and third
+    /// page, and a fixture that imitates it can agree with an insert that has stopped doing it.
+    ///
+    /// Each page gets its own `(routing_bucket, block_ref_key)` -- `(i, i)` -- so `pages` DISTINCT
+    /// refs go in, and a count below is not a count of one ref filed repeatedly.
+    fn core_with(object: &str, pages: u32) -> CoreIndex {
         let mut index = CoreIndex::default();
-        for (i, component) in components.iter().enumerate() {
-            index.insert_object_block_lookup(
-                i as u32,
-                i as u64,
-                &page(object, *component),
-            );
+        for i in 0..pages {
+            index.insert_object_block_lookup(i, u64::from(i), &page(object));
         }
         index
     }
 
-    fn components_left(index: &CoreIndex, object: &str) -> Vec<Option<String>> {
+    fn refs_under_the_only_slot(index: &CoreIndex, object: &str) -> usize {
         index
-            .object_block_refs("hash", object)
-            .map(|entry| {
-                entry
-                    .by_component
-                    .iter()
-                    .map(|component| {
-                        component.component.as_ref().map(|name| name.to_string())
-                    })
-                    .collect()
-            })
-            .unwrap_or_default()
+            .block_refs_for("hash", object, None)
+            .map_or(0, <[BlockLookupRef]>::len)
     }
 
+    /// THE HALF OF THE TRIPWIRE THAT HAS A DISCRIMINATOR, and it can still fail.
+    ///
+    /// Three inserts for one object must ACCUMULATE into the one slot, which is `BlockRefs::One`
+    /// growing into `Many` under [`ObjectBlockRefs::file`]. The count is what makes this bite: a
+    /// `file` that replaced instead of inserting -- the obvious way to write it once there is only
+    /// one slot, and what the whole-slot removal next door does -- would leave ONE ref here, and
+    /// every other arm in this module, which asks whether something is there rather than how much,
+    /// would still pass.
     #[test]
-    fn removing_one_component_leaves_the_others() {
-        let mut index = core_with("k", &[Some("a"), Some("b"), Some("c")]);
-        index.remove_object_block_lookup_entry("hash", "k", Some("b"));
+    fn the_insert_accumulates_an_objects_pages_into_the_one_slot() {
+        let index = core_with("k", 3);
         assert_eq!(
-            components_left(&index, "k"),
-            vec![Some("a".to_string()), Some("c".to_string())]
+            3,
+            refs_under_the_only_slot(&index, "k"),
+            "three pages of one object did not accumulate in its slot"
+        );
+        assert_eq!(
+            Some(3),
+            index.object_component_block_refs,
+            "the ref counter disagrees with the three refs that went in"
+        );
+        // AND ONE SLOT HOLDS ALL THREE. Not implied by the line above: a structure that kept three
+        // slots of one ref each would answer 3 to a walk over the object and 1 to the slot read.
+        assert_eq!(
+            3,
+            index
+                .object_block_refs("hash", "k")
+                .map_or(0, ObjectBlockRefs::total_refs),
+            "the object's refs are not all reachable through its single slot"
         );
     }
 
+    /// THE OTHER HALF: a lookup BY A NAMED COMPONENT resolves nothing, while the same lookup
+    /// unnamed resolves everything.
+    ///
+    /// # WHAT CAN MAKE THIS FAIL, STATED PLAINLY BECAUSE IT IS NOT A STRUCTURAL DRIFT
+    ///
+    /// With the second level gone this is [`ObjectBlockRefs::names_the_only_slot`]'s single
+    /// predicate and nothing else's, so the only thing that can redden it is an edit to that
+    /// predicate. It is kept anyway, and asserted BOTH WAYS in one arm, for two reasons. A
+    /// one-sided check is satisfied on whichever side an edit moves -- loosening the predicate so
+    /// every query hits would redden a `Some`-misses assertion and leave a `None`-hits assertion
+    /// passing, and only the pair says which way it went. And the consequence of loosening it is
+    /// not a bigger index: `bucket_store::bucket_index_block_address` passes a caller's component
+    /// straight through, so a `Some` that started hitting would serve an object's whole page as
+    /// the answer to a field lookup that has always, correctly, found nothing.
     #[test]
-    fn removing_the_first_and_last_components_works() {
-        let mut index = core_with("k", &[Some("a"), Some("b"), Some("c")]);
-        index.remove_object_block_lookup_entry("hash", "k", Some("a"));
+    fn a_named_component_resolves_nothing_while_the_unnamed_one_resolves_everything() {
+        let index = core_with("k", 2);
         assert_eq!(
-            components_left(&index, "k"),
-            vec![Some("b".to_string()), Some("c".to_string())]
+            None,
+            index.block_refs_for("hash", "k", Some("f0")),
+            "a lookup by element name resolved the object's pages"
         );
-        index.remove_object_block_lookup_entry("hash", "k", Some("c"));
-        assert_eq!(components_left(&index, "k"), vec![Some("b".to_string())]);
+        assert_eq!(
+            2,
+            index
+                .block_refs_for("hash", "k", None)
+                .map_or(0, <[BlockLookupRef]>::len),
+            "the unnamed lookup stopped resolving, so the assertion above passed over an empty \
+             lookup rather than over a refused query"
+        );
     }
 
+    /// Restated from `removing_an_absent_component_changes_nothing`.
     #[test]
-    fn a_none_component_is_removable_and_does_not_take_the_others() {
-        // `None` sorts before every `Some`, so it is the range's first element -- the case most
-        // likely to run off the front of the set.
-        let mut index = core_with("k", &[None, Some("a"), Some("b")]);
+    fn a_removal_by_a_named_component_is_a_no_op() {
+        let mut index = core_with("k", 2);
+        index.remove_object_block_lookup_entry("hash", "k", Some("f0"));
+        assert_eq!(
+            2,
+            refs_under_the_only_slot(&index, "k"),
+            "a removal by element name took the object's pages with it"
+        );
+        assert_eq!(
+            Some(2),
+            index.object_component_block_refs,
+            "the counter moved for a removal that removed nothing"
+        );
+
+        // AND THE SINGLE-REF REMOVER TOO, which is the other caller of the same predicate and the
+        // one the upsert's supersede goes through.
+        let first = BlockLookupRef {
+            routing_bucket: 0,
+            block_ref_key: 0,
+        };
+        assert!(
+            !index.remove_object_block_lookup_ref("hash", "k", Some("f0"), &first),
+            "a single-ref removal by element name reported a removal"
+        );
+        assert_eq!(2, refs_under_the_only_slot(&index, "k"));
+    }
+
+    /// Restated from `emptying_the_set_drops_the_key_entirely`, with `Some("only")` replaced by
+    /// `None`.
+    #[test]
+    fn dropping_the_only_slot_drops_the_objects_key() {
+        let mut index = core_with("k", 1);
+        // FLOOR: the object is in the lookup to begin with, so the absence below is a removal and
+        // not a fixture that never filed anything.
+        assert!(
+            index.object_block_refs("hash", "k").is_some(),
+            "the fixture filed nothing, so the assertion below would hold vacuously"
+        );
         index.remove_object_block_lookup_entry("hash", "k", None);
-        assert_eq!(
-            components_left(&index, "k"),
-            vec![Some("a".to_string()), Some("b".to_string())]
+        assert!(
+            index.object_block_refs("hash", "k").is_none(),
+            "the object stayed in the lookup with no slot, which is a `get` that succeeds and \
+             answers nothing"
         );
-    }
-
-    #[test]
-    fn every_ref_sharing_a_component_goes() {
-        let mut index = CoreIndex::default();
-        for i in 0..3u32 {
-            index.insert_object_block_lookup(
-                i,
-                i as u64,
-                &page("k", Some("dup")),
-            );
-        }
-        index.insert_object_block_lookup(9, 9, &page("k", Some("keep")));
-        index.remove_object_block_lookup_entry("hash", "k", Some("dup"));
-        assert_eq!(components_left(&index, "k"), vec![Some("keep".to_string())]);
-    }
-
-    #[test]
-    fn removing_an_absent_component_changes_nothing() {
-        let mut index = core_with("k", &[Some("a"), Some("b")]);
-        index.remove_object_block_lookup_entry("hash", "k", Some("zzz"));
-        assert_eq!(
-            components_left(&index, "k"),
-            vec![Some("a".to_string()), Some("b".to_string())]
-        );
-    }
-
-    #[test]
-    fn emptying_the_set_drops_the_key_entirely() {
-        let mut index = core_with("k", &[Some("only")]);
-        index.remove_object_block_lookup_entry("hash", "k", Some("only"));
-        assert!(index.object_block_refs("hash", "k").is_none());
+        assert_eq!(Some(0), index.object_component_block_refs);
     }
 
     /// THE COUNTER AGREES WITH THE REFS THAT ARE ACTUALLY THERE, after every single-ref removal.
@@ -5177,29 +5149,32 @@ mod component_lookup_tests {
         index
             .object_block_lookup
             .values()
-            .map(|entry| entry.total_refs())
+            .map(ObjectBlockRefs::total_refs)
             .sum()
     }
 
     #[test]
     fn a_single_ref_removal_keeps_the_counter_equal_to_what_is_present() {
-        let mut index = core_with("k", &[Some("a"), Some("b"), Some("c")]);
+        let mut index = core_with("k", 3);
         index.object_component_block_refs = Some(refs_actually_present(&index));
         // FLOOR: there is something to remove, so the agreement below is not over an empty map.
         assert_eq!(
             3,
             refs_actually_present(&index),
-            "the fixture holds {} refs, so this is not the three-component shape the removals \
-             below assume",
+            "the fixture holds {} refs, so this is not the three-ref shape the removals below \
+             assume",
             refs_actually_present(&index)
         );
 
         // Each ref of `core_with` is (bucket i, key i) in declaration order.
-        let b = BlockLookupRef { routing_bucket: 1, block_ref_key: 1 };
+        let b = BlockLookupRef {
+            routing_bucket: 1,
+            block_ref_key: 1,
+        };
         assert!(
-            index.remove_object_block_lookup_ref("hash", "k", Some("b"), &b),
-            "the ref the fixture filed for component b was not found, so every assertion below \
-             would hold over a removal that did nothing"
+            index.remove_object_block_lookup_ref("hash", "k", None, &b),
+            "the ref the fixture filed was not found, so every assertion below would hold over a \
+             removal that did nothing"
         );
         assert_eq!(
             Some(refs_actually_present(&index)),
@@ -5213,7 +5188,7 @@ mod component_lookup_tests {
         // nothing and decrements anyway is the drift this guard exists for, and it is silent.
         let before = index.object_component_block_refs;
         assert!(
-            !index.remove_object_block_lookup_ref("hash", "k", Some("b"), &b),
+            !index.remove_object_block_lookup_ref("hash", "k", None, &b),
             "removing the same ref twice reported a second removal"
         );
         assert_eq!(
@@ -5226,76 +5201,93 @@ mod component_lookup_tests {
         );
     }
 
+    /// WHERE A COUNT AND A SLOT DISAGREE, restated from
+    /// `the_last_ref_of_a_component_takes_the_slot_and_not_just_the_ref`.
+    ///
+    /// An empty slot is not an absent one: `refs_for` answered `Some(&[])` for the first and
+    /// `None` for the second, and the upsert distinguishes its re-add case -- "established but
+    /// names nothing for this object" -- by exactly that difference. A removal that left the slot
+    /// behind would send the re-add down the wrong branch.
+    ///
+    /// THE COLLAPSE MADE THE EMPTY STATE UNREPRESENTABLE rather than merely wrong, because the
+    /// slot is an `Option` and [`ObjectBlockRefs::drop_ref`] takes it in the statement that sees
+    /// it empty. This arm keeps its teeth anyway, because what it asserts is the OBSERVABLE --
+    /// that `block_refs_for` goes from `Some` to `None` and not to `Some(&[])` -- and that is a
+    /// claim about the answer rather than about which type expresses it.
     #[test]
-    fn the_last_ref_of_a_component_takes_the_slot_and_not_just_the_ref() {
-        // WHERE A COUNT AND A SLOT DISAGREE. An empty component slot is not an absent one:
-        // `refs_for` answers `Some(&[])` for the first and `None` for the second, and the upsert
-        // distinguishes the re-add case -- "established but names nothing for this component" --
-        // by exactly that difference. A removal that left the slot behind would send the re-add
-        // down the wrong branch.
-        let mut index = CoreIndex::default();
-        for i in 0..2u32 {
-            index.insert_object_block_lookup(i, i as u64, &page("k", Some("dup")));
-        }
-        index.insert_object_block_lookup(9, 9, &page("k", Some("keep")));
+    fn the_last_ref_of_the_slot_takes_the_slot_and_the_objects_key() {
+        let mut index = core_with("k", 2);
         index.object_component_block_refs = Some(refs_actually_present(&index));
         assert_eq!(
-            3,
+            2,
             refs_actually_present(&index),
-            "the fixture is not the two-refs-on-one-component shape this is about"
+            "the fixture is not the two-refs-in-one-slot shape this is about"
         );
 
         // First of the two: the slot stays, because it still holds one.
         assert!(index.remove_object_block_lookup_ref(
-            "hash", "k", Some("dup"),
-            &BlockLookupRef { routing_bucket: 0, block_ref_key: 0 },
+            "hash",
+            "k",
+            None,
+            &BlockLookupRef {
+                routing_bucket: 0,
+                block_ref_key: 0
+            },
         ));
         assert_eq!(
-            Some(vec![BlockLookupRef { routing_bucket: 1, block_ref_key: 1 }]).as_deref(),
-            index.block_refs_for("hash", "k", Some("dup")),
-            "the component's other ref did not survive its sibling's removal"
+            Some(vec![BlockLookupRef {
+                routing_bucket: 1,
+                block_ref_key: 1
+            }])
+            .as_deref(),
+            index.block_refs_for("hash", "k", None),
+            "the slot's other ref did not survive its sibling's removal"
         );
-        assert_eq!(Some(refs_actually_present(&index)), index.object_component_block_refs);
+        assert_eq!(
+            Some(refs_actually_present(&index)),
+            index.object_component_block_refs
+        );
 
-        // Second: the slot must GO, not become empty.
+        // Second: the slot must GO, not become empty -- and with it the object's whole entry,
+        // because an object present in the lookup with no slot is a `get` that succeeds and
+        // answers nothing.
         assert!(index.remove_object_block_lookup_ref(
-            "hash", "k", Some("dup"),
-            &BlockLookupRef { routing_bucket: 1, block_ref_key: 1 },
+            "hash",
+            "k",
+            None,
+            &BlockLookupRef {
+                routing_bucket: 1,
+                block_ref_key: 1
+            },
         ));
         assert_eq!(
             None,
-            index.block_refs_for("hash", "k", Some("dup")),
-            "the component slot survived its last ref as an EMPTY slot, which reads as present"
+            index.block_refs_for("hash", "k", None),
+            "the slot survived its last ref as an EMPTY slot, which reads as present"
         );
-        assert_eq!(
-            components_left(&index, "k"),
-            vec![Some("keep".to_string())],
-            "removing one component's last ref disturbed another component"
-        );
-        assert_eq!(Some(refs_actually_present(&index)), index.object_component_block_refs);
-
-        // And the object's whole entry goes with its last component.
-        assert!(index.remove_object_block_lookup_ref(
-            "hash", "k", Some("keep"),
-            &BlockLookupRef { routing_bucket: 9, block_ref_key: 9 },
-        ));
         assert!(
             index.object_block_refs("hash", "k").is_none(),
-            "the object stayed in the lookup with no components, which is a `get` that succeeds \
-             and answers nothing"
+            "the object stayed in the lookup with no slot"
         );
         assert_eq!(Some(0), index.object_component_block_refs);
         assert_eq!(0, refs_actually_present(&index));
     }
 
+    /// Restated from `the_running_ref_total_is_decremented_by_what_was_removed`, and it carries
+    /// `every_ref_sharing_a_component_goes`'s surviving half: a whole-slot removal takes EVERY ref
+    /// the slot held, not one of them. Three went in, so a decrement of three is the claim and a
+    /// decrement of one is the failure it is for.
     #[test]
-    fn the_running_ref_total_is_decremented_by_what_was_removed() {
-        // main keeps a running total beside the map; `retain` derived the decrement by
-        // differencing the length, and this form knows it directly. Same number either way.
-        let mut index = core_with("k", &[Some("a"), Some("b"), Some("c")]);
+    fn the_running_ref_total_is_decremented_by_what_the_slot_held() {
+        let mut index = core_with("k", 3);
         index.object_component_block_refs = Some(3);
-        index.remove_object_block_lookup_entry("hash", "k", Some("b"));
-        assert_eq!(index.object_component_block_refs, Some(2));
+        index.remove_object_block_lookup_entry("hash", "k", None);
+        assert_eq!(
+            Some(0),
+            index.object_component_block_refs,
+            "the whole-slot removal decremented by one ref rather than by the three it took"
+        );
+        assert_eq!(0, refs_actually_present(&index));
     }
 }
 
