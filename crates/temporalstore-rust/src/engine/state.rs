@@ -4428,6 +4428,185 @@ const _: () = {
     assert!(field_sum == std::mem::size_of::<BlockIndex>());
 };
 
+// WHAT THE ENTRY WOULD BE IF ITS ADDRESS FIELD HELD THE BARE WORD: FORTY-EIGHT, MEASURED.
+//
+// # AND THE FIELD CANNOT HOLD IT TODAY. THE NUMBER IS RECORDED, THE STEP IS REFUSED.
+//
+// The width is real and it is recorded here because the next lane needs it to be real before it
+// starts. What blocks it is not the width and not the census: it is that THREE OF THE FOUR TERMS
+// THE HOLDER CARRIES ARE READ THROUGH THIS FIELD, and every place that reads them is a place the
+// bare word cannot answer. A compiler census over `address: BlockAddress` enumerates 157 errors in
+// 39 files -- 48 on `length`, 26 on `block_id`, 7 on `generation` -- and SEVEN production readers
+// of `block_id` alone, which is four more than the three this step was scoped against. The four
+// that were missed are `BlockIndex::log_backed`, `container_page_ordinal`, and the handle and the
+// written key.
+//
+// THE ONE THAT DECIDES IT IS `next_block_index_for_object`, and the lead that was supposed to free
+// it is refuted by the structure it points at. A block id is an ordinal INSIDE its object, and the
+// walk takes `max + 1` over the object's entries -- so the question is whether the ordinal is
+// recoverable as a POSITION in the object's own block list instead of stored on every entry. It is
+// not, on four independent grounds, each read off the list rather than argued:
+//
+//   * `BlockRefs::insert` keeps the list as a SORTED SET ordered by `BlockLookupRef`'s derived
+//     `Ord`, whose second term is `block_ref_key` -- a `u64` HASH. Position in that list is
+//     position in hash order, which carries no ordinal.
+//   * The list is nested PER COMPONENT (`ComponentBlocks`), while `next_block_index_for_object`
+//     filters on `(model_id, object_key)` and NOT on the component. A position inside one
+//     component's list is the wrong denominator for a maximum taken across all of them.
+//   * `insert_object_block_lookup` returns early on `page.deleted`, so the list omits exactly the
+//     entries the walk still counts. Taking the ordinal from the list would hand out a value BELOW
+//     a deleted-but-still-reachable block's ordinal, which is the reuse this walk's own doc calls
+//     two live blocks claiming one position.
+//   * The list is keyed per object across buckets; the walk is scoped to ONE `routing_bucket`.
+//
+// AND A COUNTER IS NOT THE WAY OUT: this walk reads the blocks rather than a counter precisely so
+// the value survives a restart with nothing persisted for it, and `block_index_handle`'s doc
+// records a counter having lost an object on reload, silently.
+//
+// THE RECORD HEADER DOES HOLD IT -- `BlockRecordHeader` carries `block_id` durably -- but reading
+// it there turns one in-memory maximum into one disk read per block of the object, on the append
+// path of `feature` and all six `context_*` kinds. That is the trade this step would be, and it is
+// a serving-path cost paid to save eight bytes of resident width.
+//
+// # THE SIBLINGS FOLLOW, SO HALF A STEP PAYS NOTHING
+//
+// Keeping any one of the three as its own field on this entry costs the whole eight bytes back.
+// The small-field group is EXACTLY FULL at eight bytes -- `kind` 1, `routing_bucket` 4, `model_id`
+// 1, `dirty` 1, `deleted` 1 -- so a `block_id: u16` beside it spills into a second word and the
+// entry measures 56 again, with 50 bytes of field instead of 56. A `length: u32` does the same.
+// That is the recorded shape of this whole address: the word sheds eight bytes and the holder
+// sheds none.
+//
+// # AND THE HANDLE'S UNIQUENESS ARGUMENT DOES NOT SURVIVE DROPPING `length`
+//
+// `block_index_handle` hashes five address terms, and the reading that frees it is that the bare
+// word IS the physical page, so slab and offset alone still tell two entries apart. THE SITE SAYS
+// OTHERWISE. `storage_bucket_internals::emit_one_entry_a_page` dedups on the TRIPLE
+// `(block_slab_id, offset, length)`, and its own note states the safety direction: deduping on
+// that narrow triple is safe only because the handle hashes a WIDER tuple, so the set "can only
+// ever emit FEWER entries than the handle is able to tell apart, never more". Dropping `length`
+// from the handle takes the handle NARROWER than the dedup, which inverts that direction -- two
+// entries that differ only in length survive the dedup and then collide on one handle, and a
+// handle collision returns a DIFFERENT page rather than failing. That is the recorded
+// 39-of-40 element loss. `validate_bucket_ownership_index_from_entries` identifies a page by the
+// same triple plus `block_id`, so nothing in this tree treats slab and offset as a page identity.
+//
+// Dropping `block_id` and `generation` from the handle alone WOULD stay on the safe side of that
+// argument -- both are terms the dedup does not use -- but it moves `block_index_written_key`,
+// which is the stored spelling, and the handle is written to disk inside the lookup's refs.
+//
+// # AND THE FIELD IS NOT SERIALIZABLE AS A BARE WORD
+//
+// `BlockAddress` derives no `Serialize` and no `Deserialize`, and that is deliberate rather than an
+// oversight: its own doc says the serde "lives THERE rather than here -- it has to, because the
+// wire row spells all four and only the holder has all four in scope". `BlockIndex` IS the stored
+// form of the page index, so the field cannot hold the bare word without the wire row giving up
+// three terms durably.
+const _: () = {
+    #[allow(dead_code)]
+    struct TheEntryHoldingOneAddressWord {
+        kind: crate::index_log::IndexItemKind,
+        routing_bucket: u32,
+        object_key: Arc<str>,
+        model_id: crate::engine::storage_bucket_internals::StoredModelKind,
+        component: Option<Arc<str>>,
+        address: crate::block_store::BlockAddress,
+        dirty: bool,
+        deleted: bool,
+    }
+    let field_sum = std::mem::size_of::<crate::index_log::IndexItemKind>()
+        + std::mem::size_of::<u32>()
+        + std::mem::size_of::<Arc<str>>()
+        + std::mem::size_of::<crate::engine::storage_bucket_internals::StoredModelKind>()
+        + std::mem::size_of::<Option<Arc<str>>>()
+        + std::mem::size_of::<crate::block_store::BlockAddress>()
+        + std::mem::size_of::<bool>()
+        + std::mem::size_of::<bool>();
+    // THE TWO NUMBERS THE STEP IS ABOUT, both asserted and neither inferred from the other.
+    assert!(field_sum == 48);
+    assert!(std::mem::size_of::<TheEntryHoldingOneAddressWord>() == 48);
+    // ZERO SLACK SURVIVES THE NARROWING: 48 is a multiple of eight, so the step is a whole word
+    // and not a word of field plus some rounding.
+    assert!(std::mem::size_of::<TheEntryHoldingOneAddressWord>() == field_sum);
+    // TIED TO `BlockIndex` ITSELF, so this cannot go on describing a type that moved. The real
+    // entry must equal the probe plus exactly what the holder carries over the bare word.
+    assert!(
+        std::mem::size_of::<BlockIndex>()
+            == std::mem::size_of::<TheEntryHoldingOneAddressWord>()
+                + (std::mem::size_of::<ElementEntry>()
+                    - std::mem::size_of::<crate::block_store::BlockAddress>())
+    );
+};
+
+// WHERE THIS LEG ENDS IF ALL THREE NARROWINGS LAND: TWENTY OF FIELD IN TWENTY-FOUR.
+//
+// Three lanes have to land for this shape to exist, and this one owns NONE of them: the address
+// field holding the bare word (refused above, with its reasons), `component` leaving, and
+// `object_key` becoming an ordinal rather than a shared name. It is pinned here so that whoever
+// lands the last of the three finds the number already measured rather than arriving at it by
+// adjusting an assertion until it passed.
+//
+// # THE SLACK AT TWENTY-FOUR IS FOUR BYTES, NOT ZERO, AND THAT CHANGES THE NEXT DECISION
+//
+// This was scoped as "20 of field, 24 wide, zero slack". The first two are measured and the third
+// is not arithmetic any field set can satisfy: TWENTY IS NOT A MULTIPLE OF EIGHT, so a twenty-byte
+// field set inside an eight-aligned struct has FOUR bytes of padding by construction. Measured at
+// four, and asserted as four rather than as zero.
+//
+// IT MATTERS BECAUSE IT INVERTS THE RULE THIS STRUCTURE IS CURRENTLY GOVERNED BY. At 56 the entry
+// has zero slack and the block above asserts it, so the next field added costs a whole eight
+// bytes. At 24 there are four bytes standing empty, so the next field up to four bytes wide costs
+// NOTHING. Every field decision taken here while the entry was full has to be re-priced at that
+// point, not inherited.
+const _: () = {
+    #[allow(dead_code)]
+    struct TheEntryAtTheEndOfTheNarrowings {
+        kind: crate::index_log::IndexItemKind,
+        routing_bucket: u32,
+        object_key: u32,
+        model_id: crate::engine::storage_bucket_internals::StoredModelKind,
+        address: crate::block_store::BlockAddress,
+        dirty: bool,
+        deleted: bool,
+    }
+    let field_sum = std::mem::size_of::<crate::index_log::IndexItemKind>()
+        + std::mem::size_of::<u32>()
+        + std::mem::size_of::<u32>()
+        + std::mem::size_of::<crate::engine::storage_bucket_internals::StoredModelKind>()
+        + std::mem::size_of::<crate::block_store::BlockAddress>()
+        + std::mem::size_of::<bool>()
+        + std::mem::size_of::<bool>();
+    // THE TWO NUMBERS, asserted independently and neither read off the other.
+    assert!(field_sum == 20);
+    assert!(std::mem::size_of::<TheEntryAtTheEndOfTheNarrowings>() == 24);
+    // THE ROUNDING RELATION, so a field set that stops rounding to 24 fails here.
+    assert!(std::mem::size_of::<TheEntryAtTheEndOfTheNarrowings>() == (field_sum + 7) / 8 * 8);
+    // THE SLACK, MEASURED AT FOUR. Written as its own assertion because the claim this block
+    // exists to correct is that it is zero.
+    assert!(std::mem::size_of::<TheEntryAtTheEndOfTheNarrowings>() - field_sum == 4);
+    // TIED TO `BlockIndex` ITSELF, through its field sum rather than its width -- the widths
+    // differ by a rounding and the field sums differ by exactly the three narrowings. The first
+    // assertion is what makes this a claim about the real struct: it holds only while the live
+    // entry has zero slack, so a field added to or removed from `BlockIndex` breaks this block.
+    let live_field_sum = std::mem::size_of::<crate::index_log::IndexItemKind>()
+        + std::mem::size_of::<u32>()
+        + std::mem::size_of::<Arc<str>>()
+        + std::mem::size_of::<crate::engine::storage_bucket_internals::StoredModelKind>()
+        + std::mem::size_of::<Option<Arc<str>>>()
+        + std::mem::size_of::<ElementEntry>()
+        + std::mem::size_of::<bool>()
+        + std::mem::size_of::<bool>();
+    assert!(live_field_sum == std::mem::size_of::<BlockIndex>());
+    assert!(
+        live_field_sum
+            == field_sum
+                + (std::mem::size_of::<ElementEntry>()
+                    - std::mem::size_of::<crate::block_store::BlockAddress>())
+                + std::mem::size_of::<Option<Arc<str>>>()
+                + (std::mem::size_of::<Arc<str>>() - std::mem::size_of::<u32>())
+    );
+};
+
 // THE DEFERRED DECISION, WITH A TRIGGER RATHER THAN A NOTE.
 //
 // This type holds the address DIRECTLY instead of the shared payload value the row
