@@ -281,3 +281,77 @@ fn an_assigned_durable_id_is_priced_and_the_numbers_are_reconstructed_from_the_t
     );
     assert_eq!(proposal_per_object - today_per_object, 8);
 }
+
+// =================================================================================================
+// CLAIM 7 -- THE +24 TERM IN CLAIM 6 DOES NOT APPLY, BECAUSE THE CHARACTERS ARE ALREADY OWNED
+// ELSEWHERE AND THE PLACE THAT OWNS THEM IS ALREADY WALKED BY PRODUCTION CODE.
+//
+// CLAIM 6 IS CORRECTED RATHER THAN DELETED, because the arithmetic in it is right and its PREMISE
+// was wrong, and the premise is the part a later reader would otherwise re-adopt. It priced a
+// persisted key-to-id map as NEW structure: twenty-four bytes an object that the tree would have
+// to start paying. It does not have to. The model maps own the characters today, unconditionally,
+// because that is how a record is addressed:
+//
+//   * `ShardState::strings` is `HashMap<ModelKey, ElementEntry>` at `state.rs:150`, and
+//     `ModelKey` is `Box<str>` at `state.rs:73` -- the characters, OWNED, one per object.
+//   * `RecordedMap` holds `HashMap<String, K::Elements>` at `recorded_map.rs:152`, which is the
+//     same thing for the four recorded kinds.
+//
+// So there is no container to build and no bytes to add. The identity would be READ from structure
+// that exists, not moved into structure that does not.
+//
+// AND IT IS ALREADY REACHED THIS WAY BY PRODUCTION CODE, which is what makes this a cost question
+// rather than a design question. `visit_model_live_blocks` offers every live model-map block in the
+// shard to a callback as `(kind, object_key, component, address)`, and its own doc says of the key
+// that "Every other arm's key is borrowed from the map and costs nothing" -- one arm composes a
+// key with `format!` and is the stated exception. `collect_model_live_block_entries` is that walk
+// with an always-true filter, and it takes NOTHING BUT A SHARD. The signature pin below is the
+// checkable form of that.
+//
+// SO THE CORRECTED TOTAL, with both denominators named again. Per entry, node against node: forty
+// to twenty-four. Per object, TOTAL against total at the measured one page per object: forty-eight
+// to thirty-two -- the entry sheds a sixteen-byte shared pointer per page and NOTHING is added, so
+// it is a SIXTEEN BYTE SAVING on both denominators rather than eight bytes of regression.
+//
+// WHAT THE CHARACTERS COST IS UNCHANGED BY ANY OF THIS, and saying so is what keeps the number
+// honest. They are stored twice today -- once as the model map's own key and once as the object
+// lookup's inner key -- and they would still be stored twice afterwards, because the lookup needs
+// its key to BE a key. The entry's field is a POINTER at the lookup's allocation, so what the
+// removal sheds is sixteen bytes of pointer per page and not one byte of text.
+//
+// AND THE SAVING IS CONDITIONAL ON THE READER CENSUS, WHICH IS WHERE THIS NOW LIVES OR DIES. Two
+// functions cannot take a model-map source at all, and one of them is on the write path:
+//
+//   * `block_index_written_key` through `serialize_page_index`, reached as
+//     `PageIndexAt<'a>(&'a BucketNode)` inside a DERIVED `Serialize for CoreIndex`. Serde hands a
+//     `Serialize` impl no context, so neither the shard nor the model maps can reach that scope.
+//     Structural, not a cost.
+//   * `refresh_one_bucket_runtime_flags`, which holds only a `&mut BucketNode` and contains FIVE
+//     of the character-wanting sites -- four dirty probes and the TTL minimum. It is reached per
+//     write through `refresh_pending_bucket_runtime_flags` from `engine.rs:1062` and
+//     `stream_batch_methods.rs:567`, and that function exists precisely to refresh only the
+//     touched buckets instead of sweeping. A whole-shard model walk per bucket per write is the
+//     quadratic outcome, so this is not servable this way AT ALL rather than servable expensively.
+// =================================================================================================
+
+/// CLAIM 7, AS A TYPE. `ModelKey` IS `Box<str>` -- the characters, owned, one per object.
+///
+/// A type-identity pin rather than a width pin: it compiles only while the two are the same type,
+/// so a `ModelKey` that stopped being the characters would fail here instead of leaving the claim
+/// standing. A width pin alone would not do it, since several unrelated things measure sixteen.
+const _: fn(crate::engine::state::ModelKey) -> Box<str> = |key| key;
+
+/// CLAIM 7, AS A TYPE. A model-map-sourced identity collector exists and takes NOTHING but a shard.
+///
+/// This is what says the identity can be read from existing structure rather than new structure.
+/// If it ever needs the bucket index to answer, this line fails and claim 7 is reopened.
+const _: fn(&crate::engine::state::ShardState) -> Vec<crate::engine::storage_bucket_internals::LiveBlockEntry> =
+    crate::engine::storage_bucket_internals::collect_model_live_block_entries;
+
+/// CLAIM 7, AS ARITHMETIC. The corrected per-object total: a saving, not a regression.
+///
+/// Reconstructed from the terms, with NO map term, because there is no map to add. Compare with
+/// the assertions under claim 6, which keep the superseded arithmetic beside its premise.
+const _: () = assert!(
+    size_of::<(u64, BlockIndex)>() - size_of::<(u64, TheEntryWithNoIdentityTerm)>() == 16
+);
