@@ -4262,6 +4262,35 @@ pub(super) fn drop_live_object_entries(shard: &mut ShardState, kind: &str, objec
     let object_id = shard
         .shard_id()
         .map(|shard_id| crate::engine::hashing::stable_block_object_id(shard_id, kind, object_key));
+    // THIS OBJECT'S PAGES, NAMED BY THE LOOKUP, instead of every page of every bucket compared
+    // against the key. The old predicate retained a deleted page of the object and removed the
+    // live ones, and the lookup names exactly the live ones -- so the set it hands back IS the set
+    // that predicate removed.
+    let targets: Vec<(u32, u64)> = shard
+        .bucket_index
+        .object_block_refs(model_id.as_str(), object_key)
+        .map(|refs| {
+            refs.iter()
+                .map(|block_ref| (block_ref.routing_bucket, block_ref.block_ref_key))
+                .collect()
+        })
+        .unwrap_or_default();
+    // AND THE BUCKETS HOLDING ONLY A TOMBSTONE OF IT, which no ref can name. The old walk set
+    // `holds_a_page_of_the_object` from deleted pages as well as live ones, and filed the object's
+    // id in that bucket's tombstone list for either -- so a bucket whose only page of the object
+    // was already deleted still got the id. The rows are what state that now.
+    let tombstoned: Vec<u32> = shard
+        .bucket_index
+        .bucket_map
+        .iter()
+        .filter(|(_, bucket)| {
+            bucket
+                .tombstone_elements
+                .iter()
+                .any(|row| row.model_id == model_id && &*row.object_key == object_key)
+        })
+        .map(|(routing_bucket, _)| *routing_bucket)
+        .collect();
     let mut touched: Vec<u32> = Vec::new();
     {
         let CoreIndex {
@@ -4269,23 +4298,23 @@ pub(super) fn drop_live_object_entries(shard: &mut ShardState, kind: &str, objec
             block_slab_live: live,
             ..
         } = &mut shard.bucket_index;
-        for (routing_bucket, bucket) in bucket_map.iter_mut() {
+        for (routing_bucket, handle) in targets {
+            let Some(bucket) = bucket_map.get_mut(&routing_bucket) else {
+                continue;
+            };
             let before = bucket.block_index.len();
-            let mut holds_a_page_of_the_object = false;
-            bucket
-                .block_index
-                .retain(&mut *live, |_, page| {
-                    let the_objects =
-                        page.model_id == model_id && &*page.object_key == object_key;
-                    holds_a_page_of_the_object |= the_objects;
-                    !(!page.deleted && the_objects)
-                });
+            bucket.block_index.remove(&handle, &mut *live);
             if bucket.block_index.len() != before {
-                touched.push(*routing_bucket);
+                touched.push(routing_bucket);
                 classify_bucket_layout_in_place(bucket);
             }
-            if holds_a_page_of_the_object {
-                if let Some(object_id) = object_id {
+            if let Some(object_id) = object_id {
+                bucket.deleted_object_index.insert(object_id);
+            }
+        }
+        if let Some(object_id) = object_id {
+            for routing_bucket in tombstoned {
+                if let Some(bucket) = bucket_map.get_mut(&routing_bucket) {
                     bucket.deleted_object_index.insert(object_id);
                 }
             }
@@ -4651,52 +4680,20 @@ fn upsert_bucket_index_block_inner(
                 classify_bucket_layout_in_place(bucket);
             }
         }
-    } else if !lookup_enabled {
-        let CoreIndex {
-            bucket_map,
-            block_slab_live: live,
-            ..
-        } = &mut shard.bucket_index;
-        for (routing_bucket, bucket) in bucket_map.iter_mut() {
-            note_site(&bucket_visit_sites::REMOVE_ALL_BUCKETS, bucket.block_index.len());
-            touched_buckets.push(*routing_bucket);
-            // THE SAME SPLIT AS THE BRANCH ABOVE, for the shard that has no lookup yet. Keyed
-            // on the page when the page is the identity, or every sibling entry of the object goes.
-            let here = super::live_page_key(&entry.address);
-            // THE NAME TERM HERE WAS THE FIRST OF THE THREE COMPONENT `retain`s AND IT WAS ALREADY
-            // VACUOUS, which is why it is deleted outright rather than translated.
-            //
-            // It read `page.component.as_deref() == entry.component.as_deref()` -- TWO ENTRIES,
-            // not an entry against an argument. Both sides were `None` for every kind before the
-            // field was removed, so it was `None == None` on every page it ever visited and
-            // asserted nothing. Contrast `mark_bucket_index_block_deleted_recording`, whose
-            // otherwise identical-looking term compares against a function ARGUMENT and therefore
-            // still decides which kinds a removal matches; that one is translated, not deleted.
-            //
-            // WHAT STILL DECIDES THE SUPERSEDE is the page-key disjunction below: the landing page
-            // for a kind that converges on the page, the VACATED page for a rewrite in place, and
-            // (kind, object key) alone for a kind that converges on the object.
-            bucket.block_index.retain(&mut *live, |_, page| {
-                !(page.object_key == entry.object_key
-                    && page.model_id == entry.kind
-                    && (!names_a_page
-                        || super::live_page_key(&page.address) == here
-                        // AND THE PAGE THIS WRITE IS LEAVING, which the landing key cannot name.
-                        // `!page.deleted` because a tombstone is not a live entry and must not be
-                        // taken by a rewrite: the sweep below is the only thing that clears one.
-                        || (!page.deleted
-                            && Some(super::live_page_key(&page.address)) == vacated)))
-            });
-            if !bucket
-                .block_index
-                .values()
-                .any(|page| page.object_id(shard_id, &page.object_key) == object_id)
-            {
-                bucket.object_index.remove(&object_id);
-            }
-            classify_bucket_layout_in_place(bucket);
-        }
     }
+    // AND THE SECOND ARM IS GONE, WHICH RETIRES THE THIRD OF THE THREE SUPERSEDE CASES.
+    //
+    // It ran `else if !lookup_enabled` -- a whole-shard retain comparing every page's identity
+    // against this write's, for the shard that had pages and no lookup. The decode fills the
+    // lookup now and the write path files every page it adds, so `lookup_enabled` is true wherever
+    // a page exists to supersede: the arm could only fire on an index this engine cannot produce.
+    //
+    // WHAT IT DECIDED, AND WHERE THAT DECISION LIVES NOW. Its predicate was the page-key
+    // disjunction -- the landing page for a kind that converges on the page, the VACATED page for
+    // a rewrite in place, and (kind, object key) alone for a kind that converges on the object --
+    // and the first branch above makes the same decision from the lookup's refs, which is the
+    // direction that does not need the entry to name its object. The tombstone sweep below was
+    // already unconditional and is untouched.
     // AND THE TOMBSTONE FOR THIS ELEMENT, WHICH NEITHER BRANCH ABOVE CAN REACH.
     //
     // UNCONDITIONAL, AND THE CONDITIONAL VERSIONS WERE BOTH WRONG. A re-add must clear the tombstone
@@ -5638,16 +5635,62 @@ pub(super) fn clear_published_object_dirty_state(shard: &mut ShardState, object_
     // loop below can rebuild when the state is stamped and reclassify when it is not.
     let shard_id = shard.shard_id();
     shard.dirty_objects.remove(object_key);
-    for bucket in shard.bucket_index.bucket_map.values_mut() {
-        note_site(&bucket_visit_sites::CLEAR_DIRTY, bucket.block_index.len());
-        let mut touched = false;
-        for page in bucket.block_index.blocks_mut_unaccounted() {
-            if &*page.object_key == object_key {
+    // THIS OBJECT'S PAGES, NAMED BEFORE THE INDEX IS BORROWED MUTABLY.
+    //
+    // EVERY KIND, because this takes an object key and no kind -- the same loop
+    // `record_exists_exact` makes over the closed set of stored kinds. The old walk compared the
+    // key alone and so matched a page of any kind.
+    //
+    // AND THE TOMBSTONED PAGES BY THEIR TRIPLE, because the lookup names only live ones and the
+    // old walk cleared the flag on a deleted page too. A tombstone is filed `dirty: true`, and
+    // the `any(page.dirty)` below reads every page in the bucket, so leaving one set would hold
+    // the bucket dirty on a published object.
+    let mut live_targets: Vec<(u32, u64)> = Vec::new();
+    for kind in super::storage_model_kinds() {
+        if let Some(refs) = shard.bucket_index.object_block_refs(kind, object_key) {
+            live_targets.extend(
+                refs.iter()
+                    .map(|block_ref| (block_ref.routing_bucket, block_ref.block_ref_key)),
+            );
+        }
+    }
+    let tombstoned: Vec<(u32, (u64, u64, u64))> = shard
+        .bucket_index
+        .bucket_map
+        .iter()
+        .flat_map(|(routing_bucket, bucket)| {
+            bucket
+                .tombstone_elements
+                .iter()
+                .filter(|row| &*row.object_key == object_key)
+                .map(move |row| (*routing_bucket, row.page))
+        })
+        .collect();
+    let mut touched_buckets: BTreeSet<u32> = BTreeSet::new();
+    for (routing_bucket, handle) in live_targets {
+        if let Some(bucket) = shard.bucket_index.bucket_map.get_mut(&routing_bucket) {
+            if let Some(page) = bucket.block_index.get_mut(&handle) {
                 page.dirty = false;
-                touched = true;
+                touched_buckets.insert(routing_bucket);
             }
         }
-        if touched {
+    }
+    for (routing_bucket, triple) in tombstoned {
+        if let Some(bucket) = shard.bucket_index.bucket_map.get_mut(&routing_bucket) {
+            for page in bucket.block_index.blocks_mut_unaccounted() {
+                if page.deleted && crate::engine::state::tombstone_page_key(&page.address) == triple
+                {
+                    page.dirty = false;
+                    touched_buckets.insert(routing_bucket);
+                }
+            }
+        }
+    }
+    for routing_bucket in touched_buckets {
+        let Some(bucket) = shard.bucket_index.bucket_map.get_mut(&routing_bucket) else {
+            continue;
+        };
+        {
             note_site(&bucket_visit_sites::CLEAR_DIRTY, bucket.block_index.len());
             let any_page_dirty = bucket
                 .block_index
