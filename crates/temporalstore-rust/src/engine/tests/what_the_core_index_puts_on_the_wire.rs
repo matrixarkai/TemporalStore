@@ -351,3 +351,65 @@ fn the_stored_page_key_is_not_self_delimiting_so_no_parser_can_invert_it() {
         "the trailing terms are positional and do distinguish"
     );
 }
+
+#[test]
+fn the_legacy_spelling_of_the_one_wire_field_still_loads_and_an_unknown_one_does_not() {
+    // WHY THIS SITS BESIDE THE GUARD RATHER THAN ONLY IN ANOTHER MODULE.
+    //
+    // The one wire field carries `alias = "slots"`, and a HAND-WRITTEN `Deserialize` -- which is
+    // the change this file exists to make safe -- is precisely the edit that drops a legacy alias
+    // with no other symptom: everything still compiles, the round trip above still passes, because
+    // a round trip only ever writes the CURRENT spelling and reads it back.
+    //
+    // `core_index_loads_legacy_bucket_page_field_names` does cover this today. Relying on it means
+    // the guard that sits beside the impl does not assert the thing the impl is most likely to
+    // break, so the coverage is restated here where the destructuring and the key set already are.
+    //
+    // THE CONTROL IS THE WHOLE TEST, AND WITHOUT IT THIS ASSERTS NOTHING. The field is
+    // `#[serde(default)]`, so an index whose top-level key the decoder does not recognise decodes
+    // SUCCESSFULLY, with an empty map and no error. "It decoded" is therefore true of any input at
+    // all. The discriminating pair is: the legacy spelling must come back POPULATED, and an
+    // unrecognised spelling must come back EMPTY. Only the two together say the alias is doing
+    // work.
+    //
+    // AND THE BUCKETS ARE TAKEN FROM A REAL ENCODE rather than hand-written as JSON, so this test
+    // does not carry its own copy of the node's stored shape -- a copy that would go stale the
+    // first time the node's own encoder moved, and would then be testing a shape nothing writes.
+    let index = an_index_with_every_field_populated();
+    let encoded = serde_json::to_value(&index).expect("a core index serializes");
+    let mut fields = encoded
+        .as_object()
+        .expect("a core index encodes as a map")
+        .clone();
+    let buckets = fields
+        .remove("bucket_map")
+        .expect("the one wire field is written under its current spelling");
+    assert!(
+        fields.is_empty(),
+        "nothing else is on the wire, so nothing else needs re-spelling here: {:?}",
+        fields.keys().collect::<Vec<_>>()
+    );
+
+    // THE LEGACY SPELLING. An index written before the field was renamed is keyed `slots`.
+    let mut legacy = serde_json::Map::new();
+    legacy.insert("slots".to_string(), buckets.clone());
+    let from_legacy: CoreIndex = serde_json::from_value(serde_json::Value::Object(legacy))
+        .expect("an index keyed with the legacy spelling must still decode");
+    assert_eq!(
+        from_legacy.bucket_map.len(),
+        index.bucket_map.len(),
+        "the legacy spelling must still load the bucket map, not quietly default it"
+    );
+
+    // THE CONTROL. A spelling the decoder knows nothing about must be IGNORED -- which is what
+    // makes the assertion above a statement about the alias rather than about `default`.
+    let mut unknown = serde_json::Map::new();
+    unknown.insert("slotz".to_string(), buckets);
+    let from_unknown: CoreIndex = serde_json::from_value(serde_json::Value::Object(unknown))
+        .expect("an unrecognised key is ignored, which is what lets a newer index load into an older engine");
+    assert!(
+        from_unknown.bucket_map.is_empty(),
+        "an unrecognised spelling must leave the map at its default; if this were populated the \
+         test above would pass whatever the alias did"
+    );
+}
