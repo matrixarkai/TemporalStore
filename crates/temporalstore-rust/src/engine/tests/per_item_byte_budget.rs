@@ -350,22 +350,29 @@ fn every_per_item_structure_states_its_width_and_its_padding() {
 
     // --- The pinned widths. ---
     assert_eq!(16, size_of::<ElementEntry>(), "ElementEntry width moved");
-    // 40, not the 56 it was before the entry stopped naming its element. Bracketed, because a bare
-    // equality is satisfied by whatever the type measures.
+    // 40, not the 56 it was before the entry stopped naming its element. The two `assert_ne!`
+    // partners that stood below this are gone: they sat under an `assert_eq!` that panics first,
+    // so they were unreachable on every change that could have fired them, and their messages
+    // -- "BlockIndex is 39, so 40 is an upper bound here" -- asserted a reachability an
+    // 8-aligned type does not have. The alignments are pinned below instead, where this
+    // module's own `padding()` column is taken over them.
     assert_eq!(40, size_of::<BlockIndex>(), "BlockIndex width moved");
-    assert_ne!(39, size_of::<BlockIndex>(), "BlockIndex is 39, so 40 is an upper bound here");
-    assert_ne!(41, size_of::<BlockIndex>(), "BlockIndex is 41, so 40 is a lower bound here");
     assert_eq!(24, size_of::<BlockIndexMap>(), "BlockIndexMap width moved");
     assert_eq!(96, size_of::<BucketNode>(), "BucketNode width moved");
     assert_eq!(16, size_of::<BlockLookupRef>(), "BlockLookupRef width moved");
     assert_eq!(24, size_of::<BlockRefs>(), "BlockRefs width moved");
     // THE THREE 40s THAT STOOD HERE ARE GONE WITH THEIR TYPES. `ComponentBlocks`, `ComponentList`
     // and `ObjectBlockRefs` were the wrappers between an object and its refs; the lookup now holds
-    // a `BlockRefs` per object, so that is the width to pin, and it is bracketed on both sides
-    // rather than left as a bare `==` that tells you the value but not whether the value is an
-    // artefact of the comparison.
-    assert_ne!(23, size_of::<BlockRefs>(), "BlockRefs is 23, so 24 is an upper bound here");
-    assert_ne!(25, size_of::<BlockRefs>(), "BlockRefs is 25, so 24 is a lower bound here");
+    // a `BlockRefs` per object, so that is the width to pin -- pinned above as a bare equality,
+    // because the `!= 23` / `!= 25` pair that stood here was dominated by it and unreachable for
+    // an 8-aligned type besides.
+    //
+    // THE ALIGNMENTS, WHICH THE WIDTHS ABOVE DO NOT ENTAIL. A width pin admits every alignment
+    // that divides it, and this module's `padding()` column is derived from the `align` each row
+    // carries -- so the alignment is the premise of every padding figure printed above and was
+    // pinned nowhere.
+    assert_eq!(8, align_of::<BlockIndex>(), "BlockIndex alignment moved");
+    assert_eq!(8, align_of::<BlockRefs>(), "BlockRefs alignment moved");
     assert_eq!(16, size_of::<ObjectIndex>(), "ObjectIndex width moved");
     assert_eq!(8, size_of::<DeletedObjectIndex>(), "DeletedObjectIndex width moved");
     assert_eq!(24, size_of::<DirtyKeySet>(), "DirtyKeySet width moved");

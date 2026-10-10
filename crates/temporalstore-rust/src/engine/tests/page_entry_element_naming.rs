@@ -635,8 +635,11 @@ fn the_entry_without_a_component_is_forty_and_the_stride_forty_eight() {
     // either, so it IS 40 and the two sides have converged. That is the step landing rather than
     // the measurement breaking -- and it is why the stride pin below moves from 64 to 48 with it.
     assert_eq!(40, size_of::<BlockIndex>(), "the entry pin moved");
-    assert_ne!(39, size_of::<BlockIndex>());
-    assert_ne!(41, size_of::<BlockIndex>());
+    // THE `!= 39` AND `!= 41` PARTNERS ARE GONE, dominated by the equality above them, which
+    // panics first and so left them unreachable on every change that could have fired them.
+    // The width is also pinned as a const beside `BlockIndex` in `state.rs`, with the alignment
+    // pin a width pin does not entail. What this module adds is the STRIDE reconstructed from
+    // that width, and the stride pin below is the claim here that can still move.
     assert_eq!(48, live_stride, "the stride pin moved");
     assert_eq!(
         40,

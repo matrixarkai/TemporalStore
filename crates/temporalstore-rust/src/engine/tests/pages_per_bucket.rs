@@ -509,13 +509,30 @@ fn every_byte_of_the_page_index_is_accounted_for() {
         "the page entry no longer reconstructs as {index_eight_aligned} bytes of eight-aligned \
          field plus {index_tail} bytes of flag rounded up to {index_rounded_tail}"
     );
-    // FORTY, AND BRACKETED. A bare equality is satisfied by whatever the type measures; the two
-    // neighbours refuse 39 and 41 so this reads as a measurement and not as a number adjusted
-    // until it passed. 56 before the entry stopped naming its element: `opt_arc_str` above is the
-    // sixteen bytes that left.
+    // FORTY, AND PINNED AT ITS ALIGNMENT INSTEAD OF BRACKETED. 56 before the entry stopped
+    // naming its element: `opt_arc_str` above is the sixteen bytes that left.
+    //
+    // WHAT STOOD HERE AND WHY IT IS GONE. The note read "a bare equality is satisfied by
+    // whatever the type measures; the two neighbours refuse 39 and 41 so this reads as a
+    // measurement and not as a number adjusted until it passed", and its two `assert_ne!`
+    // partners carried messages -- "the page entry is 39, so 40 is an upper bound here" --
+    // asserting that 39 and 41 were reachable. They are not: the type is 8-aligned, so they are
+    // 7 and 1 mod 8. And the partners could not have run anyway, because the `assert_eq!` below
+    // panics first on every change that could have fired them.
+    //
+    // THE ALIGNMENT PIN IS NOT DOMINATED, and here it is a premise rather than a flourish: the
+    // reconstruction above rounds the tail up to `align_of::<BlockIndex>()`, and the per-bucket
+    // arithmetic later in this module uses it as the modulus again. A width pin admits every
+    // alignment that divides it, so `== 40` is equally true at align 1, 2, 4 and 8 and says
+    // nothing about the modulus those sums are taken over.
     assert_eq!(40, size_of::<BlockIndex>(), "the page entry's budgeted width moved");
-    assert_ne!(39, size_of::<BlockIndex>(), "the page entry is 39, so 40 is an upper bound here");
-    assert_ne!(41, size_of::<BlockIndex>(), "the page entry is 41, so 40 is a lower bound here");
+    assert_eq!(
+        8,
+        std::mem::align_of::<BlockIndex>(),
+        "the page entry is {}-aligned; the tail rounding above and the per-bucket sums below are \
+         taken to this modulus",
+        std::mem::align_of::<BlockIndex>()
+    );
 
     // NARROWING THE FLAGS STILL RECLAIMS NOTHING, BUT NOT FOR THE REASON IT USED TO.
     //

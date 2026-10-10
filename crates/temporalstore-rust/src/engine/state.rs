@@ -2762,11 +2762,16 @@ pub(super) enum BlockRefs {
 /// between them moves nothing at all. Same arithmetic, opposite conclusion, and which one applies
 /// is a property of the holder rather than of the width.
 ///
-/// BRACKETED, because a single `==` that compiles tells you the value while the pair tells you
-/// the value is not an artefact of the comparison chosen.
+/// PINNED AT ITS WIDTH AND AT ITS ALIGNMENT, AND THE NEIGHBOUR BRACKET THAT STOOD HERE IS GONE.
+/// The note read that a single `==` which compiles tells you the value while the pair tells you
+/// the value is not an artefact of the comparison chosen. The pair told you nothing: `!= 23` and
+/// `!= 25` sat in the same const context as `== 24`, which entails both, and 23 and 25 are
+/// unreachable for an 8-aligned type in any case. The argument is written out in full beside
+/// [`BlockIndex`]'s width pin. The alignment is pinned in its place, because a width pin admits
+/// every alignment that divides it and this one is the modulus `per_item_byte_budget`'s row for
+/// this type pads with.
 const _: () = assert!(std::mem::size_of::<BlockRefs>() == 24);
-const _: () = assert!(std::mem::size_of::<BlockRefs>() != 23);
-const _: () = assert!(std::mem::size_of::<BlockRefs>() != 25);
+const _: () = assert!(std::mem::align_of::<BlockRefs>() == 8);
 /// AND THE DECOMPOSITION, not merely the width -- a width test in this tree once printed a wrong
 /// field sum and passed because it asserted only the total. The widest arm is the spilled vector,
 /// and the enum is exactly as wide as it, so the tag costs nothing. If the tag ever stops being
@@ -4293,17 +4298,29 @@ pub(super) struct BlockIndex {
 /// `an_index_written_before_this_change_is_written_back_without_the_key_the_entry_shed` (what this
 /// binary writes back in its place) and `core_index_loads_legacy_bucket_page_field_names` (that
 /// the old names still read).
-// FORTY, AND EXACTLY FORTY RATHER THAN AT MOST FORTY.
+// FORTY, AND THE NEIGHBOUR BRACKET THAT STOOD HERE IS GONE.
 //
-// A bare `== 40` is a one-sided claim in the sense this campaign has been bitten by: it is
-// satisfied by whatever the type happens to measure, and a reader cannot tell a pin that was
-// MEASURED from one that was adjusted until it passed. The two neighbours are asserted beside it
-// so the pin brackets the width: 39 and 41 are both refused, so 40 is the value and not a bound
-// in either direction. All three are const-evaluated, so none of them can be a test that nothing
-// runs.
+// IT COULD DISTINGUISH NO CASE. The `!= 39` and `!= 41` lines sat in the SAME const context as
+// the `== 40` above them, and `x == 40` already entails `x != 39` and `x != 41`. An inequality
+// dominated by an equality over the same expression cannot fail in any state the equality
+// admits, so each could only have failed in a build that was already failing one line higher.
+// That holds at every width and every alignment, so naming REACHABLE neighbours instead would
+// be the same mistake with better arithmetic: it still names no case `== 40` lets through.
+//
+// THE ALIGNMENT IS WHY IT LOOKED HARMLESS, NOT WHY IT WAS EMPTY. `size_of` is always a multiple
+// of `align_of` and this type is 8-aligned, so 39 and 41 are 7 and 1 mod 8 and no layout of it
+// can reach either. The bracket was a theorem about Rust layout wearing this type's name. The
+// treatment is the one `bucket_node_container_header` carries on main, where it was DRIVEN: a
+// planted field that moves a real width reddens the `==` and leaves the `!=` partner GREEN.
+//
+// WHAT REPLACES IT IS A DIFFERENT CLAIM, NOT A BETTER BRACKET. A width pin admits every
+// alignment that DIVIDES it -- `== 40` is equally true at align 1, 2, 4 and 8 -- so the line
+// below can fail in a state that every width assertion in this file accepts. It is a PREMISE
+// rather than a curiosity: `page_entry_handles`, `pages_per_bucket` and `per_item_byte_budget`
+// each reconstruct this width as eight-aligned field plus a tail rounded up to
+// `align_of::<BlockIndex>()`, so this value is the modulus of those decompositions.
 const _: () = assert!(std::mem::size_of::<BlockIndex>() == 40);
-const _: () = assert!(std::mem::size_of::<BlockIndex>() != 39);
-const _: () = assert!(std::mem::size_of::<BlockIndex>() != 41);
+const _: () = assert!(std::mem::align_of::<BlockIndex>() == 8);
 
 // THE WIDTH, MEASURED AT THIS COMMIT -- not a target.
 //

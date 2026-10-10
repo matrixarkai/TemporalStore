@@ -1105,8 +1105,12 @@ fn the_entry_is_forty_bytes_and_every_one_is_accounted_for() {
     // `cargo check` cannot see an `assert_eq!` in a test body, so the pin compiled clean and only
     // running it said so.
     assert_eq!(40, size_of::<BlockIndex>());
-    assert_ne!(39, size_of::<BlockIndex>());
-    assert_ne!(41, size_of::<BlockIndex>());
+    // THE `!= 39` AND `!= 41` PARTNERS THAT STOOD HERE ARE GONE. They could distinguish no
+    // case. The `assert_eq!` above panics first, so on the only change that could ever have
+    // fired them they were never reached -- and an assertion that never ran reads exactly like
+    // one that passed. The claim they reached for, that 40 is a value and not a bound, is
+    // carried by `align_of::<BlockIndex>() == 8` earlier in this function, which a width pin
+    // does NOT entail: `== 40` is equally true at align 1, 2, 4 and 8.
 
     // The slack, which is why every step here is sixteen bytes and not twelve.
     let slack = size_of::<BlockIndex>() - (eight_aligned + tail);

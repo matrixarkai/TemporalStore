@@ -195,9 +195,13 @@ fn the_stored_entry_has_dropped_the_flag_and_gained_no_key() {
     // element, which is a different change; the claim the pin exists to make is unaffected and the
     // number it names is not.
     //
-    // BRACKETED, so it reads as a measurement rather than a literal adjusted until it passed --
-    // and this is the pin that proves the point: `cargo check` cannot see an `assert_eq!` in a test
-    // body, so it compiled clean through the whole width step and only running it said so.
+    // PINNED, AND NOT BRACKETED -- which is a change from what stood here. The note read
+    // "BRACKETED, so it reads as a measurement rather than a literal adjusted until it
+    // passed", and the `!= 39` / `!= 41` partners below it did no such thing: the `assert_eq!`
+    // panics first, so they were unreachable on every change that could have fired them. What
+    // the note had RIGHT is kept, because it is why this pin is worth having at all: `cargo
+    // check` cannot see an `assert_eq!` in a test body, so this compiled clean through the
+    // whole width step and only running it said so.
     assert_eq!(
         40,
         std::mem::size_of::<BlockIndex>(),
@@ -205,6 +209,4 @@ fn the_stored_entry_has_dropped_the_flag_and_gained_no_key() {
          says so",
         std::mem::size_of::<BlockIndex>(),
     );
-    assert_ne!(39, std::mem::size_of::<BlockIndex>());
-    assert_ne!(41, std::mem::size_of::<BlockIndex>());
 }
