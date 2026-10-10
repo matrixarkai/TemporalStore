@@ -235,18 +235,34 @@ fn budget() -> Vec<Budgeted> {
             size: size_of::<IndexItem>(),
             align: align_of::<IndexItem>(),
             // kind, routing_bucket, TWO String handles (the composite page handle and the
-            // model spelling), the Arc<str> object key and Option<Arc<str>> component it shares
-            // with the resident entry, object_id, the shared Option<ElementEntry> payload, deleted.
+            // model spelling), the Arc<str> object key it shares with the resident entry,
+            // object_id, the shared Option<ElementEntry> payload, deleted.
             //
             // THREE FIELDS LEFT AND ONE WAS RENAMED. `block_id`, `size` and `in_log` were each a
             // derivation of the address -- `block_id()`, `length()` and `block_id().is_none()` --
             // and are computed where they are written instead. The address itself is now reached
             // through the payload the resident model map also holds.
+            //
+            // AND THE ELEMENT NAME LEFT TOO, WHICH IS THE 120 -> 104 PINNED BELOW. The
+            // `size_of::<Option<Arc<str>>>()` term that stood in this sum is REMOVED rather than
+            // the total adjusted, so the sum is still reconstructed from the declaration and still
+            // fails naming a field that moved: 118 -> 102 inside a 104-byte struct. With the term
+            // still in, this row printed a field sum of 118 against a size of 104 and the
+            // `fields <= size` assertion below would have fired -- masked only because the width
+            // pin panicked three lines earlier. No row in this list holds an `Option<Arc<str>>`
+            // any more, which is what the `BlockIndex` row above already says of the `opt_arc_str`
+            // binding.
+            //
+            // THERE IS A SECOND, INDEPENDENT COPY OF THIS DECOMPOSITION, and whoever moves this
+            // width next needs both. `index_log::tests::what_every_byte_of_an_index_item_is_spent_on`
+            // reconstructs the same struct as an eight-aligned group plus a tail, and the same
+            // sixteen bytes took that group 112 -> 96. Two copies of one decomposition that DIFFER
+            // are not duplicates: correcting one and leaving the other leaves the stale half to be
+            // read as current.
             fields: size_of::<IndexItemKind>()
                 + size_of::<u32>()
                 + 2 * string
                 + size_of::<std::sync::Arc<str>>()
-                + size_of::<Option<std::sync::Arc<str>>>()
                 + size_of::<u64>()
                 + size_of::<Option<crate::block_store::ElementEntry>>()
                 + size_of::<bool>(),
@@ -377,7 +393,18 @@ fn every_per_item_structure_states_its_width_and_its_padding() {
     assert_eq!(8, size_of::<DeletedObjectIndex>(), "DeletedObjectIndex width moved");
     assert_eq!(24, size_of::<DirtyKeySet>(), "DirtyKeySet width moved");
     assert_eq!(16, size_of::<WalResidentBlock>(), "WalResidentBlock width moved");
-    assert_eq!(120, size_of::<IndexItem>(), "IndexItem width moved");
+    // 104, NOT 120, BECAUSE AN ELEMENT NAME LEFT THE ROW. `IndexItem::component` was an
+    // `Option<Arc<str>>`; `Arc<str>` is a fat pointer, so the option cost two whole words with its
+    // discriminant in the pointer's niche, and those sixteen bytes are the whole of the step. It is
+    // the SAME sixteen bytes, for the SAME reason, as the `BlockIndex` row's 56 -> 40 pinned above:
+    // both structures held that one name, and they gave it up one step apart.
+    //
+    // THE EXACTNESS IS PINNED WHERE THE TYPE IS DECLARED, NOT HERE. `index_log.rs` carries
+    // `size_of::<IndexItem>() == 104` with `!= 103` and `!= 105` beside it as const assertions the
+    // build evaluates, so 104 is exact rather than a bound. A second bracketing pair here would be
+    // dominated by the equality below and unreachable for an 8-aligned type besides -- the same
+    // reason the note on the three 40s above gives for not keeping one.
+    assert_eq!(104, size_of::<IndexItem>(), "IndexItem width moved");
     assert_eq!(104, size_of::<SlabCatalogEntry>(), "SlabCatalogEntry width moved");
     assert_eq!(
         168,
@@ -706,7 +733,20 @@ fn only_the_structures_that_hold_an_address_moved() {
                 // group. `in_log` left too and is worth nothing here: it was a tail bool the
                 // aligner was already padding, so the tail went 7 -> 6 of 8. None of this is
                 // the address shed, so all 32 are named and subtracted.
-                "IndexItem" => 32i64,
+                //
+                // AND SIXTEEN MORE, BECAUSE THE ELEMENT NAME THEN LEFT THIS ROW TOO. The
+                // `component` the paragraph above names as a name this row SHARED with the
+                // resident entry is now gone from both. It was an `Option<Arc<str>>` in the
+                // eight-aligned group -- a fat pointer plus a niche discriminant, so two whole
+                // words -- and it is the whole of this row's 120 -> 104. 32 + 16 = 48.
+                //
+                // THIS ROW AND THE `BlockIndex` ROW BELOW NOW CARRY THE SAME KIND OF TERM FOR THE
+                // SAME KIND OF REASON: one structure each, both of which held that one name, each
+                // subtracting its own sixteen bytes so the ADDRESS claim stays checked against a
+                // live `size_of` instead of being frozen into a constant. Without this term the row
+                // would fail saying "something else moved with it unaccounted" -- true, and it
+                // would read as an address defect.
+                "IndexItem" => 48i64,
                 // THE ENTRY GAVE UP ITS ELEMENT NAME, SIXTEEN BYTES, AND THAT IS NOT THE ADDRESS
                 // SHED EITHER. `BlockIndex::component` was an `Option<Arc<str>>` sitting in the
                 // eight-aligned group; dropping it takes two whole words out, so this row's total

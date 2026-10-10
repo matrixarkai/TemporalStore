@@ -64,7 +64,6 @@ fn index_item(index: usize) -> IndexItem {
         block_ref_key: format!("tenant/1/object/{index:08}"),
         object_key: format!("tenant/1/object/{index:08}").into(),
         model_id: "m".to_string(),
-        component: None,
         object_id: 1,
         // ADDRESS-LESS BY DESIGN: this item is the smallest a delta record can carry,
         // and an address would make it bigger rather than smaller. The `size` it used

@@ -287,9 +287,9 @@ fn the_ported_frame_is_the_live_binary_frame_minus_its_marker_byte() {
 
 /// EVERY ONE OF THE PORTED ITEM'S SEVEN FIELDS IS A VARINT, SO NOTHING ON IT CAN HOLD A CHARACTER.
 ///
-/// This is the structural half of the refusal: the live row's `object_key`, `component` and
-/// `block_ref_key` have no counterpart on the ported item, and not because the port chose
-/// different names -- because the port has no length-delimited field in which text could ride.
+/// This is the structural half of the refusal: the live row's `object_key` and `block_ref_key`
+/// have no counterpart on the ported item, and not because the port chose different names --
+/// because the port has no length-delimited field in which text could ride.
 ///
 /// THE CONTROL IS THE WALKER ITSELF. A walker that cannot SEE a wire-type-2 field would report any
 /// message as character-free, so the same walk is run over the ported RECORD, whose `items` is a
@@ -444,7 +444,6 @@ fn the_fold_stores_the_rows_object_id_as_a_u64_and_the_truncation_is_not_a_membe
         block_ref_key: String::new(),
         object_key: Arc::from(key),
         model_id: "string".to_string(),
-        component: None,
         object_id,
         entry: Some(ElementEntry::from_parts(1, 0, 16, None, None)),
         deleted: false,
@@ -570,7 +569,6 @@ fn the_fold_takes_the_bucket_from_the_item_because_the_entry_comes_back_at_zero(
         block_ref_key: String::new(),
         object_key: Arc::from("the-key"),
         model_id: "string".to_string(),
-        component: None,
         object_id: stable_block_object_id(1, "string", "the-key"),
         entry: Some(ElementEntry::from_parts(1, 0, 16, None, None)),
         deleted: false,
@@ -635,7 +633,6 @@ fn an_index_log_row_states_its_shape_only_by_its_slot_count() {
         block_ref_key: String::new(),
         object_key: Arc::from("the-key"),
         model_id: "string".to_string(),
-        component: None,
         object_id: 0,
         entry: Some(ElementEntry::from_parts(1, 0, 16, None, None)),
         deleted: false,

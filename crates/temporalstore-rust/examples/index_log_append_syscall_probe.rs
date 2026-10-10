@@ -16,7 +16,6 @@ fn small_item(bucket: u32, key: &str) -> IndexItem {
         block_ref_key: key.to_string(),
         object_key: key.into(),
         model_id: "m".to_string(),
-        component: None,
         object_id: 1,
         deleted: false,
         // ADDRESS-LESS BY DESIGN: the smallest row a delta record can carry. An address would

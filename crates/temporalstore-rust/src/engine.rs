@@ -3298,7 +3298,13 @@ fn collect_upsert_index_items(
         let block_ref_key = crate::index_log::block_ref_key_from_parts(
             kind,
             object_key,
-            component.as_deref(),
+            // `None`, AND THIS IS THE HALF THAT CANNOT BE LEFT BEHIND. `strip_block_ref_key_repeat`
+            // clears the stored handle only on an EXACT match against its own derivation, and that
+            // derivation passes `None` now. Naming the element here would make the strip decline on
+            // every container row -- the same drift, with the same cost, that the paragraph above
+            // measured at 2,202 allocations and 82,653 bytes. The two derivations of a page's
+            // handle AGREE from here on: this one and `state::block_index_written_key`.
+            None,
             address.block_slab_id(),
             address.offset(),
             address.length(),
@@ -3311,7 +3317,6 @@ fn collect_upsert_index_items(
             block_ref_key,
             object_key: std::sync::Arc::from(object_key.as_str()),
             model_id: (*kind).to_string(),
-            component: component.as_deref().map(std::sync::Arc::from),
             object_id,
             deleted: false,
             // THE WHOLE PAYLOAD. The three slots this used to fill beside the address --
@@ -3406,12 +3411,10 @@ fn collect_command_index_items_for(
                 // takes the pointer instead of copying the characters per item.
                 object_key: page.object_key.clone(),
                 model_id: page.model_id.clone().to_string(),
-                // `None`, AND READ OFF THE TYPE RATHER THAN OFF THE ENTRY. The row's component
-                // slot stays -- the index log packs it and a row written by an older binary still
-                // carries one -- but an entry has no name to put in it, which is what this
-                // emission was already writing: every entry's component was `None` before the
-                // field was removed, so the bytes this produces do not move.
-                component: None,
+                // THE ROW'S SLOT 5 STAYS AND THE FIELD IS GONE. This emission was already writing
+                // a constant `None` into it, so the bytes it produces do not move: the serializer
+                // writes that same nil for every row now, and a row written by an older binary
+                // still carries whatever name it was given.
                 object_id: page.object_id(shard_id),
                 deleted: page.deleted,
                 // `in_log` here was `page.log_backed()` -- the accessor added when the stored
@@ -4195,9 +4198,17 @@ fn fold_delta_block_items(
                 // page. Both branches are gone with the field: the entry has no slot for an
                 // element name, so there is nothing for the two routes to disagree about.
                 //
-                // THE ITEM STILL CARRIES THE ELEMENT'S OWN NAME and that has not moved -- it is
-                // the full record of the write, which recovery needs to restore the model map.
-                // What stopped being derivable from it is the ENTRY's filing name.
+                // AND THE ROW IS NOT WHERE RECOVERY GETS THE ELEMENT'S NAME. This said the item
+                // "still carries the element's own name ... which recovery needs to restore the
+                // model map". It was wrong about which record recovery reads, and the row has no
+                // such field now. The model maps come back from two places, neither of them this
+                // row: `apply_outcome_item` installs elements from `wal::WalOutcomeItem::component`,
+                // which is the WAL's own record of the write; and `shard.hashes`, `sets`, `zsets`
+                // and `lists` carry `#[serde(default)]` and come back from the index snapshot
+                // directly. What a FOLD needs arrives beside these items in the record's own
+                // `key_states` blobs -- `CARRIED_CONTAINER_FIELDS` carries the member bytes, the
+                // sequence, the field and the address for all four kinds, and
+                // `fold_carried_container_elements` filters them on the ADDRESS, not on any name.
                 // The record carries the id and the address no longer does, so there is nothing
                 // to copy across: the entry derives the id from its own terms.
                 address,

@@ -17106,17 +17106,38 @@ fn a_list_push_files_its_index_item_under_the_pushed_entry() {
         .index_log_store
         .read_delta_records(1, 0)
         .expect("delta records readable");
-    // The newest record carrying a component for this list is the left push's.
-    let component = records
+    // RE-ATTRIBUTED OFF THE ROW AND ONTO THE RECORD'S OWN CARRY, WITH THE SOURCE NAMED.
+    //
+    // This read the pushed sequence out of `IndexItem::component` -- the sequence as sixteen hex
+    // digits, biased -- and the row has no such field any more. The sequence is carried instead in
+    // the record's `key_states` blobs, under `CARRIED_CONTAINER_FIELDS[2]` (`list_elements`), as
+    // the (sequence, address) pair read back out of `shard.lists` after the write. That is the
+    // source `fold_carried_container_elements` reads on a reload, so it is the source this arm
+    // should have been asking: the question "which entry did the push file its item under" still
+    // has an answer, and this is where the answer lives.
+    //
+    // The sequence arrives as a NUMBER rather than as hex text, so the decode this test used to
+    // perform is gone with it -- there is nothing left to mis-parse.
+    let newest_carry = records
         .iter()
         .rev()
-        .flat_map(|record| record.items.iter())
-        .find(|item| item.object_key.as_ref() == "queue" && item.component.is_some())
-        .and_then(|item| item.component.clone())
-        .expect("the push wrote an index item with a component");
-
-    let biased = u64::from_str_radix(&component, 16).expect("the component is 16 hex digits");
-    let seq = biased.wrapping_add(i64::MIN as u64) as i64;
+        .flat_map(|record| record.key_states.iter())
+        .filter(|blob| blob.get("key").and_then(|key| key.as_str()) == Some("queue"))
+        .filter_map(|blob| blob.get("list_elements").and_then(|value| value.as_array()))
+        .next()
+        .expect("no record carried a list element for `queue`, so this arm has nothing to score");
+    // ONE ELEMENT PER PUSH, so "the newest carry" names the left push rather than happening to.
+    assert_eq!(
+        1,
+        newest_carry.len(),
+        "the newest record carried {} list element(s) for `queue`; with more than one, taking the \
+         first is luck rather than the left push",
+        newest_carry.len()
+    );
+    let seq = newest_carry[0]
+        .get(0)
+        .and_then(|sequence| sequence.as_i64())
+        .expect("the carried list element states its sequence");
 
     assert_eq!(
         seq, head_seq,

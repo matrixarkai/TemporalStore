@@ -719,9 +719,13 @@ fn the_entry_without_a_component_is_forty_and_the_stride_forty_eight() {
 ///    `component` as an `Option` with `#[serde(default)]`, so an absent component is not a
 ///    corruption -- it is a shape the decoder is specified to accept. Read off the real serde impls
 ///    rather than off the attributes.
-/// B. THE FOLD FILES IT. `fold_delta_block_items` copies `item.component` straight onto the page
-///    entry, so an item that named nothing produces an index entry that names nothing. This is the
-///    real fold, in the real order the load path runs it.
+/// B. THE FOLD FILES THE PAGE. This said `fold_delta_block_items` copies `item.component`
+///    straight onto the page entry, so an item that named nothing produced an entry that named
+///    nothing. NEITHER the entry nor the item has that field any more, so what the fold files is
+///    an entry naming no element BY CONSTRUCTION rather than by copying an absent name. The leg
+///    still builds the state leg C is about -- it is the real fold, in the real order the load
+///    path runs it -- and the arm picks its planted page out by ADDRESS, which is stricter than
+///    the absence of a name ever was.
 /// C. THE DERIVE IS WHERE IT BECOMES A FIELD. Both arms, over one index holding both states at once.
 ///
 /// # TWO KEYS, BECAUSE ONE KEY CANNOT TELL THE TWO STATES APART DETERMINISTICALLY
@@ -801,12 +805,38 @@ fn a_hash_page_naming_no_field_is_skipped_while_a_genuine_empty_field_name_is_ke
     let _ = &decoded;
 
     // And the delta item, whose EVERY field carries `#[serde(default)]` by stated design, so the
-    // emptiest legal record decodes to an item that names nothing.
+    // emptiest legal record still decodes.
+    //
+    // RESTATED ONTO WHAT CAN STILL BE ASKED, AND DELIBERATELY NOT ONTO THE COUNTER. This asserted
+    // `bare_item.component.is_none()`, and `IndexItem` has no such field -- the claim became
+    // unwritable rather than false. The decoder still READS slot 5, and a name found there is
+    // dropped and COUNTED, by `index_log::stored_element_names_dropped`. This arm does not assert
+    // on that count: it is process-global, and a process-global counter cannot be attributed
+    // across concurrent `#[test]`s -- a mutex does not fix it, which this tree has measured once
+    // already.
+    //
+    // What IS race-free is that neither wire shape is refused, which is leg A's actual claim, and
+    // that a row carrying a name decodes to a WELL-FORMED item rather than to something plausible
+    // and wrong. Both are asserted, because "it decoded" alone would be satisfied by garbage.
     let bare_item: crate::index_log::IndexItem =
         serde_json::from_str("{}").expect("an all-default delta item decodes");
+    let named_item: crate::index_log::IndexItem = serde_json::from_str(
+        r#"{"c":"f0","rb":8539,"ok":"ef-nameless","mi":"hash","d":true}"#,
+    )
+    .expect("a delta row that carries an element name must still decode");
     assert!(
-        bare_item.component.is_none(),
-        "a delta item with no component key decoded with one"
+        !bare_item.deleted && bare_item.entry.is_none(),
+        "the all-default item decoded to something other than all-defaults"
+    );
+    assert_eq!(
+        (8539, "ef-nameless", true),
+        (
+            named_item.routing_bucket,
+            named_item.object_key.as_ref(),
+            named_item.deleted
+        ),
+        "a row carrying an element name decoded with its OTHER slots wrong, so the name is not \
+         merely being dropped -- it is shifting the row"
     );
     println!(
         "[leg A] an absent component is a legal wire shape on both carriers: page entry {} B with \
@@ -916,8 +946,10 @@ fn a_hash_page_naming_no_field_is_skipped_while_a_genuine_empty_field_name_is_ke
         ),
         object_key: nameless_key.into(),
         model_id: "hash".to_string(),
-        // THE WHOLE POINT: this item names no field.
-        component: None,
+        // THE WHOLE POINT USED TO BE THIS FIELD, AND IT IS NOW THE TYPE. The literal stated
+        // `component: None` under the note "this item names no field"; the row has no such field,
+        // so naming no field is what every item is, by construction rather than by choice. The arm
+        // picks this planted page out by ADDRESS, which is what still distinguishes it.
         object_id: stable_block_object_id(1, "hash", nameless_key),
         // THIS FIXTURE USED TO DISAGREE WITH ITS OWN ADDRESS. `from_compact_slab_address`
         // passes `None` for the block id, so the derivation is `in_log = true` and the literal
@@ -1200,18 +1232,26 @@ fn hash_entries_of(engine: &TemporalEngine, key: &str) -> Vec<(String, Vec<u8>)>
 /// # THE CLAIM THIS EXISTS TO STOP BEING A CITATION
 ///
 /// `IndexItem::block_ref_key` is built by `index_log::block_ref_key_from_parts`, whose THIRD term
-/// is the element name: `kind:object_key:component:slab:offset:length:block_id:generation`. Two
-/// routes fill that term and they do not agree about it. `engine::collect_upsert_index_items`
-/// passes the element's own name through; the entry walk in `collect_command_index_items_for`
+/// is the element name: `kind:object_key:component:slab:offset:length:block_id:generation`.
+///
+/// TWO ROUTES FILL THAT TERM, AND THEY USED TO DISAGREE. `engine::collect_upsert_index_items`
+/// passed the element's own name through; the entry walk in `collect_command_index_items_for`
 /// takes the entry's own key from `state::block_index_written_key`, which passes `None` because
-/// the page entry has no element name left to give it. So one physical page is described by two
+/// the page entry has no element name left to give it. So one physical page was described by two
 /// different handle spellings depending on which emitter produced the row.
 ///
-/// That is survivable only while nothing reads the handle back, and until now that was a sentence
-/// in a doc comment rather than a test. `strip_block_ref_key_repeat`'s own documentation rests the
-/// whole omit-and-rebuild scheme on it -- "find WHO READS THE RECONSTRUCTION first" -- and records
-/// that it once got the consequence backwards. A claim load-bearing enough to be corrected in
-/// place is load-bearing enough to be driven.
+/// THEY AGREE NOW -- both pass `None` -- AND THIS GUARD IS WHAT MADE CONVERGING THEM SAFE.
+/// Converging them changes the handle every upsert row stores and every stored row rebuilds, and
+/// that is inert only because nothing reads the handle back. Before this guard existed that was a
+/// sentence in a doc comment: `strip_block_ref_key_repeat`'s documentation rests the whole
+/// omit-and-rebuild scheme on it -- "find WHO READS THE RECONSTRUCTION first" -- and records that
+/// it once got the consequence backwards. A claim load-bearing enough to be corrected in place is
+/// load-bearing enough to be driven.
+///
+/// IT IS NOT RETIRED WITH THE DISAGREEMENT IT LICENSED. The property it states -- that a stored
+/// handle decides nothing -- is what keeps the omit-and-rebuild scheme honest for a later change
+/// to any of the eight terms. And the named arm below is now a spelling NO writer produces, which
+/// makes it a better negative arm than it was while something still wrote it.
 ///
 /// # WHY THE FOLD IS THE RIGHT SUBJECT AND THE ONLY ONE
 ///
@@ -1237,6 +1277,9 @@ fn the_stored_page_handle_decides_nothing_the_fold_files() {
 
     let kind = "hash";
     let object_key = "handle-unread";
+    // ONLY A HANDLE TERM NOW. The row itself cannot carry an element name, so this varies the one
+    // place a name can still appear -- the third term of the handle derivation -- which is exactly
+    // the term under test.
     let component = "f0";
     let address = ElementEntry::from_parts(42, 1_048_576, 4096, Some(7), None);
     let routing_bucket = block_routing_bucket(object_key, 0, OPERATOR_END);
@@ -1285,7 +1328,6 @@ fn the_stored_page_handle_decides_nothing_the_fold_files() {
             block_ref_key: handle.to_string(),
             object_key: object_key.into(),
             model_id: kind.to_string(),
-            component: Some(component.into()),
             object_id,
             entry: Some(address.clone()),
             deleted: false,

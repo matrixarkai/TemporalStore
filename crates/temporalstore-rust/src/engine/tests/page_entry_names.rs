@@ -2124,7 +2124,6 @@ fn a_record_whose_page_handle_was_omitted_still_names_its_page_after_the_fold() 
         block_ref_key: String::new(),
         object_key: KEY.into(),
         model_id: KIND.to_string(),
-        component: None,
         object_id: OBJECT_ID,
         // The fixture asserts above that this address carries no block id, so the three slots
         // this used to state -- 0, LENGTH, true -- are exactly what the codec now derives.
@@ -2138,7 +2137,6 @@ fn a_record_whose_page_handle_was_omitted_still_names_its_page_after_the_fold() 
         block_ref_key: NOT_A_DERIVATION.to_string(),
         object_key: WRONG_KEY.into(),
         model_id: KIND.to_string(),
-        component: None,
         object_id: OBJECT_ID,
         // The fixture asserts above that this address carries no block id, so the three slots
         // this used to state -- 0, LENGTH, true -- are exactly what the codec now derives.

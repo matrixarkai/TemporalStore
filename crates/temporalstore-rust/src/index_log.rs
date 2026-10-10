@@ -655,10 +655,6 @@ pub struct IndexItem {
         deserialize_with = "model_id_either_shape"
     )]
     pub model_id: String,
-    /// Shared with the resident entry the same way `object_key` is. The `Option` still
-    /// costs nothing: a thin pointer's niche carries the discriminant.
-    #[serde(rename = "c", alias = "component", default)]
-    pub component: Option<std::sync::Arc<str>>,
     #[serde(rename = "oi", alias = "object_id", default)]
     pub object_id: u64,
     /// WHERE THE ELEMENT LIVES -- the SHARED payload, the same struct the resident model map
@@ -689,10 +685,28 @@ pub struct IndexItem {
     /// # THE TWELVE SLOTS DID NOT MOVE
     ///
     /// Nothing here changes the wire. The index log is POSITIONAL and carries no struct version,
-    /// so a row whose length does not match the struct decoding it is REFUSED -- and the format
-    /// stamp cannot help, because it guards the NAMED served index. All twelve slots are still
-    /// written; the three derived ones are computed in the serializer and CROSS-CHECKED in the
-    /// conversion from [`IndexItemWire`], which is signal this row did not have before.
+    /// and the format stamp cannot help, because it guards the NAMED served index. All twelve slots
+    /// are still written; the three derived ones are computed in the serializer and CROSS-CHECKED
+    /// in the conversion from [`IndexItemWire`], which is signal this row did not have before.
+    ///
+    /// # A CORRECTION: THE GUARANTEE THIS PARAGRAPH USED TO STATE DOES NOT EXIST
+    ///
+    /// It said a row whose LENGTH does not match the struct decoding it is REFUSED. There is no
+    /// length check anywhere on this path. What refuses a mismatch is SLOT TYPING, and only where
+    /// the types happen to disagree -- measured, with both arms driven: a stored twelve-slot row
+    /// read by an eleven-field struct is refused with "wrong msgpack marker FixStr(2)" when slot 5
+    /// holds a name and "invalid type: unit value, expected u64" when it holds nil. In both cases
+    /// the shift put a string or a nil where a `u64` was expected. Nothing counted the slots.
+    ///
+    /// AND A ROW SHORT AT THE TAIL IS ACCEPTED. Every field here carries `#[serde(default)]`, so a
+    /// seq that simply ENDS EARLY has the rest filled in: measured, a row missing only its last
+    /// slot decodes with `deleted: false` on a row that never said so. A tombstone read as live is
+    /// a resurrection, so the TAIL is the one position where a slot leaving is silent rather than
+    /// loud, and that is a property of position rather than of length.
+    ///
+    /// Leaving the false sentence in place beside a change that relies on slot typing would be
+    /// worse than having no sentence: it is the shape that has misdirected decisions in this file
+    /// before, which is why the wrong version is quoted rather than quietly replaced.
     #[serde(skip)]
     pub entry: Option<ElementEntry>,
     #[serde(rename = "d", alias = "deleted", default)]
@@ -755,6 +769,33 @@ struct IndexItemWire {
     deleted: bool,
 }
 
+/// How many stored rows carried an element name this binary has no field for.
+///
+/// A DETECTOR, NOT A REFUSAL, and the same shape as `DERIVED_SLOT_DISAGREEMENTS` below. Slot 5 of
+/// the positional row still exists and `IndexItemWire` still reads it, but `IndexItem` has no
+/// field to put it in, so the value is DROPPED. A silently dropped stored value is the shape this
+/// file refuses elsewhere, so it is counted where it would otherwise be invisible and a test can
+/// assert on the count.
+///
+/// Dropping it is safe, and that is established rather than assumed: nothing read
+/// `IndexItem::component` outside this file's own handle derivation and its serializer -- the
+/// compiler says so, over 39 diagnostics in 10 files of which the only readers were
+/// `strip_block_ref_key_repeat`, `restore_block_ref_key_repeat` and the positional encoder. The
+/// element identity a fold needs arrives through the record's `key_states` blobs instead, in
+/// `engine::CARRIED_CONTAINER_FIELDS`, for all four container kinds.
+static STORED_ELEMENT_NAMES_DROPPED: std::sync::atomic::AtomicUsize =
+    std::sync::atomic::AtomicUsize::new(0);
+
+/// How many stored rows have carried an element name this binary dropped, since the last reset.
+pub fn stored_element_names_dropped() -> usize {
+    STORED_ELEMENT_NAMES_DROPPED.load(std::sync::atomic::Ordering::Relaxed)
+}
+
+/// Reset the dropped-name count, so a test measures its own rows and not another test's.
+pub fn reset_stored_element_names_dropped() {
+    STORED_ELEMENT_NAMES_DROPPED.store(0, std::sync::atomic::Ordering::Relaxed);
+}
+
 /// How many stored rows disagreed with their own address about a derived slot.
 ///
 /// A DETECTOR, NOT A REFUSAL. Today a row carrying `sz` that disagrees with `address.length()` is
@@ -797,13 +838,19 @@ impl From<IndexItemWire> for IndexItem {
                     .fetch_add(disagreed, std::sync::atomic::Ordering::Relaxed);
             }
         }
+        // THE ELEMENT NAME IS DROPPED HERE, AND THE DROP IS COUNTED. The slot is still read --
+        // `IndexItemWire` declares it, so an older row's name still decodes -- and there is no
+        // field left to carry it into memory. Counting it is what keeps a dropped stored value
+        // from being invisible; see `STORED_ELEMENT_NAMES_DROPPED`.
+        if wire.component.is_some() {
+            STORED_ELEMENT_NAMES_DROPPED.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        }
         Self {
             kind: wire.kind,
             routing_bucket: wire.routing_bucket,
             block_ref_key: wire.block_ref_key,
             object_key: wire.object_key,
             model_id: wire.model_id,
-            component: wire.component,
             object_id: wire.object_id,
             entry: wire.address,
             deleted: wire.deleted,
@@ -815,11 +862,17 @@ impl From<IndexItemWire> for IndexItem {
 /// Pinned because it is the widest thing built per page anywhere in the engine.
 ///
 /// WHAT THIS NUMBER IS MADE OF IS RECONSTRUCTED RATHER THAN RESTATED, by
-/// `tests::what_every_byte_of_an_index_item_is_spent_on`: the eight-aligned fields come to 112
+/// `tests::what_every_byte_of_an_index_item_is_spent_on`: the eight-aligned fields come to 96
 /// and the tail -- the routing bucket, the kind and the ONE remaining flag -- comes to 6, which
 /// the aligner
 /// rounds to 8. The probe asserts each field is really in the group it counts it in, so a field
 /// that MOVES between the two fails there with the group it left.
+///
+/// (96, NOT 112, AND THAT IS ONE MORE DRIFT THAN THE FIVE THE NOTE AT THE END OF THIS CHAIN
+/// COUNTS. This sentence said 112 while the assertion below said 104 -- and 112 plus the 8-byte
+/// tail is 120, the width before the element name came off -- so the first thing a reader met
+/// described the struct as it was one step ago. The arm itself has read 96 since that step; only
+/// the prose lagged, which is exactly the failure the parenthetical below documents.)
 ///
 /// THE TEST IS THE AUTHORITY, NOT THIS PARAGRAPH. It reconstructs the two groups from the
 /// declaration and fails naming the group a field left, which is how the 120 below was caught
@@ -849,7 +902,12 @@ impl From<IndexItemWire> for IndexItem {
 /// documented history of exactly that failure about its own wire format, and the same rule applies
 /// to the resident one: a width chain that does not start where the assertion does is read as the
 /// current width by whoever reads it next.)
-const _: () = assert!(std::mem::size_of::<IndexItem>() == 120);
+const _: () = assert!(std::mem::size_of::<IndexItem>() == 104);
+// BRACKETED, so 104 is EXACT and not a bound. 120 before the element name came off: the name was
+// an `Option<Arc<str>>`, and `Arc<str>` is a fat pointer, so the `Option` was 16 bytes with the
+// discriminant in the pointer's niche.
+const _: () = assert!(std::mem::size_of::<IndexItem>() != 103);
+const _: () = assert!(std::mem::size_of::<IndexItem>() != 105);
 
 /// A field whose value is its default says nothing, and every field here carries
 /// `#[serde(default)]` -- so a reader that meets an absent one fills in the same value it would
@@ -921,13 +979,24 @@ impl IndexItem {
     /// derivation whose output is stored" to "changing it corrupts stored data", and never asked
     /// whether anything reads the output. Every step was true; the conclusion was not.
     ///
-    /// `component` IS still blocked, for a different and stronger reason -- so do not read the
-    /// correction as an opening. Unlike `block_ref_key` it is carried into memory and participates in
-    /// MATCHING: `fold_delta_block_items` sets it on the `BlockIndex`, the upsert retain compares
-    /// `page.component.as_deref() == item.component.as_deref()`, and
-    /// `mark_bucket_index_block_deleted_recording` resolves through it. It is the only discriminator
-    /// between two elements of ONE folded page, which share model id, object key AND address, so
-    /// dropping it collapses them onto one slot. It cannot go until the entry stops being per-element.
+    /// `component` WAS BLOCKED FOR A SECOND AND STRONGER REASON, AND THE BLOCK IS DISCHARGED --
+    /// recorded rather than deleted, because the condition it named is exactly what lifted it. The
+    /// paragraph read: unlike `block_ref_key` the element name is carried into memory and
+    /// participates in MATCHING, because `fold_delta_block_items` set it on the `BlockIndex` and the
+    /// upsert `retain` compared `page.component.as_deref() == item.component.as_deref()`; it was the
+    /// only discriminator between two elements of ONE folded page, which share model id, object key
+    /// AND address; and it "cannot go until the entry stops being per-element".
+    ///
+    /// THE ENTRY HAS STOPPED BEING PER-ELEMENT. `BlockIndex::component` came off when the page entry
+    /// went 56 bytes to 40, so the fold has no field to set, and that comparison is deleted as a
+    /// tautology with the reason at its own site -- both sides were already `None` for every kind.
+    /// What discriminates two elements of one page now is the page's own payload, which names every
+    /// element on it, and the four durable maps, which are keyed by the element.
+    ///
+    /// So `IndexItem::component` is gone too and slot 5 carries a constant nil. The rule below is
+    /// what settled it, asked in the right order: nothing reads the reconstruction. The compiler
+    /// enumerated the readers -- 39 diagnostics across 10 files -- and the only ones were this
+    /// function, its inverse, and the positional encoder.
     ///
     /// THE RULE, in the order the questions have to be asked. For a stored field omitted because it is
     /// derivable: find WHO READS THE RECONSTRUCTION first. If something does, the omission is a
@@ -942,7 +1011,14 @@ impl IndexItem {
         let derived = block_ref_key_from_parts(
             &self.model_id,
             &self.object_key,
-            self.component.as_deref(),
+            // `None`, AND IT MUST MATCH WHAT THE WRITER BUILT. This is a CLEAR-ON-EXACT-MATCH
+            // strip, so if an emitter still names the element in the handle it builds, this
+            // derivation disagrees and the strip DECLINES -- storing the whole composite key on
+            // every row. That is not hypothetical: when `generation` stopped being
+            // `block_id.or(object_id)` the two copies of this derivation drifted and the delta
+            // went from 100 allocations and 4,520 bytes to 2,202 and 82,653 over twenty writes at
+            // a 3,200-member set. `collect_upsert_index_items` passes `None` too, for this reason.
+            None,
             address.block_slab_id(),
             address.offset(),
             address.length(),
@@ -968,7 +1044,13 @@ impl IndexItem {
         self.block_ref_key = block_ref_key_from_parts(
             &self.model_id,
             &self.object_key,
-            self.component.as_deref(),
+            // `None`, the inverse of the strip's own term. A row stored before this change carries
+            // a name in slot 5 and this rebuilds a handle that does not spell it -- which is inert,
+            // because nothing reads the rebuilt handle:
+            // `page_entry_element_naming::the_stored_page_handle_decides_nothing_the_fold_files`
+            // folds the same item under the named, the unnamed and a nonsense handle and gets one
+            // identical entry, down to the handle the map allocated.
+            None,
             address.block_slab_id(),
             address.offset(),
             address.length(),
@@ -1287,7 +1369,16 @@ impl serde::Serialize for IndexItem {
         row.serialize_element(&Handle(&self.block_ref_key))?;
         row.serialize_element(&self.object_key)?;
         row.serialize_element(&Model(&self.model_id))?;
-        row.serialize_element(&self.component)?;
+        // SLOT 5 STAYS, AND NOW CARRIES A CONSTANT NIL. The row is positional with no struct
+        // version of its own, and the served index's stamp cannot help because it guards the NAMED
+        // index -- so REMOVING the slot would stop every stored row decoding. Measured both ways:
+        // a stored twelve-slot row read by an eleven-field struct is refused ("wrong msgpack
+        // marker FixStr(2)" when the slot holds a name, "invalid type: unit value, expected u64"
+        // when it holds nil), and an eleven-slot row read by the twelve-field struct is refused
+        // too. Keeping the slot and writing nil is a change of VALUE, not of shape: every stored
+        // row still decodes, and a row this binary writes is 1 byte shorter than one naming an
+        // element (75 B against 78 B on the measured fixture, 76 B when the name was already nil).
+        row.serialize_element(&None::<&str>)?;
         row.serialize_element(&self.object_id)?;
         // THE THREE DERIVED SLOTS, computed here because here is where they are written.
         //
@@ -4188,7 +4279,6 @@ mod tests {
             block_ref_key: "k".to_string(),
             object_key: "k".into(),
             model_id: "m".to_string(),
-            component: None,
             object_id: 1,
             // ADDRESS-LESS BY DESIGN: this fixture measures a floor, so it stays at
             // the floor. An address would take the row from one nil to a six-slot
@@ -4480,7 +4570,6 @@ mod tests {
             block_ref_key: key.to_string(),
             object_key: key.into(),
             model_id: "m".to_string(),
-            component: None,
             object_id: 1,
             // ADDRESS-LESS BY DESIGN: this fixture measures a floor, so it stays at
             // the floor. An address would take the row from one nil to a six-slot
@@ -5771,7 +5860,6 @@ mod tests {
             block_ref_key: "string:m:0::0:0:126:0:0".to_string(),
             object_key: "m:0".into(),
             model_id: "string".to_string(),
-            component: None,
             object_id: 122110326161599232,
             // ADDRESS-LESS BY DESIGN: this fixture measures a floor, so it stays at
             // the floor. An address would take the row from one nil to a six-slot
@@ -5978,10 +6066,15 @@ mod tests {
         // restore ORDER is exercised. With no address the derive returns early and a reader that
         // restored the key too late would still pass -- which is what the first version of this
         // test did.
-        fn item(key: &str, component: &str) -> IndexItem {
+        // THE PARAMETER THAT VARIED THE FIXTURE IS NOW AN OFFSET, NOT AN ELEMENT NAME. These
+        // items were distinguished only by their component, and nothing can carry one: with the
+        // name gone the four cases below would have built runs of IDENTICAL rows, and a fixture
+        // parameter that varies nothing is how a case list stops testing what it names. The
+        // offset is in the handle derivation, so it varies the thing the round trip is about.
+        fn item(key: &str, offset: u64) -> IndexItem {
             let address = crate::block_store::ElementEntry::from_parts(
                 7,
-                4096,
+                offset,
                 832,
                 None,
                 None,
@@ -5989,7 +6082,7 @@ mod tests {
             let block_ref_key = block_ref_key_from_parts(
                 "feature",
                 key,
-                Some(component),
+                None,
                 address.block_slab_id(),
                 address.offset(),
                 address.length(),
@@ -6002,7 +6095,6 @@ mod tests {
                 block_ref_key,
                 object_key: key.into(),
                 model_id: "feature".to_string(),
-                component: Some(component.into()),
                 object_id: 0,
                 // The three slots this used to state were its own derivation; the codec
                 // computes them where they are written.
@@ -6012,10 +6104,10 @@ mod tests {
         }
 
         let cases: Vec<(&str, Vec<IndexItem>)> = vec![
-            ("shared", vec![item("ctx:event:41", "a"), item("ctx:event:41", "b"), item("ctx:event:41", "c")]),
-            ("shared-empty", vec![item("", "a"), item("", "b")]),
-            ("differing", vec![item("ctx:event:41", "a"), item("ctx:event:99", "b")]),
-            ("single", vec![item("ctx:event:41", "a")]),
+            ("shared", vec![item("ctx:event:41", 4096), item("ctx:event:41", 8192), item("ctx:event:41", 12288)]),
+            ("shared-empty", vec![item("", 4096), item("", 8192)]),
+            ("differing", vec![item("ctx:event:41", 4096), item("ctx:event:99", 8192)]),
+            ("single", vec![item("ctx:event:41", 4096)]),
         ];
 
         for (label, items) in cases {
@@ -6060,7 +6152,10 @@ mod tests {
                 block_ref_key: String::new(),
                 object_key: "ctx:event:41:tenant-7".into(),
                 model_id: "feature".to_string(),
-                component: Some((1_787_429_651_961u64 + index).to_string().into()),
+                // THE ROWS ARE IDENTICAL NOW, AND THAT IS HONEST FOR THIS FIXTURE. They were
+                // distinguished only by a component, which no row can carry. This arm measures a
+                // per-row FLOOR -- address-less, handle-less, by design -- so a run of identical
+                // rows is the floor it is about rather than a weakened case.
                 object_id: 0,
                 // ADDRESS-LESS BY DESIGN: this fixture measures a floor, so it stays at
                 // the floor. An address would take the row from one nil to a six-slot
@@ -6973,7 +7068,6 @@ mod tests {
             block_ref_key: "17665223918442101733".to_string(),
             object_key: "tenant/7/object/000000123".into(),
             model_id: "string".to_string(),
-            component: None,
             object_id: 12_345,
             // AN ADDRESS, DELIBERATELY. This half's subject is that a NON-DEFAULT value in each
             // slot is still written, and the three derived slots only carry non-defaults when
@@ -7082,7 +7176,6 @@ mod tests {
             block_ref_key: handle.to_string(),
             object_key: "tenant/7/object/000000123".into(),
             model_id: "string".to_string(),
-            component: None,
             object_id: 12_345,
             // ADDRESS-LESS BY DESIGN: this fixture measures a floor, so it stays at
             // the floor. An address would take the row from one nil to a six-slot
@@ -7148,7 +7241,6 @@ mod tests {
             block_ref_key: 17_665_223_918_442_101_733u64.to_string(),
             object_key: "tenant/7/object/000000123".into(),
             model_id: "string".to_string(),
-            component: None,
             object_id,
             deleted: false,
             // The address arrives as the closure's parameter, so it becomes the payload directly
@@ -7205,7 +7297,10 @@ mod tests {
     /// So the row is decoded as a POSITIONAL ARRAY and each slot is checked where it sits. That
     /// states the wire contract rather than restating the encoder, and it fails if a slot is
     /// reordered, retired, added, or given a different value -- any of which is a stored-format
-    /// change on a log that is positional, refuses a length mismatch, and carries no version.
+    /// change on a log that is positional and carries no version. (It does NOT "refuse a length
+    /// mismatch" -- see the correction on [`IndexItem::entry`]. A mismatch is refused by SLOT
+    /// TYPING where the types disagree, and a row short at the TAIL is accepted with its missing
+    /// slots defaulted.)
     ///
     /// # THE THREE DERIVED SLOTS ARE THE POINT
     ///
@@ -7215,14 +7310,17 @@ mod tests {
     /// log-resident slot still carries `block_id().is_none()`.
     /// A STORED DELTA ROW THAT NAMES ITS ELEMENT, AS BYTES, CAPTURED BEFORE THE WRITER COULD NOT.
     ///
-    /// 44 bytes, twelve positional slots, produced by `capture_a_stored_row_that_names_its_element`
-    /// below from the production authority and the production strip pass. Slot 5 holds `"f0"`,
-    /// which is what `engine::collect_upsert_index_items` puts there for a hash field.
+    /// 44 bytes, twelve positional slots, produced by the capture helper that stood here, from
+    /// the production authority and the production strip pass. Slot 5 holds `"f0"`, which is what
+    /// `engine::collect_upsert_index_items` used to put there for a hash field, before both the
+    /// field and the helper were removed.
     ///
-    /// NEVER REGENERATE THIS. Once `IndexItem` has no slot for an element name there is no writer
-    /// left that can produce such a row, so these bytes are the only record of the shape. A golden
-    /// holding YESTERDAY'S INPUT keeps its bytes; what moves is the assertions about what this
-    /// binary derives FROM them.
+    /// NEVER REGENERATE THIS, AND THERE IS NOTHING LEFT TO REGENERATE IT WITH.
+    /// `capture_a_stored_row_that_names_its_element` stood below and is DELETED with the field:
+    /// `IndexItem` has no slot for an element name, so the helper could not build the row it
+    /// captured. These bytes are now the only record of the shape in the tree. A golden holding
+    /// YESTERDAY'S INPUT keeps its bytes; what moves is the assertions about what this binary
+    /// derives FROM them -- and arm 4 below is the one that moved.
     const A_STORED_ROW_THAT_NAMES_ITS_ELEMENT: &str =
         "9c00cd215ba0ac756e67617465642f6861736801a26630000795cf0000002a00100000cd100007c00700c2c2";
 
@@ -7253,11 +7351,17 @@ mod tests {
     ///      cleared the composite handle because the writer had built it by the same derivation, so
     ///      the element name is NOT also spelled into the stored handle. Slot 5 is its only home on
     ///      a stored row.
-    ///   4. WHAT THIS BINARY DERIVES FROM IT. `restore_block_ref_key_repeat` rebuilds the handle
-    ///      from the row, and today it rebuilds the spelling that NAMES the element. This is the
-    ///      assertion that moves: with the element name off `IndexItem` the rebuild passes `None`
-    ///      and lands on the spelling `state::block_index_written_key` already produced -- two
-    ///      derivations of one page handle that disagree today and agree afterwards.
+    ///   4. WHAT THIS BINARY DERIVES FROM IT, AND THIS ARM HAS MOVED. It asserted that
+    ///      `restore_block_ref_key_repeat` rebuilt the spelling that NAMES the element, which was
+    ///      true while `IndexItem` had a field to read the name out of. The field is gone, the
+    ///      rebuild passes `None`, and the handle it produces is the PAGE-named spelling -- the
+    ///      same one `state::block_index_written_key` already produced. Two derivations of one
+    ///      page's handle that disagreed before this change and agree after it.
+    ///
+    ///      RESTATED, NOT RE-GOLDENED: the arm still compares two spellings computed from the
+    ///      authority, and still requires them to differ, so it can still fail. What changed is
+    ///      WHICH of the two the rebuild is required to equal. Re-goldening would have meant
+    ///      pasting the new string in and losing the statement.
     #[test]
     fn a_stored_row_naming_its_element_decodes_and_its_name_is_still_readable() {
         let bytes =
@@ -7340,85 +7444,16 @@ mod tests {
         println!("[golden] names the element: {names_the_element:?}");
         println!("[golden] names the page:    {names_the_page:?}");
         assert_eq!(
-            names_the_element, item.block_ref_key,
-            "this binary rebuilds a handle that does NOT name the element, which is the state the \
-             element-name removal produces -- restate this arm onto `names_the_page` and say so, \
-             rather than re-goldening the string"
-        );
-    }
-
-    /// CAPTURE ONLY. Emits the byte literal for a stored delta row that NAMES ITS ELEMENT.
-    ///
-    /// # WHY BYTES, AND WHY THIS IS A ONE-WAY DOOR
-    ///
-    /// Slot 5 of the positional row is `IndexItem::component`, and `collect_upsert_index_items`
-    /// fills it with the element's own name. Once that field is gone there is no writer left in the
-    /// crate that can produce such a row -- not behind a flag and not by hand, because the struct
-    /// has no slot to put a name in -- so BYTES are the only form of it that outlives the field.
-    /// That is the same reason `engine::tests::page_entry_names::UNGATED_STORE_INDEX_AT_STAMP_8`
-    /// was captured as text instead of being regenerated.
-    ///
-    /// # IT MUST NOT BE RE-RUN ONCE SLOT 5 CANNOT BE FILLED
-    ///
-    /// Re-running it then captures a row whose slot 5 is nil, which DESTROYS the fixture while
-    /// leaving every assertion on it passing. The golden records YESTERDAY'S INPUT; the assertions
-    /// about what this binary derives FROM it are the half that is allowed to move.
-    ///
-    /// # PROVENANCE IS THIS BODY
-    ///
-    /// Built through the production authority (`block_ref_key_from_parts`) and the production
-    /// strips, in `append_delta_record`'s own order -- the handle strip first, because it derives
-    /// from `object_key` and blanking that first would make it decline. So the bytes are what the
-    /// writer puts on disk rather than this test's invention.
-    #[test]
-    #[ignore = "capture helper: regenerates the golden; never run it once slot 5 cannot be filled"]
-    fn capture_a_stored_row_that_names_its_element() {
-        let shard: ShardId = 1;
-        let model_id = "hash".to_string();
-        let object_key = "ungated/hash".to_string();
-        let component = "f0";
-        let address =
-            crate::block_store::ElementEntry::from_parts(42, 1_048_576, 4096, Some(7), None);
-
-        let mut item = IndexItem {
-            kind: IndexItemKind::Page,
-            routing_bucket: 8539,
-            // THE AUTHORITY, WITH THE ELEMENT NAMED -- what the upsert emitter passes through for
-            // a hash field, and the spelling the entry walk does NOT produce.
-            block_ref_key: block_ref_key_from_parts(
-                &model_id,
-                &object_key,
-                Some(component),
-                address.block_slab_id(),
-                address.offset(),
-                address.length(),
-                address.block_id().unwrap_or_default(),
-                address.generation().unwrap_or_default(),
-            ),
-            object_key: object_key.clone().into(),
-            model_id: model_id.clone(),
-            component: Some(component.into()),
-            object_id: crate::engine::hashing::stable_block_object_id(
-                shard, &model_id, &object_key,
-            ),
-            entry: Some(address.clone()),
-            deleted: false,
-        };
-        item.strip_block_ref_key_repeat();
-        item.strip_size_repeat();
-        item.strip_address_repeats();
-        item.strip_object_id_repeat(shard);
-
-        let bytes = rmp_serde::to_vec(&item).expect("encode the row positionally");
-        let hex: String = bytes.iter().map(|byte| format!("{byte:02x}")).collect();
-        println!("[capture] {} B", bytes.len());
-        println!(
-            "[capture] stored handle after the strip: {:?} (empty means the strip fired, so slot \
-             5 is the only place this row names its element)",
+            names_the_page, item.block_ref_key,
+            "this binary rebuilt {:?}, which is not the page-named spelling. Both derivations of a \
+             page's handle pass `None` now -- this one and `state::block_index_written_key` -- so a \
+             handle that names the element means an element name has come back to one of them",
             item.block_ref_key
         );
-        println!("[capture] object_id after the strip: {}", item.object_id);
-        println!("[capture] hex = \"{hex}\"");
+        assert_ne!(
+            names_the_element, item.block_ref_key,
+            "the rebuild still names the element, so the two derivations have not converged"
+        );
     }
 
     #[test]
@@ -7431,7 +7466,6 @@ mod tests {
             block_ref_key: "17665223918442101733".to_string(),
             object_key: "tenant/7/object/000000123".into(),
             model_id: "string".to_string(),
-            component: Some("field-0".into()),
             object_id: 12_345,
             entry: Some(address.clone()),
             deleted: false,
@@ -7449,10 +7483,11 @@ mod tests {
         assert_eq!(
             12,
             slots.len(),
-            "the row has {} slots, not 12. The index log is positional and refuses a row whose \
-             length does not match the struct decoding it, so a slot leaving or arriving refuses \
-             every stored row -- and the format stamp cannot help, because it guards the NAMED \
-             served index.",
+            "the row has {} slots, not 12. The index log is positional and carries no version, \
+             and the format stamp cannot help because it guards the NAMED served index. A slot \
+             leaving or arriving in the MIDDLE stops stored rows decoding -- by slot typing, not by \
+             any length check -- and one leaving the TAIL is worse, because `serde(default)` fills \
+             it in and the row then decodes wrongly in silence.",
             slots.len(),
         );
 
@@ -7479,6 +7514,19 @@ mod tests {
         );
         // And slot 11 is the tombstone, which is still a field.
         assert_eq!(Some(false), slots[11].as_bool(), "slot 11 must carry `deleted`");
+
+        // SLOT 5 IS A CONSTANT NIL, AND THIS IS A TRIPWIRE RATHER THAN A PIN. The slot stays on
+        // the wire because removing it would stop every stored row decoding, and `IndexItem` has
+        // no field for it, so the encoder writes nil for every row of every kind. A value here
+        // means an element name has come back to the row; the fixture above used to put
+        // `"field-0"` in it, so this arm replaces a pin on a value with a statement that there is
+        // no value to pin.
+        assert!(
+            slots[5].is_null(),
+            "slot 5 carries {:?}, not the constant nil the encoder writes -- an element name has \
+             come back to the index-log row",
+            slots[5]
+        );
         println!("[slots] 12 positional slots, with 7/9/10 carrying their derivation");
 
         // AND THE NAMED SHAPE IS NOT THIS ROW'S TO WRITE, which is worth saying because it
@@ -7549,7 +7597,6 @@ mod tests {
             block_ref_key: "k".to_string(),
             object_key: "tenant/1/object/9".into(),
             model_id: "feature".to_string(),
-            component: Some("a".into()),
             object_id: 0,
             entry: Some(address.clone()),
             deleted: false,
@@ -7603,6 +7650,146 @@ mod tests {
         println!(
             "[derived-slots] a planted stored disagreement was counted: {}",
             derived_slot_disagreements()
+        );
+    }
+
+    /// THE DROPPED ELEMENT NAME IS COUNTED, AND THE RESET IS WHAT MAKES THAT A MEASUREMENT.
+    ///
+    /// `IndexItemWire` still declares slot 5, so a row written before the field came off still
+    /// decodes and still hands its name to the conversion -- which has nowhere left to put it. The
+    /// drop is invisible except through `STORED_ELEMENT_NAMES_DROPPED`, and until this arm existed
+    /// nothing read that counter at all: `reset_stored_element_names_dropped` had NO CALLER, so no
+    /// arm could tell "counted correctly" from "never incremented". The instrumentation added to
+    /// prove the name is accounted for was itself unexercised. A repo-wide Python guard over the
+    /// Rust sources found that; the Rust suite could not, because an uncalled function is not a
+    /// failing test.
+    ///
+    /// THE RESET IS THE INSTRUMENT AND NOT A TIDY-UP. Without it this arm reads whatever the rest
+    /// of the binary happened to leave in a process-global counter, which is a reading and not a
+    /// measurement. With it, the count below is exactly the rows THIS arm converted.
+    ///
+    /// THE CONTROLS ARE WHAT MAKE THE NUMBER MEAN "DROPPED NAMES", and there are two, because a
+    /// counter incremented once per DECODE would satisfy any assertion that only counts upward:
+    ///
+    ///   * A WIRE DECODE MUST NOT MOVE IT. `IndexItem` rides `serde(from = "IndexItemWire")`, so
+    ///     the count belongs to the CONVERSION; deserializing the same bytes into the wire type
+    ///     runs no conversion and must leave the counter where it was.
+    ///   * A ROW WHOSE SLOT 5 IS NIL MUST NOT MOVE IT. That is the shape the encoder writes today,
+    ///     so it is the row the counter meets most often and the one it must stay silent on.
+    ///
+    /// The named row is converted THREE times and the nil row TWICE, so the expected count is 3.
+    /// No other rule reaches that figure: "one per conversion" gives 5, "one per decode of any
+    /// kind" gives 6, and "once per arm" gives 1.
+    ///
+    /// THE COUNTER IS PROCESS-GLOBAL, WHICH IS A STATED LIMIT RATHER THAN AN OVERSIGHT. An exact
+    /// assertion on a global can be perturbed by a concurrent arm, and this tree has already
+    /// measured that a mutex does not fix that. One other arm in this file converts a row carrying
+    /// a name -- `a_stored_row_naming_its_element_decodes_and_its_name_is_still_readable`, over the
+    /// 44-byte golden -- so the message below names it: a count ABOVE the expectation is that
+    /// collision and not a defect in the counter. Exactness is kept rather than traded for a
+    /// one-sided `>=`, because `>=` is satisfied by exactly the concurrent increment it would be
+    /// hiding, and the gating run is single-threaded.
+    #[test]
+    fn a_stored_element_name_is_counted_when_it_is_dropped_and_a_nil_slot_is_not() {
+        // Planted as a MAP, because no writer left in this binary can build a row that names an
+        // element -- the field it would have come from is gone.
+        #[derive(serde::Serialize)]
+        struct PlantedRow {
+            #[serde(rename = "ok")]
+            object_key: std::sync::Arc<str>,
+            #[serde(rename = "mi")]
+            model_id: String,
+            #[serde(rename = "c")]
+            component: Option<std::sync::Arc<str>>,
+        }
+        let plant = |named: Option<&str>| {
+            encode_as_map(
+                &PlantedRow {
+                    object_key: "tenant/1/object/9".into(),
+                    model_id: "feature".to_string(),
+                    component: named.map(std::sync::Arc::from),
+                },
+                INDEX_LOG_SHAPE_DELTA,
+            )
+        };
+        let named = plant(Some("f0"));
+        let nil = plant(None);
+        assert_ne!(
+            named, nil,
+            "the two planted rows are the same bytes, so the control is the subject"
+        );
+
+        // VACUITY FIRST: a counter that did not start at zero makes every figure below a reading
+        // of some other arm's rows.
+        reset_stored_element_names_dropped();
+        assert_eq!(
+            0,
+            stored_element_names_dropped(),
+            "the reset left {} in the counter",
+            stored_element_names_dropped()
+        );
+
+        // CONTROL ONE: the wire decode recovers the name and must not count it. Both halves --
+        // "the name is absent from the item" is also true of a row that never carried one, so the
+        // name is shown to ARRIVE before it is shown to be dropped.
+        let wire: IndexItemWire =
+            decode_index_payload(&named).expect("the planted row decodes as a wire row");
+        assert_eq!(
+            Some("f0"),
+            wire.component.as_deref(),
+            "slot 5 did not reach the wire row, so the drop is not what loses the name"
+        );
+        assert_eq!(
+            0,
+            stored_element_names_dropped(),
+            "a WIRE decode moved the dropped-name count to {}. The count belongs to the \
+             `serde(from)` conversion, so a decode that runs no conversion must not move it",
+            stored_element_names_dropped()
+        );
+
+        // THE SUBJECT: three conversions of the named row. The other slots are asserted intact,
+        // because "it decoded" is satisfied by garbage.
+        for round in 1..=3 {
+            let item: IndexItem =
+                decode_index_payload(&named).expect("the planted row converts to an item");
+            assert_eq!(
+                "tenant/1/object/9",
+                &*item.object_key,
+                "round {round} lost the object key as well, so this is not a clean drop of one slot"
+            );
+            assert_eq!("feature", item.model_id, "round {round} lost the model spelling");
+        }
+
+        // CONTROL TWO: two conversions of the nil row, which must add nothing.
+        let after_named = stored_element_names_dropped();
+        for round in 1..=2 {
+            let item: IndexItem =
+                decode_index_payload(&nil).expect("a row whose slot 5 is nil converts");
+            assert_eq!("feature", item.model_id, "the nil row did not convert in round {round}");
+        }
+        assert_eq!(
+            after_named,
+            stored_element_names_dropped(),
+            "converting a row whose slot 5 is NIL moved the count from {} to {} -- the counter is \
+             counting conversions, not dropped names",
+            after_named,
+            stored_element_names_dropped()
+        );
+
+        println!(
+            "[dropped-names] 1 wire decode + 3 named conversions + 2 nil conversions = {}",
+            stored_element_names_dropped()
+        );
+        assert_eq!(
+            3,
+            stored_element_names_dropped(),
+            "the dropped-name count is {} and not the 3 names this arm actually dropped. BELOW 3 \
+             means the conversion stopped counting a name it has no field for, which is the silent \
+             drop this counter exists to prevent. ABOVE 3, under a parallel run, is the \
+             process-global collision this arm's doc names: \
+             `a_stored_row_naming_its_element_decodes_and_its_name_is_still_readable` converts the \
+             44-byte golden, which also carries a name",
+            stored_element_names_dropped()
         );
     }
 
@@ -7681,7 +7868,6 @@ flag exists to say",
             block_ref_key: 17_665_223_918_442_101_733u64.to_string(),
             object_key: "tenant/7/object/000000123".into(),
             model_id: "string".to_string(),
-            component: None,
             object_id,
             deleted: false,
             // The address arrives as the closure's parameter, so it becomes the payload directly
@@ -7727,7 +7913,6 @@ flag exists to say",
             block_ref_key: 17_665_223_918_442_101_733u64.to_string(),
             object_key: "tenant/7/object/000000123".into(),
             model_id: "string".to_string(),
-            component: None,
             object_id: 12_345_678_901_234_567u64,
             // The three slots this used to state were its own derivation; the codec
             // computes them where they are written.
@@ -7838,8 +8023,6 @@ flag exists to say",
         //   block_ref_key, model_id             : String                (2 x 24)
         //   object_key                          : Arc<str>              (16, a thin pointer and a
         //                                          length, shared with the resident entry)
-        //   component                           : Option<Arc<str>>      (16, the pointer's niche
-        //                                          holds the discriminant)
         //   address                             : Option<BlockAddress>  (24: a 16-byte address
         //                                          with no niche, so the discriminant costs a word)
         //   object_id                           : u64                   (1 x 8)
@@ -7848,9 +8031,13 @@ flag exists to say",
         // `address.block_id()` and `address.length()` -- so they are computed where they are
         // written instead of stored beside it. The payload that replaced the address is the same
         // width: `Option<ElementEntry>` is 24, exactly what `Option<BlockAddress>` was.
+        // TWO WORDS LEFT THIS GROUP, AND THE PRICE IS THE DISTANCE. The element name was an
+        // `Option<Arc<str>>`, and `Arc<str>` is a FAT pointer, so the option cost two whole words
+        // with its discriminant in the pointer's niche. 112 -> 96, which with the 8-byte tail is
+        // the struct's 104. The TERM IS REMOVED rather than the total adjusted, so the sum is
+        // still reconstructed from the types and still fails naming the group a field left.
         let eight_aligned = 2 * size_of::<String>()
             + size_of::<std::sync::Arc<str>>()
-            + size_of::<Option<std::sync::Arc<str>>>()
             + size_of::<Option<crate::block_store::ElementEntry>>()
             + size_of::<u64>();
         //   routing_bucket : u32            (4)
@@ -7867,8 +8054,20 @@ flag exists to say",
         println!("  total               {:>4} B", size_of::<IndexItem>());
 
         assert_eq!(
-            112, eight_aligned,
-            "the eight-aligned group is {eight_aligned} B, not 112 -- a field entered or left it",
+            96, eight_aligned,
+            "the eight-aligned group is {eight_aligned} B, not 96 -- a field entered or left it",
+        );
+        // THE STEP IS ASSERTED AS A DISTANCE, not left as two numbers in a comment. This group was
+        // 112 while the row named its element, and the sixteen bytes that left are exactly what an
+        // `Option<Arc<str>>` costs -- so the identity below holds only while THAT is the width that
+        // left. A later change taking something else out of this group breaks it rather than
+        // quietly inheriting the number.
+        assert_eq!(
+            112,
+            eight_aligned + size_of::<Option<std::sync::Arc<str>>>(),
+            "the group plus the element name's own width is {}, not the 112 it was before the name \
+             came off -- so 96 was not reached by removing an `Option<Arc<str>>`",
+            eight_aligned + size_of::<Option<std::sync::Arc<str>>>(),
         );
         assert_eq!(6, tail, "the tail is {tail} B of field, not 6");
         assert_eq!(8, rounded_tail, "the tail rounds to {rounded_tail}, not 8");
@@ -7945,7 +8144,6 @@ flag exists to say",
             ),
             object_key: object_key.clone().into(),
             model_id: model_id.clone(),
-            component: None,
             object_id: crate::engine::hashing::stable_block_object_id(shard, &model_id, &object_key),
             // The three slots this used to state were its own derivation; the codec
             // computes them where they are written.
@@ -7981,7 +8179,10 @@ flag exists to say",
             ("block handle", one(&Handle(&item.block_ref_key))),
             ("object_key", one(&item.object_key)),
             ("model", one(&Model(&item.model_id))),
-            ("component", one(&item.component)),
+            // SLOT 5, PRICED AS THE SERIALIZER WRITES IT. It is no longer a field; the encoder
+            // puts a constant nil there, so this prices the nil rather than reading a value off
+            // the struct -- the same treatment the three derived slots below already get.
+            ("component", one(&None::<&str>)),
             ("object_id", one(&item.object_id)),
             // THE THREE DERIVED SLOTS, priced as the SERIALIZER writes them. They are no longer
             // fields, but all twelve slots are still on the wire, so this stays a measurement of
@@ -8020,7 +8221,10 @@ flag exists to say",
             ("block handle", one(&Handle(&item.block_ref_key))),
             ("object_key", one(&item.object_key)),
             ("model", one(&Model(&item.model_id))),
-            ("component", one(&item.component)),
+            // SLOT 5, PRICED AS THE SERIALIZER WRITES IT. It is no longer a field; the encoder
+            // puts a constant nil there, so this prices the nil rather than reading a value off
+            // the struct -- the same treatment the three derived slots below already get.
+            ("component", one(&None::<&str>)),
             ("object_id", one(&item.object_id)),
             // THE THREE DERIVED SLOTS, priced as the SERIALIZER writes them. They are no longer
             // fields, but all twelve slots are still on the wire, so this stays a measurement of
@@ -8119,7 +8323,6 @@ flag exists to say",
                         ),
                         object_key: object_key.clone().into(),
                         model_id: model_id.clone(),
-                        component: None,
                         object_id: crate::engine::hashing::stable_block_object_id(
                             shard, &model_id, &object_key,
                         ),
@@ -8234,7 +8437,6 @@ flag exists to say",
                         ),
                         object_key: object_key.clone().into(),
                         model_id: model_id.clone(),
-                        component: None,
                         object_id: crate::engine::hashing::stable_block_object_id(
                             shard, &model_id, &object_key,
                         ),
@@ -8443,7 +8645,41 @@ flag exists to say",
         );
     }
 
-    /// WHAT A CONTAINER ELEMENT'S NAME COSTS A DELTA ROW, AT THREE NAME LENGTHS.
+    /// THE HOISTED COMPONENTLESS ROW IS THIRTY BYTES, AND THE KIND SPELLING IS NOT A CONFOUND.
+    ///
+    /// # WHAT THIS ARM MEASURED, AND WHY THAT HALF IS DELETED RATHER THAN LEFT RED
+    ///
+    /// It was `what_a_container_elements_row_costs`, and it priced an element name on a delta row
+    /// at three name lengths -- 1, 16 and 64, the last crossing msgpack's fixstr boundary. All
+    /// three arms and all three verdicts are DELETED, because a row cannot carry an element name
+    /// any more: `IndexItem` has no such field and the encoder writes a constant nil into slot 5.
+    ///
+    /// THE RESULT IS WRITTEN HERE RATHER THAN LEFT AS A DELETION, because a deletion leaves a
+    /// reviewer nothing to read. What the three verdicts claimed was: a name is not free on any
+    /// arm; it is paid PER ROW at its own length plus a header, so between `length` and
+    /// `length + 2`; and at 64 characters the name alone outweighed the entire 30-byte
+    /// componentless row. The post-change measurement is that a 1-character name left the row at
+    /// 30 B against a 30 B control -- a delta of ZERO, which is what reddened the first verdict.
+    ///
+    /// THE PRE-CHANGE FIGURES ARE NOT QUOTED, AND THAT IS DELIBERATE. The arm was not re-run on
+    /// the base in this session, so the only numbers in hand are the BOUNDS its own assertions
+    /// stated, not measurements. Writing 2, 17 and 66 here because the bounds imply them would be
+    /// arithmetic wearing a measurement's clothes.
+    ///
+    /// # AND THE COST DID NOT VANISH, IT MOVED -- WHICH IS THE ACCOUNTING THAT MATTERS
+    ///
+    /// Zero per ROW is not zero. A container element's name is carried once per touched element in
+    /// the delta record's own `key_states` blobs, under `engine::CARRIED_CONTAINER_FIELDS`, beside
+    /// the address. So the charge moved from one copy per PAGE ENTRY to one copy per TOUCHED
+    /// ELEMENT per record, and anyone pricing it has to price it there. This arm does not measure
+    /// that, and says so rather than leaving a zero to be read as a saving.
+    ///
+    /// # WHAT SURVIVES, AND IT IS THE TWO CONTROLS
+    ///
+    /// The 30-byte pin and the kind-spelling control are unaffected by the removal -- both rows
+    /// were already componentless -- and both catch a real failure: a fixture that stopped
+    /// hoisting, or a strip that stopped firing, moves them. They are kept and the arm is renamed
+    /// to what it now does.
     ///
     /// EVERY ROW FIGURE THIS CAMPAIGN PUBLISHED WAS MEASURED ON A ROW WITH `component: None`.
     /// 119 B unstripped and 55 B stripped come from `what_every_byte_of_an_index_item_is_spent_on`;
@@ -8472,13 +8708,18 @@ flag exists to say",
     /// `model_id_as_number_when_it_is_known` and both are known; without this arm the element
     /// deltas below would silently carry the model slot's difference as well.
     #[test]
-    fn what_a_container_elements_row_costs() {
+    fn the_hoisted_row_is_thirty_bytes_and_the_kind_spelling_is_not_a_confound() {
         let shard: ShardId = 7;
         let object_key = "tenant/7/object/000000123".to_string();
 
         // The eight-blocks-of-one-object fixture of the mechanism pricing above, verbatim apart
         // from the two things being varied: the model spelling and the element name.
-        let row_of = |model: &str, component: Option<&str>| -> usize {
+        // THE ELEMENT-NAME PARAMETER IS GONE, NOT RENAMED TO `_component`. It could no longer
+        // reach the row, so keeping it would have made the three arms below encode the SAME row
+        // three times and compare it with itself -- a fixture parameter that varies nothing, which
+        // is how an arm reads as a tree fact while asserting only its own setup. A caller that
+        // tries to name an element is now a compile error instead.
+        let row_of = |model: &str| -> usize {
             let model_id = model.to_string();
             let mut items: Vec<IndexItem> = (0..8u64)
                 .map(|index| {
@@ -8492,10 +8733,15 @@ flag exists to say",
                     let mut item = IndexItem {
                         kind: IndexItemKind::Page,
                         routing_bucket: 8539,
+                        // `None`, NOT THE LOOP'S OWN NAME. The strip clears the stored handle
+                        // only on an exact match against a derivation that passes `None`, so
+                        // naming the element here would make it DECLINE and this fixture would
+                        // price a row carrying a whole composite key -- a shape no writer
+                        // produces.
                         block_ref_key: block_ref_key_from_parts(
                             &model_id,
                             &object_key,
-                            component,
+                            None,
                             address.block_slab_id(),
                             address.offset(),
                             address.length(),
@@ -8504,7 +8750,6 @@ flag exists to say",
                         ),
                         object_key: object_key.clone().into(),
                         model_id: model_id.clone(),
-                        component: component.map(std::sync::Arc::from),
                         object_id: crate::engine::hashing::stable_block_object_id(
                             shard, &model_id, &object_key,
                         ),
@@ -8528,16 +8773,16 @@ flag exists to say",
             // the cost of a writer that gave up, and it reads identically to an expensive element.
             assert!(
                 items[0].block_ref_key.is_empty(),
-                "the composite-handle strip did not fire for model {model} component {component:?}",
+                "the composite-handle strip did not fire for model {model}",
             );
             assert!(
                 items[0].entry.is_some(),
-                "model {model} component {component:?} must carry a payload, so its size slot is \
-                 the sentinel by construction",
+                "model {model} must carry a payload, so its size slot is the sentinel by \
+                 construction",
             );
             assert_eq!(
                 0, items[0].object_id,
-                "the object-id strip did not fire for model {model} component {component:?}",
+                "the object-id strip did not fire for model {model}",
             );
 
             // The record-level hoist, which is what makes this the COMMON row rather than the
@@ -8557,7 +8802,7 @@ flag exists to say",
         // THE CONTROL: the componentless hoisted row every published figure in this campaign was
         // measured against.
         const CONTROL_ROW_BYTES: usize = 30;
-        let control = row_of("string", None);
+        let control = row_of("string");
         assert_eq!(
             CONTROL_ROW_BYTES, control,
             "the componentless hoisted row measured {control} B, not the {CONTROL_ROW_BYTES} B \
@@ -8566,7 +8811,7 @@ flag exists to say",
         );
 
         // THE SECOND CONTROL: the kind name is not what the deltas below are measuring.
-        let control_hash = row_of("hash", None);
+        let control_hash = row_of("hash");
         assert_eq!(
             control, control_hash,
             "a componentless row costs {control} B under `string` and {control_hash} B under \
@@ -8574,67 +8819,12 @@ flag exists to say",
              and the element deltas below would carry that difference too",
         );
 
-        // Three element-name lengths. 1 is the shortest a field can be, 16 is an ordinary field
-        // name, and 64 crosses msgpack's fixstr boundary at 32 -- so the header width is exercised
-        // as well as the payload.
-        let mut measured: Vec<(usize, usize)> = Vec::new();
-        for length in [1usize, 16, 64] {
-            let name = "e".repeat(length);
-            measured.push((length, row_of("hash", Some(&name))));
-        }
-
+        println!("=== the hoisted componentless row ===");
+        println!("  string  {control} B");
+        println!("  hash    {control_hash} B");
         println!(
-            "=== a container element's row, against a {control} B componentless control ==="
-        );
-        for (length, bytes) in &measured {
-            println!(
-                "  element name {length:>3} chars  {bytes:>4} B   +{:>3} B over the control  \
-                 ({:>5.1}% of it)",
-                bytes - control,
-                (bytes - control) as f64 / control as f64 * 100.0,
-            );
-        }
-
-        // ------------------------------------------------------------------
-        // THE VERDICTS.
-        // ------------------------------------------------------------------
-
-        // (1) AN ELEMENT NAME IS NOT FREE ON ANY ARM. This is the claim the campaign's
-        //     componentless rows could not make either way.
-        for (length, bytes) in &measured {
-            assert!(
-                *bytes > control,
-                "an element name of {length} chars left the row at {bytes} B against a {control} B \
-                 componentless control, so the name is being written for free somewhere",
-            );
-        }
-
-        // (2) IT IS PAID PER ROW AT THE LENGTH OF THE NAME, not at some pooled or shared cost.
-        //     Each delta is the name's own bytes plus msgpack's header, minus the one byte a
-        //     `nil` component spends -- so between `length` and `length + 1`. A mechanism that
-        //     shared the name across the rows of one object would show up here as a delta that
-        //     stopped tracking the length.
-        for (length, bytes) in &measured {
-            let delta = bytes - control;
-            assert!(
-                delta >= *length && delta <= length + 2,
-                "an element name of {length} chars added {delta} B to the row; a per-row name \
-                 costs its own length plus a header, so anything outside {length}..={} means the \
-                 slot is no longer written per row at its full length",
-                length + 2,
-            );
-        }
-
-        // (3) THE HEADLINE, AS AN ASSERTION. At 64 characters the element name alone is worth
-        //     more than the entire componentless row -- which is the figure that makes "identity
-        //     is already down to a couple of bytes" false of the rows that carry one.
-        let (long_length, long_bytes) = *measured.last().expect("three arms");
-        assert!(
-            long_bytes - control > control,
-            "a {long_length}-char element name added {} B to a {control} B row; the premise of \
-             this probe is that a long element name can outweigh the whole componentless row, and \
-             on this encoding it did not",
-            long_bytes - control,
+            "  the three element-name arms that stood here are deleted: a row cannot carry an \
+             element name, and their result is recorded in this arm's doc"
         );
     }
 
