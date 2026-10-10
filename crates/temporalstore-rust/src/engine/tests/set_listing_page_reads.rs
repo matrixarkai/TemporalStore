@@ -474,12 +474,19 @@ fn a_second_set_listing_reads_no_pages_at_all_because_the_answer_is_cached() {
 ///
 /// AND IT IS NOT RESTATED AS `component.is_none()`, WHICH IS WHY THAT IS SAID HERE. Production
 /// writes the `None` as a literal, so an `is_none()` assertion compares a constant against itself:
-/// it would read like a guard over the deletion while being unable to fail. What actually guards
-/// the deletion is a SIGNATURE TRIPWIRE -- `element_ordinal_reuse` pins this function's exact
-/// declaration text including `-> Vec<(Option<Arc<str>>, ElementEntry)>` -- so a reader gaining a
-/// component back cannot do it quietly. The `MEMBERS * width * 2` name-byte assertion goes with the
-/// copy it measured, for the same reason: the term is zero now, and zero is not measurable off a
-/// hardcoded `None`.
+/// it would read like a guard over the deletion while being unable to fail. The
+/// `MEMBERS * width * 2` name-byte assertion goes with the copy it measured, for the same reason:
+/// the term is zero now, and zero is not measurable off a hardcoded `None`.
+///
+/// WHAT DOES GUARD THE DELETION IS A CONST-EVALUATED FIELD SUM, and it is named precisely because
+/// the obvious candidate does not. `state.rs` reconstructs `BlockIndex`'s width from its seven
+/// fields BY TYPE and asserts the sum is 40 and equal to `size_of::<BlockIndex>()`, so re-adding a
+/// `component: Option<Arc<str>>` puts the sum at 56 and fails to COMPILE -- it cannot be a test
+/// nothing runs. The signature tripwire in `element_ordinal_reuse`, which pins this function's
+/// exact declaration text including `-> Vec<(Option<Arc<str>>, ElementEntry)>`, is a weaker and
+/// different guard: it fires when the pair's SHAPE changes or a caller gains a component argument,
+/// and it would NOT fire on the first slot merely starting to be populated. Both are cited rather
+/// than one, because an earlier draft of this paragraph credited the tripwire with the whole job.
 ///
 /// # WHAT IS ASSERTED INSTEAD, AND WHY IT CAN FAIL
 ///
