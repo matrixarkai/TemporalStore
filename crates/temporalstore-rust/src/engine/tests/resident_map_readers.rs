@@ -303,6 +303,13 @@ fn resident_members(engine: &TemporalEngine, key: &str) -> BTreeSet<Vec<u8>> {
 /// of its return paths and the walk now hands back addresses and nothing else. The helper returned
 /// an empty set for every key, which is what fired the per-row controls.
 ///
+/// AND THE DERIVED SIDE OF THE MERGE IS EMPTY, measured by handing `fill_absent_elements` an empty
+/// persisted map and finding `shard.sets` empty afterwards. Rebuilding a set's members from the live
+/// page index needs the component the entry no longer carries, so nothing arrives from that side:
+/// the resident set map is wholly the durable snapshot's, and the address test is the only filter
+/// there is. That is why these arms compare the map against the SERVING path and not against a
+/// second derivation of the same thing.
+///
 /// AND THE PAGE PAYLOAD IS NOT THE SUBSTITUTE, measured rather than argued: a removal leaves the
 /// element's page live and still stating the element, holding the removal in a SEPARATE tombstone
 /// page, so a payload-derived population OVER-REPORTS and would agree with the resident map -- which

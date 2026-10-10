@@ -486,9 +486,24 @@ fn a_second_set_listing_reads_no_pages_at_all_because_the_answer_is_cached() {
 /// TWO THINGS, both over sources that still exist and can disagree.
 ///
 /// FIRST, THE MEMBER BYTES ARE STILL RECOVERABLE WITHOUT A PAGE READ -- just not from the index.
-/// They are in the page PAYLOAD, as the element key each item is filed under, and the set decoded
-/// from there is asserted equal to the set the listing returns. Those are two independent walks
-/// over two artefacts, so a page whose payload disagreed with what the listing serves fails this.
+/// They are in the page PAYLOAD, and the two sides of the equality are TWO DIFFERENT FIELDS of it,
+/// which is worth naming because the copies being distinct is the whole claim. The left is the
+/// element KEY each item is filed under, decoded by `component_from_element_key`. The right is what
+/// the listing serves, which is the item's stored VALUE -- `derive_membership` folds the pages and
+/// hands back `derived.live.into_values()`. Both were written by one call site, which is what makes
+/// them a redundancy and not a check.
+///
+/// THREE MUTATIONS WERE DRIVEN TO PROVE THEY ARE INDEPENDENT, AND THE FIRST TWO COULD NOT, so they
+/// are recorded here rather than left for the next reader to repeat:
+///
+///   - truncating the component moved BOTH sides, because the serving path keys its fold by the
+///     component: 12 members collided into 2 and the DENOMINATOR fired, not the equality;
+///   - truncating the served VALUE collided them too, since this fixture's members differ only in
+///     their last bytes -- again the denominator;
+///   - flipping the first byte of the ELEMENT KEY is the one that isolates it. Every member here
+///     starts with the same digit, so all twelve stay distinct, the listing still serves what was
+///     written, and only the key-decoded copy moves. That reddens this equality and nothing above
+///     it.
 ///
 /// SECOND, AND THIS IS THE PART THE OLD ARM COULD NOT HAVE STATED: the walk now returns one pair
 /// per PAGE rather than one per element, so after a FOLD it hands back strictly fewer pairs than
@@ -656,6 +671,14 @@ fn every_member_a_set_listing_returns_is_already_spelled_by_its_component() {
 /// `bucket_index_component_block_addresses` hardcodes `None` in the pair's first slot on ALL THREE
 /// of its return paths -- the lookup arm, the released arm and the bucket walk -- so the walk hands
 /// back addresses and nothing else. Measured here: resident map 2 member(s), live page index 0.
+///
+/// AND THE DERIVED SIDE OF THIS MERGE IS NOW EMPTY, which is the fact that makes the rest of it
+/// matter. `reconcile_secondary_views_from_bucket_index` builds `derived` from the live page index,
+/// and rebuilding a set's members from there needs the component the entry no longer carries.
+/// Measured by handing the merge an EMPTY persisted map: `shard.sets` came back empty, so nothing
+/// in it came from the derived side. The resident set map is therefore wholly the durable
+/// snapshot's now, and the address test in `fill_absent_elements` is the only filter standing
+/// between a stale snapshot and the map a reader trusts.
 ///
 /// SO THE COMPARISON IS RE-ATTRIBUTED TO THE SOURCE THAT CAN STILL ANSWER, which is the serving
 /// path. `SMEMBERS` is asked outright, with the shard lock DROPPED first, and its answer is the
