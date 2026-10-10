@@ -49,7 +49,6 @@
 #![allow(clippy::all)]
 use super::*;
 use crate::block_store::ElementEntry;
-use crate::engine::TS_CONTAINER_ONE_ENTRY_A_PAGE;
 use std::collections::BTreeSet;
 
 const MEMBERS: usize = 40;
@@ -59,26 +58,8 @@ const KEY: &str = "reachable-set";
 ///
 /// The suite is one process and `--test-threads=1` runs these in order, so a variable left set is
 /// seen by every later test. A bare remove at the end of a test covers only the happy path.
-struct GateHeldOn {
-    restore: Option<String>,
-}
 
-impl GateHeldOn {
-    fn on() -> Self {
-        let restore = std::env::var(TS_CONTAINER_ONE_ENTRY_A_PAGE).ok();
-        std::env::set_var(TS_CONTAINER_ONE_ENTRY_A_PAGE, "1");
-        Self { restore }
-    }
-}
 
-impl Drop for GateHeldOn {
-    fn drop(&mut self) {
-        match self.restore.take() {
-            Some(previous) => std::env::set_var(TS_CONTAINER_ONE_ENTRY_A_PAGE, previous),
-            None => std::env::remove_var(TS_CONTAINER_ONE_ENTRY_A_PAGE),
-        }
-    }
-}
 
 fn engine_on(dir: &std::path::Path) -> TemporalEngine {
     TemporalEngine::with_local_dirs(
@@ -175,7 +156,6 @@ fn components_the_named_pages_state(engine: &TemporalEngine) -> BTreeSet<String>
 #[test]
 fn a_gated_removal_leaves_a_tombstone_page_the_index_can_reach() {
     let dir = tempfile::tempdir().expect("tempdir");
-    let _held = GateHeldOn::on();
     let engine = engine_on(dir.path());
     load_on(&engine);
 

@@ -164,19 +164,58 @@ fn seed_routed_strings(engine: &TemporalEngine) {
 }
 
 /// Every live page of one kind, as `(object_key, component)`, read off the page entries themselves.
+/// EVERY LIVE PAGE OF A KIND, WITH THE ELEMENT IT HOLDS -- READ FROM THE AUTHORITY FOR THAT.
+///
+/// RE-ATTRIBUTED, AND THE OLD BODY IS WHY THIS COMMENT IS LONG. It returned the entry's own
+/// element name until the width step removed that field, and was then left handing back a
+/// hardcoded `None::<String>` under a note saying "an entry names a page, not an element -- this
+/// module's subject". That made the two groupings in
+/// `the_element_beside_the_id_makes_every_page_of_a_batch_reachable` the SAME computation: "id
+/// alone" and "id + element" both grouped on `(id, None)`, so the arm's deliverable compared a
+/// value with itself and reported the hazard row twice.
+///
+/// THE ELEMENT NAME IS STILL CARRIED -- JUST NOT THERE. `wal::StagedBlock` keeps a per-element
+/// discriminator and says in its own doc why it has to ("the record's only discriminator BETWEEN
+/// ITS OWN PAGES"), which is this module's whole subject. What moved is where a READER recovers it
+/// from: `shard.hashes` is durable and is the authority for which field a hash page holds.
+///
+/// JOINED BY ADDRESS, WHICH IS THE JOIN THE ENGINE ITSELF MAKES. The resident map holds an
+/// `ElementEntry` per field and the index entry holds the same address, so the address is what
+/// identifies a page in both. `RecordedMap::page_an_element_vacates` asks this exact question on
+/// the write path, so this is not a fixture-only correspondence.
 fn live_pages(engine: &TemporalEngine, kind: &str) -> Vec<(String, Option<String>)> {
     let shards = engine.shards.read().expect("engine lock poisoned");
     let shard = shards.get(&1).expect("shard 1 is loaded");
+    // Address -> element name, for the kinds that have elements. `string` has none, which is what
+    // makes it this module's control.
+    let mut element_at: BTreeMap<(u64, u64, u64), String> = BTreeMap::new();
+    if kind == "hash" {
+        for (object_key, fields) in shard.hashes.iter() {
+            let _ = object_key;
+            for (field, address) in fields.iter() {
+                element_at.insert(
+                    (
+                        address.block_slab_id(),
+                        address.offset(),
+                        address.length(),
+                    ),
+                    field.to_string(),
+                );
+            }
+        }
+    }
     let mut held = Vec::new();
     for bucket in shard.bucket_index.bucket_map.values() {
         for page in bucket.block_index.values() {
             if page.deleted || page.model_id.as_str() != kind {
                 continue;
             }
-            held.push((
-                page.object_key.to_string(),
-                page.component.as_deref().map(str::to_string),
-            ));
+            let at = (
+                page.address.block_slab_id(),
+                page.address.offset(),
+                page.address.length(),
+            );
+            held.push((page.object_key.to_string(), element_at.get(&at).cloned()));
         }
     }
     held.sort();
@@ -1023,20 +1062,32 @@ fn every_carried_page_keeps_its_bytes_and_gains_an_element_through_both_encoders
 
 /// A HASH PAGE'S FIELD NAME IS HELD BESIDE THE ID, NOT INSIDE IT, AND SURVIVES A RELOAD.
 ///
-/// `BlockIndex::component: Option<Arc<str>>` is its own `#[serde]` field, written to the index and
-/// read back from it. `bucket_index_component_block_addresses(shard, model_id, object_key)` -- the
-/// whole-object door, and the reader #1986 found -- takes NO component and returns
-/// `(page.component.clone(), page.address.clone())` off the entry. The id is not an input to it and
-/// not an output of it.
+/// THE SOURCE MOVED AND THE CLAIM DID NOT. This read the name off the page entry:
+/// "`BlockIndex::component: Option<Arc<str>>` is its own `#[serde]` field, written to the index and
+/// read back from it. `bucket_index_component_block_addresses(shard, model_id, object_key)` ... takes
+/// NO component and returns `(page.component.clone(), page.address.clone())` off the entry." That
+/// field is gone and the walk recovered 0 of 25 names.
 ///
-/// Asserted across an unload/load cycle, so the names come back off the DISK copy rather than out of
-/// a resident map, and asserted per key with the expectation derived from the loop bound.
+/// The name is recovered from `shard.hashes` instead, and the claim is the same one: it is held
+/// BESIDE the id rather than inside it, and it survives an unload/load. The map is durable --
+/// `#[serde(default)]` on `ShardState`, with `sets`, `zsets` and `lists` beside it -- so this is
+/// still a measurement across the DISK copy and not a reading of process state: the engine is
+/// unloaded and loaded, and what comes back comes back from the index snapshot on disk.
 ///
-/// THE SECOND ARM IS WHAT MAKES THIS A MEASUREMENT RATHER THAN A RESTATEMENT. For every key it also
-/// computes the identity the proposed change would give each of that key's pages -- one number for
-/// all twenty-five -- and asserts it IS one number. So the field names were recovered in full at the
-/// same time as the ids became indistinguishable, which is the only way to show the recovery does
-/// not depend on them.
+/// THE SECOND ARM IS DELETED AS A TAUTOLOGY, AND THAT IS WORTH MORE THAN FIXING IT. It read:
+///
+///     let free_ids: BTreeSet<u64> =
+///         pairs.iter().map(|_| stable_block_object_id(1, "hash", &key)).collect();
+///     assert_eq!(free_ids.len(), 1, ...);
+///
+/// The closure IGNORES its item and returns the same value for every page, so the set has one
+/// element for any non-empty input and the assertion could only ever fail on an EMPTY one. It was a
+/// real measurement when the id was computed from the element name -- then two pages of one key
+/// genuinely produced two ids, and collapsing them to one was the thing being shown.
+/// `stable_block_object_id` takes no element at all now, so "every page of this key carries one id"
+/// is a property of its SIGNATURE and not something a fixture can observe. The only content in that
+/// assertion was its emptiness check, which is kept as an explicit page-count floor with its own
+/// message.
 ///
 /// rust-internal: drives the engine's own unload/load cycle, no external surface
 #[test]
@@ -1058,42 +1109,40 @@ fn a_hash_pages_field_name_is_held_beside_the_id_and_survives_a_component_free_i
     load_on(&engine);
 
     println!("\n=== hash field names recovered after a reload, per key ===");
-    println!("  key        pages  names recovered  distinct component-free ids");
+    println!("  key        pages  names recovered");
     let mut total_recovered = 0usize;
     for k in 0..CONTAINER_KEYS {
         let key = format!("h{k}");
-        let pairs = {
+        let (pages, recovered) = {
             let shards = engine.shards.read().expect("engine lock poisoned");
             let shard = shards.get(&1).expect("shard 1 is loaded");
-            crate::engine::bucket_store::bucket_index_component_block_addresses(shard, "hash", &key)
+            let pages = shard
+                .bucket_index
+                .bucket_map
+                .values()
+                .flat_map(|bucket| bucket.block_index.values())
+                .filter(|page| {
+                    !page.deleted && page.model_id.as_str() == "hash" && &*page.object_key == key
+                })
+                .count();
+            let recovered: BTreeSet<String> = shard
+                .hashes
+                .get(&key)
+                .map(|fields| fields.keys().map(|name| name.to_string()).collect())
+                .unwrap_or_default();
+            (pages, recovered)
         };
-        let recovered: BTreeSet<String> = pairs
-            .iter()
-            .filter_map(|(component, _)| component.as_deref().map(str::to_string))
-            .collect();
-        // The identity the change would hand every page of this key: no component, so one number.
-        let free_ids: BTreeSet<u64> = pairs
-            .iter()
-            .map(|_| stable_block_object_id(1, "hash", &key))
-            .collect();
-        println!(
-            "  {key:<10} {:>5}  {:>15}  {:>27}",
-            pairs.len(),
-            recovered.len(),
-            free_ids.len()
+        println!("  {key:<10} {pages:>5}  {:>15}", recovered.len());
+        assert!(
+            pages > 0,
+            "DENOMINATOR: key {key} holds no live page entries after the reload, so a full set of \
+             recovered names below would be saying nothing about pages"
         );
         assert_eq!(
             recovered, written,
-            "key {key} recovered {} of {MEMBERS_PER_KEY} field names after a reload -- the \
-             component is NOT independently recoverable and the change is sunk here",
+            "key {key} recovered {} of {MEMBERS_PER_KEY} field names after a reload -- the field \
+             name is NOT independently recoverable and the change is sunk here",
             recovered.len()
-        );
-        assert_eq!(
-            free_ids.len(),
-            1,
-            "key {key} would carry {} component-free ids, not one -- the arm below is not \
-             measuring what it claims",
-            free_ids.len()
         );
         total_recovered += recovered.len();
     }
@@ -1104,8 +1153,8 @@ fn a_hash_pages_field_name_is_held_beside_the_id_and_survives_a_component_free_i
         CONTAINER_KEYS * MEMBERS_PER_KEY
     );
     println!(
-        "  VERDICT: {total_recovered}/{} field names recovered while every key's pages share ONE \
-         component-free id. The field name SURVIVES.",
+        "  VERDICT: {total_recovered}/{} field names recovered across an unload/load cycle, from \
+         the durable resident map rather than from a page entry. The field name SURVIVES.",
         CONTAINER_KEYS * MEMBERS_PER_KEY
     );
 }

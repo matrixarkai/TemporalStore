@@ -80,6 +80,7 @@ use crate::block_store::ElementEntry;
 use crate::engine::state::{
     BlockIndex, BlockIndexMap, BlockSlabLiveIndex, BucketLayoutState, BucketNode, BucketTtl,
     DeletedObjectIndex,
+    TombstoneElements,
     ObjectIndex,
 };
 
@@ -487,7 +488,10 @@ fn every_byte_of_the_page_index_is_accounted_for() {
     // all. A field-width subtraction would have predicted nothing here twice over. ---
     let arc_str = size_of::<Arc<str>>();
     let opt_arc_str = size_of::<Option<Arc<str>>>();
-    let index_eight_aligned = arc_str + opt_arc_str + size_of::<ElementEntry>();
+    // TWO EIGHT-ALIGNED FIELDS, NOT THREE: `opt_arc_str` was the component and it is gone, which
+    // is the 56 -> 40 step. `opt_arc_str` stays bound above as the width the name USED to cost,
+    // because the paragraphs here are stated against that arithmetic.
+    let index_eight_aligned = arc_str + size_of::<ElementEntry>();
     let index_tail = size_of::<crate::engine::storage_bucket_internals::StoredModelKind>()
         + 2 * size_of::<bool>()
         + size_of::<crate::index_log::IndexItemKind>()
@@ -505,7 +509,30 @@ fn every_byte_of_the_page_index_is_accounted_for() {
         "the page entry no longer reconstructs as {index_eight_aligned} bytes of eight-aligned \
          field plus {index_tail} bytes of flag rounded up to {index_rounded_tail}"
     );
-    assert_eq!(56, size_of::<BlockIndex>(), "the page entry's budgeted width moved");
+    // FORTY, AND PINNED AT ITS ALIGNMENT INSTEAD OF BRACKETED. 56 before the entry stopped
+    // naming its element: `opt_arc_str` above is the sixteen bytes that left.
+    //
+    // WHAT STOOD HERE AND WHY IT IS GONE. The note read "a bare equality is satisfied by
+    // whatever the type measures; the two neighbours refuse 39 and 41 so this reads as a
+    // measurement and not as a number adjusted until it passed", and its two `assert_ne!`
+    // partners carried messages -- "the page entry is 39, so 40 is an upper bound here" --
+    // asserting that 39 and 41 were reachable. They are not: the type is 8-aligned, so they are
+    // 7 and 1 mod 8. And the partners could not have run anyway, because the `assert_eq!` below
+    // panics first on every change that could have fired them.
+    //
+    // THE ALIGNMENT PIN IS NOT DOMINATED, and here it is a premise rather than a flourish: the
+    // reconstruction above rounds the tail up to `align_of::<BlockIndex>()`, and the per-bucket
+    // arithmetic later in this module uses it as the modulus again. A width pin admits every
+    // alignment that divides it, so `== 40` is equally true at align 1, 2, 4 and 8 and says
+    // nothing about the modulus those sums are taken over.
+    assert_eq!(40, size_of::<BlockIndex>(), "the page entry's budgeted width moved");
+    assert_eq!(
+        8,
+        std::mem::align_of::<BlockIndex>(),
+        "the page entry is {}-aligned; the tail rounding above and the per-bucket sums below are \
+         taken to this modulus",
+        std::mem::align_of::<BlockIndex>()
+    );
 
     // NARROWING THE FLAGS STILL RECLAIMS NOTHING, BUT NOT FOR THE REASON IT USED TO.
     //
@@ -694,7 +721,6 @@ enum MirrorInlineAddress {
 struct MirrorPageNoDeleted {
     object_key: Arc<str>,
     model_id: crate::engine::storage_bucket_internals::StoredModelKind,
-    component: Option<Arc<str>>,
     address: ElementEntry,
     dirty: bool,
     log_backed: bool,
@@ -705,7 +731,6 @@ struct MirrorPageNoDeleted {
 struct MirrorPageOneFlagByte {
     object_key: Arc<str>,
     model_id: crate::engine::storage_bucket_internals::StoredModelKind,
-    component: Option<Arc<str>>,
     address: ElementEntry,
     flags: u8,
 }
@@ -715,7 +740,6 @@ struct MirrorPageOneFlagByte {
 struct MirrorPageNoFlags {
     object_key: Arc<str>,
     model_id: crate::engine::storage_bucket_internals::StoredModelKind,
-    component: Option<Arc<str>>,
     address: ElementEntry,
 }
 
@@ -726,7 +750,6 @@ struct MirrorPageNoFlags {
 #[allow(dead_code)]
 struct MirrorPageEmptyTail {
     object_key: Arc<str>,
-    component: Option<Arc<str>>,
     address: ElementEntry,
 }
 
@@ -754,6 +777,7 @@ struct MirrorNode<I> {
     object_index: ObjectIndex,
     deleted_object_index: DeletedObjectIndex,
     block_index: I,
+    tombstone_elements: TombstoneElements,
 }
 
 /// WHAT EACH SHAPE OF THE BLOCK INDEX WOULD COST, IN WIDTH.
@@ -1168,6 +1192,7 @@ fn mirror_live_node(node: &BucketNode) -> MirrorNode<BlockIndexMap> {
         object_index: node.object_index.clone(),
         deleted_object_index: node.deleted_object_index.clone(),
         block_index: node.block_index.clone(),
+        tombstone_elements: node.tombstone_elements.clone(),
     }
 }
 
@@ -1197,6 +1222,7 @@ fn mirror_boxed_node(node: &BucketNode) -> MirrorNode<MirrorBoxedPageIndex> {
         object_index: node.object_index.clone(),
         deleted_object_index: node.deleted_object_index.clone(),
         block_index,
+        tombstone_elements: node.tombstone_elements.clone(),
     }
 }
 
@@ -1781,7 +1807,6 @@ fn page_for(seed: u64) -> BlockIndex {
         // Was `"strings"`, which is not a spelling the registry declares -- the plural was a
         // fixture typo that a free-form string field could not catch.
         model_id: crate::engine::storage_bucket_internals::StoredModelKind::String,
-        component: None,
         address: ElementEntry::from_parts(
             7,
             seed * 128,
@@ -1801,7 +1826,6 @@ fn component_page(seed: u64, component: &str) -> BlockIndex {
         object_key: Arc::from("container"),
         // Was `"hashes"`, likewise not a declared spelling.
         model_id: crate::engine::storage_bucket_internals::StoredModelKind::Hash,
-        component: Some(Arc::from(component)),
         address: ElementEntry::from_parts(
             9,
             seed * 256,
@@ -1828,10 +1852,8 @@ fn assert_same_page(context: &str, handle: u64, left: &BlockIndex, right: &Block
         left.model_id, right.model_id,
         "{context}: page {handle} changed model_id"
     );
-    assert_eq!(
-        left.component, right.component,
-        "{context}: page {handle} changed component"
-    );
+    // THE COMPONENT COMPARISON IS GONE WITH THE FIELD. It was one of the six identity terms this
+    // helper compared, and the entry has no seventh name to change.
     assert_eq!(
         left.address, right.address,
         "{context}: page {handle} changed address"
@@ -2075,38 +2097,44 @@ fn a_bucket_that_grows_past_one_page_and_shrinks_back_holds_the_same_page_set() 
         "an emptied index yielded entries"
     );
 
-    // --- TWO BLOCKS THAT DIFFER ONLY IN THEIR COMPONENT ARE TWO BLOCKS. ---
+    // --- TWO BLOCKS THAT DIFFER ONLY IN THEIR COMPONENT ARE NOT A STATE THIS INDEX CAN HOLD. ---
     //
-    // This is the container workload the distribution above measures: a hash field, a set member
-    // and a list element are the same object key under different components, and they all route to
-    // the same bucket. A handle that did not read the component would file them all as one block
-    // and 99 of every 100 would be lost -- while every length assertion on a single-block fixture
-    // still passed.
+    // This read: "TWO BLOCKS THAT DIFFER ONLY IN THEIR COMPONENT ARE TWO BLOCKS. A handle that did
+    // not read the component would file them all as one block and 99 of every 100 would be lost --
+    // while every length assertion on a single-block fixture still passed."
+    //
+    // The handle no longer reads a component, because the entry has none. `component_page(20,
+    // "alpha")` and `component_page(20, "beta")` are now the SAME entry -- same object key, same
+    // model, same address -- so they hash alike and the second takes the first's slot. That is the
+    // loss the old assertion warned about, and it is why the collapse is a correctness requirement:
+    // the projection emits one entry per distinct PAGE, so two entries of one object at one address
+    // are never filed.
+    //
+    // ASSERTED AS THE COLLISION RATHER THAN DELETED, for the reason the original gave for existing
+    // at all: nothing else in this module would notice. A length assertion on a single-block
+    // fixture passes either way. `sibling_handles` holds the same pair of claims -- that the
+    // collision is real, and that `index_entry_names_a_page` keeps it unreachable -- and this is the
+    // one that sits beside the bucket distribution the loss would have shown up in.
     let mut components = BlockIndexMap::default();
     let first_component = components.insert(component_page(20, "alpha"), &mut live);
     let second_component = components.insert(component_page(20, "beta"), &mut live);
-    assert_ne!(
+    assert_eq!(
         first_component, second_component,
-        "two pages of one object differing only in their component were given the same handle; \
-         the second would silently displace the first"
+        "two entries of one object at one address were given DIFFERENT handles. If they are \
+         separable then the handle has gained a discriminator the entry's field set does not show, \
+         and the two assertions below -- which expect one entry, not two -- are the wrong way round"
     );
     assert_eq!(
-        2,
+        1,
         components.len(),
-        "two components of one object are two pages, and this index holds {}",
+        "two entries of one object at one address are ONE page in this index, and it holds {}",
         components.len()
     );
     assert_same_page(
-        "the first component",
+        "the surviving entry",
         first_component,
         &component_page(20, "alpha"),
-        components.get(&first_component).expect("alpha is filed"),
-    );
-    assert_same_page(
-        "the second component",
-        second_component,
-        &component_page(20, "beta"),
-        components.get(&second_component).expect("beta is filed"),
+        components.get(&first_component).expect("the entry is filed"),
     );
 }
 
@@ -2192,31 +2220,49 @@ fn the_inline_and_mapped_arms_write_the_same_bytes_for_the_same_page_set() {
         untouched_bytes.len()
     );
 
-    // --- THE WRITTEN KEY CARRIES THE COMPONENT, which nothing in the crate pinned. ---
+    // --- THE WRITTEN KEY NO LONGER HAS A COMPONENT TO CARRY, AND THE OLD ARM IS RESTATED. ---
     //
-    // Found by mutation, and the reason it was missed is worth keeping. The written key is
-    // rendered from the block's identity AND its address, so dropping the component from it leaves
-    // every key DISTINCT -- the addresses differ. Uniqueness cannot catch it, key counts cannot
-    // catch it, and the ordering guard cannot catch it; the only thing that changes is the text of
-    // a stored key, which is the bytes on disk. A mutation that dropped the component from the
-    // written key survived every test in this crate.
+    // It read: "THE WRITTEN KEY CARRIES THE COMPONENT, which nothing in the crate pinned. Found by
+    // mutation, and the reason it was missed is worth keeping. The written key is rendered from the
+    // block's identity AND its address, so dropping the component from it leaves every key DISTINCT
+    // -- the addresses differ. Uniqueness cannot catch it, key counts cannot catch it, and the
+    // ordering guard cannot catch it; the only thing that changes is the text of a stored key,
+    // which is the bytes on disk." It then built two pages differing ONLY in their component and
+    // asserted their written keys differed.
     //
-    // The two blocks below differ ONLY in their component and sit at the same address, which is
-    // what makes this about the component and not about the address.
-    let mut without_component = component_page(5, "body");
-    without_component.component = None;
-    let with_key = crate::engine::state::block_index_written_key(&component_page(5, "body"));
-    let without_key = crate::engine::state::block_index_written_key(&without_component);
-    println!("  written key with a component    : {with_key}");
-    println!("  written key without one         : {without_key}");
+    // NEITHER PAGE CAN BE BUILT NOW: an entry has no component to set or clear, so "two pages of
+    // one object at the same address, one with a component and one without" is not a pair this type
+    // can express. `block_index_written_key` passes the constant `None` into
+    // `block_ref_key_from_parts`, which is what it was already receiving for every entry of every
+    // kind -- so the stored spelling does not move with this change, and that is why removing the
+    // field costs no `SHARD_INDEX_FORMAT_VERSION` step.
+    //
+    // THE MUTATION-FOUND LESSON IS KEPT BY ASKING THE SAME QUESTION OF THE TERMS THAT REMAIN.
+    // The reason the original escaped every other guard was that uniqueness and counts cannot see a
+    // key's TEXT change while the addresses differ. That is still true of the object key: drop it
+    // from the rendering and every key stays distinct. So the written key is asserted to carry the
+    // object key, and two pages that differ only in their object key are asserted to render
+    // different keys -- the same shape of claim, over the identity term the entry still has.
+    let here = component_page(5, "body");
+    let elsewhere_key = {
+        let mut other = component_page(5, "body");
+        other.object_key = std::sync::Arc::from("a-different-object");
+        other
+    };
+    let here_key = crate::engine::state::block_index_written_key(&here);
+    let other_key = crate::engine::state::block_index_written_key(&elsewhere_key);
+    println!("  written key                     : {here_key}");
+    println!("  written key, other object       : {other_key}");
     assert!(
-        with_key.contains("body"),
-        "the written key for a page with a component does not carry the component: {with_key:?}"
+        here_key.contains(&*here.object_key),
+        "the written key does not carry the object key: {here_key:?} for {:?}",
+        here.object_key
     );
     assert_ne!(
-        with_key, without_key,
-        "two pages of one object at the same address, one with a component and one without, \
-         render the SAME written key -- the component has stopped reaching the stored spelling"
+        here_key, other_key,
+        "two pages at the SAME address under DIFFERENT object keys render the same written key -- \
+         the object key has stopped reaching the stored spelling, which is the shape a uniqueness \
+         or count guard cannot see because the addresses are identical here on purpose"
     );
 
     // --- And a many-block node round-trips through the stored form back to the same block set. ---

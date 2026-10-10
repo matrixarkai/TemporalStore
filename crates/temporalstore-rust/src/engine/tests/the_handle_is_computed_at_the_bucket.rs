@@ -44,7 +44,6 @@ fn page(object: &str, component: Option<&str>, slab: u64, offset: u32, length: u
         routing_bucket: 7,
         object_key: Arc::from(object),
         model_id: stored_model_kind("hash"),
-        component: component.map(Arc::from),
         address: ElementEntry::from_parts(slab, offset as u64, length as u64, Some(7), Some(11)),
         dirty: false,
         deleted: false,
@@ -132,22 +131,19 @@ fn the_hoisted_handle_is_byte_identical_to_the_one_the_map_used_to_compute() {
         "changing the address OFFSET left the handle alone"
     );
 
-    // --- NEGATIVE CONTROL TWO: PERTURB THE COMPONENT, separately, because the address and the
-    //     name are two different sources and an instrument blind to one is not blind to both. ---
-    let mut renamed = base.clone();
-    renamed.component = Some(Arc::from("f-9"));
-    assert_ne!(
-        block_index_handle(base),
-        block_index_handle(&renamed),
-        "changing the component left the handle alone, so the name terms are not hashed"
-    );
-    let mut componentless = base.clone();
-    componentless.component = None;
-    assert_ne!(
-        block_index_handle(base),
-        block_index_handle(&componentless),
-        "dropping the component left the handle alone"
-    );
+    // --- NEGATIVE CONTROL TWO IS GONE: THERE IS NO NAME ON THE ENTRY TO PERTURB. ---
+    //
+    // Two controls stood here. One renamed the entry's component and asserted the handle moved;
+    // the other dropped it and asserted the same. Both existed because "the address and the name
+    // are two different sources and an instrument blind to one is not blind to both" -- a real
+    // argument while the entry had a name.
+    //
+    // `BlockIndex` has no component field, so neither perturbation can be written. The handle
+    // still hashes a name TERM -- `block_index_handle` passes the constant `None::<&str>`, which
+    // keeps every handle bit-for-bit what it was -- but a constant cannot be perturbed, so a
+    // control over it would move nothing and assert nothing. The controls that remain perturb the
+    // address slab, the address offset, the object key and the model spelling, and each still
+    // moves the handle.
 
     println!(
         "\n=== the handle after the hoist ===\n  {} entries, {} distinct handles, inline arm \

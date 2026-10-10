@@ -93,7 +93,6 @@ fn the_log_resident_fact_is_derived_from_the_address_alone() {
         routing_bucket: 7,
         object_key: std::sync::Arc::from("tenant/7/object/1"),
         model_id: crate::engine::storage_bucket_internals::StoredModelKind::Hash,
-        component: Some(std::sync::Arc::from("field-0")),
         address: in_log.clone(),
         dirty: true,
         deleted: true,
@@ -154,7 +153,6 @@ fn the_stored_entry_has_dropped_the_flag_and_gained_no_key() {
         routing_bucket: 7,
         object_key: std::sync::Arc::from("tenant/7/object/1"),
         model_id: crate::engine::storage_bucket_internals::StoredModelKind::Hash,
-        component: Some(std::sync::Arc::from("field-0")),
         address: ElementEntry::from_parts(42, 1_048_576, 4096, Some(7), None),
         dirty: false,
         deleted: false,
@@ -189,11 +187,26 @@ fn the_stored_entry_has_dropped_the_flag_and_gained_no_key() {
          detect a field leaving at all",
     );
 
-    // And the width is unchanged, so nobody reads this as a footprint change.
+    // AND THE WIDTH IS 40, WHICH IS NOT THIS MODULE'S CHANGE AND IS PINNED HERE ANYWAY.
+    //
+    // This read 56 under "the width is unchanged, so nobody reads this as a footprint change" --
+    // a pin on the width THIS module's change did not move, so that a reader could not mistake a
+    // stored-format change for a footprint one. The entry is 40 now because it stopped naming its
+    // element, which is a different change; the claim the pin exists to make is unaffected and the
+    // number it names is not.
+    //
+    // PINNED, AND NOT BRACKETED -- which is a change from what stood here. The note read
+    // "BRACKETED, so it reads as a measurement rather than a literal adjusted until it
+    // passed", and the `!= 39` / `!= 41` partners below it did no such thing: the `assert_eq!`
+    // panics first, so they were unreachable on every change that could have fired them. What
+    // the note had RIGHT is kept, because it is why this pin is worth having at all: `cargo
+    // check` cannot see an `assert_eq!` in a test body, so this compiled clean through the
+    // whole width step and only running it said so.
     assert_eq!(
-        56,
+        40,
         std::mem::size_of::<BlockIndex>(),
-        "the entry is {} bytes; this change was never a footprint change and the body says so",
+        "the entry is {} bytes; this module's change was never a footprint change and the body \
+         says so",
         std::mem::size_of::<BlockIndex>(),
     );
 }

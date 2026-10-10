@@ -168,11 +168,8 @@ fn seed_and_unload(dir: &std::path::Path) -> (BTreeSet<Vec<u8>>, Vec<u8>) {
     // value, these two tests are where it would surface, because they are the only ones that drive
     // the accept-or-replay decision over a store this binary wrote itself. That is the moment the
     // stamp question reopens.
-    let expected_live = if crate::engine::container_index_files_one_entry_a_page() {
-        1
-    } else {
-        MEMBERS - 1
-    };
+    // ONE LIVE ENTRY, UNCONDITIONALLY: the per-element projection this chose against is retired.
+    let expected_live = 1;
     assert_eq!(
         (expected_live, 1),
         (live, tombstoned),
@@ -236,11 +233,8 @@ fn a_reload_of_a_store_this_binary_wrote_reads_the_index_rather_than_replaying()
     // accept-or-replay check passes, so the binary reads the index it wrote rather than replaying;
     // the membership is what the removal left; and the removed member is still absent. A short live
     // count here with those three holding is a statement about FILING.
-    let expected_live = if crate::engine::container_index_files_one_entry_a_page() {
-        1
-    } else {
-        MEMBERS - 1
-    };
+    // ONE LIVE ENTRY, UNCONDITIONALLY: the per-element projection this chose against is retired.
+    let expected_live = 1;
     assert_eq!(
         (expected_live, 1),
         (live, tombstoned),

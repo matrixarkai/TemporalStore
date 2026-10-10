@@ -753,11 +753,18 @@ pub(super) struct ContainerElementRef<'a> {
 ///
 /// # WHAT THIS CHANGES AND WHAT IT DOES NOT
 ///
-/// It changes the PAGE count and not the ENTRY count. Several elements come to share one address,
-/// and `block_index_handle` hashes the component beside the address, so the page index still holds
-/// one entry per element -- `entry_count_versus_page_count`'s
-/// `two_elements_sharing_one_page_are_still_two_entries_because_the_handle_names_the_component`
-/// drives exactly that and is unchanged by this. The entry count is a later stage's subject.
+/// It changes the PAGE count and the ENTRY count falls with it. Several elements come to share one
+/// address, and `block_index_handle` hashes the model spelling, the object key and that address and
+/// nothing per-element, so entries converge on pages -- `entry_count_versus_page_count`'s
+/// `one_page_is_one_entry_because_the_handle_can_no_longer_name_an_element` holds the mechanism and
+/// `container_pages_are_batched::a_compaction_round_folds_a_containers_pages_and_folds_its_entry_
+/// count_with_them` measures it through a round, 40 entries over 40 pages before and 1 over 1 after.
+///
+/// THIS PARAGRAPH SAID THE OPPOSITE AND IT WAS TRUE WHEN IT WAS WRITTEN: "It changes the PAGE count
+/// and not the ENTRY count ... `block_index_handle` hashes the component beside the address, so the
+/// page index still holds one entry per element ... The entry count is a later stage's subject."
+/// That later stage has landed -- `BlockIndex` has no element-name field -- so the entry count is
+/// this round's subject too.
 ///
 /// Page count is what a load path that reads every page pays, which is why it comes first: a replay
 /// that read a page per element once read 987 MB off a 32 MB log, and the reason that was

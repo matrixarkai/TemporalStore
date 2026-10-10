@@ -1,13 +1,13 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright 2026 MatrixArkAI
 
-//! A DURABLE MAP MUST OUTRANK A NAME DERIVED FROM IT.
+//! A DURABLE MAP MUST OUTRANK A NAME DERIVED FROM IT -- AND THERE IS NO NAME LEFT TO OUTRANK.
 //!
-//! # THE DEFECT
+//! # THE DEFECT, AND WHY IT IS NOW UNREACHABLE RATHER THAN FIXED
 //!
-//! `reconcile_secondary_views_from_bucket_index` rebuilds the model maps from the bucket index, and
-//! for three kinds it recovers an element's identity by PARSING the component name the write path
-//! spelled it into -- then assigned the result over the top:
+//! `reconcile_secondary_views_from_bucket_index` rebuilt the model maps from the bucket index, and
+//! for three kinds it recovered an element's identity by PARSING the component name the write path
+//! had spelled it into -- then assigned the result over the top:
 //!
 //! ```text
 //!     if saw_lists { shard.lists = lists; }
@@ -16,8 +16,36 @@
 //! ```
 //!
 //! All three of those maps are PERSISTED. So a stored value was being reconstructed from a second
-//! copy of itself rendered as text, and the durable copy had no say. Driven below: a zset written at
-//! score 7.5 comes back at 99.25 when only its NAME is changed.
+//! copy of itself rendered as text, and the durable copy had no say: a zset written at score 7.5
+//! came back at 99.25 when only its NAME was changed. The merge that replaced the assignment is
+//! what this module was built to hold.
+//!
+//! THE SECOND COPY IS GONE. `BlockIndex` has no element-name field -- all four container kinds file
+//! one entry a page -- so there is no text to parse and
+//! `rebuild_unserialized_model_maps_from_bucket_index` passes an EMPTY derived view, keeping only
+//! its live-address filter. The four resident maps are durable (`#[serde(default)]`) and are the
+//! sole authority for which elements exist.
+//!
+//! SO EVERY ARM THAT PLANTED A DISAGREEMENT BETWEEN THE TWO SOURCES HAD ITS SUBJECT BECOME
+//! UNREPRESENTABLE, and each is restated to say so rather than relaxed to pass. The four that moved,
+//! and what each says now:
+//!
+//!   * `a_durable_zset_score_has_no_name_left_to_disagree_with_it` -- no component text of any
+//!     shape reaches a served index, counted over the real files with the object key as the control
+//!     that makes the zero mean "absent".
+//!   * `an_element_name_cannot_be_made_unreadable_because_the_index_holds_none` -- the corruption
+//!     this module's one load-bearing arm performed cannot be performed; there is no name to
+//!     corrupt.
+//!   * `an_element_the_durable_map_does_not_hold_does_not_come_back` -- the repair case is gone BY
+//!     DESIGN, and that arm carries the three mechanisms that make the state unreachable in
+//!     production rather than merely absent in this fixture.
+//!   * `an_empty_zset_member_is_a_whole_component_and_survives_the_fold_shape` -- its length
+//!     boundary is re-attributed to the PAGE, which is where a component still exists.
+//!
+//! A TEST PROVING A DEFECT UNREACHABLE IS WORTH MORE THAN ONE PROVING IT CURRENTLY ABSENT, which is
+//! why these are restatements and not deletions: each one now fails if an element name returns to
+//! a page index entry, which is the single change that would make the whole defect class reachable
+//! again.
 //!
 //! # WHAT EACH DURABLE MAP HOLDS, AND WHICH KINDS HAVE ONE
 //!
@@ -66,17 +94,32 @@
 //! the only path" by three separate documents. Both channels are named here so the next reader has
 //! to meet the second one.
 //!
-//! The rule is therefore per ELEMENT: the derived view decides which elements exist and which page
-//! backs each, because it reflects the fold; the durable map supplies what the name merely re-spells,
-//! and keeps any element the derived view could not produce.
+//! The rule WAS per ELEMENT: the derived view decided which elements exist and which page backs
+//! each, because it reflected the fold; the durable map supplied what the name merely re-spelled,
+//! and kept any element the derived view could not produce.
 //!
-//! # AND THREE SILENT GUESSES BECOME SKIPS
+//! IT IS NOT A RULE ABOUT TWO SOURCES ANY MORE, because for a container element there is only one.
+//! The derived view produces NOTHING: an entry has no element name, so it cannot say which elements
+//! exist, which page backs one, or what a name re-spells. The resident map answers all three. What
+//! survives of the rule is its live-address FILTER -- `reconcile_from_durable` is
+//! `fill_absent_elements(derived, persisted, live, refused)`, and the `live` set still drops a
+//! durable element whose page the settled index does not hold. That is the half
+//! `length_answer_and_listing_agree` drives from the other side, and it is why the call is not
+//! simply deleted: without it a reload would keep MORE than it should, not less.
+//!
+//! # AND THREE SILENT GUESSES BECAME SKIPPED READS, THEN BECAME IMPOSSIBLE
 //!
 //! Each arm handled an unreadable name differently and none of them said so. A set's became
-//! `unwrap_or_default()` -- the EMPTY member, a real value that then took a genuine element's address.
-//! A list's became SEQUENCE ZERO, a real position whose entry it overwrote. A zset's was dropped. They
-//! are skipped and counted now, and skipping is safe precisely because the durable map keeps the
-//! element.
+//! `unwrap_or_default()` -- the EMPTY member, a real value that then took a genuine element's
+//! address. A list's became SEQUENCE ZERO, a real position whose entry it overwrote. A zset's was
+//! dropped. They were made skips, and counted, and the skip was safe precisely because the durable
+//! map kept the element.
+//!
+//! THERE IS NOW NO NAME TO GUESS FROM, so none of the three can fire. The guess that remains is one
+//! layer down: a container page spells its elements, and an element key the page's own spelling
+//! cannot render is counted as `unrenderable_items` by `derive_membership` rather than defaulted.
+//! The empty-member assertion in the set arm below is kept pointing at exactly that, because it is
+//! the same defect at a new door.
 //!
 //! # WHY THIS IS NOT THEORETICAL
 //!
@@ -135,7 +178,14 @@ fn read(engine: &TemporalEngine, command: Command) -> crate::types::CommandRespo
 }
 
 /// The component name a zset member is filed under, as the write path spells it.
-fn zset_name(score: f64, member: &[u8]) -> String {
+fn zset_name(member: &[u8]) -> String {
+    hex::encode(member)
+}
+
+/// The component name a zset member USED TO be filed under, before the score left it. Kept only
+/// for `a_durable_zset_score_outranks_a_component_name_that_disagrees`, to prove a needle shaped
+/// like the retired encoding no longer appears anywhere in a served index.
+fn zset_name_with_retired_score_prefix(score: f64, member: &[u8]) -> String {
     format!(
         "{:016x}{}",
         crate::engine::execute_on_shard::zset_score_bits(score),
@@ -210,23 +260,64 @@ pub(super) fn swap_across_index_files(indexes: &std::path::Path, from: &str, to:
     total
 }
 
+/// How many times a name appears across every index file, with NO mutation.
+///
+/// SHARES THE SUBJECT'S MATCHER EXACTLY, which is the whole reason it exists rather than a byte
+/// search of its own. It asks [`swap_in_index`] to swap the needle with ITSELF, so the count comes
+/// from the same decompress-and-scan that [`swap_across_index_files`] performs and the bytes it
+/// writes back are the bytes it read. A separate search would miss a compressed frame entirely and
+/// report a confident zero -- and a zero is exactly what the arms below are asserting, so the
+/// control that makes a zero mean "absent" has to read the same set as the subject.
+pub(super) fn count_across_index_files(indexes: &std::path::Path, needle: &str) -> usize {
+    let mut total = 0usize;
+    for entry in std::fs::read_dir(indexes).expect("the index directory exists") {
+        let path = entry.expect("a directory entry").path();
+        if !path.is_file() {
+            continue;
+        }
+        let bytes = std::fs::read(&path).expect("the index reads");
+        if let Some((_unchanged, found)) = swap_in_index(&bytes, needle, needle) {
+            total += found;
+        }
+    }
+    total
+}
+
 // =============================================================================================
 // 1. THE TEST THAT IS THE WHOLE POINT
 // =============================================================================================
 
-/// THE DURABLE SCORE WINS OVER A NAME THAT DISAGREES WITH IT.
+/// A DURABLE ZSET SCORE HAS NO NAME LEFT TO DISAGREE WITH IT.
 ///
-/// This is the same experiment that found the defect, with the assertion the other way round. A zset
-/// is written at 7.5; the component name in the served index is then changed to spell 99.25, and
-/// nothing else is touched -- the persisted `zsets` map still holds 7.5 beside the member. On reload
-/// the answer must be **7.5**.
+/// RESTATED A SECOND TIME, AND THIS TIME THE DIVERGENCE CANNOT BE REPRESENTED AT ALL. The original
+/// experiment -- the one that found the defect -- wrote a zset at 7.5, changed its served-index
+/// component to spell 99.25, and required the reload to answer 7.5 from the durable `zsets` map.
+/// The first restatement observed that a zset component is `hex::encode(member)` with no score term
+/// in it, asserted a score-shaped needle swaps ZERO times, and used a MEMBER-shaped needle as the
+/// control proving that zero meant "absent" rather than "the scan found nothing in anything".
 ///
-/// Before this change it was 99.25: `shard.zsets = zsets` replaced the durable map with a view built
-/// by parsing names, so a stored value lost to a second copy of itself rendered as text.
+/// THAT CONTROL IS WHAT FAILED, and it was right to: "the member-shaped needle was not found in any
+/// index file, so the zero above proves nothing". `BlockIndex` has no element-name field, so a
+/// served index carries NO component text of any shape -- not the score prefix, and not the member
+/// hex the first restatement assumed was still there. There is nothing in the stored form for a
+/// corrupted name to disagree with the durable map about, and nothing for this experiment to
+/// corrupt.
 ///
-/// rust-internal: mutates the engine's own served index, no external surface
+/// SO BOTH NEEDLES ARE NOW SUBJECTS AND THE CONTROL HAS MOVED TO SOMETHING THAT IS ACTUALLY
+/// PRESENT. The object key is in these files; it is counted first, through the SAME matcher, so a
+/// zero from either needle means the text is absent rather than the scan being broken. That
+/// distinction is the only thing standing between this arm and a pair of assertions that pass on an
+/// empty directory.
+///
+/// AND THE DEFECT IS NOW UNREACHABLE RATHER THAN ABSENT, which is worth more than the original
+/// test was. A score parsed out of a name cannot outrank the durable map, because there is no name
+/// to parse: `shard.zsets` (`zset_index_serde`) is the only place a score is written down. The
+/// positive half is still driven -- the score comes back at 7.5 across a reload -- so this arm
+/// still fails if the durable map stops being read.
+///
+/// rust-internal: reads the engine's own served index files, no external surface
 #[test]
-fn a_durable_zset_score_outranks_a_component_name_that_disagrees() {
+fn a_durable_zset_score_has_no_name_left_to_disagree_with_it() {
     let dir = tempfile::tempdir().unwrap();
     let indexes = dir.path().join("indexes");
     let member = b"outranked-member".to_vec();
@@ -247,22 +338,48 @@ fn a_durable_zset_score_outranks_a_component_name_that_disagrees() {
         engine.unload_shard(1);
     }
 
-    let from = zset_name(durable_score, &member);
-    let to = zset_name(name_score, &member);
-    assert_eq!(
-        from.len(),
-        to.len(),
-        "the two names differ in length, so the swap would not be a pure substitution"
-    );
-    assert_ne!(from, to, "the two scores spell the same name");
-    println!("[outrank] name {from:?} -> {to:?} (member half unchanged)");
-    let swaps = swap_across_index_files(&indexes, &from, &to);
+    // THE CONTROL, FIRST AND THROUGH THE SAME MATCHER: text that IS in these files. Without it the
+    // two zeros below would pass over an empty directory, an unreadable frame, or a codec this
+    // scan cannot decompress.
+    let object_key_hits = count_across_index_files(&indexes, "do-zset");
     assert!(
-        swaps > 0,
-        "the name was not found in any index file, so nothing was mutated and this test would pass \
-         without testing anything"
+        object_key_hits > 0,
+        "the object key was not found in any index file, so the scan is reading nothing and the \
+         zeros below say nothing about what the index contains"
+    );
+    println!("[outrank] control: the object key appears {object_key_hits} time(s)");
+
+    // SUBJECT 1: the score-shaped name, as a component used to be spelled. Gone with the score.
+    let retired_from = zset_name_with_retired_score_prefix(durable_score, &member);
+    let retired_to = zset_name_with_retired_score_prefix(name_score, &member);
+    assert_ne!(
+        retired_from, retired_to,
+        "the two scores spell the same retired-shape name"
+    );
+    let retired_hits = count_across_index_files(&indexes, &retired_from);
+    assert_eq!(
+        0, retired_hits,
+        "a score-shaped name appears {retired_hits} time(s) in a served index -- the score is \
+         supposed to have left the component entirely"
     );
 
+    // SUBJECT 2: the member-shaped name, which the first restatement used as its control. Gone with
+    // the FIELD. This is the assertion that inverted.
+    let member_hits = count_across_index_files(&indexes, &zset_name(&member));
+    assert_eq!(
+        0, member_hits,
+        "a member-shaped name appears {member_hits} time(s) in a served index. An entry has no \
+         element-name field, so no component text of any shape should reach the stored form -- if \
+         this is nonzero the name is back on the entry and the whole of this arm's reasoning has \
+         to be re-driven, not relaxed"
+    );
+    println!(
+        "[outrank] neither a score-shaped nor a member-shaped name appears: there is no stored \
+         text for a durable score to be outranked by"
+    );
+
+    // AND THE DURABLE MAP IS STILL READ, which is the half that can still fail. The score survives
+    // a reload because `shard.zsets` is written and read back; nothing re-derives it.
     let engine = engine_on(dir.path());
     load_on(&engine, OPERATOR_END);
     let answered = match read(
@@ -276,21 +393,18 @@ fn a_durable_zset_score_outranks_a_component_name_that_disagrees() {
             String::from_utf8_lossy(&bytes).to_string()
         }
         other => panic!(
-            "the member did not come back at all: {other:?}. That is a different defect than the \
-             score's SOURCE -- investigate rather than adjusting this test."
+            "the member did not come back at all: {other:?}. The durable map is now the ONLY \
+             source for a zset element, so this is that map not being read rather than a score \
+             source question -- investigate rather than adjusting this test."
         ),
     };
     let score: f64 = answered
         .parse()
         .unwrap_or_else(|_| panic!("a score came back as {answered:?}"));
-    println!(
-        "[outrank] wrote {durable_score}, changed the NAME to spell {name_score}, left the durable \
-         map alone; the reload answered {score}"
-    );
+    println!("[outrank] wrote {durable_score}, reloaded, answered {score} from the durable map");
     assert!(
         (score - durable_score).abs() < 1e-9,
-        "the reload answered {score}, not the durable {durable_score}. If it answered {name_score} \
-         the derived name is authoritative again and this fix has been undone."
+        "the reload answered {score}, not the durable {durable_score}"
     );
 }
 
@@ -560,41 +674,52 @@ fn all_three_spelled_kinds_and_the_two_without_a_durable_map_survive_a_reload() 
 //    (and NOT "durable wins where present" -- the index-derived address wins a collision)
 // =============================================================================================
 
-/// AN ELEMENT WITH NO DURABLE ENTRY STILL COMES BACK FROM ITS NAME.
+/// AN ELEMENT THE DURABLE MAP DOES NOT HOLD DOES NOT COME BACK, AND THE STATE IS UNREACHABLE.
 ///
-/// The rule is "an element missing from the durable map is still derivable", not "never derive",
-/// and NOT -- as this paragraph said until it was measured -- "the durable map wins where it has
-/// the element". It does not win: `fill_absent_elements` starts from the map built out of the
-/// bucket index and calls `insert_element_if_absent`, so on a collision the INDEX-DERIVED address
-/// is the one that survives and the durable map supplies only what the index could not name. This
-/// test never exercised that direction, which is why the wrong claim sat here passing.
+/// INVERTED, AND IT IS THE ARM THIS WHOLE MODULE TURNS ON. It asserted that an element missing from
+/// the durable map "is still derivable" -- recovered BY IDENTITY from the element name on its page
+/// index entry -- and a first restatement narrowed that to "the member still comes back, only its
+/// SCORE is now a placeholder". Measured: `fb-two` does not come back at all,
+/// `Bytes { value: None }`. The member half went with the score half, for the same reason and one
+/// step further on: there is no element name on an entry to recover an identity FROM.
+/// `rebuild_unserialized_model_maps_from_bucket_index` passes an EMPTY derived view and keeps only
+/// its live-address filter.
 ///
-/// It has to allow derivation at all because `apply_key_states` folds `features` and the
-/// control-state maps out of the delta log and NOT `sets`, `zsets` or `lists`, so an element the
-/// fold added reaches these maps ONLY through the derived view. A rule that preferred the durable
-/// map per KEY -- which is what the `control_state` arm does, for a reason that holds there --
-/// would drop every one of them.
+/// SO THE DIVERGENCE CAN NO LONGER BE REPRESENTED, and that is the finding rather than a loss to
+/// chase. The four resident maps are durable (`#[serde(default)]`) and are the sole authority for
+/// which elements exist. An element they do not hold is an element that does not exist.
 ///
-/// AND THE CLAIM IS NARROWER THAN IT LOOKS, which is worth stating because it was read too widely
-/// for most of a campaign. What this pins is the REPAIR case: an element the durable map has LOST
-/// comes back because the index entry names it. It is NOT evidence that the index must name every
-/// element for a load to be correct -- a container element the index does not name at all survives
-/// the reconcile untouched, measured in
-/// `context_node_survives_reload::a_container_only_element_survives_the_reconcile_when_its_page_is_still_live`,
-/// because the live filter keys on `(slab_id, offset, length)` and asks only whether the PAGE is
-/// still there.
+/// AND THE PLANTED STATE IS UNREACHABLE IN PRODUCTION, WHICH IS WHY THIS IS SAFE RATHER THAN MERELY
+/// TRUE. Three mechanisms close it, and all three were read rather than assumed:
 ///
-/// Driven directly on the merge, because constructing a half-folded store through the public surface
-/// would be a fixture with more moving parts than the property it checks.
+///   1. THE FOLD CANNOT PRODUCE IT. This fixture builds the state by mutating the resident map
+///      directly, and its own comment called that "the shape a delta fold produces: an element the
+///      index knows about and the persisted map does not". The fold cannot produce it any more:
+///      `collect_upsert_index_items` resolves each item's address THROUGH the resident map for all
+///      four container kinds -- `shard.hashes`/`sets`/`zsets`/`lists` -- and `continue`s where the
+///      lookup misses, so a delta item exists only where the map held the element.
+///   2. THE DURABLE MAP DOES NOT LOSE ELEMENTS ACROSS A LOAD. It is written to the index snapshot
+///      and read back; `length_answer_and_listing_agree` drives that a short container STAYS short
+///      across a reload rather than being re-derived, which is the same precedence from the other
+///      side.
+///   3. AN INDEX THAT REALLY CARRIES AN ELEMENT NAME IS REFUSED. `persistence` refuses a stamp
+///      below `SHARD_INDEX_FORMAT_VERSION` with `<`, and 12 was stamped by the commit that made all
+///      four kinds page-named, so such an index is rebuilt from the WAL rather than decoded. The
+///      argument is set out in full beside that constant.
+///
+/// WHAT IS ASSERTED, THEREFORE: the element the map kept comes back at its TRUE score (the positive
+/// control -- without it this arm would pass on a reload that lost the whole key), the element the
+/// map lost does not come back, and the resident map holds exactly the one element after the reload
+/// so the derived view cannot be quietly resurrecting it under a different score.
 ///
 /// rust-internal: reads the merge the load path uses, no product behaviour
 #[test]
-fn an_element_the_durable_map_does_not_hold_still_comes_back_from_its_name() {
+fn an_element_the_durable_map_does_not_hold_does_not_come_back() {
     let dir = tempfile::tempdir().unwrap();
     let engine = engine_on(dir.path());
     load_on(&engine, OPERATOR_END);
 
-    // Two members of one zset, written normally, so both are durable and both have names.
+    // Two members of one zset, written normally, so both are durable and both have pages.
     for (element, member) in [b"fb-one".to_vec(), b"fb-two".to_vec()].iter().enumerate() {
         write(
             &engine,
@@ -606,9 +731,7 @@ fn an_element_the_durable_map_does_not_hold_still_comes_back_from_its_name() {
         );
     }
 
-    // Now DROP one of them from the durable map only, leaving its page entry and its name in the
-    // bucket index. That is the shape a delta fold produces: an element the index knows about and the
-    // persisted map does not.
+    // Drop one from the durable map only, leaving its page and its index entry.
     {
         let mut shards = engine.shards.write().expect("engine lock poisoned");
         let shard = shards.get_mut(&1).expect("shard is loaded");
@@ -624,82 +747,112 @@ fn an_element_the_durable_map_does_not_hold_still_comes_back_from_its_name() {
         println!("[fallback] removed fb-two from the durable map, leaving its page entry");
     }
 
-    // A release and reload runs the merge. The element the durable map no longer holds must come
-    // back from its NAME rather than vanishing.
     engine.unload_shard(1);
     load_on(&engine, OPERATOR_END);
 
-    for (member, expected) in [(b"fb-one".to_vec(), 1.0f64), (b"fb-two".to_vec(), 2.0f64)] {
-        let answered = match read(
+    let score_of = |member: &[u8]| -> Option<f64> {
+        match read(
             &engine,
             Command::ZSetScore {
                 key: "fb-zset".to_string(),
-                member: member.clone(),
+                member: member.to_vec(),
             },
         ) {
             crate::types::CommandResponse::Bytes { value: Some(bytes) } => {
-                String::from_utf8_lossy(&bytes).to_string()
+                String::from_utf8_lossy(&bytes).parse::<f64>().ok()
             }
-            other => panic!(
-                "{:?} did not come back: {other:?}. If it is fb-two, the merge is dropping elements \
-                 the durable map does not hold -- which is the regression a per-KEY rule would have \
-                 caused, and the whole reason this rule is per element.",
-                String::from_utf8_lossy(&member)
-            ),
-        };
-        let score: f64 = answered.parse().expect("a score parses");
-        assert!(
-            (score - expected).abs() < 1e-9,
-            "{:?} came back at {score}, not {expected}",
-            String::from_utf8_lossy(&member)
+            _ => None,
+        }
+    };
+    let kept = score_of(b"fb-one");
+    let lost = score_of(b"fb-two");
+    println!("[fallback] after the reload: fb-one={kept:?} fb-two={lost:?}");
+
+    // THE POSITIVE CONTROL. Without it a reload that lost the whole key would read as this finding.
+    assert_eq!(
+        Some(1.0),
+        kept,
+        "fb-one, which the durable map never lost, came back as {kept:?} rather than its true 1.0 \
+         -- this fixture lost the whole key and says nothing about the element it dropped"
+    );
+
+    // THE INVERSION.
+    assert_eq!(
+        None, lost,
+        "fb-two came back as {lost:?} after being dropped from the durable map. Nothing can name \
+         it: an entry carries no element name and the derived view is empty by construction. A \
+         value here means an element name has come back to the entry, or something else has \
+         started deriving identity from the index -- re-read this arm's doc before adjusting it"
+    );
+
+    // AND THE RESIDENT MAP HOLDS EXACTLY THE ONE ELEMENT, so the `None` above is the map's own
+    // content rather than a read path that happens to miss.
+    {
+        let shards = engine.shards.read().expect("engine lock poisoned");
+        let shard = shards.get(&1).expect("shard is loaded");
+        let members = shard.zsets.get("fb-zset").expect("the zset is present");
+        assert_eq!(
+            1,
+            members.len(),
+            "the resident map holds {} members after the reload, not the one the fixture left it \
+             with; the derived view is putting something back",
+            members.len()
         );
-        println!(
-            "[fallback] {:?} came back at {score}",
-            String::from_utf8_lossy(&member)
+        assert!(
+            members.contains_key(b"fb-one".as_slice()),
+            "the member the map kept is not the one that survived"
         );
     }
     println!(
-        "[fallback] so an element the durable map does not hold still arrives through its name. \
-         This says nothing about a collision: the assertions above exercise only the ABSENT case, \
-         and where both sources hold one element it is the index-derived address that survives"
+        "[fallback] so an element the durable map does not hold is gone, and the map is the sole \
+         authority. The state this fixture planted by hand is one the fold cannot produce"
     );
 }
 
-/// AN UNREADABLE NAME LOSES NOTHING, BECAUSE THE DURABLE MAP KEEPS THE ELEMENT.
+/// AN ELEMENT NAME CANNOT BE MADE UNREADABLE, BECAUSE A SERVED INDEX HOLDS NONE.
 ///
-/// This is what the merge is for, and the only case in which it is load-bearing -- a mutant that
-/// reverted it to an assignment survived every other test here, because those fixtures leave the
-/// element missing from the DURABLE map rather than from the derived view.
+/// RESTATED INTO THE UNREACHABLE FORM. This planted a corrupt element name into a served index file
+/// -- one character of a set member's hex swapped for `z`, length kept so nothing shifted -- and
+/// asserted that the derived view skipped the element while the durable map put it back. It is the
+/// only case in which the merge was load-bearing: a mutant that reverted it to an assignment
+/// survived every other arm here.
 ///
-/// THE EXPERIMENT. Write a set, then corrupt one member's component name in the served index so
-/// `hex::decode` cannot read it, keeping the length so nothing else shifts. On reload the derived view
-/// skips that element; the durable map still holds it, and the merge puts it back.
+/// THE EXPERIMENT IS UNRUNNABLE, AND THE ARM'S OWN FLOOR IS WHAT SAID SO: "the name was not found
+/// in any index file, so nothing was corrupted and this test would pass without testing anything".
+/// `BlockIndex` has no element-name field, so a served index carries no component text to corrupt.
+/// A name cannot be made unreadable when there is no name.
 ///
-/// TWO THINGS ARE ASSERTED, and the second is the older defect. The member must come back -- and the
-/// EMPTY member must not appear, because the set arm used to end `.unwrap_or_default()`, which turned
-/// a name it could not read into the empty member: a real value that then took this element's address.
+/// SO THE DEFECT IS UNREACHABLE RATHER THAN ABSENT, which is the stronger of the two things this
+/// can say. The old failure was a silent GUESS: a set's unreadable name became
+/// `unwrap_or_default()` -- the EMPTY member, a real value that then took a genuine element's
+/// address. There is no parse left to get wrong, because there is nothing to parse.
 ///
-/// rust-internal: mutates the engine's own served index, no external surface
+/// WHAT IS ASSERTED, AND WHY EACH HALF IS HERE:
+///
+///   * THE CONTROL, FIRST: the object key IS in these files, counted through the same matcher the
+///     subject uses. A zero from a scan that reads nothing would pass for the finding.
+///   * THE SUBJECT: no component text for this object's members appears in any index file. This
+///     fails if an element name returns to the stored form -- which is the thing that would make
+///     the old defect reachable again.
+///   * AND THE PROPERTIES THE CORRUPTION USED TO PROTECT, still driven end to end: both members
+///     come back, NEITHER is the empty member, and both are removable. The empty-member assertion
+///     is kept as a tripwire rather than retired: a set is served from its PAGES now, through
+///     `derive_membership`, and an element key that cannot be rendered is counted as unrenderable
+///     rather than defaulted -- so the shape that produced the empty member has moved rather than
+///     gone, and this is where it would show.
+///
+/// rust-internal: reads the engine's own served index files, no external surface
 #[test]
-fn an_unreadable_component_name_is_skipped_and_the_durable_map_keeps_the_element() {
-    // IT PLANTS A CORRUPT ELEMENT NAME INTO AN INDEX FILE AND NEEDS TO FIND ONE THERE. A gated
-    // live set entry carries none, so there is nothing to corrupt and the test's own floor says so
-    // in as many words -- "the name was not found in any index file, so nothing was corrupted and
-    // this test would pass without testing anything". That floor is the instrument working.
-    //
-    // The gated equivalent -- a derived view that cannot name an element while the durable map
-    // still holds it -- is held by `gated_corpus_across_a_store_boundary`, whose durable floor is
-    // asserted before any served count is read.
-    let _gate_off = super::GateOff::held();
+fn an_element_name_cannot_be_made_unreadable_because_the_index_holds_none() {
     let dir = tempfile::tempdir().unwrap();
     let indexes = dir.path().join("indexes");
     let kept = b"kept-member".to_vec();
-    let corrupted = b"corrupted-member".to_vec();
+    let second = b"second-member".to_vec();
 
     {
         let engine = engine_on(dir.path());
         load_on(&engine, OPERATOR_END);
-        for member in [&kept, &corrupted] {
+        for member in [&kept, &second] {
             write(
                 &engine,
                 Command::SetAdd {
@@ -711,22 +864,28 @@ fn an_unreadable_component_name_is_skipped_and_the_durable_map_keeps_the_element
         engine.unload_shard(1);
     }
 
-    // A set's component name is `hex::encode(member)`. Swapping one character for `z` keeps the
-    // length -- so nothing else in the payload shifts -- and makes it undecodable.
-    let from = hex::encode(&corrupted);
-    let mut to = from.clone();
-    to.replace_range(0..1, "z");
-    assert_eq!(from.len(), to.len(), "the corruption changed the length");
+    // THE CONTROL, THROUGH THE SAME MATCHER AS THE SUBJECT.
+    let object_key_hits = count_across_index_files(&indexes, "un-set");
     assert!(
-        hex::decode(&to).is_err(),
-        "{to:?} still decodes, so this fixture has not made an unreadable name"
+        object_key_hits > 0,
+        "the object key was not found in any index file, so the scan is reading nothing and the \
+         zeros below say nothing about what the index contains"
     );
-    println!("[unreadable] name {from:?} -> {to:?}");
-    let swaps = swap_across_index_files(&indexes, &from, &to);
-    assert!(
-        swaps > 0,
-        "the name was not found in any index file, so nothing was corrupted and this test would pass \
-         without testing anything"
+
+    // THE SUBJECT: there is no element name in the stored form to corrupt.
+    for member in [&kept, &second] {
+        let name = hex::encode(member);
+        let hits = count_across_index_files(&indexes, &name);
+        assert_eq!(
+            0, hits,
+            "the element name {name:?} appears {hits} time(s) in a served index. An entry carries \
+             no element name, so there should be none to find -- and if there is one, it can be \
+             made unreadable and the defect this arm records is reachable again"
+        );
+    }
+    println!(
+        "[unreadable] no element name appears in any index file ({object_key_hits} object-key \
+         hits prove the scan reads them), so there is nothing a corruption could make unreadable"
     );
 
     let engine = engine_on(dir.path());
@@ -751,18 +910,17 @@ fn an_unreadable_component_name_is_skipped_and_the_durable_map_keeps_the_element
     assert!(
         !members.iter().any(|member| member.is_empty()),
         "the set came back holding the EMPTY member. That is what an unreadable name used to become \
-         -- a real value taking a genuine element's address -- so this is the older defect returning."
+         -- a real value taking a genuine element's address. A set is served from its pages now, so \
+         this would be `derive_membership` defaulting an element key it could not render instead of \
+         counting it unrenderable: the same defect at a new door."
     );
     assert!(
         members.iter().any(|member| member == &kept),
-        "the member whose name was left alone is gone, which is a different failure than this test is \
-         for"
+        "a member written normally is gone, which is a different failure than this arm is for"
     );
     assert!(
-        members.iter().any(|member| member == &corrupted),
-        "the member whose NAME was corrupted is gone. The derived view cannot read it and the durable \
-         map still holds it, so the merge is what brings it back -- if this fails, the merge has been \
-         reverted to an assignment."
+        members.iter().any(|member| member == &second),
+        "a member written normally is gone, which is a different failure than this arm is for"
     );
     assert_eq!(
         members.len(),
@@ -771,25 +929,30 @@ fn an_unreadable_component_name_is_skipped_and_the_durable_map_keeps_the_element
         members.len()
     );
     println!(
-        "[unreadable] both members came back: the unreadable name was skipped rather than defaulted, \
-         and the durable map supplied the element the derived view could not"
+        "[unreadable] both members came back from the durable map and the pages, with no name in \
+         the index for either of them"
     );
 
-    // AND IT MUST STILL BE REMOVABLE, which is the door the merge is actually for.
+    // AND IT MUST STILL BE REMOVABLE, WHICH IS NOW A CLAIM ABOUT THE RESIDENT MAP ALONE.
     //
-    // A set's member is SERVED from its page: `SetMembers` walks
-    // `bucket_index_component_block_addresses` and reads the bytes, so it answers whether or not
-    // `shard.sets` holds the element. `shard.sets` has exactly one reader in the command surface --
-    // `SetRemove` -- so that is where a missing element shows. Without the merge the derived view has
-    // skipped this member, the remove cannot find it, and the set holds a member nobody can delete.
+    // This paragraph read "which is the door the merge is actually for ... Without the merge the
+    // derived view has skipped this member, the remove cannot find it, and the set holds a member
+    // nobody can delete." There is no skip to recover from: nothing derives a set member from an
+    // index entry, so `shard.sets` is not a repair of a derived view -- it IS the membership.
+    //
+    // WHAT MAKES THE ASSERTION WORTH KEEPING is that the two sides of a set are still different
+    // artefacts. `SetMembers` answers from the PAGES, and `SetRemove` is the one command that
+    // consults `shard.sets`. So a member present in the pages and absent from the map is served
+    // and undeletable -- the same end state the old defect produced, by a different route -- and
+    // this is the arm that would show it.
     let removed = read(
         &engine,
         Command::SetRemove {
             key: "un-set".to_string(),
-            member: corrupted.clone(),
+            member: second.clone(),
         },
     );
-    println!("[unreadable] removing the member whose name is unreadable answered {removed:?}");
+    println!("[unreadable] removing a member answered {removed:?}");
     // Asserted on the EFFECT, not on the answer: `SetRemove` answers `Empty`, and what matters is
     // whether the member stops being served.
     let after = match read(
@@ -799,21 +962,22 @@ fn an_unreadable_component_name_is_skipped_and_the_durable_map_keeps_the_element
         },
     ) {
         crate::types::CommandResponse::Members { members } => members,
-        other => panic!("a set read answered {other:?}"),
+        unexpected => panic!("a set read answered {unexpected:?}"),
     };
     assert!(
-        !after.iter().any(|member| member == &corrupted),
-        "the member whose NAME is unreadable is STILL SERVED after a remove: {after:?}. \
-         `shard.sets` is the only map `SetRemove` consults, so without the merge the derived view's \
-         skip leaves a member that is served from its page and cannot be deleted."
+        !after.iter().any(|member| member == &second),
+        "a member is STILL SERVED after a remove: {after:?}. `SetMembers` answers from the pages \
+         and `SetRemove` consults `shard.sets`, so a member the map does not hold is served and \
+         undeletable -- the end state the unreadable-name defect used to produce, by a different \
+         route."
     );
     assert!(
         after.iter().any(|member| member == &kept),
         "the removal took the wrong member"
     );
     println!(
-        "[unreadable] and it removed cleanly, leaving {} member(s) -- so the merge is what makes an \
-         unreadable name a skip rather than a leak",
+        "[unreadable] and it removed cleanly, leaving {} member(s) -- the pages and the resident \
+         map agree about membership with no name in the index for either of them",
         after.len()
     );
 }
@@ -826,41 +990,47 @@ fn an_unreadable_component_name_is_skipped_and_the_durable_map_keeps_the_element
 /// the hash twin of `an_unreadable_component_name_is_skipped_and_the_durable_map_keeps_the_element`,
 /// and it is the one test here that fails if `shard.hashes = hashes` comes back.
 ///
-/// # WHY THE FIXTURE CANNOT CORRUPT A NAME, THE WAY THE SET TWIN DOES
+/// # RESTATED: THE SHAPE IS NO LONGER PLANTED, BECAUSE IT IS THE ONLY SHAPE THERE IS
 ///
-/// A set member's component is `hex::encode(member)`, so swapping one character for `z` keeps the
-/// length and makes it UNDECODABLE. A hash field's component IS the field name, in plain characters
-/// -- there is no decode to break, and every string is a legal field name, so no corruption of its
-/// characters produces an unreadable one. The only shape of "the derived view cannot name this
-/// element" a hash has is a page entry carrying NO component at all, which is what
-/// `reconcile_secondary_views_from_bucket_index` counts in `unreadable_names` and skips.
+/// This test used to BLANK the component on one field's page entry and keep a second field's name as
+/// a control -- a named page and a nameless one, side by side. Under one entry a page NO live entry
+/// of any container kind carries an element name, so there is nothing left to blank: the blanking
+/// loop matched zero entries and the fixture's own floor refused it with `blanked 0, not one`. That
+/// floor is why this reads as a restatement rather than as a test that quietly stopped testing.
 ///
-/// So the fixture blanks the component on ONE field's page entry, in memory, before the unload that
-/// writes the index. That is the same door the zset fallback test uses to produce a shape the public
-/// surface will not produce on demand, and it leaves everything else -- the page, its address, the
-/// durable map -- exactly as the write path left it.
+/// THE CONTROL HAD TO GO WITH IT, AND THAT IS THE HONEST VERSION. `field-0` was the control because
+/// its page still named it, so it arrived through the DERIVED view while `field-1` could only arrive
+/// from the durable map. Neither is named now, so there is no named/nameless contrast to draw, and
+/// keeping `field-0` as a "control" would be a second copy of the same case wearing the word
+/// control. What replaces it is a DENOMINATOR on the other side of the claim: the index must be
+/// shown to hold live hash entries for this key and to name NOTHING with them, or "the durable map
+/// supplied it" is a conclusion about an index that was simply empty.
 ///
-/// # WHAT IS ASSERTED, AND THE CONTROL
+/// # WHAT IS ASSERTED, AND WHAT WOULD HAVE TO DISAGREE FOR IT TO FAIL
 ///
-/// Both fields must be in `shard.hashes` after the reload. `field-0`, whose page still names it, is
-/// THE CONTROL: it arrives through the derived view, so a fixture that lost the whole key cannot
-/// pass as this finding. `field-1`, whose page names nothing, can only arrive from the durable map
-/// through the merge -- before `hashes` was durable this field was simply gone, which is the
-/// six-of-six-fields-served-as-zero shape.
+/// Both fields must be in `shard.hashes` after a reload, and the index must name neither. The two
+/// independent artefacts are the index, which names zero fields, and the durable map, which names
+/// two: if the merge stops consulting the map -- `shard.hashes = hashes`, or
+/// `insert_element_if_absent` ceasing to insert -- the reload serves ZERO fields, because nothing
+/// else can name one. That is a strictly larger failure than the single field the planted version
+/// could lose, so the restatement did not weaken what this holds.
+///
+/// AND IT IS A TRIPWIRE IN THE OTHER DIRECTION TOO. If any live hash entry is ever found naming a
+/// field again, the `named` floor below reddens and says so: the collapse would have been reverted,
+/// and the arms in this module that assume a nameless index would all need re-reading.
 ///
 /// Asserted on the resident map rather than through a command, deliberately: `HashGet` and
-/// `HashGetAll` resolve through `bucket_index_component_block_addresses`, which is keyed BY the
-/// component, so a page naming no field is invisible to them whether the merge works or not. The
-/// map is what this change repairs, so the map is what is read.
+/// `HashGetAll` resolve through the resident map now, so reading them would be reading the same
+/// source twice rather than the index against the map.
 ///
-/// rust-internal: mutates the engine's own in-memory index, no external surface
+/// rust-internal: reads the engine's own in-memory index, no external surface
 #[test]
 fn an_unnamed_hash_page_is_skipped_and_the_durable_map_keeps_the_field() {
     let dir = tempfile::tempdir().unwrap();
     let engine = engine_on(dir.path());
     load_on(&engine, OPERATOR_END);
 
-    // Two fields of one hash, written normally, so both are durable and both have names.
+    // Two fields of one hash, written normally.
     for element in 0..2 {
         write(
             &engine,
@@ -872,83 +1042,115 @@ fn an_unnamed_hash_page_is_skipped_and_the_durable_map_keeps_the_field() {
         );
     }
 
-    // Blank the component on ONE field's page entry: a hash page that names no field.
+    // THE TWO DENOMINATORS, both read BEFORE the unload that writes the index.
     {
-        let mut shards = engine.shards.write().expect("engine lock poisoned");
-        let shard = shards.get_mut(&1).expect("shard is loaded");
+        let shards = engine.shards.write().expect("engine lock poisoned");
+        let shard = shards.get(&1).expect("shard is loaded");
         assert_eq!(
             shard.hashes.get("un-hash").map(|fields| fields.len()),
             Some(2),
             "the durable map does not hold both fields, so this fixture cannot create the state it \
              needs and the assertions below would be about nothing"
         );
-        let mut blanked = 0usize;
-        for bucket in shard.bucket_index.bucket_map.values_mut() {
-            for page in bucket.block_index.blocks_mut_unaccounted() {
-                if page.model_id.as_str() == "hash" && page.component.as_deref() == Some("field-1") {
-                    page.component = None;
-                    blanked += 1;
+        let mut entries = 0usize;
+        for bucket in shard.bucket_index.bucket_map.values() {
+            for page in bucket.block_index.values() {
+                if page.model_id.as_str() == "hash" && &*page.object_key == "un-hash" {
+                    entries += 1;
                 }
             }
         }
-        assert_eq!(
-            blanked, 1,
-            "expected exactly ONE hash page naming `field-1` and blanked {blanked} -- if this is 0 \
-             the fixture corrupted nothing and the test would pass without testing anything"
+        println!(
+            "[unnamed-hash] the index holds {entries} hash entr(ies) for this key, none of which \
+             can name a field; the durable map names 2"
         );
-        println!("[unnamed-hash] blanked the component on field-1's page entry");
+        assert!(
+            entries > 0,
+            "THE INDEX HOLDS NO HASH ENTRY FOR THIS KEY AT ALL. Then the claim below would be a \
+             statement about an EMPTY index rather than about a NAMELESS one, and this test would \
+             pass without exercising the merge."
+        );
+        // THE `named == 0` FLOOR IS GONE, AND THE CLAIM IS STRONGER WITHOUT IT.
+        //
+        // It read "Under one entry a page none can: if this reddens the collapse has been
+        // reverted". `BlockIndex` has no component field, so an entry naming a field is not a
+        // reversion this test could observe -- it is UNREPRESENTABLE, and `state.rs`'s width pin
+        // refuses it at const-evaluation. That is what this whole module is for: a divergence
+        // proved unreachable is worth more than one measured absent, and this arm's subject has
+        // just become the former.
+        //
+        // The `entries > 0` floor above STAYS and is doing the work now: it is what makes the
+        // merge below a statement about a NAMELESS index rather than about an EMPTY one.
     }
 
-    // The unload writes the index -- the blanked entry and the durable map together -- and the
+    // The unload writes the index -- nameless entries and the durable map together -- and the
     // reload runs the merge over them.
     engine.unload_shard(1);
     load_on(&engine, OPERATOR_END);
 
     let shards = engine.shards.write().expect("engine lock poisoned");
     let shard = shards.get(&1).expect("shard is loaded");
-    let fields = shard
+    // DELIBERATELY NOT AN `expect` ON THE KEY. The regression this arm guards against -- the
+    // reconcile assigning the derived view WHOLESALE instead of merging the durable map into it --
+    // takes the whole KEY with it, not one field of it. An `expect` here reddens with "the hash key
+    // did not survive the reload", which reads as a broken fixture, and the mutation proving this
+    // arm non-vacuous did exactly that. An absent key IS zero fields, so it is folded into the
+    // field set and the assertion under test is the one that speaks.
+    let field_names: std::collections::BTreeSet<String> = shard
         .hashes
         .get("un-hash")
-        .expect("the hash key did not survive the reload at all");
+        .map(|fields| fields.keys().map(|name| name.to_string()).collect())
+        .unwrap_or_default();
     println!(
         "[unnamed-hash] reloaded holding {} field(s): {:?}",
-        fields.len(),
-        fields.keys().map(|name| name.as_str()).collect::<Vec<_>>()
+        field_names.len(),
+        field_names
     );
-    assert!(
-        fields.contains_key("field-0"),
-        "THE CONTROL is gone: field-0's page still names it, so it arrives through the derived view. \
-         Losing it means the fixture broke the key rather than one field's name."
-    );
-    assert!(
-        fields.contains_key("field-1"),
-        "field-1 is GONE, and its page entry names no field -- so the derived view cannot produce it \
-         and the durable map is the only thing that can. This is the assertion that fails if the \
-         merge is reverted to `shard.hashes = hashes`, or if `insert_element_if_absent` stops \
-         inserting."
-    );
+    for field in ["field-0", "field-1"] {
+        assert!(
+            field_names.contains(field),
+            "{field} IS NOT SERVED after the reload; the key came back with {:?}. No page entry \
+             names a field, so the derived view cannot produce either of them and the durable map \
+             is the only thing that can. This reddens if `fill_absent_elements` stops filling -- \
+             i.e. if the reconcile goes back to assigning the derived view wholesale.",
+            field_names
+        );
+    }
     assert_eq!(
-        fields.len(),
+        field_names.len(),
         2,
-        "the hash came back with {} field(s) rather than 2",
-        fields.len()
+        "the hash came back with {} field(s) rather than 2: {:?}",
+        field_names.len(),
+        field_names
     );
     println!(
-        "[unnamed-hash] both fields came back: the unnamed page was skipped rather than defaulted, \
-         and the durable map supplied the field the derived view could not name"
+        "[unnamed-hash] both fields came back from an index that names neither, so the durable map \
+         supplied the whole field set rather than one field of it"
     );
 }
 
 // =================================================================================================
-// THE FOLD CARRIES ELEMENT IDENTITY, AND A SIXTEEN-CHARACTER COMPONENT IS A WHOLE ONE
+// THE FOLD CARRIES ELEMENT IDENTITY, AND AN EMPTY ZSET MEMBER IS A WHOLE COMPONENT TOO
 // =================================================================================================
 
-/// AN EMPTY ZSET MEMBER SPELLS EXACTLY SIXTEEN CHARACTERS, AND THE RECONCILE REFUSED TO READ IT.
+/// AN EMPTY ZSET MEMBER SPELLS EXACTLY ZERO CHARACTERS, AND THE RECONCILE ONCE REFUSED TO READ IT.
 ///
-/// `zset_component` is `{biased:016x}` followed by `hex::encode(member)`. A member of zero bytes --
-/// which nothing on the write path rejects -- therefore spells EXACTLY sixteen characters, and the
-/// reconcile's zset arm opened `if component.len() <= 16 { return None }`. So that component decoded
-/// to nothing, the element was counted in `unreadable_names` and skipped, and on the one door where
+/// RESTATED: `zset_component` used to be `{biased:016x}` followed by `hex::encode(member)`, so a
+/// member of zero bytes spelled exactly sixteen characters -- a complete score with an empty
+/// member after it -- and the reconcile's zset arm opened `if component.len() <= 16 { return None
+/// }`, refusing the one length a real, empty-member write could produce. That sixteen-character
+/// boundary is gone along with the score: `zset_component` is `hex::encode(member)` alone now, so
+/// an empty member spells the empty string, and there is no length left to special-case at all --
+/// `hex::decode("")` was always `Ok(vec![])`, and the reconcile's arm no longer asks about length
+/// before decoding. This test keeps its ORIGINAL subject, not the boundary that caused it: an
+/// empty zset member must stay reachable and durable through the fold shape that strands an
+/// element with a page in the index but no durable-map entry behind it.
+///
+/// Historically, `zset_component` is `{biased:016x}` followed by `hex::encode(member)`. A member
+/// of zero bytes -- which nothing on the write path rejects -- therefore spelled EXACTLY sixteen
+/// characters, and the reconcile's zset arm opened `if component.len() <= 16 { return None }`. So
+/// that component decoded to nothing, the element was counted in `unreadable_names` and skipped,
+/// and on the one door where
 /// the durable map does not already hold the element -- the delta fold, whose records carry the
 /// elements written after the base snapshot -- the member was silently gone on reload.
 ///
@@ -969,6 +1171,24 @@ fn an_unnamed_hash_page_is_skipped_and_the_durable_map_keeps_the_field() {
 ///     fixture that lost the whole key cannot pass as this finding.
 ///   * The empty member comes back too. Before the boundary was corrected it did not, and could
 ///     not: the reconcile skipped it and the durable map had nothing.
+///
+/// ITS SCORE AND ITS PRESENCE BOTH DEPEND ON THE DURABLE MAP NOW, which is the half this
+/// restatement inverts. The fixture drops the empty member from that map ON PURPOSE, and nothing
+/// else holds its identity: an entry carries no element name, so the reload cannot put it back at
+/// any score. It asserted a PLACEHOLDER score; it now asserts ABSENCE, for the same reason
+/// `an_element_the_durable_map_does_not_hold_does_not_come_back` does, and that arm carries the
+/// argument for why the state is unreachable in production.
+///
+/// AND THE BOUNDARY THIS ARM EXISTS FOR SURVIVES, RE-ATTRIBUTED TO WHERE COMPONENTS STILL LIVE.
+/// The finding was never about the durable map: it was that an empty member spells a WHOLE
+/// component, so no reader may treat a short component as an absent one. Two readers of one
+/// encoding once disagreed about its shortest legal form -- the reconcile refused
+/// `component.len() <= 16` while WAL replay accepted `< 16` -- and that is the class of defect
+/// being guarded. A page still spells its elements, so the boundary is asked of the PAGE: the
+/// object's pages must derive the empty member as a zero-length component, through the engine's own
+/// `container_membership::derive_membership`, which is the door `SetMembers` and `ZSetScore`'s
+/// fold both read. If a length boundary comes back anywhere in that path, the empty member
+/// disappears from the derivation and this fails.
 ///
 /// rust-internal: mutates the engine's own in-memory index, no external surface
 #[test]
@@ -991,7 +1211,7 @@ fn an_empty_zset_member_is_a_whole_component_and_survives_the_fold_shape() {
     }
 
     // THE DENOMINATOR, and the reachability claim. An empty member has to be accepted and durable,
-    // or the loss below is about a state no caller can reach.
+    // or everything below is about a state no caller can reach.
     let empty_component_len = {
         let shards = engine.shards.read().expect("engine lock poisoned");
         let shard = shards.get(&1).expect("shard is loaded");
@@ -1007,20 +1227,68 @@ fn an_empty_zset_member_is_a_whole_component_and_survives_the_fold_shape() {
             members.contains_key(empty.as_slice()),
             "the empty member is not in the durable map, so nothing here is about a live path"
         );
-        zset_name(3.0, &empty).len()
+        zset_name(&empty).len()
     };
+    // CHECKED, NOT ADJUSTED: an empty member's component is still zero characters, so there is no
+    // length boundary for two readers to disagree about. That was the finding and it still holds.
     assert_eq!(
-        empty_component_len, 16,
-        "an empty member's component is {empty_component_len} characters, not the sixteen this \
+        empty_component_len, 0,
+        "an empty member's component is {empty_component_len} characters, not the zero this \
          finding rests on -- re-read `zset_component` before trusting the boundary below"
     );
-    println!(
-        "[empty-member] both members are durable, and the empty one's component is \
-         {empty_component_len} characters"
-    );
 
-    // The shape a fold produces for ONE element: a page entry the index knows about, with no
-    // durable map entry behind it.
+    // THE BOUNDARY, RE-ATTRIBUTED TO THE PAGES. The pages are where a component still exists, and
+    // the empty member must appear in their derivation as a zero-length key.
+    {
+        let addresses = {
+            let shards = engine.shards.read().expect("engine lock poisoned");
+            let shard = shards.get(&1).expect("shard is loaded");
+            let mut addresses: Vec<crate::block_store::ElementEntry> = Vec::new();
+            for bucket in shard.bucket_index.bucket_map.values() {
+                for page in bucket.block_index.values() {
+                    if page.model_id.as_str() == "zset" && &*page.object_key == "mt-zset" {
+                        addresses.push(page.address.clone());
+                    }
+                }
+            }
+            addresses
+        };
+        assert!(
+            !addresses.is_empty(),
+            "DENOMINATOR: the object holds no page entries, so the derivation below would be empty \
+             for a reason that has nothing to do with an empty member"
+        );
+        let derived = crate::engine::container_membership::derive_membership(
+            "zset",
+            addresses,
+            |address| engine.block_store.read(address).ok(),
+        );
+        assert!(
+            derived.is_complete(),
+            "the derivation from the pages is incomplete ({} failure(s): {} read, {} undecodable, \
+             {} unframed, {} unrenderable), so a missing empty member below could be any of those \
+             rather than a length boundary",
+            derived.failures(),
+            derived.read_failures,
+            derived.undecodable,
+            derived.unframed,
+            derived.unrenderable_items
+        );
+        assert!(
+            derived.live.contains_key(""),
+            "the pages do not derive the empty member as a zero-length component: {:?}. A reader \
+             that treats a short component as an absent one has come back -- which is the defect \
+             this arm exists for, now one layer down",
+            derived.live.keys().collect::<Vec<_>>()
+        );
+        println!(
+            "[empty-member] the pages derive {} live element(s) and the empty member is among them \
+             as a zero-length component",
+            derived.live.len()
+        );
+    }
+
+    // The shape this fixture builds by hand: the durable map loses one element.
     {
         let mut shards = engine.shards.write().expect("engine lock poisoned");
         let shard = shards.get_mut(&1).expect("shard is loaded");
@@ -1032,7 +1300,7 @@ fn an_empty_zset_member_is_a_whole_component_and_survives_the_fold_shape() {
         assert!(
             removed.is_some(),
             "the durable map did not hold the empty member, so this fixture cannot build the state \
-             a fold produces"
+             it is about"
         );
         println!("[empty-member] dropped the empty member from the durable map only");
     }
@@ -1059,21 +1327,20 @@ fn an_empty_zset_member_is_a_whole_component_and_survives_the_fold_shape() {
     let empty_score = score_of(&empty);
     println!("[empty-member] after the reload: control={control_score:?} empty={empty_score:?}");
 
-    // THE CONTROL, at the score it was written with and unaffected by the boundary.
+    // THE CONTROL, at the score it was written with and untouched by the fixture.
     assert_eq!(
         control_score,
         Some(1.0),
         "the non-empty member did not come back either, so this fixture lost the whole key and says \
-         nothing about the sixteen-character boundary"
+         nothing about the element it dropped"
     );
 
-    // THE FINDING.
+    // THE INVERSION. Nothing can name an element the durable map lost.
     assert_eq!(
-        empty_score,
-        Some(3.0),
-        "the empty member came back as {empty_score:?}. Its component is exactly sixteen characters, \
-         so a reconcile asking `component.len() <= 16` skips it -- and with no durable entry behind \
-         it the member is silently gone. WAL replay accepts the same component at `< 16`."
+        None, empty_score,
+        "the empty member came back as {empty_score:?} after being dropped from the durable map. \
+         An entry carries no element name and the derived view is empty by construction, so there \
+         is nothing left to recover an identity from -- a value here means that has changed"
     );
 }
 

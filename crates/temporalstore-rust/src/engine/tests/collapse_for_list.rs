@@ -52,7 +52,6 @@
 
 #![allow(clippy::all)]
 use super::*;
-use crate::engine::TS_CONTAINER_ONE_ENTRY_A_PAGE;
 
 const ELEMENTS: usize = 40;
 const LIST_KEY: &str = "collapse/list";
@@ -60,34 +59,8 @@ const HASH_KEY: &str = "collapse/hash";
 const ZSET_KEY: &str = "collapse/zset";
 
 /// Holds the gate at an explicit value and puts back whatever was there, panic or not.
-struct GateHeld {
-    restore: Option<String>,
-}
 
-impl GateHeld {
-    fn at(value: &str) -> Self {
-        let restore = std::env::var(TS_CONTAINER_ONE_ENTRY_A_PAGE).ok();
-        std::env::set_var(TS_CONTAINER_ONE_ENTRY_A_PAGE, value);
-        Self { restore }
-    }
 
-    fn on() -> Self {
-        Self::at("1")
-    }
-
-    fn off() -> Self {
-        Self::at("0")
-    }
-}
-
-impl Drop for GateHeld {
-    fn drop(&mut self) {
-        match self.restore.take() {
-            Some(previous) => std::env::set_var(TS_CONTAINER_ONE_ENTRY_A_PAGE, previous),
-            None => std::env::remove_var(TS_CONTAINER_ONE_ENTRY_A_PAGE),
-        }
-    }
-}
 
 fn engine_on(
     cache: &std::path::Path,
@@ -181,12 +154,14 @@ fn list_len(engine: &TemporalEngine) -> i64 {
     )
 }
 
-/// Live index entries for one kind and object: how many there are, and how many NAME an element.
-fn entries_named(engine: &TemporalEngine, model_id: &str, object_key: &str) -> (usize, usize) {
+/// Live index entries for one kind and object.
+///
+/// THE SECOND TERM IS GONE. It counted entries that NAME an element, and `BlockIndex` has no field
+/// for a name -- so the count could only read zero and the assertions on it could only pass.
+fn live_entries(engine: &TemporalEngine, model_id: &str, object_key: &str) -> usize {
     let shards = engine.shards.read().expect("engine lock poisoned");
     let shard = shards.get(&1).expect("shard 1 loaded");
     let mut live = 0usize;
-    let mut named = 0usize;
     for bucket in shard.bucket_index.bucket_map.values() {
         for page in bucket.block_index.values() {
             if page.deleted || page.model_id.as_str() != model_id || &*page.object_key != object_key
@@ -194,12 +169,9 @@ fn entries_named(engine: &TemporalEngine, model_id: &str, object_key: &str) -> (
                 continue;
             }
             live += 1;
-            if page.component.is_some() {
-                named += 1;
-            }
         }
     }
-    (live, named)
+    live
 }
 
 /// (live entries, tombstoned entries) for one kind and object.
@@ -272,30 +244,27 @@ fn fold(engine: &TemporalEngine) {
         .expect("the fold round must succeed");
 }
 
-/// The entry floor for a collapsed kind: FEWER entries than elements, and not one naming an
-/// element. Printed before it is asserted.
+/// The entry floor for a collapsed kind: FEWER entries than elements. Printed before asserted.
+///
+/// THE SECOND HALF OF THIS FLOOR IS GONE. It also asserted that not one entry named an element,
+/// and `BlockIndex` has no field for a name -- so that half could only pass. What is left is the
+/// half that can still fail, and it is the sharper one: fewer live entries than elements means the
+/// elements actually folded onto a shared page.
 fn assert_collapsed(engine: &TemporalEngine, model_id: &str, object_key: &str) {
-    let (live, named) = entries_named(engine, model_id, object_key);
+    let live = live_entries(engine, model_id, object_key);
     println!(
-        "    {model_id:<5} entries: {live:>3} live / {named:>3} naming an element (of {ELEMENTS} elements)"
+        "    {model_id:<5} entries: {live:>3} live (of {ELEMENTS} elements)"
     );
     assert!(
         live < ELEMENTS,
         "{model_id} filed {live} live entries for {ELEMENTS} elements, so nothing folded onto a \
          shared page and every assertion in this arm is about a gate that changed nothing"
     );
-    assert_eq!(
-        0, named,
-        "{model_id} filed {named} entries naming an element, so the collapsed arm is not what \
-         produced this index"
-    );
 }
-
 /// A PRESENT LIST ELEMENT IS STILL SERVED UNDER THE COLLAPSE, AND A POPPED ONE IS STILL GONE.
 #[test]
 fn a_list_keeps_its_present_elements_and_loses_its_popped_one_under_the_collapse() {
     println!("\n=== list, gate on, folded ===");
-    let _gate = GateHeld::on();
     let dir = tempfile::tempdir().expect("tempdir");
     let engine = engine_on(
         &dir.path().join("cache"),
@@ -375,7 +344,6 @@ fn a_list_keeps_its_present_elements_and_loses_its_popped_one_under_the_collapse
 #[test]
 fn a_popped_list_element_does_not_come_back_when_the_index_is_re_derived() {
     println!("\n=== list, gate on, popped, then reopened ===");
-    let _gate = GateHeld::on();
     let dir = tempfile::tempdir().expect("tempdir");
     let pages = dir.path().join("pages");
     let indexes = dir.path().join("indexes");
@@ -455,7 +423,6 @@ fn a_gated_list_comes_back_through_wal_replay() {
     let pages = dir.path().join("pages");
     let indexes = dir.path().join("indexes");
     {
-        let _gate = GateHeld::on();
         let engine = engine_on(&dir.path().join("cache-writer"), &pages, &indexes);
         load_on(&engine);
         write_list(&engine);
@@ -469,7 +436,6 @@ fn a_gated_list_comes_back_through_wal_replay() {
         // Deliberately NO unload. The engine is dropped here.
     }
 
-    let _gate = GateHeld::on();
     crate::engine::persistence::reset_index_load_path_counts();
     let reloaded = engine_on(&dir.path().join("cache-reloaded"), &pages, &indexes);
     let response = reloaded.load_shard_with(load_request());
@@ -525,7 +491,6 @@ fn a_gated_list_comes_back_through_wal_replay() {
 #[test]
 fn a_gated_removal_keeps_the_live_entry_and_adds_a_tombstone_instead_of_reducing_the_count() {
     println!("\n=== what a gated per-element removal does to the entry census ===");
-    let _gate = GateHeld::on();
     let dir = tempfile::tempdir().expect("tempdir");
     let engine = engine_on(
         &dir.path().join("cache"),
@@ -581,18 +546,22 @@ fn a_gated_removal_keeps_the_live_entry_and_adds_a_tombstone_instead_of_reducing
 
 /// WHICH KINDS THE PROJECTION COLLAPSES, ASSERTED SIDE BY SIDE IN ONE STORE.
 ///
-/// # THIS IS THE RESTATEMENT OF A PIN THAT HAD TO GO RED
+/// # THIS IS THE RESTATEMENT OF A PIN THAT HAD TO GO RED, FOR THE SECOND TIME
 ///
 /// `index_entry_names_a_page` used to say "only its SET arm consumes the answer: hash, zset and
 /// list emit one named entry per element either way", and
-/// `gated_corpus_across_a_store_boundary` calls those three kinds THE CONTROL. One of the three has
-/// moved, so that sentence is false and the control is two kinds rather than three. This test is
-/// what the sentence is replaced BY: the membership of the collapsed set, asserted per kind against
-/// a real engine rather than described in a comment.
+/// `gated_corpus_across_a_store_boundary` calls those three kinds THE CONTROL. This test replaced
+/// that sentence with per-kind assertions against a real engine -- and then its own two control
+/// arms went red in turn, because hash and zset joined the collapsed set once their refusals were
+/// discharged. THE CONTROL IS NOW EMPTY: there is no container kind left outside the set, so the
+/// thing this arm pins is no longer a boundary between kinds but the claim that ALL FOUR fold.
+/// What replaces the control is `the_shared_predicate_names_every_container_kind_and_nothing_else`,
+/// which walks the whole registry and asserts the non-container kinds are still out -- a boundary
+/// that cannot be emptied by widening the set, because it is computed from the set rather than
+/// listed beside it.
 #[test]
-fn the_projection_collapses_list_and_leaves_hash_and_zset_naming_every_element() {
+fn the_projection_collapses_every_container_kind() {
     println!("\n=== all three kinds in one gated store, folded ===");
-    let _gate = GateHeld::on();
     let dir = tempfile::tempdir().expect("tempdir");
     let engine = engine_on(
         &dir.path().join("cache"),
@@ -605,102 +574,246 @@ fn the_projection_collapses_list_and_leaves_hash_and_zset_naming_every_element()
     write_list(&engine);
     fold(&engine);
 
-    let hash = entries_named(&engine, "hash", HASH_KEY);
-    let zset = entries_named(&engine, "zset", ZSET_KEY);
-    let list = entries_named(&engine, "list", LIST_KEY);
-    println!("    hash : {:>3} live / {:>3} naming an element", hash.0, hash.1);
-    println!("    zset : {:>3} live / {:>3} naming an element", zset.0, zset.1);
-    println!("    list : {:>3} live / {:>3} naming an element", list.0, list.1);
+    let hash = live_entries(&engine, "hash", HASH_KEY);
+    let zset = live_entries(&engine, "zset", ZSET_KEY);
+    let list = live_entries(&engine, "list", LIST_KEY);
+    println!("    hash : {hash:>3} live");
+    println!("    zset : {zset:>3} live");
+    println!("    list : {list:>3} live");
 
-    assert_collapsed(&engine, "list", LIST_KEY);
-
-    // THE CONTROLS, AND THE PIN ON THE COLLAPSED SET'S MEMBERSHIP.
+    // ALL THREE, THROUGH ONE HELPER -- three independent measurements, not a restatement of one.
     //
-    // If either of these goes red because that kind collapsed too, the work named on
-    // `index_entry_names_a_page` has to have been done first:
-    //   * hash -- its four index-by-component readers moved onto `shard.hashes`;
-    //   * zset -- the score taken out of the component, so dropping the component stops deleting
-    //     the index's only copy of it, and the rescore supersede fixed so one member at one score
-    //     cannot leave two live entries.
-    assert_eq!(
-        (ELEMENTS, ELEMENTS),
-        hash,
-        "hash filed {} live entries of which {} name a field. Hash is deliberately NOT in the \
-         page-named set: its reads resolve through the index BY COMPONENT with no resident-map \
-         fallback, so a nameless hash entry makes a present field unreachable",
-        hash.0,
-        hash.1
-    );
-    assert_eq!(
-        (ELEMENTS, ELEMENTS),
-        zset,
-        "zset filed {} live entries of which {} name an element. Zset is deliberately NOT in the \
-         page-named set: its component IS THE SCORE, so dropping it deletes the index's only copy \
-         of the score -- measured as 12 red tests across 5 modules when it was attempted",
-        zset.0,
-        zset.1
-    );
+    // AND THE PARAGRAPH THAT STOOD HERE IS REFUTED BY ITS OWN SUBJECT. It read: "THE SECOND HALF
+    // IS WHAT KEEPS THIS FROM BECOMING VACUOUS. `entries_named` counts `component.is_some()`, and
+    // with every container kind collapsed that count is zero for all of them, which could be read
+    // as an assertion that can no longer fail. It can: a regression that files a container per
+    // element makes it non-zero."
+    //
+    // IT CANNOT, ANY MORE. `BlockIndex` has no component field, so no regression in this crate can
+    // make that count non-zero -- the only way back is to re-add the field, which fails
+    // `state.rs`'s width pin at const-evaluation before any test runs. The half the paragraph
+    // dismissed as the one that "would not notice" is now the only one with a subject, and the
+    // fold floor is what stops it being vacuous: `live < ELEMENTS` is satisfied trivially when
+    // elements share no page, which is why `assert_collapsed` is only ever called after `fold`.
+    assert_collapsed(&engine, "list", LIST_KEY);
+    assert_collapsed(&engine, "hash", HASH_KEY);
+    assert_collapsed(&engine, "zset", ZSET_KEY);
 }
 
 /// THE MEMBERSHIP OF THE COLLAPSED SET, ASKED OF THE PREDICATE ITSELF, BOTH GATE DIRECTIONS.
 ///
 /// The arm above measures what the projection EMITS; this one pins what the shared predicate every
 /// filer reads ANSWERS, so a filer that stopped consulting it could not quietly disagree.
+///
+/// # RESTATED, NOT RE-GOLDENED
+///
+/// This was `the_shared_predicate_names_set_and_list_but_not_hash_or_zset` and its two `!` arms
+/// carried the reasons hash and zset were held out. Both reasons were discharged -- hash's four
+/// index-by-component readers now answer from `shard.hashes`, and a zset component is the member
+/// in hex with the score on the outcome's `value` slot -- so the assertions are turned over rather
+/// than deleted, and the kinds that are STILL out are asserted positively below so the set cannot
+/// be widened past the containers by accident. The old name itself asserted the false claim, which
+/// is why it could not stay.
 #[test]
-fn the_shared_predicate_names_set_and_list_but_not_hash_or_zset() {
+fn the_shared_predicate_names_every_container_kind_and_nothing_else() {
     use crate::engine::storage_bucket_internals::index_entry_names_a_page;
     {
-        let _gate = GateHeld::on();
+        for kind in ["set", "list", "hash", "zset"] {
+            assert!(
+                index_entry_names_a_page(kind),
+                "{kind} must be page-named when the gate is on: all four container kinds are in \
+                 the collapsed set now. See `index_entry_names_a_page` for what discharged the \
+                 hash and zset refusals"
+            );
+        }
+        // AND THE OTHER SIDE, WHICH IS THE HALF THAT STAYS FALSE. These kinds file no element
+        // name and hold exactly one page per object, so the convergence they need is the
+        // object-wide one and NOT the page-keyed one: an address-keyed predicate here would leave
+        // a stale live entry on every string write in the engine. Asserted per kind over the
+        // whole registry rather than by naming two, so a kind added later is covered by this
+        // test instead of by whoever remembers it.
+        for kind in crate::engine::storage_bucket_internals::ModelKind::ALL {
+            let name = kind.as_str();
+            if matches!(name, "set" | "list" | "hash" | "zset") {
+                continue;
+            }
+            assert!(
+                !index_entry_names_a_page(name),
+                "{name} answered page-named, but it is not a container kind: it files no element \
+                 name and has one page per object, so the page-keyed term would leave its \
+                 relocated pages behind as stale live entries"
+            );
+        }
+    }
+    // AND THERE IS NO SECOND POSITION TO CHECK, WHICH IS WHY THIS ARM IS INVERTED RATHER THAN
+    // DELETED.
+    //
+    // This held the gate explicitly OFF and asserted that NO kind answered page-named -- the
+    // escape hatch's own behaviour. The gate is retired, so that arm was left asserting something
+    // FALSE the moment its holder was deleted: a line removed from a guard can leave the
+    // assertion beside it reading the opposite of the truth, which is worse than deleting both.
+    //
+    // Restated as the claim that replaces it: the four container kinds answer page-named with NO
+    // variable set anywhere, because there is no variable. Asserted over the same list, so the
+    // non-container kinds are still checked in the same breath.
+    for kind in ["set", "zset", "list", "hash"] {
         assert!(
-            index_entry_names_a_page("set"),
-            "set must be page-named when the gate is on"
-        );
-        assert!(
-            index_entry_names_a_page("list"),
-            "list must be page-named when the gate is on"
-        );
-        assert!(
-            !index_entry_names_a_page("hash"),
-            "hash must NOT be page-named: four of its readers resolve through the index by \
-             component with no resident-map fallback. See `index_entry_names_a_page`"
-        );
-        assert!(
-            !index_entry_names_a_page("zset"),
-            "zset must NOT be page-named: its component carries the SCORE, so dropping it deletes \
-             data rather than a name. See `index_entry_names_a_page`"
-        );
-        // The component-less kinds keep component-keyed convergence, which is what supersedes a
-        // relocated page for them. An address-keyed predicate here would leave a stale live entry
-        // on every string write in the engine.
-        assert!(
-            !index_entry_names_a_page("string"),
-            "string is not a container kind"
-        );
-        assert!(
-            !index_entry_names_a_page("feature"),
-            "feature is not a container kind"
+            index_entry_names_a_page(kind),
+            "{kind} is a container kind and did not answer page-named. There is no gate left to \
+             turn off, so the only way this can be false is the predicate's own kind list"
         );
     }
-    let _gate = GateHeld::off();
-    for kind in ["set", "zset", "list", "hash", "string", "feature"] {
+    for kind in ["string", "feature"] {
         assert!(
             !index_entry_names_a_page(kind),
-            "{kind} answered page-named with the gate explicitly off"
+            "{kind} answered page-named, and it holds ONE page per object: the page-keyed term \
+             would leave its relocated pages behind as stale live entries"
         );
     }
 }
 
-/// THE FOUR HASH READERS THAT HOLD HASH OUT, EXERCISED SO THE BASELINE IS RECORDED.
+/// THE OTHER SIDE OF THE PREDICATE, DRIVEN RATHER THAN ASSERTED: a collapsed kind supersedes
+/// exactly the page it replaces and leaves every sibling page of the object alone.
 ///
-/// Not a restatement of the assertion above. This drives the readers themselves under the gate, so
-/// that the step which moves them has a measured "before" to preserve rather than a claim about
-/// one. `HashLen` is the sharpest of the four: it is
-/// `bucket_index_component_block_addresses(..).len()`, so it counts ENTRIES, and under a collapse
-/// it would report the PAGE count with no union to rescue it.
+/// # WHY THIS IS NOT COVERED BY THE ARMS ABOVE
+///
+/// Those measure what the projection emits from the model maps -- a DERIVED index, rebuilt whole.
+/// This one writes one more element into an object whose pages are already folded, which is the
+/// path where a slot-keyed removal took every other page of the object with it: measured, on a
+/// five-member set folded onto one page and written to once, as a listing serving ONE member.
+/// Under one entry a page every entry of an object shares one slot keyed `None`, so the page key
+/// derived from the address is the only thing telling the object's own entries apart -- and HASH
+/// and ZSET reach this path for the first time with this change, which is what makes driving it
+/// per kind worth the engine starts.
 #[test]
-fn hashs_index_readers_still_answer_per_field_while_hash_is_held_out() {
+fn a_write_after_a_fold_supersedes_one_page_and_not_the_objects_siblings() {
+    for (model_id, object_key) in [("list", LIST_KEY), ("hash", HASH_KEY), ("zset", ZSET_KEY)] {
+        println!("\n=== {model_id}: one more element written after the fold ===");
+        let dir = tempfile::tempdir().expect("tempdir");
+        let engine = engine_on(
+            &dir.path().join("cache"),
+            &dir.path().join("pages"),
+            &dir.path().join("indexes"),
+        );
+        load_on(&engine);
+        match model_id {
+            "list" => write_list(&engine),
+            "hash" => write_hash(&engine),
+            _ => write_zset(&engine),
+        }
+        fold(&engine);
+        let folded_live = live_entries(&engine, model_id, object_key);
+        println!("    after the fold : {folded_live:>3} live");
+        assert!(
+            folded_live >= 1 && folded_live < ELEMENTS,
+            "{model_id} holds {folded_live} live entries for {ELEMENTS} elements after the fold, \
+             so nothing folded onto a shared page and the write below cannot exercise the \
+             page-keyed term at all"
+        );
+
+        // ONE MORE ELEMENT, under a name the fold has never seen, so the entry it files is a NEW
+        // page rather than a rewrite of one already folded.
+        let fresh = ELEMENTS + 1;
+        match model_id {
+            "list" => write(
+                &engine,
+                Command::ListPush {
+                    key: LIST_KEY.to_string(),
+                    member: element_bytes(fresh),
+                    left: false,
+                },
+            ),
+            "hash" => write(
+                &engine,
+                Command::HashSet {
+                    key: HASH_KEY.to_string(),
+                    field: field_name(fresh),
+                    value: element_bytes(fresh),
+                },
+            ),
+            _ => write(
+                &engine,
+                Command::ZSetAdd {
+                    key: ZSET_KEY.to_string(),
+                    member: element_bytes(fresh),
+                    score: fresh as f64,
+                },
+            ),
+        }
+        let after_live = live_entries(&engine, model_id, object_key);
+        println!("    after a write  : {after_live:>3} live");
+
+        // THE SIBLINGS SURVIVED, AS AN EXACT COUNT AND NOT A FLOOR.
+        //
+        // A FLOOR IS THE WRONG SHAPE HERE AND THE FIRST DRAFT OF THIS USED ONE. It asserted
+        // `after_live >= folded_live`, and all forty elements fold onto ONE page -- so the broken
+        // behaviour this arm is about, a slot-wide removal that takes the folded page with it,
+        // leaves exactly one entry too, and `1 >= 1` passes. Measured: the mutation below was
+        // green against that draft. The folded page's entry and the new page's entry are two
+        // distinct entries, so the count after the write is the count before it PLUS ONE, and
+        // that is the only reading the slot-wide behaviour cannot satisfy.
+        assert_eq!(
+            folded_live + 1,
+            after_live,
+            "{model_id} held {folded_live} live entries before one more element was written and \
+             {after_live} after. One more page means one more entry; anything else means filing \
+             the new page took the object's already-folded page with it, which is what the \
+             page-keyed supersede term exists to prevent"
+        );
+        // THE `after_named == 0` ARM IS GONE: an entry has no element name to count, so it could
+        // only pass. What it was watching for -- the write path filing through a different arm
+        // than the projection -- is held by the count above, which is an exact `folded_live + 1`
+        // and not a floor.
+
+        // AND THE ELEMENTS ARE STILL SERVED, which is the half a count cannot stand in for: an
+        // entry count is the index's own bookkeeping, and the question a client asks is whether
+        // the members are there. This is the assertion that caught the recorded five-member set
+        // serving ONE member after a single write.
+        let served = match model_id {
+            "list" => list_len(&engine),
+            "hash" => integer(
+                &engine,
+                Command::HashLen {
+                    key: HASH_KEY.to_string(),
+                },
+            ),
+            _ => integer(
+                &engine,
+                Command::ZSetCard {
+                    key: ZSET_KEY.to_string(),
+                },
+            ),
+        };
+        println!("    served         : {served:>3} element(s) (of {} written)", ELEMENTS + 1);
+        assert_eq!(
+            (ELEMENTS + 1) as i64,
+            served,
+            "{model_id} served {served} elements after {} were written, so writing one element \
+             into a folded object orphaned the rest",
+            ELEMENTS + 1
+        );
+    }
+}
+
+/// THE FOUR HASH READERS THAT USED TO HOLD HASH OUT, NOW ANSWERING OVER A COLLAPSED HASH.
+///
+/// # THE BASELINE THIS RECORDED IS NOW THE RESULT IT CHECKS
+///
+/// This was written while hash was held out, to record a measured "before" for the step that moves
+/// those readers rather than a claim about one. The step has landed: they answer from
+/// `shard.hashes` instead of resolving through the index by component, and hash is in the
+/// collapsed set -- so the SAME assertions now say something stronger than they were written to
+/// say. They are what shows a hash field is still reachable when its entry carries no element
+/// name, which is the one thing the collapse could have broken for this kind.
+///
+/// `HashLen` is the sharpest of the four and the reason this arm is worth the engine start: it was
+/// `bucket_index_component_block_addresses(..).len()`, so it counted ENTRIES, and over a collapsed
+/// index it would report the PAGE count with no union to rescue it. It answers the full element
+/// count here with the fields on folded pages, which is only possible because it stopped counting
+/// entries.
+#[test]
+fn hashs_index_readers_still_answer_per_field_over_a_collapsed_hash() {
     println!("\n=== hash readers under the gate, hash held out of the collapse ===");
-    let _gate = GateHeld::on();
     let dir = tempfile::tempdir().expect("tempdir");
     let engine = engine_on(
         &dir.path().join("cache"),
@@ -735,23 +848,36 @@ fn hashs_index_readers_still_answer_per_field_while_hash_is_held_out() {
         assert_eq!(
             Some(element_bytes(index)),
             value,
-            "HashGet lost field {index}. It resolves through `bucket_index_block_address`, which \
-             requires `page.component == Some(field)` on every branch"
+            "HashGet lost field {index} over a COLLAPSED hash. It used to resolve through \
+             `bucket_index_block_address`, which required `page.component == Some(field)` on \
+             every branch; it answers from `shard.hashes` now, and this is what shows a present \
+             field is still reachable when its entry carries no element name"
         );
     }
 }
 
-/// AND THE ZSET READER THAT HOLDS ZSET OUT: ITS COMPONENT CARRIES THE SCORE.
+/// AND NO ZSET ENTRY SPELLS A SCORE ANY MORE -- THE ASSERTION TURNED OVER, NOT DELETED.
 ///
-/// The baseline the step that converts zset must preserve. A zset component is
-/// `{biased_score:016x}{hex(member)}`, so the index's name for an element is the only copy of its
-/// score outside `shard.zsets` -- which is why dropping it is a data deletion rather than a
-/// renaming, and why `durable_outranks_derived` has three arms about the name being consulted and
-/// being allowed to disagree with the durable map.
+/// # WHAT THIS ARM USED TO SAY, AND WHY IT IS WORTH KEEPING INVERTED
+///
+/// It said a zset entry's name IS the score: a component was `{biased_score:016x}{hex(member)}`,
+/// so the index's name for an element was the only copy of its score outside `shard.zsets`, which
+/// made dropping it a data deletion rather than a renaming. That was the refusal that held zset
+/// out of the collapsed set, and it was discharged by moving the score onto the WAL outcome's
+/// `value` slot.
+///
+/// Inverted it is a TRIPWIRE ON A DATA LOSS, which is a stronger thing to own than a baseline. If
+/// a zset entry ever carries sixteen leading hex characters again, either the score has crept back
+/// onto the component -- in which case the collapse that drops the component is deleting it -- or
+/// a member's own hex is being mistaken for one. Deleting this arm when its premise flipped would
+/// have left nothing watching that, since every other assertion about zset components checks what
+/// they DO hold.
+///
+/// Asserted over the entries in the index rather than over the predicate, so it reads the shape
+/// that actually got filed.
 #[test]
-fn a_zset_entry_still_names_its_score_while_zset_is_held_out() {
-    println!("\n=== zset entries under the gate, zset held out of the collapse ===");
-    let _gate = GateHeld::on();
+fn no_zset_entry_spells_a_score_now_that_the_collapse_drops_the_name() {
+    println!("\n=== zset entries under the gate, zset in the collapse ===");
     let dir = tempfile::tempdir().expect("tempdir");
     let engine = engine_on(
         &dir.path().join("cache"),
@@ -762,36 +888,52 @@ fn a_zset_entry_still_names_its_score_while_zset_is_held_out() {
     write_zset(&engine);
     fold(&engine);
 
-    // Every live zset entry names an element, and the name is sixteen hex characters of biased
-    // score followed by the hex member -- so the score is recoverable FROM THE ENTRY.
-    let shards = engine.shards.read().expect("engine lock poisoned");
-    let shard = shards.get(&1).expect("shard 1 loaded");
-    let mut named = 0usize;
-    let mut score_bearing = 0usize;
-    for bucket in shard.bucket_index.bucket_map.values() {
-        for page in bucket.block_index.values() {
-            if page.deleted || page.model_id.as_str() != "zset" || &*page.object_key != ZSET_KEY {
-                continue;
-            }
-            if let Some(component) = page.component.as_deref() {
-                named += 1;
-                if component.len() >= 16 && u64::from_str_radix(&component[..16], 16).is_ok() {
-                    score_bearing += 1;
-                }
-            }
-        }
-    }
-    println!("    zset entries naming an element: {named}, of which {score_bearing} carry a decodable score");
-    assert_eq!(
-        ELEMENTS, named,
-        "zset filed {named} entries naming an element for {ELEMENTS} members, so it is not \
-         holding one named entry per element any more"
+    // THE TRIPWIRE IS MOVED OFF THE ENTRIES AND ONTO THE RENDERER, because the entries can no
+    // longer carry the shape it was watching for.
+    //
+    // It walked the live zset entries and asserted two counts were zero: how many named an element
+    // at all, and how many of those spelled sixteen leading hex characters that decode as a biased
+    // score. Its own comment explained why both were taken -- "no entry carries a score" is
+    // satisfied vacuously by "no entry carries a name", and the named count is what tells those
+    // apart. `BlockIndex` has no component field now, so BOTH counts are structurally zero and
+    // neither can tell anything apart: the arm it was built to be, a tripwire on a data loss,
+    // cannot be served by counting entries any more.
+    //
+    // WHAT CAN STILL REGRESS IS THE RENDERER, and that is what this now asserts.
+    // `container_pages::component_from_element_key` is the function that turns a page's item key
+    // back into a component string, and its `ScoreThenMember` arm is the one that used to spell
+    // the score: it returns `hex::encode(key[8..])`, the member alone, deliberately skipping the
+    // eight score bytes. A change that dropped the `8..` would put the score straight back into
+    // every derived name -- which is the data-deletion risk the old arm was watching -- and it
+    // would do it without any entry carrying a component at all. So the key is built WITH a known
+    // score in its first eight bytes and the render is asserted not to contain it.
+    //
+    // AND THE ROUND TRIP IS ASSERTED IN BOTH DIRECTIONS, because a renderer that returned the
+    // empty string would also "not contain the score" and would be a worse loss than the one
+    // guarded against.
+    let member = b"zs-member-01".to_vec();
+    let score_bytes: [u8; 8] = 0x0123_4567_89ab_cdefu64.to_be_bytes();
+    let mut page_key = score_bytes.to_vec();
+    page_key.extend_from_slice(&member);
+    let rendered = crate::engine::container_pages::component_from_element_key(
+        crate::engine::container_pages::ElementKeySpelling::ScoreThenMember,
+        &page_key,
+    )
+    .expect("a score-then-member key renders a component");
+    let score_hex = hex::encode(score_bytes);
+    println!("    key = {} -> component {rendered}", hex::encode(&page_key));
+    assert!(
+        !rendered.contains(&score_hex),
+        "the zset component renderer spelled the score back into the name: {rendered} contains \
+         {score_hex}. The score rides the WAL outcome's `value` slot and `shard.zsets` now, so a \
+         score in a rendered name is the data the collapse deletes being put back where it will \
+         be dropped"
     );
     assert_eq!(
-        named, score_bearing,
-        "{} of {named} zset components did not decode a biased score out of their first sixteen \
-         characters. That decode is what makes the component DATA rather than a name, and it is \
-         the reason zset is held out of the collapse",
-        named - score_bearing
+        hex::encode(&member),
+        rendered,
+        "the zset component renderer must return the MEMBER alone. It returned {rendered}, which \
+         is neither the member nor the member behind a score -- a renderer that lost the member \
+         would satisfy the score assertion above while losing more than the score ever was"
     );
 }

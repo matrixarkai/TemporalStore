@@ -502,12 +502,37 @@ impl TemporalEngine {
         let shards = self.shards.read().expect("engine lock poisoned");
         let shard = shards.get(&shard_id)?;
         let (start_routing_bucket, end_routing_bucket) = shard.routing_range();
-        let address = super::bucket_store::bucket_index_block_address(
-            shard,
-            model_id,
-            object_key,
-            component,
-        )?;
+        // A NAMED ELEMENT'S ADDRESS COMES FROM THE RESIDENT MAP.
+        //
+        // This asked `bucket_index_block_address`, which requires
+        // `page.component.as_deref() == component` on every branch. An entry carries no element
+        // name, so for a container element that resolved NOTHING and this door answered `None` for
+        // elements that were present and served:
+        // `container_page_element_key::every_container_kind_reads_back_the_value_it_wrote_through_a_
+        // framed_page` failed at "no stored page for hash hash-key component field-0000".
+        //
+        // The resident map is keyed BY the element and is where the production readers that used to
+        // resolve this way now go, so this door follows them rather than keeping a resolution the
+        // engine no longer has. The index is still asked as a FALLBACK, because it is the door for
+        // a kind that has no resident element map -- and because a caller naming a component for
+        // such a kind should get the same answer it always did.
+        let address = match component {
+            Some(component) => {
+                super::state::resident_component_address(shard, model_id, object_key, component)
+                    .cloned()
+                    .or_else(|| {
+                        super::bucket_store::bucket_index_block_address(
+                            shard,
+                            model_id,
+                            object_key,
+                            Some(component),
+                        )
+                    })?
+            }
+            None => super::bucket_store::bucket_index_block_address(
+                shard, model_id, object_key, None,
+            )?,
+        };
         let routing_bucket = super::hashing::block_routing_bucket(
             object_key,
             start_routing_bucket,
@@ -1164,11 +1189,10 @@ impl TemporalEngine {
         for (routing_bucket, bucket) in &shard.bucket_index.bucket_map {
             for (block_ref_key, page) in &bucket.block_index {
                 out.push_str(&format!(
-                    "bucket={routing_bucket} ref={block_ref_key} kind={} key={} component={:?} object_id={} slab={} off={} len={} deleted={} log_backed={}
+                    "bucket={routing_bucket} ref={block_ref_key} kind={} key={} object_id={} slab={} off={} len={} deleted={} log_backed={}
 ",
                     page.model_id,
                     page.object_key,
-                    page.component,
                     page.object_id(shard_id),
                     page.address.block_slab_id(),
                     page.address.offset(),
@@ -1491,12 +1515,11 @@ impl TemporalEngine {
                             .lists
                             .replay_remove_element(&item.object_key, &sequence);
                     }
+                    // THE SCORE HALF IS GONE FROM THIS STRING -- a removal never needed it for
+                    // anything beyond finding the member to drop, which is still all this arm
+                    // does.
                     ("zset", Some(encoded)) => {
-                        if encoded.len() < 16 {
-                            return false;
-                        }
-                        let (_score_hex, member_hex) = encoded.split_at(16);
-                        let Ok(member) = hex::decode(member_hex) else {
+                        let Ok(member) = hex::decode(encoded) else {
                             return false;
                         };
                         shard
@@ -1674,19 +1697,26 @@ impl TemporalEngine {
                 );
                 true
             }
-            // zset: sixteen hex digits of the biased score, then the member in hex.
+            // zset: the member in hex. THE SCORE NO LONGER RIDES THE COMPONENT -- it rides
+            // `item.value`, eight big-endian bytes, which `RecordedKind::outcome_value` is the
+            // only producer of. There is no fallback to a score-shaped component: a record this
+            // old does not exist, because this replay arm and the writer that feeds it moved in
+            // the same change, and a value-less zset insert outcome is therefore always a replay
+            // this arm cannot recover -- refuse rather than install a wrong score.
             "zset" => {
                 let (Some(address), Some(component)) =
                     (item.resolved_address(), item.component.clone())
                 else {
                     return false;
                 };
-                if component.len() < 16 {
+                let Ok(member) = hex::decode(&component) else {
                     return false;
-                }
-                let (score_hex, member_hex) = component.split_at(16);
-                let (Ok(biased), Ok(member)) =
-                    (u64::from_str_radix(score_hex, 16), hex::decode(member_hex))
+                };
+                let Some(biased) = item
+                    .value
+                    .as_deref()
+                    .and_then(|bytes| <[u8; 8]>::try_from(bytes).ok())
+                    .map(u64::from_be_bytes)
                 else {
                     return false;
                 };
@@ -2177,19 +2207,33 @@ impl TemporalEngine {
     /// The append path learns a block's log id by writing the record; a reload learns it by
     /// reading the index. Both end up in the same table, which is why no read path had to
     /// change for this to work.
-    /// The component comes from the INDEX ENTRY, not from the map.
+    /// THE ELEMENT CANNOT COME FROM THE INDEX ENTRY ANY MORE, AND IT HAD ALREADY STOPPED COMING
+    /// FROM THERE BEFORE THE FIELD WENT.
     ///
-    /// A registration names a block, and a block is an object plus an element. The persisted map
-    /// carries only the folded key (see `block_in_wal::wal_resident_key`), so the element has to
-    /// be read back from the place that has always held it: `BlockIndex::component`, sitting on
-    /// the same block entry as the address whose object id this is. Walking the index rather than
-    /// re-reading each record keeps this a pure in-memory pass over state the load has already
-    /// built -- no extra log I/O on the load path.
+    /// This read "the element has to be read back from the place that has always held it:
+    /// `BlockIndex::component`, sitting on the same block entry as the address whose object id this
+    /// is." That field is gone, and the paragraph was already describing a value that was `None`
+    /// for every entry of every kind: one entry a page files no element name, so this walk has
+    /// folded on `wal_resident_key(object_id, None)` -- which the function returns as `object_id`
+    /// unchanged -- since the collapse, not since this change.
     ///
-    /// Registering with the wrong element would be worse than registering nothing: the entry would
-    /// resolve a record and then fail to find its block inside it, which is a miss with the cost of
-    /// a record read. So a block whose folded key is not in the map is skipped, and only an exact
-    /// match registers.
+    /// WHAT THAT MEANS, STATED RATHER THAN LEFT TO BE REDISCOVERED. The two WRITERS of this map
+    /// (`TemporalEngine`'s append path and `lifecycle`'s replay) key each entry on the STAGED
+    /// BLOCK's component, which IS the element's own name -- a record is a full account of the
+    /// write. So an entry filed for a container element has a folded key no walk over the index can
+    /// reconstruct, and it is skipped here. Only registrations for the kinds that carry no element
+    /// name -- one block per object -- rehydrate.
+    ///
+    /// AND SKIPPING IS THE SAFE DIRECTION, which is why this is a cost and not a defect: a
+    /// registration with the WRONG element is worse than none, because the entry resolves a record
+    /// and then fails to find its block inside it -- a miss that costs a record read. A block whose
+    /// folded key is not in the map is skipped, and only an exact match registers. What a skip
+    /// costs is that a container element still living in the log is read through the block store's
+    /// ordinary path on the first read after a reload instead of being resolved straight to its
+    /// record.
+    ///
+    /// Walking the index rather than re-reading each record keeps this a pure in-memory pass over
+    /// state the load has already built -- no extra log I/O on the load path.
     pub(super) fn rehydrate_wal_resident_blocks(&self, shard_id: ShardId) {
         let shards = self.shards.read().expect("engine lock poisoned");
         let Some(shard) = shards.get(&shard_id) else {
@@ -2204,7 +2248,9 @@ impl TemporalEngine {
                     continue;
                 }
                 let object_id = page.object_id(shard_id);
-                let component = page.component.as_deref();
+                // `None`: an entry names a page, not an element. See this function's doc for what
+                // that skips and why skipping is the safe direction.
+                let component = None;
                 let folded = super::block_in_wal::wal_resident_key(object_id, component);
                 let Some(placement) = shard.wal_resident_blocks.get(&folded) else {
                     continue;

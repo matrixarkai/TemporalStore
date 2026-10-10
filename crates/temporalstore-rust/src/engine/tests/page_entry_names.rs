@@ -150,7 +150,9 @@ fn name_spread(engine: &TemporalEngine) -> NameSpread {
             held += 1;
             keys.insert(page.object_key.as_ref());
             models.insert(page.model_id.as_str());
-            components.insert(page.component.as_deref());
+            // Every entry's name is the same absence, so this set holds one member for any
+            // non-empty bucket. The histogram it feeds is restated where it is read.
+            components.insert(None::<&str>);
         }
         *spread.pages_held.entry(held).or_default() += 1;
         *spread.object_key.entry(keys.len()).or_default() += 1;
@@ -672,7 +674,6 @@ fn capture_the_stored_spelling_of_a_page_entry() {
             routing_bucket: 7,
             object_key: Arc::from(key),
             model_id: crate::engine::storage_bucket_internals::stored_model_kind(model),
-            component: component.map(Arc::from),
             address: ElementEntry::from_parts(
                 slab,
                 offset,
@@ -740,10 +741,9 @@ fn capture_the_stored_spelling_of_a_page_entry() {
                 "        (\"{}\", \"{}\", {}, {}, {}, {}, {}, {}, {}),",
                 entry.object_key,
                 entry.model_id,
-                match entry.component.as_deref() {
-                    Some(name) => format!("Some(\"{name}\")"),
-                    None => "None".to_string(),
-                },
+                // The component column is `None` on every row now: an entry names a page. The
+                // column is kept in the printed shape so an existing golden still lines up.
+                "None".to_string(),
                 entry.address.block_slab_id(),
                 entry.address.offset(),
                 entry.address.length(),
@@ -769,7 +769,6 @@ fn capture_the_stored_spelling_of_a_page_entry() {
 
 const PAGE_ENTRY_PLAIN: &str = r#"{"object_key":"k","model_id":"string","address":{"a":4294967298,"l":3,"pi":4,"oi":null,"g":4},"dirty":false,"deleted":false}"#;
 
-const PAGE_ENTRY_WITH_COMPONENT: &str = r#"{"object_key":"k","model_id":"string","component":"f0","address":{"a":4294967298,"l":3,"pi":4,"oi":null,"g":4},"dirty":false,"deleted":false}"#;
 
 const PAGE_ENTRY_ALL_FLAGS: &str = r#"{"object_key":"k","model_id":"string","address":{"a":4294967298,"l":3,"pi":4,"oi":null,"g":4},"dirty":true,"deleted":true}"#;
 
@@ -819,6 +818,17 @@ const OLD_STORE_INDEX_WITH_AN_INDEPENDENT_GENERATION: &str = r#"{"bucket_map":{"
 /// stored text unmodified and the round trip would be an equality with itself.
 const REMOVED_KEY: &str = "\"last_dump_sequence\":11,";
 
+/// The element name as a stored row carries it, and the page handle that renders it.
+///
+/// TWO PLACES, BECAUSE `block_index_written_key` RENDERS THE NAME INTO THE MAP KEY as well as the
+/// entry carrying it as a field. A canonicalisation that took only one of them would leave the
+/// write-back comparison reporting a difference it had caused itself.
+const STORED_ELEMENT_NAME: &str = r#""component":"f0","#;
+const STORED_NAMED_HANDLE: &str = r#""hash:k:f0:1:9:3:4:4""#;
+/// The same handle as this binary renders it: the element slot between the object key and the slab
+/// id is empty, which is the shape the five string rows of this fixture already have.
+const PAGE_NAMED_HANDLE: &str = r#""hash:k::1:9:3:4:4""#;
+
 /// Every page of that index, spelled out independently of the text it came from.
 ///
 /// `(object_key, model_id, component, slab, offset, length, dirty, deleted, log_backed)`.
@@ -844,17 +854,22 @@ const OLD_STORE_PAGES: &[(&str, &str, Option<&str>, u64, u64, u64, bool, bool, b
 /// stopped reading `flags.2` and every caller went on passing a bool that went nowhere -- no
 /// warning, because a tuple field is not an unused variable. Narrowing the tuple makes the
 /// compiler demand the change at each call site, which is the only way a caller finds out.
-pub(super) fn page_fixture(
-    component: Option<&str>,
-    length: u64,
-    flags: (bool, bool),
-) -> BlockIndex {
+///
+/// AND THE `component` ARGUMENT WENT THE SAME WAY, for the same reason and one step later. The
+/// literal below stopped setting an element name when the field left `BlockIndex`, so the argument
+/// decided nothing: `page_fixture(Some("f0"), ..)` and `page_fixture(None, ..)` returned the SAME
+/// value, and the golden over the second shape was a second copy of the first. It is removed rather
+/// than renamed to `_component`, so a caller that still tries to name an element is a compile error.
+///
+/// THE LITERAL IS EXHAUSTIVE AND HAS NO `..`, which is what makes it the tripwire the fourth shape
+/// used to be: an element-name field returning to the entry breaks THIS function to compile, before
+/// any golden has a chance to be re-goldened around it.
+pub(super) fn page_fixture(length: u64, flags: (bool, bool)) -> BlockIndex {
     BlockIndex {
         kind: crate::index_log::IndexItemKind::Page,
         routing_bucket: 7,
         object_key: Arc::from("k"),
         model_id: crate::engine::storage_bucket_internals::StoredModelKind::String,
-        component: component.map(Arc::from),
         address: crate::block_store::ElementEntry::from_parts(
             1,
             2,
@@ -867,13 +882,28 @@ pub(super) fn page_fixture(
     }
 }
 
-/// THE STORED SPELLING OF A PAGE ENTRY, character for character, over four shapes.
+/// THE STORED SPELLING OF A PAGE ENTRY, character for character, over three shapes.
 ///
 /// Pinned because this line of work is about the entry's REPRESENTATION, and the one way a
-/// representation change becomes data loss is by moving a byte nobody was watching. Four shapes
+/// representation change becomes data loss is by moving a byte nobody was watching.
+///
+/// THREE SHAPES, NOT FOUR, AND THE FOURTH WAS NOT DROPPED FOR CONVENIENCE. It read: "Four shapes
 /// rather than one, because the component is `skip_serializing_if = "Option::is_none"`: a golden
 /// over a single shape would pin the branch that omits it and say nothing about the branch that
-/// writes it.
+/// writes it." There is no branch that writes it. `BlockIndex` has no element-name field, so the
+/// WITH_COMPONENT shape serialized to the same bytes as PLAIN -- the two goldens were one golden
+/// twice, and the control asserting them different (`assert_ne!(plain, with_component)`, "a page
+/// carrying a component must not write the same bytes as one without it") had become a comparison
+/// of a value with itself, asserted unequal.
+///
+/// WHAT REPLACES IT IS STRONGER THAN A FOURTH GOLDEN. The shape it was pinning cannot be
+/// constructed: `page_fixture`'s literal names every field with no `..`, so the field returning is
+/// a COMPILE error here rather than a golden someone updates.
+///
+/// AND THE THREE THAT REMAIN WERE CHECKED, NOT RE-GOLDENED. `PAGE_ENTRY_PLAIN`,
+/// `PAGE_ENTRY_ALL_FLAGS` and `PAGE_ENTRY_OVER_WIDE` are byte-for-byte what they were: the entry's
+/// serialized form lost the element-name key and nothing else, and none of these three ever carried
+/// one. The stamp this change spends is accounted for in the module header.
 ///
 /// WITH ITS OWN CONTROL. Two entries that both serialized to nothing would pass an equality test
 /// against each other, so the shapes are asserted to differ from one another and each spelling is
@@ -893,34 +923,23 @@ pub(super) fn page_fixture(
 /// disk. Keeping it empty is also what lets the decode go on cross-checking an old `g` against
 /// `block_id.or(object_id)`, which `an_old_store_whose_generation_disagrees_is_refused_before_the_decode`
 /// drives.
-///
-/// AND THE VALUE MOVING IS WHAT THE VERSION STAMP PAYS FOR. `SHARD_INDEX_FORMAT_VERSION` goes to 6
-/// with this change; the four goldens below are the tripwire that makes someone come and check
-/// that the stamp moved with them.
 #[test]
 fn the_stored_spelling_of_a_page_entry_moved_in_exactly_one_slot() {
-    let plain = serde_json::to_string(&page_fixture(None, 3, (false, false)))
-        .expect("a page entry serializes");
-    let with_component = serde_json::to_string(&page_fixture(Some("f0"), 3, (false, false)))
-        .expect("a page entry serializes");
-    let all_flags = serde_json::to_string(&page_fixture(None, 3, (true, true)))
-        .expect("a page entry serializes");
-    let over_wide = serde_json::to_string(&page_fixture(None, u64::MAX, (false, false)))
+    let plain =
+        serde_json::to_string(&page_fixture(3, (false, false))).expect("a page entry serializes");
+    let all_flags =
+        serde_json::to_string(&page_fixture(3, (true, true))).expect("a page entry serializes");
+    let over_wide = serde_json::to_string(&page_fixture(u64::MAX, (false, false)))
         .expect("a page entry serializes");
 
-    println!("PLAIN          = {plain}");
-    println!("WITH_COMPONENT = {with_component}");
-    println!("ALL_FLAGS      = {all_flags}");
-    println!("OVER_WIDE      = {over_wide}");
+    println!("PLAIN     = {plain}");
+    println!("ALL_FLAGS = {all_flags}");
+    println!("OVER_WIDE = {over_wide}");
 
     assert_eq!(
         PAGE_ENTRY_PLAIN, plain,
         "the stored spelling of a page entry moved AGAIN, beyond the one slot this change moved it \
          in; if that is intended, the version stamp has to move with it"
-    );
-    assert_eq!(
-        PAGE_ENTRY_WITH_COMPONENT, with_component,
-        "the stored spelling of a page entry WITH a component moved"
     );
     assert_eq!(
         PAGE_ENTRY_ALL_FLAGS, all_flags,
@@ -930,11 +949,23 @@ fn the_stored_spelling_of_a_page_entry_moved_in_exactly_one_slot() {
         PAGE_ENTRY_OVER_WIDE, over_wide,
         "the stored spelling of a page entry whose length saturated moved"
     );
-
-    // --- Controls. Without these the four assertions above could all be comparing "" with "". ---
+    // AND NO SHAPE WRITES AN ELEMENT-NAME KEY, which is what the retired fourth golden was for.
+    // Asserted over all three rather than inferred from the equalities above, because a golden
+    // updated in step with a regression would not report one and this will.
     for (name, spelling) in [
         ("plain", &plain),
-        ("with component", &with_component),
+        ("all flags", &all_flags),
+        ("over wide", &over_wide),
+    ] {
+        assert!(
+            !spelling.contains("\"component\""),
+            "the {name} spelling writes an element-name key: {spelling}"
+        );
+    }
+
+    // --- Controls. Without these the assertions above could all be comparing "" with "". ---
+    for (name, spelling) in [
+        ("plain", &plain),
         ("all flags", &all_flags),
         ("over wide", &over_wide),
     ] {
@@ -945,13 +976,8 @@ fn the_stored_spelling_of_a_page_entry_moved_in_exactly_one_slot() {
         );
     }
     assert_ne!(
-        plain, with_component,
-        "a page carrying a component must not write the same bytes as one without it, or the \
-         component has stopped being stored"
-    );
-    assert_ne!(
         plain, all_flags,
-        "the three flags must reach the stored form, or a dirty page would load clean"
+        "the flags must reach the stored form, or a dirty page would load clean"
     );
     assert_ne!(
         plain, over_wide,
@@ -962,15 +988,13 @@ fn the_stored_spelling_of_a_page_entry_moved_in_exactly_one_slot() {
     // will accept, never as its own low bits -- `u64::MAX` truncated to `u32` is 4,294,967,295
     // either way, so the case that decides it is the one below. ---
     let wrapped_would_be = (u64::MAX as u32) as u64; // what `as u32` yields: the low bits.
-    let saturated = page_fixture(None, u64::MAX, (false, false)).address.length();
+    let saturated = page_fixture(u64::MAX, (false, false)).address.length();
     assert_eq!(
         u32::MAX as u64,
         saturated,
         "an over-wide length must saturate at u32::MAX, not wrap"
     );
-    let low_bits = page_fixture(None, 0x1_0000_0003, (false, false))
-        .address
-        .length();
+    let low_bits = page_fixture(0x1_0000_0003, (false, false)).address.length();
     assert_eq!(
         u32::MAX as u64,
         low_bits,
@@ -1033,7 +1057,7 @@ fn an_index_written_before_this_change_loads_page_for_page() {
             (
                 page.object_key.to_string(),
                 page.model_id.to_string(),
-                page.component.as_deref().map(str::to_string),
+                None::<String>,
                 page.address.block_slab_id(),
                 page.address.offset(),
                 page.address.length(),
@@ -1052,11 +1076,20 @@ fn an_index_written_before_this_change_loads_page_for_page() {
             // rows what it stored was WRONG: a log-resident flag set on a slab-backed page. That
             // disagreement was a documented defect. The property is derived from the address now,
             // so there is no stored copy left to round-trip and nothing to compare it against.
-            .map(|(key, model, component, slab, offset, length, dirty, deleted, _log_backed)| {
+            //
+            // AND THE COMPONENT COLUMN IS NOW THE SAME KIND OF COLUMN: KEPT, AND DERIVED THROUGH.
+            // It reads `Some("f0")` for the hash row because that is what the old index stored,
+            // and the table is the record of those bytes spelled out independently of the text. The
+            // expectation is DERIVED from it by applying the one difference this binary makes --
+            // the entry has no field to put an element name in, so the decode drops it -- rather
+            // than by editing `Some("f0")` to `None`. Editing the table would destroy the record
+            // and leave this arm asserting that an index with no element name loads as one with no
+            // element name, which is a statement about nothing.
+            .map(|(key, model, _component, slab, offset, length, dirty, deleted, _log_backed)| {
                 (
                     (*key).to_string(),
                     (*model).to_string(),
-                    component.map(str::to_string),
+                    None::<String>,
                     *slab,
                     *offset,
                     *length,
@@ -1084,9 +1117,33 @@ fn an_index_written_before_this_change_loads_page_for_page() {
         "the fixture holds {} pages; it is supposed to hold a multi-page object",
         loaded.len()
     );
+    // THE DERIVATION ABOVE MUST HAVE SOMETHING TO DERIVE, asserted on the SOURCE rather than on the
+    // result. This read `loaded.iter().any(|page| page.2.is_some())` -- "no loaded page carries a
+    // component, so the component's stored round trip is untested" -- and no loaded page CAN carry
+    // one, so it could only ever fail. What it was protecting is still worth protecting: that the
+    // stored bytes really do contain an element name for the decode to drop. So it is asked of the
+    // fixture, in both of the places the name appears in a stored row.
     assert!(
-        loaded.iter().any(|page| page.2.is_some()),
-        "no loaded page carries a component, so the component's stored round trip is untested"
+        OLD_STORE_PAGES.iter().any(|page| page.2.is_some()),
+        "no row of the stored page table carries an element name, so dropping it in the \
+         derivation above changes nothing and this arm tests no shed key"
+    );
+    assert!(
+        OLD_STORE_INDEX.contains(STORED_ELEMENT_NAME),
+        "the stored index text carries no {STORED_ELEMENT_NAME} key, so the tolerant decode this \
+         arm is about is not being exercised"
+    );
+    assert!(
+        OLD_STORE_INDEX.contains(STORED_NAMED_HANDLE),
+        "the stored index text carries no element-named page handle, so the key shape this arm is \
+         about is not being exercised"
+    );
+    // AND NOTHING THAT LOADED CARRIES ONE, which is the other half of the same statement: the
+    // decode is tolerant of the key and drops it rather than failing or keeping it.
+    assert!(
+        loaded.iter().all(|page| page.2.is_none()),
+        "a loaded page carries an element name; the entry has no field for one, so this would mean \
+         the field has come back"
     );
     assert!(
         loaded.iter().filter(|page| page.0 == "k").count() > 1,
@@ -1219,12 +1276,60 @@ fn an_index_written_before_this_change_is_written_back_without_the_key_the_entry
          from the entry and this binary does not write it"
     );
 
+    // AND THE ELEMENT NAME IS DROPPED FROM THE EXPECTATION IN BOTH PLACES IT APPEARS, COUNTED.
+    //
+    // THE FIFTH DIFFERENCE, AND THE ONLY ONE THIS BRANCH ADDS. `BlockIndex` has no element-name
+    // field, so a stored row that carries one is written back without it -- and the name appears
+    // TWICE in a stored row, which is why this is two substitutions and not one:
+    //
+    //   * the entry's own `"component":"f0"` key, which the wire struct no longer declares; and
+    //   * the page_index MAP KEY, `"hash:k:f0:1:9:3:4:4"`. `block_index_written_key` renders the
+    //     element name into that key, and it passes `None` now, so the slot between the object key
+    //     and the slab id is empty -- the same shape the five string rows in this fixture already
+    //     have.
+    //
+    // A SUBSTITUTION THAT MATCHED ONLY ONE OF THE TWO WOULD LEAVE THE COMPARISON REPORTING A
+    // DIFFERENCE IT HAD CAUSED ITSELF, so both are counted before and after, in the same shape as
+    // the object id and the log-resident flag above.
+    assert_eq!(
+        1,
+        canonical.matches(STORED_ELEMENT_NAME).count(),
+        "the fixture must carry exactly one stored element name, on its one hash row, or the \
+         canonicalisation below is not reporting what happens to one"
+    );
+    assert_eq!(
+        1,
+        canonical.matches(STORED_NAMED_HANDLE).count(),
+        "the fixture must carry exactly one element-named page handle, or the canonicalisation \
+         below is not reporting what happens to one"
+    );
+    let canonical = canonical
+        .replace(STORED_ELEMENT_NAME, "")
+        .replace(STORED_NAMED_HANDLE, PAGE_NAMED_HANDLE);
+    assert_eq!(
+        0,
+        canonical.matches("\"component\"").count(),
+        "every stored element name must be gone from the expectation: the key is retired from the \
+         entry and this binary does not write it"
+    );
+    assert_eq!(
+        0,
+        canonical.matches(STORED_NAMED_HANDLE).count(),
+        "the element-named page handle must be gone from the expectation, not left as it was"
+    );
+    assert_eq!(
+        1,
+        canonical.matches(PAGE_NAMED_HANDLE).count(),
+        "and it must be rewritten to the page-named handle this binary renders"
+    );
+
     let rewritten = serde_json::to_string(&index).expect("the index re-serializes");
     assert_eq!(
         canonical, rewritten,
         "the index this binary writes back differs from the index it was given in some way other \
          than dropping last_dump_sequence, retiring the address's routing bucket, emptying its \
-         identity slot, and dropping the log-resident flag the entry shed"
+         identity slot, dropping the log-resident flag the entry shed, and dropping the element \
+         name from both the entry and its page handle"
     );
     assert!(
         rewritten.len() > 500,
@@ -1335,11 +1440,7 @@ fn fold_every_name(engine: &TemporalEngine) -> u64 {
             for byte in page.model_id.as_str().as_bytes() {
                 sum = sum.wrapping_mul(31).wrapping_add(*byte as u64);
             }
-            if let Some(component) = page.component.as_deref() {
-                for byte in component.as_bytes() {
-                    sum = sum.wrapping_mul(31).wrapping_add(*byte as u64);
-                }
-            }
+            // No element name on the entry, so nothing to fold into the sum from it.
         }
     }
     sum
@@ -1725,8 +1826,8 @@ fn a_store_stamped_with_the_wrong_struct_version_is_refused_before_it_is_decoded
     // --- The other stamp, stated rather than assumed: the in-payload field is NOT what refuses
     // at this layer. `load_index_inner` is. Saying so here keeps the two from being confused. ---
     assert_eq!(
-        8, SHARD_INDEX_FORMAT_VERSION,
-         "the struct version moved; the refusal messages pinned above quote it. Moved 2 -> 3 when the object id stopped folding the component in: the stored `oi` keeps its type, so an old index decodes cleanly and serves a recomputed id that disagrees with its own `object_index`. Moved 3 -> 5 when a container page gained the ability to state that one of its items was REMOVED: the payload is opaque to every index encoder, so an old index again decodes cleanly, and what disagrees is what a tombstone item MEANS -- the previous binary reads one as an empty live value and puts the element back. Moved 6 -> 7 when the object list began storing its SLOTS rather than a sorted set of its ids: the sequence is written in slot order and spells a placeholder `null`, so a bucket holding more than one object writes different bytes, and a previous binary reading them would take a slot position for an ascending rank -- which is the same class of silent misread as the three below, arriving on the load path. Moved 5 -> 6 when `object_id` left `ElementEntry`: `generation` is the block id alone now, so a WAL-resident page's generation went from Some(object_id) to None, every ref key it resolves through moves, and an OMITTED ref key restores to a different handle entirely. 4 was skipped and its reservation is now VOID -- it was held while this constant was 3, main moved to 5, and spending 4 would LOWER the constant, which `persistence.rs`'s one-sided `<` turns into a silent accept. A stamp may only ever increase. All three bumps share one shape: the stored row decodes cleanly and the disagreement appears later, on a recovery path. The pinned assertions above resolve the constant symbolically, so they followed it -- this literal is the tripwire that made someone come and check that they did"
+        12, SHARD_INDEX_FORMAT_VERSION,
+         "the struct version moved; the refusal messages pinned above quote it. Moved 2 -> 3 when the object id stopped folding the component in: the stored `oi` keeps its type, so an old index decodes cleanly and serves a recomputed id that disagrees with its own `object_index`. Moved 3 -> 5 when a container page gained the ability to state that one of its items was REMOVED: the payload is opaque to every index encoder, so an old index again decodes cleanly, and what disagrees is what a tombstone item MEANS -- the previous binary reads one as an empty live value and puts the element back. Moved 6 -> 7 when the object list began storing its SLOTS rather than a sorted set of its ids: the sequence is written in slot order and spells a placeholder `null`, so a bucket holding more than one object writes different bytes, and a previous binary reading them would take a slot position for an ascending rank -- which is the same class of silent misread as the three below, arriving on the load path. Moved 5 -> 6 when `object_id` left `ElementEntry`: `generation` is the block id alone now, so a WAL-resident page's generation went from Some(object_id) to None, every ref key it resolves through moves, and an OMITTED ref key restores to a different handle entirely. 4 was skipped and its reservation is now VOID -- it was held while this constant was 3, main moved to 5, and spending 4 would LOWER the constant, which `persistence.rs`'s one-sided `<` turns into a silent accept. A stamp may only ever increase. Moved 8 -> 9 when a zset's component stopped spelling its score: `block_index_written_key` renders `component` into the map key the served index is serialized under, so `\"0000000000000000<member>\"` became `\"<member>\"` under the same named map. The decode stays clean on both sides of this one too -- `component` keeps its `String` type -- and what disagrees is what the text MEANS on the recovery path that reads it back as a page's element, the same shape as 2->3, 3->5 and 6->7. All four bumps share one shape: the stored row decodes cleanly and the disagreement appears later, on a recovery path. Moved 9 -> 11 when a TOMBSTONE'S ELEMENT NAME LEFT THE ENTRY: a tombstone entry files no component and the element it records is a new key on the BUCKET NODE, so the entry's rendered key loses the element text AND the node grows a key. The named served index DROPS an undeclared key silently, so a binary before that change reading an index written after it loads every tombstone with no element at all -- a removal nothing can identify, which is the resurrection the change exists to prevent. Same shape as every bump above: the row decodes cleanly and the disagreement appears on a recovery path. TEN IS NOT A HOLE AND IS NOT SPENDABLE: it is claimed by an UNCOMMITTED edit in another working tree, which no ref holds and no sweep of refs can see -- a lane swept 2,567 refs, found nothing above 9, and was wrong for exactly that reason. Moved 11 -> 12 when HASH AND ZSET joined the page-named set: the same key `block_index_written_key` renders, moved for two more kinds, which is 8 -> 9 again with a wider scope. The pinned assertions above resolve the constant symbolically, so they followed it -- this literal is the tripwire that made someone come and check that they did"
     );
     // --- AND THE REFUSAL IS COUNTED APART FROM AN ABSENCE, which is the whole reason the counters
     //     exist: `load_index_inner` answers `Ok(None)` for stale, undecodable and absent alike, so
@@ -1835,7 +1936,7 @@ fn page_tuples(
             (
                 page.object_key.to_string(),
                 page.model_id.to_string(),
-                page.component.as_deref().map(str::to_string),
+                None::<String>,
                 page.address.block_slab_id(),
                 page.address.offset(),
                 page.address.length(),
@@ -2171,4 +2272,215 @@ fn a_record_whose_page_handle_was_omitted_still_names_its_page_after_the_fold() 
          supposed to re-derive that set from each page's own terms, so a stored id cannot be \
          authoritative any more"
     );
+}
+
+// ---------------------------------------------------------------------------------------------
+// AN UNGATED STORE MUST BE REFUSED, NOT MISREAD.
+// ---------------------------------------------------------------------------------------------
+
+
+/// A WHOLE SHARD INDEX WRITTEN WITH THE GATE OFF, AT THE STAMP A PRE-CHANGE BINARY CARRIES.
+///
+/// Captured by `capture_an_ungated_store_index` from this branch's own ungated writer, with
+/// `index_format_version` set to 8 -- what `matrixark/main` holds. Three entries, each NAMING its
+/// element: `component` `f0` and `f1` on a hash and `6d30` (hex `m0`) on a zset, and the written
+/// key of each embedding that name.
+///
+/// A STRING CONSTANT, WHICH IS THE WHOLE POINT. Once `BlockIndex` has no field for an element
+/// name there is no way left to BUILD this store -- not with a gate, not by hand -- so bytes are
+/// the only form of it that outlives the field. This is the yesterday\x27s-input kind of golden: it
+/// is not what this engine writes and must never be regenerated to match what it writes.
+const UNGATED_STORE_INDEX_AT_STAMP_8: &str = r##"{"index_format_version":8,"wal_resident_blocks":{},"expires_at_ms":{},"strings":{},"hashes":{"ungated/hash":{"f1":{"a":27,"l":27,"pi":1,"oi":null,"g":1},"f0":{"a":0,"l":27,"pi":0,"oi":null,"g":0}}},"sets":{},"seen":{},"buckets":{},"zsets":{"ungated/zset":[[[109,48],[13830554455654793216,{"a":54,"l":34,"pi":0,"oi":null,"g":0}]]]},"lists":{},"features":{},"control_state":{},"control_state_blocks":{},"control_state_changes":{},"control_state_change_sketch":{},"control_state_selection":{},"control_state_uuid":{},"context_nodes":{},"context_event_timeline":{},"context_audits":{},"context_entities":{},"context_children":{},"context_summaries":{},"context_compressions":{},"slot_index":{"bucket_map":{"979707521":{"routing_slot":979707521,"layout":"SingleBlockObject","dirty":true,"deleted":false,"meta_loaded":true,"loading":false,"in_memory":true,"ttl_ms":null,"dirty_generation":1,"object_index":[3660521199139779587],"deleted_object_index":[],"page_index":{"zset:ungated/zset:6d30:0:54:34:0:0":{"object_key":"ungated/zset","model_id":"zset","component":"6d30","address":{"a":54,"l":34,"pi":0,"oi":null,"g":0},"dirty":true,"deleted":false}}},"3709665044":{"routing_slot":3709665044,"layout":"MultiBlockObject","dirty":true,"deleted":false,"meta_loaded":true,"loading":false,"in_memory":true,"ttl_ms":null,"dirty_generation":2,"object_index":[14105434925875933987],"deleted_object_index":[],"page_index":{"hash:ungated/hash:f0:0:0:27:0:0":{"object_key":"ungated/hash","model_id":"hash","component":"f0","address":{"a":0,"l":27,"pi":0,"oi":null,"g":0},"dirty":true,"deleted":false},"hash:ungated/hash:f1:0:27:27:1:1":{"object_key":"ungated/hash","model_id":"hash","component":"f1","address":{"a":27,"l":27,"pi":1,"oi":null,"g":1},"dirty":true,"deleted":false}}}}},"applied_wal_sequence":3}
+"##;
+
+/// AN UNGATED STORE IS REFUSED BEFORE IT IS SERVED, WHICH IS WHAT MAKES THE ELEMENT NAME REMOVABLE.
+///
+/// # THE QUESTION THIS SETTLES
+///
+/// Removing the element name from a page entry means a store whose entries DO name their elements
+/// becomes uninterpretable: the named decoder drops a key it has no field for, SILENTLY, so such a
+/// store would decode cleanly into an index whose container entries name nothing. If that index
+/// were then served, every element it names would be lost or mis-served -- which is not a format
+/// change, it is data loss.
+///
+/// The stamp is what has to stop it, and `persistence.rs` compares with `<`, so a value that is too
+/// LOW falls through to Accepted. That asymmetry is exactly the lethal direction, which is why this
+/// is DRIVEN rather than argued: the store is planted, the shard is loaded, and the load path is
+/// read off the engine's own counters.
+///
+/// # THE ORDER IS THE LOAD-BEARING PART
+///
+/// The refusal happens AFTER the decode and BEFORE the index is used -- `decode_index_bytes`
+/// succeeds, the dropped key is already gone by then, and `load_index_inner` refuses on the stamp
+/// and answers `Ok(None)` so the caller replays the write-ahead log instead. So the silent drop is
+/// harmless only because the refusal follows it. If that order ever inverted, this guard is what
+/// would catch it: the first arm asserts the decode SUCCEEDS and the names are gone, and the second
+/// asserts the shard nevertheless serves nothing from it.
+///
+/// # AND IT IS COUNTED BOTH WAYS
+///
+/// `stale > 0` alone is not enough: `index_load_path_counts` is four independent counters and a
+/// load that was refused AND accepted would move both. So `accepted` is asserted at zero over the
+/// same reset window. An earlier guard in this file moves `stale` and leaves `accepted` unchecked.
+#[test]
+fn an_ungated_store_is_refused_before_it_is_served() {
+    use crate::engine::persistence::{index_load_path_counts, reset_index_load_path_counts};
+
+    // --- ARM 1: THE DECODE SUCCEEDS, AND IT IS THE DECODE THAT LOSES THE NAMES. ---
+    let decoded = crate::engine::decode_index_bytes(UNGATED_STORE_INDEX_AT_STAMP_8.as_bytes())
+        .expect("an index written by a pre-change binary must still DECODE -- the stamp refuses it \
+                 one layer up, and a decode that failed here would hide that");
+    assert_eq!(
+        8, decoded.index_format_version,
+        "the golden's stamp is {} rather than 8, so it is not the pre-change store this guard is \
+         about",
+        decoded.index_format_version
+    );
+    let container_entries: Vec<(String, String, Option<String>)> = decoded
+        .bucket_index
+        .bucket_map
+        .values()
+        .flat_map(|bucket| bucket.block_index.values())
+        .filter(|page| matches!(page.model_id.as_str(), "hash" | "zset" | "set" | "list"))
+        .map(|page| {
+            (
+                page.object_key.to_string(),
+                page.model_id.as_str().to_string(),
+                element_name_of(page),
+            )
+        })
+        .collect();
+    println!("\n=== a pre-change store, decoded by this binary ===");
+    for row in &container_entries {
+        println!("  {row:?}");
+    }
+    // FLOOR: the golden really does hold container entries, or the naming claim below is about an
+    // empty set and the refusal arm is about an empty store.
+    assert_eq!(
+        3,
+        container_entries.len(),
+        "the golden decoded to {} container entries rather than 3, so it is not the store this \
+         guard was captured from",
+        container_entries.len()
+    );
+
+    // THE NAMES ARE A FACT ABOUT THE STORED BYTES, asserted there rather than on the decoded
+    // entries -- because what this binary can still READ off an entry is exactly what the change
+    // under test takes away. The bytes cannot change; the field can. So the golden is asserted to
+    // SPELL the three element names, and what the decode recovered is PRINTED beside it.
+    for spelling in [
+        "\"component\":\"f0\"",
+        "\"component\":\"f1\"",
+        "\"component\":\"6d30\"",
+    ] {
+        assert!(
+            UNGATED_STORE_INDEX_AT_STAMP_8.contains(spelling),
+            "the golden does not spell {spelling}, so it is not a store whose entries name their \
+             elements and the refusal below is about nothing"
+        );
+    }
+    let recovered = container_entries
+        .iter()
+        .filter(|(_, _, name)| name.is_some())
+        .count();
+    println!(
+        "  of 3 stored element names, this binary recovered {recovered} off the entries -- a drop \
+         to 0 is the silent key drop that the refusal below stands between a reader and"
+    );
+
+    // --- ARM 2: THE SHARD REFUSES IT, AND SERVES NOTHING FROM IT. ---
+    let dir = tempfile::tempdir().expect("tempdir");
+    let indexes = dir.path().join("indexes");
+    std::fs::create_dir_all(&indexes).expect("mkdir");
+    std::fs::write(
+        indexes.join("shard-7.index.json"),
+        UNGATED_STORE_INDEX_AT_STAMP_8.as_bytes(),
+    )
+    .expect("plant the pre-change index");
+    // AND THE ROUTING-RANGE STAMP BESIDE IT, WHICH A PRE-CHANGE STORE REALLY HAS.
+    //
+    // Without it this guard asserted nothing and did not say so: `decide_routing_range` refuses a
+    // store that has ON-DISK STATE and NO range stamp, before the index is read at all, so all four
+    // index-load counters stayed at ZERO -- not even `absent`. Measured, by driving it: a refusal
+    // arm that cannot tell "refused for the reason under test" from "never asked" is the shape of a
+    // control that passes for an unintended reason. A binary that wrote this index also wrote this
+    // file, so planting both is what makes the FORMAT stamp the thing being tested.
+    crate::engine::routing_range_stamp::write_routing_range_stamp(
+        &indexes,
+        7,
+        crate::engine::routing_range_stamp::RoutingRangeStamp {
+            start_routing_bucket: 0,
+            end_routing_bucket: u32::MAX,
+        },
+    )
+    .expect("plant the routing-range stamp the index was written under");
+
+    reset_index_load_path_counts();
+    let engine = crate::engine::TemporalEngine::with_local_dirs(
+        1024,
+        dir.path().join("cache"),
+        dir.path().join("pages"),
+        indexes,
+    );
+    // THE LOAD'S OWN STATUS, CHECKED. A first draft of this guard did not, and every counter read
+    // ZERO -- not even `absent` -- which is what a load that never reached the index looks like.
+    // A refusal arm that cannot tell "refused" from "never asked" asserts nothing.
+    engine.load_shard(7);
+    let (accepted, stale, absent, undecodable) = index_load_path_counts();
+    println!(
+        "  load path -> accepted {accepted}, stale {stale}, absent {absent}, undecodable \
+         {undecodable}"
+    );
+    assert!(
+        stale > 0,
+        "a store stamped 8 against a current {} was NOT counted as a stale-stamp refusal: accepted \
+         {accepted}, stale {stale}, absent {absent}, undecodable {undecodable}. \
+         `persistence.rs` compares with `<`, so the direction that fails silently is a stamp that \
+         is too LOW -- and this is that direction",
+        crate::engine::SHARD_INDEX_FORMAT_VERSION
+    );
+    assert_eq!(
+        0, accepted,
+        "the load counted {accepted} ACCEPTED beside {stale} refused. Four independent counters \
+         mean a load can move both, and a refusal that is also an acceptance is an acceptance"
+    );
+    assert_eq!(
+        0, undecodable,
+        "the planted index was counted UNDECODABLE, so this guard is measuring a parse failure \
+         rather than the stamp -- and a parse failure would hide the silent key drop arm 1 asserts"
+    );
+
+    // AND NOTHING IS SERVED FROM IT. There is no write-ahead log beside the planted index, so a
+    // refusal leaves an empty shard; anything served here came out of the index this binary was
+    // supposed to refuse.
+    let served = engine.execute(crate::types::ExecuteRequest {
+        shard_id: 7,
+        command: crate::types::Command::HashGetAll {
+            key: "ungated/hash".to_string(),
+        },
+    });
+    let entries = match served.response {
+        crate::types::CommandResponse::HashEntries { entries } => entries,
+        other => panic!("expected HashEntries, got {other:?}"),
+    };
+    println!("  served from the refused index: {} field(s)", entries.len());
+    assert!(
+        entries.is_empty(),
+        "the refused index served {} field(s): {:?}. A refused store must be REPLAYED, never read \
+         -- and with no log beside it the honest answer is nothing at all",
+        entries.len(),
+        entries
+    );
+}
+
+/// The element name a page entry carries, read in the one place that has to change when the field
+/// goes.
+///
+/// A HELPER AND NOT AN INLINE FIELD READ, so that removing `BlockIndex::component` leaves ONE
+/// compile error here with a comment attached rather than silently turning the naming assertion
+/// above into `None == None`. When the field goes this answers `None` for every entry, which is
+/// precisely the silent drop arm 1 is about -- and the assertion above compares against the golden's
+/// own recorded names rather than against whatever this returns.
+fn element_name_of(page: &BlockIndex) -> Option<String> {
+    None::<String>
 }

@@ -16,8 +16,8 @@
 //!     to the clone. `arc_payload_bytes` walks the distinct `Arc` pointers and adds them back
 //!     ONCE each, which is what a shared string actually costs.
 //!   * A `Vec` clones to its LENGTH, not its capacity, so spare capacity is not counted. Every
-//!     `Vec` in these structures is built to a known small length (`BlockRefs::Many` and
-//!     `ComponentList::Many` both start at capacity 2), so the omission is bounded and small.
+//!     `Vec` in these structures is built to a known small length (`BlockRefs::Many`
+//!     starts at capacity 2), so the omission is bounded and small.
 //!   * `HashMap` and `BTreeMap` clones preserve bucket count and tree shape respectively, so their
 //!     nodes ARE counted, including the half of a B-tree leaf that ascending inserts leave empty.
 //!
@@ -36,7 +36,7 @@ use std::sync::Arc;
 
 use crate::block_store::ElementEntry;
 use crate::engine::state::{
-    BlockIndex, BlockIndexMap, BlockLookupRef, BlockRefs, ComponentBlocks, ComponentList,
+    BlockIndex, BlockIndexMap, BlockLookupRef, BlockRefs,
     ObjectIndex,
 };
 
@@ -84,37 +84,20 @@ fn dirty_key_set_arm(set: &crate::engine::state::DirtyKeySet) -> &'static str {
     }
 }
 
-fn component_list_arm(list: &ComponentList) -> &'static str {
-    match list {
-        ComponentList::Empty => "Empty",
-        ComponentList::One(_) => "One",
-        ComponentList::Many(_) => "Many",
-    }
-}
-
-fn probe_page(object: &str, component: Option<&str>, slot: u64) -> BlockIndex {
+// The `component: Option<&str>` parameter this took was DEAD and is gone: it was accepted and
+// never mentioned in the `BlockIndex` below, because the field it used to fill came off the entry.
+// Two call sites were passing a value that decided nothing.
+fn probe_page(object: &str, slot: u64) -> BlockIndex {
     BlockIndex {
         kind: crate::index_log::IndexItemKind::Page,
         routing_bucket: 7,
         object_key: Arc::from(object),
         model_id: crate::engine::storage_bucket_internals::StoredModelKind::String,
-        component: component.map(Arc::from),
         address: ElementEntry::from_parts(1, slot * 64, 64, Some(slot), Some(slot)),
         dirty: false,
         deleted: false,
     }
 }
-
-fn probe_component(name: Option<&str>, slot: u64) -> ComponentBlocks {
-    ComponentBlocks {
-        component: name.map(Arc::from),
-        refs: BlockRefs::One(BlockLookupRef {
-            routing_bucket: 7,
-            block_ref_key: slot,
-        }),
-    }
-}
-
 /// THE SHRINK QUESTION, on every path that can shrink.
 ///
 /// A container that grows to `Many` and never collapses is a leak that looks like usage: the memory
@@ -177,8 +160,7 @@ fn every_inline_shape_collapses_back_on_a_fill_and_drain() {
         let mut map = BlockIndexMap::default();
         let mut handles: Vec<u64> = Vec::new();
         for slot in 0..FILL {
-            let component = format!("c{slot}");
-            handles.push(map.insert(probe_page("o", Some(&component), slot), &mut live));
+            handles.push(map.insert(probe_page("o", slot), &mut live));
         }
         if map.len() != FILL as usize {
             failures.push(format!("BlockIndexMap filled to {} pages, not {FILL}", map.len()));
@@ -205,8 +187,7 @@ fn every_inline_shape_collapses_back_on_a_fill_and_drain() {
         let mut map = BlockIndexMap::default();
         let mut handles: Vec<u64> = Vec::new();
         for slot in 0..FILL {
-            let component = format!("c{slot}");
-            handles.push(map.insert(probe_page("o", Some(&component), slot), &mut live));
+            handles.push(map.insert(probe_page("o", slot), &mut live));
         }
         let mut remaining = FILL as usize;
         while remaining > 0 {
@@ -224,61 +205,22 @@ fn every_inline_shape_collapses_back_on_a_fill_and_drain() {
         }
     }
 
-    // --- ComponentList: insert to Many, remove back to Empty from the tail. ---
-    {
-        let mut list = ComponentList::default();
-        for slot in 0..FILL {
-            let at = list.len();
-            let name = format!("c{slot}");
-            list.insert(at, probe_component(Some(&name), slot));
-        }
-        if list.len() != FILL as usize {
-            failures.push(format!("ComponentList filled to {} entries, not {FILL}", list.len()));
-        }
-        let mut remaining = FILL as usize;
-        while remaining > 0 {
-            remaining -= 1;
-            list.remove(remaining);
-            steps += 1;
-            let want = expected_arm(remaining);
-            let got = component_list_arm(&list);
-            if got != want {
-                failures.push(format!("ComponentList at {remaining} entries is {got}, expected {want}"));
-            }
-        }
-    }
-
-    // --- ComponentList: removal from the FRONT, which a tail-only collapse gets wrong. ---
-    {
-        let mut list = ComponentList::default();
-        for slot in 0..FILL {
-            let at = list.len();
-            let name = format!("c{slot}");
-            list.insert(at, probe_component(Some(&name), slot));
-        }
-        let mut remaining = FILL as usize;
-        while remaining > 0 {
-            remaining -= 1;
-            list.remove(0);
-            steps += 1;
-            let want = expected_arm(remaining);
-            let got = component_list_arm(&list);
-            if got != want {
-                failures.push(format!(
-                    "ComponentList draining from the front at {remaining} entries is {got}, expected {want}"
-                ));
-            }
-            // The collapse must keep the RIGHT entry, not merely an entry: draining from the front
-            // leaves the highest-numbered component behind.
-            if remaining == 1 {
-                let kept = list[0].component.as_deref().map(|s| s.to_string());
-                let want_kept = Some(format!("c{}", FILL - 1));
-                if kept != want_kept {
-                    failures.push(format!("ComponentList collapsed to {kept:?}, expected {want_kept:?}"));
-                }
-            }
-        }
-    }
+    // TWO `ComponentList` DRAIN PATHS STOOD HERE AND THE TYPE IS GONE. They filled the list past
+    // its inline arm and drained it one entry at a time -- once from the tail, once from the FRONT,
+    // "which a tail-only collapse gets wrong" -- checking at every step that the arm matched
+    // `expected_arm(len)`, and that the survivor of a front-drain was the right entry rather than
+    // merely an entry.
+    //
+    // `Option<BlockRefs>` HAS NO IMAGE OF THAT LADDER, which is why neither is rewritten.
+    // `expected_arm`'s three rungs need three states and an `Option` has two; a front-versus-tail
+    // distinction needs positions and there is one slot; "keeps the right entry" needs entries to
+    // choose between. The nearest surviving claim is that the object's entry goes when its last ref
+    // does, and that is `BlockRefs`'s emptiness rather than a list's -- held in one statement, with
+    // a comment saying it is the single holder, in `CoreIndex::remove_object_block_lookup_ref`.
+    //
+    // THE DENOMINATOR BELOW MOVED WITH THEM, from six drain paths to four. That constant is the
+    // guard that stops this whole test passing by never filling anything, so it is edited rather
+    // than dropped.
 
     // --- DirtyKeySet: the same shape, on the index that marks objects dirty. ---
     // Drained through `take`, which is the path `DirtyObjectIndex::insert` uses to MOVE a key
@@ -308,13 +250,14 @@ fn every_inline_shape_collapses_back_on_a_fill_and_drain() {
         }
     }
 
-    // Denominator. Six paths drain `FILL` entries one at a time and the `clear()` path contributes
-    // one state, so a complete run visits exactly 6 * FILL + 1 of them. A rewrite that stopped
-    // filling would satisfy every assertion above by never making one.
-    const DRAIN_STATES: usize = 6 * FILL as usize + 1;
+    // Denominator. Four paths drain `FILL` entries one at a time and the `clear()` path
+    // contributes one state, so a complete run visits exactly 4 * FILL + 1 of them. It was SIX
+    // until the two `ComponentList` paths went with their type. A rewrite that stopped filling
+    // would satisfy every assertion above by never making one.
+    const DRAIN_STATES: usize = 4 * FILL as usize + 1;
     assert_eq!(
         DRAIN_STATES, steps,
-        "the drain visited {steps} states across six paths of {FILL} entries, expected \
+        "the drain visited {steps} states across four paths of {FILL} entries, expected \
          {DRAIN_STATES}; it is not exercising what it claims to"
     );
     assert!(
@@ -337,15 +280,24 @@ fn expected_arm(len: usize) -> &'static str {
 /// `BlockRefs` is the one shape with NO shrink path, and that is a property of its surface rather
 /// than an oversight -- so it is pinned here rather than left to be rediscovered.
 ///
-/// `BlockRefs::insert` grows `One` into `Many`. Nothing anywhere removes a SINGLE ref: a ref leaves
-/// only when its whole `ComponentBlocks` leaves, through `ComponentList::remove`, which drops the
-/// `BlockRefs` entire. So a `Many` that could collapse never arises, and adding a per-ref removal
-/// without adding the collapse beside it would create one.
+/// `BlockRefs::insert` grows `One` into `Many`, and `BlockRefs::remove` can leave a `Many` holding
+/// nothing -- it cannot turn back into `One`, and it has no collapse of its own.
 ///
-/// This fails if a per-ref removal appears: it asserts the surface, and the surface is what makes
-/// the missing collapse safe.
+/// # THE OLD SAFETY ARGUMENT WAS RETIRED BY THE COLLAPSE, AND SAYING SO IS THE POINT
+///
+/// This used to read: "Nothing anywhere removes a SINGLE ref: a ref leaves only when its whole
+/// `ComponentBlocks` leaves, through `ComponentList::remove`, which drops the `BlockRefs` entire.
+/// So a `Many` that could collapse never arises", and it promised "This fails if a per-ref removal
+/// appears". A per-ref removal does appear -- `CoreIndex::remove_object_block_lookup_ref` calls
+/// `BlockRefs::remove` -- and this test would not have caught it, because what it asserts is the
+/// SURFACE and the surface did not change.
+///
+/// WHAT MAKES THE MISSING COLLAPSE SAFE NOW is not that the state cannot arise but that it cannot
+/// SURVIVE: the empty `Many` is transient by contract, and its single holder drops the object from
+/// the lookup in the same breath that sees it empty. The arms below are unchanged and still pin the
+/// surface; the claim above them is now the true one.
 #[test]
-fn a_ref_list_has_no_partial_removal_so_it_has_nothing_to_collapse_from() {
+fn a_ref_lists_surface_is_pinned_and_its_empty_arm_is_transient() {
     let mut refs = BlockRefs::One(BlockLookupRef {
         routing_bucket: 7,
         block_ref_key: 2,
@@ -604,19 +556,15 @@ fn walk_bucket_index_strings(
             // The page's model spelling is one byte inline and a `&'static str`, so it holds no
             // shared allocation for this walk to find. The lookup's `by_model` head below still
             // does, and is still counted -- once, which is the point of the walk.
-            if let Some(component) = page.component.as_ref() {
-                bytes += arc_str_bytes(seen, component);
-            }
+            // The ENTRY holds no element name either, and neither does the LOOKUP any more: the
+            // level that held one is deleted, so there is no third shared allocation anywhere on
+            // this path. The loop that used to sum component names was identically zero before it
+            // was removed, because every name was already `None`.
         }
     }
-    for (model_id, object_key, refs) in bucket_index.object_block_lookup.iter() {
+    for (model_id, object_key, _refs) in bucket_index.object_block_lookup.iter() {
         bytes += arc_str_bytes(seen, model_id);
         bytes += arc_str_bytes(seen, object_key);
-        for component in refs.by_component.iter() {
-            if let Some(name) = component.component.as_ref() {
-                bytes += arc_str_bytes(seen, name);
-            }
-        }
     }
     bytes
 }
@@ -858,16 +806,6 @@ fn what_a_live_key_costs_in_the_index_at_two_corpus_sizes() {
         pages_per_bucket.report("pages per bucket");
         objects_per_bucket.report("objects per bucket");
 
-        let mut components_per_object = Occupancy::default();
-        let mut refs_per_component = Occupancy::default();
-        for (_model, _key, refs) in shard.bucket_index.object_block_lookup.iter() {
-            components_per_object.observe(refs.by_component.len());
-            for component in refs.by_component.iter() {
-                refs_per_component.observe(component.refs.len());
-            }
-        }
-        components_per_object.report("components per object");
-        refs_per_component.report("refs per component");
 
         // --- Which ARM each shape is actually in, across the whole shard. ---
         let mut page_arms = [0usize; 3];
@@ -876,20 +814,22 @@ fn what_a_live_key_costs_in_the_index_at_two_corpus_sizes() {
             page_arms[arm_slot(block_index_map_arm(&bucket.block_index))] += 1;
             object_arms[arm_slot(object_index_arm(&bucket.object_index))] += 1;
         }
-        let mut component_arms = [0usize; 3];
+        // THE `by_component` ARM CENSUS IS GONE AND ITS ONLY REACHABLE BUCKET SAYS WHY. It counted
+        // `ComponentList`'s Empty/One/Many across the shard, and `Empty` was unreachable through
+        // the producer -- every remover drops an object from the lookup the moment it holds
+        // nothing -- while `Many` needed a second component. So it read `[0, n, 0]` by
+        // construction for every corpus. The `ref_arms` census beside it is the one with content,
+        // and it now reads the object's own slot.
         let mut ref_arms = [0usize; 2];
         for (_model, _key, refs) in shard.bucket_index.object_block_lookup.iter() {
-            component_arms[arm_slot(component_list_arm(&refs.by_component))] += 1;
-            for component in refs.by_component.iter() {
-                ref_arms[match component.refs {
-                    BlockRefs::One(_) => 0,
-                    BlockRefs::Many(_) => 1,
-                }] += 1;
-            }
+            ref_arms[match refs {
+                BlockRefs::One(_) => 0,
+                BlockRefs::Many(_) => 1,
+            }] += 1;
         }
         println!(
             "  arms Empty/One/Many: block_index {page_arms:?} over {} buckets; object_index \
-             {object_arms:?}; by_component {component_arms:?}; refs One/Many {ref_arms:?}",
+             {object_arms:?}; lookup refs One/Many {ref_arms:?}",
             shard.bucket_index.bucket_map.len()
         );
 

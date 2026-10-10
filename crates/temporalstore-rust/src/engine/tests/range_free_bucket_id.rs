@@ -618,9 +618,15 @@ fn removing_the_routing_bucket_recovers_no_bytes_alone_and_eight_in_combination(
          and this one are each a word and not a fraction of one"
     );
 
-    // --- BucketNode: 80 bytes of eight-aligned field and a 6-byte tail rounded to 8. Four out of
+    // --- BucketNode: 88 bytes of eight-aligned field and a 6-byte tail rounded to 8. Four out of
     // the tail leaves 2, which still rounds to 8.
-    const NODE_EIGHT_ALIGNED: usize = 80;
+    //
+    // 88 AND NOT 80: the node gained `tombstone_elements`, one word, when a removal's element name
+    // left the page entries, and it landed in the EIGHT-ALIGNED group. This is the FIFTH
+    // decomposition of this struct in the suite and the last one found -- the other four were
+    // restated when the word landed and this one was not, which is why the figure is a named
+    // constant rather than a literal inside the assertion: a constant at least fails in one place.
+    const NODE_EIGHT_ALIGNED: usize = 88;
     const NODE_TAIL: usize = 6;
     let node_width = size_of::<BucketNode>();
     let node_align = align_of::<BucketNode>();

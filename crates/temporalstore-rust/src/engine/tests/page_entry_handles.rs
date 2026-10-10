@@ -61,7 +61,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 
 use crate::control::LoadShardRequest;
-use crate::engine::state::{BlockIndex, BlockRefs, ComponentBlocks, ComponentList, ObjectBlockRefs};
+use crate::engine::state::{BlockIndex, BlockRefs};
 use crate::engine::storage_bucket_internals::StoredModelKind;
 
 // Imported as a NAME rather than spelled out at the call site: the counting-allocator gate in
@@ -76,7 +76,6 @@ const OPERATOR_END: u32 = 1023;
 const WHOLE_KEYSPACE_END: u32 = u32::MAX;
 
 /// An `Arc<str>`'s own allocation: the text behind two words of strong/weak count.
-const ARC_HEADER_BYTES: usize = 16;
 
 // =================================================================================================
 // FIXTURE. The same shapes `page_entry_names` seeds, so the two modules' numbers are comparable.
@@ -332,19 +331,17 @@ fn pages_per_object(engine: &TemporalEngine) -> PagesPerObject {
         let mut bucket_components: BTreeSet<Option<&str>> = BTreeSet::new();
         for (_, page) in bucket.block_index.iter() {
             measured.pages += 1;
-            bucket_components.insert(page.component.as_deref());
+            // One member for any non-empty bucket: every entry carries the same absence.
+            bucket_components.insert(None::<&str>);
             let slot = per_object
                 .entry((page.model_id, page.object_key.to_string()))
                 .or_default();
             slot.0 += 1;
-            if let Some(component) = page.component.as_deref() {
-                slot.1.insert(component.to_string());
-                measured.component_name_bytes += component.len();
-                if is_hex_spelling_of_numbers(component) {
-                    measured.hex_components += 1;
-                    measured.hex_component_name_bytes += component.len();
-                }
-            }
+            // NO ELEMENT NAME ON THE ENTRY, so the component columns of this census -- distinct
+            // names per object, name bytes, and the hex-spelled share of them -- are zero by
+            // construction. They are kept as columns because the arms below print them as the
+            // denominator for what a name WOULD have cost; each of those is restated where it is
+            // read.
         }
         *measured
             .components_per_bucket
@@ -624,9 +621,11 @@ fn measure_component_table(engine: &TemporalEngine) -> TableCost {
     for bucket in shard.bucket_index.bucket_map.values() {
         for (_, page) in bucket.block_index.iter() {
             pages += 1;
-            if let Some(component) = page.component.as_ref() {
-                names.push(Arc::clone(component));
-            }
+            // NOTHING TO INTERN. This measured what a candidate intern table for element names
+            // would cost, over the names the entries held. The entries hold none, so the table
+            // has no input -- and the question it was pricing is settled more cheaply than it
+            // proposed: the name did not need interning, it needed removing, and `state.rs`'s pin
+            // records the sixteen bytes a page that recovered.
         }
     }
     let probe = Probe::start();
@@ -1015,133 +1014,26 @@ fn the_component_name_is_hex_text_for_numbers_and_that_half_is_measured() {
 // LAYOUT. What each name's handle does to the entry, and to the component level around it.
 // =================================================================================================
 
-/// Mirrors of `ComponentBlocks`/`ComponentList` with an ordinal in place of the name, so the
-/// niche question is measured rather than reasoned about.
-mod ordinal_layout {
-    use super::*;
-    use std::num::{NonZeroU16, NonZeroU32};
-
-    #[derive(Debug, Clone)]
-    pub(super) struct ComponentBlocksU16 {
-        pub(super) component: Option<NonZeroU16>,
-        pub(super) refs: BlockRefs,
-    }
-    #[derive(Debug, Clone)]
-    pub(super) enum ComponentListU16 {
-        Empty,
-        One(ComponentBlocksU16),
-        Many(Vec<ComponentBlocksU16>),
-    }
-
-    #[derive(Debug, Clone)]
-    pub(super) struct ComponentBlocksU32 {
-        pub(super) component: Option<NonZeroU32>,
-        pub(super) refs: BlockRefs,
-    }
-    #[derive(Debug, Clone)]
-    pub(super) enum ComponentListU32 {
-        Empty,
-        One(ComponentBlocksU32),
-        Many(Vec<ComponentBlocksU32>),
-    }
-
-    /// A plain integer with a SENTINEL rather than a `NonZero`, which is the shape with no niche
-    /// at all. Measured so the claim below is about what a niche is worth here, not about what a
-    /// niche is worth in general.
-    #[derive(Debug, Clone)]
-    pub(super) struct ComponentBlocksPlain {
-        pub(super) component: u16,
-        pub(super) refs: BlockRefs,
-    }
-    #[derive(Debug, Clone)]
-    pub(super) enum ComponentListPlain {
-        Empty,
-        One(ComponentBlocksPlain),
-        Many(Vec<ComponentBlocksPlain>),
-    }
-}
-
-/// AN ORDINAL DOES NOT COST `ComponentList` ITS TAG -- IT MAKES THE LEVEL SMALLER.
-///
-/// #1967 measured `ComponentList` at 40 bytes, the same as the `ComponentBlocks` its `One` arm
-/// holds inline, and recorded that the tag rides a niche in the component NAME. The natural worry
-/// is that replacing the name with an ordinal takes the niche away and the enum grows by eight.
-///
-/// MEASURED, IT GOES THE OTHER WAY, and the reason is instructive: with a 16-byte
-/// `Option<Arc<str>>` beside a 24-byte `BlockRefs` the struct is 40 with NO PADDING, so a niche
-/// really is the only place a tag could go. With a two- or four-byte ordinal the struct is 32 and
-/// carries SIX BYTES OF PADDING before `refs`, and a tag fits there without needing a niche at
-/// all. The plain-integer arm is the control on exactly that: it has no niche and is also 32.
-///
-/// So the niche was load-bearing only for the shape that no longer applies, and the component
-/// level gets CHEAPER per entry rather than more expensive. What decides `component` is the table,
-/// not the niche -- which is what the refutation above measures.
-#[test]
-fn an_ordinal_does_not_cost_the_component_list_its_tag() {
-    use ordinal_layout::*;
-    let rows = [
-        ("ComponentBlocks (name, today)", std::mem::size_of::<ComponentBlocks>()),
-        ("ComponentList   (name, today)", std::mem::size_of::<ComponentList>()),
-        ("ComponentBlocks (NonZeroU16)", std::mem::size_of::<ComponentBlocksU16>()),
-        ("ComponentList   (NonZeroU16)", std::mem::size_of::<ComponentListU16>()),
-        ("ComponentBlocks (NonZeroU32)", std::mem::size_of::<ComponentBlocksU32>()),
-        ("ComponentList   (NonZeroU32)", std::mem::size_of::<ComponentListU32>()),
-        ("ComponentBlocks (u16 sentinel, NO niche)", std::mem::size_of::<ComponentBlocksPlain>()),
-        ("ComponentList   (u16 sentinel, NO niche)", std::mem::size_of::<ComponentListPlain>()),
-        ("BlockRefs", std::mem::size_of::<BlockRefs>()),
-        ("ObjectBlockRefs", std::mem::size_of::<ObjectBlockRefs>()),
-    ];
-    println!("\n=== the component level, by what the name is ===");
-    for (label, size) in rows {
-        println!("  {label:<42} {size:>3} B");
-    }
-
-    // Today's shape, pinned so a change to `BlockRefs` cannot make this test vacuous.
-    assert_eq!(40, std::mem::size_of::<ComponentBlocks>());
-    assert_eq!(40, std::mem::size_of::<ComponentList>());
-
-    // THE CLAIM: the wrapper stays free, and the entry shrinks.
-    for (label, blocks, list) in [
-        (
-            "NonZeroU16",
-            std::mem::size_of::<ComponentBlocksU16>(),
-            std::mem::size_of::<ComponentListU16>(),
-        ),
-        (
-            "NonZeroU32",
-            std::mem::size_of::<ComponentBlocksU32>(),
-            std::mem::size_of::<ComponentListU32>(),
-        ),
-    ] {
-        assert_eq!(
-            blocks, list,
-            "{label}: the three-arm wrapper is supposed to stay free -- `ComponentList` the same \
-             width as the `ComponentBlocks` its `One` arm holds -- and it is {list} against {blocks}"
-        );
-        assert!(
-            list <= std::mem::size_of::<ComponentList>(),
-            "{label}: `ComponentList` grew from {} to {list}; the niche the tag rode really was \
-             load-bearing and this is the eight bytes that were feared",
-            std::mem::size_of::<ComponentList>()
-        );
-        assert!(
-            blocks < std::mem::size_of::<ComponentBlocks>(),
-            "{label}: `ComponentBlocks` did not shrink at all ({blocks} against {})",
-            std::mem::size_of::<ComponentBlocks>()
-        );
-    }
-
-    // THE CONTROL on the explanation. If the tag needed a niche, the sentinel arm -- which has
-    // none -- would be wider than the `NonZero` arm. It is not, so the tag is riding PADDING and
-    // the niche is not what makes this work.
-    assert_eq!(
-        std::mem::size_of::<ComponentListPlain>(),
-        std::mem::size_of::<ComponentListU16>(),
-        "a plain `u16` has no niche and a `NonZeroU16` has one, so if the tag needed a niche these \
-         two would differ. They do not, which is the evidence that the tag rides the padding an \
-         ordinal introduces rather than a niche in the field"
-    );
-}
+// `mod ordinal_layout` AND `an_ordinal_does_not_cost_the_component_list_its_tag` WERE HERE.
+//
+// They measured whether replacing `ComponentBlocks`'s component NAME with a two-byte ordinal would
+// cost `ComponentList` the tag that rode the name's niche. Mirror types with `NonZeroU16`,
+// `NonZeroU32` and a plain-integer control priced the three candidates, and the answer was that an
+// ordinal makes the level smaller rather than larger.
+//
+// THE NARROWING THEY WERE CLEARING THE WAY FOR IS SUPERSEDED, AND BY A STRONGER RESULT. The field
+// is not two bytes now, it is zero: `ComponentBlocks` and `ComponentList` are deleted and an
+// object's refs hang directly off the object. Deleting the name beats narrowing it, so there is no
+// decision left for this measurement to inform.
+//
+// AND A MECHANICAL REWRITE WOULD HAVE BEEN WORSE THAN A DELETION. Two of its arms -- wrapper width
+// equals entry width, and the sentinel control equals the `NonZero` one -- still COMPILE after the
+// deletion, because both of their operands are mirror types declared in this file. They would have
+// become assertions about rustc's layout rules over types this crate does not ship: green forever,
+// measuring nothing. The two arms that lose an operand would have been repaired by substituting
+// the pinned literal 40, which makes both sides constants fixed by declarations in this same file.
+// The comment that stood at the pins said they were "pinned so a change to `BlockRefs` cannot make
+// this test vacuous" -- a guard that protects nothing once the left-hand side is local too.
 
 /// THE ENTRY IS 72 BYTES AND ITS RECONSTRUCTION IS ASSERTED, NOT ITS TOTAL.
 ///
@@ -1151,20 +1043,22 @@ fn an_ordinal_does_not_cost_the_component_list_its_tag() {
 /// AND WHAT EACH OF THE THREE NAMES WOULD BE WORTH, measured on mirrors rather than projected, so
 /// the remaining two verdicts are stated against the same arithmetic as the one that shipped.
 #[test]
-fn the_entry_is_fifty_six_bytes_and_every_one_is_accounted_for() {
+fn the_entry_is_forty_bytes_and_every_one_is_accounted_for() {
     use std::mem::{align_of, offset_of, size_of};
 
     let address = size_of::<crate::block_store::ElementEntry>();
     let model = size_of::<StoredModelKind>();
     let object_key = size_of::<Arc<str>>();
-    let component = size_of::<Option<Arc<str>>>();
+    // `component` IS NO LONGER A FIELD OF THE ENTRY. The local is kept as the WIDTH THE NAME USED
+    // TO COST, because the verdicts below are stated against that arithmetic -- what each of the
+    // three names would be worth -- and it is now a counterfactual rather than a measurement.
+    let component_when_it_was_a_field = size_of::<Option<Arc<str>>>();
     let flags = 3usize;
 
     println!("\n=== BlockIndex, field by field ===");
-    println!("  offsets: address@{} object_key@{} component@{} model_id@{} dirty@{} deleted@{} kind@{} routing_bucket@{}",
+    println!("  offsets: address@{} object_key@{} model_id@{} dirty@{} deleted@{} kind@{} routing_bucket@{}",
         offset_of!(BlockIndex, address),
         offset_of!(BlockIndex, object_key),
-        offset_of!(BlockIndex, component),
         offset_of!(BlockIndex, model_id),
         offset_of!(BlockIndex, dirty),
         offset_of!(BlockIndex, deleted),
@@ -1172,18 +1066,23 @@ fn the_entry_is_fifty_six_bytes_and_every_one_is_accounted_for() {
         offset_of!(BlockIndex, routing_bucket),
     );
     println!(
-        "  address {address} + object_key {object_key} + component {component} + model_id {model} \
-         + flags {flags} = {} bytes of field in {} B",
-        address + object_key + component + model + flags,
+        "  address {address} + object_key {object_key} + model_id {model} \
+         + flags {flags} = {} bytes of field in {} B \
+         (a name on the entry would have added {component_when_it_was_a_field} more)",
+        address + object_key + model + flags,
         size_of::<BlockIndex>()
     );
 
     assert_eq!(1, model, "the model spelling is supposed to be one byte");
     assert_eq!(8, align_of::<BlockIndex>());
 
-    // THE RECONSTRUCTION. The three 8-aligned fields form the group; the model byte and the three
+    // THE RECONSTRUCTION. The 8-aligned fields form the group; the model byte and the three
     // flag bytes are the tail, and the tail is rounded once to the alignment.
-    let eight_aligned = address + object_key + component;
+    //
+    // TWO 8-ALIGNED FIELDS NOW, NOT THREE: `component` was the third and it is gone, which is the
+    // 56 -> 40 step. The reconstruction is what proves the arithmetic rather than the comment --
+    // if the field set and this sum part, it fails here.
+    let eight_aligned = address + object_key;
     let tail = model + flags;
     let round_up = |value: usize, to: usize| (value + to - 1) / to * to;
     assert_eq!(
@@ -1200,7 +1099,18 @@ fn the_entry_is_fifty_six_bytes_and_every_one_is_accounted_for() {
     // NOTHING BUT RUNNING IT COULD HAVE SAID SO. That sentence was already here for the 72 -> 64
     // step and it earned itself again: a scan for `const _: () = assert!(size_of...)` does not see
     // an `assert_eq!` in a test body, so this pin compiled clean and failed at run time.
-    assert_eq!(56, size_of::<BlockIndex>());
+    // FORTY NOW, AND THE SENTENCE ABOVE EARNED ITSELF A THIRD TIME. It was written for the
+    // 72 -> 64 step, repeated for 64 -> 56, and this is 56 -> 40: the RECONSTRUCTION above needed
+    // no change, which is the point of reconstructing rather than totalling, and this literal did.
+    // `cargo check` cannot see an `assert_eq!` in a test body, so the pin compiled clean and only
+    // running it said so.
+    assert_eq!(40, size_of::<BlockIndex>());
+    // THE `!= 39` AND `!= 41` PARTNERS THAT STOOD HERE ARE GONE. They could distinguish no
+    // case. The `assert_eq!` above panics first, so on the only change that could ever have
+    // fired them they were never reached -- and an assertion that never ran reads exactly like
+    // one that passed. The claim they reached for, that 40 is a value and not a bound, is
+    // carried by `align_of::<BlockIndex>() == 8` earlier in this function, which a width pin
+    // does NOT entail: `== 40` is equally true at align 1, 2, 4 and 8.
 
     // The slack, which is why every step here is sixteen bytes and not twelve.
     let slack = size_of::<BlockIndex>() - (eight_aligned + tail);
@@ -1443,7 +1353,7 @@ fn page_triples(engine: &TemporalEngine) -> Vec<(String, String, Option<String>,
             (
                 page.model_id.as_str().to_string(),
                 page.object_key.to_string(),
-                page.component.as_deref().map(str::to_string),
+                None::<String>,
                 page.address.block_slab_id(),
                 page.address.offset(),
             )
@@ -1485,7 +1395,6 @@ fn sample_entry() -> BlockIndex {
         routing_bucket: 7,
         object_key: Arc::from("k"),
         model_id: StoredModelKind::String,
-        component: Some(Arc::from("a")),
         address: crate::block_store::ElementEntry::from_parts(1, 2, 4, Some(5), Some(6)),
         dirty: true,
         deleted: false,
@@ -1665,7 +1574,7 @@ fn the_model_spelling_did_not_move_on_the_wire_and_the_entry_lost_three_steps_in
             "{label}: the spelling did not survive the round trip"
         );
         assert_eq!(page.object_key, decoded.object_key, "{label}: object_key moved");
-        assert_eq!(page.component, decoded.component, "{label}: component moved");
+        // No component on the entry, so there is no such field to survive a round trip.
         assert_eq!(page.dirty, decoded.dirty, "{label}: dirty moved");
         assert_eq!(page.deleted, decoded.deleted, "{label}: deleted moved");
         // NOT a stored field any more, and this is the ONLY address property this loop checks --
@@ -1695,15 +1604,24 @@ fn the_model_spelling_did_not_move_on_the_wire_and_the_entry_lost_three_steps_in
     // still present, because the index log packs positionally. See
     // `per_item_byte_budget::the_stored_form_moved_in_one_slot_and_the_version_stamp_pays_for_it`,
     // which is the tripwire for that and fired on this change.
+    // A FOURTH STEP JOINS THE CHAIN, so the last link is not asked to carry two of them.
+    //
+    // The chain was 88 -> 72 -> 64 -> `size_of`, with the final link asserted at EIGHT: the
+    // address shedding its object id. The entry then stopped naming its element, which is another
+    // sixteen, and the final link measured 24 -- so the assertion failed naming the right
+    // mechanism for the wrong arithmetic. The milestone the object id left it at is written down
+    // (56) and the new step gets its own link and its own assertion, which is what keeps each
+    // claim attributable to one change.
     let in_memory_before = 88usize;
     let after_the_spelling = 72usize;
     let after_the_address_narrowing = 64usize;
+    let after_shedding_the_object_id = 56usize;
     let in_memory_after = std::mem::size_of::<BlockIndex>();
     let spelling_wire_delta = 0i64;
     println!(
         "  in memory {in_memory_before} -> {after_the_spelling} -> {after_the_address_narrowing} \
-         -> {in_memory_after} B ({:.2}% in total), model spelling on the wire \
-         {spelling_wire_delta} B (0.00%)",
+         -> {after_shedding_the_object_id} -> {in_memory_after} B ({:.2}% in total), model \
+         spelling on the wire {spelling_wire_delta} B (0.00%)",
         100.0 * (in_memory_before - in_memory_after) as f64 / in_memory_before as f64
     );
     assert_eq!(
@@ -1720,10 +1638,18 @@ fn the_model_spelling_did_not_move_on_the_wire_and_the_entry_lost_three_steps_in
     );
     assert_eq!(
         8,
-        after_the_address_narrowing - in_memory_after,
+        after_the_address_narrowing - after_shedding_the_object_id,
         "shedding the address's object id is supposed to be eight bytes, and unlike the two \
          narrowings above it pays ALONE: it is a whole eight-byte field leaving the eight-aligned \
          group, not a field getting smaller inside it"
+    );
+    assert_eq!(
+        16,
+        after_shedding_the_object_id - in_memory_after,
+        "the entry giving up its element NAME is supposed to be sixteen bytes -- a fat optional \
+         pointer leaving the eight-aligned group whole, which is why it is a step of two words \
+         and not one word and some rounding. It pays alone for the same reason the object id did, \
+         and it is the largest single step in this chain."
     );
     assert_eq!(
         0, spelling_wire_delta,
@@ -1853,7 +1779,6 @@ mod tail_layout {
     /// assertion below pins against `BlockIndex`.
     pub(super) struct F0 {
         pub(super) object_key: Arc<str>,
-        pub(super) component: Option<Arc<str>>,
         pub(super) address: [u64; 2],
         pub(super) model: u8,
         pub(super) dirty: bool,
@@ -1862,7 +1787,6 @@ mod tail_layout {
     }
     pub(super) struct F1 {
         pub(super) object_key: Arc<str>,
-        pub(super) component: Option<Arc<str>>,
         pub(super) address: [u64; 2],
         pub(super) model: u8,
         pub(super) flags: PageFlags,
@@ -2126,181 +2050,30 @@ fn an_empty_value_still_carries_a_length_so_the_zero_length_tombstone_is_open() 
 }
 
 // =================================================================================================
-// WHAT THE COMPONENT LEVEL COSTS. Priced at N=1 and at N=100, bytes AND allocations, read path
-// counted. A measurement handed over, not a change made.
+// WHAT THE COMPONENT LEVEL COST -- ANSWERED BY DELETING IT, NOT BY THE MEASUREMENT THAT WAS HERE
 // =================================================================================================
-
-/// One flattened page ref: the component as an ordinal beside the ref the level used to group.
-///
-/// The shape a flattening would use, sized so the comparison is against something real rather than
-/// against an estimate.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
-struct FlatPageRef {
-    component: Option<std::num::NonZeroU16>,
-    routing_bucket: u32,
-    block_ref_key: u64,
-}
-
-/// Build one object's component level the way the lookup does, and report what it cost.
-fn nested_level(components: usize) -> (ObjectBlockRefs, usize) {
-    let mut refs = ObjectBlockRefs::default();
-    let mut heap = 0usize;
-    for index in 0..components {
-        // The name the engine would actually hold: a zset component is 16 hex characters for the
-        // biased score plus twice the member's bytes.
-        let name: Arc<str> = Arc::from(format!("{index:016x}{}", hex::encode(b"member-0000000000")).as_str());
-        heap += name.len() + ARC_HEADER_BYTES;
-        let entry = ComponentBlocks {
-            component: Some(name),
-            refs: BlockRefs::One(crate::engine::state::BlockLookupRef {
-                routing_bucket: 7,
-                block_ref_key: index as u64,
-            }),
-        };
-        let at = match refs.position(entry.component.as_deref()) {
-            Ok(at) => at,
-            Err(at) => at,
-        };
-        refs.by_component.insert(at, entry);
-    }
-    (refs, heap)
-}
-
-/// WHAT THE COMPONENT LEVEL COSTS AT ONE COMPONENT AND AT A HUNDRED, with the read path counted.
-///
-/// #1967 measured `ComponentList` at 40 bytes, the same as the `ComponentBlocks` its `One` arm
-/// holds inline, and that was recorded as "the level is free". IT IS A NARROWER CLAIM THAN IT
-/// SOUNDS: what is free is the three-arm ENUM WRAPPER around one `ComponentBlocks`. The LEVEL costs
-/// 40 bytes per component plus a vector allocation past the first, and at the container shape --
-/// p50 100 components under one object -- that is about `40 + 100 * 40` bytes and an allocation per
-/// object.
-///
-/// PRICED AGAINST A FLAT LIST, which is what a design with no component concept does: pages live in
-/// one vector per object and a "component" is just a different page id.
-///
-/// NOTHING IS CHANGED HERE. This is the measurement, taken so the decision can be made on numbers
-/// -- and the read path is counted because that is the term a footprint comparison cannot see: a
-/// flattening that turns a 100-entry bisection into a 100-entry scan on the serving path has to be
-/// declined with numbers or shipped with the cost stated.
-#[test]
-fn what_the_component_level_costs_at_one_component_and_at_a_hundred() {
-    use std::mem::size_of;
-
-    println!("\n=== the component level, priced ===");
-    println!(
-        "  {:>5} {:>12} {:>12} {:>10} {:>12} {:>12} {:>10} {:>9} {:>9}",
-        "N", "nested B", "nested allo", "nest reads", "flat B", "flat allo", "flat reads", "B saved", "allo"
-    );
-
-    let mut rows: Vec<(usize, usize, usize, usize, usize, usize, usize)> = Vec::new();
-    for components in [1usize, 100] {
-        // --- TODAY. The struct, plus the vector it spills into past one, plus the names. ---
-        let (level, name_heap) = nested_level(components);
-        let inline = size_of::<ObjectBlockRefs>();
-        let spilled = if components > 1 {
-            components * size_of::<ComponentBlocks>()
-        } else {
-            0
-        };
-        let nested_bytes = inline + spilled + name_heap;
-        // One for the vector past the first component, one per component name.
-        let nested_allocs = usize::from(components > 1) + components;
-
-        // The read: a bisection over `by_component`, counted through the real comparator.
-        let mut nested_reads = 0usize;
-        let target = level.by_component[components - 1].component.clone();
-        let _ = level
-            .by_component
-            .binary_search_by(|entry| {
-                nested_reads += 1;
-                entry.component.as_deref().cmp(&target.as_deref())
-            });
-
-        // --- FLATTENED. One vector of page refs per object, each carrying an ordinal. ---
-        let flat: Vec<FlatPageRef> = (0..components)
-            .map(|index| FlatPageRef {
-                component: std::num::NonZeroU16::new(index as u16 + 1),
-                routing_bucket: 7,
-                block_ref_key: index as u64,
-            })
-            .collect();
-        // The names still have to live somewhere -- a flat list does not make them free, it moves
-        // them. Counted at the same cost, which is what makes this a comparison of the LEVEL.
-        let flat_bytes = size_of::<Vec<FlatPageRef>>() + components * size_of::<FlatPageRef>() + name_heap;
-        let flat_allocs = 1 + components;
-
-        // The read, as a SCAN -- the honest worst case for a flat list, and the term that decides.
-        let mut flat_scan_reads = 0usize;
-        let wanted = flat[components - 1].component;
-        for entry in &flat {
-            flat_scan_reads += 1;
-            if entry.component == wanted {
-                break;
-            }
-        }
-
-        println!(
-            "  {components:>5} {nested_bytes:>12} {nested_allocs:>12} {nested_reads:>10} \
-             {flat_bytes:>12} {flat_allocs:>12} {flat_scan_reads:>10} {:>9} {:>9}",
-            nested_bytes as i64 - flat_bytes as i64,
-            nested_allocs as i64 - flat_allocs as i64,
-        );
-        rows.push((
-            components,
-            nested_bytes,
-            nested_allocs,
-            nested_reads,
-            flat_bytes,
-            flat_allocs,
-            flat_scan_reads,
-        ));
-    }
-
-    let (_, n1_bytes, n1_allocs, n1_reads, f1_bytes, f1_allocs, f1_reads) = rows[0];
-    let (_, n100_bytes, _n100_allocs, n100_reads, f100_bytes, _f100_allocs, f100_reads) = rows[1];
-
-    // --- THE LEVEL AT N = 1: the wrapper is free and the flat list is not cheaper. ---
-    assert_eq!(
-        size_of::<ComponentList>(),
-        size_of::<ComponentBlocks>(),
-        "#1967's measurement: the three-arm wrapper is the width of the entry its `One` arm holds"
-    );
-    assert!(
-        n1_bytes <= f1_bytes,
-        "at one component the nested level costs {n1_bytes} B and a flat list {f1_bytes} B, so \
-         flattening is supposed to be no cheaper at N=1 and it is"
-    );
-    assert!(
-        n1_allocs <= f1_allocs,
-        "at one component the nested level makes {n1_allocs} allocations and a flat list \
-         {f1_allocs}; the inline `One` arm exists precisely to avoid the vector"
-    );
-
-    // --- THE LEVEL AT N = 100: it costs, and the read path is where flattening loses. ---
-    assert!(
-        n100_bytes > f100_bytes,
-        "at a hundred components the nested level costs {n100_bytes} B against a flat list's \
-         {f100_bytes} B, so the level is supposed to COST at the container shape and it does not"
-    );
-    assert!(
-        f100_reads > n100_reads,
-        "a bisection over a hundred entries is supposed to read fewer than a scan over a hundred: \
-         nested {n100_reads}, flat {f100_reads}. If a flat scan ever reads fewer, the read-path \
-         objection to flattening is gone and this needs re-deciding"
-    );
-    assert_eq!(
-        1, n1_reads,
-        "a bisection over a list of ONE is supposed to be a single comparison, not {n1_reads}"
-    );
-    assert_eq!(1, f1_reads, "and so is a scan over one");
-
-    println!(
-        "\n  VERDICT, HANDED OVER RATHER THAN TAKEN. At N=1 the level is free and flattening is no \
-         cheaper. At N=100 the level costs {} B more than a flat list, and a flat SCAN reads \
-         {f100_reads} entries where the bisection reads {n100_reads} -- {:.1}x. So the level pays \
-         on the population that is p50 and costs on the population that is MAX, which is the \
-         two-population shape a single number would hide. Recommend BY POPULATION.",
-        n100_bytes - f100_bytes,
-        f100_reads as f64 / n100_reads.max(1) as f64
-    );
-}
+//
+// `FlatPageRef`, `nested_level` and `what_the_component_level_costs_at_one_component_and_at_a_
+// hundred` were here. The test priced the second level of `ObjectBlockLookup` at N=1 and at N=100,
+// in bytes and allocations, with the read path counted, and handed over a verdict: the level pays
+// at the p50 population and costs at the MAX one, "Recommend BY POPULATION".
+//
+// ITS CORRECTION OF #1967 WAS RIGHT AND IS WORTH KEEPING ON THE RECORD. #1967 had measured
+// `ComponentList` at the same 40 bytes as the `ComponentBlocks` its `One` arm held and recorded
+// that as "the level is free". This test said plainly that it is a narrower claim than it sounds:
+// what was free is the three-arm ENUM WRAPPER around one entry, and the LEVEL is the entry.
+//
+// THE VERDICT IS NOW SETTLED, AND NOT THE WAY EITHER POPULATION SUGGESTED. There was no MAX
+// population. `insert_object_block_lookup` was the only site in the crate that ever built a
+// `ComponentBlocks`, and it wrote `component: None` as a literal -- so N was always 1 and the
+// entry it held was a 24-byte `BlockRefs` behind a 16-byte `Option<Arc<str>>` holding a constant.
+// The level is deleted rather than flattened by population, which is a stronger outcome than the
+// comparison this test was set up to decide.
+//
+// WHY THIS IS PROSE AND NOT A RESTATED ARM. `nested_level` built its fixture BY HAND, with
+// `components` distinct `Some(hex)` names under one object -- a state the producer could not
+// reach even before this commit. Every arm that would survive a mechanical rewrite is the N=1 one,
+// and at N=1 the new shape makes all three tautologies: "a bisection over a list of one reads one"
+// becomes the definition of `Option::is_some`; the byte and allocation comparisons become two
+// compile-time constants compared with `<=`, since the name heap is now zero. A deletion with its
+// result recorded is honest where a green assertion over constants is not.

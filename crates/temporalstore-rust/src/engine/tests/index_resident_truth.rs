@@ -206,14 +206,9 @@ pub(super) fn walk(engine: &TemporalEngine) -> IndexWalk {
             let key_ptr = page.object_key.as_ptr() as usize;
             let slot = seen_keys.entry(key_ptr).or_insert((key_len, 0));
             slot.1 += 1;
-            if let Some(component) = page.component.as_ref() {
-                let component_len = component.len();
-                out.component_request_per_entry += arc_str_request(component_len) as u64;
-                let slot = seen_components
-                    .entry(component.as_ptr() as usize)
-                    .or_insert((component_len, 0));
-                slot.1 += 1;
-            }
+            // NO COMPONENT REQUEST PER ENTRY: the entry carries no element name, so it asks the
+            // allocator for nothing on that account. The counter and the `seen_components` census
+            // therefore stay at zero by construction rather than by measurement.
         }
     }
     // A second pass for the ownership census: the number of entries holding each allocation is
@@ -228,16 +223,8 @@ pub(super) fn walk(engine: &TemporalEngine) -> IndexWalk {
                     out.keys_held_outside += 1;
                 }
             }
-            if let Some(component) = page.component.as_ref() {
-                let component_ptr = component.as_ptr() as usize;
-                if let Some((len, held_here)) = seen_components.remove(&component_ptr) {
-                    out.component_allocs += 1;
-                    out.component_request += arc_str_request(len) as u64;
-                    if std::sync::Arc::strong_count(component) > held_here {
-                        out.components_held_outside += 1;
-                    }
-                }
-            }
+            // No element name on the entry, so no second shared allocation to attribute: the
+            // component columns of this census stay at zero by construction.
         }
     }
     out

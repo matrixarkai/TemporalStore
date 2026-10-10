@@ -300,7 +300,6 @@ fn one_real_page_free_standing() -> BlockIndex {
         routing_bucket: 7,
         object_key: std::sync::Arc::from("free-standing"),
         model_id: crate::engine::storage_bucket_internals::StoredModelKind::String,
-        component: None,
         address: crate::block_store::ElementEntry::from_parts(1, 64, 32, Some(7), Some(11)),
         dirty: false,
         deleted: false,
@@ -1650,7 +1649,10 @@ fn what_the_narrower_entry_is_worth_on_the_heap_now_that_it_is_behind_a_pointer(
     // former width every byte below is a comparison with a shape this engine never had.
     let narrow = size_of::<BlockIndex>();
     let wide = size_of::<MirrorWideEntry>();
-    assert_eq!(56, narrow, "the live page entry is {narrow} B, not 56");
+    // 40 NOW: the entry gave up its element name, sixteen bytes, after the 72 -> 56 this module is
+    // about. The mirror of the FORMER entry below stays 72 -- it models the shape this change
+    // replaced and keeps its own name slot, which is why only this side moved.
+    assert_eq!(40, narrow, "the live page entry is {narrow} B, not 40");
     assert_eq!(
         72, wide,
         "the mirror of the former entry is {wide} B, not 72; it is not the shape this change replaced"
@@ -1723,7 +1725,9 @@ fn what_the_narrower_entry_is_worth_on_the_heap_now_that_it_is_behind_a_pointer(
         let wide_page = MirrorWideEntry {
             object_key: std::sync::Arc::clone(&page.object_key),
             model_id: page.model_id,
-            component: page.component.clone(),
+            // The MIRROR models the entry as it was WHEN IT WAS WIDE, so it keeps the slot and
+            // fills it with the absence a real entry no longer has a field for.
+            component: None,
             address: MirrorWideAddress {
                 address: 0,
                 object_id: 0,

@@ -54,10 +54,17 @@
 //!  4  engine.rs:4740 mark_bucket_index_object_deleted       CORRECT  a whole-object delete takes tombstones too; the
 //!                                                                    CommonDelete arm of the five-way guard asserts zero
 //!  5  engine.rs:4931 mark_..._block_deleted_recording       CORRECT  the removal's own retain
-//!  6  engine.rs:4979 mark_..._block_deleted_recording       WRONG, FIXED HERE. `any(|page| page.object_id() == id)` would
-//!                                                                    be answered by the removed element's OWN tombstone, so a
-//!                                                                    key's last element never filed its object id. Now asks
-//!                                                                    about LIVE pages. a_keys_last_element_still_files_its_object_id
+//!  6  engine.rs:4979 mark_..._block_deleted_recording       CORRECT, AND THIS ROW WAS WRONG ABOUT IT. It read "WRONG, FIXED
+//!                                                                    HERE: `any(|page| page.object_id() == id)` would be
+//!                                                                    answered by the removed element's OWN tombstone". The
+//!                                                                    predicate asks `!page.deleted && ...`, so a tombstone
+//!                                                                    cannot answer it and never could. The last element's
+//!                                                                    object id went unfiled for a DIFFERENT reason, one level
+//!                                                                    up -- the retain deciding `removed` compares the
+//!                                                                    element's name against a page-named entry that has none,
+//!                                                                    so the arm holding this filter never runs for a
+//!                                                                    container. Filed in drop_live_object_entries instead.
+//!                                                                    a_keys_last_element_still_files_its_object_id
 //!  7  engine.rs:5384 record_exists_exact                    CORRECT  `!page.deleted`; EXISTS is one of #2025's five readers
 //!  8  engine.rs:6111 object_manager_stats                   CORRECT  `.filter(|page| !page.deleted)`
 //!  9  engine.rs:6236 object_manager_stats                   HARMLESS dirty-bucket count; a fresh tombstone IS dirty and its
@@ -223,9 +230,10 @@ fn tombstoned_components(engine: &TemporalEngine, kind: &str, key: &str) -> BTre
     for bucket in shard.bucket_index.bucket_map.values() {
         for page in bucket.block_index.values() {
             if page.deleted && page.model_id.as_str() == kind && &*page.object_key == key {
-                if let Some(component) = page.component.as_deref() {
-                    held.insert(component.to_string());
-                }
+                // AN ENTRY NAMES NO ELEMENT, so this set is always empty. It is restated where
+                // it is read -- the element a tombstone is about is recorded in the bucket's
+                // `tombstone_elements` rows, not on the entry.
+                let _ = page;
             }
         }
     }
@@ -238,7 +246,6 @@ fn no_index_reader_answers_from_a_tombstone_entry() {
     // THE FIVE READERS THIS ENUMERATES NAME ELEMENTS BY COMPONENT, which a page-named entry
     // does not carry, so gated it counts names rather than readers. The gated tombstone's
     // reachability is `removal_the_index_can_find`'s subject.
-    let _gate_off = super::GateOff::held();
     let dir = tempfile::tempdir().expect("tempdir");
     let engine = engine_on(dir.path());
     load_on(&engine, "cte-readers");
@@ -273,7 +280,27 @@ fn no_index_reader_answers_from_a_tombstone_entry() {
         1, tombstoned,
         "DENOMINATOR: {tombstoned} tombstone entries, so this module is not testing what it claims"
     );
-    assert_eq!(2, live, "{live} live entries after removing one of three");
+    // THREE, NOT TWO: A REMOVAL DOES NOT RETIRE THE LIVE ENTRY OVER THE PAGE IT VACATES.
+    //
+    // This asserted 2 -- one entry per surviving MEMBER. Under one entry a page the live entries
+    // are the object's PAGES, and a gated removal deliberately keeps the page entry because the
+    // page may still hold siblings; the tombstone is added BESIDE it. So the live count does not
+    // fall on a removal, and this fixture's three members are three pages before and after.
+    //
+    // THE ASYMMETRY IS KNOWN AND RECORDED, not discovered here:
+    // `index_entry_names_a_page`'s doc calls it "a defect of footprint rather than of answers" and
+    // names the fix -- ask the resident map whether any sibling is still on the vacated page,
+    // which `RecordedMap::page_an_element_vacates` is -- and why a removal cannot reach it, since
+    // it enters the index through a door that takes no element type. What this arm still holds is
+    // the half that is about ANSWERS: every reader below must refuse to answer FROM the tombstone,
+    // and that is asserted member by member rather than by a count.
+    assert_eq!(
+        3, live,
+        "{live} live entries after removing one of three. One entry a page means the live count is \
+         the PAGE count, which a removal does not reduce -- if this is 2 the removal has started \
+         retiring the vacated page's entry, which is the footprint fix the doc describes, and the \
+         comment above it should be read rather than this number adjusted"
+    );
 
     // READER 1: the page index reader every serving path resolves through.
     let named: BTreeSet<Vec<u8>> =
@@ -290,11 +317,45 @@ fn no_index_reader_answers_from_a_tombstone_entry() {
         .iter()
         .filter_map(|(component, _)| component.as_deref().and_then(|c| hex::decode(c).ok()))
         .collect();
-    println!("  index reader names {} member(s)", named.len());
-    assert_eq!(2, named.len(), "the index reader names {} of 2", named.len());
-    assert!(
-        !named.contains(&victim),
-        "the index reader names the removed member, so it answered from the tombstone entry"
+    let returned = crate::engine::bucket_store::bucket_index_component_block_addresses(
+        &engine
+            .shards
+            .read()
+            .expect("engine lock poisoned")
+            .get(&1)
+            .expect("shard is loaded"),
+        "set",
+        key,
+    )
+    .len();
+    println!("  index reader returns {returned} pair(s), naming {} member(s)", named.len());
+
+    // THE QUESTION IS SHARPER NOW: NOT "DOES IT NAME THE REMOVED MEMBER" BUT "DOES IT RETURN THE
+    // TOMBSTONE AT ALL".
+    //
+    // This asserted the reader named 2 of 2 surviving members and did not name the removed one.
+    // The reader's pairs carry no name -- an entry has none -- so it names nobody, and an
+    // assertion that it does not name the VICTIM would pass for the same reason it would pass for
+    // every other member: vacuously.
+    //
+    // What can still fail, and is what the arm was really about: the reader must not hand back the
+    // tombstone's page. It filters `!page.deleted`, so it returns one pair per LIVE page -- three
+    // here, since a removal retains the vacated page's entry -- and never the fourth. If that
+    // filter were lost this returns 4 and reddens, which is the defect "answering from a tombstone
+    // entry" actually consists of.
+    assert_eq!(
+        0,
+        named.len(),
+        "the index reader named {} member(s). An entry carries no element name, so every pair it \
+         returns must be nameless -- a name here means a component has come back onto the entry",
+        named.len()
+    );
+    assert_eq!(
+        live, returned,
+        "the index reader returned {returned} pair(s) where {live} entries are live and \
+         {tombstoned} tombstoned. It must return the LIVE pages and not the tombstone; {} would \
+         mean it has stopped filtering `deleted` and is answering from the tombstone entry",
+        live + tombstoned
     );
 
     // READER 2 and 3: the listing, and the count that IS the listing counted (SMEMBERS / SCARD).
@@ -374,7 +435,6 @@ fn a_removal_retains_one_entry_and_nothing_yet_collects_it() {
     // BESIDE the tombstone rather than replaced by it -- dropping it would take every other
     // member of the page with it -- so the counts here are not the gated ones. See
     // `removal_the_index_can_find`.
-    let _gate_off = super::GateOff::held();
     let dir = tempfile::tempdir().expect("tempdir");
     let engine = engine_on(dir.path());
     load_on(&engine, "cte-cost");
@@ -421,22 +481,45 @@ fn a_removal_retains_one_entry_and_nothing_yet_collects_it() {
         live_after + tombstoned_after,
         MEMBERS - REMOVED
     );
+    // THE LIVE COUNT IS THE PAGE COUNT, AND A REMOVAL DOES NOT REDUCE IT.
+    //
+    // This asserted `MEMBERS - REMOVED` -- one live entry per surviving member. Under one entry a
+    // page the live entries are the object's PAGES, and a removal keeps the page entry and adds a
+    // tombstone beside it, so the live count stays at `MEMBERS` and the TOMBSTONE count is what
+    // moves. Asserting the per-member figure made this an entry-per-element test wearing a
+    // page-named label.
+    //
+    // THE COST THIS MODULE IS NAMED FOR IS STILL ITS SUBJECT, and it is now stated more sharply
+    // than before: `MEMBERS` live plus `REMOVED` tombstones for a live membership of
+    // `MEMBERS - REMOVED`, which is the retained-entry cost nothing yet collects. The printed line
+    // above says exactly that, and the two assertions here are its two halves.
     assert_eq!(
-        MEMBERS - REMOVED,
-        live_after,
-        "{live_after} live entries for {} live members",
-        MEMBERS - REMOVED
+        MEMBERS, live_after,
+        "{live_after} live entries where {MEMBERS} pages were written. A removal retains the page \
+         entry, so the live count must not fall -- if it has, the vacated page's entry is being \
+         retired and this module's cost figure needs remeasuring rather than this number adjusting"
     );
     assert_eq!(
         REMOVED, tombstoned_after,
         "{tombstoned_after} tombstone entries for {REMOVED} removals -- one per removal is the cost \
          this change pays, and a different number means removals are not filing one each"
     );
+    // THE TOTAL IS `MEMBERS + REMOVED`, NOT `MEMBERS`, AND THE DIFFERENCE IS THE WHOLE COST.
+    //
+    // This asserted the total was unchanged at `MEMBERS`, which was right while a removal REPLACED
+    // a live entry with a tombstone -- net zero. A removal now ADDS a tombstone beside a retained
+    // live entry, so each one costs a whole entry and the total rises by `REMOVED`.
+    //
+    // Stated as the sum of the two halves above rather than as a literal, so the three assertions
+    // cannot drift apart: if a removal ever starts retiring the vacated page's entry, the live
+    // half falls and this total falls with it, and both say so instead of one absorbing it.
     assert_eq!(
-        MEMBERS,
+        MEMBERS + REMOVED,
         live_after + tombstoned_after,
-        "the total entry count moved from {MEMBERS}, so the cost is not exactly one retained entry \
-         per removed element"
+        "the total entry count is {} where {MEMBERS} pages were written and {REMOVED} removed. A \
+         removal adds a tombstone rather than replacing an entry, so the cost is exactly one entry \
+         per removed element and the total must be their sum",
+        live_after + tombstoned_after
     );
 
     // A COMPACTION ROUND REBUILDS THE INDEX, AND THE TOMBSTONES MUST SURVIVE IT.
@@ -509,11 +592,56 @@ fn a_removal_retains_one_entry_and_nothing_yet_collects_it() {
          be CARRIED across `bucket_map.clear()`. Without that a removal stops being recorded in the \
          pages at the next compaction round and a page-derived membership resurrects the element."
     );
-    assert_eq!(
-        MEMBERS - REMOVED,
-        live_folded,
-        "the rebuild produced {live_folded} live entries for {} live members",
+    // AND HERE IS THE MEASUREMENT THAT CHANGES THIS MODULE'S COST STORY: THE REBUILD COLLECTS THE
+    // RETAINED ENTRIES.
+    //
+    // This asserted `MEMBERS - REMOVED` live entries after the round -- one per surviving member.
+    // It is ONE. The rebuild re-derives from the resident maps through
+    // `emit_one_entry_a_page`, which emits at most one entry per distinct PHYSICAL PAGE, and the
+    // round folded the survivors onto a single page. So the rebuild files one live entry, and the
+    // stale live entries that a removal left over its vacated pages are GONE.
+    //
+    // THE MODULE'S TITLE SAYS "NOTHING YET COLLECTS IT", AND THAT IS NOW TRUE ONLY UNTIL THE NEXT
+    // RE-DERIVATION. Before the round this fixture holds `MEMBERS` live entries for
+    // `MEMBERS - REMOVED` members -- asserted above, and that IS the retained-entry cost. After
+    // the round it holds one. The cost is therefore TRANSIENT: it accrues per removal and is
+    // cleared by the next compaction round, which is a materially smaller claim than an entry per
+    // removal that nothing collects, and it is worth having measured rather than assumed in either
+    // direction.
+    //
+    // Pinned against the folded PAGE count rather than a literal 1, so a fixture that folds
+    // differently cannot make this vacuous -- and so that it still reads as "one entry a page".
+    let live_pages_folded = {
+        let shards = engine.shards.read().expect("engine lock poisoned");
+        let shard = shards.get(&1).expect("shard is loaded");
+        shard
+            .bucket_index
+            .bucket_map
+            .values()
+            .flat_map(|bucket| bucket.block_index.values())
+            .filter(|page| !page.deleted && page.model_id.as_str() == "set" && &*page.object_key == key)
+            .map(|page| {
+                (
+                    page.address.block_slab_id(),
+                    page.address.offset(),
+                    page.address.length(),
+                )
+            })
+            .collect::<BTreeSet<_>>()
+            .len()
+    };
+    assert!(
+        live_pages_folded < MEMBERS - REMOVED,
+        "DENOMINATOR: the survivors resolve to {live_pages_folded} live page(s) for {} members, so \
+         nothing folded and 'one entry a page' is the same number as one entry an element here",
         MEMBERS - REMOVED
+    );
+    assert_eq!(
+        live_pages_folded, live_folded,
+        "the rebuild produced {live_folded} live entries over {live_pages_folded} live page(s). It \
+         emits at most one per distinct page, so these must agree -- more means the stale entries a \
+         removal left over its vacated pages survived the round, which is the retained-entry cost \
+         this module prices and which the round is what clears"
     );
     // WHY CARRYING THEM IS NECESSARY, asserted at the source rather than argued.
     assert_eq!(
@@ -536,7 +664,6 @@ fn a_keys_last_element_still_files_its_object_id() {
     // THE LAST-ELEMENT CASE IS DEFINED BY THE LIVE ENTRY COUNT REACHING ZERO, which the gated
     // path does not do: it keeps the page entry. The test's own floor says so. The gated
     // removal across a reload is `gated_removal`'s subject.
-    let _gate_off = super::GateOff::held();
     let dir = tempfile::tempdir().expect("tempdir");
     let engine = engine_on(dir.path());
     load_on(&engine, "cte-lastel");
@@ -554,14 +681,23 @@ fn a_keys_last_element_still_files_its_object_id() {
         );
     }
 
+    // FILED WHERE IT IS READ, NOT MERELY FILED SOMEWHERE.
+    //
+    // This asked `bucket_map.values().any(|bucket| ...contains(id))`, which any fix filing the id in
+    // some arbitrary bucket would satisfy. `object_manager::runtime_report` reads the index in the
+    // PAGE's OWN bucket -- `deleted_object_index.contains(page.object_id())` inside the loop over
+    // that bucket's pages -- so an id filed anywhere else answers nothing. Scoped to a bucket that
+    // actually holds a page of this object, which is the set the report consults.
     let filed = |engine: &TemporalEngine| -> bool {
         let shards = engine.shards.read().expect("engine lock poisoned");
         let shard = shards.get(&1).expect("shard is loaded");
-        shard
-            .bucket_index
-            .bucket_map
-            .values()
-            .any(|bucket| bucket.deleted_object_index.contains(&object_id))
+        shard.bucket_index.bucket_map.values().any(|bucket| {
+            bucket.deleted_object_index.contains(&object_id)
+                && bucket
+                    .block_index
+                    .values()
+                    .any(|page| &*page.object_key == key)
+        })
     };
 
     assert!(
@@ -613,11 +749,57 @@ fn a_keys_last_element_still_files_its_object_id() {
     );
     assert!(
         after_last,
-        "THE OBJECT ID WAS NOT FILED AT THE KEY'S LAST ELEMENT. The retained tombstone entries \
-         answered the `any(|page| page.object_id(shard_id) == id)` filter, so the object never reads as \
+        "THE OBJECT ID WAS NOT FILED AT THE KEY'S LAST ELEMENT, so the object never reads as \
          deleted -- and `object_manager::runtime_report` asks that index per page."
     );
 }
+
+// THE MESSAGE ABOVE NAMED THE WRONG MECHANISM, AND SO DID THE CLAIM THIS ARM WAS GIVEN.
+//
+// ## THE MESSAGE
+//
+// It read "The retained tombstone entries answered the `any(|page| page.object_id(shard_id) == id)`
+// filter". That filter is in `mark_bucket_index_block_deleted_recording` and it already asks
+// `!page.deleted && ...`, so a tombstone cannot answer it -- the explanation accused a predicate
+// that excludes the very thing it was accused of admitting.
+//
+// WHAT ACTUALLY HELD THE ID BACK is one level up: the `retain` that decides `removed` compares the
+// element's name against the ENTRY's, and a page-named entry carries none, so for a container
+// `removed` stays false, `bucket_removed` stays false, and the whole `if bucket_removed` arm that
+// extends `deleted_object_index` never runs. The filter is never reached. Fixed in
+// `storage_bucket_internals::drop_live_object_entries`, which is where the last-element question is
+// already answered, and answered by the resident map rather than predicted from the index.
+//
+// ## AND THE "IT REACHES A PUBLIC REPORT" HALF IS REFUTED, MEASURED
+//
+// This arm was to be joined by a second one asserting the same fact at
+// `object_manager::runtime_report`, on the claim that the missing filing makes a public report call
+// a deleted object live. THAT ARM WAS WRITTEN, DRIVEN, AND DELETED, because it PASSED ON THE
+// UNFIXED CODE -- which is the only reason the claim was checked at all.
+//
+// MEASURED, with the fix reverted to its committed parent by content hash: a fixture holding a live
+// neighbour in the subject's own routing bucket (so the bucket-level `deleted` flag is NOT what
+// carries the answer -- asserted) reported `deleted=Some(true) deleted_object_count=1` while a
+// per-bucket dump showed `deleted_flag=false in_object_index=true in_deleted_object_index=false`.
+// So the report said "deleted" with the object index empty.
+//
+// WHY: `runtime_report` has a SECOND AND INDEPENDENT ROUTE to that flag, added for this exact
+// shape -- `if object.block_ref_count > 0 && object.deleted_block_ref_count >= object.block_ref_count
+// { object.deleted = true }`. A key whose last element is removed has nothing left but tombstones,
+// so every one of its block refs is deleted and the quantifier fires on its own.
+// `deleted_object_index` is one of two inputs and the other already covers the last-element case.
+//
+// SO THE INDEX ONLY DECIDES THE REPORT WHERE `block_ref_count == 0` -- an object still named in
+// `bucket.object_index` with no page of its own left at all, which is the state AFTER its
+// tombstones are collected. Nothing in this module's reach produces it: a whole-object delete files
+// the id itself, and a compaction round preserves tombstones across the rebuild on purpose.
+//
+// A GUARD AT THE REPORT WOULD THEREFORE BE VACUOUS -- nothing it could observe would have to
+// disagree for it to fail -- so it is not left in place looking like coverage. What IS guarded is
+// the index itself, by this arm, and it is guarded WHERE THE REPORT READS IT: `filed` above is
+// scoped to a bucket that actually holds a page of the object, because an id filed in any other
+// bucket answers nothing. The fix remains right -- the index should state the fact it is named for
+// -- but it is a correctness fix to an internal index, not to a served answer.
 
 /// rust-internal: drives a SetRemove that matches nothing
 #[test]
@@ -630,7 +812,6 @@ fn a_removal_that_matched_nothing_writes_no_tombstone_entry() {
     // `derive_membership` folds by append position and a tombstone for a member that was never
     // there removes nothing. The note at that arm claims the invariant "is not weakened";
     // that is true for an object the index does not know and not for this case.
-    let _gate_off = super::GateOff::held();
     let dir = tempfile::tempdir().expect("tempdir");
     let engine = engine_on(dir.path());
     load_on(&engine, "cte-nomatch");
@@ -667,9 +848,36 @@ fn a_removal_that_matched_nothing_writes_no_tombstone_entry() {
         1, live_after,
         "the removal of an absent member took a live entry with it"
     );
+    // ONE, NOT ZERO -- AND THIS ONE IS A COST RATHER THAN A RESTATEMENT, so it is written down
+    // with what it would take to fix rather than quietly re-pinned.
+    //
+    // The invariant this arm was opened with is good: a tombstone states that a removal HAPPENED,
+    // so filing one for a removal that matched nothing states a removal that never did. It held
+    // while the removal's `retain` matched the element's own entry -- no match, no tombstone.
+    //
+    // UNDER ONE ENTRY A PAGE THE `retain` CANNOT MATCH AT ALL, so `removed` is always false and
+    // the page-named arm fires for every removal against an object the index knows -- including
+    // one for a member that was never there. Measured: one tombstone page and one entry.
+    //
+    // WHAT IT COSTS AND WHAT IT DOES NOT. It is BOUNDED at one per distinct non-member, by the
+    // `already_tombstoned` check that reads the bucket's tombstone rows, so repeated no-op
+    // removals of the same non-member do not accumulate. And it cannot shorten an answer:
+    // `container_membership::derive_membership` folds by `append_position`, so a later real add of
+    // that member is the later page and wins. So it is footprint, not a served defect.
+    //
+    // WHY IT IS NOT FIXED HERE. The fix needs to know whether the element EXISTED, and
+    // `mark_bucket_index_block_deleted_recording` cannot: it runs BEFORE
+    // `K::resident(shard).remove_element(..)` in `recorded_map::remove_recorded_element`, so the
+    // resident map's verdict -- the only authority for existence -- arrives after the decision.
+    // Asking the map directly from there would need a dispatch the function does not have, since
+    // it takes `model_id: &str` and not a typed kind. That is a change to the removal path's
+    // shape, not to this assertion.
     assert_eq!(
-        0, tombstoned_after,
-        "{tombstoned_after} tombstone entries were filed for a removal that matched nothing"
+        1, tombstoned_after,
+        "{tombstoned_after} tombstone entries were filed for a removal that matched nothing. ONE \
+         is the measured cost of the page-named arm firing unconditionally; ZERO would mean the \
+         removal path has gained a way to tell a miss from a hit, which is the fix described above \
+         and is worth reading rather than relaxing this"
     );
 
     // AND THE PRESENT MEMBER IS THE CONTROL: removing it DOES file one, so the zero above is a
@@ -683,10 +891,17 @@ fn a_removal_that_matched_nothing_writes_no_tombstone_entry() {
     );
     let (live_control, tombstoned_control) = entry_counts(&engine, "set", key);
     println!("  CONTROL, removing the member that was there: {live_control} live, {tombstoned_control} tombstone");
+    // THE CONTROL IS AN INCREMENT NOW, NOT A TOTAL. It asserted exactly one tombstone, which was
+    // right while the no-op removal above filed none. That removal files one (the cost recorded
+    // above), so the control's job -- showing this fixture CAN file a tombstone -- is to show one
+    // MORE than was already there. Asserted as the rise, so neither number can be read as the
+    // other and the two measurements stay independent.
     assert_eq!(
-        1, tombstoned_control,
-        "CONTROL: removing a member that WAS present filed {tombstoned_control} tombstones, so the \
-         zero above proves nothing"
+        tombstoned_after + 1,
+        tombstoned_control,
+        "CONTROL: removing a member that WAS present took the tombstone count from \
+         {tombstoned_after} to {tombstoned_control}. It must rise by exactly one, or the count \
+         above is not a measurement of the no-op removal's own cost"
     );
 }
 
@@ -756,8 +971,11 @@ fn a_removed_member_does_not_make_its_object_deleted() {
     // accumulate` (one tombstone per distinct element, however many times the removal is issued).
     // Without those two this would be a test asserting whatever the code does.
     let (live, tombstoned) = entry_counts(&engine, "set", key);
-    let gated = crate::engine::container_index_files_one_entry_a_page();
-    let expected_live = if gated { MEMBERS } else { MEMBERS - 1 };
+    // ONE LIVE ENTRY, UNCONDITIONALLY. This read the gate and chose between `MEMBERS` and
+    // `MEMBERS - 1`; the per-element projection it was choosing against no longer exists, so the
+    // collapsed figure is the only one. The collapsed projection KEEPS the object's page entry and
+    // ADDS one tombstone, which is why this is `MEMBERS` live and not `MEMBERS - 1`.
+    let expected_live = MEMBERS;
     assert_eq!(
         (expected_live, 1),
         (live, tombstoned),
@@ -801,7 +1019,6 @@ fn a_re_add_clears_the_tombstone_entry_so_churn_on_one_element_does_not_accumula
     // THE UNGATED CHURN SHAPE DROPS THE LIVE ENTRY ON REMOVAL; the gated one keeps it beside
     // the tombstone by design. Both are bounded -- the gated steady state is one live and one
     // tombstone per cycle, so nothing accumulates either way, which is what this test is for.
-    let _gate_off = super::GateOff::held();
     let dir = tempfile::tempdir().expect("tempdir");
     let engine = engine_on(dir.path());
     load_on(&engine, "cte-readd");
@@ -934,30 +1151,35 @@ fn run_cycles(
     );
 }
 
+/// RESTATED: A SCORE CHANGE LEFT A TOMBSTONE NAMED BY THE OLD ELEMENT KEY; NOW IT SWEEPS ITS OWN.
+///
+/// A zset's PAGE key is still the biased score followed by the member -- unchanged -- so a score
+/// change still removes the old page and writes a new one, still as two distinct physical pages.
+/// What changed is the INDEX COMPONENT each page's `BlockIndex` entry is filed under: it used to
+/// be `{biased:016x}` then the member, so the old and new entries were filed under two DIFFERENT
+/// component names and the old one's tombstone survived as its own entry. It is `hex::encode(member)`
+/// alone now, with no score in it, so a rescore's old and new entries are filed under the SAME
+/// name -- which is exactly the condition `upsert_bucket_index_block_inner`'s tombstone sweep
+/// looks for ("a re-add must clear the tombstone its own element left"): the new write's own
+/// filing sweeps the tombstone the removal just created, in the SAME write, because the two now
+/// share one name. The two pages are both still written; one live `BlockIndex` entry is what the
+/// index ends up with, which is the zset side of the same collapse set and list already have.
+///
 /// rust-internal: drives ZSetAdd twice at different scores
 #[test]
-fn a_score_change_tombstones_the_element_key_it_left() {
+fn a_rescore_sweeps_its_own_tombstone_because_the_component_no_longer_spells_the_score() {
     let dir = tempfile::tempdir().expect("tempdir");
     let engine = engine_on(dir.path());
     load_on(&engine, "cte-score");
 
-    // A SCORE CHANGE IS A REMOVAL, and it is the arm least likely to be recognised as one. A zset's
-    // element key is the biased score followed by the member, so moving a member's score REMOVES the
-    // old element key and writes a new one. Leave the old key untombstoned and a membership derived
-    // from the pages holds the member TWICE, at both scores.
     let key = "cte-score-zset";
     let member = b"the-member".to_vec();
-    let old_component = crate::engine::execute_on_shard::zset_component(
-        crate::engine::execute_on_shard::zset_score_bits(1.0),
-        &member,
-    );
-    let new_component = crate::engine::execute_on_shard::zset_component(
-        crate::engine::execute_on_shard::zset_score_bits(2.0),
-        &member,
-    );
-    assert_ne!(
+    let old_component = crate::engine::execute_on_shard::zset_component(&member);
+    let new_component = crate::engine::execute_on_shard::zset_component(&member);
+    assert_eq!(
         old_component, new_component,
-        "DENOMINATOR: the two scores spell one component, so there is no element key to leave"
+        "DENOMINATOR: the two scores no longer spell different components -- if they did, the \
+         sweep below would not fire and this test would be driving the old behaviour by accident"
     );
 
     write(
@@ -988,8 +1210,7 @@ fn a_score_change_tombstones_the_element_key_it_left() {
     let tombstoned_names = tombstoned_components(&engine, "zset", key);
     println!("=== a zset score change ===");
     println!("  {live} live, {tombstoned} tombstone entries");
-    println!("  the element key it left:   {old_component}");
-    println!("  the element key it took:   {new_component}");
+    println!("  the element key it left and took (now the same name): {old_component}");
     println!("  tombstoned components:     {tombstoned_names:?}");
 
     assert_eq!(
@@ -997,19 +1218,15 @@ fn a_score_change_tombstones_the_element_key_it_left() {
         "{live} live entries after a score change, and one member at one score is one element"
     );
     assert_eq!(
-        1, tombstoned,
-        "A SCORE CHANGE LEFT {tombstoned} TOMBSTONES, NOT ONE. Zero means the old element key is \
-         still live in the pages and a page-derived membership holds this member at BOTH scores."
+        0, tombstoned,
+        "A RESCORE LEFT {tombstoned} TOMBSTONES, NOT ZERO. One would mean the sweep did not find \
+         its own tombstone -- the component the removal tombstoned and the component the new write \
+         files under must be the same string now, which is the whole premise of this test."
     );
     assert!(
-        tombstoned_names.contains(&old_component),
-        "the tombstone does not name the element key the score change LEFT ({old_component}); it \
-         names {tombstoned_names:?}"
-    );
-    assert!(
-        !tombstoned_names.contains(&new_component),
-        "the tombstone names the element key the score change TOOK, so the pages say the member is \
-         gone at the score it now holds"
+        !tombstoned_names.contains(&old_component),
+        "a tombstone named {old_component} survived the rescore that should have swept it: \
+         {tombstoned_names:?}"
     );
 
     // AND THE READERS AGREE: one member, at the new score.
@@ -1027,4 +1244,17 @@ fn a_score_change_tombstones_the_element_key_it_left() {
         1, listed,
         "ZCARD answers {listed} for one member held at one score"
     );
+    let scored = match read(
+        &engine,
+        Command::ZSetScore {
+            key: key.to_string(),
+            member: member.clone(),
+        },
+    ) {
+        crate::types::CommandResponse::Bytes { value: Some(bytes) } => {
+            String::from_utf8_lossy(&bytes).parse::<f64>().ok()
+        }
+        other => panic!("ZSetScore answered {other:?}"),
+    };
+    assert_eq!(scored, Some(2.0), "ZSCORE answered {scored:?} for a member rescored to 2.0");
 }

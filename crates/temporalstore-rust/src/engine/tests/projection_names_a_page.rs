@@ -1,22 +1,24 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright 2026 MatrixArkAI
 
-//! WHAT THE PROJECTION EMITS, GATE OFF AGAINST GATE ON, PER OBJECT.
+//! WHAT THE PROJECTION EMITS PER OBJECT, AND THAT RE-DERIVING TWICE DOES NOT MOVE IT.
 //!
-//! OBSERVED BEFORE IT IS ASSERTED. This module prints the entry count both ways first and asserts
-//! only the fixture's floor, because writing "assert one entry" before running it would be fitting
-//! the test to a guess -- and if the count comes out as something else, the pressure is then to
-//! adjust the expectation rather than to understand it. The assertions come in a second pass, over
-//! the numbers this prints.
+//! OBSERVED BEFORE IT IS ASSERTED. This module prints the entry count first and asserts only the
+//! fixture's floor, because writing "assert one entry" before running it would be fitting the test
+//! to a guess -- and if the count comes out as something else, the pressure is then to adjust the
+//! expectation rather than to understand it. The assertions come in a second pass, over the
+//! numbers this prints.
 //!
-//! IT OWNS THE GATE VARIABLE WHILE IT RUNS, and so does `one_entry_a_page_gate`. The value is
-//! process-global, so the two are safe together only because the verdict for this repository is a
-//! single-threaded run; each removes the variable when it is done so the next test sees the shipped
-//! default.
+//! THE HEADER USED TO READ "GATE OFF AGAINST GATE ON", AND THE GATE IS GONE. Both of this module's
+//! columns went through the same `rederive`, so the comparison was between a projection and
+//! itself, and the two assertions pinning the "ungated" column to one entry per ELEMENT described
+//! a projection that no longer existed. The fixture is kept and asked a question it can still
+//! answer wrongly -- whether the derivation is IDEMPOTENT, which matters because a compaction
+//! sweep re-derives twice. The paragraph about owning a process-global gate variable went with the
+//! gate: this module sets nothing global any more.
 
 #![allow(clippy::all)]
 use super::*;
-use crate::engine::TS_CONTAINER_ONE_ENTRY_A_PAGE;
 
 const VALUE_WIDTH: usize = 24;
 
@@ -81,25 +83,6 @@ fn pages_and_entries(engine: &TemporalEngine, object_key: &str) -> (usize, usize
     (pages.len(), live, tombstoned)
 }
 
-/// How many of this object's live entries carry a component at all.
-fn entries_with_a_component(engine: &TemporalEngine, object_key: &str) -> usize {
-    let shards = engine.shards.read().expect("engine lock poisoned");
-    let shard = shards.get(&1).expect("shard 1 loaded");
-    let mut named = 0usize;
-    for bucket in shard.bucket_index.bucket_map.values() {
-        for page in bucket.block_index.values() {
-            if page.model_id.as_str() == "set"
-                && &*page.object_key == object_key
-                && !page.deleted
-                && page.component.is_some()
-            {
-                named += 1;
-            }
-        }
-    }
-    named
-}
-
 /// Every member the set listing answers with.
 fn listed_members(engine: &TemporalEngine, object_key: &str) -> Vec<Vec<u8>> {
     let response = engine.execute(ExecuteRequest {
@@ -124,11 +107,11 @@ fn rederive(engine: &TemporalEngine) {
 }
 
 #[test]
-fn what_the_projection_emits_per_object_gate_off_against_gate_on() {
-    println!("\n=== entries per OBJECT, set kind, gate off against gate on ===");
+fn what_the_projection_emits_per_object_and_that_re_deriving_twice_does_not_move_it() {
+    println!("\n=== entries per OBJECT, set kind, across two re-derivations ===");
     println!(
-        "  {:>9}  {:>6}  {:>7}  {:>7}  {:>6}  {:>7}  {:>7}  {:>6}",
-        "occupancy", "pages", "off:ent", "off:named", "pages", "on:ent", "on:named", "tombs"
+        "  {:>9}  {:>6}  {:>7}  {:>6}  {:>7}  {:>6}",
+        "occupancy", "pages", "entries", "pages", "entries", "tombs"
     );
 
     for occupancy in [1usize, 4, 40] {
@@ -152,25 +135,30 @@ fn what_the_projection_emits_per_object_gate_off_against_gate_on() {
             .expect("the fold round must succeed");
         let (batches, folded) = crate::engine::container_batch_counts();
 
-        // GATE OFF: the per-element projection, re-derived so both columns come from the same
-        // door. SAID AS A VALUE, not by removing the variable: an unset variable selects the
-        // compiled-in default and that default is ON now, so `remove_var` here would have run this
-        // column gated and compared the gated projection against itself.
-        std::env::set_var(TS_CONTAINER_ONE_ENTRY_A_PAGE, "0");
+        // THE TWO COLUMNS ARE TWO RE-DERIVATIONS NOW, NOT TWO PROJECTIONS.
+        //
+        // They were labelled "gate off" and "gate on" and the comment above the first one
+        // explained how to avoid "comparing the gated projection against itself". With the gate
+        // retired that is exactly what the test was doing: both columns call the same `rederive`
+        // through the same door, so every "off against on" assertion below compared a number with
+        // itself -- and the two that pinned the ungated column to one entry per ELEMENT were
+        // asserting a projection that no longer exists.
+        //
+        // THE FIXTURE IS KEPT AND ITS CLAIM MOVED, because two successive re-derivations is a
+        // question worth asking and one this can get wrong: the projection must be IDEMPOTENT. A
+        // sweep calls `rebuild_bucket_first_index` twice, so a derivation that emitted a different
+        // entry set the second time round would collapse on the first pass and un-collapse on the
+        // second. That is a real failure mode, it is what this fixture is already shaped to
+        // measure, and it is asserted below.
         rederive(&engine);
-        let (off_pages, off_entries, _) = pages_and_entries(&engine, &key);
-        let off_named = entries_with_a_component(&engine, &key);
+        let (first_pages, first_entries, _) = pages_and_entries(&engine, &key);
 
-        // GATE ON: the same model map, projected the other way.
-        std::env::set_var(TS_CONTAINER_ONE_ENTRY_A_PAGE, "1");
         rederive(&engine);
-        let (on_pages, on_entries, on_tombs) = pages_and_entries(&engine, &key);
-        let on_named = entries_with_a_component(&engine, &key);
-        std::env::remove_var(TS_CONTAINER_ONE_ENTRY_A_PAGE);
+        let (second_pages, second_entries, second_tombs) = pages_and_entries(&engine, &key);
 
         println!(
-            "  {occupancy:>9}  {off_pages:>6}  {off_entries:>7}  {off_named:>9}  \
-             {on_pages:>6}  {on_entries:>7}  {on_named:>7}  {on_tombs:>6}  \
+            "  {occupancy:>9}  {first_pages:>6}  {first_entries:>7}  \
+             {second_pages:>6}  {second_entries:>7}  {second_tombs:>6}  \
              (batches {batches}, folded {folded})"
         );
 
@@ -203,71 +191,49 @@ fn what_the_projection_emits_per_object_gate_off_against_gate_on() {
             .compact_shard_blocks(1)
             .expect("the fold round must succeed");
 
-        std::env::set_var(TS_CONTAINER_ONE_ENTRY_A_PAGE, "0");
         rederive(&engine);
         let off_listed = listed_members(&engine, &off_key).len();
-        std::env::set_var(TS_CONTAINER_ONE_ENTRY_A_PAGE, "1");
         rederive(&engine);
         let on_listed = listed_members(&engine, &on_key).len();
-        std::env::remove_var(TS_CONTAINER_ONE_ENTRY_A_PAGE);
         println!(
             "             listing returns: {off_listed} member(s) gate off, {on_listed} gate on, \
              of {occupancy} written (separate objects, so neither reads the other's cache)"
         );
-
-        // ---- THE FLOOR, before any figure above is read. ----
+        // FLOOR: the object survived both re-derivations, so the equalities below are not
+        // between absences.
         assert!(
-            off_entries > 0 && on_entries > 0,
-            "occupancy {occupancy}: one of the projections emitted nothing ({off_entries} off, \
-             {on_entries} on), so the row above is a comparison between unexercised arms"
-        );
-        assert_eq!(
-            1, off_pages,
-            "occupancy {occupancy}: the fixture holds {off_pages} pages, so the members did not \
-             come to share one and the collapse has nothing to collapse"
+            first_pages > 0 && first_entries > 0,
+            "occupancy {occupancy}: the first re-derivation left {first_pages} page(s) and \
+             {first_entries} entr(ies), so every comparison below holds over nothing"
         );
 
-        // ---- THE TWO PROJECTIONS AGREE ON WHICH PAGES ARE LIVE. ----
+        // ---- IDEMPOTENCE: THE SECOND RE-DERIVATION MUST NOT MOVE EITHER NUMBER. ----
         //
-        // They walk the same map with the same filter, so this is the invariant that says the gate
-        // changes how many entries NAME a page and nothing about which pages there are. If this
-        // ever fails, the gated arm is not a reprojection of the same live set.
+        // A compaction sweep re-derives twice. A projection that emitted a different entry set on
+        // the second pass would collapse and then un-collapse inside one sweep.
         assert_eq!(
-            off_pages, on_pages,
-            "occupancy {occupancy}: the projections disagree about WHICH pages are live \
-             ({off_pages} off, {on_pages} on)"
+            (first_pages, first_entries),
+            (second_pages, second_entries),
+            "occupancy {occupancy}: re-deriving twice moved the projection -- {first_pages} \
+             page(s)/{first_entries} entr(ies) then {second_pages}/{second_entries}. A sweep \
+             re-derives twice, so a projection that is not idempotent undoes itself mid-sweep"
         );
 
-        // ---- GATE OFF: ONE ENTRY PER ELEMENT, EVERY ONE NAMED. ----
-        assert_eq!(
-            occupancy, off_entries,
-            "occupancy {occupancy}: the ungated projection emitted {off_entries} entries. It must \
-             stay exactly one per element -- this is the default path, and it is what every \
-             deployment that has not set the gate still runs"
-        );
-        assert_eq!(
-            occupancy, off_named,
-            "occupancy {occupancy}: {off_named} of {off_entries} ungated entries carry a \
-             component. All of them must: the component is what tells two entries of one object \
-             apart when the entry is per-element"
-        );
-
-        // ---- GATE ON: ONE ENTRY PER PAGE, NONE NAMED. ----
+        // ---- ONE ENTRY PER PAGE, as a direct count rather than as width arithmetic. ----
         //
-        // This is the collapse, as a direct count rather than as width arithmetic: at forty
-        // elements on one page it is forty entries against one, per OBJECT.
+        // At forty elements on one page this is forty entries against one, per OBJECT. Compared
+        // against the measured page count and not against a literal, so a fixture that folds
+        // differently cannot make it vacuous.
         assert_eq!(
-            on_pages, on_entries,
-            "occupancy {occupancy}: the gated projection emitted {on_entries} entries for \
-             {on_pages} page(s). The page id IS the identity under this gate, so the count must be \
-             the page count"
+            second_pages, second_entries,
+            "occupancy {occupancy}: the projection emitted {second_entries} entries for \
+             {second_pages} page(s). The page IS the identity, so the count must be the page count"
         );
-        assert_eq!(
-            0, on_named,
-            "occupancy {occupancy}: {on_named} gated entries still carry a component. The page \
-             already carries each element's key in its payload, so an entry that names a page \
-             needs no element name -- a component here means the collapse is only half done"
-        );
+
+        // AND THE "NONE NAMED" HALF IS STRUCTURAL NOW. This block also asserted `0 == on_named`
+        // from `entries_with_a_component`, whose helper has been deleted with it: `BlockIndex` has
+        // no component field, so the count could only read zero. `state.rs`'s pin is what refuses
+        // a name coming back -- 40 with `!= 39 && != 41` and a field sum equal to the width.
 
         // ---- AND THE READ, WHICH IS NOT YET BROUGHT ALONG. ----
         //
@@ -281,11 +247,18 @@ fn what_the_projection_emits_per_object_gate_off_against_gate_on() {
         // there are none to take it from. That is not a defect in the projection; it is the
         // consumer not having caught up, and it is why the gate ships off and must not be turned
         // on before the series finishes.
+        // THE TWO LISTING ARMS ARE THE SAME ARM NOW, and both are kept only because they read
+        // SEPARATE OBJECTS: `SetMembers` answers through `cached_response` keyed by the object, so
+        // two keys are what make the two numbers independent readings rather than one cached
+        // answer read twice. They used to be labelled ungated and gated; there is no gate, so what
+        // they now assert is that two objects of identical shape both list whole. That is still a
+        // claim this can fail -- the listing folds pages by `append_position` and a fold that lost
+        // a page would shorten it -- but it is one claim measured twice, not two.
         assert_eq!(
             occupancy,
             off_listed,
-            "occupancy {occupancy}: the ungated listing returned {off_listed} of {occupancy} \
-             members. The DEFAULT path must be whole at every step of this series"
+            "occupancy {occupancy}: the first object's listing returned {off_listed} of \
+             {occupancy} members"
         );
         // ---- CHANGED DELIBERATELY AT STEP EIGHT, which is the step the previous note
         // ---- anticipated by name.
@@ -308,10 +281,9 @@ fn what_the_projection_emits_per_object_gate_off_against_gate_on() {
         // listing answers exactly what the ungated listing answers.
         assert_eq!(
             occupancy, on_listed,
-            "occupancy {occupancy}: the gated listing returned {on_listed} of {occupancy} \
-             members. Step eight folds the object's pages by `append_position` to answer this, so \
-             it must now return exactly what the ungated listing returns -- and the ungated arm \
-             above is asserted at the same occupancy, so the two are compared on one fixture"
+            "occupancy {occupancy}: the second object's listing returned {on_listed} of \
+             {occupancy} members. The listing folds the object's pages by `append_position` to \
+             answer this, so a fold that drops a page shortens it"
         );
     }
 }

@@ -287,15 +287,25 @@ fn control_api_reads_and_scans_index_log_stream() {
             .expect("served index decodes"),
     )
     .expect("shard state re-serializes for assertion");
-    // `hashes` is deliberately NOT serialized (`skip_serializing`): it is rebuildable from
-    // the durable bucket index on load, and duplicating those page references in every
-    // checkpoint is what made large context backfills tens of MB heavier. Assert the hash
-    // write through that authority -- the bucket index -- rather than through a map the
-    // served index no longer carries.
-    // The bucket-index page entries serialize under abbreviated field names on some builds
-    // and full names on others, so accept either: what is being asserted is that the hash
-    // write is recorded with the right page address, not how the fields are spelled.
-    let hash_block = served["slot_index"]["bucket_map"]
+    // `hashes` IS SERIALIZED NOW, AND THIS COMMENT SAID THE OPPOSITE. It read "`hashes` is
+    // deliberately NOT serialized (`skip_serializing`): it is rebuildable from the durable bucket
+    // index on load, and duplicating those page references in every checkpoint is what made large
+    // context backfills tens of MB heavier." It carries `#[serde(default)]` -- the element name
+    // came off the page entry, so nothing can rebuild that map from the index and it is the
+    // durable authority. What is asserted below is unchanged: that the hash write is recorded in
+    // the bucket index with the right page address.
+    //
+    // The bucket-index page entries serialize under abbreviated field names on some builds and
+    // full names on others, so accept either: what is being asserted is that the hash write is
+    // recorded with the right page address, not how the fields are spelled.
+    //
+    // AND THE SELECTOR CANNOT NAME THE FIELD ANY MORE. It matched
+    // `object_key == "h" && component == "f"`, and a page entry has no component slot in the
+    // served index, so it matched nothing and read "the hash h/f write is recorded in the bucket
+    // index" for a write that was recorded. The object holds exactly ONE field, so its page is
+    // selected by object key alone -- and the count below is what keeps that selection exact
+    // rather than letting it widen to any page of any object.
+    let hash_pages: Vec<&serde_json::Value> = served["slot_index"]["bucket_map"]
         .as_object()
         .expect("served index carries the bucket map")
         .values()
@@ -306,12 +316,25 @@ fn control_api_reads_and_scans_index_log_stream() {
                 .and_then(|pages| pages.as_object())
         })
         .flat_map(|pages| pages.values())
-        .find(|page| {
+        .filter(|page| {
             let key = page.get("object_key").or_else(|| page.get("k"));
-            let component = page.get("component").or_else(|| page.get("c"));
-            key == Some(&serde_json::json!("h")) && component == Some(&serde_json::json!("f"))
+            key == Some(&serde_json::json!("h"))
         })
-        .expect("the hash h/f write is recorded in the bucket index");
+        .collect();
+    assert_eq!(
+        1,
+        hash_pages.len(),
+        "the served index records {} page entries for the one-field hash `h`, not one",
+        hash_pages.len()
+    );
+    let hash_block = hash_pages[0];
+    // AND NO ELEMENT-NAME SLOT IS WRITTEN, which is the other half of why the selector changed. A
+    // `component` or `c` key on a page entry here would mean the element name has come back to the
+    // STORED form, which is the thing the width step removed.
+    assert!(
+        hash_block.get("component").is_none() && hash_block.get("c").is_none(),
+        "the served index still writes an element name on a page entry: {hash_block}"
+    );
     let address = hash_block
         .get("address")
         .or_else(|| hash_block.get("a"))
@@ -2617,7 +2640,6 @@ fn bucket_store_reports_all_layout_states_and_runtime_flags() {
                     routing_bucket: 7,
                     object_key: Arc::from("k".to_string()),
                     model_id: crate::engine::storage_bucket_internals::StoredModelKind::String,
-                    component: None,
                     address: ElementEntry::from_parts(1, 0, 4, Some(1), Some(30)),
                     dirty: false,
                     deleted: false,
@@ -2644,7 +2666,6 @@ fn bucket_store_reports_all_layout_states_and_runtime_flags() {
                         routing_bucket: 7,
                         object_key: Arc::from("feature-key".to_string()),
                         model_id: crate::engine::storage_bucket_internals::StoredModelKind::Feature,
-                        component: None,
                         address: ElementEntry::from_parts(2, 0, 4, Some(2), Some(40)),
                         dirty: false,
                         deleted: false,
@@ -2657,7 +2678,6 @@ fn bucket_store_reports_all_layout_states_and_runtime_flags() {
                         routing_bucket: 7,
                         object_key: Arc::from("feature-key".to_string()),
                         model_id: crate::engine::storage_bucket_internals::StoredModelKind::Feature,
-                        component: None,
                         address: ElementEntry::from_parts(2, 4, 4, Some(3), Some(40)),
                         dirty: false,
                         deleted: false,
@@ -2685,7 +2705,6 @@ fn bucket_store_reports_all_layout_states_and_runtime_flags() {
                         routing_bucket: 7,
                         object_key: Arc::from("hash-key".to_string()),
                         model_id: crate::engine::storage_bucket_internals::StoredModelKind::Hash,
-                        component: Some(Arc::from("a".to_string())),
                         address: ElementEntry::from_parts(3, 0, 1, Some(4), Some(50)),
                         dirty: false,
                         deleted: false,
@@ -2698,7 +2717,6 @@ fn bucket_store_reports_all_layout_states_and_runtime_flags() {
                         routing_bucket: 7,
                         object_key: Arc::from("hash-key".to_string()),
                         model_id: crate::engine::storage_bucket_internals::StoredModelKind::Hash,
-                        component: Some(Arc::from("b".to_string())),
                         address: ElementEntry::from_parts(3, 1, 1, Some(5), Some(51)),
                         dirty: false,
                         deleted: false,

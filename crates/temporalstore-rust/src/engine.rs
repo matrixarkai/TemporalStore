@@ -2497,7 +2497,85 @@ pub(crate) fn eager_cache_warm_on_load() -> bool {
 /// equality with the constant, never ordered or ranged". `engine::decode_index_bytes` does compare
 /// with `!=` -- but only in its MSGPACK arm, and `persistence.rs` compares with `<`. #2051 tracks
 /// that asymmetry and the decision it needs; nothing here depends on the equality claim.
-pub(super) const SHARD_INDEX_FORMAT_VERSION: u32 = 8;
+///
+/// 8 -> 9 WHEN A ZSET COMPONENT STOPPED SPELLING THE SCORE. `state::block_index_written_key`
+/// renders `component` into the map key the served index is serialized under, and a zset entry's
+/// `component` moved from `{biased:016x}` then the member in hex to the member alone -- so a page
+/// that used to render `"0000000000000000<member>"` now renders `"<member>"`, a different key under
+/// the same named map. The decode itself stays clean either way: `component` keeps its `String`
+/// type on both sides of the change, so an old-stamped index still deserializes, and what disagrees
+/// is what the text MEANS, on the recovery path that reads it back as a page's element -- the same
+/// shape the three bumps above this one each describe. The positional index log is untouched: it
+/// keeps its slot and refuses only on length mismatch, so nothing there needed a bump to stay
+/// correct. `wal_proto` is untouched too -- the score rides the WAL outcome's existing `value` byte
+/// slot now, never the component, and that slot's presence was already optional on the wire.
+///
+/// 9 -> 11 WHEN A TOMBSTONE'S ELEMENT NAME LEFT THE ENTRY. A tombstone entry no longer carries
+/// `component` -- it files `None` -- and the element it is about is a new key on the BUCKET NODE,
+/// `tombstone_elements`. Both halves move the served index: the entry's rendered key drops the
+/// element text it used to carry (`block_index_written_key`), and the node grows a key a reader
+/// without this change does not know. The named served index DROPS an undeclared key silently, so
+/// a binary before this change reading an index written after it would load every tombstone with no
+/// element at all -- a removal nothing can identify, which is precisely the resurrection this
+/// change exists to prevent. That is what the stamp has to stop, and it stops it in both codecs:
+/// `persistence` refuses a lower stamp with `<` and falls back to WAL replay, and the msgpack
+/// container carries the stamp in its header and refuses a mismatch before a byte is decoded.
+///
+/// ELEVEN AND NOT TEN, AND THE READ IS RECORDED. `matrixark/main` holds 8, read from
+/// `git show matrixark/main:...` immediately before this commit and never from this tree -- a
+/// self-read returns the value just written and confirms itself. 9 is this branch's own carried zset
+/// change. 10 is taken by an UNCOMMITTED edit in another working tree (`/root/oi_prod`), which no
+/// ref holds and no sweep of refs can see: a previous lane swept 2,567 local and remote refs,
+/// found nothing above 9, and was wrong for exactly that reason. So the trees were read, not the
+/// refs. The direction that is lethal is TOO LOW, because `persistence` compares with `<` and a
+/// stale value falls through to Accepted.
+///
+/// 11 -> 12 WHEN HASH AND ZSET JOINED THE PAGE-NAMED SET. `block_index_written_key` renders
+/// `component` into the map key the served index is serialized under, so a hash page that used to
+/// render under its field name and a zset page that used to render under its member now render
+/// under neither -- a different key in the same named map, for two more kinds. Same shape as 8 -> 9,
+/// which moved that key for zset alone, and the same reason a bump is needed rather than optional:
+/// the row decodes cleanly either way and what disagrees is what the key MEANS on the recovery path
+/// that reads it back as a page's element. ELEVEN WAS THIS BRANCH'S OWN PREVIOUS STEP and TEN is
+/// still claimed by an uncommitted edit in another working tree, so this is the next free number
+/// above both; main was re-read at 8 immediately before this commit.
+///
+/// AND REMOVING THE ELEMENT-NAME FIELD OWES NO FURTHER BUMP. TWELVE IS ENOUGH, AND THIS IS WHY.
+///
+/// The step after the one above took `BlockIndex::component` off the entry altogether -- 56 bytes
+/// of field to 40. That is a change to the stored form: the named served index stops writing a
+/// `"component"` key, and `block_index_written_key` renders the element slot of the map key empty.
+/// Both are exactly the kind of movement the four paragraphs above each paid a number for, so the
+/// question is a real one rather than a formality.
+///
+/// WHAT SETTLES IT IS THE REFUSAL FLOOR, NOT THE SIZE OF THE CHANGE. `persistence` refuses an index
+/// stamped BELOW this constant and falls back to WAL replay, with `<` -- so the set of indexes this
+/// binary will decode at all is exactly those stamped 12. Twelve was stamped BY the commit that
+/// made hash and zset page-named, which is the commit after which nothing files an element name on
+/// an entry. So every index this binary accepts was written by a binary that filed no element name,
+/// and the key this step stops writing is a key no accepted index contains. An index that really
+/// does carry one is stamped 10 or lower, is refused before a byte is decoded, and is rebuilt from
+/// the WAL.
+///
+/// THE DIRECTION THAT WOULD HAVE NEEDED A NUMBER IS THE OPPOSITE ONE: a binary BEFORE the collapse
+/// reading an index written after it. That is what 11 and 12 above already stop, and they stop it
+/// in both codecs. Spending a thirteenth number here would refuse every index this binary itself
+/// wrote at 12 and send every store through WAL replay once, for a key none of them carries.
+///
+/// SO THE THREE STORED-FORMAT ARMS THAT WENT RED ARE FIXTURES, NOT PRODUCTION OUTPUT MOVING, and
+/// that distinction is written into each of them in `engine::tests::page_entry_names`. All three
+/// HAND-CONSTRUCT an element name: two canonicalise a stored row that carries one so they can
+/// assert what this binary writes back, and the third goldened a `BlockIndex` built with a
+/// component argument that the struct literal had already stopped using. The combination they
+/// exercise -- an element name beside a CURRENT stamp -- is one no production binary has ever
+/// written, which is the whole reason the floor argument above holds.
+///
+/// ONE HAZARD WORTH RECORDING ABOUT THE NUMBERS THEMSELVES. On this branch the constant went 9 to
+/// 11, back to 9 when the collapse was refused for hash and zset again, then to 11, then to 12. So
+/// STAMP 11 NAMES TWO DIFFERENT ON-DISK SHAPES in this branch's history. Nothing reads an 11, because
+/// the floor is 12 and the comparison is `<` -- but anything that ever starts treating a stamp below
+/// the floor as meaningful has to know that one of them is ambiguous.
+pub(super) const SHARD_INDEX_FORMAT_VERSION: u32 = 12;
 
 /// Serialize a shard index, stamping the current format version.
 ///
@@ -3117,13 +3195,10 @@ fn command_upsert_components(
         // A zset add writes exactly one component, and it is derivable from the command. Declaring
         // it takes the O(1) delta path; without it the record snapshots every block of the object,
         // which cost 4 allocations per member already present.
-        Command::ZSetAdd { key, member, score } => Some(vec![(
+        Command::ZSetAdd { key, member, score: _ } => Some(vec![(
             "zset",
             key.clone(),
-            Some(crate::engine::execute_on_shard::zset_component(
-                crate::engine::execute_on_shard::zset_score_bits(*score),
-                member,
-            )),
+            Some(crate::engine::execute_on_shard::zset_component(member)),
         )]),
         Command::SetAdd { key, member } => {
             Some(vec![("set", key.clone(), Some(hex::encode(member)))])
@@ -3170,11 +3245,10 @@ fn collect_upsert_index_items(
                 .and_then(|fields| fields.get(field))
                 .cloned(),
             ("string", None) => shard.strings.get(object_key.as_str()).cloned(),
-            // `zset_component` is `{biased:016x}` followed by hex(member), so the member the map is
-            // keyed by is recoverable from the component it was filed under.
-            ("zset", Some(component)) => component
-                .get(16..)
-                .and_then(|member_hex| hex::decode(member_hex).ok())
+            // `zset_component` is `hex::encode(member)` -- the score no longer rides this string
+            // -- so the member the map is keyed by is recoverable from the whole of it.
+            ("zset", Some(component)) => hex::decode(component)
+                .ok()
                 .and_then(|member| {
                     shard
                         .zsets
@@ -3315,7 +3389,12 @@ fn collect_command_index_items_for(
                 continue;
             }
             if let Some((kind, component)) = only {
-                if page.model_id.as_str() != kind || page.component.as_deref() != component {
+                // NARROWED BY THE ENTRY'S OWN NAME, WHICH IT NO LONGER HAS. This read
+                // `page.component.as_deref() != component`; every entry's name was already `None`,
+                // so the surviving question is whether the CALLER asked for a named element at
+                // all. It did not match a named element before this change and it does not now --
+                // `component.is_some()` is the same predicate with the entry's constant folded in.
+                if page.model_id.as_str() != kind || component.is_some() {
                     continue;
                 }
             }
@@ -3327,7 +3406,12 @@ fn collect_command_index_items_for(
                 // takes the pointer instead of copying the characters per item.
                 object_key: page.object_key.clone(),
                 model_id: page.model_id.clone().to_string(),
-                component: page.component.clone(),
+                // `None`, AND READ OFF THE TYPE RATHER THAN OFF THE ENTRY. The row's component
+                // slot stays -- the index log packs it and a row written by an older binary still
+                // carries one -- but an entry has no name to put in it, which is what this
+                // emission was already writing: every entry's component was `None` before the
+                // field was removed, so the bytes this produces do not move.
+                component: None,
                 object_id: page.object_id(shard_id),
                 deleted: page.deleted,
                 // `in_log` here was `page.log_backed()` -- the accessor added when the stored
@@ -4042,14 +4126,25 @@ fn fold_delta_block_items(
                 .entry
                 .as_ref()
                 .map(|entry| live_page_key(entry));
-            // COMPARED AGAINST WHAT THE ENTRY IS FILED UNDER. The item carries the element's
-            // name; the entries it supersedes are filed under the page's. Comparing the two
-            // directly would match nothing under the gate and converge on no entry at all.
-            let filed_name = if names_a_page { None } else { item.component.as_deref() };
+            // THE FILING-NAME TERM IS DELETED AS A TAUTOLOGY, WITH THE REASON HERE RATHER THAN
+            // IN A COMMIT MESSAGE.
+            //
+            // It read `page.component.as_deref() == filed_name`, where
+            // `filed_name = if names_a_page { None } else { item.component.as_deref() }`. BOTH
+            // SIDES WERE ALREADY `None` FOR EVERY KIND: `names_a_page` answers true for all four
+            // container kinds, and the kinds it answers false for -- `string`, `control_state`,
+            // `context_node` and the timestamped series -- carry no element name to begin with, so
+            // `filed_name` was unconditionally `None` and no entry had a name to compare with it.
+            // The term asserted nothing before the field was touched, and with the field gone it
+            // cannot be written at all.
+            //
+            // WHAT STILL DECIDES THE SUPERSEDE is the page key below: keyed on `live_page_key`
+            // when a kind converges on the page, and on (kind, object key) alone when it converges
+            // on the object. That distinction is `names_a_page`'s remaining job here, which is why
+            // the binding above it is kept and only this comparison goes.
             bucket.block_index.retain(&mut bucket_index.block_slab_live, |_, page| {
                 !(page.model_id.as_str() == item.model_id
                     && page.object_key.as_ref() == item.object_key.as_ref()
-                    && page.component.as_deref() == filed_name
                     && match (names_a_page, here.as_ref()) {
                         (true, Some(here)) => live_page_key(&page.address) == *here,
                         _ => true,
@@ -4094,17 +4189,15 @@ fn fold_delta_block_items(
                 model_id: crate::engine::storage_bucket_internals::stored_model_kind(
                     &item.model_id,
                 ),
-                // THE SAME CONDITION THE WRITE PATH FILES UNDER, so the two routes compute
-                // the same written key for the same page. The item's own component is the ELEMENT
-                // -- a full record of the write, which recovery needs to restore the model map --
-                // and what the ENTRY is filed under is decided here, once, from that condition.
-                component: if crate::engine::storage_bucket_internals::index_entry_names_a_page(
-                    &item.model_id,
-                ) {
-                    None
-                } else {
-                    item.component.clone().map(Arc::from)
-                },
+                // NO NAME IS FILED, AND THERE IS NO LONGER A CONDITION DECIDING IT. This read
+                // `if index_entry_names_a_page(..) { None } else { item.component }`, on the
+                // reasoning that the two routes must compute the same written key for the same
+                // page. Both branches are gone with the field: the entry has no slot for an
+                // element name, so there is nothing for the two routes to disagree about.
+                //
+                // THE ITEM STILL CARRIES THE ELEMENT'S OWN NAME and that has not moved -- it is
+                // the full record of the write, which recovery needs to restore the model map.
+                // What stopped being derivable from it is the ENTRY's filing name.
                 // The record carries the id and the address no longer does, so there is nothing
                 // to copy across: the entry derives the id from its own terms.
                 address,
@@ -4465,140 +4558,46 @@ fn env_flag_on(name: &str) -> bool {
     crate::env_flag::env_bool(name, false)
 }
 
-/// The name of the gate below, written ONCE so the gate and the test that pins it cannot come to
-/// disagree about which variable an operator has to set. A hand-copied name is a gate nobody can
-/// turn on and a test that still passes.
-///
-/// READ BY THE SET ARM OF `visit_model_live_blocks` SINCE STEP TWO. The step-one suppression that
-/// stood here is gone, and its absence is the evidence the gate is wired: a dead-code allow would
-/// now be hiding the fact that nothing reads it.
-pub(crate) const TS_CONTAINER_ONE_ENTRY_A_PAGE: &str = "TS_CONTAINER_ONE_ENTRY_A_PAGE";
 
-/// Whether the page index files ONE ENTRY PER PAGE for a container, rather than one per ELEMENT.
+/// THE ONE-ENTRY-A-PAGE GATE IS RETIRED, AND THIS IS WHERE IT WAS.
 ///
-/// # WHAT IT IS FOR
+/// `TS_CONTAINER_ONE_ENTRY_A_PAGE` and `container_index_files_one_entry_a_page()` stood here. Every
+/// container kind files one index entry per PAGE, carrying no element name, and there is no longer
+/// a position in which it does otherwise.
 ///
-/// A container's index holds one entry per element: per hash field, set member, zset scored member
-/// and list index. Measured on this tree, that is **~152 bytes per element, flat whatever the
-/// occupancy** -- 6,120 bytes for an object of forty elements on one compacted page, against 104
-/// for one entry per page. The page already carries each element's key in its payload, because
-/// `container_pages` writes it there precisely so a page is interpretable without the entry that
-/// names it. So the entries restate what the page already says.
+/// # WHY IT COULD NOT STAY
 ///
-/// # WHY A GATE AND NOT A CHANGE
+/// `BlockIndex` is the structure the index is MADE of -- one per page, millions of them -- and
+/// `component` was the only place on it an element name could live. Taking that field out is the
+/// whole point of this series, and with it gone the gate's OFF position is not a slower layout, it
+/// is an UNIMPLEMENTABLE one: nothing could file a name, and every reader that resolved an element
+/// by matching `page.component == component` would answer wrongly rather than slowly. A flag whose
+/// two positions are "correct" and "silently wrong" is not a flag.
 ///
-/// The index is a DERIVED PROJECTION of the model maps: `visit_model_live_blocks` emits one entry
-/// per member from `shard.sets` and friends, and `rebuild_bucket_first_index` re-derives the whole
-/// thing -- twice inside one compaction sweep. So the filing and the derivation cannot be changed
-/// in separate commits: whichever lands first is undone by the other. A projection can, however,
-/// be computed two ways behind one switch, and that is what this is for. Each edit in the series
-/// landed conditional on this gate, with the old path intact beside it. While the default was off
-/// that meant nothing changed for a deployment that had not set it; the default is ON now, so what
-/// an unset variable selects has MOVED -- see the grandfathering section below.
+/// # WHAT IT WAS, MEASURED, SO THE DECISION IS NOT TAKEN ON A RECOLLECTION
 ///
-/// # ITS DEFAULT IS ON NOW, AND IT IS STILL MEANT TO BE DELETED
+/// It shipped ON by default (`env_flag_default_on`) from the set and list collapses onward, so the
+/// OFF position was a development affordance and never a deployed configuration. And its coverage
+/// was partly an accident of test ORDER: four arms -- `resident_map_readers` x2 and
+/// `set_listing_page_reads` x2 -- passed in a full suite only because
+/// `replay_under_the_gate::the_gate_guard_restores_the_variable_even_when_an_assertion_panics` set
+/// the variable to `"0"` and never put it back. Driven both ways before the retirement: those four
+/// FAIL when run alone (6 passed, 4 failed) and PASS when the leaking arm runs first (15 of 15).
 ///
-/// This section used to say the opposite, and it is restated rather than deleted because the
-/// reason it said so is the reason to read the rest of this comment: the gated path WAS incomplete
-/// by construction, and a reader who remembers that has to be told it no longer is.
+/// # AND THE STORED SIDE IS A ONE-WAY DOOR, WHICH IS A SEPARATE CLAIM
 ///
-/// The default is ON. Every consumer the series set out to bring along has landed -- the authority
-/// check, the ordinal source, the removal representation, the replay arm, the index-log emitter,
-/// the reconcile and, last, the LISTING, which was the one that mattered: until it landed, turning
-/// this on made a folded container's listing return nothing at all. The env var remains in both
-/// directions as an operator escape hatch (`=0|false|no|off` turns it off), through the same shared
-/// boolean vocabulary every other flag uses.
+/// A store written with the gate OFF has entries that name their elements, and this binary cannot
+/// read one. It must be REFUSED rather than misread, and that is the stamp's job --
+/// `an_ungated_store_is_refused_before_it_is_served` drives it on a stored golden and reads the
+/// engine's own load-path counters: accepted 0, stale 1, and nothing served. The named decoder drops
+/// a key it has no field for SILENTLY, so the refusal is what stands between that drop and an
+/// answer.
 ///
-/// This is still scaffolding with a planned demolition: the step after this one REMOVES both the
-/// gate and the per-element path, so that the two ways of computing the projection do not become a
-/// permanent fork. A gate that ships off and is never flipped strands the feature behind it, and
-/// this repository is carrying another lever that way; this one is no longer in that state.
-///
-/// # THERE IS NO GRANDFATHERING, BECAUSE THE INDEX IS RE-DERIVED AT LOAD
-///
-/// The most important consequence of moving this default, and the one that is easy to get wrong:
-/// the index is a DERIVED PROJECTION of the model maps, recomputed on the way in. So this gate
-/// decides what the READER files, not what some earlier writer wrote. A store written by an
-/// ungated binary, opened by a binary with this default, comes up with the COLLAPSED entry shape.
-///
-/// Measured across a real store boundary -- write, fold, `unload_shard`, drop the engine, reopen
-/// over the same directories with a separate cache -- at forty elements in each of the four
-/// container kinds, by
-/// `engine::tests::gated_corpus_across_a_store_boundary`:
-///
-/// | store written | read with | set members served | durable |
-/// |---|---|---|---|
-/// | gated | gated | 40 of 40 | 40 |
-/// | UNGATED | gated | 40 of 40 | 40 |
-/// | gated | UNGATED | 40 of 40 | 40 |
-///
-/// The middle row is the upgrade every existing deployment takes, and it is whole. The last row is
-/// why `SHARD_INDEX_FORMAT_VERSION` is NOT bumped for this change: an ungated reader re-derives the
-/// index through the ungated arm and re-files one NAMED entry per element, so the page-named
-/// entries never survive into its view and there is nothing for it to misread. A projection
-/// recomputed at load carries no durable shape to disagree about. If a later step makes the
-/// collapsed shape survive a load -- an authoritative index that is persisted rather than
-/// re-derived -- the stamp question reopens then, and that test is the tripwire for it.
-///
-/// One further measured caution: the `reconcile: N component name(s) could not be read and were
-/// skipped` line fires whenever a gated store is loaded, INCLUDING when every element is served
-/// correctly, and it was silent in the case that served nothing. It is not an alarm for this class
-/// of failure and nothing should be built on it.
-///
-/// # WHAT IT DOES TODAY
-///
-/// SIX readers, not the one this said when it was written and not the five it said after that:
-/// `index_entry_names_a_page` (the shared predicate that decides WHICH KINDS this applies to, and
-/// the one every filing predicate asks), the container arms of `visit_model_live_blocks` (the
-/// projection that derives the page index from the model maps), the block ordinal and the set
-/// listing in `execute_on_shard`, and the two removal arms here.
-///
-/// THE KIND LIST IS NO LONGER "SET". `set` and `list` emit one entry per distinct page address and
-/// no component with the gate on, and one entry per element with it off. Do not read the kind list
-/// out of this paragraph: `index_entry_names_a_page` is the authority and this is a description of
-/// it.
-///
-/// `hash` AND `zset` ARE HELD OUT, both on measurement rather than on sequencing, and for
-/// different reasons -- a zset component carries the SCORE, so dropping it deletes data rather
-/// than a name, while four hash readers resolve through the index BY COMPONENT with no
-/// resident-map fallback, so a nameless hash entry makes a present field unreachable. The full
-/// statement of each, with the numbers, is on `index_entry_names_a_page`. That leaves hash and
-/// zset as the control the three non-set kinds used to be between them: a short answer for either
-/// is a broken reload rather than anything this gate did.
-///
-/// # AND IT DROPS THE NAME FROM LIVE ENTRIES ONLY. TOMBSTONES KEEP IT.
-///
-/// The precise scope, written here because it is a design decision with two independent reasons
-/// and neither is visible from a diff. A LIVE entry under this gate is a per-PAGE fact: the page's
-/// payload already names every element on it, so the entry needs no element name, and dropping it
-/// is the collapse. A TOMBSTONE is a per-ELEMENT fact -- recording WHICH element was removed is its
-/// entire content -- so a nameless tombstone is not a smaller one, it is one that has lost what it
-/// was for. Both reasons were measured rather than argued:
-///
-///   * THE SWEEP CANNOT TELL WHOSE IT IS. A re-add clears the tombstone its own element left; against
-///     a nameless tombstone it matches every tombstone of the object, so re-adding Y clears X's and
-///     X comes back.
-///   * AND THE RETENTION CANNOT BE BOUNDED. `removed` is always false under this gate, so the gated
-///     arm fires on every removal: with a nameless tombstone, four removals of ONE member left FOUR
-///     tombstone pages, growing per removal issued rather than per element removed -- on what is a
-///     no-op from the client's side. Named, it is 1 / 1 / 3 for one removal, four of the same
-///     member, and three distinct members.
-///
-/// There is a THIRD consequence that is not about this gate at all, and it is why "nameless" was
-/// never an option rather than merely a worse one: on the outcome wire, a removal's absent component
-/// is load-bearing semantics. `wal_proto` encodes `object_deleted: item.deleted &&
-/// item.component.is_none()`, and `lifecycle` acts on it by dropping the whole object or series. So
-/// `None` there is not an empty field, it is a different instruction.
-///
-/// NO STORED SHAPE MOVES FOR ANY OF THIS. The tombstone's component field already existed and the
-/// ungated path already filled it, so `SHARD_INDEX_FORMAT_VERSION` does not change.
-///
-/// Observed, per OBJECT, at one page in every row: forty elements emit **forty entries ungated and
-/// one gated**, four emit four against one, and one emits one against one -- with every ungated
-/// entry carrying a component and no gated entry carrying one.
-pub(crate) fn container_index_files_one_entry_a_page() -> bool {
-    env_flag_default_on(TS_CONTAINER_ONE_ENTRY_A_PAGE)
-}
+/// The argument that a store from before a change may be refused rather than guessed at is the
+/// tree's own, at `engine/routing_range_stamp.rs:50`: "The adoption existed to keep existing
+/// deployments starting; before the first milestone there are none to keep, so the honest answer
+/// replaces the convenient one." Refusing is the honest answer; serving a store whose element names
+/// were dropped on the way in is the convenient one.
 
 /// Tuning for sampled eviction, read from the environment with defaults that mirror the
 /// established policy: sample several buckets per wanted victim, keep a bounded candidate pool
@@ -5100,7 +5099,7 @@ fn bucket_index_target_buckets_for_object_key(shard: &ShardState, key: &str) -> 
     let mut buckets = BTreeSet::new();
     for kind in storage_model_kinds() {
         if let Some(entry) = shard.bucket_index.object_block_refs(kind, key) {
-            buckets.extend(entry.all_refs().map(|block_ref| block_ref.routing_bucket));
+            buckets.extend(entry.iter().map(|block_ref| block_ref.routing_bucket));
         }
     }
     buckets
@@ -5232,7 +5231,7 @@ fn mark_bucket_index_block_deleted_recording(
     let mut tombstone_bucket: Option<u32> = None;
     // Kept for the gated branch at the end, because the ungated `if let` below MOVES `tombstone`
     // out of scope when it builds its tuple.
-    let tombstone_for_gate = tombstone.clone();
+    let tombstone_for_the_page_named_arm = tombstone.clone();
     // THE BUCKET A GATED TOMBSTONE MUST BE FILED IN, read off the object's existing LIVE entry
     // rather than recomputed.
     //
@@ -5244,22 +5243,16 @@ fn mark_bucket_index_block_deleted_recording(
     //
     // Computed before the mutable walk below, both to keep the borrow simple and so it describes
     // the index as it was BEFORE this removal touched it.
-    let gated_tombstone_bucket: Option<u32> = if container_index_files_one_entry_a_page() {
-        shard
-            .bucket_index
-            .bucket_map
-            .iter()
-            .find(|(_, bucket)| {
-                bucket.block_index.values().any(|page| {
-                    !page.deleted
-                        && page.model_id.as_str() == model_id
-                        && &*page.object_key == key
-                })
+    let tombstone_bucket_for_a_page_named_kind: Option<u32> = shard
+        .bucket_index
+        .bucket_map
+        .iter()
+        .find(|(_, bucket)| {
+            bucket.block_index.values().any(|page| {
+                !page.deleted && page.model_id.as_str() == model_id && &*page.object_key == key
             })
-            .map(|(routing_bucket, _)| *routing_bucket)
-    } else {
-        None
-    };
+        })
+        .map(|(routing_bucket, _)| *routing_bucket);
     let target_buckets = if shard.bucket_index.object_block_lookup.is_empty() {
         shard
             .bucket_index
@@ -5286,9 +5279,24 @@ fn mark_bucket_index_block_deleted_recording(
         let mut bucket_removed = false;
         let mut deleted_object_ids = BTreeSet::new();
         bucket.block_index.retain(&mut shard.bucket_index.block_slab_live, |_, page| {
+            // THE THIRD COMPONENT `retain` IN THE ENGINE, AND THE ONLY ONE THAT WAS NOT VACUOUS.
+            //
+            // This read `page.component.as_deref() == component`, and with every entry's name
+            // already `None` that comparison still DECIDED something, because the other side is
+            // this function's ARGUMENT and not another entry: `None == Some(member)` is false for a
+            // container and `None == None` true for the kinds that converge on the object key. So
+            // it is translated and NOT deleted as a tautology -- deleting it would widen the
+            // removal to take a container's whole page entry, and taking that entry takes every
+            // sibling member on the page with it.
+            //
+            // `component.is_none()` is that same predicate with the entry's constant folded in,
+            // so the kinds it matches are exactly the kinds it matched before: `string`,
+            // `control_state` and `context_node` converge on the object key and are removed here;
+            // a container's removal matches nothing here and is recorded by the tombstone arm at
+            // the end of this function instead.
             let matches = page.model_id.as_str() == model_id
                 && &*page.object_key == key
-                && page.component.as_deref() == component;
+                && component.is_none();
             if matches {
                 deleted_object_ids.insert(page.object_id(shard_id));
                 bucket_removed = true;
@@ -5425,11 +5433,11 @@ fn mark_bucket_index_block_deleted_recording(
     //
     // AND ONLY WHERE THE OBJECT ACTUALLY HAS AN ENTRY. The invariant the ungated path states just
     // above -- a removal that matched nothing must not file a tombstone, because that would state a
-    // removal that never happened -- is not weakened here: `gated_tombstone_bucket` is `None`
+    // removal that never happened -- is not weakened here: `tombstone_bucket_for_a_page_named_kind` is `None`
     // unless the object already holds a live page entry, so a removal against an object the index
     // does not know files nothing.
-    if !removed && container_index_files_one_entry_a_page() {
-        if let (Some(address), Some(routing_bucket)) = (tombstone_for_gate, gated_tombstone_bucket) {
+    if !removed {
+        if let (Some(address), Some(routing_bucket)) = (tombstone_for_the_page_named_arm, tombstone_bucket_for_a_page_named_kind) {
             // THE TOMBSTONE KEEPS THE ELEMENT'S NAME EVEN THOUGH THE LIVE ENTRY DOES NOT, and the
             // asymmetry is the point rather than an exception.
             //
@@ -5449,24 +5457,30 @@ fn mark_bucket_index_block_deleted_recording(
             //     and a page-named entry has none -- so this arm fires on EVERY removal. Measured
             //     with a nameless tombstone: four removals of ONE member left FOUR tombstone pages
             //     and four entries, growing per removal issued rather than per element removed, on
-            //     what is a no-op from the client's side. With the name present the arm can ask
+            //     what is a no-op from the client's side. With the name recorded the arm can ask
             //     whether this element's tombstone is already filed, which is what the check below
             //     does.
             //
-            // So the gate's scope is one clause narrower than it looks: it drops the element name
-            // from LIVE entries only.
-            let already_tombstoned = shard
-                .bucket_index
-                .bucket_map
-                .get(&routing_bucket)
-                .is_some_and(|bucket| {
-                    bucket.block_index.values().any(|page| {
-                        page.deleted
-                            && &*page.object_key == key
-                            && page.model_id.as_str() == model_id
-                            && page.component.as_deref() == component
+            // SO THE NAME IS KEPT, AND IT IS KEPT OFF THE ENTRY. Both losses above are about an
+            // ELEMENT, and both are repaired by `BucketNode::tombstone_elements` -- a row per
+            // distinct element removed, filed beside the entries by
+            // `insert_container_tombstone_entry`. The gate's scope is therefore not "live entries
+            // only": NO entry names an element now, and a removal pays for its own name in a
+            // structure only removals have.
+            let already_tombstoned = component.is_some_and(|component| {
+                shard
+                    .bucket_index
+                    .bucket_map
+                    .get(&routing_bucket)
+                    .and_then(|bucket| {
+                        bucket.tombstone_element_page(
+                            key,
+                            crate::engine::storage_bucket_internals::stored_model_kind(model_id),
+                            component,
+                        )
                     })
-                });
+                    .is_some()
+            });
             if !already_tombstoned {
                 crate::engine::storage_bucket_internals::insert_container_tombstone_entry(
                     shard,
@@ -5844,7 +5858,7 @@ fn record_exists_exact(shard: &ShardState, key: &str) -> bool {
                 .bucket_index
                 .object_block_refs(kind, key)
                 .map(|block_refs| {
-                    block_refs.all_refs().any(|block_ref| {
+                    block_refs.iter().any(|block_ref| {
                         shard
                             .bucket_index
                             .bucket_map
@@ -6551,7 +6565,7 @@ fn object_manager_stats(
                             .bucket_index
                             .object_block_lookup
                             .values()
-                            .map(crate::engine::state::ObjectBlockRefs::total_refs)
+                            .map(crate::engine::state::BlockRefs::len)
                             .sum::<usize>()
                     }),
                     shard.dirty_objects.len(),
@@ -6564,31 +6578,27 @@ fn object_manager_stats(
                     .flat_map(|bucket| bucket.block_index.values())
                     .filter(|page| !page.deleted)
                     .collect::<Vec<_>>();
+                // A THIRD TUPLE TERM THAT WAS ALREADY CONSTANT, AND IS DROPPED RATHER THAN SET
+                // TO `None`.
+                //
+                // Both of these sets carried `(kind, object_key, hash_field)`, where the third
+                // term was `(model_id == "hash").then(|| page.component.as_deref()).flatten()`.
+                // Every entry's component was `None`, so the term evaluated to `None` for every
+                // page of every kind -- a constant, which adds nothing to a set's cardinality.
+                // Spelling it `None` would have kept a tuple slot that cannot distinguish two
+                // pages; the count is identical either way, so the slot goes and this note says
+                // what it used to mean: one entry per hash FIELD, back when an entry named one.
                 let bucket_object_count = live_blocks
                     .iter()
-                    .map(|page| {
-                        (
-                            page.model_id.as_str(),
-                            page.object_key.as_ref(),
-                            (page.model_id.as_str() == "hash")
-                                .then(|| page.component.as_deref())
-                                .flatten(),
-                        )
-                    })
+                    .map(|page| (page.model_id.as_str(), page.object_key.as_ref()))
                     .collect::<BTreeSet<_>>()
                     .len();
                 let bucket_dirty_object_count = live_blocks
                     .iter()
                     .filter(|page| page.dirty || shard.dirty_objects.contains(page.object_key.as_ref()))
-                    .map(|page| {
-                        (
-                            page.model_id.as_str(),
-                            page.object_key.as_ref(),
-                            (page.model_id.as_str() == "hash")
-                                .then(|| page.component.as_deref())
-                                .flatten(),
-                        )
-                    })
+                    // The same constant third term as the count above, dropped for the same
+                    // reason and with the reason written there.
+                    .map(|page| (page.model_id.as_str(), page.object_key.as_ref()))
                     .collect::<BTreeSet<_>>()
                     .len();
                 (bucket_object_count, live_blocks.len(), bucket_dirty_object_count)

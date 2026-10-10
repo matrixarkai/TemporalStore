@@ -32,28 +32,8 @@ use crate::{ElementEntry, BlockStoreOptions, BlockStore};
 /// A guard rather than a `set_var` and a matching `remove_var`: `Drop` runs while unwinding, so a
 /// FAILING test cannot leak the gate into every test after it in the process. That contamination
 /// has already happened once in this series, and it is ordered and silent rather than a flake.
-struct GateOff {
-    restore: Option<String>,
-}
 
-impl GateOff {
-    fn held() -> Self {
-        let restore = std::env::var(crate::engine::TS_CONTAINER_ONE_ENTRY_A_PAGE).ok();
-        std::env::set_var(crate::engine::TS_CONTAINER_ONE_ENTRY_A_PAGE, "0");
-        Self { restore }
-    }
-}
 
-impl Drop for GateOff {
-    fn drop(&mut self) {
-        match self.restore.take() {
-            Some(previous) => {
-                std::env::set_var(crate::engine::TS_CONTAINER_ONE_ENTRY_A_PAGE, previous)
-            }
-            None => std::env::remove_var(crate::engine::TS_CONTAINER_ONE_ENTRY_A_PAGE),
-        }
-    }
-}
 
 fn wait_for_fresh_admission_second() {
     loop {
@@ -260,9 +240,42 @@ mod decoded_index_packing;
 mod two_level_resident_shape;
 mod reconcile_allocation;
 mod hash_read_union_divergence;
-mod packed_element_scan_cost;
+// `packed_element_scan_cost` WAS DECLARED HERE AND THE FILE IS DELETED.
+//
+// It priced two arms in nanoseconds at occupancies from one element to four hundred: ARM A, the
+// per-element level of the resident lookup -- `ObjectBlockRefs::position`, a binary search whose
+// comparison dereferenced an `Option<Arc<str>>` into a separate allocation and compared the name
+// -- against ARM B, `select_container_element`'s packed linear scan. Its own words: "Arm A is the
+// cost that goes; arm B is the cost that stays."
+//
+// ARM A IS GONE, so the trade it measured is settled rather than open. `ObjectBlockRefs`,
+// `ComponentList` and `ComponentBlocks` are deleted and an object maps straight to its
+// `BlockRefs`; there is no per-element level left to price and no `position` to call.
+//
+// IT COULD NOT BE REPAIRED MECHANICALLY, AND ITS OWN DOC SAID NOT TO TRY. The fixture built the
+// per-element level BY HAND -- `occupancy` distinct `Some(name)` entries under one object, a state
+// the producer could not reach even before the collapse, since `insert_object_block_lookup` wrote
+// `component: None` as a literal. And on keeping arm B alone it is explicit: "A measurement that
+// priced B alone would be pricing the status quo." Arm B is the shipped selector and both read
+// doors already call it unconditionally, so nothing it measured about the scan has changed.
+//
+// WHAT IT ESTABLISHED, KEPT ON THE RECORD because it is the reasoning the collapse rests on: the
+// recorded 3.0-17.8x that read as a refutation was a ratio over a different denominator -- a scan
+// of one of 1,024 fixed routing buckets, whose length grows with the corpus -- while the scan it
+// was being compared against walks the elements of ONE OBJECT, whose length is a property of the
+// data shape and not of the corpus. The two numbers answer different questions and the first never
+// bounded the second.
+//
+// THE ELEMENT-NAME BRANCH'S LAST CHANGE TO IT WAS A WIDTH RESTATEMENT, AND THAT IS WHY THIS
+// DELETION IS A MERGE DECISION AND NOT ONLY THIS BRANCH'S. `ea2b26bb7` restated one pin inside
+// `resident_bytes_per_object` -- `size_of::<BlockIndex>()` from 56 to 40, with a note that the
+// arithmetic MULTIPLIES it so a stale width scales the whole column. That pin's subject survives;
+// the arithmetic it fed does not, because the column priced the chain `ObjectBlockRefs ->
+// ComponentList -> ComponentBlocks -> BlockRefs` per object and three of those four are deleted.
+// The 40 is not lost with the file: it is a `const _` beside `BlockIndex` in `state.rs` and is
+// re-asserted in `page_entry_handles`, `pages_per_bucket`, `per_item_byte_budget`,
+// `page_entry_element_naming` and `the_entry_cannot_name_its_object_by_slot`.
 mod set_listing_source;
-mod one_entry_a_page_gate;
 mod projection_names_a_page;
 mod authority_check_cost;
 mod sweep_keeps_the_collapse;
@@ -276,3 +289,4 @@ mod the_handle_is_computed_at_the_bucket;
 mod gated_corpus_across_a_store_boundary;
 mod write_after_fold;
 mod collapse_for_list;
+mod zset_component_drops_the_score;

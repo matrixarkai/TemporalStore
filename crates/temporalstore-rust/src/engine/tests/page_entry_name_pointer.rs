@@ -204,7 +204,11 @@ fn samples(hist: &BTreeMap<usize, usize>) -> usize {
 struct MirrorEntryThinNames {
     object_key: NonNull<u8>,
     model_id: StoredModelKind,
-    component: Option<NonNull<u8>>,
+    // THE SECOND NAME SLOT IS GONE WITH THE FIELD IT MIRRORED. This modelled the entry with BOTH
+    // of its names narrowed to one word each. The entry has one name now -- `component` was
+    // removed outright rather than narrowed -- so the mirror models the one that is left, and the
+    // figures this module reports are what hoisting THAT name would be worth on top of the
+    // sixteen bytes already recovered.
     address: ElementEntry,
     dirty: bool,
     deleted: bool,
@@ -377,7 +381,7 @@ struct MirrorEntryBothOrdinalsPackedOneFlagByte {
 ///
 /// rust-internal: measures declarations, no product behaviour
 #[test]
-fn two_one_word_name_slots_take_the_page_entry_from_fifty_six_to_forty() {
+fn one_remaining_name_slot_takes_the_entry_from_forty_to_thirty_two_and_the_chunk_class_refuses_it() {
     // --- THE CONTROL FIRST. A one-word `Option` is the whole reason 44 is reachable. ---
     assert_eq!(
         size_of::<usize>(),
@@ -394,7 +398,7 @@ fn two_one_word_name_slots_take_the_page_entry_from_fifty_six_to_forty() {
     );
 
     // --- THE LIVE ENTRY, FIELD BY FIELD AT ITS REAL OFFSET. ---
-    let live = page_fixture(Some("f0"), 3, (true, false));
+    let live = page_fixture(3, (true, false));
     let live_fields = [
         (
             "object_key",
@@ -406,11 +410,9 @@ fn two_one_word_name_slots_take_the_page_entry_from_fifty_six_to_forty() {
             field_width(&live.model_id),
             offset_of!(BlockIndex, model_id),
         ),
-        (
-            "component",
-            field_width(&live.component),
-            offset_of!(BlockIndex, component),
-        ),
+        // The `component` row is gone with the field -- sixteen bytes between `model_id` and
+        // `address`, which is the 56 -> 40 step. `field_width` infers from the field handed to it,
+        // so a row for a field that does not exist cannot be written at all.
         (
             "address",
             field_width(&live.address),
@@ -434,7 +436,6 @@ fn two_one_word_name_slots_take_the_page_entry_from_fifty_six_to_forty() {
     let projected = MirrorEntryThinNames {
         object_key: NonNull::dangling(),
         model_id: live.model_id,
-        component: Some(NonNull::dangling()),
         address: live.address.clone(),
         dirty: true,
         deleted: false,
@@ -451,11 +452,6 @@ fn two_one_word_name_slots_take_the_page_entry_from_fifty_six_to_forty() {
             "model_id",
             field_width(&projected.model_id),
             offset_of!(MirrorEntryThinNames, model_id),
-        ),
-        (
-            "component",
-            field_width(&projected.component),
-            offset_of!(MirrorEntryThinNames, component),
         ),
         (
             "address",
@@ -572,12 +568,11 @@ fn two_one_word_name_slots_take_the_page_entry_from_fifty_six_to_forty() {
          and a length side by side",
         field_width(&live.object_key)
     );
-    assert_eq!(
-        2 * size_of::<usize>(),
-        field_width(&live.component),
-        "`component` is {} B, not the two words of a fat optional pointer",
-        field_width(&live.component)
-    );
+    // THE SECOND FAT-POINTER ASSERTION IS GONE WITH ITS FIELD. It read "`component` is {} B, not
+    // the two words of a fat optional pointer" -- a premise for every figure in this module about
+    // what a NAME costs on the entry. The entry has one name now, `object_key`, asserted just
+    // above; the second name is not narrowed, it is removed, and the sixteen bytes it held are the
+    // step this branch measures.
 
     // --- THE STEP. ---
     println!(
@@ -588,46 +583,88 @@ fn two_one_word_name_slots_take_the_page_entry_from_fifty_six_to_forty() {
         size_of::<MirrorEntryThinNames>(),
         size_of::<MirrorEntryThinNames>() as isize - size_of::<BlockIndex>() as isize
     );
+    // ONE WORD, NOT TWO. The step was "two fat pointers for two thin ones", and the entry has ONE
+    // name left -- so the saving is one word: `object_key` from sixteen bytes to eight. The second
+    // name was not narrowed, it was REMOVED, which is the sixteen bytes `state.rs`'s 40-byte pin
+    // records and is not this mirror's to claim.
     assert_eq!(
-        live_sum - 2 * size_of::<usize>(),
+        live_sum - size_of::<usize>(),
         projected_sum,
-        "swapping two fat pointers for two thin ones is supposed to take {live_sum} B of field to \
-         {}; the mirror holds {projected_sum}",
-        live_sum - 2 * size_of::<usize>()
+        "swapping the entry's one fat name pointer for a thin one is supposed to take {live_sum} B \
+         of field to {}; the mirror holds {projected_sum}",
+        live_sum - size_of::<usize>()
     );
-    // 40, NOT 48: this mirror holds a `BlockAddress` and shed the same eight bytes the live entry
-    // did when the object id left it. The STEP below is unchanged at sixteen precisely because both
-    // sides moved by eight.
+    // 32, NOT 40: the mirror lost its second name slot with the field it mirrored, so it holds one
+    // thin name where it held two. It read 40 while the live entry was 56 and the step was sixteen;
+    // the live entry is 40 now and this mirror is 32, so the step is EIGHT -- one word, from the one
+    // name that is left.
     assert_eq!(
-        40,
+        32,
         size_of::<MirrorEntryThinNames>(),
-        "two one-word name slots land the entry at {} B, not 40. The whole premise of this module is \
-         that {projected_sum} B of field rounds to 40",
+        "one one-word name slot lands the entry at {} B, not 32. The premise of this module is \
+         that {projected_sum} B of field rounds to 32",
         size_of::<MirrorEntryThinNames>()
     );
+    // EIGHT, NOT SIXTEEN, because there is one name left to thin rather than two.
+    //
+    // The sixteen this module priced was two fat pointers becoming two thin ones. One of the two
+    // names did not get thinner, it left: `state.rs` pins the entry at 40 against the 56 it was,
+    // and those sixteen bytes are recorded there rather than here. What this mirror still prices
+    // is what hoisting the REMAINING name would be worth ON TOP of that, and it is one word.
     assert_eq!(
-        16,
+        8,
         size_of::<BlockIndex>() - size_of::<MirrorEntryThinNames>(),
-        "the step is {} B, not the 16 the rest of this module prices",
+        "the step is {} B, not the 8 one remaining name slot can be worth",
         size_of::<BlockIndex>() - size_of::<MirrorEntryThinNames>()
     );
 
-    // --- AND THE CHUNK CLASS MOVES WITH IT, which is the part a struct width cannot say. Since
-    //     #1975 the single-page arm holds the entry behind a BOX, so what a bucket pays for one page
-    //     is the CHUNK and not the width -- and a sibling found 64 + 8 and 72 + 8 landing in the
-    //     same 80-byte class, so a width step can round away entirely. This one does not. ---
+    // --- AND THE CHUNK CLASS DOES **NOT** MOVE WITH IT ANY MORE, WHICH REFUSES THE REMAINING
+    //     STEP ON THE COLUMN THAT DECIDES IT. ---
+    //
+    // THE SENTENCE ABOVE THIS USED TO END "This one does not", AND IT DOES NOW. It read: "a sibling
+    // found 64 + 8 and 72 + 8 landing in the same 80-byte class, so a width step can round away
+    // entirely. This one does not." That was measured while the entry was 56 and this mirror 40:
+    // `chunk(56)` is 64 and `chunk(40)` is 48, a real sixteen bytes a bucket.
+    //
+    // The entry is 40 now -- the element name left it outright rather than being thinned -- and the
+    // mirror is 32. `chunk` models the documented glibc rule, request plus a header word rounded up
+    // to sixteen: 40 + 8 = 48, and 32 + 8 = 40 which rounds to 48 as well. BOTH LAND IN THE SAME
+    // 48-BYTE CLASS, so hoisting the one remaining name recovers NOTHING for a single-page bucket,
+    // which since #1975 is where the entry lives behind a box.
+    //
+    // SO THIS IS A STOP CONDITION FOR THE REMAINING PROPOSAL, not a number to correct. The module
+    // exists to price hoisting the entry's names into one-word slots; the first name was not
+    // hoisted, it was removed, and that step DID move the chunk class (64 -> 48). The second name
+    // cannot move it at all from here. Asserted as the rounding-away rather than inverted into a
+    // "no change" check, because the direction matters: if a later change makes the entry wider or
+    // the mirror narrower this reddens, and whoever hits it has the arithmetic in front of them.
     let chunk_now = chunk(size_of::<BlockIndex>());
     let chunk_thin = chunk(size_of::<MirrorEntryThinNames>());
     println!(
         "  boxed single page: chunk {chunk_now} B -> {chunk_thin} B ({:+} B)",
         chunk_thin as isize - chunk_now as isize
     );
-    assert!(
-        chunk_thin < chunk_now,
-        "the entry narrows from {} B to {} B and the allocator serves both out of a {chunk_now} B \
-         chunk, so the step rounds away for every single-page bucket",
+    assert_eq!(
+        chunk_now, chunk_thin,
+        "the entry is {} B and the mirror {} B, and the chunk rule serves them out of {chunk_now} B \
+         and {chunk_thin} B. While those classes DIFFER the remaining name slot is worth something \
+         per single-page bucket and this module's proposal is live again -- read the arithmetic \
+         above rather than relaxing this, because the measurement that refused it is the one that \
+         just changed",
         size_of::<BlockIndex>(),
         size_of::<MirrorEntryThinNames>()
+    );
+    // AND THE STEP THAT DID PAY IS RECORDED BESIDE THE ONE THAT DOES NOT, so the refusal above is
+    // not read as "name hoisting never pays". 56 was the entry's width before it stopped naming its
+    // element; `chunk(56)` is a class above `chunk(40)`, which is the sixteen bytes a bucket that
+    // the shipped removal actually moved.
+    assert!(
+        chunk(56) > chunk_now,
+        "chunk(56) is {} and chunk({}) is {chunk_now}: the width step the entry already took did \
+         not move the chunk class either, which would mean this module's whole column is flat and \
+         the refusal above says nothing",
+        chunk(56),
+        size_of::<BlockIndex>()
     );
 }
 
@@ -679,12 +716,10 @@ fn page_census(engine: &TemporalEngine) -> PageCensus {
         for (_, page) in bucket.block_index.iter() {
             held += 1;
             key_allocations.insert(page.object_key.as_ptr() as usize, page.object_key.len());
-            match page.component.as_deref() {
-                Some(name) => {
-                    component_allocations.insert(name.as_ptr() as usize, name.len());
-                }
-                None => census.pages_without_component += 1,
-            }
+            // EVERY page is without a component now, so `component_allocations` stays empty and
+            // this counter is the page count. Kept as the census column it is read as; the arms
+            // that compared the two are restated where they are read.
+            census.pages_without_component += 1;
             objects_here.insert(page.object_key.to_string());
             *pages_by_object
                 .entry((page.model_id, page.object_key.to_string()))
@@ -1413,7 +1448,6 @@ fn an_entry_names_its_object_from_its_own_terms() {
         routing_bucket: 7,
         object_key: Arc::from("named-key"),
         model_id: stored_model_kind("string"),
-        component: None,
         address: ElementEntry::from_parts(1, 2, 3, Some(4), None),
         dirty: false,
         deleted: false,

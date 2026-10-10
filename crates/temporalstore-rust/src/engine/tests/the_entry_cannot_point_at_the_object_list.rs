@@ -271,10 +271,17 @@ fn pages_of_key(engine: &TemporalEngine, kind: &str, key: &str) -> usize {
 // =================================================================================================
 
 #[allow(dead_code)]
+// THE MIRRORS LOSE THEIR NAME SLOT WITH THE REAL ENTRY'S.
+//
+// Both of these swap the entry's `object_key` for an ordinal into the bucket's object list, and
+// both carried `component: Option<Arc<str>>` beside it because the real entry did. It does not, so
+// a mirror that kept the slot would be sixteen bytes wider than the thing it mirrors and the
+// counterfactual would price a shape the engine cannot reach. The ordinal proposal is about the
+// OBJECT KEY and is unaffected by the element name leaving -- which is why these are restated
+// rather than retired.
 struct OrdinalEntryU16 {
     object_ordinal: u16,
     model_id: StoredModelKind,
-    component: Option<Arc<str>>,
     address: ElementEntry,
     dirty: bool,
     deleted: bool,
@@ -285,7 +292,6 @@ struct OrdinalEntryU16 {
 struct OrdinalEntryU8 {
     object_ordinal: u8,
     model_id: StoredModelKind,
-    component: Option<Arc<str>>,
     address: ElementEntry,
     dirty: bool,
     deleted: bool,
@@ -331,7 +337,7 @@ fn reconstruct(fields: &[(&'static str, usize, usize)], word: usize) -> usize {
 ///
 /// rust-internal: reads this crate's own type layout, no product behaviour
 #[test]
-fn a_u16_ordinal_would_take_the_entry_from_sixty_four_to_forty_eight_and_a_u8_adds_nothing() {
+fn a_u16_ordinal_would_take_the_entry_from_forty_to_twenty_four_and_a_u8_adds_nothing() {
     use std::mem::{align_of, offset_of, size_of};
 
     let entry_total = size_of::<BlockIndex>();
@@ -342,7 +348,9 @@ fn a_u16_ordinal_would_take_the_entry_from_sixty_four_to_forty_eight_and_a_u8_ad
     let entry_fields: Vec<(&'static str, usize, usize)> = vec![
         ("object_key", offset_of!(BlockIndex, object_key), size_of::<Arc<str>>()),
         ("model_id", offset_of!(BlockIndex, model_id), size_of::<StoredModelKind>()),
-        ("component", offset_of!(BlockIndex, component), size_of::<Option<Arc<str>>>()),
+        // The `component` row is gone with the field: sixteen bytes between `model_id` and
+        // `address`, and the whole of the 56 -> 40 step. The reconstruction assertion below is
+        // what keeps this list honest against the type.
         ("address", offset_of!(BlockIndex, address), size_of::<ElementEntry>()),
         ("dirty", offset_of!(BlockIndex, dirty), size_of::<bool>()),
         ("deleted", offset_of!(BlockIndex, deleted), size_of::<bool>()),
@@ -379,7 +387,6 @@ fn a_u16_ordinal_would_take_the_entry_from_sixty_four_to_forty_eight_and_a_u8_ad
     let u16_fields: Vec<(&'static str, usize, usize)> = vec![
         ("object_ordinal", offset_of!(OrdinalEntryU16, object_ordinal), size_of::<u16>()),
         ("model_id", offset_of!(OrdinalEntryU16, model_id), size_of::<StoredModelKind>()),
-        ("component", offset_of!(OrdinalEntryU16, component), size_of::<Option<Arc<str>>>()),
         ("address", offset_of!(OrdinalEntryU16, address), size_of::<ElementEntry>()),
         ("dirty", offset_of!(OrdinalEntryU16, dirty), size_of::<bool>()),
         ("deleted", offset_of!(OrdinalEntryU16, deleted), size_of::<bool>()),

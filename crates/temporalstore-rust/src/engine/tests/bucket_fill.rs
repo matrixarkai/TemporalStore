@@ -1319,8 +1319,8 @@ fn filling_a_bucket_coarsens_the_dirty_set_by_exactly_the_keys_it_holds() {
 
 /// WHY THE OBJECT-TO-BLOCKS LOOKUP CANNOT BE ANSWERED BY SCANNING ONE BUCKET.
 ///
-/// `ObjectBlockLookup` holds six levels -- two `BTreeMap`s, `ComponentList`, `ComponentBlocks`,
-/// `BlockRefs` and `BlockLookupRef` -- and every block entry in a bucket already carries the
+/// `ObjectBlockLookup` holds four levels -- two `BTreeMap`s, an `Option` slot and
+/// `BlockRefs` over `BlockLookupRef` -- and every block entry in a bucket already carries the
 /// object key that would let a scan answer the same question. The lookup is also already
 /// `skip_serializing` and rebuilt by `rebuild_object_block_lookup` on load, so it is provably a
 /// cache of the bucket map and nothing about it is authoritative.
@@ -1421,7 +1421,7 @@ fn an_objects_bucket_cannot_be_recomputed_from_its_key_once_the_range_has_moved(
     let mut checked = 0usize;
     for (_model, object, refs) in shard.bucket_index.object_block_lookup.iter() {
         let sits_in = actual.get(object.as_ref()).copied();
-        for block_ref in refs.all_refs() {
+        for block_ref in refs.iter() {
             assert_eq!(
                 Some(block_ref.routing_bucket),
                 sits_in,
@@ -1448,7 +1448,7 @@ fn an_objects_bucket_cannot_be_recomputed_from_its_key_once_the_range_has_moved(
 /// the object has.
 ///
 /// A ONE-BLOCK OBJECT IS THE CASE THAT REGRESSES, and it must not be averaged with the other.
-/// Today its answer is `ComponentList::One` held inline: nothing is probed. Derived, it is the
+/// Today its answer is the object's one slot, held inline: nothing is probed. Derived, it is the
 /// bucket's whole list. This reports the two populations separately, with the histogram of what
 /// a derived walk would examine.
 ///
@@ -1633,89 +1633,25 @@ fn deriving_an_objects_blocks_from_the_flat_list_walks_the_whole_bucket() {
     );
 }
 
-/// A DERIVED ANSWER COMES BACK IN THE WRONG ORDER.
-///
-/// `ObjectBlockRefs::position` BISECTS `by_component`, and its doc says the order is the one "a
-/// caller would expect": components ascending, `None` first, matching `Option`'s own ordering.
-/// That order is a precondition of the bisection, not a convenience -- `refs_for` is `position`
-/// plus an index.
-///
-/// A walk of the bucket's flat list yields handle order, and the handle is a hash. So a derived
-/// answer would have to SORT its result on every read to be usable by the bisection that reads
-/// it, and a derived answer that skipped the sort would silently reorder a container's members
-/// while still type-checking. This asserts the two orders differ, so the sort is not optional.
-///
-/// rust-internal: reads the engine's own bucket map, no product behaviour
-#[test]
-#[ignore = "seeds a container store; run by name"]
-fn a_walk_of_the_flat_list_answers_in_handle_order_not_component_order() {
-    let dir = tempfile::tempdir().expect("tempdir");
-    let engine = engine_on(dir.path());
-    load_on(&engine, NARROW_END);
-    let keys = seed_container(&engine, 4, 100);
-
-    let shards = engine.shards.read().expect("engine lock poisoned");
-    let shard = shards.get(&1).expect("shard is loaded");
-
-    let mut compared = 0usize;
-    let mut differed = 0usize;
-    for key in &keys {
-        // The order a walk of the flat list would produce: handle order, filtered to this object.
-        let mut walked: Vec<String> = Vec::new();
-        for bucket in shard.bucket_index.bucket_map.values() {
-            for (_handle, page) in bucket.block_index.iter() {
-                if &*page.object_key == key.as_str() {
-                    walked.push(page.component.as_deref().unwrap_or("").to_string());
-                }
-            }
-        }
-        // The order the lookup holds, which is what `position` bisects.
-        let mut held: Vec<String> = Vec::new();
-        for kind in crate::engine::storage_model_kinds() {
-            if let Some(entry) = shard.bucket_index.object_block_refs(kind, key) {
-                for component in entry.by_component.iter() {
-                    held.push(component.component.as_deref().unwrap_or("").to_string());
-                }
-            }
-        }
-        if held.is_empty() {
-            continue;
-        }
-        assert_eq!(
-            walked.len(),
-            held.len(),
-            "{key}: a walk found {} blocks and the lookup holds {}; the two are not looking at \
-             the same object and the order comparison below is meaningless",
-            walked.len(),
-            held.len()
-        );
-        let mut sorted = walked.clone();
-        sorted.sort();
-        assert_eq!(
-            sorted, held,
-            "{key}: the lookup's order is not the walk's order SORTED, so the derived answer \
-             cannot be repaired by sorting and the two shapes disagree on content, not just order"
-        );
-        compared += 1;
-        if walked != held {
-            differed += 1;
-        }
-    }
-    assert!(
-        compared > 0,
-        "compared no objects, so this test asserts nothing about either order"
-    );
-    println!(
-        "  {differed} of {compared} container objects come back from a walk in an order that is \
-         NOT the component order the lookup holds and `position` bisects; a derived read must \
-         sort, and one that did not would reorder a container's members silently"
-    );
-    assert_eq!(
-        differed, compared,
-        "only {differed} of {compared} objects were reordered by the walk; if handle order and \
-         component order agreed, the sort would be free and this cost would not exist"
-    );
-}
+// `a_walk_of_the_flat_list_answers_in_handle_order_not_component_order` WAS HERE, AND IT IS GONE
+// FOR TWO REASONS -- ONE OF WHICH WAS TRUE BEFORE THIS COMMIT TOUCHED ANYTHING.
+//
+// ITS SUBJECT NO LONGER EXISTS. It asserted that a walk of a bucket's flat block list answers in
+// handle order while `ObjectBlockRefs::position` bisects `by_component` in COMPONENT order, so a
+// derived read would have to sort. `by_component` and `position` are both gone: an object has one
+// slot, so there is no component order for a derived answer to come back in the wrong one of.
+//
+// AND IT COULD ONLY EVER HAVE FAILED. Both sides of its comparison were vectors of EMPTY STRINGS.
+// `walked` pushed `String::new()` per page by construction, and `held` pushed
+// `component.component.as_deref().unwrap_or("")` -- and every entry's component was already `None`
+// once the element name came off the page entry, so every `held` element was `""` too. So
+// `walked == held` for every object, `differed` stayed 0, and the closing
+// `assert_eq!(differed, compared)` was unsatisfiable for any non-empty fixture. It never reported
+// that because the arm carries `#[ignore]` and is run only by name: an assertion inside a test
+// nothing runs has a third state, and this one was in it.
+//
+// Nothing replaces it. The surviving ordering question -- whether the refs INSIDE a slot are
+// sorted -- is `BlockRefs::insert`'s, and `index_bytes_per_key` already drives it.
 
 /// IS THE BUCKET A BLOCK IS FILED IN ALWAYS THE BUCKET ITS KEY COMPUTES, WITHIN ONE RANGE?
 ///
@@ -1980,7 +1916,7 @@ fn the_loaded_range_is_reachable_from_the_state_the_bucket_set_reader_already_ta
         let mut reported: BTreeSet<u32> = BTreeSet::new();
         for kind in crate::engine::storage_model_kinds() {
             if let Some(entry) = shard.bucket_index.object_block_refs(kind, key) {
-                reported.extend(entry.all_refs().map(|block_ref| block_ref.routing_bucket));
+                reported.extend(entry.iter().map(|block_ref| block_ref.routing_bucket));
             }
         }
         if reported.is_empty() {
@@ -2156,7 +2092,7 @@ fn a_pre_stamp_store_built_narrow_is_adopted_onto_a_range_that_cannot_compute_it
                 bucket.block_index.values().any(|page| &*page.object_key == object.as_ref())
             })
             .map(|(routing_bucket, _)| *routing_bucket);
-        if refs.all_refs().all(|block_ref| Some(block_ref.routing_bucket) == sits_in) {
+        if refs.iter().all(|block_ref| Some(block_ref.routing_bucket) == sits_in) {
             lookup_correct += 1;
         }
     }

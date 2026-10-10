@@ -328,7 +328,10 @@ fn drop_if_expired(
 /// Two of the seven are not obviously removals and are the ones this must not miss: a `ZSetAdd` or
 /// `ZSetIncrement` that changes a member's score REMOVES the old `(score, member)` element key and
 /// writes a new one. Leave the old key untombstoned and a page-derived membership holds the member
-/// TWICE, at both scores. `a_score_change_tombstones_the_element_key_it_left` drives that.
+/// TWICE, at both scores. `a_rescore_sweeps_its_own_tombstone_because_the_component_no_longer_spells_the_score`
+/// drives that -- and, since the component the removal tombstones and the component the new write
+/// files under are now the same string, also drives the sweep that cleans the tombstone up again
+/// in the same write.
 ///
 /// # WHAT IT DOES WHEN IT CANNOT WRITE THE PAGE
 ///
@@ -360,8 +363,7 @@ pub(super) fn remove_container_element(
             // the record header and onto the address from one value -- `decode_block_record` refuses
             // a page whose two copies disagree, which is what #2008 threaded this for.
             let block_ordinal = crate::engine::state::container_page_ordinal(
-                &shard.bucket_index,
-                routing_bucket,
+                shard,
                 model_id,
                 key,
                 component,
@@ -845,44 +847,24 @@ pub(crate) fn execute_on_shard(
             // returns from the same value -- assigning it afterwards would leave the two
             // disagreeing, which `decode_block_record` refuses as a page id mismatch.
             //
-            // UNDER ONE ENTRY A PAGE THE INDEX CANNOT SAY. `container_page_ordinal` finds an
-            // existing field's position by looking for an entry filed under this field's
-            // component; a gated entry carries none, so that branch cannot match and the walk
-            // falls through to `highest + 1` on every overwrite -- a fresh ordinal, a fresh
-            // address, a fresh page, for a write that should land on the same one. Hash is the
-            // one container kind that overwrites a field IN PLACE this way, which is exactly the
-            // case `SetAdd`'s identical gated branch exists for.
+            // AND THE QUESTION GOES TO THE MAP THAT IS KEYED BY THE FIELD, inside the function.
+            // `container_page_ordinal` used to find an existing field's position by looking for an
+            // entry filed under that field's component; a page-named entry carries none, so the
+            // walk fell through to `highest + 1` on every overwrite -- a fresh ordinal, a fresh
+            // address, a fresh page, for a write that should land on the same one. Hash is the one
+            // container kind that overwrites a field IN PLACE this way.
             //
-            // SO THE QUESTION GOES TO THE MAP THAT IS KEYED BY THE FIELD. `shard.hashes` holds
-            // this field against the address it currently occupies, and that address's
-            // `block_id` IS its position -- the same number the index would have reported, read
-            // from the structure that still knows which field is which. The ungated path is left
-            // exactly as it was.
-            let block_ordinal = if crate::engine::container_index_files_one_entry_a_page() {
-                shard
-                    .hashes
-                    .get(&key)
-                    .and_then(|fields| fields.get(&field))
-                    .and_then(|address| address.block_id())
-                    .and_then(|held| u32::try_from(held).ok())
-                    .unwrap_or_else(|| {
-                        crate::engine::state::container_page_ordinal(
-                            &shard.bucket_index,
-                            routing_bucket,
-                            "hash",
-                            &key,
-                            &field,
-                        )
-                    })
-            } else {
-                crate::engine::state::container_page_ordinal(
-                    &shard.bucket_index,
-                    routing_bucket,
-                    "hash",
-                    &key,
-                    &field,
-                )
-            };
+            // THAT IS ONE BRANCH, NOT TWO, NOW. This arm used to read `shard.hashes` itself under
+            // the gate and call the function without it; the function reads the resident map
+            // itself, so the two arms of that `if` computed the same value and the gate decided
+            // nothing. The rule lives in one place -- see `state::container_page_ordinal`, which
+            // also records why the resident map answers the high-water half as well.
+            let block_ordinal = crate::engine::state::container_page_ordinal(
+                shard,
+                "hash",
+                &key,
+                &field,
+            );
             // The block STATES which field it is, rather than leaving that to the entry that names
             // it. Same value, one frame around it -- see `container_pages`.
             let page = crate::engine::container_pages::single_element_page("hash", &field, &value);
@@ -931,36 +913,24 @@ pub(crate) fn execute_on_shard(
                     // durable (`#[serde(default)]`, see `RecordedMap`'s unconditional
                     // `Serialize`) and already the address `HashMultiGet` reads a field from --
                     // same lookup, used here as the point read's source of truth under the gate.
-                    value: if crate::engine::container_index_files_one_entry_a_page() {
-                        shard
-                            .hashes
-                            .get(&key)
-                            .and_then(|fields| fields.get(&field))
-                            .and_then(|address| {
-                                read_block_bytes(
-                                    cache,
-                                    block_store,
-                                    shard_id,
-                                    address,
-                                    PageIdentity::of(shard_id, "hash", &key, Some(field.as_str())),
-                                    Some(block_routing_bucket(
-                                        &key,
-                                        start_routing_bucket,
-                                        end_routing_bucket,
-                                    )),
-                                )
-                            })
-                    } else {
-                        read_bucket_index_value(
-                            cache,
-                            block_store,
-                            shard_id,
-                            shard,
-                            "hash",
-                            &key,
-                            Some(field.as_str()),
-                        )
-                    },
+                    value: shard
+                        .hashes
+                        .get(&key)
+                        .and_then(|fields| fields.get(&field))
+                        .and_then(|address| {
+                            read_block_bytes(
+                                cache,
+                                block_store,
+                                shard_id,
+                                address,
+                                PageIdentity::of(shard_id, "hash", &key, Some(field.as_str())),
+                                Some(block_routing_bucket(
+                                    &key,
+                                    start_routing_bucket,
+                                    end_routing_bucket,
+                                )),
+                            )
+                        }),
                 }
             })
         }
@@ -1014,33 +984,14 @@ pub(crate) fn execute_on_shard(
                 // returns from the same value -- assigning it afterwards would leave the two
                 // disagreeing, which `decode_block_record` refuses as a page id mismatch.
                 //
-                // UNDER ONE ENTRY A PAGE THE INDEX CANNOT SAY -- see `HashSet`'s identical gated
-                // branch for why, and why the question goes to `shard.hashes` instead.
-                let block_ordinal = if crate::engine::container_index_files_one_entry_a_page() {
-                    shard
-                        .hashes
-                        .get(&key)
-                        .and_then(|fields| fields.get(&field))
-                        .and_then(|address| address.block_id())
-                        .and_then(|held| u32::try_from(held).ok())
-                        .unwrap_or_else(|| {
-                            crate::engine::state::container_page_ordinal(
-                                &shard.bucket_index,
-                                routing_bucket,
-                                "hash",
-                                &key,
-                                &field,
-                            )
-                        })
-                } else {
-                    crate::engine::state::container_page_ordinal(
-                        &shard.bucket_index,
-                        routing_bucket,
+                // AND THE POSITION COMES FROM THE RESIDENT MAP, inside the function -- see
+                // `HashSet`'s identical site and `state::container_page_ordinal`.
+                let block_ordinal = crate::engine::state::container_page_ordinal(
+                        shard,
                         "hash",
                         &key,
                         &field,
-                    )
-                };
+                );
                 // The block STATES which field it is -- see `container_pages`. Built per entry
                 // because the frame carries the field, so one frame cannot stand for two.
                 let page =
@@ -1088,40 +1039,26 @@ pub(crate) fn execute_on_shard(
             // at zero -- this is the one HASH surface among the four that WRITES on a miss, so
             // the wrong answer is not just served, it is persisted. `shard.hashes` is durable and
             // already the address `HashMultiGet`/the gated `HashGet` read a field from.
-            let current = if crate::engine::container_index_files_one_entry_a_page() {
-                shard
-                    .hashes
-                    .get(&key)
-                    .and_then(|fields| fields.get(&field))
-                    .and_then(|address| {
-                        read_block_bytes(
-                            cache,
-                            block_store,
-                            shard_id,
-                            address,
-                            PageIdentity::of(shard_id, "hash", &key, Some(field.as_str())),
-                            Some(block_routing_bucket(
-                                &key,
-                                start_routing_bucket,
-                                end_routing_bucket,
-                            )),
-                        )
-                    })
-                    .and_then(|bytes| parse_i64(&bytes))
-                    .unwrap_or_default()
-            } else {
-                read_bucket_index_value(
-                    cache,
-                    block_store,
-                    shard_id,
-                    shard,
-                    "hash",
-                    &key,
-                    Some(field.as_str()),
-                )
+            let current = shard
+                .hashes
+                .get(&key)
+                .and_then(|fields| fields.get(&field))
+                .and_then(|address| {
+                    read_block_bytes(
+                        cache,
+                        block_store,
+                        shard_id,
+                        address,
+                        PageIdentity::of(shard_id, "hash", &key, Some(field.as_str())),
+                        Some(block_routing_bucket(
+                            &key,
+                            start_routing_bucket,
+                            end_routing_bucket,
+                        )),
+                    )
+                })
                 .and_then(|bytes| parse_i64(&bytes))
-                .unwrap_or_default()
-            };
+                .unwrap_or_default();
             let value = current.saturating_add(increment);
             let routing_bucket =
                 block_routing_bucket(&key, start_routing_bucket, end_routing_bucket);
@@ -1130,33 +1067,14 @@ pub(crate) fn execute_on_shard(
             // returns from the same value -- assigning it afterwards would leave the two
             // disagreeing, which `decode_block_record` refuses as a page id mismatch.
             //
-            // UNDER ONE ENTRY A PAGE THE INDEX CANNOT SAY -- see `HashSet`'s identical gated
-            // branch for why, and why the question goes to `shard.hashes` instead.
-            let block_ordinal = if crate::engine::container_index_files_one_entry_a_page() {
-                shard
-                    .hashes
-                    .get(&key)
-                    .and_then(|fields| fields.get(&field))
-                    .and_then(|address| address.block_id())
-                    .and_then(|held| u32::try_from(held).ok())
-                    .unwrap_or_else(|| {
-                        crate::engine::state::container_page_ordinal(
-                            &shard.bucket_index,
-                            routing_bucket,
-                            "hash",
-                            &key,
-                            &field,
-                        )
-                    })
-            } else {
-                crate::engine::state::container_page_ordinal(
-                    &shard.bucket_index,
-                    routing_bucket,
-                    "hash",
-                    &key,
-                    &field,
-                )
-            };
+            // AND THE POSITION COMES FROM THE RESIDENT MAP, inside the function -- see `HashSet`'s
+            // identical site and `state::container_page_ordinal` for why the index cannot say.
+            let block_ordinal = crate::engine::state::container_page_ordinal(
+                shard,
+                "hash",
+                &key,
+                &field,
+            );
             // The block STATES which field it is -- see `container_pages`.
             let page = crate::engine::container_pages::single_element_page(
                 "hash",
@@ -1258,18 +1176,32 @@ pub(crate) fn execute_on_shard(
             let mut named_by_index: std::collections::HashSet<String> =
                 std::collections::HashSet::with_capacity(indexed.len());
             for (component, address) in indexed {
-                // A `None` COMPONENT NAMES NO FIELD, and is deliberately not counted below. It is
-                // the whole-object door's answer for a block that belongs to the object rather
-                // than to an element of it; the container is keyed by field name and cannot hold
-                // one, so treating it as a field the container lacks would be a false positive on
-                // every single occurrence. It is served exactly as it always was.
-                if let Some(name) = component.as_deref() {
-                    named_by_index.insert(name.to_string());
-                }
-                let name = component
-                    .as_deref()
-                    .map(|name| name.to_string())
-                    .unwrap_or_default();
+                // A `None` COMPONENT NAMES NO FIELD, SO IT IS NOT SERVED AS ONE.
+                //
+                // THIS USED TO DEFAULT IT TO `""` AND SERVE IT. The paragraph here said a nameless
+                // entry "is the whole-object door's answer for a block that belongs to the object
+                // rather than to an element of it ... It is served exactly as it always was", and
+                // that was survivable only while every hash entry carried a field name. Under one
+                // entry a page NO hash entry carries one, so every page of the object was served as
+                // a field called `""` whose value was the raw page FRAME.
+                //
+                // MEASURED, and it is the defect that refused this collapse twice: a two-field hash
+                // answered FOUR entries -- `("f1", ..), ("f3", ..)` and two `("", b"TSCPG2\n...")`
+                // -- which `conformance_oracle_matches_reference_model` reports against the
+                // reference model and `a_command_of_one_type_answers_empty_for_a_key_of_another`
+                // reports as a hash that is not the hash that was written. It also served `hash: 41`
+                // of 40 on a forty-field corpus, which is one phantom per folded page.
+                //
+                // AN EMPTY FIELD NAME IS LEGAL, which is exactly why the absent one must not spell
+                // it: defaulting here collides with a genuine `""` field and takes its value. This
+                // is the same `unwrap_or_default()` correction the four derived-view arms already
+                // carry, arriving on the READ path. The field a nameless page holds is named inside
+                // the page's own frame and in `shard.hashes`, and the union below serves it from
+                // there -- so nothing is lost by skipping, only a name that was never written.
+                let Some(name) = component.as_deref().map(str::to_string) else {
+                    continue;
+                };
+                named_by_index.insert(name.clone());
                 resolved.push((name, component, address));
             }
 
@@ -1327,13 +1259,12 @@ pub(crate) fn execute_on_shard(
             }
             CommandResponse::Integer {
                 // UNDER ONE ENTRY A PAGE THE INDEX NAMES NO FIELD, so a count of index entries is
-                // a count of PAGES, not fields -- a wrong number, not an empty answer. The
-                // resident map is durable and keyed by field, so it is the count under the gate.
-                value: if crate::engine::container_index_files_one_entry_a_page() {
-                    shard.hashes.get(&key).map(|fields| fields.len()).unwrap_or(0) as i64
-                } else {
-                    bucket_index_component_block_addresses(shard, "hash", &key).len() as i64
-                },
+                // THE INDEX NAMES NO FIELD, so a count of index entries is a count of PAGES, not
+                // fields -- a wrong number rather than an empty answer. The resident map is durable
+                // and keyed by field, so it is the count. The entry-counting arm this replaces is
+                // deleted rather than left behind a condition: there is no state in which an entry
+                // names a field for it to count.
+                value: shard.hashes.get(&key).map(|fields| fields.len()).unwrap_or(0) as i64,
             }
         }
         Command::HashDelete { key, field } => {
@@ -1391,48 +1322,24 @@ pub(crate) fn execute_on_shard(
             // append stamps it into the record header, and read off the block index -- which is
             // where the element's own previous block, if it has one, already states its position.
             //
-            // EXCEPT THAT UNDER ONE ENTRY PER PAGE THE INDEX CANNOT SAY. `container_page_ordinal`
-            // finds an element's existing position by looking for an entry filed under this
-            // element's component; a gated entry carries none, so that branch cannot match and the
-            // walk falls through to `highest + 1`. Every rewrite of one member would then take a
-            // fresh ordinal -- a fresh `block_id`, a fresh address, and therefore a fresh page --
-            // so a member written five times would leave five pages instead of overwriting one.
-            // Measured: two pages and ordinals [0, 1] where the ungated path leaves one and [0].
+            // AND THE QUESTION GOES TO THE MAP THAT IS KEYED BY THE MEMBER, inside the function.
+            // `container_page_ordinal` used to pick an element's existing position out of the INDEX
+            // by component, which a page-named entry does not carry -- so every rewrite fell
+            // through to `highest + 1` and a member written five times left five pages instead of
+            // overwriting one (measured: two pages and ordinals [0, 1] where one and [0] are
+            // right). This arm therefore carried its own `shard.sets` lookup under the gate, with
+            // the function called only when the map had no answer.
             //
-            // SO THE QUESTION GOES TO THE MAP THAT IS KEYED BY THE MEMBER. `shard.sets` holds this
-            // member against the address it currently occupies, and that address's `block_id` IS
-            // its position -- the same number the index would have reported, read from the
-            // structure that still knows which element is which. It is authoritative rather than
-            // derived, and it needs no page read: adding a fetch to a write path inside a
-            // footprint change is scope drift this series has already declined once.
-            //
-            // The ungated path is left exactly as it was, so a deployment that has not set the
-            // gate computes this the way it always did.
-            let block_ordinal = if crate::engine::container_index_files_one_entry_a_page() {
-                shard
-                    .sets
-                    .get(&key)
-                    .and_then(|members| members.get(&member))
-                    .and_then(|address| address.block_id())
-                    .and_then(|held| u32::try_from(held).ok())
-                    .unwrap_or_else(|| {
-                        crate::engine::state::container_page_ordinal(
-                            &shard.bucket_index,
-                            routing_bucket,
-                            "set",
-                            &key,
-                            &member_component,
-                        )
-                    })
-            } else {
-                crate::engine::state::container_page_ordinal(
-                    &shard.bucket_index,
-                    routing_bucket,
-                    "set",
-                    &key,
-                    &member_component,
-                )
-            };
+            // THAT IS ONE BRANCH, NOT TWO, NOW. The function asks the resident map itself, so the
+            // gated arm here and the ungated one computed the same value and the `if` decided
+            // nothing -- a branch whose arms cannot differ, which no suite can report. The lookup
+            // lives in the one place that owns the rule; see `state::container_page_ordinal`.
+            let block_ordinal = crate::engine::state::container_page_ordinal(
+                shard,
+                "set",
+                &key,
+                &member_component,
+            );
             // The block STATES which member it is -- see `container_pages`. For a set the element
             // key IS the member and so is the value, which the frame stores once: #2017 measured
             // that redundancy and this is the stage that stops paying it twice.
@@ -1485,7 +1392,7 @@ pub(crate) fn execute_on_shard(
                 };
             }
             if let Some(old_biased) = existed {
-                let old_component = zset_component(old_biased, &member);
+                let old_component = zset_component(&member);
                 remove_container_element(
                     cache,
                     block_store,
@@ -1499,7 +1406,7 @@ pub(crate) fn execute_on_shard(
                     async_storage,
                 );
             }
-            let component = zset_component(biased, &member);
+            let component = zset_component(&member);
             let object_id = stable_block_object_id(shard_id, "zset", &key);
             let routing_bucket =
                 block_routing_bucket(&key, start_routing_bucket, end_routing_bucket);
@@ -1508,8 +1415,7 @@ pub(crate) fn execute_on_shard(
             // returns from the same value -- assigning it afterwards would leave the two
             // disagreeing, which `decode_block_record` refuses as a page id mismatch.
             let block_ordinal = crate::engine::state::container_page_ordinal(
-                &shard.bucket_index,
-                routing_bucket,
+                shard,
                 "zset",
                 &key,
                 &component,
@@ -1532,15 +1438,15 @@ pub(crate) fn execute_on_shard(
                 async_storage,
                 block_ordinal,
             ) {
-                upsert_bucket_index_block(
-                    shard,
-                    shard_id,
-                    "zset",
-                    &key,
-                    Some(component.clone()),
-                    address.clone(),
-                    true,
-                );
+                // THE STANDALONE UPSERT IS GONE BECAUSE THE OPERATION DOES IT -- the same
+                // correction `ZSetIncrBy` and `ListPush` already carry (see their own notes). It
+                // stood here filing the SAME block under the SAME component a second time, which
+                // staged a second WAL outcome for one write: harmless while the component carried
+                // the score twice over identically, and no longer harmless now that only
+                // `install_element`'s own filing carries the score (through
+                // `RecordedKind::outcome_value`) -- a replay of the OTHER, standalone-filed
+                // outcome would have found no score to install and refused the whole shard load.
+                // One call now does both, record first.
                 super::recorded_map::install_element::<super::recorded_map::ZSetKind>(
                     shard,
                     shard_id,
@@ -1591,7 +1497,7 @@ pub(crate) fn execute_on_shard(
             match biased {
                 None => CommandResponse::Integer { value: 0 },
                 Some(biased) => {
-                    let component = zset_component(biased, &member);
+                    let component = zset_component(&member);
                     mutated |= super::recorded_map::remove_element::<super::recorded_map::ZSetKind>(
                         cache,
                         block_store,
@@ -1854,7 +1760,7 @@ pub(crate) fn execute_on_shard(
             let score = old.map_or(0.0, zset_score_from_bits) + increment;
             let biased = zset_score_bits(score);
             if let Some(old_biased) = old {
-                let old_component = zset_component(old_biased, &member);
+                let old_component = zset_component(&member);
                 remove_container_element(
                     cache,
                     block_store,
@@ -1868,7 +1774,7 @@ pub(crate) fn execute_on_shard(
                     async_storage,
                 );
             }
-            let component = zset_component(biased, &member);
+            let component = zset_component(&member);
             let object_id = stable_block_object_id(shard_id, "zset", &key);
             let routing_bucket =
                 block_routing_bucket(&key, start_routing_bucket, end_routing_bucket);
@@ -1877,8 +1783,7 @@ pub(crate) fn execute_on_shard(
             // returns from the same value -- assigning it afterwards would leave the two
             // disagreeing, which `decode_block_record` refuses as a page id mismatch.
             let block_ordinal = crate::engine::state::container_page_ordinal(
-                &shard.bucket_index,
-                routing_bucket,
+                shard,
                 "zset",
                 &key,
                 &component,
@@ -1936,7 +1841,7 @@ pub(crate) fn execute_on_shard(
             ordered.truncate(count as usize);
             let mut members = Vec::new();
             for (member, biased) in ordered {
-                let component = zset_component(biased, &member);
+                let component = zset_component(&member);
                 remove_container_element(
                     cache,
                     block_store,
@@ -2026,8 +1931,7 @@ pub(crate) fn execute_on_shard(
             // returns from the same value -- assigning it afterwards would leave the two
             // disagreeing, which `decode_block_record` refuses as a page id mismatch.
             let block_ordinal = crate::engine::state::container_page_ordinal(
-                &shard.bucket_index,
-                routing_bucket,
+                shard,
                 "list",
                 &key,
                 &component,
@@ -2220,180 +2124,69 @@ pub(crate) fn execute_on_shard(
                 };
             }
             cached_response(cache, CacheKey::set_members(shard_id, &key), || {
-                // ---- UNDER ONE ENTRY A PAGE, IDENTITY IS IN THE PAYLOAD ----
+                // IDENTITY IS IN THE PAYLOAD, AND THERE IS NO LONGER ANOTHER WAY.
                 //
-                // The walk below answers each ENTRY from the page it names, and its `None` arm
-                // says why that cannot work here: "an entry naming no component can only be
-                // answered by a page that names no element either". Under this gate every entry
-                // names no component and every page IS framed, so that arm drops every member and
-                // the listing returns EMPTY -- measured as `listed=0` against 40 ungated.
+                // This was the gated arm of an `if`, and the ungated arm walked the entries and
+                // answered each from the page it named. That walk's own `None` arm said why it
+                // cannot work once an entry names no element -- "an entry naming no component can
+                // only be answered by a page that names no element either" -- so with every entry
+                // nameless it dropped every member and the listing returned EMPTY, measured as
+                // `listed=0` against 40. It is deleted rather than left unreachable: an entry
+                // cannot name an element any more, so there is no state in which it would be right.
                 //
-                // So the gated listing asks the PAYLOAD instead. That is the direction that
-                // resurrected a removed member once, and the two things that make it safe now are
-                // both recent and both driven: the tombstone page is REACHABLE from the index
-                // (step 8a), and `derive_membership` folds every page of the object by
+                // Asking the PAYLOAD is the direction that resurrected a removed member once, and
+                // the two things that make it safe are both driven: the tombstone page is REACHABLE
+                // from the index, and `derive_membership` folds every page of the object by
                 // `append_position` with a value and a tombstone as the same kind of statement, so
                 // the later page wins. A hand-rolled loop over the payload lacks exactly that
                 // precedence, which is why one resurrected a member before.
                 //
                 // THE ENUMERATOR IS THE ONE THAT KEEPS TOMBSTONE ENTRIES, because withholding them
                 // would hand the fold only the pages that say "present".
-                if crate::engine::container_index_files_one_entry_a_page() {
-                    let routing_bucket =
-                        block_routing_bucket(&key, start_routing_bucket, end_routing_bucket);
-                    let addresses =
-                        super::bucket_store::bucket_index_all_block_addresses_with_tombstones(
-                            shard, "set", &key,
-                        );
-                    let derived = crate::engine::container_membership::derive_membership(
-                        "set",
-                        addresses,
-                        |address| {
-                            read_block_bytes(
-                                cache,
-                                block_store,
-                                shard_id,
-                                address,
-                                PageIdentity::of(shard_id, "set", &key, None),
-                                Some(routing_bucket),
-                            )
-                        },
-                    );
-                    if derived.is_complete() {
-                        GATED_LISTING_DERIVED
-                            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-                        return CommandResponse::Members {
-                            members: derived.live.into_values().collect(),
-                        };
-                    }
-                    // AN INCOMPLETE DERIVATION MUST NOT BE SERVED, and the reason is not
-                    // squeamishness: a page that could not be read may have been the one carrying
-                    // a tombstone, so an incomplete fold can be OVER-complete as easily as under,
-                    // and there is no direction to fail safely in. The durable member map is the
-                    // authority -- `reconcile_from_durable` treats it as such, and a gated removal
-                    // was already shown to survive a reload in it -- so the answer comes from
-                    // there and the decline is counted rather than hidden.
-                    GATED_LISTING_DECLINED.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-                    return CommandResponse::Members {
-                        members: shard
-                            .sets
-                            .get(&key)
-                            .map(|members| {
-                                members.iter().map(|(member, _)| member.clone()).collect()
-                            })
-                            .unwrap_or_default(),
-                    };
-                }
-                // ONE DECODE PER DISTINCT PAGE, AND IDENTITY STAYS WITH THE ENTRIES.
-                //
-                // The walk below is unchanged: it names the members that exist, and a removed
-                // member's entry is filtered out of it exactly as before. What changes is that a
-                // page is read ONCE rather than once per entry naming it -- and after a fold every
-                // entry of an object names the SAME page, so a forty-member set read one page forty
-                // times, each read a linear walk of that page's packed keys.
-                //
-                // WHY IDENTITY DOES NOT MOVE, which is the whole reason this is safe. An earlier
-                // attempt enumerated the members out of the payload and dropped the walk. It read
-                // one page instead of forty and it RESURRECTED A REMOVED MEMBER: a fold followed by
-                // a removal leaves the folded page still naming the member as live, while the
-                // removal lives in a separate tombstone page and a deleted entry. Enumerating the
-                // payload saw neither. Asking the entries WHICH members exist, and the page only
-                // WHAT each one holds, cannot reach that state: an element with no live entry is
-                // never asked for.
                 let routing_bucket =
                     block_routing_bucket(&key, start_routing_bucket, end_routing_bucket);
-                let walk = bucket_index_component_block_addresses(shard, "set", &key);
-
-                // Decoded once per distinct page. The key is the PHYSICAL page -- the same three
-                // terms `live_page_key` uses -- because several entries of one object resolve to
-                // one page and reading it again would decode the same items again.
-                let mut by_component: std::collections::BTreeMap<String, Vec<u8>> =
-                    std::collections::BTreeMap::new();
-                // An unframed page is one value and the entry beside it names the element, which is
-                // every page written before `container_pages`. Its payload IS the member, so it is
-                // kept against its address rather than contributed to the component map -- there is
-                // no frame to render a component out of.
-                let mut unframed: std::collections::BTreeMap<(u64, u64, u64), Vec<u8>> =
-                    std::collections::BTreeMap::new();
-                let mut decoded: std::collections::BTreeSet<(u64, u64, u64)> =
-                    std::collections::BTreeSet::new();
-
-                for (_component, address) in &walk {
-                    let page = (
-                        address.block_slab_id(),
-                        address.offset(),
-                        address.length(),
+                let addresses =
+                    super::bucket_store::bucket_index_all_block_addresses_with_tombstones(
+                        shard, "set", &key,
                     );
-                    if !decoded.insert(page) {
-                        continue;
-                    }
-                    // `None`, so the funnel hands back the WHOLE payload: naming an element here
-                    // would select one out of a frame about to be read in full.
-                    let Some(bytes) = read_block_bytes(
-                        cache,
-                        block_store,
-                        shard_id,
-                        address,
-                        PageIdentity::of(shard_id, "set", &key, None),
-                        Some(routing_bucket),
-                    ) else {
-                        continue;
+                let derived = crate::engine::container_membership::derive_membership(
+                    "set",
+                    addresses,
+                    |address| {
+                        read_block_bytes(
+                            cache,
+                            block_store,
+                            shard_id,
+                            address,
+                            PageIdentity::of(shard_id, "set", &key, None),
+                            Some(routing_bucket),
+                        )
+                    },
+                );
+                if derived.is_complete() {
+                    GATED_LISTING_DERIVED
+                        .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                    return CommandResponse::Members {
+                        members: derived.live.into_values().collect(),
                     };
-                    match crate::engine::container_pages::decode_container_page(&bytes) {
-                        crate::engine::container_pages::ContainerPageDecode::Framed {
-                            spelling,
-                            items,
-                            ..
-                        } => {
-                            for item in items {
-                                // An item stating its own removal yields no value, which is the
-                                // same answer the per-element selector gave: it answered `Removed`
-                                // and the listing dropped it.
-                                if item.deleted {
-                                    continue;
-                                }
-                                if let Some(component) =
-                                    crate::engine::container_pages::component_from_element_key(
-                                        spelling, &item.key,
-                                    )
-                                {
-                                    by_component.insert(component, item.value);
-                                }
-                            }
-                        }
-                        crate::engine::container_pages::ContainerPageDecode::NotFramed => {
-                            unframed.insert(page, bytes);
-                        }
-                        // The bytes CLAIM to be a frame and will not walk. Handing them back would
-                        // serve framing bytes as a member, which is the outcome `container_pages`
-                        // exists to make impossible, so this page contributes nothing.
-                        crate::engine::container_pages::ContainerPageDecode::Corrupt(_) => {}
-                    }
                 }
-
-                // ANSWERED ENTRY BY ENTRY, IN THE WALK'S OWN ORDER. The walk is sorted by
-                // component, so this is the order the listing has always returned -- there is
-                // nothing to sort back.
-                let members = walk
-                    .into_iter()
-                    .filter_map(|(component, address)| {
-                        let page = (
-                            address.block_slab_id(),
-                            address.offset(),
-                            address.length(),
-                        );
-                        match component.as_deref() {
-                            Some(component) => by_component
-                                .get(component)
-                                .cloned()
-                                .or_else(|| unframed.get(&page).cloned()),
-                            // An entry naming no component can only be answered by a page that
-                            // names no element either.
-                            None => unframed.get(&page).cloned(),
-                        }
-                    })
-                    .collect();
-                CommandResponse::Members { members }
+                // AN INCOMPLETE DERIVATION MUST NOT BE SERVED, and the reason is not
+                // squeamishness: a page that could not be read may have been the one carrying
+                // a tombstone, so an incomplete fold can be OVER-complete as easily as under,
+                // and there is no direction to fail safely in. The durable member map is the
+                // authority -- `reconcile_from_durable` treats it as such, and a gated removal
+                // was already shown to survive a reload in it -- so the answer comes from
+                // there and the decline is counted rather than hidden.
+                GATED_LISTING_DECLINED.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                CommandResponse::Members {
+                    members: shard
+                        .sets
+                        .get(&key)
+                        .map(|members| {
+                            members.iter().map(|(member, _)| member.clone()).collect()
+                        })
+                        .unwrap_or_default(),
+                }
             })
         }
         Command::SetRemove { key, member } => {
@@ -5219,9 +5012,18 @@ pub(super) fn zset_score_string(biased: u64) -> String {
     }
 }
 
-/// The persisted component: score bits then member, so lexical order is (score, member) order.
-pub(super) fn zset_component(biased: u64, member: &[u8]) -> String {
-    format!("{biased:016x}{}", hex::encode(member))
+/// The persisted component: the member alone, hex encoded.
+///
+/// USED TO BE SCORE BITS THEN MEMBER -- the comment this replaces said so, and the lexical order
+/// it bought was never built on: every zset serving arm that returns members in score order
+/// reads the score out of `shard.zsets` and sorts explicitly (`zset_members_in_score_range`,
+/// `zset_ordered_members`), so dropping the score from this string costs that ordering nothing.
+/// What it buys is the thing this change is for: `BlockIndex.component` for a zset entry is now
+/// the same shape as a set's, so zset can collapse to one index entry a page the way set and list
+/// already have. The score still rides every write -- see `RecordedKind::outcome_value` and the
+/// WAL outcome's `value` field -- it is simply no longer spelled into this string.
+pub(super) fn zset_component(member: &[u8]) -> String {
+    hex::encode(member)
 }
 
 /// The members whose score falls in `[min_bits, max_bits]`, in score order.

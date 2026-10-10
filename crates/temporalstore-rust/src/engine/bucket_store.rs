@@ -181,7 +181,14 @@ pub(super) fn bucket_index_block_address(
             if !page.deleted
                 && page.model_id.as_str() == model_id
                 && &*page.object_key == object_key
-                && page.component.as_deref() == component
+                // THE ENTRY HAS NO NAME TO MATCH, so the surviving question is whether the caller
+                // asked for a named element. This read `page.component.as_deref() == component`
+                // against entries whose component was already `None` for every kind, so the answer
+                // does not move: a point lookup BY component found nothing here before this change
+                // and finds nothing now -- hash's four such readers were moved onto `shard.hashes`
+                // for exactly that reason -- and a lookup with no component still resolves the
+                // kinds that converge on the object key.
+                && component.is_none()
             {
                 return Some(page.address.clone());
             }
@@ -206,7 +213,9 @@ pub(super) fn bucket_index_block_address(
             !page.deleted
                 && page.model_id.as_str() == model_id
                 && &*page.object_key == object_key
-                && page.component.as_deref() == component
+                // The no-lookup twin of the predicate above, translated the same way and for the
+                // same reason.
+                && component.is_none()
         })
         .map(|page| page.address.clone())
         .next()
@@ -255,12 +264,24 @@ pub(super) fn bucket_index_component_block_addresses(
 ) -> Vec<(Option<Arc<str>>, ElementEntry)> {
     if let Some(object_refs) = shard.bucket_index.object_block_refs(model_id, object_key) {
         let mut refs = object_refs
-            .all_refs()
+            .iter()
             .filter_map(|block_ref| {
                 let bucket = shard.bucket_index.bucket_map.get(&block_ref.routing_bucket)?;
                 let page = bucket.block_index.get(&block_ref.block_ref_key)?;
                 if !page.deleted && page.model_id.as_str() == model_id && &*page.object_key == object_key {
-                    Some((page.component.clone(), page.address.clone()))
+                    // `None` IN THE FIRST SLOT, AND THAT SLOT IS NOW DEAD ON BOTH ARMS -- said
+                    // here rather than left to be rediscovered. `released_component_block_addresses`
+                    // already hardcodes `(None, address)`, and this arm's `page.component` was
+                    // already `None` for every kind before the field was removed, so the pair's
+                    // first element can no longer distinguish anything.
+                    //
+                    // THE PAIR IS KEPT ANYWAY, DELIBERATELY. Its shape is pinned by a signature
+                    // tripwire -- `element_ordinal_reuse` asserts this function's exact declaration
+                    // text, including `-> Vec<(Option<Arc<str>>, ElementEntry)>`, so that a reader
+                    // gaining a component cannot do it quietly -- and roughly twenty call sites
+                    // destructure the pair. Collapsing it is a separate change with that tripwire
+                    // to restate, not a side effect of a width step.
+                    Some((None, page.address.clone()))
                 } else {
                     None
                 }
@@ -283,9 +304,18 @@ pub(super) fn bucket_index_component_block_addresses(
         .values()
         .flat_map(|bucket| bucket.block_index.values())
         .filter(|page| !page.deleted && page.model_id.as_str() == model_id && &*page.object_key == object_key)
-        .map(|page| (page.component.clone(), page.address.clone()))
+        // `None` for the same reason as the lookup arm above.
+        .map(|page| (None, page.address.clone()))
         .collect::<Vec<_>>();
-    refs.sort_by(|left, right| left.0.cmp(&right.0));
+    // AND THE SORT IS NOW A NO-OP, WHICH IS WORTH SAYING BECAUSE A READER ORDERS BY IT.
+    //
+    // It sorts by the pair's first element, which is the same `None` for every row -- so the order
+    // this returns is the order the bucket walk produced, and `sort_by` is a stable sort, so that
+    // order is preserved rather than scrambled. The call is kept because the ORDERING CONTRACT is
+    // what callers were given (`hash_field_map`'s note and `element_ordinal_reuse` both cite it),
+    // and removing the sort would quietly convert "sorted by component" into "walk order" at the
+    // moment a component could come back.
+    refs.sort_by(|left: &(Option<Arc<str>>, _), right| left.0.cmp(&right.0));
     refs
 }
 

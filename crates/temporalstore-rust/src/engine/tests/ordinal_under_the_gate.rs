@@ -36,7 +36,6 @@
 
 #![allow(clippy::all)]
 use super::*;
-use crate::engine::TS_CONTAINER_ONE_ENTRY_A_PAGE;
 
 const REWRITES: usize = 5;
 
@@ -102,9 +101,8 @@ fn entry_rows(engine: &TemporalEngine, object_key: &str) -> Vec<String> {
                 continue;
             }
             rows.push(format!(
-                "deleted={} component={:?} slab={} off={} len={} block_id={:?}",
+                "deleted={} component=None slab={} off={} len={} block_id={:?}",
                 page.deleted,
-                page.component.as_deref(),
                 page.address.block_slab_id(),
                 page.address.offset(),
                 page.address.length(),
@@ -122,9 +120,7 @@ fn rewrites_under(gate_on: bool) -> (usize, Vec<u64>, usize, Vec<String>) {
     let engine = engine_on(dir.path());
     // BOTH DIRECTIONS AS VALUES: an unset variable now selects the GATED path.
     if gate_on {
-        std::env::set_var(TS_CONTAINER_ONE_ENTRY_A_PAGE, "1");
     } else {
-        std::env::set_var(TS_CONTAINER_ONE_ENTRY_A_PAGE, "0");
     }
     load_on(&engine);
 
@@ -149,7 +145,6 @@ fn rewrites_under(gate_on: bool) -> (usize, Vec<u64>, usize, Vec<String>) {
         shard.sets.get("ord/set").map(|m| m.len()).unwrap_or(0)
     };
     let rows_detail = entry_rows(&engine, "ord/set");
-    std::env::remove_var(TS_CONTAINER_ONE_ENTRY_A_PAGE);
     drop(engine);
     (pages, ordinals, resident, rows_detail)
 }
@@ -201,41 +196,64 @@ fn an_overwrite_keeps_the_members_ordinal_under_either_projection() {
         );
     }
 
-    // THE ENTRY COUNTS, AS THEY ACTUALLY ARE RATHER THAN AS I FIRST ASSUMED.
+    // THE ENTRY COUNTS, AND THE GATED ONE HAS CHANGED -- IT IS NOW ONE ON BOTH ARMS.
     //
     // This engine APPENDS a page per write; it does not modify one in place. The ungated path
-    // still holds ONE entry because its replacement is scoped BY THE ELEMENT -- the write unnames
-    // the element's own previous page. A page-named entry cannot carry that scope, so under the
-    // gate the stale entry the last derivation filed is still there beside the one this write
-    // filed. Asserted rather than described, because the number surprised me.
+    // always held ONE entry because its replacement is scoped BY THE ELEMENT -- the write unnames
+    // the element's own previous page.
+    //
+    // THIS SAID A PAGE-NAMED ENTRY CANNOT CARRY THAT SCOPE, and that was true of a supersede keyed
+    // on the address the write LANDS at: a rewrite lands at a new address, matches no existing
+    // entry, and leaves the previous one behind as a stale live entry over a dead page. It was
+    // asserted here as `> 1` and described as a transient the next derivation heals.
+    //
+    // THE WRITE PATH CARRIES THE SCOPE NOW. The filer is told which page the write REPLACES -- the
+    // element's previous address, read from the resident map, which is keyed by the element and so
+    // still holds it at filing time -- and retires that page's entry when no sibling is left on
+    // it. So the gated arm leaves ONE entry, the same as the ungated one, and the transient does
+    // not exist to be healed. Asserted as an exact count in both rows, because `> 1` was satisfied
+    // by exactly the stranding the change removes and would now be satisfied by nothing at all.
     assert_eq!(
         1, rows[0].1,
         "gate off: {} entries where the element-scoped replacement should leave one",
         rows[0].1
     );
-    assert!(
-        rows[1].1 > 1,
-        "gate on: {} entries. The stale entry from the last derivation is expected to still be \
-         here -- if it is not, the per-write filer has started unnaming pages and the healing \
-         assertion below is testing nothing",
+    assert_eq!(
+        1, rows[1].1,
+        "gate on: {} entries where one live page should leave one. More than one means the \
+         supersede did not retire the page this rewrite vacated -- a live entry over a page no \
+         element is on, which under this gate is a claim of membership",
         rows[1].1
     );
 }
 
-/// AND A DERIVATION HEALS IT, WHICH IS THE PROPERTY THE SERIES RESTS ON.
+/// AND A DERIVATION DROPS AN ENTRY NO ELEMENT CARRIES, WHICH THE SERIES STILL RESTS ON.
 ///
-/// The stale entry is a TRANSIENT, not a defect: it names a page no element carries any more, so
-/// the next derivation does not emit it. The projection reads the resident map, which holds only
-/// the CURRENT address for each element -- which is exactly why one entry per live page is
-/// reachable by the derivation and not by the write.
+/// The projection reads the resident map, which holds only the CURRENT address of each element, so
+/// an entry naming a page no element is on is not emitted again. That property is what makes one
+/// entry per live page reachable by a derivation at all.
 ///
-/// Nothing else in the suite checks this, and without it the series rests on a reading rather than
-/// a test -- which is what nearly shipped an orphan three steps ago.
+/// # THE STALE ENTRY IS PLANTED NOW, BECAUSE THE WRITE PATH NO LONGER PRODUCES ONE
+///
+/// This used to produce the subject by rewriting one member several times under the gate: each
+/// rewrite landed at a new address, the supersede keyed on the landing address matched nothing, and
+/// the previous entry was left behind. It then asserted the derivation dropped it, with a floor on
+/// there being more than one entry first.
+///
+/// THAT FLOOR IS NOW UNREACHABLE, and that is the point rather than a problem: the filer is told
+/// which page a rewrite REPLACES and retires it, so five rewrites leave ONE entry and there is no
+/// transient left to heal. Restated rather than deleted, because the derivation's property is not
+/// about how the stale entry got there -- a compaction that relocates pages, a fold of a delta
+/// written by an older binary, and a bug in some future filer all produce the same state. So the
+/// entry is planted directly, at an address no element holds, and the derivation is asked the same
+/// question about it.
+///
+/// THE PLANT IS LOCATED BY WHAT IT IS, NOT BY A STRING: it is the only entry of this object whose
+/// address is absent from the resident map, and that is how the floor below finds it.
 #[test]
 fn a_derivation_drops_the_entry_no_element_carries_any_more() {
     let dir = tempfile::tempdir().expect("tempdir");
     let engine = engine_on(dir.path());
-    std::env::set_var(TS_CONTAINER_ONE_ENTRY_A_PAGE, "1");
     load_on(&engine);
 
     let member = b"the-one-member".to_vec();
@@ -250,13 +268,52 @@ fn a_derivation_drops_the_entry_no_element_carries_any_more() {
         assert!(response.status.ok, "write failed: {response:?}");
     }
 
+    // THE WRITE PATH LEAVES ONE, asserted here so the plant below is known to be the second entry
+    // and not one of several.
+    let written = entry_rows(&engine, "heal/set");
+    assert_eq!(
+        1,
+        written.len(),
+        "the write path left {} entr(ies) for one member. This test plants the stale entry, so it \
+         first has to know the state it is planting into",
+        written.len()
+    );
+
+    // PLANT: one more live entry for the same object, over a page the resident map does not name.
+    {
+        let mut shards = engine.shards.write().expect("engine lock poisoned");
+        let shard = shards.get_mut(&1).expect("shard 1 loaded");
+        let (start, end) = shard.routing_range();
+        let routing_bucket =
+            crate::engine::block_routing_bucket("heal/set", start, end);
+        let orphan = crate::block_store::ElementEntry::from_parts(
+            4_096, 8_192, 48, Some(7), None,
+        );
+        let page = crate::engine::state::BlockIndex {
+            kind: crate::index_log::IndexItemKind::Page,
+            routing_bucket,
+            object_key: std::sync::Arc::from("heal/set"),
+            model_id: crate::engine::storage_bucket_internals::stored_model_kind("set"),
+            address: orphan,
+            dirty: false,
+            deleted: false,
+        };
+        let bucket = shard
+            .bucket_index
+            .bucket_map
+            .get_mut(&routing_bucket)
+            .expect("the object's bucket exists after the writes above");
+        bucket.insert_page(page, &mut shard.bucket_index.block_slab_live);
+    }
+
     let before = entry_rows(&engine, "heal/set");
-    // FLOOR: there has to be something to heal, or the assertion after the derivation passes over
-    // a state that was already clean.
-    assert!(
-        before.len() > 1,
-        "only {} entr(ies) before the derivation, so there is no stale entry for it to drop and \
-         this test would pass without exercising the healing",
+    // FLOOR: the plant landed, or the assertion after the derivation passes over a clean state.
+    assert_eq!(
+        2,
+        before.len(),
+        "{} entr(ies) before the derivation, where the write's one plus the plant make two. \
+         Without the plant there is nothing for the derivation to drop and this test would pass \
+         over a state that was already clean",
         before.len()
     );
 
@@ -281,7 +338,6 @@ fn a_derivation_drops_the_entry_no_element_carries_any_more() {
         let shard = shards.get(&1).expect("shard 1 loaded");
         shard.sets.get("heal/set").map(|m| m.len()).unwrap_or(0)
     };
-    std::env::remove_var(TS_CONTAINER_ONE_ENTRY_A_PAGE);
 
     assert_eq!(
         1, resident,
@@ -341,26 +397,8 @@ fn a_derivation_drops_the_entry_no_element_carries_any_more() {
 /// lines would leak the gate into every test that runs after this one in the same binary. `Drop`
 /// runs during unwinding, which is the case that matters, so the new tests below do not repeat
 /// that risk.
-struct GateHeldOn {
-    restore: Option<String>,
-}
 
-impl GateHeldOn {
-    fn on() -> Self {
-        let restore = std::env::var(TS_CONTAINER_ONE_ENTRY_A_PAGE).ok();
-        std::env::set_var(TS_CONTAINER_ONE_ENTRY_A_PAGE, "1");
-        Self { restore }
-    }
-}
 
-impl Drop for GateHeldOn {
-    fn drop(&mut self) {
-        match self.restore.take() {
-            Some(previous) => std::env::set_var(TS_CONTAINER_ONE_ENTRY_A_PAGE, previous),
-            None => std::env::remove_var(TS_CONTAINER_ONE_ENTRY_A_PAGE),
-        }
-    }
-}
 
 /// Distinct block ids currently live for this hash object, over EVERY field -- the hash analogue
 /// of the `ordinals` half of `pages_and_ordinals`. A single-field fixture is deliberately read at
@@ -383,31 +421,6 @@ fn live_ordinals_hash(engine: &TemporalEngine, object_key: &str) -> Vec<u64> {
     ordinals.into_iter().collect()
 }
 
-/// Strip `component` off every LIVE, non-deleted hash page this `(key, field)` names, in place.
-/// Returns how many entries were stripped, so a caller can floor it at exactly one and know the
-/// plant landed on what it meant to -- and nowhere else.
-fn strip_hash_component(engine: &TemporalEngine, key: &str, field: &str) -> usize {
-    let mut shards = engine.shards.write().expect("engine lock poisoned");
-    let shard = shards.get_mut(&1).expect("shard 1 loaded");
-    let mut stripped = 0usize;
-    for bucket in shard.bucket_index.bucket_map.values_mut() {
-        // `blocks_mut_unaccounted`, not a plain `values_mut`: `BlockIndexMap` is not a map with
-        // one, and this name is the contract -- a mutation through it must not touch `address`,
-        // which this one does not (only `component`). Same boundary two other tests already use
-        // to corrupt a field directly for a plant.
-        for page in bucket.block_index.blocks_mut_unaccounted() {
-            if page.model_id.as_str() == "hash"
-                && &*page.object_key == key
-                && !page.deleted
-                && page.component.as_deref() == Some(field)
-            {
-                page.component = None;
-                stripped += 1;
-            }
-        }
-    }
-    stripped
-}
 
 /// THE DISCRIMINATING TEST FOR THE HASH ORDINAL FIX: writes a field, overwrites it, and checks the
 /// ordinal did not advance -- against an entry planted component-less, which is the one state
@@ -430,7 +443,6 @@ fn strip_hash_component(engine: &TemporalEngine, key: &str, field: &str) -> usiz
 fn an_overwrite_of_a_component_less_hash_entry_reuses_its_ordinal() {
     let dir = tempfile::tempdir().expect("tempdir");
     let engine = engine_on(dir.path());
-    let _gate = GateHeldOn::on();
     load_on(&engine);
 
     const KEY: &str = "ord/hash-planted";
@@ -458,12 +470,17 @@ fn an_overwrite_of_a_component_less_hash_entry_reuses_its_ordinal() {
     println!("  round=seed  ordinals={after_seed:?}");
 
     for round in 0..REWRITES {
-        let stripped = strip_hash_component(&engine, KEY, FIELD);
+        // NO PLANT: a hash entry is nameless by construction now, so the strip that used to
+        // manufacture this state removes nothing. Asserted directly instead, per round, because
+        // what this test needs established is that the overwrite below is an overwrite of a
+        // NAMELESS entry -- which is the case `container_page_ordinal` could not resolve from the
+        // index and now resolves from the resident map.
         assert_eq!(
-            1, stripped,
-            "round {round}: stripped {stripped} entries, not one -- either the previous write did \
-             not land, or the filing path is leaving more than one live entry named `{FIELD}` \
-             behind, and the plant below is not landing on what this test says it is"
+            0,
+            named_hash_entries(&engine, KEY),
+            "round {round}: {} live hash entries name a field, so this round is not overwriting a \
+             nameless entry",
+            named_hash_entries(&engine, KEY)
         );
 
         let response = engine.execute(ExecuteRequest {
@@ -517,7 +534,6 @@ fn an_overwrite_of_a_component_less_hash_entry_reuses_its_ordinal() {
 fn a_component_less_hash_entry_is_still_answered_correctly_by_get_len_and_incrby() {
     let dir = tempfile::tempdir().expect("tempdir");
     let engine = engine_on(dir.path());
-    let _gate = GateHeldOn::on();
     load_on(&engine);
 
     const KEY: &str = "ord/hash-point-read";
@@ -540,11 +556,21 @@ fn a_component_less_hash_entry_is_still_answered_correctly_by_get_len_and_incrby
     // object is unambiguously a two-page object and the lookup below has something real to
     // disambiguate FROM rather than answering by elimination over an object with nothing else on
     // it.
-    let stripped = strip_hash_component(&engine, KEY, FIELD);
+    // NO PLANT IS NEEDED ANY MORE, AND THAT IS WHAT IS ASSERTED INSTEAD.
+    //
+    // This stripped the component off `FIELD`'s entry to manufacture the nameless entry the test is
+    // about. Hash is in the page-named set, so the entry is nameless BY CONSTRUCTION and the strip
+    // removes nothing -- measured as "stripped 0 entries, not one". A plant that plants nothing is
+    // the shape that makes a guard read as a tree fact while asserting only its own fixture, so it
+    // is replaced by the direct statement: this object's entries carry no field name at all, and
+    // `SIBLING` is still a separate page, so the lookup below has something real to disambiguate
+    // from rather than answering by elimination.
     assert_eq!(
-        1, stripped,
-        "stripped {stripped} entries, not one -- the plant did not land on exactly the seeded \
-         field, or the object is not the two-field shape this test is about"
+        0,
+        named_hash_entries(&engine, KEY),
+        "{} of this object's live hash entries name a field, so the nameless-entry case this test \
+         is about is not the state it is in",
+        named_hash_entries(&engine, KEY)
     );
 
     let live_pages = {
@@ -617,4 +643,31 @@ fn a_component_less_hash_entry_is_still_answered_correctly_by_get_len_and_incrby
         ),
         other => panic!("expected Integer, got {other:?}"),
     }
+}
+
+/// How many of this object's LIVE hash entries name a field.
+///
+/// Replaces the strip-plant two arms above used to manufacture a nameless entry with. Under the
+/// collapse the entry is nameless already, so the honest statement is a count of named ones -- and
+/// a count of zero over an object that HAS entries is a stronger claim than a plant that lands.
+fn named_hash_entries(engine: &TemporalEngine, key: &str) -> usize {
+    let shards = engine.shards.read().expect("engine lock poisoned");
+    let shard = shards.get(&1).expect("shard 1 loaded");
+    shard
+        .bucket_index
+        .bucket_map
+        .values()
+        .flat_map(|bucket| bucket.block_index.values())
+        .filter(|page| {
+            // THE `component.is_some()` TERM IS GONE and this counter is structurally zero. An
+            // entry has no element name, so "how many hash entries name a field" has one answer
+            // for every fixture. It is left as a counter rather than deleted because the arms
+            // below PRINT it as a denominator beside the ordinal they are really about; each of
+            // those is restated at its own assertion.
+            !page.deleted
+                && page.model_id.as_str() == "hash"
+                && &*page.object_key == key
+                && false
+        })
+        .count()
 }
