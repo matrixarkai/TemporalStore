@@ -206,6 +206,7 @@ mod page_entry_handles;
 
 mod bucket_sequence_budget;
 mod bucket_node_arms;
+mod bucket_node_container_header;
 mod bucket_flag_masks;
 mod inline_arm_trade;
 mod layout_arm_selection;
@@ -225,6 +226,7 @@ mod length_answer_and_listing_agree;
 mod set_listing_page_reads;
 mod object_is_a_key_not_an_element;
 mod container_page_element_key;
+mod the_entry_cannot_name_its_object_by_slot;
 mod the_entry_cannot_point_at_the_object_list;
 mod resident_map_readers;
 mod container_pages_are_batched;
@@ -263,6 +265,16 @@ mod hash_read_union_divergence;
 // was being compared against walks the elements of ONE OBJECT, whose length is a property of the
 // data shape and not of the corpus. The two numbers answer different questions and the first never
 // bounded the second.
+//
+// THE ELEMENT-NAME BRANCH'S LAST CHANGE TO IT WAS A WIDTH RESTATEMENT, AND THAT IS WHY THIS
+// DELETION IS A MERGE DECISION AND NOT ONLY THIS BRANCH'S. `ea2b26bb7` restated one pin inside
+// `resident_bytes_per_object` -- `size_of::<BlockIndex>()` from 56 to 40, with a note that the
+// arithmetic MULTIPLIES it so a stale width scales the whole column. That pin's subject survives;
+// the arithmetic it fed does not, because the column priced the chain `ObjectBlockRefs ->
+// ComponentList -> ComponentBlocks -> BlockRefs` per object and three of those four are deleted.
+// The 40 is not lost with the file: it is a `const _` beside `BlockIndex` in `state.rs` and is
+// re-asserted in `page_entry_handles`, `pages_per_bucket`, `per_item_byte_budget`,
+// `page_entry_element_naming` and `the_entry_cannot_name_its_object_by_slot`.
 mod set_listing_source;
 mod projection_names_a_page;
 mod authority_check_cost;

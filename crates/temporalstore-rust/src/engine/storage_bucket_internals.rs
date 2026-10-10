@@ -3866,12 +3866,19 @@ pub(super) struct ObjectDeletionFiled(());
 ///     `set_listing_page_reads` x1, `fold_hash_map_completeness` x2, `carried_page_identity` x2,
 ///     `folded_page_membership`, `container_page_element_key`, `entry_object_identity` x2.
 ///   * THEY ASSERT ONE ENTRY PER ELEMENT, which is the collapse written down as an expectation:
-///     `part4` x5 (`components_of_one_object_stay_separate`,
+///     `part4` x5 (`one_objects_pages_are_one_lookup_row_holding_every_ref`,
 ///     `every_field_of_a_hash_is_filed_in_the_bucket_index`,
-///     `block_index_identity_string_cardinality`, `object_block_lookup_occupancy_census`,
+///     `the_index_wire_keys_are_what_they_were`, `object_block_lookup_occupancy_census`,
 ///     `a_bucket_holding_one_block_holds_no_node`), `entry_count_versus_page_count`,
 ///     `pages_per_bucket` x2, `page_entry_element_naming` x2, `object_is_a_key_not_an_element` x2,
 ///     `container_pages_are_batched` x1.
+///
+///     AND THE FIFTH NAME IN THAT LIST WAS WRONG, MEASURED. It read
+///     `block_index_identity_string_cardinality`, which PASSES -- driven by name, 1 of 2855. The
+///     part4 arm that is red is `the_index_wire_keys_are_what_they_were`, which is a stored-format
+///     golden rather than a one-entry-per-element expectation: the serialized key set lost
+///     `component`. The COUNT of five was right and one of its members was not, which is the shape
+///     a list of names goes stale in without the total moving.
 ///   * THEIR SUBJECT NO LONGER EXISTS AT ALL, which is the case for RESTATEMENT INTO A TRIPWIRE
 ///     rather than deletion: `set_listing_page_reads::every_member_a_set_listing_returns_is_
 ///     already_spelled_by_its_component` (the redundancy the collapse deleted),

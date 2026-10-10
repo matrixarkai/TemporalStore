@@ -18,19 +18,28 @@
 //!
 //! ```text
 //!     pages per container      FALLS -- that is the whole change
-//!     index entries per container   UNCHANGED -- `block_index_handle` hashes the component
-//!                                  beside the address, so elements sharing a page still hash
-//!                                  to different handles
+//!     index entries per container   FALLS WITH IT, which it did NOT when this module was
+//!                                  written. `BlockIndex` has no element-name field, so
+//!                                  `block_index_handle` is decided by the model spelling, the
+//!                                  object key and the ADDRESS alone. Elements sharing a page
+//!                                  share an address and therefore a handle, so the index files
+//!                                  ONE entry a page. Measured by the arm below: 40 entries over
+//!                                  40 pages before a round, 1 over 1 after.
 //!     bytes per element        BARELY MOVES -- measured 12 -> 3 of framing for a set of
 //!                                  eight-byte members, which is a small number of a small number
 //! ```
 //!
+//! THE MIDDLE ROW IS RESTATED BECAUSE IT INVERTED, NOT BECAUSE ITS NUMBER WENT STALE. It read
+//! "UNCHANGED -- `block_index_handle` hashes the component beside the address, so elements sharing
+//! a page still hash to different handles". The field that element name lived on has been removed,
+//! so the term is gone from the handle and two elements on one page hash ALIKE. The entry count is
+//! the PAGE count now, and the row that used to say what the fold did not buy says what it does.
+//!
 //! `entry_count_versus_page_count`'s
-//! `two_elements_sharing_one_page_are_still_two_entries_because_the_handle_names_the_component`
-//! already drives the middle row and is untouched by this.
-//! `a_compaction_round_folds_a_containers_pages_and_leaves_its_entry_count_alone` below asserts it
-//! from this module's own fixture, because a reader of this module should not have to go and find
-//! that one to learn what was NOT bought.
+//! `one_page_is_one_entry_because_the_handle_can_no_longer_name_an_element` drives the mechanism.
+//! `a_compaction_round_folds_a_containers_pages_and_folds_its_entry_count_with_them` below asserts
+//! it from this module's own fixture, because a reader of this module should not have to go and
+//! find that one to learn what the fold buys.
 //!
 //! # THE FOUR THINGS THAT COULD GO WRONG
 //!
@@ -217,7 +226,7 @@ fn seed(engine: &TemporalEngine, object_key: &str, elements: usize) {
 // 1. THE FOLD, PER KIND, WITH BOTH COUNTERS FLOORED
 // =================================================================================================
 
-/// A COMPACTION ROUND FOLDS A CONTAINER'S PAGES AND LEAVES ITS ENTRY COUNT ALONE.
+/// A COMPACTION ROUND FOLDS A CONTAINER'S PAGES AND FOLDS ITS ENTRY COUNT WITH THEM.
 ///
 /// The headline. Pages per container before and after, off the engine's own page index, for all four
 /// container kinds, with the string control beside them at zero.
@@ -226,16 +235,23 @@ fn seed(engine: &TemporalEngine, object_key: &str, elements: usize) {
 /// nothing reports, so the fold's own two counters are asserted non-zero first and printed on the
 /// row.
 ///
+/// RESTATED, AND THE CLAIM INVERTED RATHER THAN THE NUMBER CORRECTED. This read "AND LEAVES ITS
+/// ENTRY COUNT ALONE", and that was true of an entry that named its element: the handle hashed the
+/// element name beside the address, so two elements sharing one page hashed to two handles and a
+/// fold moved the page column only. The name is off the entry now, so the handle cannot tell two
+/// elements of one page apart and the entry count IS the page count. The old name is the refuted
+/// claim, which is why it is not kept beside a relaxed assertion.
+///
 /// rust-internal: drives the engine's own command surface
 #[test]
-fn a_compaction_round_folds_a_containers_pages_and_leaves_its_entry_count_alone() {
-    // THE ENTRY COUNT NOT MOVING IS THE UNGATED INVARIANT, and it is still the right one for
-    // that path: the handle hashes the component beside the address, so ungated, two entries
-    // sharing a page must stay two. Gated, the count collapsing to the PAGE count is the whole
-    // point, and it is asserted positively -- `projection_names_a_page` holds entries == pages
-    // with none named at occupancies 1, 4 and 40, and `gated_corpus_across_a_store_boundary`
-    // holds it across a reload. So this is pinned, not re-goldened: both invariants are stated,
-    // each on the path it belongs to.
+fn a_compaction_round_folds_a_containers_pages_and_folds_its_entry_count_with_them() {
+    // ENTRIES CONVERGE ON PAGES ON EVERY PATH, because there is no longer a path where they do
+    // not. This comment read "THE ENTRY COUNT NOT MOVING IS THE UNGATED INVARIANT ... Gated, the
+    // count collapsing to the PAGE count is the whole point", and it named two paths. The
+    // one-entry-a-page flag is retired and the entry has no field for an element name, so the
+    // ungated half has no off position to be in: the collapsed shape is the only shape.
+    // `projection_names_a_page` holds entries == pages with none named at occupancies 1, 4 and 40,
+    // and `gated_corpus_across_a_store_boundary` holds it across a reload.
     let dir = tempfile::tempdir().expect("tempdir");
     println!(
         "\n=== pages and entries per container, before and after one round ===\n  store path {} characters",
@@ -309,12 +325,39 @@ fn a_compaction_round_folds_a_containers_pages_and_leaves_its_entry_count_alone(
             pages_after < *pages_before,
             "{kind} holds {pages_after} pages where it held {pages_before}, so nothing folded"
         );
-        // THE ENTRY COUNT IS THE PART THIS STAGE DOES NOT BUY, and it is asserted rather than
-        // omitted: a reader who saw only the page column would take the entry column for granted.
-        assert_eq!(
-            *entries_before, entries_after,
-            "{kind} holds {entries_after} entries where it held {entries_before}; the handle hashes \
-             the component beside the address, so sharing a page must NOT change this"
+        // THE ENTRY COUNT FOLDS WITH THE PAGES, AND THAT IS THE ROW THIS ARM EXISTS TO HOLD. It
+        // asserted `entries_after == entries_before` for as long as an entry named its element:
+        // two elements sharing one page hashed to two handles, so folding pages left the entry
+        // count alone, and this fixture measured 40 before and 40 after. `BlockIndex` has no
+        // element-name field now, so `block_index_handle` is the model spelling, the object key
+        // and the ADDRESS -- 40 pages fold to 1 and the 40 entries fold to 1 with them.
+        //
+        // WHAT THIS IS WORTH, STATED EXACTLY, BECAUSE IT IS LESS THAN IT LOOKS. On this tree the
+        // page fold and the entry fold are the SAME EVENT: there is no field left that could keep
+        // two entries over one folded page, so `pages_after < pages_before` above and the
+        // assertion below cannot part company. It is kept as a TRIPWIRE on the claim that
+        // inverted -- it FAILS on the engine this arm was written against, where the page column
+        // fell and the entry column did not -- and not as an independent guard.
+        //
+        // `entries_after == pages_after` WAS WRITTEN HERE AND THEN DELETED AS VACUOUS, which is
+        // recorded because it reads like the stronger assertion. `addresses_and_entries` derives
+        // its PAGE column by deduplicating the very entries it counts for the ENTRY column, so the
+        // two columns are one measurement and nothing independent could make them disagree.
+        //
+        // FIVE MUTATIONS WERE DRIVEN LOOKING FOR A SENSITIVITY HERE AND ALL FIVE STAYED GREEN,
+        // listed so the next lane does not repeat them: defeating `emit_one_entry_a_page`'s
+        // dedup; dropping the offset term from `block_index_handle`; making every
+        // `insert_unaccounted` file a fresh handle; making
+        // `sync_bucket_index_object_blocks_with_mode`'s retain keep the object's old entries; and
+        // adding a real removal to this fixture, which does leave a retained live entry --
+        // `container_page_ordinal::the_ordinal_names_a_position_and_a_delete_frees_it` reads that
+        // one -- but not one that survives the round. Whatever collapses the entries here is not
+        // any of those five, and it is not attributed.
+        assert!(
+            entries_after < *entries_before,
+            "{kind} holds {entries_after} entries where it held {entries_before}; a round that \
+             folded {pages_before} pages into {pages_after} left the entry count alone, which is \
+             what an entry that names its element does"
         );
         kinds_folded += 1;
     }

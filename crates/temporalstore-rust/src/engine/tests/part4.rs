@@ -4652,6 +4652,23 @@ fn dirty_objects_versus_the_blocks_own_dirty_flags() {
 // against the producer. The `Some`-misses half would restate `names_the_only_slot`, which
 // `a_named_component_resolves_nothing_while_the_unnamed_one_resolves_everything` already asserts
 // in both directions in one arm so that it cannot pass one-sided.
+//
+// ONE CLAIM FROM THE ELEMENT-NAME BRANCH'S REWRITE IS CARRIED RATHER THAN DROPPED. That branch kept
+// this arm alive as `one_objects_pages_are_one_lookup_row_holding_every_ref` and moved the order
+// claim -- "removal binary-searches this vector, so its order is load-bearing" -- down from
+// `by_component` onto the refs. The rewrite as a whole cannot come across, because it reads
+// `grouped.by_component` and `refs_for(..)` and neither exists. The claim it moved IS live:
+// `BlockRefs::insert` keeps the refs sorted and `BlockRefs::remove` binary-searches them, so an
+// `insert` rewritten to append would make `remove` miss a ref that is present. Nothing else in the
+// tree asserted it. It is restated against the producer, beside
+// `the_insert_accumulates_an_objects_pages_into_the_one_slot` in `state.rs`.
+//
+// AND RESTATED ON THE WHOLE REF, NOT RE-GOLDENED. That branch's version sorted a PROJECTION --
+// `refs.iter().map(|r| r.block_ref_key)` -- while `BlockLookupRef` derives `Ord` over
+// `(routing_bucket, block_ref_key)`. Those are different orders, agreeing only while the routing
+// buckets happen to ascend with the keys, so the projection could pass over a vector `remove`
+// could not search. The restatement compares the refs themselves, over a fixture inserted
+// DESCENDING so that an append and a sorted insert cannot produce the same vector.
 
 /// The common case takes the inline arm, and the spilled arm still behaves.
 ///
@@ -5906,15 +5923,34 @@ fn every_field_of_a_hash_is_filed_in_the_bucket_index() {
     let fields = shard.hashes.get("wide").expect("the hash exists");
     assert_eq!(fields.len(), 64, "all fields written");
 
+    // THE LOOKUP TAKES NO ELEMENT NAME NOW, AND THE ADDRESS IS STILL WHAT IS CHECKED.
+    //
+    // This passed `Some(field.as_str())`. `contains_object_block_address` ends with
+    // `&& component.is_none()` -- the old `page.component.as_deref() == component` with the
+    // entry's own constant folded in -- so a `Some` can never match and every field read as
+    // UNFILED: "field f000 holds an address the bucket index does not have filed", for a field
+    // that was filed. The object's pages are all under its single componentless row, and what is
+    // asserted is unchanged: each field's address is among them, including the overwritten ones
+    // whose old filing is stale.
     for (field, address) in fields.iter() {
         assert!(
-            shard.bucket_index.contains_object_block_address(
+            shard
+                .bucket_index
+                .contains_object_block_address("hash", "wide", None, address),
+            "field {field} holds an address the bucket index does not have filed"
+        );
+        // AND THE ELEMENT-NAME AXIS IS ASSERTED GONE, so the line above cannot quietly become
+        // redundant. If the lookup starts answering by field name again, the name is back on the
+        // stored entry and this arm says so rather than passing on the componentless row alone.
+        assert!(
+            !shard.bucket_index.contains_object_block_address(
                 "hash",
                 "wide",
                 Some(field.as_str()),
                 address
             ),
-            "field {field} holds an address the bucket index does not have filed"
+            "the lookup answered for field {field} BY NAME. An entry carries no element name, so \
+             a named lookup must resolve nothing -- if it does, the name has returned to the entry"
         );
     }
 }
@@ -6533,7 +6569,24 @@ fn the_index_wire_keys_are_what_they_were() {
             // the address word rather than carrying it. An index written before this still has the
             // key and still loads -- the wire struct does not deny unknown fields, so the stored
             // value is read and ignored.
-            "component",
+            // "component" is GONE, and it is the key this change removes. `BlockIndex` has no
+            // element-name field: all four container kinds file one entry a page, so an entry
+            // names a page and has nothing to say about which element is on it. The entry went 56
+            // bytes of field to 40 with it.
+            //
+            // AND IT OWES NO FORMAT STAMP, which is the part a reader of this list will want and
+            // is argued in full beside `SHARD_INDEX_FORMAT_VERSION`. The short form: the load
+            // refuses anything stamped below 12 and 12 was stamped BY the commit that made hash
+            // and zset page-named, so every index this binary accepts was written by a binary that
+            // filed no element name. The key this list stops expecting is a key no accepted index
+            // contains; one that really carries it is stamped 10 or lower and is rebuilt from the
+            // WAL.
+            //
+            // RESTATED RATHER THAN RE-GOLDENED, which for a list means the removed key is named
+            // here rather than quietly absent -- the same treatment "log_backed", "h", "rs", "o",
+            // "ps", "b" and "last_dump_sequence" already get below. A key that simply disappeared
+            // from this vector would leave the next reader unable to tell a removal from an
+            // oversight, which is the whole job of the list.
             "deleted",
             "deleted_object_index",
             "dirty",
@@ -7050,9 +7103,29 @@ fn a_bucket_holding_one_block_holds_no_node() {
         // per-key ceiling above, which is the assertion that would eventually fail for it.
         let live = bucket.block_index.values().filter(|page| !page.deleted).count();
         let tombstoned = bucket.block_index.values().filter(|page| page.deleted).count();
+        let resident = shard.hashes.get("wide").map_or(0, |fields| fields.len());
+        // RESTATED: THE LIVE ENTRY IS RETAINED TOO, NOT ONLY A TOMBSTONE ADDED.
+        //
+        // The paragraph above said "the map holds ONE LIVE entry and TWO TOMBSTONES, three
+        // entries". It holds FIVE. A removal reaches the index through a door whose `retain`
+        // matches `component.is_none()`, which a page-named entry cannot satisfy, so it keeps the
+        // live entry over the page its element vacated AND appends a tombstone beside it. Two
+        // removals therefore leave THREE live entries and two tombstones.
+        //
+        // The membership claim is asked of the resident map, which is the authority for which
+        // fields exist and is what `HashLen` and `HashGetAll` answer from. The live entry count is
+        // asserted beside it as the retention, so the cost is recorded where it is read rather
+        // than folded into a number that looks like membership.
         assert_eq!(
-            1, live,
-            "two of three fields were removed and {live} live entries remain"
+            1, resident,
+            "two of three fields were removed and the resident map holds {resident} field(s)"
+        );
+        assert_eq!(
+            3, live,
+            "two of three fields were removed and {live} live entries remain. Three is the \
+             expected number and the retention described above -- the survivor plus one entry per \
+             removal. If this is 1 the retirement of a vacated page's entry has landed, and this \
+             assertion is the one to come and restate"
         );
         assert_eq!(
             2, tombstoned,
@@ -7061,16 +7134,27 @@ fn a_bucket_holding_one_block_holds_no_node() {
              membership resurrects both fields"
         );
         assert_eq!(
-            3,
+            live + tombstoned,
             bucket.block_index.len(),
-            "the map holds {} entries where one live and two tombstones is three",
+            "the map holds {} entries where the live and tombstoned counts above sum to {}; the \
+             two walks and `len()` must see the same set",
+            bucket.block_index.len(),
+            live + tombstoned
+        );
+        assert_eq!(
+            5,
+            bucket.block_index.len(),
+            "the map holds {} entries where three live and two tombstones is five. This read \
+             `3 == len()` under the belief that a removal replaced the live entry with a \
+             tombstone; it ADDS one beside it, so two removals leave five entries rather than \
+             three",
             bucket.block_index.len()
         );
         // AND THE ARM FOLLOWS THE ENTRY COUNT, which is the invariant this test is really about: the
         // arm must never disagree with `len()`, whatever the entries are.
         assert!(
             matches!(bucket.block_index, BlockIndexMap::Many(_)),
-            "a page index holding three entries must be in the multi-entry arm"
+            "a page index holding five entries must be in the multi-entry arm"
         );
     }
 
@@ -7107,13 +7191,36 @@ fn a_bucket_holding_one_block_holds_no_node() {
             .expect("the object must still be filed");
         let live = bucket.block_index.values().filter(|page| !page.deleted).count();
         let tombstoned = bucket.block_index.values().filter(|page| page.deleted).count();
-        assert_eq!(3, live, "writing the two fields back left {live} live entries");
+        let resident = shard.hashes.get("wide").map_or(0, |fields| fields.len());
+        // THE TOMBSTONE CLAIM HELD AND WAS CHECKED RATHER THAN ADJUSTED. The message below is the
+        // one this arm shipped with, and the measurement still agrees with it: writing a field back
+        // clears its tombstone through the upsert's retain, so the tombstone cost is bounded at one
+        // entry per DISTINCT element removed rather than one per removal.
         assert_eq!(
             0, tombstoned,
             "writing a field back did not clear its tombstone: {tombstoned} remain. The upsert's \
              `retain` matches on the component, so a re-add takes the tombstone with it -- which is \
              what bounds the cost of this change at one entry per DISTINCT element removed rather \
              than one per removal."
+        );
+        // THE LIVE COUNT IS FIVE, AND THE RE-ADD DOES NOT BOUND THAT ONE. Three fields are
+        // resident, and the two entries the removals left over the pages their elements vacated are
+        // STILL THERE -- the re-add wrote each field to a NEW address, so it superseded nothing at
+        // the old one. This asserted 3 on the belief that a removal replaced its entry; it adds one
+        // beside it, and a remove-then-re-add leaves that one behind for good.
+        //
+        // The membership is asked of the resident map, which is the authority, so the five is read
+        // as the retention it is rather than as a field count.
+        assert_eq!(
+            3, resident,
+            "writing the two fields back left the resident map holding {resident} field(s), not 3"
+        );
+        assert_eq!(
+            5, live,
+            "writing the two fields back left {live} live entries. Five is the expected number: \
+             three resident fields plus the two entries the removals left over the vacated pages, \
+             which a re-add at a NEW address does not supersede. If this is 3 the retirement of a \
+             vacated page's entry has landed, and this assertion is the one to come and restate"
         );
     }
     // Now the whole object, through the path that keeps no tombstone, and the map must DRAIN.
@@ -7736,6 +7843,30 @@ fn object_block_lookup_refs_per_object_census() {
     // every claim below true for free.
     assert!(objects > 0, "the lookup is empty; nothing was measured");
     assert!(refs_total > 0, "no refs were recorded; nothing was measured");
+    // THE TWO-SIDED GATE MOVED FROM THE COMPONENT AXIS TO THE REFS AXIS, BECAUSE THE COMPONENT
+    // AXIS COLLAPSED TO ONE SHAPE AND THEN THE AXIS ITSELF CAME OFF.
+    //
+    // It read `single_component > 0 && multi_component > 0` and refused with "corpus is one-sided
+    // (2200 single, 0 multi) -- the occupancy question would be decided by construction, not
+    // measurement". It was right to refuse: once a page entry carried no element name an object
+    // held exactly ONE componentless lookup row whatever its kind, and a mixed corpus could not
+    // produce a second shape on that axis.
+    //
+    // THE REPLACEMENT GATE THE ELEMENT-NAME BRANCH WROTE IS NOT CARRIED, AND THAT IS A MERGE
+    // DECISION RATHER THAN AN OMISSION. It asserted `objects == single_component` -- "every object
+    // must hold exactly one componentless row". That counts ROWS, and there is no row level left
+    // to count: `ObjectBlockRefs`, `ComponentList` and `ComponentBlocks` are deleted and the
+    // lookup's per-object value IS a `BlockRefs`. Rewritten onto this shape it would read
+    // `objects == objects` and pass for every corpus including an empty one. Its claim -- that a
+    // component can no longer be filed under a row of its own -- is kept where it is still
+    // falsifiable: `a_named_component_resolves_nothing_while_the_unnamed_one_resolves_everything`
+    // in `state.rs` asserts `names_the_only_slot` in both directions in one arm.
+    //
+    // THE MULTIPLICITY DID NOT GO -- IT MOVED INSIDE THE SLOT. A hash of eight fields is one slot
+    // holding EIGHT refs, where it used to be eight rows of one. So the question this census
+    // exists for -- does the inline single-ref shape earn its place -- is asked of the refs
+    // vector, and that axis is genuinely two-sided in this corpus: 2,000 strings at one ref and
+    // 200 hashes at eight.
     assert!(
         single_ref_object > 0 && multi_ref_object > 0,
         "corpus is one-sided ({single_ref_object} single-ref, {multi_ref_object} multi-ref) -- \

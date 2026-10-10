@@ -769,7 +769,6 @@ fn capture_the_stored_spelling_of_a_page_entry() {
 
 const PAGE_ENTRY_PLAIN: &str = r#"{"object_key":"k","model_id":"string","address":{"a":4294967298,"l":3,"pi":4,"oi":null,"g":4},"dirty":false,"deleted":false}"#;
 
-const PAGE_ENTRY_WITH_COMPONENT: &str = r#"{"object_key":"k","model_id":"string","component":"f0","address":{"a":4294967298,"l":3,"pi":4,"oi":null,"g":4},"dirty":false,"deleted":false}"#;
 
 const PAGE_ENTRY_ALL_FLAGS: &str = r#"{"object_key":"k","model_id":"string","address":{"a":4294967298,"l":3,"pi":4,"oi":null,"g":4},"dirty":true,"deleted":true}"#;
 
@@ -819,6 +818,17 @@ const OLD_STORE_INDEX_WITH_AN_INDEPENDENT_GENERATION: &str = r#"{"bucket_map":{"
 /// stored text unmodified and the round trip would be an equality with itself.
 const REMOVED_KEY: &str = "\"last_dump_sequence\":11,";
 
+/// The element name as a stored row carries it, and the page handle that renders it.
+///
+/// TWO PLACES, BECAUSE `block_index_written_key` RENDERS THE NAME INTO THE MAP KEY as well as the
+/// entry carrying it as a field. A canonicalisation that took only one of them would leave the
+/// write-back comparison reporting a difference it had caused itself.
+const STORED_ELEMENT_NAME: &str = r#""component":"f0","#;
+const STORED_NAMED_HANDLE: &str = r#""hash:k:f0:1:9:3:4:4""#;
+/// The same handle as this binary renders it: the element slot between the object key and the slab
+/// id is empty, which is the shape the five string rows of this fixture already have.
+const PAGE_NAMED_HANDLE: &str = r#""hash:k::1:9:3:4:4""#;
+
 /// Every page of that index, spelled out independently of the text it came from.
 ///
 /// `(object_key, model_id, component, slab, offset, length, dirty, deleted, log_backed)`.
@@ -844,11 +854,17 @@ const OLD_STORE_PAGES: &[(&str, &str, Option<&str>, u64, u64, u64, bool, bool, b
 /// stopped reading `flags.2` and every caller went on passing a bool that went nowhere -- no
 /// warning, because a tuple field is not an unused variable. Narrowing the tuple makes the
 /// compiler demand the change at each call site, which is the only way a caller finds out.
-pub(super) fn page_fixture(
-    component: Option<&str>,
-    length: u64,
-    flags: (bool, bool),
-) -> BlockIndex {
+///
+/// AND THE `component` ARGUMENT WENT THE SAME WAY, for the same reason and one step later. The
+/// literal below stopped setting an element name when the field left `BlockIndex`, so the argument
+/// decided nothing: `page_fixture(Some("f0"), ..)` and `page_fixture(None, ..)` returned the SAME
+/// value, and the golden over the second shape was a second copy of the first. It is removed rather
+/// than renamed to `_component`, so a caller that still tries to name an element is a compile error.
+///
+/// THE LITERAL IS EXHAUSTIVE AND HAS NO `..`, which is what makes it the tripwire the fourth shape
+/// used to be: an element-name field returning to the entry breaks THIS function to compile, before
+/// any golden has a chance to be re-goldened around it.
+pub(super) fn page_fixture(length: u64, flags: (bool, bool)) -> BlockIndex {
     BlockIndex {
         kind: crate::index_log::IndexItemKind::Page,
         routing_bucket: 7,
@@ -866,13 +882,28 @@ pub(super) fn page_fixture(
     }
 }
 
-/// THE STORED SPELLING OF A PAGE ENTRY, character for character, over four shapes.
+/// THE STORED SPELLING OF A PAGE ENTRY, character for character, over three shapes.
 ///
 /// Pinned because this line of work is about the entry's REPRESENTATION, and the one way a
-/// representation change becomes data loss is by moving a byte nobody was watching. Four shapes
+/// representation change becomes data loss is by moving a byte nobody was watching.
+///
+/// THREE SHAPES, NOT FOUR, AND THE FOURTH WAS NOT DROPPED FOR CONVENIENCE. It read: "Four shapes
 /// rather than one, because the component is `skip_serializing_if = "Option::is_none"`: a golden
 /// over a single shape would pin the branch that omits it and say nothing about the branch that
-/// writes it.
+/// writes it." There is no branch that writes it. `BlockIndex` has no element-name field, so the
+/// WITH_COMPONENT shape serialized to the same bytes as PLAIN -- the two goldens were one golden
+/// twice, and the control asserting them different (`assert_ne!(plain, with_component)`, "a page
+/// carrying a component must not write the same bytes as one without it") had become a comparison
+/// of a value with itself, asserted unequal.
+///
+/// WHAT REPLACES IT IS STRONGER THAN A FOURTH GOLDEN. The shape it was pinning cannot be
+/// constructed: `page_fixture`'s literal names every field with no `..`, so the field returning is
+/// a COMPILE error here rather than a golden someone updates.
+///
+/// AND THE THREE THAT REMAIN WERE CHECKED, NOT RE-GOLDENED. `PAGE_ENTRY_PLAIN`,
+/// `PAGE_ENTRY_ALL_FLAGS` and `PAGE_ENTRY_OVER_WIDE` are byte-for-byte what they were: the entry's
+/// serialized form lost the element-name key and nothing else, and none of these three ever carried
+/// one. The stamp this change spends is accounted for in the module header.
 ///
 /// WITH ITS OWN CONTROL. Two entries that both serialized to nothing would pass an equality test
 /// against each other, so the shapes are asserted to differ from one another and each spelling is
@@ -892,34 +923,23 @@ pub(super) fn page_fixture(
 /// disk. Keeping it empty is also what lets the decode go on cross-checking an old `g` against
 /// `block_id.or(object_id)`, which `an_old_store_whose_generation_disagrees_is_refused_before_the_decode`
 /// drives.
-///
-/// AND THE VALUE MOVING IS WHAT THE VERSION STAMP PAYS FOR. `SHARD_INDEX_FORMAT_VERSION` goes to 6
-/// with this change; the four goldens below are the tripwire that makes someone come and check
-/// that the stamp moved with them.
 #[test]
 fn the_stored_spelling_of_a_page_entry_moved_in_exactly_one_slot() {
-    let plain = serde_json::to_string(&page_fixture(None, 3, (false, false)))
-        .expect("a page entry serializes");
-    let with_component = serde_json::to_string(&page_fixture(Some("f0"), 3, (false, false)))
-        .expect("a page entry serializes");
-    let all_flags = serde_json::to_string(&page_fixture(None, 3, (true, true)))
-        .expect("a page entry serializes");
-    let over_wide = serde_json::to_string(&page_fixture(None, u64::MAX, (false, false)))
+    let plain =
+        serde_json::to_string(&page_fixture(3, (false, false))).expect("a page entry serializes");
+    let all_flags =
+        serde_json::to_string(&page_fixture(3, (true, true))).expect("a page entry serializes");
+    let over_wide = serde_json::to_string(&page_fixture(u64::MAX, (false, false)))
         .expect("a page entry serializes");
 
-    println!("PLAIN          = {plain}");
-    println!("WITH_COMPONENT = {with_component}");
-    println!("ALL_FLAGS      = {all_flags}");
-    println!("OVER_WIDE      = {over_wide}");
+    println!("PLAIN     = {plain}");
+    println!("ALL_FLAGS = {all_flags}");
+    println!("OVER_WIDE = {over_wide}");
 
     assert_eq!(
         PAGE_ENTRY_PLAIN, plain,
         "the stored spelling of a page entry moved AGAIN, beyond the one slot this change moved it \
          in; if that is intended, the version stamp has to move with it"
-    );
-    assert_eq!(
-        PAGE_ENTRY_WITH_COMPONENT, with_component,
-        "the stored spelling of a page entry WITH a component moved"
     );
     assert_eq!(
         PAGE_ENTRY_ALL_FLAGS, all_flags,
@@ -929,11 +949,23 @@ fn the_stored_spelling_of_a_page_entry_moved_in_exactly_one_slot() {
         PAGE_ENTRY_OVER_WIDE, over_wide,
         "the stored spelling of a page entry whose length saturated moved"
     );
-
-    // --- Controls. Without these the four assertions above could all be comparing "" with "". ---
+    // AND NO SHAPE WRITES AN ELEMENT-NAME KEY, which is what the retired fourth golden was for.
+    // Asserted over all three rather than inferred from the equalities above, because a golden
+    // updated in step with a regression would not report one and this will.
     for (name, spelling) in [
         ("plain", &plain),
-        ("with component", &with_component),
+        ("all flags", &all_flags),
+        ("over wide", &over_wide),
+    ] {
+        assert!(
+            !spelling.contains("\"component\""),
+            "the {name} spelling writes an element-name key: {spelling}"
+        );
+    }
+
+    // --- Controls. Without these the assertions above could all be comparing "" with "". ---
+    for (name, spelling) in [
+        ("plain", &plain),
         ("all flags", &all_flags),
         ("over wide", &over_wide),
     ] {
@@ -944,13 +976,8 @@ fn the_stored_spelling_of_a_page_entry_moved_in_exactly_one_slot() {
         );
     }
     assert_ne!(
-        plain, with_component,
-        "a page carrying a component must not write the same bytes as one without it, or the \
-         component has stopped being stored"
-    );
-    assert_ne!(
         plain, all_flags,
-        "the three flags must reach the stored form, or a dirty page would load clean"
+        "the flags must reach the stored form, or a dirty page would load clean"
     );
     assert_ne!(
         plain, over_wide,
@@ -961,15 +988,13 @@ fn the_stored_spelling_of_a_page_entry_moved_in_exactly_one_slot() {
     // will accept, never as its own low bits -- `u64::MAX` truncated to `u32` is 4,294,967,295
     // either way, so the case that decides it is the one below. ---
     let wrapped_would_be = (u64::MAX as u32) as u64; // what `as u32` yields: the low bits.
-    let saturated = page_fixture(None, u64::MAX, (false, false)).address.length();
+    let saturated = page_fixture(u64::MAX, (false, false)).address.length();
     assert_eq!(
         u32::MAX as u64,
         saturated,
         "an over-wide length must saturate at u32::MAX, not wrap"
     );
-    let low_bits = page_fixture(None, 0x1_0000_0003, (false, false))
-        .address
-        .length();
+    let low_bits = page_fixture(0x1_0000_0003, (false, false)).address.length();
     assert_eq!(
         u32::MAX as u64,
         low_bits,
@@ -1051,11 +1076,20 @@ fn an_index_written_before_this_change_loads_page_for_page() {
             // rows what it stored was WRONG: a log-resident flag set on a slab-backed page. That
             // disagreement was a documented defect. The property is derived from the address now,
             // so there is no stored copy left to round-trip and nothing to compare it against.
-            .map(|(key, model, component, slab, offset, length, dirty, deleted, _log_backed)| {
+            //
+            // AND THE COMPONENT COLUMN IS NOW THE SAME KIND OF COLUMN: KEPT, AND DERIVED THROUGH.
+            // It reads `Some("f0")` for the hash row because that is what the old index stored,
+            // and the table is the record of those bytes spelled out independently of the text. The
+            // expectation is DERIVED from it by applying the one difference this binary makes --
+            // the entry has no field to put an element name in, so the decode drops it -- rather
+            // than by editing `Some("f0")` to `None`. Editing the table would destroy the record
+            // and leave this arm asserting that an index with no element name loads as one with no
+            // element name, which is a statement about nothing.
+            .map(|(key, model, _component, slab, offset, length, dirty, deleted, _log_backed)| {
                 (
                     (*key).to_string(),
                     (*model).to_string(),
-                    component.map(str::to_string),
+                    None::<String>,
                     *slab,
                     *offset,
                     *length,
@@ -1083,9 +1117,33 @@ fn an_index_written_before_this_change_loads_page_for_page() {
         "the fixture holds {} pages; it is supposed to hold a multi-page object",
         loaded.len()
     );
+    // THE DERIVATION ABOVE MUST HAVE SOMETHING TO DERIVE, asserted on the SOURCE rather than on the
+    // result. This read `loaded.iter().any(|page| page.2.is_some())` -- "no loaded page carries a
+    // component, so the component's stored round trip is untested" -- and no loaded page CAN carry
+    // one, so it could only ever fail. What it was protecting is still worth protecting: that the
+    // stored bytes really do contain an element name for the decode to drop. So it is asked of the
+    // fixture, in both of the places the name appears in a stored row.
     assert!(
-        loaded.iter().any(|page| page.2.is_some()),
-        "no loaded page carries a component, so the component's stored round trip is untested"
+        OLD_STORE_PAGES.iter().any(|page| page.2.is_some()),
+        "no row of the stored page table carries an element name, so dropping it in the \
+         derivation above changes nothing and this arm tests no shed key"
+    );
+    assert!(
+        OLD_STORE_INDEX.contains(STORED_ELEMENT_NAME),
+        "the stored index text carries no {STORED_ELEMENT_NAME} key, so the tolerant decode this \
+         arm is about is not being exercised"
+    );
+    assert!(
+        OLD_STORE_INDEX.contains(STORED_NAMED_HANDLE),
+        "the stored index text carries no element-named page handle, so the key shape this arm is \
+         about is not being exercised"
+    );
+    // AND NOTHING THAT LOADED CARRIES ONE, which is the other half of the same statement: the
+    // decode is tolerant of the key and drops it rather than failing or keeping it.
+    assert!(
+        loaded.iter().all(|page| page.2.is_none()),
+        "a loaded page carries an element name; the entry has no field for one, so this would mean \
+         the field has come back"
     );
     assert!(
         loaded.iter().filter(|page| page.0 == "k").count() > 1,
@@ -1218,12 +1276,60 @@ fn an_index_written_before_this_change_is_written_back_without_the_key_the_entry
          from the entry and this binary does not write it"
     );
 
+    // AND THE ELEMENT NAME IS DROPPED FROM THE EXPECTATION IN BOTH PLACES IT APPEARS, COUNTED.
+    //
+    // THE FIFTH DIFFERENCE, AND THE ONLY ONE THIS BRANCH ADDS. `BlockIndex` has no element-name
+    // field, so a stored row that carries one is written back without it -- and the name appears
+    // TWICE in a stored row, which is why this is two substitutions and not one:
+    //
+    //   * the entry's own `"component":"f0"` key, which the wire struct no longer declares; and
+    //   * the page_index MAP KEY, `"hash:k:f0:1:9:3:4:4"`. `block_index_written_key` renders the
+    //     element name into that key, and it passes `None` now, so the slot between the object key
+    //     and the slab id is empty -- the same shape the five string rows in this fixture already
+    //     have.
+    //
+    // A SUBSTITUTION THAT MATCHED ONLY ONE OF THE TWO WOULD LEAVE THE COMPARISON REPORTING A
+    // DIFFERENCE IT HAD CAUSED ITSELF, so both are counted before and after, in the same shape as
+    // the object id and the log-resident flag above.
+    assert_eq!(
+        1,
+        canonical.matches(STORED_ELEMENT_NAME).count(),
+        "the fixture must carry exactly one stored element name, on its one hash row, or the \
+         canonicalisation below is not reporting what happens to one"
+    );
+    assert_eq!(
+        1,
+        canonical.matches(STORED_NAMED_HANDLE).count(),
+        "the fixture must carry exactly one element-named page handle, or the canonicalisation \
+         below is not reporting what happens to one"
+    );
+    let canonical = canonical
+        .replace(STORED_ELEMENT_NAME, "")
+        .replace(STORED_NAMED_HANDLE, PAGE_NAMED_HANDLE);
+    assert_eq!(
+        0,
+        canonical.matches("\"component\"").count(),
+        "every stored element name must be gone from the expectation: the key is retired from the \
+         entry and this binary does not write it"
+    );
+    assert_eq!(
+        0,
+        canonical.matches(STORED_NAMED_HANDLE).count(),
+        "the element-named page handle must be gone from the expectation, not left as it was"
+    );
+    assert_eq!(
+        1,
+        canonical.matches(PAGE_NAMED_HANDLE).count(),
+        "and it must be rewritten to the page-named handle this binary renders"
+    );
+
     let rewritten = serde_json::to_string(&index).expect("the index re-serializes");
     assert_eq!(
         canonical, rewritten,
         "the index this binary writes back differs from the index it was given in some way other \
          than dropping last_dump_sequence, retiring the address's routing bucket, emptying its \
-         identity slot, and dropping the log-resident flag the entry shed"
+         identity slot, dropping the log-resident flag the entry shed, and dropping the element \
+         name from both the entry and its page handle"
     );
     assert!(
         rewritten.len() > 500,

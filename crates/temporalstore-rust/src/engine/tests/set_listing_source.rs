@@ -186,6 +186,61 @@ fn components_the_pages_still_state(
     stated
 }
 
+/// The addresses of this object's LIVE pages, captured so they can still be read after the index
+/// entry that names them is gone.
+fn live_page_addresses(engine: &TemporalEngine, object_key: &str) -> Vec<ElementEntry> {
+    let shards = engine.shards.read().expect("engine lock poisoned");
+    let shard = shards.get(&1).expect("shard 1 is loaded");
+    let mut addresses = Vec::new();
+    for bucket in shard.bucket_index.bucket_map.values() {
+        for page in bucket.block_index.values() {
+            if page.model_id.as_str() != "set" || &*page.object_key != object_key || page.deleted {
+                continue;
+            }
+            addresses.push(page.address.clone());
+        }
+    }
+    addresses
+}
+
+/// Every element key a given set of PAGE ADDRESSES still states as present, read straight off the
+/// block store rather than through the index.
+///
+/// IT HAS TO BYPASS THE INDEX, which is the whole reason it exists beside
+/// `components_the_pages_still_state`: `drop_live_entries` removes the index ENTRY and leaves the
+/// block, so a page it un-names cannot be reached through `block_index` at all. Reading addresses
+/// captured beforehand is what lets an arm say the bytes outlived the name.
+fn components_at(
+    engine: &TemporalEngine,
+    addresses: &[ElementEntry],
+) -> std::collections::BTreeSet<String> {
+    let mut stated = std::collections::BTreeSet::new();
+    for address in addresses {
+        let Ok(bytes) = engine.block_store.read(address) else {
+            continue;
+        };
+        if let crate::engine::container_pages::ContainerPageDecode::Framed {
+            spelling,
+            items,
+            ..
+        } = crate::engine::container_pages::decode_container_page(&bytes)
+        {
+            for item in items {
+                if item.deleted {
+                    continue;
+                }
+                if let Some(component) =
+                    crate::engine::container_pages::component_from_element_key(spelling, &item.key)
+                {
+                    stated.insert(component);
+                }
+            }
+        }
+    }
+    stated
+}
+
+
 /// Drop `how_many` of this object's live set entries, leaving their PAGE untouched.
 fn drop_live_entries(engine: &TemporalEngine, object_key: &str, how_many: usize) -> usize {
     let mut shards = engine.shards.write().expect("engine lock poisoned");
@@ -241,10 +296,30 @@ fn a_folded_set_still_lists_every_member_in_the_order_it_always_did() {
         "[presence] {pages} distinct page(s), {live} live entr(ies), {tombstoned} tombstoned, \
          for {MEMBERS} members"
     );
+    // RE-ATTRIBUTED, BECAUSE `pages < live` BECAME UNREACHABLE RATHER THAN FALSE. All four
+    // container kinds now file ONE index entry a page, so every live entry of this object names a
+    // distinct page and `pages == live` holds BY CONSTRUCTION -- the old form can only ever fail,
+    // and its obvious repair, `pages == live`, is a tautology that would read like a guard while
+    // asserting nothing, both sides being the same walk counted twice.
+    //
+    // THE SHARING THIS ARM NEEDS IS A PROPERTY OF THE PAGE PAYLOAD, which is where the members
+    // went, so it is asserted there: strictly more members stated by the pages than there are
+    // pages. That compares two independent artefacts -- the index's page count, and the bytes
+    // inside those pages -- and the UNFOLDED shape FAILS it, at MEMBERS pages stating MEMBERS
+    // members, which is what makes this a measurement of the fold rather than a restatement of it.
+    let stated = components_the_pages_still_state(&engine, "listing/whole");
+    assert_eq!(
+        MEMBERS,
+        stated.len(),
+        "the live pages state {} member(s), not the {MEMBERS} written, so the payload side of the \
+         comparison below is not this whole set",
+        stated.len()
+    );
     assert!(
-        pages < live,
-        "the members did not come to share a page: {pages} page(s) for {live} entries, so nothing \
-         here is exercising a page read that used to happen several times"
+        pages < stated.len(),
+        "the members did not come to share a page: {pages} page(s) stating {} member(s), so \
+         nothing here is exercising a page read that used to happen several times",
+        stated.len()
     );
     let listed = listed_members(&engine, "listing/whole");
     // ORDER AND NOT JUST CONTENT. The walk is sorted by component, a set's component is its member
@@ -320,52 +395,92 @@ fn a_member_removed_after_the_fold_is_not_listed_even_though_its_page_still_stat
 // WHICH SOURCE, AND THE CONTROL
 // =================================================================================================
 
-/// IDENTITY COMES FROM THE ENTRIES, PROVED BY REMOVING A NAME AND NOT ITS PAGE.
+/// IDENTITY COMES FROM THE ENTRIES, AND A PARTIAL UN-NAMING CAN NO LONGER BE BUILT.
 ///
-/// Post-fold the members share a page, so dropping ONE live entry removes a name while leaving the
-/// page that holds the member. A listing driven by the entries loses exactly that member; one
-/// enumerating the payload loses none. This is the same experiment the rejected version used --
-/// with the assertion the other way round, because the answer it was looking for was the wrong one.
+/// RESTATED RATHER THAN ADJUSTED, because the experiment stopped being REPRESENTABLE. This arm
+/// dropped ONE live entry of a folded object so that a name went while the page holding the member
+/// stayed, then asked which way the listing went: an entry-driven listing loses exactly that
+/// member, a payload-driven one loses none. All four container kinds now file ONE INDEX ENTRY A
+/// PAGE, so a folded object has a single entry and the smallest un-naming the index can express is
+/// the WHOLE PAGE. `live == MEMBERS - 1` is therefore not a stale number to re-golden; it names a
+/// state the store can no longer reach, measured at 0 page(s) and 0 live entr(ies).
 ///
-/// THE CONTROL IS DROPPING EVERY ENTRY: the listing must be empty. Without it the arm above could
-/// pass on a listing that answers nothing at all.
+/// THE SAME DISCRIMINATION SURVIVES AT PAGE GRANULARITY, and that is what is asserted. Drop the one
+/// entry and the member BYTES are untouched -- `drop_live_entries` removes index entries, not
+/// blocks -- so the two sources disagree as sharply as they ever did: a reader enumerating the
+/// payload answers with all MEMBERS members, and a reader taking identity from the entries answers
+/// with none.
+///
+/// THE OLD CONTROL IS DELETED, NOT REPLACED IN KIND, and the reason is recorded here so that nobody
+/// restores it. It dropped EVERY entry and required the listing to be empty, which guarded the arm
+/// above against passing on a listing that answers nothing at all. Post-collapse, dropping the one
+/// entry IS dropping every entry: the control had become the subject run a second time, and a
+/// control that runs the subject cannot discriminate. The control that replaces it interrogates the
+/// OTHER side -- the captured pages must still state all MEMBERS members after the drop -- so an
+/// empty listing cannot be explained away by the bytes having gone with the name.
 #[test]
 fn the_set_listing_takes_its_identity_from_the_entries_and_not_from_the_payload() {
     let (engine, _dir) = folded_set("listing/one-name-gone");
+
+    // ONE ENTRY A PAGE IS THE PREMISE, so it is asserted rather than assumed. If a set ever went
+    // back to an entry per element this reads MEMBERS and the whole-page reasoning stops applying.
+    let (pages_before, live_before, _) = page_and_entry_counts(&engine, "listing/one-name-gone");
+    assert_eq!(
+        1, live_before,
+        "the folded object holds {live_before} live entr(ies) over {pages_before} page(s). One \
+         entry a page is what makes a whole-page un-naming the only one available, and this arm \
+         is built on it"
+    );
+
+    // Captured BEFORE the drop, because an un-named page is unreachable through the index: the
+    // control below has to read these addresses straight off the block store.
+    let addresses = live_page_addresses(&engine, "listing/one-name-gone");
+    assert_eq!(
+        pages_before,
+        addresses.len(),
+        "captured {} address(es) for {pages_before} live page(s)",
+        addresses.len()
+    );
+
     let dropped = drop_live_entries(&engine, "listing/one-name-gone", 1);
     assert_eq!(1, dropped, "the fixture dropped {dropped} entries, not one");
     let (pages, live, _) = page_and_entry_counts(&engine, "listing/one-name-gone");
-    assert!(
-        pages >= 1 && live == MEMBERS - 1,
-        "after dropping one entry: {pages} page(s), {live} live entr(ies). The page must survive \
-         for this arm to distinguish the sources"
-    );
-    let listed = listed_members(&engine, "listing/one-name-gone");
     assert_eq!(
-        MEMBERS - 1,
-        listed.len(),
-        "the listing returned {} member(s) after one NAME was dropped while its page survived. \
-         Identity is supposed to come from the entries, so exactly one member should go; a \
-         payload-enumerating reader would still return all {MEMBERS}",
+        (0usize, 0usize),
+        (pages, live),
+        "dropping this object's one entry left {pages} page(s) and {live} live entr(ies). The \
+         un-naming is supposed to take a whole page's worth of names with it, because there is one \
+         entry a page -- if this ever reads (1, 39) the partial un-naming is representable again \
+         and the arm this one replaced should come back"
+    );
+
+    // THE CONTROL, AND IT IS ON THE SOURCE THE SUBJECT DOES NOT USE. The bytes outlived the name.
+    let stated = components_at(&engine, &addresses);
+    assert_eq!(
+        MEMBERS,
+        stated.len(),
+        "the captured pages state {} member(s) after the entry was dropped, not the {MEMBERS} \
+         written. The empty listing below has to be the entries' doing; if the payload went with \
+         the name this arm cannot tell an entry-driven reader from a payload-driven one",
+        stated.len()
+    );
+
+    // THE FINDING.
+    let listed = listed_members(&engine, "listing/one-name-gone");
+    assert!(
+        listed.is_empty(),
+        "the listing returned {} member(s) with no live entry naming their page, while those \
+         pages still state all {MEMBERS}. A reader enumerating the payload answers exactly that \
+         way, which is the defect this arm exists for and the reason identity stays with the \
+         entries",
         listed.len()
     );
-    drop(engine);
-
-    // THE CONTROL.
-    let (engine, _dir) = folded_set("listing/all-names-gone");
-    let dropped = drop_live_entries(&engine, "listing/all-names-gone", usize::MAX);
-    assert!(
-        dropped >= MEMBERS,
-        "the control dropped only {dropped} of {MEMBERS} entries, so it proves nothing"
+    println!(
+        "[source] the object's one entry dropped -> {} member(s) listed, while the captured pages \
+         still state {} -- identity is the entries'",
+        listed.len(),
+        stated.len()
     );
-    let empty = listed_members(&engine, "listing/all-names-gone");
-    assert!(
-        empty.is_empty(),
-        "the listing returned {} member(s) with no live entry naming the page, so this test \
-         cannot fail",
-        empty.len()
-    );
-    println!("[source] one name dropped -> one member gone; every name dropped -> empty");
 }
 
 // =================================================================================================

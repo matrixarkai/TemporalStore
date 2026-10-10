@@ -502,12 +502,37 @@ impl TemporalEngine {
         let shards = self.shards.read().expect("engine lock poisoned");
         let shard = shards.get(&shard_id)?;
         let (start_routing_bucket, end_routing_bucket) = shard.routing_range();
-        let address = super::bucket_store::bucket_index_block_address(
-            shard,
-            model_id,
-            object_key,
-            component,
-        )?;
+        // A NAMED ELEMENT'S ADDRESS COMES FROM THE RESIDENT MAP.
+        //
+        // This asked `bucket_index_block_address`, which requires
+        // `page.component.as_deref() == component` on every branch. An entry carries no element
+        // name, so for a container element that resolved NOTHING and this door answered `None` for
+        // elements that were present and served:
+        // `container_page_element_key::every_container_kind_reads_back_the_value_it_wrote_through_a_
+        // framed_page` failed at "no stored page for hash hash-key component field-0000".
+        //
+        // The resident map is keyed BY the element and is where the production readers that used to
+        // resolve this way now go, so this door follows them rather than keeping a resolution the
+        // engine no longer has. The index is still asked as a FALLBACK, because it is the door for
+        // a kind that has no resident element map -- and because a caller naming a component for
+        // such a kind should get the same answer it always did.
+        let address = match component {
+            Some(component) => {
+                super::state::resident_component_address(shard, model_id, object_key, component)
+                    .cloned()
+                    .or_else(|| {
+                        super::bucket_store::bucket_index_block_address(
+                            shard,
+                            model_id,
+                            object_key,
+                            Some(component),
+                        )
+                    })?
+            }
+            None => super::bucket_store::bucket_index_block_address(
+                shard, model_id, object_key, None,
+            )?,
+        };
         let routing_bucket = super::hashing::block_routing_bucket(
             object_key,
             start_routing_bucket,

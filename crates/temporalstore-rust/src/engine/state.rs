@@ -148,7 +148,12 @@ pub(super) struct ShardState {
     #[serde(skip)]
     pub(super) expiry_by_deadline: BTreeMap<(u64, String), ()>,
     pub(super) strings: HashMap<ModelKey, ElementEntry>,
-    // Rebuildable from the durable bucket/block index on load; do not duplicate in checkpoints.
+    // DURABLE, AND THIS LINE SAID IT WAS NOT. It read "Rebuildable from the durable bucket/block
+    // index on load; do not duplicate in checkpoints", which was true while this field was
+    // `skip_serializing` and the element name on a page-index entry was the durable spelling of a
+    // hash field. The entry has no element-name field now, so nothing could rebuild this map from
+    // the index: `hashes` carries `#[serde(default)]` below, as `sets`, `zsets` and `lists` do, and
+    // the four resident maps ARE the authority rather than a derived view of one.
     //
     // THE INNER CONTAINER IS A SORTED VECTOR, NOT A TABLE AND NOT A B-TREE, and it is the only one
     // of the eighteen nested model maps that is either. Measured on the counting allocator, a hash
@@ -4228,22 +4233,33 @@ pub(super) struct BlockIndex {
 }
 
 /// One per stored block. TWO shared names, a one-byte model spelling, an address, and three
-/// flags -- 56 bytes of field in 56, WITH NO SLACK LEFT.
+/// flags -- 40 bytes of field in 40, WITH NO SLACK LEFT.
 ///
-/// It was 52 of field in 56 before the entry absorbed the index-log row's two locating fields and
-/// shed the flag nothing maintained. The width did not move; the slack did, from four bytes to
-/// none. SO THE NEXT FIELD ADDED HERE COSTS EIGHT BYTES, NOT NONE -- every field decision in this
-/// structure's history was priced against slack that no longer exists.
+/// THE DECOMPOSITION IN THIS PARAGRAPH WAS STALE AND THE CONST ASSERT BELOW WAS NOT. It read "56
+/// bytes of field in 56 ... It was 52 of field in 56 before the entry absorbed the index-log row's
+/// two locating fields and shed the flag nothing maintained", and at the flags it read "at 60 four
+/// again -- and at 56 it is ZERO". The element-name field has since been removed: the entry is 40
+/// of field in 40, the const assert thirty lines below reconstructs that sum FROM THE TYPES, and a
+/// prose decomposition is the one form of this that nothing can fail. It is corrected here rather
+/// than deleted, because the history is what tells the next reader that every field decision in
+/// this structure was priced against slack it no longer has.
 ///
-/// 64, not 72, since the address inside it is 24 bytes and not 32: it shed the `routing_bucket`
-/// the read path now derives from the key, and narrowed its `block_id` to the sixteen bits the
-/// record encoder has always refused to exceed. That is the fourth whole eight-byte step out of
-/// this structure: 72, not 88, since the model spelling stopped being a sixteen-byte fat pointer
-/// to a string drawn from a seventeen-element set; 88, not 96, since the address merged its slab
-/// id and its offset into one word; 96, not 104, since it shed its derived `generation` before
-/// that.
+/// 40, NOT 56, SINCE THE ELEMENT NAME LEFT: `Option<Arc<str>>` is a sixteen-byte fat pointer with a
+/// niche, so the field set went 56 -> 40 and the width with it -- a whole two words rather than one
+/// word and some rounding. SO THE NEXT FIELD ADDED HERE STILL COSTS EIGHT BYTES, NOT NONE: 40 is a
+/// multiple of eight, so the field set packs exactly and the first addition rounds the type up by a
+/// full word. `element_ordinal_reuse::the_width_an_element_ordinal_would_take_and_the_ceiling_that_
+/// implies` prices both candidate ordinal widths at 48 for that reason.
 ///
-/// THE FOURTH STEP IS TWO NARROWINGS AND NEITHER IS WORTH ANYTHING ALONE. The address carried 29
+/// 56, not 64, since the address inside it is 16 bytes and not 24; 64, not 72, before that, since
+/// the address shed the `routing_bucket` the read path now derives from the key and narrowed its
+/// `block_id` to the sixteen bits the record encoder has always refused to exceed. That is one
+/// whole eight-byte step out of this structure among several: 72, not 88, since the model spelling
+/// stopped being a sixteen-byte fat pointer to a string drawn from a seventeen-element set; 88, not
+/// 96, since the address merged its slab id and its offset into one word; 96, not 104, since it
+/// shed its derived `generation` before that.
+///
+/// THE ADDRESS STEP WAS TWO NARROWINGS AND NEITHER WAS WORTH ANYTHING ALONE. The address carried 29
 /// bytes of payload in 32. Dropping the bucket leaves 25 and narrowing the id leaves 27; both
 /// round back to 32 and this structure would have stayed 72 for either one. Together they leave
 /// 23, the address is 24, and the step lands. `block_store`'s width assert carries both
@@ -4251,13 +4267,13 @@ pub(super) struct BlockIndex {
 /// reading of it that declared this blocked.
 ///
 /// AND THE FLAGS STILL DO NOT PAY, THOUGH NO LONGER BECAUSE OF SLACK. At 99 bytes of field the
-/// slack was five, at 91 five, at 83 five, at 68 four, at 60 four again -- and at 56 it is ZERO:
-/// the two locating fields absorbed from the index-log row filled the tail exactly. Packing the
-/// TWO flags that remain would still reclaim nothing, because the tail rounds to one word with or
-/// without them, and it would still move the stored index, which spells each of them as its own
-/// key. What changed is that the slack this claim used to be READ OFF is gone, so the claim is
-/// asserted directly in `pages_per_bucket::every_byte_of_the_page_index_is_accounted_for` instead
-/// of through the room left over beside it.
+/// slack was five, at 91 five, at 83 five, at 68 four, at 60 four again, at 56 it was ZERO -- and
+/// at 40 it is ZERO still, because 40 packs exactly as 56 did. Packing the TWO flags that remain
+/// would reclaim nothing, because the tail rounds to one word with or without them, and it would
+/// still move the stored index, which spells each of them as its own key. What changed is that the
+/// slack this claim used to be READ OFF is gone, so the claim is asserted directly in
+/// `pages_per_bucket::every_byte_of_the_page_index_is_accounted_for` instead of through the room
+/// left over beside it.
 ///
 /// AND THE WIRE DID MOVE, IN EXACTLY ONE SLOT. This paragraph said "WHAT DID NOT MOVE IS THE WIRE
 /// -- the spelling is still written and read as the string it always was; only the in-memory width
@@ -4324,6 +4340,227 @@ const _: () = {
     // ZERO SLACK, asserted as the claim: the next field here costs EIGHT bytes. It survived the
     // removal -- 40 is a multiple of 8, so the field set still packs exactly.
     assert!(field_sum == std::mem::size_of::<BlockIndex>());
+};
+
+// WHAT THE ENTRY WOULD BE IF ITS ADDRESS FIELD HELD THE BARE WORD: THIRTY-TWO, MEASURED.
+//
+// # AND THE FIELD CANNOT HOLD IT TODAY. THE NUMBER IS RECORDED, THE STEP IS REFUSED.
+//
+// The width is real and it is recorded here because the next lane needs it to be real before it
+// starts. What blocks it is not the width and not the census: it is that THREE OF THE FOUR TERMS
+// THE HOLDER CARRIES ARE READ THROUGH THIS FIELD, and every place that reads them is a place the
+// bare word cannot answer. A compiler census over `address: BlockAddress` enumerates 157 errors in
+// 39 files -- 48 on `length`, 26 on `block_id`, 7 on `generation` -- and SEVEN production readers
+// of `block_id` alone, which is four more than the three this step was scoped against. The four
+// that were missed are `BlockIndex::log_backed`, `container_page_ordinal`, and the handle and the
+// written key.
+//
+// THE ONE THAT DECIDES IT IS `next_block_index_for_object`, and the lead that was supposed to free
+// it is refuted by the structure it points at. A block id is an ordinal INSIDE its object, and the
+// walk takes `max + 1` over the object's entries -- so the question is whether the ordinal is
+// recoverable as a POSITION in the object's own block list instead of stored on every entry. It is
+// not, on four independent grounds, each read off the list rather than argued:
+//
+//   * `BlockRefs::insert` keeps the list as a SORTED SET ordered by `BlockLookupRef`'s derived
+//     `Ord`, whose second term is `block_ref_key` -- a `u64` HASH. Position in that list is
+//     position in hash order, which carries no ordinal.
+//   * The list is nested PER COMPONENT (`ComponentBlocks`), while `next_block_index_for_object`
+//     filters on `(model_id, object_key)` and NOT on the component. A position inside one
+//     component's list is the wrong denominator for a maximum taken across all of them.
+//   * `insert_object_block_lookup` returns early on `page.deleted`, so the list omits exactly the
+//     entries the walk still counts. Taking the ordinal from the list would hand out a value BELOW
+//     a deleted-but-still-reachable block's ordinal, which is the reuse this walk's own doc calls
+//     two live blocks claiming one position.
+//   * The list is keyed per object across buckets; the walk is scoped to ONE `routing_bucket`.
+//
+// AND A COUNTER IS NOT THE WAY OUT: this walk reads the blocks rather than a counter precisely so
+// the value survives a restart with nothing persisted for it, and `block_index_handle`'s doc
+// records a counter having lost an object on reload, silently.
+//
+// THE RECORD HEADER DOES HOLD IT -- `BlockRecordHeader` carries `block_id` durably -- but reading
+// it there turns one in-memory maximum into one disk read per block of the object, on the append
+// path of `feature` and all six `context_*` kinds. That is the trade this step would be, and it is
+// a serving-path cost paid to save eight bytes of resident width.
+//
+// # THE SIBLINGS FOLLOW, SO HALF A STEP PAYS NOTHING
+//
+// Keeping any one of the remaining two as its own field on this entry costs the whole eight bytes
+// back. The small-field group is EXACTLY FULL at eight bytes -- `kind` 1, `routing_bucket` 4,
+// `model_id` 1, `dirty` 1, `deleted` 1 -- and it is still exactly full after the element name
+// left, because that field was never in it. So a `block_id: u16` beside it spills into a second
+// word and the entry measures 40 again, with 34 bytes of field instead of 32. A `length: u32` does
+// the same. That is the recorded shape of this whole address: the word sheds eight bytes and the
+// holder sheds none.
+//
+// THE NUMBERS IN THIS PARAGRAPH MOVED WITH THE PROBE AND THE CLAIM DID NOT. It read "the entry
+// measures 56 again, with 50 bytes of field instead of 56", against a probe at 48 and a live entry
+// at 56. Against a probe at 32 and a live entry at 40 the same spill reads 40 and 34 -- the step
+// is still a whole word given back, which is the whole point of the paragraph.
+//
+// # AND THE HANDLE'S UNIQUENESS ARGUMENT DOES NOT SURVIVE DROPPING `length`
+//
+// `block_index_handle` hashes five address terms, and the reading that frees it is that the bare
+// word IS the physical page, so slab and offset alone still tell two entries apart. THE SITE SAYS
+// OTHERWISE. `storage_bucket_internals::emit_one_entry_a_page` dedups on the TRIPLE
+// `(block_slab_id, offset, length)`, and its own note states the safety direction: deduping on
+// that narrow triple is safe only because the handle hashes a WIDER tuple, so the set "can only
+// ever emit FEWER entries than the handle is able to tell apart, never more". Dropping `length`
+// from the handle takes the handle NARROWER than the dedup, which inverts that direction -- two
+// entries that differ only in length survive the dedup and then collide on one handle, and a
+// handle collision returns a DIFFERENT page rather than failing. That is the recorded
+// 39-of-40 element loss. `validate_bucket_ownership_index_from_entries` identifies a page by the
+// same triple plus `block_id`, so nothing in this tree treats slab and offset as a page identity.
+//
+// Dropping `block_id` and `generation` from the handle alone WOULD stay on the safe side of that
+// argument -- both are terms the dedup does not use -- but it moves `block_index_written_key`,
+// which is the stored spelling, and the handle is written to disk inside the lookup's refs.
+//
+// # AND THE FIELD IS NOT SERIALIZABLE AS A BARE WORD
+//
+// `BlockAddress` derives no `Serialize` and no `Deserialize`, and that is deliberate rather than an
+// oversight: its own doc says the serde "lives THERE rather than here -- it has to, because the
+// wire row spells all four and only the holder has all four in scope". `BlockIndex` IS the stored
+// form of the page index, so the field cannot hold the bare word without the wire row giving up
+// three terms durably.
+const _: () = {
+    #[allow(dead_code)]
+    struct TheEntryHoldingOneAddressWord {
+        kind: crate::index_log::IndexItemKind,
+        routing_bucket: u32,
+        object_key: Arc<str>,
+        model_id: crate::engine::storage_bucket_internals::StoredModelKind,
+        address: crate::block_store::BlockAddress,
+        dirty: bool,
+        deleted: bool,
+    }
+    let field_sum = std::mem::size_of::<crate::index_log::IndexItemKind>()
+        + std::mem::size_of::<u32>()
+        + std::mem::size_of::<Arc<str>>()
+        + std::mem::size_of::<crate::engine::storage_bucket_internals::StoredModelKind>()
+        + std::mem::size_of::<crate::block_store::BlockAddress>()
+        + std::mem::size_of::<bool>()
+        + std::mem::size_of::<bool>();
+    // THE PROBE LOST THE TERM THE LIVE ENTRY LOST, WHICH IS WHY THE NUMBER MOVED FROM 48 TO 32.
+    //
+    // It carried a `component: Option<Arc<str>>` -- sixteen bytes -- and measured 48, because it
+    // was written against an entry that still named its element. This branch removed that field
+    // from `BlockIndex`, and the probe's whole job is to answer "what would THIS entry measure if
+    // its address field held the bare word". Keeping the term would have the probe measure a
+    // structure that cannot exist here, and the tie at the bottom of this block is what stops that
+    // -- it is the assertion that went red on the merge.
+    //
+    // THE REFUSAL ABOVE IS UNTOUCHED BY ANY OF THIS, which is worth saying because only the width
+    // moved. Three of the four terms the holder carries are read through this field; the census
+    // that enumerates them counts READERS, not bytes, and the seven production readers of
+    // `block_id` are the same seven. What this branch changed is the number the step would reach,
+    // not whether it can be taken.
+    //
+    // THE TWO NUMBERS THE STEP IS ABOUT, both asserted and neither inferred from the other.
+    assert!(field_sum == 32);
+    assert!(std::mem::size_of::<TheEntryHoldingOneAddressWord>() == 32);
+    // ZERO SLACK SURVIVES THE NARROWING: 32 is a multiple of eight, so the step is a whole word
+    // and not a word of field plus some rounding. It survived the element name's removal too --
+    // 48 and 32 are both multiples of eight -- so this identity is checked rather than restated.
+    assert!(std::mem::size_of::<TheEntryHoldingOneAddressWord>() == field_sum);
+    // TIED TO `BlockIndex` ITSELF, so this cannot go on describing a type that moved. The real
+    // entry must equal the probe plus exactly what the holder carries over the bare word.
+    //
+    // THE EXPRESSION IS UNCHANGED AND IT IS THE PROBE THAT MOVED. 32 + (16 - 8) is 40, which is
+    // what the live entry measures; it was 48 + (16 - 8) = 56 against main's. So the tie did its
+    // job twice over: it refused the merge, and it still holds with no term added to it.
+    assert!(
+        std::mem::size_of::<BlockIndex>()
+            == std::mem::size_of::<TheEntryHoldingOneAddressWord>()
+                + (std::mem::size_of::<ElementEntry>()
+                    - std::mem::size_of::<crate::block_store::BlockAddress>())
+    );
+};
+
+// WHERE THIS LEG ENDS IF THE REMAINING NARROWINGS LAND: TWENTY OF FIELD IN TWENTY-FOUR.
+//
+// THREE LANES WERE NAMED AND ONE HAS LANDED, so this reads as two. It said "Three lanes have to
+// land for this shape to exist, and this one owns NONE of them: the address field holding the bare
+// word (refused above, with its reasons), `component` leaving, and `object_key` becoming an ordinal
+// rather than a shared name." The element name HAS left `BlockIndex` on this branch -- the entry is
+// 40 -- so what stands between the live entry and this shape is the address word and the object
+// key. The probe below is unchanged: it was already written without an element name, which is why
+// its own three assertions survived the merge untouched while the two that tie back to the live
+// entry did not.
+//
+// It is pinned here so that whoever lands the last of them finds the number already measured
+// rather than arriving at it by adjusting an assertion until it passed.
+//
+// # THE SLACK AT TWENTY-FOUR IS FOUR BYTES, NOT ZERO, AND THAT CHANGES THE NEXT DECISION
+//
+// This was scoped as "20 of field, 24 wide, zero slack". The first two are measured and the third
+// is not arithmetic any field set can satisfy: TWENTY IS NOT A MULTIPLE OF EIGHT, so a twenty-byte
+// field set inside an eight-aligned struct has FOUR bytes of padding by construction. Measured at
+// four, and asserted as four rather than as zero.
+//
+// IT MATTERS BECAUSE IT INVERTS THE RULE THIS STRUCTURE IS CURRENTLY GOVERNED BY. At 40 the entry
+// has zero slack and the block above asserts it, so the next field added costs a whole eight
+// bytes. At 24 there are four bytes standing empty, so the next field up to four bytes wide costs
+// NOTHING. Every field decision taken here while the entry was full has to be re-priced at that
+// point, not inherited. That was true of the entry at 56 and it is still true at 40: the removal
+// of the element name took a whole two words and left the field set packing exactly, so the rule
+// did not change when the width did.
+const _: () = {
+    #[allow(dead_code)]
+    struct TheEntryAtTheEndOfTheNarrowings {
+        kind: crate::index_log::IndexItemKind,
+        routing_bucket: u32,
+        object_key: u32,
+        model_id: crate::engine::storage_bucket_internals::StoredModelKind,
+        address: crate::block_store::BlockAddress,
+        dirty: bool,
+        deleted: bool,
+    }
+    let field_sum = std::mem::size_of::<crate::index_log::IndexItemKind>()
+        + std::mem::size_of::<u32>()
+        + std::mem::size_of::<u32>()
+        + std::mem::size_of::<crate::engine::storage_bucket_internals::StoredModelKind>()
+        + std::mem::size_of::<crate::block_store::BlockAddress>()
+        + std::mem::size_of::<bool>()
+        + std::mem::size_of::<bool>();
+    // THE TWO NUMBERS, asserted independently and neither read off the other.
+    assert!(field_sum == 20);
+    assert!(std::mem::size_of::<TheEntryAtTheEndOfTheNarrowings>() == 24);
+    // THE ROUNDING RELATION, so a field set that stops rounding to 24 fails here.
+    assert!(std::mem::size_of::<TheEntryAtTheEndOfTheNarrowings>() == (field_sum + 7) / 8 * 8);
+    // THE SLACK, MEASURED AT FOUR. Written as its own assertion because the claim this block
+    // exists to correct is that it is zero.
+    assert!(std::mem::size_of::<TheEntryAtTheEndOfTheNarrowings>() - field_sum == 4);
+    // TIED TO `BlockIndex` ITSELF, through its field sum rather than its width -- the widths
+    // differ by a rounding and the field sums differ by exactly the narrowings. The first
+    // assertion is what makes this a claim about the real struct: it holds only while the live
+    // entry has zero slack, so a field added to or removed from `BlockIndex` breaks this block.
+    //
+    // AND IT DID BREAK, WHICH IS THE PIN WORKING. `live_field_sum` carried an
+    // `Option<Arc<str>>` term for the element name and came to 56 -- main's entry. This branch
+    // removed that field, so the live entry is SEVEN fields and 40, and the assertion below went
+    // red on the merge rather than quietly describing a type that had moved. The term is dropped
+    // rather than the number adjusted.
+    let live_field_sum = std::mem::size_of::<crate::index_log::IndexItemKind>()
+        + std::mem::size_of::<u32>()
+        + std::mem::size_of::<Arc<str>>()
+        + std::mem::size_of::<crate::engine::storage_bucket_internals::StoredModelKind>()
+        + std::mem::size_of::<ElementEntry>()
+        + std::mem::size_of::<bool>()
+        + std::mem::size_of::<bool>();
+    assert!(live_field_sum == std::mem::size_of::<BlockIndex>());
+    // AND THE DELTAS ARE TWO NOW, NOT THREE. This read `field_sum + (ElementEntry - BlockAddress)
+    // + size_of::<Option<Arc<str>>>() + (Arc<str> - u32)`, naming the three narrowings that stood
+    // between the live entry and the end of the leg. The middle one -- the element name leaving --
+    // HAS LANDED on this branch, so it is no longer a difference between the two shapes and
+    // naming it here would double-count it. What is left between 40 and 20 is the address word and
+    // the object key.
+    assert!(
+        live_field_sum
+            == field_sum
+                + (std::mem::size_of::<ElementEntry>()
+                    - std::mem::size_of::<crate::block_store::BlockAddress>())
+                + (std::mem::size_of::<Arc<str>>() - std::mem::size_of::<u32>())
+    );
 };
 
 // THE DEFERRED DECISION, WITH A TRIGGER RATHER THAN A NOTE.
@@ -5083,6 +5320,83 @@ mod component_lookup_tests {
                 .object_block_refs("hash", "k")
                 .map_or(0, BlockRefs::len),
             "the object's refs are not all reachable through its single slot"
+        );
+    }
+    /// THE REFS IN THE ONE SLOT STAY SORTED, WHICH IS THE ORDER `remove` SEARCHES.
+    ///
+    /// CARRIED FROM AN ARM THE COLLAPSE DELETED, in the merge that joined the two branches.
+    /// `components_of_one_object_stay_separate` in `part4.rs` asserted "removal binary-searches
+    /// this vector, so its order is load-bearing" of the SECOND LEVEL's vector, and the
+    /// element-name branch's rewrite of that arm moved the claim down onto the refs. The level is
+    /// gone and the rewrite with it -- it reads `by_component` and `refs_for(..)`, neither of which
+    /// exists -- but the claim belongs here: [`BlockRefs::insert`] keeps the refs sorted and
+    /// [`BlockRefs::remove`] binary-searches them, so an `insert` rewritten to append, which is the
+    /// obvious way to add to a `Vec`, would leave every other arm in this module green and make
+    /// `remove` miss a ref that is present. Nothing else in the tree asserted it.
+    ///
+    /// THE FIXTURE INSERTS DESCENDING ON PURPOSE. Fed ascending refs, an append and a sorted insert
+    /// produce the SAME vector and this arm could not tell them apart. [`core_with`] ascends, so
+    /// this builds its own rather than reusing it.
+    ///
+    /// AND IT COMPARES WHOLE REFS. `BlockLookupRef` derives `Ord` over `(routing_bucket,
+    /// block_ref_key)`, so sorting a projection onto either field alone is a DIFFERENT order that
+    /// agrees with this one only while the two fields ascend together. The version on the
+    /// element-name branch projected onto `block_ref_key`, which is why it is restated here rather
+    /// than carried across.
+    ///
+    /// THE CONSEQUENCE IS ASSERTED AND NOT ONLY THE MECHANISM. The ref inserted LAST is the lowest,
+    /// so an append would strand it at the end of an unsorted vector where `binary_search` cannot
+    /// reach it; the removal below is the question `remove` actually asks.
+    #[test]
+    fn the_refs_in_the_only_slot_stay_sorted_for_the_search_that_removes_them() {
+        const PAGES: u32 = 4;
+        let mut index = CoreIndex::default();
+        // The counter must be established before the inserts, for the reason `core_with` gives.
+        index.object_component_block_refs = Some(0);
+        // DESCENDING: (3,3), (2,2), (1,1), (0,0).
+        for i in (0..PAGES).rev() {
+            index.insert_object_block_lookup(i, u64::from(i), &page("k"));
+        }
+
+        let refs = index
+            .object_block_refs("hash", "k")
+            .expect("the object is in the lookup");
+        assert_eq!(
+            PAGES as usize,
+            refs.len(),
+            "the fixture filed {} refs of {PAGES}, so the order claim below has too little to              range over",
+            refs.len()
+        );
+        let held = refs.as_slice();
+        assert!(
+            held.windows(2).all(|pair| pair[0] < pair[1]),
+            "the refs in the slot are not strictly ascending, so `BlockRefs::remove`'s binary              search can miss a ref that is present: {held:?}"
+        );
+
+        // THE REF INSERTED LAST IS AT THE FRONT, which an append cannot achieve.
+        let lowest = BlockLookupRef {
+            routing_bucket: 0,
+            block_ref_key: 0,
+        };
+        assert_eq!(
+            Some(&lowest),
+            held.first(),
+            "the lowest ref went in last and is not at the front, so the insert is not placing by              order: {held:?}"
+        );
+
+        // AND `remove` FINDS IT. This is the failure an append-style insert actually produces: the
+        // ref is present, `binary_search` looks for it in the wrong half, and the removal reports
+        // that an object's live page was never filed.
+        let mut slot = refs.clone();
+        assert!(
+            slot.remove(&lowest),
+            "the slot holds {lowest:?} and `remove` did not find it"
+        );
+        assert_eq!(
+            PAGES as usize - 1,
+            slot.len(),
+            "the removal took {} refs, not exactly one",
+            PAGES as usize - slot.len()
         );
     }
 
