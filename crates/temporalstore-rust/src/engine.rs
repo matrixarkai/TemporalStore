@@ -989,6 +989,10 @@ impl TemporalEngine {
                             end_routing_bucket,
                         ),
                     );
+                    // PUSHED, NOT PULLED. The bucket predicate no longer asks a page which object
+                    // it belongs to, so the dirtiness has to reach the pages here, where the shard
+                    // is in scope. Idempotent, so the async branch below marking again is free.
+                    push_object_dirty_onto_its_existing_pages(shard, &object_key);
                     if config.async_storage {
                         mark_async_dirty_object(
                             shard,
@@ -5905,6 +5909,91 @@ fn record_exists_exact(shard: &ShardState, key: &str) -> bool {
         || shard.context_children.contains_key(key)
         || shard.context_summaries.contains_key(key)
         || shard.context_compressions.contains_key(key)
+}
+
+/// Mark every page an object ALREADY HAS as dirty, at the moment the object is marked.
+///
+/// # WHY THE DIRTINESS IS PUSHED RATHER THAN PULLED
+///
+/// A bucket is dirty when any page in it is dirty or any page's OBJECT is dirty. The second half
+/// asked a page which object it belonged to, which is the one question a page is about to stop
+/// being able to answer -- and it asked it on the write path, in a scope holding nothing but the
+/// bucket, so there was nowhere to look the answer up. Pushing at mark time moves that work to a
+/// place that already holds the shard, and leaves the bucket predicate as `any(page.dirty)`.
+///
+/// IT IS ALSO LESS WORK, not merely work moved. Pulling costs a map lookup per page on every
+/// refresh, and a refresh happens on every write. Pushing costs one lookup plus one write per page
+/// the object already has, once per mark. Marks cannot outnumber refreshes, because every mark is
+/// on a write and every write refreshes.
+///
+/// # WHAT MAKES IT EQUIVALENT, WHICH IS THE PART THAT HAD TO BE ESTABLISHED
+///
+/// The predicate iterates PAGES, so the object half only ever decided the answer for pages that
+/// EXIST. Two cases cover those:
+///
+///   * pages that exist when the object is marked -- this function marks them;
+///   * pages written after the object is marked -- the write path already sets `dirty` on the
+///     entry it constructs from its caller's intent, so they carry their own.
+///
+/// And nothing is left dirty that should not be, because both clearing paths clear pages in the
+/// SAME SCOPE they drop object keys: the dump clears every page of each cleared bucket and then
+/// drains exactly those buckets, and the per-object clear removes the key and then clears that
+/// object's pages. A load clears every page and starts the dirty set empty.
+///
+/// # THE ONE PREMISE, ASSERTED RATHER THAN ASSUMED
+///
+/// This can only find pages through the object lookup, which is derived and is empty between a
+/// decode and the rebuild that fills it. A mark in that window would find nothing. The load
+/// rebuilds before it returns the shard, so the window should not be reachable from a write --
+/// and that is a claim about control flow rather than about this function, so it is a
+/// `debug_assert` here instead of a comment. If it ever fires, a mark is reaching a shard whose
+/// lookup has not been built and this function is silently doing nothing.
+///
+/// THE KINDS ARE ITERATED because neither marking site knows the object's model, and the lookup is
+/// keyed by both. Seventeen map lookups against a set of that size, which is the same shape
+/// `bucket_index_target_buckets_for_object_key` and the delete path already use.
+pub(in crate::engine) fn push_object_dirty_onto_its_existing_pages(
+    shard: &mut ShardState,
+    object_key: &str,
+) {
+    // ESTABLISH THE LOOKUP ON THE FIRST MARK THAT FINDS IT UNBUILT, then take the cheap path
+    // thereafter -- the same bargain the delete path already makes, and for the same reason.
+    //
+    // THE WINDOW IS REACHABLE, AND A DEBUG ASSERTION SAYING IT WAS NOT IS HOW THAT WAS FOUND.
+    // The first version of this function asserted that a mark could not reach a shard holding
+    // buckets whose lookup had not been built, reasoning that a load rebuilds before it returns
+    // the shard. Two tests fired it immediately. The reasoning was about ONE path into this
+    // function and the window belongs to the others, so the premise is replaced by the rebuild
+    // rather than by a more carefully worded claim.
+    //
+    // Without this the push silently finds nothing: a marked object's pages stay clean, and the
+    // bucket predicate that now reads only `page.dirty` answers false for a dirty object. The
+    // rebuild is O(pages) and runs at most once per unbuilt lookup.
+    if shard.bucket_index.object_block_lookup.is_empty()
+        && !shard.bucket_index.bucket_map.is_empty()
+    {
+        shard.bucket_index.rebuild_object_block_lookup();
+    }
+    // COLLECTED FIRST, so the immutable loan on the lookup ends before the pages are taken
+    // mutably. The two are disjoint fields of one struct, but the refs borrow from one of them.
+    let mut refs: Vec<crate::engine::state::BlockLookupRef> = Vec::new();
+    for kind in storage_model_kinds() {
+        if let Some(entry) = shard.bucket_index.object_block_refs(kind, object_key) {
+            refs.extend(entry.iter().cloned());
+        }
+    }
+    for block_ref in refs {
+        let Some(bucket) = shard
+            .bucket_index
+            .bucket_map
+            .get_mut(&block_ref.routing_bucket)
+        else {
+            continue;
+        };
+        if let Some(page) = bucket.block_index.get_mut(&block_ref.block_ref_key) {
+            page.dirty = true;
+        }
+    }
 }
 
 fn storage_model_kinds() -> &'static [&'static str] {

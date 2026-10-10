@@ -295,3 +295,4 @@ mod entry_width_at_each_step;
 mod an_assigned_durable_id_defeats_ground_one_only;
 mod what_the_core_index_puts_on_the_wire;
 mod the_write_path_leaves_the_bucket_ttl_alone;
+mod marking_an_object_dirty_reaches_its_pages;

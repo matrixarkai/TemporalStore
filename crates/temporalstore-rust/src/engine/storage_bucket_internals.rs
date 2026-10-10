@@ -1313,6 +1313,10 @@ pub(super) fn mark_async_dirty_object(
     // Recorded WITH the bucket that was just computed for it. Every consumer that asks which
     // bucket a dirty object belongs to used to recompute this hash for itself.
     shard.dirty_objects.insert(object_key, routing_bucket);
+    // PUSHED, NOT PULLED -- see `push_object_dirty_onto_its_existing_pages`. This is the second of
+    // exactly two sites that mark an object dirty, and the invariant the tests pin is that BOTH
+    // push: a mark that does not reach its pages leaves the bucket reading clean.
+    super::push_object_dirty_onto_its_existing_pages(shard, object_key);
     let bucket = shard
         .bucket_index
         .bucket_map
@@ -5368,7 +5372,11 @@ fn refresh_one_bucket_runtime_flags(
     shard_id: Option<ShardId>,
     bucket: &mut BucketNode,
     now: u64,
-    dirty_objects: &DirtyObjectIndex,
+    // KEPT IN THE SIGNATURE DELIBERATELY, AND NO LONGER READ HERE. The dirty rollup below is
+    // `any(page.dirty)` now. The parameter stays because removing it would touch every caller for
+    // no behavioural reason, and because the next reader should see that this function was handed
+    // the set and chose not to consult it rather than never having had access to it.
+    _dirty_objects: &DirtyObjectIndex,
     expires_at_ms: &BTreeMap<String, u64>,
     rebuild_object_index: bool,
     // SEPARATE FROM `rebuild_object_index` ON PURPOSE -- see [`BucketTtlRollup`]. The two
@@ -5386,7 +5394,10 @@ fn refresh_one_bucket_runtime_flags(
     let any_page_dirty = bucket
         .block_index
         .values()
-        .any(|page| page.dirty || dirty_objects.contains(page.object_key.as_ref()));
+        // `any(page.dirty)` ALONE, because the dirtiness is pushed onto the pages at mark
+        // time now. See `push_object_dirty_onto_its_existing_pages` for why that is equivalent
+        // and for the two cases that cover every page the object half used to decide.
+        .any(|page| page.dirty);
     bucket.set_dirty(bucket.dirty() | any_page_dirty);
     // THE TTL MINIMUM IS A REPORTED STATISTIC, AND THE WRITE PATH NO LONGER COMPUTES IT.
     //
@@ -5499,6 +5510,13 @@ fn refresh_all_bucket_runtime_flags(
 /// function of its own blocks plus the two shard-wide maps, and both of those are noted against the
 /// buckets they affect. `bucket_runtime_flags_match_full_sweep` in the engine tests checks that
 /// equivalence against a real workload rather than leaving it as an argument.
+///
+/// WHAT THAT TEST DOES NOT COVER, SAID HERE BECAUSE THIS PROSE IS WHAT STOPS A READER LOOKING. It
+/// compares dirtiness as a BOOLEAN -- `bucket.dirty()` either side -- so it sees THAT a bucket is
+/// dirty and never WHY. It is therefore insensitive to how the dirtiness arrives, which was not
+/// wrong when it was written and is not wrong now: it was never the guard for the mechanism. The
+/// mechanism is asserted in `marking_an_object_dirty_reaches_its_pages`, and the TTL half it also
+/// compares only by presence is asserted in `the_write_path_leaves_the_bucket_ttl_alone`.
 #[cfg_attr(test, track_caller)]
 pub(super) fn refresh_pending_bucket_runtime_flags(shard: &mut ShardState) {
     if shard.buckets_pending_flag_refresh.is_empty() {
@@ -5583,7 +5601,9 @@ pub(super) fn clear_published_object_dirty_state(shard: &mut ShardState, object_
             let any_page_dirty = bucket
                 .block_index
                 .values()
-                .any(|page| page.dirty || shard.dirty_objects.contains(page.object_key.as_ref()));
+                // `any(page.dirty)` alone; the keys were just dropped from the dirty set and
+                // this object's pages were just cleared, so the two halves agree by construction.
+                .any(|page| page.dirty);
             bucket.set_dirty(any_page_dirty);
             match shard_id {
                 Some(shard_id) => update_bucket_layout(shard_id, bucket),
