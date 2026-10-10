@@ -196,17 +196,39 @@ fn an_encode_then_decode_keeps_every_wire_field_and_drops_every_omitted_one() {
         !after.block_slab_live.is_ready(),
         "a skipped derived tally must not survive a round trip"
     );
+    // THE LOOKUP IS STILL NOT WRITTEN, AND IT IS NO LONGER TRUE THAT A DECODE LEAVES IT EMPTY.
+    //
+    // It is `skip_serializing`, so nothing about it reaches the bytes -- that half is unchanged.
+    // What changed is the other side: the decoder now FILES each decoded page into it, because the
+    // walk that used to do that afterwards reads each page's identity off the entry and the entry
+    // is about to have none. This fixture's two buckets hold no pages, so there is nothing to file
+    // and it comes back empty -- which makes this assertion a statement about the FIXTURE now and
+    // not about the field. `a_decode_files_every_page_into_the_object_lookup` is where the filling
+    // is asserted, on an index that has pages.
     assert!(
         after.object_block_lookup.is_empty(),
-        "a skip_serializing lookup must not be written, so it must come back empty"
+        "nothing was written and this fixture has no page to file, so nothing can come back"
     );
     assert!(
         after.kind_pool.is_empty(),
         "a skipped interning pool must not survive"
     );
+    // AND THE DERIVED TOTAL IS ESTABLISHED BY THE DECODE, WHERE IT USED TO BE LEFT UNKNOWN.
+    //
+    // This read `None`, under "a skipped derived total must come back unestablished rather than
+    // zero". That was right while a rebuild ran after every load and was the only thing that could
+    // establish it. The decode establishes the lookup now, so it must establish the count with it:
+    // `insert_object_block_lookup` increments only `if let Some(total)`, so a total left at `None`
+    // can never be incremented into a right answer, and a lookup that is established beside a
+    // count that is not is the exact pair that made the stats path walk the shard.
+    //
+    // ZERO HERE AND NOT UNKNOWN, because this fixture files no page. The value is asserted as
+    // `Some` and as the number of refs actually filed, so a decoder that forgot to establish it
+    // fails and so does one that invents a count.
     assert_eq!(
-        after.object_component_block_refs, None,
-        "a skipped derived total must come back unestablished rather than zero"
+        after.object_component_block_refs,
+        Some(0),
+        "the decode must establish the derived total, at the number of refs it filed"
     );
     assert!(
         after.released_buckets.is_empty(),
@@ -350,6 +372,123 @@ fn the_stored_page_key_is_not_self_delimiting_so_no_parser_can_invert_it() {
     );
 }
 
+
+/// A DECODE FILES EVERY LIVE PAGE INTO THE OBJECT LOOKUP, INSTEAD OF LEAVING IT TO A LATER WALK.
+///
+/// # WHY THE DECODER HAS TO BE THE ONE THAT DOES IT
+///
+/// `object_block_lookup` is keyed by (kind, object key) and valued by the
+/// `(routing_bucket, handle)` of each of that object's pages. It is not written, and it was
+/// rebuilt after every load by `rebuild_object_block_lookup`, which walks the decoded entries and
+/// reads the identity off each one. That walk is exactly what stops working when the entry carries
+/// no identity -- so the filing moves to the one pass that has both the identity and the handle in
+/// scope, which is the decode itself.
+///
+/// # THE THREE CLAIMS, AND THE CONTROL THAT MAKES THEM MEAN ANYTHING
+///
+/// The decoded lookup must name each LIVE page by the handle the decoded map filed it under; the
+/// derived ref total must be established at that count; and the DELETED page must be absent --
+/// `insert_object_block_lookup` returns early on one, and without that third claim the first two
+/// would be equally true of a decoder that filed everything it saw.
+///
+/// THE HANDLES ARE COMPARED AGAINST THE DECODED MAP'S OWN KEYS, not against handles recomputed
+/// here. A lookup ref that names a handle the map does not hold is a ref pointing at nothing,
+/// which is the failure a counter-assigned handle produced on this structure once already.
+#[test]
+fn a_decode_files_every_page_into_the_object_lookup() {
+    use crate::block_store::ElementEntry;
+    use crate::engine::state::BlockIndex;
+    use crate::engine::storage_bucket_internals::stored_model_kind;
+
+    const KIND: &str = "set";
+    const LIVE_OBJECT: &str = "live-object";
+    const DEAD_OBJECT: &str = "dead-object";
+
+    fn page(object: &str, slab: u64, offset: u64, deleted: bool) -> BlockIndex {
+        BlockIndex {
+            object_key: Arc::from(object),
+            model_id: stored_model_kind(KIND),
+            address: ElementEntry::from_parts(slab, offset, 16, Some(offset / 16 + 1), None),
+            dirty: false,
+            deleted,
+        }
+    }
+
+    let mut index = CoreIndex::default();
+    for routing_bucket in [3u32, 11u32] {
+        let mut node = BucketNode::default();
+        node.routing_bucket = routing_bucket;
+        node.set_meta_loaded(true);
+        node.set_in_memory(true);
+        index.bucket_map.insert(routing_bucket, node);
+    }
+    {
+        let CoreIndex {
+            bucket_map,
+            block_slab_live,
+            ..
+        } = &mut index;
+        let first = bucket_map.get_mut(&3).expect("bucket 3 was just inserted");
+        let a = page(LIVE_OBJECT, 1, 0, false);
+        let b = page(LIVE_OBJECT, 1, 16, false);
+        first.insert_page(&a.object_key.clone(), a, block_slab_live);
+        first.insert_page(&b.object_key.clone(), b, block_slab_live);
+        let second = bucket_map.get_mut(&11).expect("bucket 11 was just inserted");
+        let c = page(DEAD_OBJECT, 2, 0, true);
+        second.insert_page(&c.object_key.clone(), c, block_slab_live);
+    }
+
+    // THE SUBJECT IS THE DECODE, so the lookup going in is empty -- nothing here files one.
+    assert!(
+        index.object_block_lookup.is_empty(),
+        "the fixture must not establish the lookup, or the decode is not what fills it"
+    );
+
+    let encoded = serde_json::to_string(&index).expect("a core index serializes");
+    let decoded: CoreIndex = serde_json::from_str(&encoded).expect("a core index deserializes");
+
+    // CLAIM ONE: every live page is named, by the handle the decoded map holds it under.
+    let filed: std::collections::BTreeSet<(u32, u64)> = decoded
+        .block_refs_for(KIND, LIVE_OBJECT, None)
+        .expect("the live object must be in the decoded lookup")
+        .iter()
+        .map(|block_ref| (block_ref.routing_bucket, block_ref.block_ref_key))
+        .collect();
+    let held: std::collections::BTreeSet<(u32, u64)> = decoded
+        .bucket_map
+        .iter()
+        .flat_map(|(routing_bucket, node)| {
+            node.block_index
+                .iter()
+                .filter(|(_, page)| !page.deleted)
+                .map(move |(handle, _)| (*routing_bucket, *handle))
+        })
+        .collect();
+    assert_eq!(
+        2,
+        held.len(),
+        "the decoded map must hold the two live pages, or this comparison has nothing in it"
+    );
+    assert_eq!(
+        held, filed,
+        "every live page the decoded map holds must be named by the decoded lookup, at the same \
+         handle"
+    );
+
+    // CLAIM TWO: the derived total is established, at the count of refs filed.
+    assert_eq!(
+        Some(2),
+        decoded.object_component_block_refs,
+        "the decode must establish the ref total at what it filed"
+    );
+
+    // CLAIM THREE, THE CONTROL: the deleted page is NOT filed, so the two claims above are about
+    // what the filing rule admits rather than about everything the decoder saw.
+    assert!(
+        decoded.block_refs_for(KIND, DEAD_OBJECT, None).is_none(),
+        "a deleted page must not reach the lookup, or the claims above hold of any decoder at all"
+    );
+}
 
 /// A DELETED PAGE'S IDENTITY IS IN THE BUCKET'S TOMBSTONE ROW, AND THAT ROW COMPOSES THE SAME
 /// STORED KEY THE ENTRY DOES.
