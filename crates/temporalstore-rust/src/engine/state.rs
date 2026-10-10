@@ -4428,7 +4428,7 @@ const _: () = {
     assert!(field_sum == std::mem::size_of::<BlockIndex>());
 };
 
-// WHAT THE ENTRY WOULD BE IF ITS ADDRESS FIELD HELD THE BARE WORD: FORTY-EIGHT, MEASURED.
+// WHAT THE ENTRY WOULD BE IF ITS ADDRESS FIELD HELD THE BARE WORD: THIRTY-TWO, MEASURED.
 //
 // # AND THE FIELD CANNOT HOLD IT TODAY. THE NUMBER IS RECORDED, THE STEP IS REFUSED.
 //
@@ -4470,12 +4470,18 @@ const _: () = {
 //
 // # THE SIBLINGS FOLLOW, SO HALF A STEP PAYS NOTHING
 //
-// Keeping any one of the three as its own field on this entry costs the whole eight bytes back.
-// The small-field group is EXACTLY FULL at eight bytes -- `kind` 1, `routing_bucket` 4, `model_id`
-// 1, `dirty` 1, `deleted` 1 -- so a `block_id: u16` beside it spills into a second word and the
-// entry measures 56 again, with 50 bytes of field instead of 56. A `length: u32` does the same.
-// That is the recorded shape of this whole address: the word sheds eight bytes and the holder
-// sheds none.
+// Keeping any one of the remaining two as its own field on this entry costs the whole eight bytes
+// back. The small-field group is EXACTLY FULL at eight bytes -- `kind` 1, `routing_bucket` 4,
+// `model_id` 1, `dirty` 1, `deleted` 1 -- and it is still exactly full after the element name
+// left, because that field was never in it. So a `block_id: u16` beside it spills into a second
+// word and the entry measures 40 again, with 34 bytes of field instead of 32. A `length: u32` does
+// the same. That is the recorded shape of this whole address: the word sheds eight bytes and the
+// holder sheds none.
+//
+// THE NUMBERS IN THIS PARAGRAPH MOVED WITH THE PROBE AND THE CLAIM DID NOT. It read "the entry
+// measures 56 again, with 50 bytes of field instead of 56", against a probe at 48 and a live entry
+// at 56. Against a probe at 32 and a live entry at 40 the same spill reads 40 and 34 -- the step
+// is still a whole word given back, which is the whole point of the paragraph.
 //
 // # AND THE HANDLE'S UNIQUENESS ARGUMENT DOES NOT SURVIVE DROPPING `length`
 //
@@ -4509,7 +4515,6 @@ const _: () = {
         routing_bucket: u32,
         object_key: Arc<str>,
         model_id: crate::engine::storage_bucket_internals::StoredModelKind,
-        component: Option<Arc<str>>,
         address: crate::block_store::BlockAddress,
         dirty: bool,
         deleted: bool,
@@ -4518,18 +4523,37 @@ const _: () = {
         + std::mem::size_of::<u32>()
         + std::mem::size_of::<Arc<str>>()
         + std::mem::size_of::<crate::engine::storage_bucket_internals::StoredModelKind>()
-        + std::mem::size_of::<Option<Arc<str>>>()
         + std::mem::size_of::<crate::block_store::BlockAddress>()
         + std::mem::size_of::<bool>()
         + std::mem::size_of::<bool>();
+    // THE PROBE LOST THE TERM THE LIVE ENTRY LOST, WHICH IS WHY THE NUMBER MOVED FROM 48 TO 32.
+    //
+    // It carried a `component: Option<Arc<str>>` -- sixteen bytes -- and measured 48, because it
+    // was written against an entry that still named its element. This branch removed that field
+    // from `BlockIndex`, and the probe's whole job is to answer "what would THIS entry measure if
+    // its address field held the bare word". Keeping the term would have the probe measure a
+    // structure that cannot exist here, and the tie at the bottom of this block is what stops that
+    // -- it is the assertion that went red on the merge.
+    //
+    // THE REFUSAL ABOVE IS UNTOUCHED BY ANY OF THIS, which is worth saying because only the width
+    // moved. Three of the four terms the holder carries are read through this field; the census
+    // that enumerates them counts READERS, not bytes, and the seven production readers of
+    // `block_id` are the same seven. What this branch changed is the number the step would reach,
+    // not whether it can be taken.
+    //
     // THE TWO NUMBERS THE STEP IS ABOUT, both asserted and neither inferred from the other.
-    assert!(field_sum == 48);
-    assert!(std::mem::size_of::<TheEntryHoldingOneAddressWord>() == 48);
-    // ZERO SLACK SURVIVES THE NARROWING: 48 is a multiple of eight, so the step is a whole word
-    // and not a word of field plus some rounding.
+    assert!(field_sum == 32);
+    assert!(std::mem::size_of::<TheEntryHoldingOneAddressWord>() == 32);
+    // ZERO SLACK SURVIVES THE NARROWING: 32 is a multiple of eight, so the step is a whole word
+    // and not a word of field plus some rounding. It survived the element name's removal too --
+    // 48 and 32 are both multiples of eight -- so this identity is checked rather than restated.
     assert!(std::mem::size_of::<TheEntryHoldingOneAddressWord>() == field_sum);
     // TIED TO `BlockIndex` ITSELF, so this cannot go on describing a type that moved. The real
     // entry must equal the probe plus exactly what the holder carries over the bare word.
+    //
+    // THE EXPRESSION IS UNCHANGED AND IT IS THE PROBE THAT MOVED. 32 + (16 - 8) is 40, which is
+    // what the live entry measures; it was 48 + (16 - 8) = 56 against main's. So the tie did its
+    // job twice over: it refused the merge, and it still holds with no term added to it.
     assert!(
         std::mem::size_of::<BlockIndex>()
             == std::mem::size_of::<TheEntryHoldingOneAddressWord>()
@@ -4538,13 +4562,19 @@ const _: () = {
     );
 };
 
-// WHERE THIS LEG ENDS IF ALL THREE NARROWINGS LAND: TWENTY OF FIELD IN TWENTY-FOUR.
+// WHERE THIS LEG ENDS IF THE REMAINING NARROWINGS LAND: TWENTY OF FIELD IN TWENTY-FOUR.
 //
-// Three lanes have to land for this shape to exist, and this one owns NONE of them: the address
-// field holding the bare word (refused above, with its reasons), `component` leaving, and
-// `object_key` becoming an ordinal rather than a shared name. It is pinned here so that whoever
-// lands the last of the three finds the number already measured rather than arriving at it by
-// adjusting an assertion until it passed.
+// THREE LANES WERE NAMED AND ONE HAS LANDED, so this reads as two. It said "Three lanes have to
+// land for this shape to exist, and this one owns NONE of them: the address field holding the bare
+// word (refused above, with its reasons), `component` leaving, and `object_key` becoming an ordinal
+// rather than a shared name." The element name HAS left `BlockIndex` on this branch -- the entry is
+// 40 -- so what stands between the live entry and this shape is the address word and the object
+// key. The probe below is unchanged: it was already written without an element name, which is why
+// its own three assertions survived the merge untouched while the two that tie back to the live
+// entry did not.
+//
+// It is pinned here so that whoever lands the last of them finds the number already measured
+// rather than arriving at it by adjusting an assertion until it passed.
 //
 // # THE SLACK AT TWENTY-FOUR IS FOUR BYTES, NOT ZERO, AND THAT CHANGES THE NEXT DECISION
 //
@@ -4553,11 +4583,13 @@ const _: () = {
 // field set inside an eight-aligned struct has FOUR bytes of padding by construction. Measured at
 // four, and asserted as four rather than as zero.
 //
-// IT MATTERS BECAUSE IT INVERTS THE RULE THIS STRUCTURE IS CURRENTLY GOVERNED BY. At 56 the entry
+// IT MATTERS BECAUSE IT INVERTS THE RULE THIS STRUCTURE IS CURRENTLY GOVERNED BY. At 40 the entry
 // has zero slack and the block above asserts it, so the next field added costs a whole eight
 // bytes. At 24 there are four bytes standing empty, so the next field up to four bytes wide costs
 // NOTHING. Every field decision taken here while the entry was full has to be re-priced at that
-// point, not inherited.
+// point, not inherited. That was true of the entry at 56 and it is still true at 40: the removal
+// of the element name took a whole two words and left the field set packing exactly, so the rule
+// did not change when the width did.
 const _: () = {
     #[allow(dead_code)]
     struct TheEntryAtTheEndOfTheNarrowings {
@@ -4585,24 +4617,34 @@ const _: () = {
     // exists to correct is that it is zero.
     assert!(std::mem::size_of::<TheEntryAtTheEndOfTheNarrowings>() - field_sum == 4);
     // TIED TO `BlockIndex` ITSELF, through its field sum rather than its width -- the widths
-    // differ by a rounding and the field sums differ by exactly the three narrowings. The first
+    // differ by a rounding and the field sums differ by exactly the narrowings. The first
     // assertion is what makes this a claim about the real struct: it holds only while the live
     // entry has zero slack, so a field added to or removed from `BlockIndex` breaks this block.
+    //
+    // AND IT DID BREAK, WHICH IS THE PIN WORKING. `live_field_sum` carried an
+    // `Option<Arc<str>>` term for the element name and came to 56 -- main's entry. This branch
+    // removed that field, so the live entry is SEVEN fields and 40, and the assertion below went
+    // red on the merge rather than quietly describing a type that had moved. The term is dropped
+    // rather than the number adjusted.
     let live_field_sum = std::mem::size_of::<crate::index_log::IndexItemKind>()
         + std::mem::size_of::<u32>()
         + std::mem::size_of::<Arc<str>>()
         + std::mem::size_of::<crate::engine::storage_bucket_internals::StoredModelKind>()
-        + std::mem::size_of::<Option<Arc<str>>>()
         + std::mem::size_of::<ElementEntry>()
         + std::mem::size_of::<bool>()
         + std::mem::size_of::<bool>();
     assert!(live_field_sum == std::mem::size_of::<BlockIndex>());
+    // AND THE DELTAS ARE TWO NOW, NOT THREE. This read `field_sum + (ElementEntry - BlockAddress)
+    // + size_of::<Option<Arc<str>>>() + (Arc<str> - u32)`, naming the three narrowings that stood
+    // between the live entry and the end of the leg. The middle one -- the element name leaving --
+    // HAS LANDED on this branch, so it is no longer a difference between the two shapes and
+    // naming it here would double-count it. What is left between 40 and 20 is the address word and
+    // the object key.
     assert!(
         live_field_sum
             == field_sum
                 + (std::mem::size_of::<ElementEntry>()
                     - std::mem::size_of::<crate::block_store::BlockAddress>())
-                + std::mem::size_of::<Option<Arc<str>>>()
                 + (std::mem::size_of::<Arc<str>>() - std::mem::size_of::<u32>())
     );
 };

@@ -5,11 +5,19 @@
 //! GROUNDS ARE INDEPENDENT.
 //!
 //! THE PROPOSAL, AND IT IS THE BEST-SHAPED ONE THIS ROUTE HAS HAD. `BlockIndex::object_key` is an
-//! `Arc<str>` at sixteen bytes on an entry that is fifty-six with no slack. Swapping it for a
-//! four-byte ordinal takes the field sum to forty-four and the width to forty-eight, MEASURED
+//! `Arc<str>` at sixteen bytes on an entry that is FORTY with no slack. Swapping it for a
+//! four-byte ordinal takes the field sum to twenty-eight and the width to thirty-two, MEASURED
 //! BELOW. Every previous attempt at that paid for the ordinal with a stored object-ordinal table,
 //! and a second stored structure is the one thing this leg may not add. So the question asked here
 //! is narrower: IS THE ORDINAL DERIVABLE FROM SOMETHING THE INDEX ALREADY HOLDS?
+//!
+//! FORTY, NOT FIFTY-SIX, AND THE SECOND TARGET IS NOW THE FIRST. This module arrived from main
+//! written against an entry of 56, where the ordinal step reached 44 of field in 48 and a further
+//! 28-in-32 waited behind "another lane's change" to the element name. That lane has LANDED on
+//! this branch: the entry is 40, so the ordinal step reaches 28 in 32 in ONE move and the two
+//! targets this module measured have become one. The 44/48 mirror is kept as the figure against
+//! the entry it was measured on, and the tie between the two probes is what shows the element
+//! name's removal was exactly the difference between them.
 //!
 //! AND THE ANSWER TO THAT NARROW QUESTION IS YES, ON THE WIRE -- WHICH IS WHY THE REFUSAL HAD TO
 //! BE DRIVEN RATHER THAN ASSUMED. `bucket.object_index` is a slot array whose positions #2057 and
@@ -198,7 +206,19 @@ use crate::engine::storage_bucket_internals::StoredModelKind;
 // THE WIDTH
 // =================================================================================================
 
-/// THE FIELD SET A FOUR-BYTE ORDINAL WOULD LEAVE, with every type taken from the live entry.
+/// THE FIELD SET A FOUR-BYTE ORDINAL WOULD LEAVE, with every type taken from the entry it was
+/// measured against.
+///
+/// IT KEEPS ITS ELEMENT-NAME TERM ON PURPOSE, AND THAT MAKES IT A HISTORICAL FIGURE NOW. 44 of
+/// field in 48 is the ordinal step applied to the entry as it stood at `2ae24a03d`, which still
+/// carried `component`. This branch removed that field, so the ordinal step applied to the LIVE
+/// entry is `BothGoneEntry` below -- 28 in 32 -- and that is the figure a reader should take from
+/// this module.
+///
+/// THIS ONE IS KEPT RATHER THAN RETIRED FOR TWO REASONS, both of which the assertions use: it is
+/// the measured rustc transcript recorded in the paragraph below, and the tie between the two
+/// probes is what shows the element name's removal is EXACTLY the difference between the two
+/// targets. That tie now reads as a step that has been taken rather than one still owed.
 ///
 /// A MIRROR AND NOT A RESTATEMENT. Nothing here is a literal: each field is spelled with the type
 /// the real `BlockIndex` spells it with, so a field whose own width moves elsewhere moves this
@@ -224,10 +244,16 @@ struct OrdinalEntry {
 
 /// THE FIELD SET ONCE `component` HAS GONE TOO -- the 28/32 this leg of the campaign is aiming at.
 ///
-/// `component` is another lane's change and nothing here touches it. This structure exists so the
-/// target is pinned to the LIVE types rather than carried as a number in prose, and so it cannot
-/// drift: the assertions below tie it to `BlockIndex` through the widths of the two fields that
-/// would have to leave.
+/// AND IT IS THE LIVE TARGET NOW, NOT THE ONE AFTER NEXT. This read "`component` is another lane's
+/// change and nothing here touches it." That lane has LANDED: `BlockIndex` has no element-name
+/// field, so this structure is the live entry with its object key swapped for an ordinal, and
+/// reaching 32 is ONE step rather than two. The probe is unchanged -- it was already written
+/// without the element name, which is why it compiled through the merge while
+/// `live_entry_field_sum` did not.
+///
+/// This structure exists so the target is pinned to the LIVE types rather than carried as a number
+/// in prose, and so it cannot drift: the assertions below tie it to `BlockIndex` through the width
+/// of the one field that would have to leave.
 struct BothGoneEntry {
     _kind: crate::index_log::IndexItemKind,
     _routing_bucket: u32,
@@ -294,13 +320,16 @@ fn both_gone_field_sum() -> usize {
 
 /// THE LIVE ENTRY'S SUM, OFF A REAL `BlockIndex`. Every other figure in this module is anchored on
 /// this one, so it is the term that most needs not to be a literal.
+///
+/// AND IT EARNED THAT: this is the function that refused to compile when the element-name field
+/// left the declaration (E0560), because it builds a real entry rather than listing widths beside
+/// one. A parallel literal would have gone on summing a field that was no longer there.
 fn live_entry_field_sum() -> usize {
     let probe = BlockIndex {
         kind: crate::index_log::IndexItemKind::Page,
         routing_bucket: 0,
         object_key: Arc::from("slot-probe"),
         model_id: StoredModelKind::String,
-        component: None,
         address: an_address(),
         dirty: false,
         deleted: false,
@@ -309,7 +338,6 @@ fn live_entry_field_sum() -> usize {
         + std::mem::size_of_val(&probe.routing_bucket)
         + std::mem::size_of_val(&probe.object_key)
         + std::mem::size_of_val(&probe.model_id)
-        + std::mem::size_of_val(&probe.component)
         + std::mem::size_of_val(&probe.address)
         + std::mem::size_of_val(&probe.dirty)
         + std::mem::size_of_val(&probe.deleted)
@@ -317,7 +345,7 @@ fn live_entry_field_sum() -> usize {
 
 /// rust-internal: arithmetic over this crate's own types, no external surface
 #[test]
-fn the_ordinal_would_make_the_entry_forty_eight_and_the_target_is_thirty_two() {
+fn the_ordinal_would_make_the_entry_thirty_two_which_is_now_the_target() {
     println!("\n=== THE WIDTH, AT THIS COMMIT ===");
     println!(
         "  live BlockIndex      field_sum {:>3}  size_of {:>3}",
@@ -336,17 +364,25 @@ fn the_ordinal_would_make_the_entry_forty_eight_and_the_target_is_thirty_two() {
     );
 
     // THE LIVE ENTRY, WHICH IS WHAT EVERYTHING ELSE IS ANCHORED ON.
+    //
+    // FORTY, NOT FIFTY-SIX, AND THESE TWO ASSERTIONS ARE WHY THAT WAS NOT MISSED. They arrived
+    // from main pinning 56 and the field sum beside it. `BlockIndex` has no element-name field on
+    // this branch -- `component: Option<Arc<str>>`, sixteen bytes -- so the entry is seven fields
+    // and 40. `live_entry_field_sum` built a real `BlockIndex` and refused to compile at all
+    // (E0560, "has no field named `component`"), which is the strongest form of this guard: the
+    // sum is taken off a real instance rather than a parallel literal, so a field that leaves the
+    // declaration cannot leave the sum silently.
     assert_eq!(
-        56,
+        40,
         std::mem::size_of::<BlockIndex>(),
-        "the live entry is {} bytes, not 56, so every figure below is anchored on a width that \
+        "the live entry is {} bytes, not 40, so every figure below is anchored on a width that \
          has moved",
         std::mem::size_of::<BlockIndex>()
     );
     assert_eq!(
-        56,
+        40,
         live_entry_field_sum(),
-        "the live entry's fields add up to {} in 56, so the ZERO SLACK this whole leg was priced \
+        "the live entry's fields add up to {} in 40, so the ZERO SLACK this whole leg was priced \
          against is gone",
         live_entry_field_sum()
     );
@@ -415,30 +451,29 @@ fn the_ordinal_would_make_the_entry_forty_eight_and_the_target_is_thirty_two() {
         println!("  {what:<20} tail {} bytes", width - field_sum);
     }
 
-    // AND THE TIE TO THE LIVE TYPE, WHICH IS WHAT MAKES THESE CLAIMS ABOUT `BlockIndex` RATHER
-    // THAN ARITHMETIC IN A VACUUM. Each term is the width of the field that would have to move,
-    // spelled as that field's own type.
+    // AND THE SECOND TIE RE-ANCHORS, BECAUSE `OrdinalEntry` IS NO LONGER THE LIVE ENTRY WITH ONE
+    // FIELD SWAPPED. It read `live_entry_field_sum() == ordinal_entry_field_sum() - u32 +
+    // Arc<str>`, which held while the live entry carried an element name. It does not now: 44 - 4
+    // + 16 is 56, which is the PRE-REMOVAL entry. So the identity is stated against that entry,
+    // expressed as the live sum plus the field that left -- which keeps it tied to `BlockIndex`
+    // rather than to the literal 56.
     assert_eq!(
-        std::mem::size_of::<OrdinalEntry>(),
-        std::mem::size_of::<BothGoneEntry>() + std::mem::size_of::<Option<Arc<str>>>(),
-        "48 is not 32 plus the component's {} bytes, so the two targets are not one field apart \
-         and the second does not follow from the first",
+        live_entry_field_sum() + std::mem::size_of::<Option<Arc<str>>>(),
+        ordinal_entry_field_sum() - std::mem::size_of::<u32>() + std::mem::size_of::<Arc<str>>(),
+        "the ordinal mirror does not reconstruct to the entry it was measured against -- the live \
+         sum plus the element name's {} bytes -- so it is not that entry with one field swapped",
         std::mem::size_of::<Option<Arc<str>>>()
     );
+    // AND THE TARGET IS NOW ONE FIELD FROM THE LIVE ENTRY, NOT TWO. This read
+    // `both_gone_field_sum() - u32 + Arc<str> + Option<Arc<str>>`, naming both fields that had to
+    // leave. One of them has: the element name is off `BlockIndex`, so putting it back here would
+    // double-count it and the identity would miss by sixteen.
     assert_eq!(
         live_entry_field_sum(),
-        ordinal_entry_field_sum() - std::mem::size_of::<u32>() + std::mem::size_of::<Arc<str>>(),
-        "the live field sum is not the ordinal field sum with the ordinal taken back out and the \
-         key's {} bytes put back, so the mirror is not the live entry with one field swapped",
-        std::mem::size_of::<Arc<str>>()
-    );
-    assert_eq!(
-        live_entry_field_sum(),
-        both_gone_field_sum() - std::mem::size_of::<u32>()
-            + std::mem::size_of::<Arc<str>>()
-            + std::mem::size_of::<Option<Arc<str>>>(),
-        "28 does not reconstruct to the live 56 by putting the key and the component back, so the \
-         32 probe is not pinned to this type at all"
+        both_gone_field_sum() - std::mem::size_of::<u32>() + std::mem::size_of::<Arc<str>>(),
+        "28 does not reconstruct to the live {} by putting the key back, so the 32 probe is not \
+         pinned to this type at all",
+        live_entry_field_sum()
     );
 
     // THE ORDINAL'S WIDTH DOES NOT MOVE THE ENTRY AT ALL, u8 THROUGH u64 -- and this paragraph is
