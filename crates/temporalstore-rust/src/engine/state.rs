@@ -505,7 +505,18 @@ impl ShardState {
     }
 }
 
-#[derive(Debug, Default, Clone, Serialize, Deserialize)]
+// SERIALIZE IS HAND-WRITTEN BELOW; DESERIALIZE IS STILL DERIVED, AND THE SPLIT IS DELIBERATE.
+//
+// The encoder has to be hand-written because the page index needs a SIBLING FIELD of this
+// struct in scope -- serde hands a `Serialize` impl no context, so a bucket's encoder can see
+// nothing but the bucket, and the blanket map impl between them is where the chain breaks.
+//
+// The DECODER is left derived until the change that needs it. Hand-writing it would mean
+// deleting every `#[serde(..)]` attribute below -- they are only valid while a derive consumes
+// them -- which would turn the alias, the defaults and the skips from DECLARATIONS the compiler
+// enforces into hand-written code that has to be read to be believed. There is no decode-side
+// need yet, so the attributes stay and the risk is not taken early.
+#[derive(Debug, Default, Clone, Deserialize)]
 pub(super) struct CoreIndex {
     #[serde(default, alias = "slots")]
     pub(super) bucket_map: BucketMap,
@@ -586,6 +597,137 @@ pub(super) struct CoreIndex {
     /// refuse the three model maps that are themselves rebuilt from the index.
     #[serde(skip)]
     pub(super) released_buckets: BTreeSet<u32>,
+}
+
+/// WHERE EACH PAGE'S OBJECT IDENTITY LIVES, INDEXED BY THE POSITION THE PAGE IS HELD AT.
+///
+/// The object lookup runs object -> refs. This is that map inverted once per encode, so a page can
+/// be asked for its identity by the `(routing_bucket, handle)` it is filed under, which is the only
+/// thing a page's position actually says about it.
+///
+/// BUILT ONLY IN DEBUG BUILDS, and that is the whole cost argument. Today the written key is still
+/// composed from the entry's own copy of the identity, so this is not what produces the bytes --
+/// it is what CHECKS them. A release build constructs none of it and pays nothing; a debug build
+/// pays one pass over the lookup per encode and then one comparison per page, which makes every
+/// dump in every test a proof that the two sources agree.
+///
+/// WHY THAT PROOF IS THE POINT. The identity is leaving the entry, and when it does this becomes
+/// the source rather than the check. A swap is only safe if the two were already known to produce
+/// byte-identical keys, and "known" here means measured on every dump the suite performs rather
+/// than argued once in a comment.
+#[cfg(debug_assertions)]
+struct PageKeysByPosition<'a> {
+    by_position: std::collections::HashMap<(u32, u64), (&'a Arc<str>, &'a Arc<str>)>,
+}
+
+#[cfg(debug_assertions)]
+impl<'a> PageKeysByPosition<'a> {
+    fn from_lookup(lookup: &'a ObjectBlockLookup) -> Self {
+        let mut by_position = std::collections::HashMap::new();
+        for (model_id, object_key, refs) in lookup.iter() {
+            for block_ref in refs.iter() {
+                by_position.insert(
+                    (block_ref.routing_bucket, block_ref.block_ref_key),
+                    (model_id, object_key),
+                );
+            }
+        }
+        Self { by_position }
+    }
+
+    fn get(&self, routing_bucket: u32, handle: u64) -> Option<(&'a Arc<str>, &'a Arc<str>)> {
+        self.by_position.get(&(routing_bucket, handle)).copied()
+    }
+}
+
+/// THE ONE FIELD OF THIS STRUCT THAT REACHES THE WIRE, and the context the rest of the encode needs.
+///
+/// Hand-written for the reason stated at the struct: the page index has to be composed where a
+/// SIBLING of the bucket map is in scope, and no derive and no `serialize_with` can offer that,
+/// because both see one field at a time.
+///
+/// THE FIELD COUNT IS PART OF THE ENCODING, not a hint. The served index is msgpack
+/// `with_struct_map`, so `serialize_struct` writes a map header of exactly this length -- the same
+/// reason `BucketNode` counts its own optional key rather than hard-coding one. One field, because
+/// five of the six are not written, and `what_the_core_index_puts_on_the_wire` observes that from a
+/// real encode rather than reading it off the attributes.
+impl Serialize for CoreIndex {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        use serde::ser::SerializeStruct;
+        #[cfg(debug_assertions)]
+        let keys = PageKeysByPosition::from_lookup(&self.object_block_lookup);
+        let mut index = serializer.serialize_struct("CoreIndex", 1)?;
+        index.serialize_field(
+            "bucket_map",
+            &BucketMapAt {
+                buckets: &self.bucket_map,
+                #[cfg(debug_assertions)]
+                keys: &keys,
+            },
+        )?;
+        index.end()
+    }
+}
+
+/// The bucket map, with each node given the context the derive could not pass it.
+///
+/// The map is written exactly as the blanket impl wrote it -- same length header, same key order,
+/// same key encoding -- because a `BTreeMap` iterates in key order and that is what it did before.
+/// What changes is which `Serialize` each VALUE goes through.
+struct BucketMapAt<'a> {
+    buckets: &'a BucketMap,
+    #[cfg(debug_assertions)]
+    keys: &'a PageKeysByPosition<'a>,
+}
+
+impl Serialize for BucketMapAt<'_> {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        use serde::ser::SerializeMap;
+        let mut map = serializer.serialize_map(Some(self.buckets.len()))?;
+        for (routing_bucket, node) in self.buckets {
+            map.serialize_entry(
+                routing_bucket,
+                &BucketNodeAt {
+                    node,
+                    #[cfg(debug_assertions)]
+                    keys: Some(self.keys),
+                },
+            )?;
+        }
+        map.end()
+    }
+}
+
+/// One node, with the page-key context in scope.
+///
+/// TWO DOORS OVER ONE IMPLEMENTATION, which is the shape this file already uses for the page index
+/// itself. `impl Serialize for BucketNode` is the door for a fixture holding a bare node and passes
+/// no context; this is the door production goes through and passes it. Both call
+/// [`serialize_bucket_node`], so there is one body and the two cannot drift.
+struct BucketNodeAt<'a> {
+    node: &'a BucketNode,
+    #[cfg(debug_assertions)]
+    keys: Option<&'a PageKeysByPosition<'a>>,
+}
+
+impl Serialize for BucketNodeAt<'_> {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        serialize_bucket_node(
+            self.node,
+            #[cfg(debug_assertions)]
+            self.keys,
+            serializer,
+        )
+    }
 }
 
 pub(super) type BucketMap = BTreeMap<u32, BucketNode>;
@@ -2313,14 +2455,25 @@ impl From<BTreeMap<String, BlockIndex>> for BlockIndexMap {
 /// before a byte is written. And the sort is not incidental: the map this used to convert into was
 /// keyed by the rendered string and emitted entries in string order, while this map is keyed by a
 /// handle and iterates in hash order, so writing them as they come would reorder every dump.
-struct PageIndexAt<'a>(&'a BucketNode);
+struct PageIndexAt<'a> {
+    node: &'a BucketNode,
+    #[cfg(debug_assertions)]
+    keys: Option<&'a PageKeysByPosition<'a>>,
+}
 
 impl Serialize for PageIndexAt<'_> {
     fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
     where
         S: serde::Serializer,
     {
-        serialize_page_index(&self.0.block_index, serializer)
+        serialize_page_index(
+            &self.node.block_index,
+            #[cfg(debug_assertions)]
+            self.node.routing_bucket,
+            #[cfg(debug_assertions)]
+            self.keys,
+            serializer,
+        )
     }
 }
 
@@ -2330,11 +2483,45 @@ impl Serialize for PageIndexAt<'_> {
 /// map with no node around it and would otherwise need a second body. Two doors over one
 /// implementation is the shape; two implementations that agree today is the hazard this change is
 /// deleting on the handle side, and it would be absurd to introduce it on this one.
-fn serialize_page_index<S>(map: &BlockIndexMap, serializer: S) -> Result<S::Ok, S::Error>
+fn serialize_page_index<S>(
+    map: &BlockIndexMap,
+    #[cfg(debug_assertions)] routing_bucket: u32,
+    #[cfg(debug_assertions)] keys: Option<&PageKeysByPosition<'_>>,
+    serializer: S,
+) -> Result<S::Ok, S::Error>
 where
     S: serde::Serializer,
 {
     use serde::ser::SerializeMap;
+    // THE KEY IS STILL COMPOSED FROM THE ENTRY'S OWN COPY OF THE IDENTITY. The context beside it
+    // is the CHECK, not the source -- see [`PageKeysByPosition`] for why the check is what makes
+    // the later swap safe, and why it costs a release build nothing.
+    #[cfg(debug_assertions)]
+    if let Some(keys) = keys {
+        for (handle, page) in map.iter() {
+            let Some((model_id, object_key)) = keys.get(routing_bucket, *handle) else {
+                // NOT AN ASSERTION. The lookup is derived and is empty between a decode and the
+                // rebuild that fills it, so a page with no entry here is an unestablished lookup
+                // rather than a disagreement. The release path reads none of this.
+                continue;
+            };
+            debug_assert_eq!(
+                block_index_written_key(page),
+                crate::index_log::block_ref_key_from_parts(
+                    model_id,
+                    object_key,
+                    None,
+                    page.address.block_slab_id(),
+                    page.address.offset(),
+                    page.address.length(),
+                    page.address.block_id().unwrap_or_default(),
+                    page.address.generation().unwrap_or_default(),
+                ),
+                "the identity held BESIDE the page must compose the same stored key as the identity \
+                 held ON it, or moving the identity off the entry would move the bytes"
+            );
+        }
+    }
     let mut entries: Vec<(String, &BlockIndex)> = map
         .values()
         .map(|page| (block_index_written_key(page), page))
@@ -2359,7 +2546,14 @@ impl Serialize for BlockIndexMap {
     where
         S: serde::Serializer,
     {
-        serialize_page_index(self, serializer)
+        serialize_page_index(
+            self,
+            #[cfg(debug_assertions)]
+            0,
+            #[cfg(debug_assertions)]
+            None,
+            serializer,
+        )
     }
 }
 
@@ -3933,34 +4127,62 @@ impl Serialize for BucketNode {
     where
         S: serde::Serializer,
     {
+        // THE FIXTURE DOOR: a bare node with no index around it, so no page-key context.
+        serialize_bucket_node(
+            self,
+            #[cfg(debug_assertions)]
+            None,
+            serializer,
+        )
+    }
+}
+
+/// THE ONE BODY both node doors go through.
+fn serialize_bucket_node<S>(
+    node_ref: &BucketNode,
+    #[cfg(debug_assertions)] keys: Option<&PageKeysByPosition<'_>>,
+    serializer: S,
+) -> Result<S::Ok, S::Error>
+where
+    S: serde::Serializer,
+{
+    {
+        let self_ = node_ref;
         use serde::ser::SerializeStruct;
         // THE COUNT IS PART OF THE ENCODING, not a hint. The served index is msgpack
         // `with_struct_map`, so `serialize_struct` writes a MAP HEADER of exactly this length --
         // a node that then writes a thirteenth field under a header of twelve is corrupt bytes,
         // not a tolerated mismatch. So the optional key below is counted here rather than
         // hard-coded, and the two cannot disagree.
-        let field_count = 12 + usize::from(!self.tombstone_elements.is_empty());
+        let field_count = 12 + usize::from(!self_.tombstone_elements.is_empty());
         let mut node = serializer.serialize_struct("BucketNode", field_count)?;
-        node.serialize_field("routing_slot", &self.routing_bucket)?;
-        node.serialize_field("layout", &self.layout)?;
-        node.serialize_field("dirty", &self.dirty())?;
-        node.serialize_field("deleted", &self.deleted())?;
-        node.serialize_field("meta_loaded", &self.meta_loaded())?;
-        node.serialize_field("loading", &self.loading())?;
-        node.serialize_field("in_memory", &self.in_memory())?;
-        node.serialize_field("ttl_ms", &self.ttl_ms)?;
-        node.serialize_field("dirty_generation", &self.dirty_generation)?;
-        node.serialize_field("object_index", &self.object_index)?;
-        node.serialize_field("deleted_object_index", &self.deleted_object_index)?;
+        node.serialize_field("routing_slot", &self_.routing_bucket)?;
+        node.serialize_field("layout", &self_.layout)?;
+        node.serialize_field("dirty", &self_.dirty())?;
+        node.serialize_field("deleted", &self_.deleted())?;
+        node.serialize_field("meta_loaded", &self_.meta_loaded())?;
+        node.serialize_field("loading", &self_.loading())?;
+        node.serialize_field("in_memory", &self_.in_memory())?;
+        node.serialize_field("ttl_ms", &self_.ttl_ms)?;
+        node.serialize_field("dirty_generation", &self_.dirty_generation)?;
+        node.serialize_field("object_index", &self_.object_index)?;
+        node.serialize_field("deleted_object_index", &self_.deleted_object_index)?;
         // AT THE BUCKET LEVEL, through `PageIndexAt`, so the written key is composed where the
         // node's other structures are in scope. The bytes are the ones the map's own impl wrote.
-        node.serialize_field("page_index", &PageIndexAt(self))?;
+        node.serialize_field(
+            "page_index",
+            &PageIndexAt {
+                node: self_,
+                #[cfg(debug_assertions)]
+                keys,
+            },
+        )?;
         // THE ELEMENT EACH TOMBSTONE IN THIS BUCKET IS ABOUT, which the entries themselves no
         // longer say. Written LAST so the key is appended to the shape rather than inserted into
         // the middle of it, and `skip_serializing_if` keeps it off every bucket that has never had
         // a removal -- which is almost all of them, so the ordinary node's bytes do not move.
-        if !self.tombstone_elements.is_empty() {
-            node.serialize_field("tombstone_elements", &self.tombstone_elements)?;
+        if !self_.tombstone_elements.is_empty() {
+            node.serialize_field("tombstone_elements", &self_.tombstone_elements)?;
         }
         node.end()
     }
