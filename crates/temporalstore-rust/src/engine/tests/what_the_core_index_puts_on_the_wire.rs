@@ -218,3 +218,136 @@ fn an_encode_then_decode_keeps_every_wire_field_and_drops_every_omitted_one() {
     // construction -- so asserting they survive would assert the opposite of the documented
     // behaviour, and asserting they are zero would restate the decoder to itself.
 }
+
+// =================================================================================================
+// WHETHER THE ENTRY CAN LOSE ITS IDENTITY WITHOUT THE BYTES MOVING -- SETTLED HERE RATHER THAN
+// REASONED ABOUT, BECAUSE THE TIDY VERSION OF THE STORY IS WRONG IN TWO PLACES.
+//
+// THE STORY UNDER TEST. The stored page index is STRING-KEYED and the key contains the object key,
+// so the hope is that the encoder can keep writing the same bytes while sourcing the identity from
+// the sibling object lookup, and the decoder can recover the identity from the map key. If that
+// held, the entry could shed its field with nothing on disk moving and no format stamp owed.
+//
+// IT DOES NOT HOLD, AND THE TWO TESTS BELOW ARE WHY.
+//
+//   1. THE OBJECT KEY IS A MEMBER OF THE ENTRY ON THE WIRE. `kind` and `routing_bucket` carry
+//      `#[serde(skip)]`; the object key does not. So removing the field removes a member from
+//      every stored entry -- that IS a byte change -- unless the encoder keeps emitting it from
+//      somewhere else.
+//
+//   2. THE MAP KEY IS NOT SELF-DELIMITING, so the decoder cannot be handed the job instead. The
+//      stored key is `kind:object:component:slab:offset:length:block_id:generation` joined with
+//      bare colons, and an object key MAY CONTAIN A COLON -- a context entity is filed under
+//      `{collection_key}:{entity_hash}`, stated twice in `storage_bucket_internals.rs` at `:2754`
+//      and `:3195`. The second test constructs two DIFFERENT (object key, component) pairs that
+//      produce the IDENTICAL key, which is the proof that no parser can invert it in general.
+//      The lookup's own flat key is length-prefixed for exactly this reason; this one is not.
+//
+// WHAT THAT LEAVES, STATED SO THE NEXT READER DOES NOT RE-DERIVE IT. With `component` fixed at
+// `None` -- which every entry's is today -- the trailing five terms are numeric and a RIGHT-ANCHORED
+// parse would work. That is a property held at a distance rather than one the format enforces, and
+// the collision below is what it is being held against. So "recover the identity from the key" is
+// available only while a property the format does not check continues to hold.
+//
+// SO THE ROUTE THAT KEEPS THE BYTES IDENTICAL IS THE THIRD ONE: the entry sheds the FIELD, the
+// encoder keeps emitting the MEMBER from the sibling lookup, and the decoder reads that member into
+// a temporary it uses for the handle and the lookup rebuild without storing it. Nothing on disk
+// moves and no stamp is owed -- and the cost is that both directions become hand-written, not just
+// the encoder.
+// =================================================================================================
+
+#[test]
+fn a_page_entry_carries_its_object_key_as_a_member_on_the_wire() {
+    use crate::engine::state::{BlockIndex, BlockSlabLiveIndex};
+
+    let mut bucket = BucketNode::default();
+    bucket.routing_bucket = 3;
+    bucket.set_meta_loaded(true);
+    let mut live = BlockSlabLiveIndex::default();
+    bucket.insert_page(
+        BlockIndex {
+            kind: crate::index_log::IndexItemKind::Page,
+            routing_bucket: 3,
+            object_key: Arc::from("an-object"),
+            model_id: crate::engine::storage_bucket_internals::StoredModelKind::from_stored_name(
+                "string",
+            )
+            .expect("`string` is a stored model spelling"),
+            address: Default::default(),
+            dirty: false,
+            deleted: false,
+        },
+        &mut live,
+    );
+
+    let encoded = serde_json::to_value(&bucket).expect("a bucket node serializes");
+    let page_index = encoded
+        .get("page_index")
+        .and_then(serde_json::Value::as_object)
+        .expect("a node writes its page index as a map");
+    assert_eq!(page_index.len(), 1, "one page was inserted");
+    let (stored_key, entry) = page_index.iter().next().expect("one entry");
+    let entry = entry
+        .as_object()
+        .expect("a page entry is written as a map");
+    let mut members: Vec<&str> = entry.keys().map(String::as_str).collect();
+    members.sort_unstable();
+    println!("a page entry writes these members: {members:?}");
+    println!("under this stored key: {stored_key}");
+
+    // THE CLAIM. The object key is a MEMBER, so taking the field off the entry takes a member off
+    // the wire unless the encoder supplies it from elsewhere. The two skipped terms are absent
+    // from this list, which is the control showing the list distinguishes skipped from written.
+    assert!(
+        members.contains(&"object_key"),
+        "the object key is written as a member of the entry: {members:?}"
+    );
+    assert!(
+        !members.contains(&"kind"),
+        "`kind` is skipped, so its absence is what makes the assertion above informative"
+    );
+    assert!(
+        !members.contains(&"routing_bucket") && !members.contains(&"routing_slot"),
+        "the routing bucket is skipped and injected by the node, so it is absent too"
+    );
+
+    // AND THE STORED KEY CARRIES THE CHARACTERS TOO, which is the half the hopeful story rested on.
+    assert!(
+        stored_key.contains("an-object"),
+        "the stored key contains the object key: {stored_key}"
+    );
+}
+
+#[test]
+fn the_stored_page_key_is_not_self_delimiting_so_no_parser_can_invert_it() {
+    use crate::index_log::block_ref_key_from_parts;
+
+    // TWO DIFFERENT IDENTITIES, ONE KEY. The separator is a bare colon and both the object key and
+    // the component may contain one, so the boundary between them is not recoverable.
+    let colon_in_the_object = block_ref_key_from_parts("string", "a:b", None, 0, 0, 0, 0, 0);
+    let colon_in_the_component = block_ref_key_from_parts("string", "a", Some("b:"), 0, 0, 0, 0, 0);
+    println!("object `a:b`, no component -> {colon_in_the_object}");
+    println!("object `a`, component `b:` -> {colon_in_the_component}");
+    assert_eq!(
+        colon_in_the_object, colon_in_the_component,
+        "two different identities must collide for the format to be shown ambiguous"
+    );
+
+    // THE CONTROL, and without it the collision above proves nothing about the FORMAT: two
+    // identities that differ in a way the format DOES delimit must produce different keys, or the
+    // builder would simply be returning a constant.
+    let plainly_different = block_ref_key_from_parts("string", "a", None, 0, 0, 0, 0, 0);
+    assert_ne!(
+        plainly_different, colon_in_the_object,
+        "the builder must distinguish identities it can delimit, or the collision is vacuous"
+    );
+
+    // AND THE NUMERIC TAIL IS DELIMITED, which is why a right-anchored parse works TODAY while
+    // every component is absent. Asserted so that the narrow availability of that parse is
+    // recorded as a property being relied on rather than a guarantee.
+    let later_generation = block_ref_key_from_parts("string", "a:b", None, 0, 0, 0, 0, 1);
+    assert_ne!(
+        later_generation, colon_in_the_object,
+        "the trailing terms are positional and do distinguish"
+    );
+}
