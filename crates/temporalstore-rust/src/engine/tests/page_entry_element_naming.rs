@@ -1194,3 +1194,171 @@ fn hash_entries_of(engine: &TemporalEngine, key: &str) -> Vec<(String, Vec<u8>)>
         other => panic!("HashGetAll answered {other:?}"),
     }
 }
+
+/// THE STORED PAGE HANDLE DECIDES NOTHING THE FOLD FILES, SO CHANGING ITS DERIVATION IS INERT.
+///
+/// # THE CLAIM THIS EXISTS TO STOP BEING A CITATION
+///
+/// `IndexItem::block_ref_key` is built by `index_log::block_ref_key_from_parts`, whose THIRD term
+/// is the element name: `kind:object_key:component:slab:offset:length:block_id:generation`. Two
+/// routes fill that term and they do not agree about it. `engine::collect_upsert_index_items`
+/// passes the element's own name through; the entry walk in `collect_command_index_items_for`
+/// takes the entry's own key from `state::block_index_written_key`, which passes `None` because
+/// the page entry has no element name left to give it. So one physical page is described by two
+/// different handle spellings depending on which emitter produced the row.
+///
+/// That is survivable only while nothing reads the handle back, and until now that was a sentence
+/// in a doc comment rather than a test. `strip_block_ref_key_repeat`'s own documentation rests the
+/// whole omit-and-rebuild scheme on it -- "find WHO READS THE RECONSTRUCTION first" -- and records
+/// that it once got the consequence backwards. A claim load-bearing enough to be corrected in
+/// place is load-bearing enough to be driven.
+///
+/// # WHY THE FOLD IS THE RIGHT SUBJECT AND THE ONLY ONE
+///
+/// `fold_delta_block_items` is the only thing in the crate that turns index-log items into page
+/// entries, and `BucketNode::insert_page` computes the map's key with `block_index_handle`, from
+/// the page's OWN fields. So the stored handle has no route into the index by construction -- and
+/// a property that holds by construction is exactly the kind that a later change breaks without
+/// anything failing.
+///
+/// # THE THREE ARMS, AND WHY NONSENSE IS ONE OF THEM
+///
+/// Two arms would show only that the two spellings agree, which is a weaker claim than that the
+/// handle is unread: a fold that happened to parse either spelling into the same thing would pass.
+/// The third arm is a string that is no derivation of anything, so the only way all three can file
+/// the same entry is if none of them is consulted.
+///
+/// rust-internal: drives the engine's own fold over its own index, no external surface
+#[test]
+fn the_stored_page_handle_decides_nothing_the_fold_files() {
+    use crate::engine::hashing::{block_routing_bucket, stable_block_object_id};
+    use crate::engine::state::CoreIndex;
+    use std::collections::BTreeSet;
+
+    let kind = "hash";
+    let object_key = "handle-unread";
+    let component = "f0";
+    let address = ElementEntry::from_parts(42, 1_048_576, 4096, Some(7), None);
+    let routing_bucket = block_routing_bucket(object_key, 0, OPERATOR_END);
+    let object_id = stable_block_object_id(1, kind, object_key);
+
+    let authority = |named: Option<&str>| {
+        crate::index_log::block_ref_key_from_parts(
+            kind,
+            object_key,
+            named,
+            address.block_slab_id(),
+            address.offset(),
+            address.length(),
+            address.block_id().unwrap_or_default(),
+            address.generation().unwrap_or_default(),
+        )
+    };
+    let named = authority(Some(component));
+    let unnamed = authority(None);
+    let nonsense = "not-a-derivation-of-anything".to_string();
+
+    // THE PLANT IS REAL. Without these the arms below could be three spellings of one string, and
+    // the guard would read as a tree fact while asserting only its own fixture.
+    assert_ne!(
+        named, unnamed,
+        "the named and unnamed spellings are the same string, so this fixture does not vary the \
+         term under test"
+    );
+    assert_ne!(named, nonsense, "the nonsense arm is the authority's own output");
+    assert_ne!(unnamed, nonsense, "the nonsense arm is the authority's own output");
+    assert!(
+        named.contains(&format!(":{component}:")),
+        "the named spelling must actually carry the element name, got {named:?}"
+    );
+    assert!(
+        !unnamed.contains(&format!(":{component}:")),
+        "the unnamed spelling must not carry the element name, got {unnamed:?}"
+    );
+
+    // What the fold FILED, including the handle the map ALLOCATED -- which is the sharper half of
+    // the claim: the key an entry is filed under is computed from the page, not read off the row.
+    let census = |handle: &str| -> Vec<(u32, String, String, u64, u64, u64, bool, u64)> {
+        let item = crate::index_log::IndexItem {
+            kind: crate::index_log::IndexItemKind::Page,
+            routing_bucket,
+            block_ref_key: handle.to_string(),
+            object_key: object_key.into(),
+            model_id: kind.to_string(),
+            component: Some(component.into()),
+            object_id,
+            entry: Some(address.clone()),
+            deleted: false,
+        };
+        let mut index = CoreIndex::default();
+        // `upsert: false` with no covered keys, so the fold ADDS and removes nothing.
+        crate::engine::fold_delta_block_items(
+            &mut index,
+            &BTreeSet::new(),
+            std::slice::from_ref(&item),
+            false,
+        );
+        let mut rows = Vec::new();
+        for bucket in index.bucket_map.values() {
+            for (allocated, page) in bucket.block_index.iter() {
+                rows.push((
+                    page.routing_bucket,
+                    page.model_id.as_str().to_string(),
+                    page.object_key.as_ref().to_string(),
+                    page.address.block_slab_id(),
+                    page.address.offset(),
+                    page.address.length(),
+                    page.deleted,
+                    *allocated,
+                ));
+            }
+        }
+        rows.sort();
+        rows
+    };
+
+    let from_named = census(&named);
+    let from_unnamed = census(&unnamed);
+    let from_nonsense = census(&nonsense);
+
+    println!("[handle] named    {named:?}");
+    println!("[handle] unnamed  {unnamed:?}");
+    println!("[handle] nonsense {nonsense:?}");
+    println!("[handle] named arm filed:    {from_named:?}");
+    println!("[handle] unnamed arm filed:  {from_unnamed:?}");
+    println!("[handle] nonsense arm filed: {from_nonsense:?}");
+
+    // THE SUBJECT COMES FIRST, AND THE ORDER IS DELIBERATE.
+    //
+    // The floor below is what stops three empty vectors comparing equal. But if the floor ran
+    // first, a mutation that makes the fold CONSULT the handle would redden the floor -- "the fold
+    // did not run" -- which is a true statement about the wrong thing. Asserting the equality
+    // first makes such a mutation fail here, naming the arm whose handle was rejected. A fold that
+    // files nothing at all still cannot pass: the equalities hold vacuously and the floor catches
+    // it two lines down.
+    assert_eq!(
+        from_named, from_unnamed,
+        "dropping the element name from the STORED handle changed what the fold filed, so the \
+         handle IS read back and converging the two derivations is not inert"
+    );
+    assert_eq!(
+        from_named, from_nonsense,
+        "a stored handle that is no derivation of anything changed what the fold filed, so the \
+         fold consults it"
+    );
+
+    // ANTI-VACUITY. Three empty censuses are equal to each other.
+    for (label, rows) in [
+        ("named", &from_named),
+        ("unnamed", &from_unnamed),
+        ("nonsense", &from_nonsense),
+    ] {
+        assert_eq!(
+            1,
+            rows.len(),
+            "the {label}-handle arm filed {} page(s), not the one this guard is about -- the fold \
+             filed nothing, so the equalities above were over empty censuses",
+            rows.len()
+        );
+    }
+}
