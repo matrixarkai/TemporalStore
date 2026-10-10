@@ -4688,17 +4688,13 @@ const _: () = {
 const _: () = {
     #[allow(dead_code)]
     struct TheEntryHoldingOneAddressWord {
-        kind: crate::index_log::IndexItemKind,
-        routing_bucket: u32,
         object_key: Arc<str>,
         model_id: crate::engine::storage_bucket_internals::StoredModelKind,
         address: crate::block_store::BlockAddress,
         dirty: bool,
         deleted: bool,
     }
-    let field_sum = std::mem::size_of::<crate::index_log::IndexItemKind>()
-        + std::mem::size_of::<u32>()
-        + std::mem::size_of::<Arc<str>>()
+    let field_sum = std::mem::size_of::<Arc<str>>()
         + std::mem::size_of::<crate::engine::storage_bucket_internals::StoredModelKind>()
         + std::mem::size_of::<crate::block_store::BlockAddress>()
         + std::mem::size_of::<bool>()
@@ -4719,18 +4715,33 @@ const _: () = {
     // not whether it can be taken.
     //
     // THE TWO NUMBERS THE STEP IS ABOUT, both asserted and neither inferred from the other.
-    assert!(field_sum == 32);
+    assert!(field_sum == 27);
     assert!(std::mem::size_of::<TheEntryHoldingOneAddressWord>() == 32);
-    // ZERO SLACK SURVIVES THE NARROWING: 32 is a multiple of eight, so the step is a whole word
-    // and not a word of field plus some rounding. It survived the element name's removal too --
-    // 48 and 32 are both multiples of eight -- so this identity is checked rather than restated.
-    assert!(std::mem::size_of::<TheEntryHoldingOneAddressWord>() == field_sum);
+    // AND THE SLACK IS FIVE, NOT ZERO -- RESTATED, BECAUSE THE PROBE WAS DESCRIBING TWO FIELDS
+    // THIS ENTRY NO LONGER HAS.
+    //
+    // It read "ZERO SLACK SURVIVES THE NARROWING: 32 is a multiple of eight, so the step is a
+    // whole word and not a word of field plus some rounding", and asserted it as
+    // `size_of::<probe>() == field_sum`. That was true of a probe carrying `kind` and
+    // `routing_bucket` -- 32 bytes of field in 32 -- and those two left `BlockIndex` in
+    // `65c7fc562`. Without them the probe holds TWENTY-SEVEN bytes of field in thirty-two.
+    //
+    // THE WIDTH DID NOT MOVE AND THAT IS WHY NOTHING FAILED. 32 and 27 both round to 32, so the
+    // width pin above went on passing and so did the tie below; what was false was the
+    // DECOMPOSITION, which is the half a width cannot check. The same shape is recorded against
+    // `entry_width_at_each_step`, where the step-zero control passed through the identical error
+    // and is now pinned by field OFFSETS for exactly that reason.
+    assert!(std::mem::size_of::<TheEntryHoldingOneAddressWord>() - field_sum == 5);
     // TIED TO `BlockIndex` ITSELF, so this cannot go on describing a type that moved. The real
     // entry must equal the probe plus exactly what the holder carries over the bare word.
     //
     // THE EXPRESSION IS UNCHANGED AND IT IS THE PROBE THAT MOVED. 32 + (16 - 8) is 40, which is
     // what the live entry measures; it was 48 + (16 - 8) = 56 against main's. So the tie did its
     // job twice over: it refused the merge, and it still holds with no term added to it.
+    //
+    // AND IT IS A TIE BETWEEN TWO WIDTHS, so it could not see the two retired fields either --
+    // the probe's width is 32 whether or not they are declared on it. Recorded here rather than
+    // left as an apparent success.
     assert!(
         std::mem::size_of::<BlockIndex>()
             == std::mem::size_of::<TheEntryHoldingOneAddressWord>()
@@ -4739,7 +4750,7 @@ const _: () = {
     );
 };
 
-// WHERE THIS LEG ENDS IF THE REMAINING NARROWINGS LAND: TWENTY OF FIELD IN TWENTY-FOUR.
+// WHERE THIS LEG ENDS IF THE REMAINING NARROWINGS LAND: FIFTEEN OF FIELD IN SIXTEEN.
 //
 // THREE LANES WERE NAMED AND ONE HAS LANDED, so this reads as two. It said "Three lanes have to
 // land for this shape to exist, and this one owns NONE of them: the address field holding the bare
@@ -4753,70 +4764,80 @@ const _: () = {
 // It is pinned here so that whoever lands the last of them finds the number already measured
 // rather than arriving at it by adjusting an assertion until it passed.
 //
-// # THE SLACK AT TWENTY-FOUR IS FOUR BYTES, NOT ZERO, AND THAT CHANGES THE NEXT DECISION
+// # THE SLACK AT THE END OF THE LEG IS ONE BYTE, AND BOTH EARLIER ANSWERS WERE WRONG
 //
-// This was scoped as "20 of field, 24 wide, zero slack". The first two are measured and the third
-// is not arithmetic any field set can satisfy: TWENTY IS NOT A MULTIPLE OF EIGHT, so a twenty-byte
-// field set inside an eight-aligned struct has FOUR bytes of padding by construction. Measured at
-// four, and asserted as four rather than as zero.
+// This was scoped as "20 of field, 24 wide, zero slack", then corrected to "20 of field, 24 wide,
+// FOUR of slack". Both were arithmetic over a field set that included `kind` and `routing_bucket`,
+// and `65c7fc562` retired both from `BlockIndex`. The probe below is the live field set with the
+// two remaining narrowings applied, and it measures FIFTEEN BYTES OF FIELD IN SIXTEEN: one byte of
+// slack, not four, at a width of sixteen, not twenty-four.
 //
-// IT MATTERS BECAUSE IT INVERTS THE RULE THIS STRUCTURE IS CURRENTLY GOVERNED BY. At 40 the entry
-// has zero slack and the block above asserts it, so the next field added costs a whole eight
-// bytes. At 24 there are four bytes standing empty, so the next field up to four bytes wide costs
-// NOTHING. Every field decision taken here while the entry was full has to be re-priced at that
-// point, not inherited. That was true of the entry at 56 and it is still true at 40: the removal
-// of the element name took a whole two words and left the field set packing exactly, so the rule
-// did not change when the width did.
+// SO THE END OF THIS LEG IS A WORD LOWER THAN RECORDED. 24 was the number to beat; it is the
+// number the FIRST of the two narrowings reaches on its own -- the identity leaving, 19 of field
+// in 24 with five of slack -- and the address word takes it to 16.
+//
+// IT STILL INVERTS THE RULE THIS STRUCTURE IS GOVERNED BY, and by more than was thought. The
+// block above asserts the live entry has FIVE bytes of slack at 40, not zero, so the next field
+// added here up to five bytes wide already costs nothing; at 24 the slack is five again, and at 16
+// it is one. Every field decision taken here while the entry was believed to be exactly full has
+// to be re-priced rather than inherited.
 const _: () = {
     #[allow(dead_code)]
     struct TheEntryAtTheEndOfTheNarrowings {
-        kind: crate::index_log::IndexItemKind,
-        routing_bucket: u32,
         object_key: u32,
         model_id: crate::engine::storage_bucket_internals::StoredModelKind,
         address: crate::block_store::BlockAddress,
         dirty: bool,
         deleted: bool,
     }
-    let field_sum = std::mem::size_of::<crate::index_log::IndexItemKind>()
-        + std::mem::size_of::<u32>()
-        + std::mem::size_of::<u32>()
+    let field_sum = std::mem::size_of::<u32>()
         + std::mem::size_of::<crate::engine::storage_bucket_internals::StoredModelKind>()
         + std::mem::size_of::<crate::block_store::BlockAddress>()
         + std::mem::size_of::<bool>()
         + std::mem::size_of::<bool>();
     // THE TWO NUMBERS, asserted independently and neither read off the other.
-    assert!(field_sum == 20);
-    assert!(std::mem::size_of::<TheEntryAtTheEndOfTheNarrowings>() == 24);
+    assert!(field_sum == 15);
+    assert!(std::mem::size_of::<TheEntryAtTheEndOfTheNarrowings>() == 16);
     // THE ROUNDING RELATION, so a field set that stops rounding to 24 fails here.
     assert!(std::mem::size_of::<TheEntryAtTheEndOfTheNarrowings>() == (field_sum + 7) / 8 * 8);
-    // THE SLACK, MEASURED AT FOUR. Written as its own assertion because the claim this block
-    // exists to correct is that it is zero.
-    assert!(std::mem::size_of::<TheEntryAtTheEndOfTheNarrowings>() - field_sum == 4);
+    // THE SLACK, MEASURED AT ONE. Written as its own assertion because this block exists to
+    // correct the claim, and the claim has now been wrong twice -- at zero, then at four.
+    assert!(std::mem::size_of::<TheEntryAtTheEndOfTheNarrowings>() - field_sum == 1);
     // TIED TO `BlockIndex` ITSELF, through its field sum rather than its width -- the widths
-    // differ by a rounding and the field sums differ by exactly the narrowings. The first
-    // assertion is what makes this a claim about the real struct: it holds only while the live
-    // entry has zero slack, so a field added to or removed from `BlockIndex` breaks this block.
+    // differ by a rounding and the field sums differ by exactly the narrowings.
     //
-    // AND IT DID BREAK, WHICH IS THE PIN WORKING. `live_field_sum` carried an
-    // `Option<Arc<str>>` term for the element name and came to 56 -- main's entry. This branch
-    // removed that field, so the live entry is SEVEN fields and 40, and the assertion below went
-    // red on the merge rather than quietly describing a type that had moved. The term is dropped
-    // rather than the number adjusted.
-    let live_field_sum = std::mem::size_of::<crate::index_log::IndexItemKind>()
-        + std::mem::size_of::<u32>()
-        + std::mem::size_of::<Arc<str>>()
+    // AND THIS TERM LIST WAS THE WORST OF THE THREE STALE ONES, because it claims to BE the live
+    // entry. It read `IndexItemKind + u32 + Arc<str> + StoredModelKind + ElementEntry + bool +
+    // bool` -- seven terms summing to 40 -- and asserted `live_field_sum == size_of::<BlockIndex>()`
+    // under a note saying "it holds only while the live entry has zero slack, so a field added to
+    // or removed from `BlockIndex` breaks this block". TWO FIELDS WERE REMOVED FROM `BlockIndex`
+    // AND IT DID NOT BREAK: the live entry fell to 35 bytes of field, the retired terms were worth
+    // exactly the five bytes of slack that opened up, and 40 == 40 went on passing. It was
+    // arithmetic about two fields that do not exist.
+    //
+    // SO THE SUM IS THE LIVE FIVE TERMS AND THE RELATION IS A ROUNDING, not an equality. The live
+    // entry holds 35 bytes of field in 40, and an equality between a field sum and a width can
+    // only be written for a field set that happens to pack exactly -- which is a coincidence to
+    // assert, not an invariant.
+    let live_field_sum = std::mem::size_of::<Arc<str>>()
         + std::mem::size_of::<crate::engine::storage_bucket_internals::StoredModelKind>()
         + std::mem::size_of::<ElementEntry>()
         + std::mem::size_of::<bool>()
         + std::mem::size_of::<bool>();
-    assert!(live_field_sum == std::mem::size_of::<BlockIndex>());
+    assert!(live_field_sum == 35);
+    assert!(std::mem::size_of::<BlockIndex>() == (live_field_sum + 7) / 8 * 8);
+    assert!(std::mem::size_of::<BlockIndex>() - live_field_sum == 5);
     // AND THE DELTAS ARE TWO NOW, NOT THREE. This read `field_sum + (ElementEntry - BlockAddress)
     // + size_of::<Option<Arc<str>>>() + (Arc<str> - u32)`, naming the three narrowings that stood
     // between the live entry and the end of the leg. The middle one -- the element name leaving --
     // HAS LANDED on this branch, so it is no longer a difference between the two shapes and
-    // naming it here would double-count it. What is left between 40 and 20 is the address word and
-    // the object key.
+    // naming it here would double-count it. What is left between 35 of field and 15 is the address
+    // word and the object key: eight bytes and twelve.
+    //
+    // THE EXPRESSION IS UNCHANGED AND BOTH SIDES MOVED BY THE FIVE BYTES THE RETIRED FIELDS
+    // CARRIED -- 40 == 20 + 8 + 12 became 35 == 15 + 8 + 12 -- which is why this one assertion
+    // survives the restatement with no term touched. That is also why it could not have caught
+    // the staleness: the two retired terms appeared on BOTH sides and cancelled.
     assert!(
         live_field_sum
             == field_sum
