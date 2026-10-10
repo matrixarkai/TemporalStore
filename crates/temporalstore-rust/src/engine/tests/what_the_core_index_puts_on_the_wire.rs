@@ -350,6 +350,142 @@ fn the_stored_page_key_is_not_self_delimiting_so_no_parser_can_invert_it() {
     );
 }
 
+
+/// A DELETED PAGE'S IDENTITY IS IN THE BUCKET'S TOMBSTONE ROW, AND THAT ROW COMPOSES THE SAME
+/// STORED KEY THE ENTRY DOES.
+///
+/// # WHY THIS IS THE MISSING HALF OF THE PRE-VERIFICATION
+///
+/// The encode-side check that the identity held BESIDE a page agrees with the identity held ON it
+/// drew on one source, the object lookup, and a tombstone is never in that lookup --
+/// `insert_object_block_lookup` returns early on a deleted page. So the check skipped every
+/// deleted page, and it was measured skipping them: over the hundred dump tests it compared
+/// 1,998,922 pages and NONE of them was deleted, while the encoder was reached by deleted pages
+/// under `tombstone` and `container_tombstone`. A swap from check to source cannot be called
+/// pre-verified on a class the check never looked at.
+///
+/// # SO THE SECOND SOURCE IS ASSERTED HERE, DIRECTLY
+///
+/// This builds one bucket holding a LIVE page and a DELETED one of the same object, files both
+/// through the index's own `insert_object_block_lookup` -- so the exclusion of the deleted page is
+/// the production rule and not a fixture's choice -- and asserts three things: the lookup names
+/// one of the two, the bucket's tombstone row names the other, and the row composes exactly the
+/// stored key the encode wrote for it.
+///
+/// THE FIRST ASSERTION IS THE CONTROL. Without it a tombstone could be in the lookup after all,
+/// and the row would be a second copy of an identity already available rather than the only one.
+#[test]
+fn the_identity_beside_a_deleted_page_is_its_tombstone_row_and_it_composes_the_same_stored_key() {
+    use crate::block_store::ElementEntry;
+    use crate::engine::state::BlockIndex;
+    use crate::engine::storage_bucket_internals::stored_model_kind;
+
+    const SLAB: u64 = 3;
+    const LIVE_OFFSET: u64 = 0;
+    const DEAD_OFFSET: u64 = 64;
+    const LENGTH: u64 = 27;
+    const OBJECT: &str = "an-object";
+    const KIND: &str = "set";
+    const ELEMENT: &str = "m0";
+
+    let mut index = CoreIndex::default();
+    let mut node = BucketNode::default();
+    node.routing_bucket = 7;
+    node.set_meta_loaded(true);
+    node.set_in_memory(true);
+    index.bucket_map.insert(7, node);
+
+    let live = BlockIndex {
+        object_key: Arc::from(OBJECT),
+        model_id: stored_model_kind(KIND),
+        address: ElementEntry::from_parts(SLAB, LIVE_OFFSET, LENGTH, Some(1), None),
+        dirty: false,
+        deleted: false,
+    };
+    let dead = BlockIndex {
+        object_key: Arc::from(OBJECT),
+        model_id: stored_model_kind(KIND),
+        address: ElementEntry::from_parts(SLAB, DEAD_OFFSET, LENGTH, Some(2), None),
+        dirty: true,
+        deleted: true,
+    };
+
+    let (live_handle, dead_handle) = {
+        let CoreIndex {
+            bucket_map,
+            block_slab_live,
+            ..
+        } = &mut index;
+        let node = bucket_map.get_mut(&7).expect("the bucket was just inserted");
+        let live_handle = node.insert_page(live.clone(), block_slab_live);
+        let dead_handle = node.insert_page(dead.clone(), block_slab_live);
+        node.record_tombstone_element(OBJECT, stored_model_kind(KIND), ELEMENT, &dead.address);
+        (live_handle, dead_handle)
+    };
+    assert_ne!(
+        live_handle, dead_handle,
+        "two pages at different offsets must file under different handles, or this bucket holds one page"
+    );
+
+    let object: Arc<str> = Arc::from(OBJECT);
+    index.insert_object_block_lookup(7, live_handle, &object, &live);
+    index.insert_object_block_lookup(7, dead_handle, &object, &dead);
+
+    // THE CONTROL: the lookup holds the live page and REFUSES the deleted one.
+    let refs = index
+        .block_refs_for(KIND, OBJECT, None)
+        .expect("the live page files a ref");
+    assert_eq!(
+        1,
+        refs.len(),
+        "a deleted page must not reach the lookup, or the tombstone row is not the only source"
+    );
+    assert_eq!(
+        live_handle, refs[0].block_ref_key,
+        "the one ref must be the LIVE page's"
+    );
+
+    // AND THE ROW HOLDS THE DELETED PAGE'S IDENTITY.
+    let row_key = {
+        let node = index.bucket_map.get(&7).expect("the bucket is still there");
+        let row = node
+            .tombstone_element_at(&dead.address)
+            .expect("the removal filed a row against the deleted page");
+        crate::index_log::block_ref_key_from_parts(
+            row.model_id.as_str(),
+            &row.object_key,
+            None,
+            dead.address.block_slab_id(),
+            dead.address.offset(),
+            dead.address.length(),
+            dead.address.block_id().unwrap_or_default(),
+            dead.address.generation().unwrap_or_default(),
+        )
+    };
+
+    let encoded = serde_json::to_value(&index).expect("a core index serializes");
+    let pages = encoded
+        .get("bucket_map")
+        .and_then(|buckets| buckets.get("7"))
+        .and_then(|node| node.get("page_index"))
+        .and_then(|pages| pages.as_object())
+        .expect("the bucket writes a page index")
+        .clone();
+
+    assert_eq!(
+        2,
+        pages.len(),
+        "the encode must write BOTH pages, or the deleted one is not on the wire at all: {:?}",
+        pages.keys().collect::<Vec<_>>()
+    );
+    assert!(
+        pages.contains_key(&row_key),
+        "the key the TOMBSTONE ROW composes must be one the encode wrote, or the row is not a \
+         source for this page: row composed {row_key}, encode wrote {:?}",
+        pages.keys().collect::<Vec<_>>()
+    );
+}
+
 #[test]
 fn the_legacy_spelling_of_the_one_wire_field_still_loads_and_an_unknown_one_does_not() {
     // WHY THIS SITS BESIDE THE GUARD RATHER THAN ONLY IN ANOTHER MODULE.

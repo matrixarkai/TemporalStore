@@ -638,6 +638,16 @@ impl<'a> PageKeysByPosition<'a> {
     fn get(&self, routing_bucket: u32, handle: u64) -> Option<(&'a Arc<str>, &'a Arc<str>)> {
         self.by_position.get(&(routing_bucket, handle)).copied()
     }
+
+    /// WHETHER THIS NAMES NO POSITION AT ALL, which is what an UNESTABLISHED lookup looks like.
+    ///
+    /// The lookup is `skip_serializing` and empty between a decode and the rebuild that fills it,
+    /// so an encode taken in that window has no identity beside any page. That is a state with a
+    /// NAME, and the check below refuses a missing source unless this is true -- which is the
+    /// difference between a skip with a reason and a skip that hides the one case that matters.
+    fn is_unestablished(&self) -> bool {
+        self.by_position.is_empty()
+    }
 }
 
 /// THE ONE FIELD OF THIS STRUCT THAT REACHES THE WIRE, and the context the rest of the encode needs.
@@ -2466,14 +2476,75 @@ impl Serialize for PageIndexAt<'_> {
     where
         S: serde::Serializer,
     {
-        serialize_page_index(
-            &self.node.block_index,
-            #[cfg(debug_assertions)]
-            self.node.routing_bucket,
-            #[cfg(debug_assertions)]
-            self.keys,
-            serializer,
-        )
+        #[cfg(debug_assertions)]
+        if let Some(keys) = self.keys {
+            check_page_keys_against_their_siblings(self.node, keys);
+        }
+        serialize_page_index(&self.node.block_index, serializer)
+    }
+}
+
+/// EVERY PAGE THIS BUCKET WRITES, CHECKED AGAINST THE IDENTITY HELD BESIDE IT.
+///
+/// # THE CHECK THIS REPLACES COMPARED NO DELETED PAGE, AND IT WAS MEASURED DOING SO
+///
+/// It lived inside the encoder, drew only on the object lookup, and `continue`d whenever the
+/// lookup did not name a page. A tombstone is NEVER in that lookup --
+/// `insert_object_block_lookup` returns early on a deleted page -- so the skip was unconditional
+/// for the whole deleted class and the comparison could not reach it.
+///
+/// COUNTED RATHER THAN REASONED. Instrumented over the hundred dump tests, the old check compared
+/// 1,998,922 pages and 0 of them were deleted, while the encoder was reached by deleted pages 7
+/// times under `tombstone` and 3 under `container_tombstone`. The denominator on the class the
+/// swap depends on was zero, so zero disagreements said nothing about it.
+///
+/// # SO THERE ARE TWO SOURCES BESIDE A PAGE AND NOT ONE
+///
+/// A LIVE page has its identity in the object lookup, inverted by position. A DELETED page has
+/// its own in this bucket's tombstone rows, which are keyed by the page triple and carry the
+/// object key and the kind -- the two terms the stored spelling is composed from. Measured over
+/// `tombstone`, `container_tombstone` and `reload`: 245 deleted pages reached the encoder and all
+/// 245 had an agreeing row, with no disagreement and no row missing.
+///
+/// # AND A MISSING SOURCE IS NOW REFUSED UNLESS THE LOOKUP IS UNESTABLISHED
+///
+/// That window is real -- an index decoded and not yet rebuilt has an empty lookup, which is
+/// where the two live pages measured without a source both came from -- and it is the one state
+/// in which a page legitimately has nothing beside it. Naming it is what stops the skip from
+/// covering the case the identity's move would break.
+#[cfg(debug_assertions)]
+fn check_page_keys_against_their_siblings(node: &BucketNode, keys: &PageKeysByPosition<'_>) {
+    for (handle, page) in node.block_index.iter() {
+        let beside: Option<(&str, &str)> = if page.deleted {
+            node.tombstone_element_at(&page.address)
+                .map(|row| (row.model_id.as_str(), &*row.object_key))
+        } else {
+            keys.get(node.routing_bucket, *handle)
+                .map(|(model_id, object_key)| (&**model_id, &**object_key))
+        };
+        let Some((model_id, object_key)) = beside else {
+            debug_assert!(
+                keys.is_unestablished(),
+                "a page written by bucket {} has no identity beside it while the lookup IS                  established, so this is not the decode-then-rebuild window: deleted={}",
+                node.routing_bucket,
+                page.deleted
+            );
+            continue;
+        };
+        debug_assert_eq!(
+            block_index_written_key(&page.object_key, page),
+            crate::index_log::block_ref_key_from_parts(
+                model_id,
+                object_key,
+                None,
+                page.address.block_slab_id(),
+                page.address.offset(),
+                page.address.length(),
+                page.address.block_id().unwrap_or_default(),
+                page.address.generation().unwrap_or_default(),
+            ),
+            "the identity held BESIDE the page must compose the same stored key as the identity              held ON it, or moving the identity off the entry would move the bytes"
+        );
     }
 }
 
@@ -2483,45 +2554,15 @@ impl Serialize for PageIndexAt<'_> {
 /// map with no node around it and would otherwise need a second body. Two doors over one
 /// implementation is the shape; two implementations that agree today is the hazard this change is
 /// deleting on the handle side, and it would be absurd to introduce it on this one.
-fn serialize_page_index<S>(
-    map: &BlockIndexMap,
-    #[cfg(debug_assertions)] routing_bucket: u32,
-    #[cfg(debug_assertions)] keys: Option<&PageKeysByPosition<'_>>,
-    serializer: S,
-) -> Result<S::Ok, S::Error>
+fn serialize_page_index<S>(map: &BlockIndexMap, serializer: S) -> Result<S::Ok, S::Error>
 where
     S: serde::Serializer,
 {
     use serde::ser::SerializeMap;
-    // THE KEY IS STILL COMPOSED FROM THE ENTRY'S OWN COPY OF THE IDENTITY. The context beside it
-    // is the CHECK, not the source -- see [`PageKeysByPosition`] for why the check is what makes
-    // the later swap safe, and why it costs a release build nothing.
-    #[cfg(debug_assertions)]
-    if let Some(keys) = keys {
-        for (handle, page) in map.iter() {
-            let Some((model_id, object_key)) = keys.get(routing_bucket, *handle) else {
-                // NOT AN ASSERTION. The lookup is derived and is empty between a decode and the
-                // rebuild that fills it, so a page with no entry here is an unestablished lookup
-                // rather than a disagreement. The release path reads none of this.
-                continue;
-            };
-            debug_assert_eq!(
-                block_index_written_key(&page.object_key, page),
-                crate::index_log::block_ref_key_from_parts(
-                    model_id,
-                    object_key,
-                    None,
-                    page.address.block_slab_id(),
-                    page.address.offset(),
-                    page.address.length(),
-                    page.address.block_id().unwrap_or_default(),
-                    page.address.generation().unwrap_or_default(),
-                ),
-                "the identity held BESIDE the page must compose the same stored key as the identity \
-                 held ON it, or moving the identity off the entry would move the bytes"
-            );
-        }
-    }
+    // THE KEY IS STILL COMPOSED FROM THE ENTRY'S OWN COPY OF THE IDENTITY, and the check that the
+    // identity held beside the page agrees has moved UP to the bucket level -- see
+    // [`check_page_keys_against_their_siblings`], which is where the bucket's tombstone rows are
+    // in scope and where the deleted class the old check could not reach is compared.
     let mut entries: Vec<(String, &BlockIndex)> = map
         .values()
         .map(|page| (block_index_written_key(&page.object_key, page), page))
@@ -2546,14 +2587,7 @@ impl Serialize for BlockIndexMap {
     where
         S: serde::Serializer,
     {
-        serialize_page_index(
-            self,
-            #[cfg(debug_assertions)]
-            0,
-            #[cfg(debug_assertions)]
-            None,
-            serializer,
-        )
+        serialize_page_index(self, serializer)
     }
 }
 
