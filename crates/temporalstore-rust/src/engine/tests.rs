@@ -238,6 +238,7 @@ mod tombstone_reload_path;
 mod hash_container_reload_authority;
 mod decoded_index_packing;
 mod two_level_resident_shape;
+mod adopting_the_ported_index_log_record;
 mod reconcile_allocation;
 mod hash_read_union_divergence;
 // `packed_element_scan_cost` WAS DECLARED HERE AND THE FILE IS DELETED.
