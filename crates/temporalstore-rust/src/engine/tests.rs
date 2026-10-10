@@ -292,3 +292,4 @@ mod write_after_fold;
 mod collapse_for_list;
 mod zset_component_drops_the_score;
 mod entry_width_at_each_step;
+mod an_assigned_durable_id_defeats_ground_one_only;
