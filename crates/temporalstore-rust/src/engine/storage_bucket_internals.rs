@@ -5324,6 +5324,25 @@ pub(super) fn note_bucket_flags_stale(shard: &mut ShardState, routing_bucket: u3
     shard.buckets_pending_flag_refresh.insert(routing_bucket);
 }
 
+/// WHETHER THIS REFRESH RECOMPUTES A BUCKET'S TTL MINIMUM, which is a separate question from
+/// whether it rebuilds the object index and must not be folded into that flag.
+///
+/// The two agree at every call site today and they are still two parameters, because one flag
+/// deciding two variables is a recorded harm in this tree: the arm's LABEL described intent while
+/// the code did something else, and a wrong figure was published off it. A reader of
+/// `LeaveStale` can tell what it decides without tracing a caller, which is the whole point of it
+/// not being a bare `bool` beside another bare `bool`.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub(super) enum BucketTtlRollup {
+    /// Recompute the minimum from the shard's expiry map. One map lookup per page in the bucket.
+    Recompute,
+    /// Leave the field exactly as it stands, accepting that it may be out of date.
+    ///
+    /// NOT a cheaper way to get the same answer -- it is a different answer, and the staleness is
+    /// the price. See [`refresh_one_bucket_runtime_flags`] for what bounds it.
+    LeaveStale,
+}
+
 /// Recompute one bucket's derived flags. The whole body of the sweep, for a single bucket.
 ///
 /// `rebuild_object_index` decides whether the live-object set is recomputed by scanning every
@@ -5352,6 +5371,9 @@ fn refresh_one_bucket_runtime_flags(
     dirty_objects: &DirtyObjectIndex,
     expires_at_ms: &BTreeMap<String, u64>,
     rebuild_object_index: bool,
+    // SEPARATE FROM `rebuild_object_index` ON PURPOSE -- see [`BucketTtlRollup`]. The two
+    // agree at every call site today and they answer different questions.
+    ttl_rollup: BucketTtlRollup,
 ) {
     bucket.set_meta_loaded(true);
     bucket.set_loading(false);
@@ -5366,23 +5388,47 @@ fn refresh_one_bucket_runtime_flags(
         .values()
         .any(|page| page.dirty || dirty_objects.contains(page.object_key.as_ref()));
     bucket.set_dirty(bucket.dirty() | any_page_dirty);
-    // The TTL is the one guaranteed full pass: a minimum has to look at every block, and each
-    // look is a map lookup keyed by the block's object key. When nothing in the shard has an
-    // expiry that whole pass is dead work -- the minimum over an empty selection is None, which
-    // is exactly what the field already holds. A store that never sets a TTL is the common case
-    // for bulk ingest, and this is where its per-bucket cost was going.
-    if expires_at_ms.is_empty() {
-        bucket.ttl_ms = BucketTtl::ABSENT;
-    } else {
-        note_site(&bucket_visit_sites::REFRESH_FLAGS, bucket.block_index.len());
-        bucket.ttl_ms = BucketTtl::from_ms(
-            bucket
-                .block_index
-                .values()
-                .filter_map(|page| expires_at_ms.get(page.object_key.as_ref()).copied())
-                .map(|expires_at| expires_at.saturating_sub(now))
-                .min(),
-        );
+    // THE TTL MINIMUM IS A REPORTED STATISTIC, AND THE WRITE PATH NO LONGER COMPUTES IT.
+    //
+    // WHAT READS IT. Every reader of `BucketNode::ttl_ms` is a report or the serializer --
+    // `object_manager.rs` sets and folds a report field, `storage_reporting.rs` sets a report flag
+    // bit and packs it into a report blob, `bucket_store.rs` counts it and sets a report field.
+    // Real expiry runs off `expires_at_ms` and its deadline-ordered mirror `expiry_by_deadline`
+    // instead. No expiry, eviction or serving decision consults a bucket's TTL, and this function
+    // is the only place the field is CONSTRUCTED.
+    //
+    // SO THE STALENESS IS THE PRICE AND IT IS BOUNDED, which is the claim a later reader needs and
+    // would not otherwise find. `flush_shard_index` runs the FULL sweep immediately before it
+    // serializes, so THE PERSISTED VALUE IS NEVER STALE -- it is recomputed right before being
+    // written. What can lag is the IN-MEMORY value the reports read, and it lags by at most one
+    // index flush. A load recomputes it too.
+    //
+    // AND WHY THE DISCRIMINATOR IS NOT "pending versus all". The write path is not always the
+    // targeted path: `refresh_pending_bucket_runtime_flags` hands its work to the full sweep once
+    // the touched set reaches half the buckets, and at the routing range production runs a batch
+    // touches essentially all of them. Gating on the traversal would therefore have left the cost
+    // exactly where it was on the configuration that matters. The question is whether this is a
+    // WRITE-path refresh, which is what [`BucketTtlRollup`] names.
+    match ttl_rollup {
+        BucketTtlRollup::LeaveStale => {}
+        BucketTtlRollup::Recompute => {
+            // When nothing in the shard has an expiry the whole pass is dead work -- the minimum
+            // over an empty selection is None, which is exactly what the field already holds. A
+            // store that never sets a TTL is the common case for bulk ingest.
+            if expires_at_ms.is_empty() {
+                bucket.ttl_ms = BucketTtl::ABSENT;
+            } else {
+                note_site(&bucket_visit_sites::REFRESH_FLAGS, bucket.block_index.len());
+                bucket.ttl_ms = BucketTtl::from_ms(
+                    bucket
+                        .block_index
+                        .values()
+                        .filter_map(|page| expires_at_ms.get(page.object_key.as_ref()).copied())
+                        .map(|expires_at| expires_at.saturating_sub(now))
+                        .min(),
+                );
+            }
+        }
     }
     match (rebuild_object_index, shard_id) {
         (true, Some(shard_id)) => update_bucket_layout(shard_id, bucket),
@@ -5398,7 +5444,9 @@ fn refresh_one_bucket_runtime_flags(
 /// ingestion quadratic in the corpus.
 #[cfg_attr(test, track_caller)]
 pub(super) fn refresh_bucket_runtime_flags(shard: &mut ShardState) {
-    refresh_all_bucket_runtime_flags(shard, true);
+    // NOT the write path: this is the load, recovery and flush sweep, and the flush one is why
+    // the persisted TTL is never stale.
+    refresh_all_bucket_runtime_flags(shard, true, BucketTtlRollup::Recompute);
 }
 
 /// The sweep, for a caller that has just rebuilt the bucket index from the block entries.
@@ -5414,13 +5462,19 @@ pub(super) fn refresh_bucket_runtime_flags(shard: &mut ShardState) {
 /// object-index rescan is skipped.
 #[cfg_attr(test, track_caller)]
 pub(super) fn refresh_bucket_runtime_flags_after_reconstruct(shard: &mut ShardState) {
-    refresh_all_bucket_runtime_flags(shard, false);
+    // RECOMPUTE, and the doc above says why: only the redundant object-index rescan is skipped
+    // here. This is not a write-path refresh, so the TTL is still owed.
+    refresh_all_bucket_runtime_flags(shard, false, BucketTtlRollup::Recompute);
 }
 
 /// The sweep, with the object-index rebuild made optional. See
 /// [`refresh_one_bucket_runtime_flags`] for when it can be skipped.
 #[cfg_attr(test, track_caller)]
-fn refresh_all_bucket_runtime_flags(shard: &mut ShardState, rebuild_object_index: bool) {
+fn refresh_all_bucket_runtime_flags(
+    shard: &mut ShardState,
+    rebuild_object_index: bool,
+    ttl_rollup: BucketTtlRollup,
+) {
     let now = now_ms();
     // Resolved ONCE, outside the loop: it is a property of the shard, not of a bucket.
     let shard_id = shard.shard_id();
@@ -5432,6 +5486,7 @@ fn refresh_all_bucket_runtime_flags(shard: &mut ShardState, rebuild_object_index
             &shard.dirty_objects,
             &shard.expires_at_ms,
             rebuild_object_index,
+            ttl_rollup,
         );
     }
     // The sweep covered everything, so nothing is left outstanding.
@@ -5465,7 +5520,9 @@ pub(super) fn refresh_pending_bucket_runtime_flags(shard: &mut ShardState) {
     let bucket_count = shard.bucket_index.bucket_map.len();
     if shard.buckets_pending_flag_refresh.len().saturating_mul(2) >= bucket_count {
         // Still the write path, so the object-index scan stays off; only the traversal changes.
-        refresh_all_bucket_runtime_flags(shard, false);
+        // STILL THE WRITE PATH even though the traversal is the sweep -- which is exactly why
+        // the TTL decision rides its own parameter rather than the traversal.
+        refresh_all_bucket_runtime_flags(shard, false, BucketTtlRollup::LeaveStale);
         return;
     }
     let now = now_ms();
@@ -5482,6 +5539,7 @@ pub(super) fn refresh_pending_bucket_runtime_flags(shard: &mut ShardState) {
             &shard.dirty_objects,
             &shard.expires_at_ms,
             false,
+            BucketTtlRollup::LeaveStale,
         );
     }
 }
