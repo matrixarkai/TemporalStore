@@ -7213,6 +7213,214 @@ mod tests {
     /// address, so this is where "the bytes did not move" is actually proved: the block id slot
     /// still carries the address's block id, the size slot carries the strip sentinel, and the
     /// log-resident slot still carries `block_id().is_none()`.
+    /// A STORED DELTA ROW THAT NAMES ITS ELEMENT, AS BYTES, CAPTURED BEFORE THE WRITER COULD NOT.
+    ///
+    /// 44 bytes, twelve positional slots, produced by `capture_a_stored_row_that_names_its_element`
+    /// below from the production authority and the production strip pass. Slot 5 holds `"f0"`,
+    /// which is what `engine::collect_upsert_index_items` puts there for a hash field.
+    ///
+    /// NEVER REGENERATE THIS. Once `IndexItem` has no slot for an element name there is no writer
+    /// left that can produce such a row, so these bytes are the only record of the shape. A golden
+    /// holding YESTERDAY'S INPUT keeps its bytes; what moves is the assertions about what this
+    /// binary derives FROM them.
+    const A_STORED_ROW_THAT_NAMES_ITS_ELEMENT: &str =
+        "9c00cd215ba0ac756e67617465642f6861736801a26630000795cf0000002a00100000cd100007c00700c2c2";
+
+    /// THE STORED ROW NAMES ITS ELEMENT IN SLOT 5, AND IN SLOT 5 ALONE.
+    ///
+    /// # WHY THIS GUARD EXISTS AT ALL
+    ///
+    /// Nothing in this crate held the bytes of a positional row from a previous build. The three
+    /// older compatibility arms -- `an_index_item_written_with_the_old_field_names_still_loads`,
+    /// `the_old_page_id_key_still_loads_into_the_renamed_block_id_field` and
+    /// `a_delta_record_written_with_the_old_field_names_still_loads` -- all build their fixtures
+    /// with `serde_json::json!`, which is the NAMED map shape. A named row has no `"c"` key to
+    /// lose, so none of them can witness what happens to the POSITIONAL slot. And
+    /// `the_twelve_stored_slots_are_unchanged_and_the_three_derived_ones_carry_their_derivation`
+    /// encodes with THIS binary and then checks positions -- its own documentation says a round
+    /// trip cannot detect a change in what gets encoded.
+    ///
+    /// # THE FOUR THINGS IT PINS, AND WHICH ONE IS ALLOWED TO MOVE
+    ///
+    /// Asserted on the STORED BYTES rather than on a decoded struct, because what a later binary
+    /// can read off a row is exactly what a change here takes away.
+    ///
+    ///   1. TWELVE SLOTS. The row is an array of twelve. Stable: taking the element name off the
+    ///      struct while leaving the serializer writing a constant nil keeps the count.
+    ///   2. SLOT 5 IS THE NAME. The stored value at position 5 is the string `"f0"`. That is a
+    ///      fact about these bytes, so it is stable forever.
+    ///   3. SLOT 2 IS EMPTY, which is what makes slot 5 load-bearing. `strip_block_ref_key_repeat`
+    ///      cleared the composite handle because the writer had built it by the same derivation, so
+    ///      the element name is NOT also spelled into the stored handle. Slot 5 is its only home on
+    ///      a stored row.
+    ///   4. WHAT THIS BINARY DERIVES FROM IT. `restore_block_ref_key_repeat` rebuilds the handle
+    ///      from the row, and today it rebuilds the spelling that NAMES the element. This is the
+    ///      assertion that moves: with the element name off `IndexItem` the rebuild passes `None`
+    ///      and lands on the spelling `state::block_index_written_key` already produced -- two
+    ///      derivations of one page handle that disagree today and agree afterwards.
+    #[test]
+    fn a_stored_row_naming_its_element_decodes_and_its_name_is_still_readable() {
+        let bytes =
+            hex::decode(A_STORED_ROW_THAT_NAMES_ITS_ELEMENT).expect("the golden is valid hex");
+        // A TRUNCATED PASTE IS THE ONE WAY A BYTE LITERAL GOES WRONG IN SILENCE.
+        assert_eq!(
+            44,
+            bytes.len(),
+            "the golden is {} B, not the 44 B that were captured -- the literal has been edited",
+            bytes.len()
+        );
+
+        // (1) and (2): READ OFF THE BYTES, as a generic value, so the assertions name POSITIONS
+        // and no struct re-imposes the mapping under test.
+        let row: serde_json::Value =
+            rmp_serde::from_slice(&bytes).expect("the golden decodes as a generic value");
+        let slots = match &row {
+            serde_json::Value::Array(slots) => slots,
+            other => panic!("the golden is not an array, it is {other:?} -- the log is POSITIONAL"),
+        };
+        assert_eq!(12, slots.len(), "the golden holds {} slots, not 12", slots.len());
+        assert_eq!(
+            Some("f0"),
+            slots[5].as_str(),
+            "slot 5 of the stored row is {:?}, not the element name this fixture exists to hold",
+            slots[5]
+        );
+        // (3) The handle slot is empty, so slot 5 is the only place the name is written.
+        assert_eq!(
+            Some(""),
+            slots[2].as_str(),
+            "slot 2 is {:?}; the whole point of this golden is that the composite handle was \
+             cleared, so the element name is not also spelled there",
+            slots[2]
+        );
+        println!("[golden] 12 slots, slot5={:?}, slot2={:?}", slots[5], slots[2]);
+
+        // (4) What the reader recovers, and what it derives from it.
+        let wire: IndexItemWire =
+            rmp_serde::from_slice(&bytes).expect("the golden decodes as a wire row");
+        assert_eq!(
+            Some("f0"),
+            wire.component.as_deref(),
+            "the wire row recovered {:?} from slot 5",
+            wire.component
+        );
+
+        let mut item: IndexItem =
+            rmp_serde::from_slice(&bytes).expect("the golden decodes as an item");
+        assert!(
+            item.block_ref_key.is_empty(),
+            "the decoded item carries a handle already, so the rebuild below is not what fills it"
+        );
+        item.restore_object_id_repeat(1);
+        item.restore_address_repeats();
+        item.restore_block_ref_key_repeat();
+
+        // BOTH SPELLINGS FROM THE AUTHORITY, so this states a relation between two derivations
+        // rather than goldening a string.
+        let address = item.entry.as_ref().expect("the golden carries an address");
+        let spelling = |named: Option<&str>| {
+            block_ref_key_from_parts(
+                &item.model_id,
+                &item.object_key,
+                named,
+                address.block_slab_id(),
+                address.offset(),
+                address.length(),
+                address.block_id().unwrap_or_default(),
+                address.generation().unwrap_or_default(),
+            )
+        };
+        let names_the_element = spelling(Some("f0"));
+        let names_the_page = spelling(None);
+        assert_ne!(
+            names_the_element, names_the_page,
+            "the two spellings are the same string, so the assertion below decides nothing"
+        );
+        println!("[golden] rebuilt handle:    {:?}", item.block_ref_key);
+        println!("[golden] names the element: {names_the_element:?}");
+        println!("[golden] names the page:    {names_the_page:?}");
+        assert_eq!(
+            names_the_element, item.block_ref_key,
+            "this binary rebuilds a handle that does NOT name the element, which is the state the \
+             element-name removal produces -- restate this arm onto `names_the_page` and say so, \
+             rather than re-goldening the string"
+        );
+    }
+
+    /// CAPTURE ONLY. Emits the byte literal for a stored delta row that NAMES ITS ELEMENT.
+    ///
+    /// # WHY BYTES, AND WHY THIS IS A ONE-WAY DOOR
+    ///
+    /// Slot 5 of the positional row is `IndexItem::component`, and `collect_upsert_index_items`
+    /// fills it with the element's own name. Once that field is gone there is no writer left in the
+    /// crate that can produce such a row -- not behind a flag and not by hand, because the struct
+    /// has no slot to put a name in -- so BYTES are the only form of it that outlives the field.
+    /// That is the same reason `engine::tests::page_entry_names::UNGATED_STORE_INDEX_AT_STAMP_8`
+    /// was captured as text instead of being regenerated.
+    ///
+    /// # IT MUST NOT BE RE-RUN ONCE SLOT 5 CANNOT BE FILLED
+    ///
+    /// Re-running it then captures a row whose slot 5 is nil, which DESTROYS the fixture while
+    /// leaving every assertion on it passing. The golden records YESTERDAY'S INPUT; the assertions
+    /// about what this binary derives FROM it are the half that is allowed to move.
+    ///
+    /// # PROVENANCE IS THIS BODY
+    ///
+    /// Built through the production authority (`block_ref_key_from_parts`) and the production
+    /// strips, in `append_delta_record`'s own order -- the handle strip first, because it derives
+    /// from `object_key` and blanking that first would make it decline. So the bytes are what the
+    /// writer puts on disk rather than this test's invention.
+    #[test]
+    #[ignore = "capture helper: regenerates the golden; never run it once slot 5 cannot be filled"]
+    fn capture_a_stored_row_that_names_its_element() {
+        let shard: ShardId = 1;
+        let model_id = "hash".to_string();
+        let object_key = "ungated/hash".to_string();
+        let component = "f0";
+        let address =
+            crate::block_store::ElementEntry::from_parts(42, 1_048_576, 4096, Some(7), None);
+
+        let mut item = IndexItem {
+            kind: IndexItemKind::Page,
+            routing_bucket: 8539,
+            // THE AUTHORITY, WITH THE ELEMENT NAMED -- what the upsert emitter passes through for
+            // a hash field, and the spelling the entry walk does NOT produce.
+            block_ref_key: block_ref_key_from_parts(
+                &model_id,
+                &object_key,
+                Some(component),
+                address.block_slab_id(),
+                address.offset(),
+                address.length(),
+                address.block_id().unwrap_or_default(),
+                address.generation().unwrap_or_default(),
+            ),
+            object_key: object_key.clone().into(),
+            model_id: model_id.clone(),
+            component: Some(component.into()),
+            object_id: crate::engine::hashing::stable_block_object_id(
+                shard, &model_id, &object_key,
+            ),
+            entry: Some(address.clone()),
+            deleted: false,
+        };
+        item.strip_block_ref_key_repeat();
+        item.strip_size_repeat();
+        item.strip_address_repeats();
+        item.strip_object_id_repeat(shard);
+
+        let bytes = rmp_serde::to_vec(&item).expect("encode the row positionally");
+        let hex: String = bytes.iter().map(|byte| format!("{byte:02x}")).collect();
+        println!("[capture] {} B", bytes.len());
+        println!(
+            "[capture] stored handle after the strip: {:?} (empty means the strip fired, so slot \
+             5 is the only place this row names its element)",
+            item.block_ref_key
+        );
+        println!("[capture] object_id after the strip: {}", item.object_id);
+        println!("[capture] hex = \"{hex}\"");
+    }
+
     #[test]
     fn the_twelve_stored_slots_are_unchanged_and_the_three_derived_ones_carry_their_derivation() {
         let address =
