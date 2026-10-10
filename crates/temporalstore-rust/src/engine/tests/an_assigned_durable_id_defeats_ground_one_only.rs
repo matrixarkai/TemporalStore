@@ -355,3 +355,72 @@ const _: fn(&crate::engine::state::ShardState) -> Vec<crate::engine::storage_buc
 const _: () = assert!(
     size_of::<(u64, BlockIndex)>() - size_of::<(u64, TheEntryWithNoIdentityTerm)>() == 16
 );
+
+// =================================================================================================
+// CLAIM 8 -- THE BUCKET TTL GATES NOTHING OPERATIONAL, SO THE TTL HALF OF THE PER-WRITE REFRESH IS
+// NOT ON THE CORRECTNESS PATH.
+//
+// WHAT IS PINNED AND WHAT IS CITED, said first so neither is mistaken for the other. The accessor
+// signature and the width below are PINNED and fail if they move. Everything else in this claim is
+// CITED: the consumer list and the expiry path are reachable only through module-private items and
+// public report structs, so a test cannot assert membership of either. A citation is not a proof
+// and is recorded as a citation.
+//
+// THE QUESTION THIS ANSWERS. `refresh_one_bucket_runtime_flags` holds only a `&mut BucketNode` and
+// contains five of the character-wanting sites -- four dirty probes and one TTL minimum -- on the
+// per-write path. For the TTL minimum the first question is not "where does the input come from"
+// but WHAT TOLERANCE THE CONSUMER HAS, because an exact minimum needs an ordered structure per
+// object while a conservative one needs almost nothing.
+//
+// THE ANSWER IS NEITHER: IT IS A REPORTED STATISTIC. Every reader of `BucketNode::ttl_ms` is a
+// report or the serializer, CITED:
+//
+//   * `object_manager.rs:83` sets a report field; `:89` and `:154` fold it into one.
+//   * `storage_reporting.rs:347` sets a report flag bit; `:368` packs it into a report blob;
+//     `:473` copies it into a report struct.
+//   * `bucket_store.rs:101` counts it into `ttl_bucket_count`; `:134` sets a report field.
+//   * `state.rs:3951` serializes it, and `ttl_ms` is in `BUCKET_NODE_FIELDS` at `state.rs:4008`.
+//   * It is CONSTRUCTED in only one place: `storage_bucket_internals.rs:5375` and `:5378`, which
+//     is the function above.
+//
+// AND REAL EXPIRY DOES NOT READ IT. Expiry runs off `expires_at_ms` and its deadline-ordered
+// mirror `expiry_by_deadline` -- `engine.rs:4831` to `:4851` for the mutators, and
+// `recovery_sweep_compact.rs:996` for the due-key prefix scan. No expiry, eviction or serving
+// decision consults a bucket's TTL. CITED.
+//
+// NO CONSUMER DOCUMENTS IT AS LIVE. `bucket_store.rs:38` declares `pub ttl_ms: Option<u64>` on the
+// public report with no claim about freshness, and the object report's field at
+// `object_manager.rs:24` likewise. So there is no doc to correct and no promise to honour. CITED.
+//
+// WHAT THAT BUYS, AND IT IS THE CHEAPEST OF THREE. The per-write refresh can simply DROP the TTL
+// term and leave it to the full sweep, which already runs on load at `persistence.rs:375` and
+// `:536`. That REMOVES a per-write loop over a bucket's pages rather than re-sourcing it: no new
+// structure, no bytes, and no stamp. The value then goes stale between full sweeps, which is a
+// reporting-accuracy decision rather than a correctness one -- and whoever implements it owes the
+// code a statement of HOW STALE it can get and WHAT refreshes it, because that is the claim a
+// later reader will need and will not otherwise find.
+//
+// THE TWO ALTERNATIVES, PRICED SO THE CHOICE IS NOT REOPENED BLIND. Making it derived-on-read
+// would take it off the wire and buy a format stamp for a statistic. A third bucket-keyed expiry
+// mirror, maintained at the `set_expiry` chokepoint -- which has the whole shard in scope at
+// `engine.rs:4846`, so it can commit to `block_routing_bucket(key, start, end)`, the same number
+// that decides where a page lives -- is sound with a CONSERVATIVE minimum precisely because the
+// consumer is a report, so it never has to search for the next minimum on a removal. It would cost
+// about twelve bytes a bucket against a removal saving sixteen bytes a page at the in-tree p50 of
+// thirty-nine pages a bucket (`state.rs:1414`), so roughly two per cent of the saving. Cheap, and
+// unnecessary if the term is simply dropped.
+// =================================================================================================
+
+/// CLAIM 8, PINNED. The accessor every report consumer reads the bucket TTL through.
+///
+/// A signature pin on `ms`, which is what makes the claim "every consumer takes an `Option<u64>`
+/// out of this and nothing more" checkable at the one place they all pass through. If the accessor
+/// ever starts handing back something a consumer could act on differently, this line fails.
+const _: fn(crate::engine::state::BucketTtl) -> Option<u64> = crate::engine::state::BucketTtl::ms;
+
+/// CLAIM 8, PINNED. The width, because the cheapest option turns on costing nothing.
+///
+/// `Option<NonZeroU64>` rides the niche, so the term is one word and dropping its per-write
+/// maintenance moves no bytes at all -- which is the half of the argument that a reader would
+/// otherwise have to take on trust.
+const _: () = assert!(size_of::<crate::engine::state::BucketTtl>() == 8);
