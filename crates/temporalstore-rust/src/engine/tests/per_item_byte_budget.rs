@@ -51,7 +51,7 @@ use crate::block_store::{ElementEntry, BlockStoreSlabDescriptor};
 use crate::engine::state::{
     BlockIndex, BlockIndexMap, BlockLookupRef, BlockRefs, BucketFlags, BucketLayoutState, BucketNode,
     BucketTtl,
-    DeletedObjectIndex, DirtyKeySet, ObjectIndex,
+    DeletedObjectIndex, DirtyKeySet, ModelKey, ObjectIndex,
     WalResidentBlock,
 };
 
@@ -630,6 +630,24 @@ fn only_the_structures_that_hold_an_address_moved() {
             168,
             0,
         ),
+        // THREE CONTROL ROWS ADDED TO REPLACE THE THREE THE COMPONENT COLLAPSE DELETED, AND THE
+        // FLOOR BELOW IS NOT LOWERED TO MEET THE SHRINK.
+        //
+        // `ComponentBlocks`, `ComponentList` and `ObjectBlockRefs` were control rows here, all
+        // three at 40 and all three holding no address. Deleting them took the control group from
+        // 13 to 10 and failed the `control >= 12` guard -- correctly, because that guard's reason
+        // is about the control's POWER: "below twelve the control cannot distinguish 'nothing else
+        // moved' from 'nothing else was looked at'". That reason has nothing to do with which
+        // types happen to exist, so lowering the floor would weaken exactly what it protects while
+        // making the arm green. The group is refilled instead.
+        //
+        // Each of these holds no `ElementEntry` inline, so each predicts NO movement, and each has
+        // its own `const _: () = assert!(size_of::<T>() == N)` beside its declaration in `state.rs`
+        // -- so the literal in the `before` column here is cross-checked by the build rather than
+        // being a second, driftable copy of the width.
+        ("ModelKey", size_of::<ModelKey>(), 16, 0),
+        ("BucketTtl", size_of::<BucketTtl>(), 8, 0),
+        ("BucketFlags", size_of::<BucketFlags>(), 1, 0),
     ];
 
     // DENOMINATORS FIRST, both of them.
