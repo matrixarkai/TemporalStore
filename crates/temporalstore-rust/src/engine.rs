@@ -3419,7 +3419,14 @@ fn collect_command_index_items_for(
                 // a constant `None` into it, so the bytes it produces do not move: the serializer
                 // writes that same nil for every row now, and a row written by an older binary
                 // still carries whatever name it was given.
-                object_id: page.object_id(shard_id),
+                //
+                // RESOLVED ACROSS TWO CHANGES TO ONE ARGUMENT LIST, and they are orthogonal. Main
+                // retired the `component` field from the row entirely, so there is nothing to pass
+                // for it. This branch changed what `object_id` TAKES -- the identity arrives as a
+                // parameter because the entry is losing its own copy -- which is a change to the
+                // call, not to the row. Keeping both means: no component term, and the key handed
+                // in explicitly.
+                object_id: page.object_id(shard_id, &page.object_key),
                 deleted: page.deleted,
                 // `in_log` here was `page.log_backed()` -- the accessor added when the stored
                 // copy of this same fact was removed from the resident entry. One derivation,
@@ -5062,7 +5069,7 @@ fn mark_bucket_index_object_deleted(shard: &mut ShardState, key: &str) -> bool {
         let mut deleted_object_ids = BTreeSet::new();
         bucket.block_index.retain(&mut shard.bucket_index.block_slab_live, |_, page| {
             if &*page.object_key == key {
-                deleted_object_ids.insert(page.object_id(shard_id));
+                deleted_object_ids.insert(page.object_id(shard_id, &page.object_key));
                 removed = true;
                 false
             } else {
@@ -5311,7 +5318,7 @@ fn mark_bucket_index_block_deleted_recording(
                 && &*page.object_key == key
                 && component.is_none();
             if matches {
-                deleted_object_ids.insert(page.object_id(shard_id));
+                deleted_object_ids.insert(page.object_id(shard_id, &page.object_key));
                 bucket_removed = true;
                 removed = true;
                 // WHERE THE TOMBSTONE ENTRY MUST GO: the bucket the live entry was actually filed
@@ -5373,7 +5380,7 @@ fn mark_bucket_index_block_deleted_recording(
                 !bucket
                     .block_index
                     .values()
-                    .any(|page| !page.deleted && page.object_id(shard_id) == *object_id)
+                    .any(|page| !page.deleted && page.object_id(shard_id, &page.object_key) == *object_id)
             });
             bucket.deleted_object_index.extend(deleted_object_ids);
             bucket.set_dirty(true);

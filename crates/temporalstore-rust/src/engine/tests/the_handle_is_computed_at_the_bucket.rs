@@ -72,7 +72,7 @@ fn the_hoisted_handle_is_byte_identical_to_the_one_the_map_used_to_compute() {
     let mut handles = Vec::new();
 
     for (at, entry) in entries.iter().enumerate() {
-        let expected = block_index_handle(entry);
+        let expected = block_index_handle(&entry.object_key, entry);
         let assigned = bucket.insert_page(entry.clone(), &mut live);
         assert_eq!(
             expected, assigned,
@@ -116,16 +116,16 @@ fn the_hoisted_handle_is_byte_identical_to_the_one_the_map_used_to_compute() {
     let mut longer = base.clone();
     longer.address = ElementEntry::from_parts(7, 0, 65, Some(7), Some(11));
     assert_ne!(
-        block_index_handle(base),
-        block_index_handle(&longer),
+        block_index_handle(&base.object_key, base),
+        block_index_handle(&longer.object_key, &longer),
         "changing the address LENGTH left the handle alone, so `length` is not hashed and the \
          address terms this hoist exists to free are not actually pinned by it"
     );
     let mut elsewhere = base.clone();
     elsewhere.address = ElementEntry::from_parts(7, 1, 64, Some(7), Some(11));
     assert_ne!(
-        block_index_handle(base),
-        block_index_handle(&elsewhere),
+        block_index_handle(&base.object_key, base),
+        block_index_handle(&elsewhere.object_key, &elsewhere),
         "changing the address OFFSET left the handle alone"
     );
 
@@ -173,7 +173,7 @@ fn the_released_door_assigns_the_same_handle_as_the_charged_one() {
              charged path"
         );
         assert_eq!(
-            block_index_handle(entry), a,
+            block_index_handle(&entry.object_key, entry), a,
             "neither door agrees with the handle read off the entry"
         );
         compared += 1;

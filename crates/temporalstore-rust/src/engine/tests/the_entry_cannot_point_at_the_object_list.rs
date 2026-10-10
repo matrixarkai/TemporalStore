@@ -488,7 +488,7 @@ fn the_object_list_holds_ids_and_the_entry_already_answers_the_id_without_one() 
             }
             pages_seen += 1;
             // What the entry can answer WITHOUT an ordinal, from the address alone.
-            let from_address = page.object_id(1);
+            let from_address = page.object_id(1, &page.object_key);
             let recomputed = stable_block_object_id(1, page.model_id.as_str(), &page.object_key);
             if from_address == recomputed {
                 id_already_answered += 1;

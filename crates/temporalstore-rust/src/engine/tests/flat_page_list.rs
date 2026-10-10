@@ -371,7 +371,7 @@ fn an_unsorted_page_list_would_reorder_every_walk_of_this_index() {
     let backwards = walk(&built_from(&backwards_input));
     let mut shuffled_input = pages.clone();
     // A fixed permutation, not a random one: this has to fail the same way every run.
-    shuffled_input.sort_by_key(|entry| block_index_handle(entry).rotate_left(29));
+    shuffled_input.sort_by_key(|entry| block_index_handle(&entry.object_key, entry).rotate_left(29));
     let shuffled = walk(&built_from(&shuffled_input));
 
     assert_eq!(
@@ -399,7 +399,7 @@ fn an_unsorted_page_list_would_reorder_every_walk_of_this_index() {
     // order it asserts, or the assertions above hold trivially.
     let appended: Vec<u64> = backwards_input
         .iter()
-        .map(|entry| block_index_handle(entry))
+        .map(|entry| block_index_handle(&entry.object_key, entry))
         .collect();
     assert_ne!(
         forwards, appended,
@@ -426,7 +426,7 @@ fn the_walk_stays_ascending_across_removals_and_middle_inserts() {
     }
     let mut removed_any = false;
     for entry in pages.iter().step_by(3) {
-        let handle = block_index_handle(entry);
+        let handle = block_index_handle(&entry.object_key, entry);
         if index.remove(&handle, &mut live).is_some() {
             removed_any = true;
         }
@@ -545,7 +545,7 @@ fn a_second_insert_of_the_same_page_replaces_it_rather_than_adding_beside_it() {
             index.len()
         );
         assert_eq!(
-            block_index_handle(target),
+            block_index_handle(&target.object_key, target),
             handle,
             "the rewrite was filed under a handle that is not the page's own"
         );
@@ -616,7 +616,7 @@ fn sorted_list(length: usize) -> Vec<(u64, BlockIndex)> {
     let mut pages: Vec<(u64, BlockIndex)> = (0..length)
         .map(|i| {
             let entry = page("bag", Some(&format!("m{i}")), 3, i as u64 * 64);
-            (block_index_handle(&entry), entry)
+            (block_index_handle(&entry.object_key, &entry), entry)
         })
         .collect();
     pages.sort_by_key(|(handle, _)| *handle);

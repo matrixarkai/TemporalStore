@@ -266,7 +266,7 @@ fn population(engine: &TemporalEngine) -> Population {
             // DERIVED, not read off the address. `pages_without_object_id` is therefore structurally
             // zero and is left at zero rather than removed from the shape: every page can name its
             // object now, which is the fact that used to be worth counting.
-            let id = entry.object_id(1);
+            let id = entry.object_id(1, &entry.object_key);
             *out.by_object_id.entry(id).or_default() += 1;
             // EVERY page is component-free now -- an entry has no element name -- so this control
             // group is the whole population rather than a subset of it. Kept because the CONTROL

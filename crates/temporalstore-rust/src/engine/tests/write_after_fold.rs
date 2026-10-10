@@ -138,7 +138,7 @@ fn entry_census(engine: &TemporalEngine) -> (usize, std::collections::BTreeSet<(
                 page.address.offset(),
                 page.address.length(),
             ));
-            written.push(crate::engine::state::block_index_written_key(page));
+            written.push(crate::engine::state::block_index_written_key(&page.object_key, page));
         }
     }
     written.sort();

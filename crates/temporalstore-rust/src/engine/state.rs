@@ -2108,21 +2108,21 @@ impl BlockIndexMap {
     /// implementation; the other arrangement is the second path this change exists to delete.
     #[cfg(test)]
     pub(super) fn insert(&mut self, page: BlockIndex, live: &mut BlockSlabLiveIndex) -> u64 {
-        let handle = block_index_handle(&page);
+        let handle = block_index_handle(&page.object_key, &page);
         self.insert_with_handle(handle, page, live)
     }
 
     /// The other test-only door, delegating for the same reason.
     #[cfg(test)]
     pub(super) fn insert_released(&mut self, page: BlockIndex) -> u64 {
-        let handle = block_index_handle(&page);
+        let handle = block_index_handle(&page.object_key, &page);
         self.insert_released_with_handle(handle, page)
     }
 
     /// The mechanism, with no accounting: the handle it was GIVEN, and the address it displaced.
     ///
     /// THE HANDLE ARRIVES FROM ABOVE, and that is the whole of this change. It was
-    /// `block_index_handle(&page)` computed right here -- inside the map, from the entry and
+    /// `block_index_handle(&page.object_key, &page)` computed right here -- inside the map, from the entry and
     /// nothing else. A map cannot see the sibling fields of the bucket that owns it, so a term
     /// that leaves the entry for a per-bucket structure becomes unreachable from this line, and
     /// every such term was therefore pinned to the entry by this one call.
@@ -2419,7 +2419,7 @@ impl FromIterator<BlockIndex> for BlockIndexMap {
         // index twice over -- once on the way in, once when the load seeds the tally.
         let mut map = Self::default();
         for page in pages {
-            let handle = block_index_handle(&page);
+            let handle = block_index_handle(&page.object_key, &page);
             map.insert_unaccounted(handle, page);
         }
         map
@@ -2506,7 +2506,7 @@ where
                 continue;
             };
             debug_assert_eq!(
-                block_index_written_key(page),
+                block_index_written_key(&page.object_key, page),
                 crate::index_log::block_ref_key_from_parts(
                     model_id,
                     object_key,
@@ -2524,7 +2524,7 @@ where
     }
     let mut entries: Vec<(String, &BlockIndex)> = map
         .values()
-        .map(|page| (block_index_written_key(page), page))
+        .map(|page| (block_index_written_key(&page.object_key, page), page))
         .collect();
     entries.sort_by(|left, right| left.0.cmp(&right.0));
 
@@ -2570,11 +2570,14 @@ impl Serialize for BlockIndexMap {
 /// Hashes exactly the fields [`block_index_written_key`] renders, so the handle and the written
 /// key always name the same block. Equal identity therefore lands on one slot, which is also how
 /// this map keeps a rewrite from accumulating a second entry for the same block.
-pub(super) fn block_index_handle(page: &BlockIndex) -> u64 {
+pub(super) fn block_index_handle(object_key: &str, page: &BlockIndex) -> u64 {
     use std::hash::{Hash, Hasher};
     let mut hasher = std::collections::hash_map::DefaultHasher::new();
     page.model_id.hash(&mut hasher);
-    page.object_key.hash(&mut hasher);
+    // THE IDENTITY ARRIVES AS A PARAMETER. It was read off the entry, which is the one place it
+    // is about to stop being. Same bytes into the same hasher in the same order, so the handle
+    // is unchanged -- what moves is WHERE the caller gets the key, and every caller has one.
+    object_key.hash(&mut hasher);
     // STILL HASHED, AND SEVERAL PRODUCERS NOW FILE IT AS `None`.
     //
     // RESTATED FROM "ONE PRODUCER", which was the set arm alone. Every kind
@@ -2607,10 +2610,10 @@ pub(super) fn block_index_handle(page: &BlockIndex) -> u64 {
     hasher.finish()
 }
 
-pub(super) fn block_index_written_key(page: &BlockIndex) -> String {
+pub(super) fn block_index_written_key(object_key: &str, page: &BlockIndex) -> String {
     crate::index_log::block_ref_key_from_parts(
         page.model_id.as_str(),
-        &page.object_key,
+        object_key,
         // `None`, WHICH IS WHAT THIS ALREADY PASSED. The STORED spelling of a page's key is built
         // here, so the value must not move: every entry's component was `None` before the field was
         // removed, and passing the constant keeps every written key character-for-character what it
@@ -3926,7 +3929,7 @@ impl BucketNode {
     /// did, in the same order, through the same hasher, so the value is byte-identical. What
     /// changes is that the computation is no longer pinned to a scope that can only see the entry.
     pub(super) fn insert_page(&mut self, page: BlockIndex, live: &mut BlockSlabLiveIndex) -> u64 {
-        let handle = block_index_handle(&page);
+        let handle = block_index_handle(&page.object_key, &page);
         self.block_index.insert_with_handle(handle, page, live)
     }
 
@@ -3935,7 +3938,7 @@ impl BucketNode {
     /// One caller, and it must stay that way -- see
     /// [`BlockIndexMap::insert_released_with_handle`].
     pub(super) fn insert_released_page(&mut self, page: BlockIndex) -> u64 {
-        let handle = block_index_handle(&page);
+        let handle = block_index_handle(&page.object_key, &page);
         self.block_index.insert_released_with_handle(handle, page)
     }
 
@@ -4857,11 +4860,11 @@ impl BlockIndex {
     ///
     /// The component is NOT a term. An object id is per (shard, kind, key); which element of that
     /// object a block holds is `component`, beside the id and not inside it.
-    pub(super) fn object_id(&self, shard_id: crate::types::ShardId) -> u64 {
+    pub(super) fn object_id(&self, shard_id: crate::types::ShardId, object_key: &str) -> u64 {
         crate::engine::hashing::stable_block_object_id(
             shard_id,
             self.model_id.as_str(),
-            &self.object_key,
+            object_key,
         )
     }
 }
@@ -4882,7 +4885,12 @@ impl CoreIndex {
             })
             .collect::<Vec<_>>();
         for (routing_bucket, block_ref_key, page) in refs {
-            self.insert_object_block_lookup(routing_bucket, block_ref_key, &page);
+            self.insert_object_block_lookup(
+                routing_bucket,
+                block_ref_key,
+                &Arc::clone(&page.object_key),
+                &page,
+            );
         }
     }
 
@@ -4893,6 +4901,10 @@ impl CoreIndex {
         &mut self,
         routing_bucket: u32,
         block_ref_key: u64,
+        // THE IDENTITY, PASSED IN. The lookup is keyed by it and the entry is about to stop
+        // carrying it, so it arrives from the caller -- which always has it, because filing a page
+        // is something done TO an object.
+        object_key: &Arc<str>,
         page: &BlockIndex,
     ) {
         if page.deleted {
@@ -4925,7 +4937,7 @@ impl CoreIndex {
             // maps straight to its refs -- see [`ObjectBlockLookup`] on what each one carried, and
             // on the one piece that had to stay, because the component ARGUMENT on the readers and
             // the removers still comes from callers and is still sometimes `Some`.
-            self.object_block_lookup.file(&kind, &page.object_key, value)
+            self.object_block_lookup.file(&kind, object_key, value)
         };
         if added {
             if let Some(total) = self.object_component_block_refs.as_mut() {
@@ -5522,7 +5534,13 @@ mod component_lookup_tests {
         // back `None`. The fixture was wrong, not the counter.
         index.object_component_block_refs = Some(0);
         for i in 0..pages {
-            index.insert_object_block_lookup(i, u64::from(i), &page(object));
+            let filed = page(object);
+            index.insert_object_block_lookup(
+                i,
+                u64::from(i),
+                &std::sync::Arc::clone(&filed.object_key),
+                &filed,
+            );
         }
         index
     }
@@ -5597,7 +5615,13 @@ mod component_lookup_tests {
         index.object_component_block_refs = Some(0);
         // DESCENDING: (3,3), (2,2), (1,1), (0,0).
         for i in (0..PAGES).rev() {
-            index.insert_object_block_lookup(i, u64::from(i), &page("k"));
+            let filed = page("k");
+            index.insert_object_block_lookup(
+                i,
+                u64::from(i),
+                &std::sync::Arc::clone(&filed.object_key),
+                &filed,
+            );
         }
 
         let refs = index

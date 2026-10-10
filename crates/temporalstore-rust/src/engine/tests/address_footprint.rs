@@ -1843,7 +1843,7 @@ fn the_capacity_ceilings_each_narrowing_would_impose() {
         for (_, page) in bucket.block_index.iter() {
             blocks_here += 1;
             model_ids.insert(page.model_id.to_string());
-            *blocks_per_object.entry(page.object_id(1)).or_default() += 1;
+            *blocks_per_object.entry(page.object_id(1, &page.object_key)).or_default() += 1;
             max_length = max_length.max(page.address.length());
             max_page_id = max_page_id.max(page.address.block_id().unwrap_or(0));
             longest.push((page.address.length(), page.object_key.to_string()));

@@ -2245,8 +2245,8 @@ fn the_inline_and_mapped_arms_write_the_same_bytes_for_the_same_page_set() {
         other.object_key = std::sync::Arc::from("a-different-object");
         other
     };
-    let here_key = crate::engine::state::block_index_written_key(&here);
-    let other_key = crate::engine::state::block_index_written_key(&elsewhere_key);
+    let here_key = crate::engine::state::block_index_written_key(&here.object_key, &here);
+    let other_key = crate::engine::state::block_index_written_key(&elsewhere_key.object_key, &elsewhere_key);
     println!("  written key                     : {here_key}");
     println!("  written key, other object       : {other_key}");
     assert!(

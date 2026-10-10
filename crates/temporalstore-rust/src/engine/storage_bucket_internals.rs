@@ -2468,7 +2468,7 @@ pub(super) fn reload_released_bucket(
     for (handle, page) in installed {
         shard
             .bucket_index
-            .insert_object_block_lookup(routing_bucket, handle, &page);
+            .insert_object_block_lookup(routing_bucket, handle, &Arc::clone(&page.object_key), &page);
     }
     shard.bucket_index.released_buckets.remove(&routing_bucket);
     note_bucket_flags_stale(shard, routing_bucket);
@@ -4348,7 +4348,7 @@ pub(super) fn insert_container_tombstone_entry(
     }
     shard
         .bucket_index
-        .insert_object_block_lookup(routing_bucket, block_ref_key, &page);
+        .insert_object_block_lookup(routing_bucket, block_ref_key, &Arc::clone(&page.object_key), &page);
     shard.buckets_pending_flag_refresh.insert(routing_bucket);
 }
 
@@ -4602,12 +4602,12 @@ fn upsert_bucket_index_block_inner(
             let removed_object_id = bucket
                 .block_index
                 .remove(&block_ref.block_ref_key, &mut shard.bucket_index.block_slab_live)
-                .map(|page| page.object_id(shard_id));
+                .map(|page| page.object_id(shard_id, &page.object_key));
             if let Some(removed_object_id) = removed_object_id {
                 if !bucket
                     .block_index
                     .values()
-                    .any(|page| page.object_id(shard_id) == removed_object_id)
+                    .any(|page| page.object_id(shard_id, &page.object_key) == removed_object_id)
                 {
                     bucket.object_index.remove(&removed_object_id);
                 }
@@ -4653,7 +4653,7 @@ fn upsert_bucket_index_block_inner(
             if !bucket
                 .block_index
                 .values()
-                .any(|page| page.object_id(shard_id) == object_id)
+                .any(|page| page.object_id(shard_id, &page.object_key) == object_id)
             {
                 bucket.object_index.remove(&object_id);
             }
@@ -4772,7 +4772,12 @@ fn upsert_bucket_index_block_inner(
     }
     shard
         .bucket_index
-        .insert_object_block_lookup(routing_bucket, block_ref_key, &block_index);
+        .insert_object_block_lookup(
+            routing_bucket,
+            block_ref_key,
+            &Arc::clone(&block_index.object_key),
+            &block_index,
+        );
     shard.buckets_pending_flag_refresh.extend(touched_buckets);
 }
 
@@ -4983,7 +4988,7 @@ pub(super) fn sync_bucket_index_object_blocks_with_mode(
         if !lookup_needs_establishing {
             shard
                 .bucket_index
-                .insert_object_block_lookup(routing_bucket, block_ref_key, &page);
+                .insert_object_block_lookup(routing_bucket, block_ref_key, &Arc::clone(&page.object_key), &page);
         }
     }
 
@@ -5150,7 +5155,7 @@ pub(super) fn update_bucket_layout(shard_id: ShardId, bucket: &mut BucketNode) {
         .block_index
         .values()
         .filter(|page| !page.deleted)
-        .map(|page| page.object_id(shard_id))
+        .map(|page| page.object_id(shard_id, &page.object_key))
         .collect();
     reconcile_object_index_with_live_pages(bucket, &live_object_ids);
     // AND THE TOMBSTONE ROWS, BY THE SAME RULE AS THE OBJECT LIST ABOVE: derived back from

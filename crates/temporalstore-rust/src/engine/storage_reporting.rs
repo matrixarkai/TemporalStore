@@ -516,7 +516,7 @@ pub(super) fn storage_physical_index_report(
                 offset: page.address.offset(),
                 length: page.address.length(),
                 block_id: page.address.block_id(),
-                object_id: Some(page.object_id(shard_id)),
+                object_id: Some(page.object_id(shard_id, &page.object_key)),
                 stored_slab_id: page.address.slab_id(),
                 checksum: None,
                 dirty: page.dirty,

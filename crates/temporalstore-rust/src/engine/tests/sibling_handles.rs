@@ -94,7 +94,10 @@ fn two_entries_of_one_object_at_one_address_share_a_handle() {
     assert_eq!(1, keys.len(), "they must also share one object key");
 
     let handles: std::collections::BTreeSet<u64> =
-        at_one_page.iter().map(block_index_handle).collect();
+        at_one_page
+            .iter()
+            .map(|page| block_index_handle(&page.object_key, page))
+            .collect();
     println!(
         "[sibling-handles] {ENTRIES} entries of one object at one address -> {} distinct handle(s)",
         handles.len()

@@ -172,7 +172,7 @@ fn ids_by_object_key(engine: &TemporalEngine) -> BTreeMap<String, Vec<u64>> {
             by_key
                 .entry(page.object_key.to_string())
                 .or_default()
-                .push(page.object_id(1));
+                .push(page.object_id(1, &page.object_key));
         }
     }
     by_key
@@ -406,7 +406,7 @@ fn the_page_id_names_an_object_so_one_object_key_holds_exactly_one_id() {
 fn the_written_key_of_a_page_spells_its_object_key_so_an_id_cannot_render_it() {
     let object_key = "container";
     let page = entry_named(object_key, Some("body"));
-    let written = crate::engine::state::block_index_written_key(&page);
+    let written = crate::engine::state::block_index_written_key(&page.object_key, &page);
     println!("\n=== the written key of one page ===\n  {written}");
 
     // --- THE PRECONDITION FOR SPLITTING IT, ENFORCED RATHER THAN PRINTED. ---
@@ -434,7 +434,7 @@ fn the_written_key_of_a_page_spells_its_object_key_so_an_id_cannot_render_it() {
     );
 
     // --- AND THE ID IS NOT IN IT, so the characters are not substitutable by the id. ---
-    let id = page.object_id(1);
+    let id = page.object_id(1, &page.object_key);
     assert_ne!(
         0, id,
         "the fixture page carries no object id, so the comparison below is vacuous"
@@ -454,7 +454,7 @@ fn the_written_key_of_a_page_spells_its_object_key_so_an_id_cannot_render_it() {
          length rather than about the characters"
     );
     let other = entry_named(other_key, Some("body"));
-    let other_written = crate::engine::state::block_index_written_key(&other);
+    let other_written = crate::engine::state::block_index_written_key(&other.object_key, &other);
     println!("  the same page under {other_key:?}\n  {other_written}");
     assert_ne!(
         written, other_written,
@@ -463,8 +463,8 @@ fn the_written_key_of_a_page_spells_its_object_key_so_an_id_cannot_render_it() {
     );
 
     // --- AND THE HANDLE MOVES WITH IT, which is what keeps the two from naming different pages. ---
-    let handle = crate::engine::state::block_index_handle(&page);
-    let other_handle = crate::engine::state::block_index_handle(&other);
+    let handle = crate::engine::state::block_index_handle(&page.object_key, &page);
+    let other_handle = crate::engine::state::block_index_handle(&other.object_key, &other);
     assert_ne!(
         handle, other_handle,
         "two pages differing only in their object key hash to one handle {handle}. \

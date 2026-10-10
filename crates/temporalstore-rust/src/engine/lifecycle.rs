@@ -1193,7 +1193,7 @@ impl TemporalEngine {
 ",
                     page.model_id,
                     page.object_key,
-                    page.object_id(shard_id),
+                    page.object_id(shard_id, &page.object_key),
                     page.address.block_slab_id(),
                     page.address.offset(),
                     page.address.length(),
@@ -2247,7 +2247,7 @@ impl TemporalEngine {
                 if page.deleted {
                     continue;
                 }
-                let object_id = page.object_id(shard_id);
+                let object_id = page.object_id(shard_id, &page.object_key);
                 // `None`: an entry names a page, not an element. See this function's doc for what
                 // that skips and why skipping is the safe direction.
                 let component = None;

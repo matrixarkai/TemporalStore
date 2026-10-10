@@ -101,7 +101,7 @@ pub(super) fn runtime_report(shard: &ShardState) -> ObjectManagerRuntimeReport {
             if !page.deleted {
                 live_block_ref_count = live_block_ref_count.saturating_add(1);
             }
-            let page_object_id = page.object_id(shard_id);
+            let page_object_id = page.object_id(shard_id, &page.object_key);
             object_ids.insert(page_object_id);
             *object_ref_counts.entry(page_object_id).or_default() += 1;
             // `missing_object_owner_refs` STOOD HERE AND HAS BEEN RETIRED, not zeroed. It counted

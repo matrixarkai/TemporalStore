@@ -4352,7 +4352,7 @@ fn deep_compare_the_index_a_reconstruct_produces() {
                     page.object_key,
                     page.model_id,
                     None::<std::sync::Arc<str>>,
-                    page.object_id(1),
+                    page.object_id(1, &page.object_key),
                     page.address.block_slab_id(),
                     page.address.offset(),
                     page.address.length(),

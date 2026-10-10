@@ -606,7 +606,7 @@ fn entries_naming(engine: &TemporalEngine, routing_bucket: u32, object_id: u64) 
     let mut live = 0usize;
     let mut tombstoned = 0usize;
     for page in bucket.block_index.values() {
-        if page.object_id(SHARD) != object_id {
+        if page.object_id(SHARD, &page.object_key) != object_id {
             continue;
         }
         if page.deleted {

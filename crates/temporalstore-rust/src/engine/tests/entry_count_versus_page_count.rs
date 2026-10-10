@@ -608,8 +608,8 @@ fn one_page_is_one_entry_because_the_handle_can_no_longer_name_an_element() {
     );
 
     assert_eq!(
-        block_index_handle(&first),
-        block_index_handle(&second),
+        block_index_handle(&first.object_key, &first),
+        block_index_handle(&second.object_key, &second),
         "two entries over one page hashed to two handles, so something per-element is back in \
          `block_index_handle` and the entry count is no longer the page count"
     );
@@ -628,8 +628,8 @@ fn one_page_is_one_entry_because_the_handle_can_no_longer_name_an_element() {
     // CONTROL ONE: a DIFFERENT page is still a second entry.
     let elsewhere = page_at(shared_slab, shared_offset + shared_length, shared_length);
     assert_ne!(
-        block_index_handle(&first),
-        block_index_handle(&elsewhere),
+        block_index_handle(&first.object_key, &first),
+        block_index_handle(&elsewhere.object_key, &elsewhere),
         "two distinct pages hashed alike, so the handle no longer names the address and a lookup \
          would serve one page's bytes for the other"
     );
@@ -648,8 +648,8 @@ fn one_page_is_one_entry_because_the_handle_can_no_longer_name_an_element() {
     let other_object =
         page_at_for_object("another-object", shared_slab, shared_offset, shared_length);
     assert_ne!(
-        block_index_handle(&first),
-        block_index_handle(&other_object),
+        block_index_handle(&first.object_key, &first),
+        block_index_handle(&other_object.object_key, &other_object),
         "two objects' pages hashed alike, so one object's entry would supersede another's"
     );
     let mut live_three = BlockSlabLiveIndex::default();

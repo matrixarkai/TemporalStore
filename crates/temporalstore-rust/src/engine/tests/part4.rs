@@ -5207,7 +5207,7 @@ fn a_block_whose_address_carries_no_object_id_still_reports_one() {
             }
             seen += 1;
             assert_ne!(
-                page.object_id(1),
+                page.object_id(1, &page.object_key),
                 0,
                 "a page filed from an address with no object id must still report the computed one"
             );
@@ -5215,7 +5215,7 @@ fn a_block_whose_address_carries_no_object_id_still_reports_one() {
             // the same function and comparing it with itself: the bucket's object index was
             // populated from the id the write path actually used.
             assert!(
-                bucket.object_index.contains(&page.object_id(1)),
+                bucket.object_index.contains(&page.object_id(1, &page.object_key)),
                 "the id the page reports must be the one the write path filed it under"
             );
         }
@@ -5637,7 +5637,7 @@ fn the_block_index_still_writes_string_keys() {
     // On the wire: the same rendered key it always wrote, rebuilt from the block.
     let json = serde_json::to_value(&bucket.block_index).unwrap();
     let written = json.as_object().expect("the wire form is a map of string keys");
-    let expected = crate::engine::state::block_index_written_key(page);
+    let expected = crate::engine::state::block_index_written_key(&page.object_key, page);
     assert!(
         written.contains_key(&expected),
         "the dump must carry the rendered key {expected:?}, got {:?}",
@@ -8347,7 +8347,7 @@ fn bucket_object_index_already_matches_a_from_scratch_recompute() {
             .block_index
             .values()
             .filter(|page| !page.deleted)
-            .map(|page| page.object_id(1))
+            .map(|page| page.object_id(1, &page.object_key))
             .collect();
         // Mirrors update_bucket_layout: an empty live set over an empty block index leaves the
         // stored set untouched, so only compare where the rebuild would actually assign.
@@ -13766,7 +13766,7 @@ fn the_maintained_object_index_matches_a_full_rebuild() {
             .block_index
             .values()
             .filter(|page| !page.deleted)
-            .map(|page| page.object_id(1))
+            .map(|page| page.object_id(1, &page.object_key))
             .collect();
         checked += 1;
         live_total += rebuilt.object_count();
