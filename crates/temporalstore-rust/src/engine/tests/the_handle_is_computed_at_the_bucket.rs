@@ -73,7 +73,7 @@ fn the_hoisted_handle_is_byte_identical_to_the_one_the_map_used_to_compute() {
 
     for (at, entry) in entries.iter().enumerate() {
         let expected = block_index_handle(&entry.object_key, entry);
-        let assigned = bucket.insert_page(entry.clone(), &mut live);
+        let assigned = bucket.insert_page(&entry.object_key.clone(), entry.clone(), &mut live);
         assert_eq!(
             expected, assigned,
             "entry {at}: the bucket-level door assigned {assigned} where the handle read off the \
@@ -164,8 +164,8 @@ fn the_released_door_assigns_the_same_handle_as_the_charged_one() {
 
     let mut compared = 0usize;
     for entry in &entries {
-        let a = charged.insert_page(entry.clone(), &mut live);
-        let b = released.insert_released_page(entry.clone());
+        let a = charged.insert_page(&entry.object_key.clone(), entry.clone(), &mut live);
+        let b = released.insert_released_page(&entry.object_key.clone(), entry.clone());
         assert_eq!(
             a, b,
             "the charged door assigned {a} and the released door {b} for one entry; they must \
@@ -195,7 +195,7 @@ fn the_written_page_index_is_the_same_map_it_was_before_the_hoist() {
     let mut bucket = BucketNode::default();
     let mut live = BlockSlabLiveIndex::default();
     for entry in fixture() {
-        bucket.insert_page(entry, &mut live);
+        bucket.insert_page(&entry.object_key.clone(), entry, &mut live);
     }
     let written = serde_json::to_value(&bucket).expect("a node serializes");
     let page_index = written

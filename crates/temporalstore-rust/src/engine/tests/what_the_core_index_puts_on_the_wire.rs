@@ -264,7 +264,7 @@ fn a_page_entry_carries_its_object_key_as_a_member_on_the_wire() {
     bucket.routing_bucket = 3;
     bucket.set_meta_loaded(true);
     let mut live = BlockSlabLiveIndex::default();
-    bucket.insert_page(
+    bucket.insert_page(&"an-object", 
         BlockIndex {
             object_key: Arc::from("an-object"),
             model_id: crate::engine::storage_bucket_internals::StoredModelKind::from_stored_name(
@@ -417,8 +417,8 @@ fn the_identity_beside_a_deleted_page_is_its_tombstone_row_and_it_composes_the_s
             ..
         } = &mut index;
         let node = bucket_map.get_mut(&7).expect("the bucket was just inserted");
-        let live_handle = node.insert_page(live.clone(), block_slab_live);
-        let dead_handle = node.insert_page(dead.clone(), block_slab_live);
+        let live_handle = node.insert_page(&live.object_key.clone(), live.clone(), block_slab_live);
+        let dead_handle = node.insert_page(&dead.object_key.clone(), dead.clone(), block_slab_live);
         node.record_tombstone_element(OBJECT, stored_model_kind(KIND), ELEMENT, &dead.address);
         (live_handle, dead_handle)
     };

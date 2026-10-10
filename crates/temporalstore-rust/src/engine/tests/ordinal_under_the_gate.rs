@@ -301,7 +301,7 @@ fn a_derivation_drops_the_entry_no_element_carries_any_more() {
             .bucket_map
             .get_mut(&routing_bucket)
             .expect("the object's bucket exists after the writes above");
-        bucket.insert_page(page, &mut shard.bucket_index.block_slab_live);
+        bucket.insert_page(&page.object_key.clone(), page, &mut shard.bucket_index.block_slab_live);
     }
 
     let before = entry_rows(&engine, "heal/set");

@@ -5377,8 +5377,8 @@ fn installing_the_same_block_twice_replaces_it() {
 
     let mut map = crate::engine::state::BlockIndexMap::default();
     let mut live = crate::engine::state::BlockSlabLiveIndex::default();
-    let first = map.insert(page(), &mut live);
-    let second = map.insert(page(), &mut live);
+    let first = map.insert(&(page()).object_key.clone(), page(), &mut live);
+    let second = map.insert(&(page()).object_key.clone(), page(), &mut live);
 
     assert_eq!(first, second, "the same page must land on the same handle");
     assert_eq!(map.len(), 1, "installing it twice must not add a second entry");
@@ -5386,7 +5386,7 @@ fn installing_the_same_block_twice_replaces_it() {
     // A block differing in one identity field is a different block and keeps its own slot.
     let mut moved = page();
     moved.address = ElementEntry::from_parts(1, 64, 4, Some(1), Some(30));
-    let third = map.insert(moved, &mut live);
+    let third = map.insert(&moved.object_key.clone(), moved, &mut live);
     assert_ne!(first, third, "a page at another offset is not the same page");
     assert_eq!(map.len(), 2);
 

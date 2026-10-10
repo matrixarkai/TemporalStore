@@ -327,7 +327,7 @@ fn built_from(pages: &[BlockIndex]) -> BlockIndexMap {
     let mut live = BlockSlabLiveIndex::default();
     let mut index = BlockIndexMap::default();
     for entry in pages {
-        index.insert(entry.clone(), &mut live);
+        index.insert(&entry.object_key.clone(), entry.clone(), &mut live);
     }
     index
 }
@@ -422,7 +422,7 @@ fn the_walk_stays_ascending_across_removals_and_middle_inserts() {
         .map(|i| page("bag", Some(&format!("g{i}")), 2, i as u64 * 64))
         .collect();
     for entry in &pages {
-        index.insert(entry.clone(), &mut live);
+        index.insert(&entry.object_key.clone(), entry.clone(), &mut live);
     }
     let mut removed_any = false;
     for entry in pages.iter().step_by(3) {
@@ -433,7 +433,7 @@ fn the_walk_stays_ascending_across_removals_and_middle_inserts() {
     }
     assert!(removed_any, "the fixture removed nothing, so nothing was exercised");
     for i in 32..48 {
-        index.insert(page("bag", Some(&format!("g{i}")), 2, i as u64 * 64), &mut live);
+        index.insert(&(page("bag", Some(&format!("g{i}")), 2, i as u64 * 64)).object_key.clone(), page("bag", Some(&format!("g{i}")), 2, i as u64 * 64), &mut live);
     }
     let handles = walk(&index);
     assert!(
@@ -485,14 +485,14 @@ fn a_second_insert_of_the_same_page_replaces_it_rather_than_adding_beside_it() {
     // must leave one live ref, not two, and that is what this asserts.
     let mut index = BlockIndexMap::default();
     let only = page("solo", None, 5, 128);
-    let first = index.insert(only.clone(), &mut live);
+    let first = index.insert(&only.object_key.clone(), only.clone(), &mut live);
     assert_eq!(
         1,
         live.tally(5).block_refs,
         "one page filed once left {} live ref(s) on its slab, not 1",
         live.tally(5).block_refs
     );
-    let again = index.insert(only.clone(), &mut live);
+    let again = index.insert(&only.object_key.clone(), only.clone(), &mut live);
     assert_eq!(first, again, "the same page took two different handles");
     assert_eq!(1, index.len(), "a rewrite on the One arm filed {} pages", index.len());
     assert!(
@@ -528,7 +528,7 @@ fn a_second_insert_of_the_same_page_replaces_it_rather_than_adding_beside_it() {
             .map(|i| page("bag", Some(&format!("h{i}")), 9, i as u64 * 64))
             .collect();
         for entry in &pages {
-            index.insert(entry.clone(), &mut live);
+            index.insert(&entry.object_key.clone(), entry.clone(), &mut live);
         }
         assert_eq!(length, index.len(), "the fixture filed the wrong number of pages");
         assert!(
@@ -536,7 +536,7 @@ fn a_second_insert_of_the_same_page_replaces_it_rather_than_adding_beside_it() {
             "a list of {length} did not reach the Many arm"
         );
         let target = &pages[length / 2];
-        let handle = index.insert(target.clone(), &mut live);
+        let handle = index.insert(&target.object_key.clone(), target.clone(), &mut live);
         assert_eq!(
             length,
             index.len(),
@@ -591,7 +591,7 @@ fn replacing_a_page_discharges_the_address_it_displaced() {
         .map(|i| page("bag", Some(&format!("k{i}")), 4, i as u64 * 64))
         .collect();
     for entry in &pages {
-        index.insert(entry.clone(), &mut live);
+        index.insert(&entry.object_key.clone(), entry.clone(), &mut live);
     }
     let before = live.tally(4);
     assert_eq!(
@@ -599,7 +599,7 @@ fn replacing_a_page_discharges_the_address_it_displaced() {
         "the fixture charged {} pages to slab 4, not the six it filed",
         before.block_refs
     );
-    index.insert(pages[3].clone(), &mut live);
+    index.insert(&(pages[3].clone()).object_key.clone(), pages[3].clone(), &mut live);
     let after = live.tally(4);
     assert_eq!(
         before, after,
@@ -1401,7 +1401,7 @@ fn the_stored_page_index_is_byte_for_byte_what_the_tree_wrote() {
     let mut list = BlockIndexMap::default();
     let mut live = BlockSlabLiveIndex::default();
     for (_, entry) in &pages {
-        list.insert(entry.clone(), &mut live);
+        list.insert(&entry.object_key.clone(), entry.clone(), &mut live);
     }
     let written = serde_json::to_vec(&list).expect("the page index serializes");
     assert!(
@@ -1414,7 +1414,7 @@ fn the_stored_page_index_is_byte_for_byte_what_the_tree_wrote() {
     // of the ordering guard above.
     let mut backwards = BlockIndexMap::default();
     for (_, entry) in pages.iter().rev() {
-        backwards.insert(entry.clone(), &mut live);
+        backwards.insert(&entry.object_key.clone(), entry.clone(), &mut live);
     }
     let written_backwards = serde_json::to_vec(&backwards).expect("the page index serializes");
     assert_eq!(
@@ -1444,7 +1444,7 @@ fn the_stored_page_index_is_byte_for_byte_what_the_tree_wrote() {
         if at == 7 {
             entry.deleted = true;
         }
-        injected.insert(entry, &mut live);
+        injected.insert(&entry.object_key.clone(), entry, &mut live);
     }
     let with_injection = serde_json::to_vec(&injected).expect("the page index serializes");
     assert_ne!(

@@ -1621,7 +1621,7 @@ fn reading_a_page_out_of_line_costs_a_dependent_load_an_inline_entry_did_not() {
     let mut listed: Vec<(u64, BlockIndexMap)> = Vec::with_capacity(BUCKETS);
     for i in 0..BUCKETS {
         let mut index = BlockIndexMap::default();
-        let handle = index.insert(page_for(i as u64), &mut live);
+        let handle = index.insert(&(page_for(i as u64)).object_key.clone(), page_for(i as u64), &mut live);
         listed.push((handle, index));
     }
     // THE DECLINED SHAPE, as a mirror: the entry held in the node's own bytes.
@@ -1933,7 +1933,7 @@ fn a_bucket_that_grows_past_one_page_and_shrinks_back_holds_the_same_page_set() 
 
     // --- One block, held in the single-block arm, whose entry is behind a pointer. ---
     let first = page_for(1);
-    let first_handle = index.insert(first.clone(), &mut live);
+    let first_handle = index.insert(&first.object_key.clone(), first.clone(), &mut live);
     assert!(
         matches!(index, BlockIndexMap::One(..)),
         "one page is not being held in the single-page arm, which is the shape the measurement \
@@ -1945,7 +1945,7 @@ fn a_bucket_that_grows_past_one_page_and_shrinks_back_holds_the_same_page_set() 
     // --- Grow to four: the list has to take the blocks in order. ---
     let mut handles = vec![first_handle];
     for seed in 2..=4u64 {
-        handles.push(index.insert(page_for(seed), &mut live));
+        handles.push(index.insert(&(page_for(seed)).object_key.clone(), page_for(seed), &mut live));
     }
     assert!(
         matches!(index, BlockIndexMap::Many(_)),
@@ -2033,7 +2033,7 @@ fn a_bucket_that_grows_past_one_page_and_shrinks_back_holds_the_same_page_set() 
     let mut retained = BlockIndexMap::default();
     let mut retained_handles = Vec::new();
     for seed in 10..=13u64 {
-        retained_handles.push(retained.insert(page_for(seed), &mut live));
+        retained_handles.push(retained.insert(&(page_for(seed)).object_key.clone(), page_for(seed), &mut live));
     }
     assert!(
         matches!(retained, BlockIndexMap::Many(_)),
@@ -2070,7 +2070,7 @@ fn a_bucket_that_grows_past_one_page_and_shrinks_back_holds_the_same_page_set() 
     // this case was added.
     let mut emptied = BlockIndexMap::default();
     for seed in 30..=33u64 {
-        emptied.insert(page_for(seed), &mut live);
+        emptied.insert(&(page_for(seed)).object_key.clone(), page_for(seed), &mut live);
     }
     assert!(
         matches!(emptied, BlockIndexMap::Many(_)),
@@ -2112,8 +2112,8 @@ fn a_bucket_that_grows_past_one_page_and_shrinks_back_holds_the_same_page_set() 
     // collision is real, and that `index_entry_names_a_page` keeps it unreachable -- and this is the
     // one that sits beside the bucket distribution the loss would have shown up in.
     let mut components = BlockIndexMap::default();
-    let first_component = components.insert(component_page(20, "alpha"), &mut live);
-    let second_component = components.insert(component_page(20, "beta"), &mut live);
+    let first_component = components.insert(&(component_page(20, "alpha")).object_key.clone(), component_page(20, "alpha"), &mut live);
+    let second_component = components.insert(&(component_page(20, "beta")).object_key.clone(), component_page(20, "beta"), &mut live);
     assert_eq!(
         first_component, second_component,
         "two entries of one object at one address were given DIFFERENT handles. If they are \
@@ -2157,7 +2157,7 @@ fn the_inline_and_mapped_arms_write_the_same_bytes_for_the_same_page_set() {
     // A node that has only ever held one block.
     let mut untouched = BucketNode::default();
     untouched.routing_bucket = 11;
-    let handle = untouched.block_index.insert(page_for(1), &mut live);
+    let handle = untouched.block_index.insert(&(page_for(1)).object_key.clone(), page_for(1), &mut live);
     assert!(
         matches!(untouched.block_index, BlockIndexMap::One(..)),
         "the untouched node is not holding its one page in the single-page arm"
@@ -2166,10 +2166,10 @@ fn the_inline_and_mapped_arms_write_the_same_bytes_for_the_same_page_set() {
     // A node that grew to four blocks and shrank back to the same single block.
     let mut round_tripped = BucketNode::default();
     round_tripped.routing_bucket = 11;
-    round_tripped.block_index.insert(page_for(1), &mut live);
+    round_tripped.block_index.insert(&(page_for(1)).object_key.clone(), page_for(1), &mut live);
     let mut extra = Vec::new();
     for seed in 2..=4u64 {
-        extra.push(round_tripped.block_index.insert(page_for(seed), &mut live));
+        extra.push(round_tripped.block_index.insert(&(page_for(seed)).object_key.clone(), page_for(seed), &mut live));
     }
     assert!(
         matches!(round_tripped.block_index, BlockIndexMap::Many(_)),
@@ -2202,7 +2202,7 @@ fn the_inline_and_mapped_arms_write_the_same_bytes_for_the_same_page_set() {
     // Without it, two nodes that both serialized to nothing would pass the assertion above.
     let mut different = BucketNode::default();
     different.routing_bucket = 11;
-    different.block_index.insert(page_for(2), &mut live);
+    different.block_index.insert(&(page_for(2)).object_key.clone(), page_for(2), &mut live);
     let different_bytes = serde_json::to_string(&different).expect("a node serializes");
     assert_ne!(
         untouched_bytes, different_bytes,
@@ -2265,9 +2265,9 @@ fn the_inline_and_mapped_arms_write_the_same_bytes_for_the_same_page_set() {
     let mut many = BucketNode::default();
     many.routing_bucket = 11;
     for seed in 1..=4u64 {
-        many.block_index.insert(page_for(seed), &mut live);
+        many.block_index.insert(&(page_for(seed)).object_key.clone(), page_for(seed), &mut live);
     }
-    many.block_index.insert(component_page(5, "body"), &mut live);
+    many.block_index.insert(&(component_page(5, "body")).object_key.clone(), component_page(5, "body"), &mut live);
     assert_eq!(5, many.block_index.len(), "five pages, five entries");
     let written = serde_json::to_string(&many).expect("a node serializes");
     let read_back: BucketNode = serde_json::from_str(&written).expect("a node deserializes");

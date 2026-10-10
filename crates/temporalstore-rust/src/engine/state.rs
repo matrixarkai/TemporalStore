@@ -2117,15 +2117,20 @@ impl BlockIndexMap {
     /// cannot exercise a handle derived differently from the one production writes. Two doors, one
     /// implementation; the other arrangement is the second path this change exists to delete.
     #[cfg(test)]
-    pub(super) fn insert(&mut self, page: BlockIndex, live: &mut BlockSlabLiveIndex) -> u64 {
-        let handle = block_index_handle(&page.object_key, &page);
+    pub(super) fn insert(
+        &mut self,
+        object_key: &str,
+        page: BlockIndex,
+        live: &mut BlockSlabLiveIndex,
+    ) -> u64 {
+        let handle = block_index_handle(object_key, &page);
         self.insert_with_handle(handle, page, live)
     }
 
     /// The other test-only door, delegating for the same reason.
     #[cfg(test)]
-    pub(super) fn insert_released(&mut self, page: BlockIndex) -> u64 {
-        let handle = block_index_handle(&page.object_key, &page);
+    pub(super) fn insert_released(&mut self, object_key: &str, page: BlockIndex) -> u64 {
+        let handle = block_index_handle(object_key, &page);
         self.insert_released_with_handle(handle, page)
     }
 
@@ -2422,14 +2427,20 @@ impl<'a> IntoIterator for &'a BlockIndexMap {
 /// entry -- and build the page index at the closing construction, where the sibling it needs is in
 /// hand. This impl then stays as the standalone door, for deserializing a bare map, which is the
 /// same two-doors-one-body shape the install and the written key already have.
-impl FromIterator<BlockIndex> for BlockIndexMap {
-    fn from_iter<I: IntoIterator<Item = BlockIndex>>(pages: I) -> Self {
+/// COLLECTED FROM (IDENTITY, PAGE) PAIRS, NOT FROM PAGES.
+///
+/// The handle is hashed from the identity and the page, and the identity is leaving the page --
+/// so the pair is what this can be built from once it has. Every producer of these pairs has the
+/// key in scope already: the decode has it in the stored map key it is iterating, and the
+/// fixtures have it in the page they just built.
+impl FromIterator<(Arc<str>, BlockIndex)> for BlockIndexMap {
+    fn from_iter<I: IntoIterator<Item = (Arc<str>, BlockIndex)>>(pages: I) -> Self {
         // Unaccounted: this is how a ShardState arrives from serde, and the tally is derived
         // AFTER a load by `reconcile_block_slab_live`. Charging blocks here would count a loaded
         // index twice over -- once on the way in, once when the load seeds the tally.
         let mut map = Self::default();
-        for page in pages {
-            let handle = block_index_handle(&page.object_key, &page);
+        for (object_key, page) in pages {
+            let handle = block_index_handle(&object_key, &page);
             map.insert_unaccounted(handle, page);
         }
         map
@@ -2444,7 +2455,12 @@ impl From<BTreeMap<String, BlockIndex>> for BlockIndexMap {
         //
         // Built through `insert`, so a loaded index takes the same shape a written one does: a
         // bucket that loads a single block must not come back holding a map.
-        flat.into_values().collect()
+        // PAIRED WITH THE IDENTITY THE ENTRY STILL CARRIES. The pair is what the collect takes
+        // now; where the key comes from is the decode's question, and it is answered here from the
+        // entry while the entry still has one.
+        flat.into_values()
+            .map(|page| (Arc::clone(&page.object_key), page))
+            .collect()
     }
 }
 
@@ -3959,11 +3975,22 @@ impl BucketNode {
     /// which is what a term moved off the entry into a per-bucket structure would need, and what
     /// `BlockIndexMap` can never offer, since a field cannot see its siblings.
     ///
-    /// It banks nothing today: `block_index_handle` reads the same terms off the entry it always
-    /// did, in the same order, through the same hasher, so the value is byte-identical. What
-    /// changes is that the computation is no longer pinned to a scope that can only see the entry.
-    pub(super) fn insert_page(&mut self, page: BlockIndex, live: &mut BlockSlabLiveIndex) -> u64 {
-        let handle = block_index_handle(&page.object_key, &page);
+    /// It banks nothing today: `block_index_handle` reads the same terms it always did, in the
+    /// same order, through the same hasher, so the value is byte-identical. What changes is that
+    /// the computation is no longer pinned to a scope that can only see the entry.
+    ///
+    /// THE IDENTITY ARRIVES AS A PARAMETER, for the same reason the four derivations in
+    /// `070f24334` take it: it is leaving the entry, and a handle computed from
+    /// `page.object_key` is a handle no caller can supply once the field is gone. Same bytes into
+    /// the same hasher in the same order, so every handle is byte-identical; what moves is where
+    /// the key comes from.
+    pub(super) fn insert_page(
+        &mut self,
+        object_key: &str,
+        page: BlockIndex,
+        live: &mut BlockSlabLiveIndex,
+    ) -> u64 {
+        let handle = block_index_handle(object_key, &page);
         self.block_index.insert_with_handle(handle, page, live)
     }
 
@@ -3971,8 +3998,8 @@ impl BucketNode {
     ///
     /// One caller, and it must stay that way -- see
     /// [`BlockIndexMap::insert_released_with_handle`].
-    pub(super) fn insert_released_page(&mut self, page: BlockIndex) -> u64 {
-        let handle = block_index_handle(&page.object_key, &page);
+    pub(super) fn insert_released_page(&mut self, object_key: &str, page: BlockIndex) -> u64 {
+        let handle = block_index_handle(object_key, &page);
         self.block_index.insert_released_with_handle(handle, page)
     }
 

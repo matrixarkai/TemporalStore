@@ -716,13 +716,13 @@ fn capture_the_stored_spelling_of_a_page_entry() {
     let mut live = crate::engine::state::BlockSlabLiveIndex::default();
     for offset in 0..4u64 {
         node.block_index
-            .insert(page("k", "string", None, 1, offset, 3, (false, false, true)), &mut live);
+            .insert(&(page("k", "string", None, 1, offset, 3, (false, false, true))).object_key.clone(), page("k", "string", None, 1, offset, 3, (false, false, true)), &mut live);
     }
-    node.block_index.insert(
+    node.block_index.insert(&(page("k", "hash", Some("f0"), 1, 9, 3, (true, false, false))).object_key.clone(), 
         page("k", "hash", Some("f0"), 1, 9, 3, (true, false, false)),
         &mut live,
     );
-    node.block_index.insert(
+    node.block_index.insert(&(page("other", "string", None, 2, 1, 5, (false, false, true))).object_key.clone(), 
         page("other", "string", None, 2, 1, 5, (false, false, true)),
         &mut live,
     );

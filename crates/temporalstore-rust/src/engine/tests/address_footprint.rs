@@ -2571,7 +2571,7 @@ fn two_buckets_holding_one_object_id_are_reported_as_one_object() {
             ..BucketNode::default()
         };
         bucket.object_index.insert(object_id);
-        bucket.block_index.insert(
+        bucket.block_index.insert(&"one-key", 
             BlockIndex {
                 object_key: std::sync::Arc::from("one-key"),
                 model_id: crate::engine::storage_bucket_internals::StoredModelKind::String,

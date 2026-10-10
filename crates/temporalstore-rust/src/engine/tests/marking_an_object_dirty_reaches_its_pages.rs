@@ -51,7 +51,7 @@ fn a_shard_holding_one_clean_page(object_key: &str) -> (ShardState, u32) {
     bucket.set_meta_loaded(true);
     bucket.set_in_memory(true);
     let mut live = BlockSlabLiveIndex::default();
-    bucket.insert_page(
+    bucket.insert_page(&object_key, 
         BlockIndex {
             object_key: Arc::from(object_key),
             model_id: crate::engine::storage_bucket_internals::StoredModelKind::from_stored_name(

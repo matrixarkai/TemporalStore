@@ -1441,7 +1441,7 @@ pub(super) fn rebuild_bucket_block_ownership(
         // of this rebuild. Both, deliberately: the charge keeps this site honest if the shape of
         // the function changes, and the seed is what makes the result independent of whatever the
         // tally held before `bucket_map.clear()` above.
-        bucket.insert_page(
+        bucket.insert_page(&entry.object_key.clone(), 
             BlockIndex {
                 object_key: entry.object_key,
                 model_id: entry.kind,
@@ -1512,7 +1512,7 @@ pub(super) fn rebuild_bucket_block_ownership(
         let model_id = tombstone.model_id;
         let object_key = tombstone.object_key.clone();
         bucket
-            .insert_page(tombstone, &mut shard.bucket_index.block_slab_live);
+            .insert_page(&tombstone.object_key.clone(), tombstone, &mut shard.bucket_index.block_slab_live);
         // AND ITS ELEMENT ROW TRAVELS WITH IT. Without this the tombstone survives the rebuild as
         // an entry whose element nothing can name, so the next re-add cannot find it to clear and
         // the retention bound is gone.
@@ -2451,7 +2451,7 @@ pub(super) fn reload_released_bucket(
         // NOT charged. `release_bucket_blocks` did not discharge these -- the blocks stayed live
         // the whole time it held them out of the index -- so counting them here would double
         // every released bucket the first time anything touched it again.
-        let handle = bucket.insert_released_page(page.clone());
+        let handle = bucket.insert_released_page(&page.object_key.clone(), page.clone());
         installed.push((handle, page));
     }
     bucket.set_meta_loaded(true);
@@ -4321,7 +4321,7 @@ pub(super) fn insert_container_tombstone_entry(
     bucket.set_in_memory(true);
     bucket.dirty_generation = bucket.dirty_generation.saturating_add(1);
     let block_ref_key = bucket
-        .insert_page(page.clone(), &mut shard.bucket_index.block_slab_live);
+        .insert_page(&page.object_key.clone(), page.clone(), &mut shard.bucket_index.block_slab_live);
     // THE ELEMENT'S NAME, FILED IN THE SAME CALL AS THE ENTRY AND AFTER IT.
     //
     // This is the one producer of a tombstone entry, which is what makes "a deleted entry with no
@@ -4766,7 +4766,7 @@ fn upsert_bucket_index_block_inner(
         // the whole defect; this is the same line, on the per-element door.
         bucket.deleted_object_index.remove(&object_id);
         // The handle the map assigns is what the lookup records, so the two cannot disagree.
-        block_ref_key = bucket.insert_page(block_index.clone(), &mut shard.bucket_index.block_slab_live);
+        block_ref_key = bucket.insert_page(&block_index.object_key.clone(), block_index.clone(), &mut shard.bucket_index.block_slab_live);
         classify_bucket_layout_in_place(bucket);
         touched_buckets.push(routing_bucket);
     }
@@ -4978,7 +4978,7 @@ pub(super) fn sync_bucket_index_object_blocks_with_mode(
             deleted: entry.deleted,
         };
         // The map assigns the handle; the lookup records the same one.
-        let block_ref_key = bucket.insert_page(page.clone(), &mut shard.bucket_index.block_slab_live);
+        let block_ref_key = bucket.insert_page(&page.object_key.clone(), page.clone(), &mut shard.bucket_index.block_slab_live);
         // `object_index` was just given this object id above, so the set is already correct and only
         // the label needs re-deriving. `update_bucket_layout` would rebuild the set by walking every
         // block in the bucket -- once per address published, which is what made a write cost the
@@ -5687,7 +5687,7 @@ pub(super) fn rebuild_bucket_first_index(
         }
         bucket.set_in_memory(bucket.in_memory() | true);
         bucket.object_index.insert(object_id);
-        bucket.insert_page(
+        bucket.insert_page(&entry.object_key.clone(), 
             BlockIndex {
                 object_key: entry.object_key,
                 model_id: entry.kind,
@@ -5751,7 +5751,7 @@ pub(super) fn rebuild_bucket_first_index(
         let model_id = tombstone.model_id;
         let object_key = tombstone.object_key.clone();
         bucket
-            .insert_page(tombstone, &mut bucket_index.block_slab_live);
+            .insert_page(&tombstone.object_key.clone(), tombstone, &mut bucket_index.block_slab_live);
         if let Some(element) = element {
             bucket.record_tombstone_element(&object_key, model_id, &element.component, &address);
         }

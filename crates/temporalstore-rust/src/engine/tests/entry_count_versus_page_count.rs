@@ -616,8 +616,8 @@ fn one_page_is_one_entry_because_the_handle_can_no_longer_name_an_element() {
 
     let mut live = BlockSlabLiveIndex::default();
     let mut index = BlockIndexMap::default();
-    index.insert(first.clone(), &mut live);
-    index.insert(second.clone(), &mut live);
+    index.insert(&first.object_key.clone(), first.clone(), &mut live);
+    index.insert(&second.object_key.clone(), second.clone(), &mut live);
     assert_eq!(
         index.len(),
         1,
@@ -635,8 +635,8 @@ fn one_page_is_one_entry_because_the_handle_can_no_longer_name_an_element() {
     );
     let mut live_two = BlockSlabLiveIndex::default();
     let mut index_two = BlockIndexMap::default();
-    index_two.insert(first.clone(), &mut live_two);
-    index_two.insert(elsewhere, &mut live_two);
+    index_two.insert(&first.object_key.clone(), first.clone(), &mut live_two);
+    index_two.insert(&elsewhere.object_key.clone(), elsewhere, &mut live_two);
     assert_eq!(
         index_two.len(),
         2,
@@ -654,8 +654,8 @@ fn one_page_is_one_entry_because_the_handle_can_no_longer_name_an_element() {
     );
     let mut live_three = BlockSlabLiveIndex::default();
     let mut index_three = BlockIndexMap::default();
-    index_three.insert(first, &mut live_three);
-    index_three.insert(other_object, &mut live_three);
+    index_three.insert(&first.object_key.clone(), first, &mut live_three);
+    index_three.insert(&other_object.object_key.clone(), other_object, &mut live_three);
     assert_eq!(
         index_three.len(),
         2,

@@ -4195,7 +4195,7 @@ fn fold_delta_block_items(
         bucket.object_index.insert(item.object_id);
         // The record's key is not carried into memory: the map assigns a handle, and the
         // record's spelling is only rebuilt when the index is written back out.
-        bucket.insert_page(
+        bucket.insert_page(&item.object_key.clone(), 
             BlockIndex {
                 object_key: Arc::from(item.object_key.clone()),
                 model_id: crate::engine::storage_bucket_internals::stored_model_kind(

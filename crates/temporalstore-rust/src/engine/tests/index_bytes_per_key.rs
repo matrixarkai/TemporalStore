@@ -158,7 +158,7 @@ fn every_inline_shape_collapses_back_on_a_fill_and_drain() {
         let mut map = BlockIndexMap::default();
         let mut handles: Vec<u64> = Vec::new();
         for slot in 0..FILL {
-            handles.push(map.insert(probe_page("o", slot), &mut live));
+            handles.push(map.insert(&(probe_page("o", slot)).object_key.clone(), probe_page("o", slot), &mut live));
         }
         if map.len() != FILL as usize {
             failures.push(format!("BlockIndexMap filled to {} pages, not {FILL}", map.len()));
@@ -185,7 +185,7 @@ fn every_inline_shape_collapses_back_on_a_fill_and_drain() {
         let mut map = BlockIndexMap::default();
         let mut handles: Vec<u64> = Vec::new();
         for slot in 0..FILL {
-            handles.push(map.insert(probe_page("o", slot), &mut live));
+            handles.push(map.insert(&(probe_page("o", slot)).object_key.clone(), probe_page("o", slot), &mut live));
         }
         let mut remaining = FILL as usize;
         while remaining > 0 {
