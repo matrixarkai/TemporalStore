@@ -57,6 +57,13 @@ struct StepZeroTheLiveEntry {
 /// Both halves are asserted, because a width alone is not an identity -- two different field sets
 /// can measure the same -- and because the alignment is the half that decides whether a later
 /// narrowing leaves the eight-aligned group or stays inside it.
+///
+/// AND WHAT THIS CONTROL CANNOT SEE, stated because it was MEASURED and not assumed. Taking one
+/// bool off the mirror leaves thirty-nine bytes of field, which rounds back to forty, and this
+/// control stays green through it. It discriminates at WORD granularity and no finer: dropping the
+/// identity reddens it, dropping a flag does not. So it establishes that the mirror is the live
+/// entry to within a word, which is the granularity every number in this file is read at, and it
+/// is not evidence that the field LIST matches term for term.
 const _: () = assert!(size_of::<StepZeroTheLiveEntry>() == size_of::<BlockIndex>());
 const _: () = assert!(align_of::<StepZeroTheLiveEntry>() == align_of::<BlockIndex>());
 
@@ -119,6 +126,32 @@ struct StepTwoTheSameFieldSetPacked {
 
 const _: () = assert!(size_of::<StepTwoTheSameFieldSetPacked>() == 24);
 const _: () = assert!(align_of::<StepTwoTheSameFieldSetPacked>() == 1);
+
+/// STEP TWO-A: THE SAME FIELD SET UNDER A DECLARED ORDER AND NOT PACKED -- FORTY, NOT TWENTY-FOUR.
+///
+/// This is the row that decides whether a stable field order is affordable, and it was found by
+/// MUTATION rather than by reasoning: taking `packed` off step two was expected to move only the
+/// alignment, and it moved the width too. A declared order cannot reorder the fields to fill its
+/// own padding, so the one-byte terms sit either side of an eight-aligned address and each buys a
+/// hole -- sixteen bytes of them, which is the entire step that removing the identity won.
+///
+/// So the two reprs are NOT a choice between the same width at two alignments. Step one at
+/// alignment eight and step two at alignment one both measure twenty-four, and a declared order
+/// without packing measures forty. If a stable field order is ever wanted here it has to be
+/// `repr(C, packed)` and pay the borrow restrictions; `repr(C)` alone gives up the width step.
+#[allow(dead_code)]
+#[repr(C)]
+struct StepTwoAUnderADeclaredOrderUnpacked {
+    kind: IndexItemKind,
+    routing_bucket: u32,
+    model_id: StoredModelKind,
+    address: ElementEntry,
+    dirty: bool,
+    deleted: bool,
+}
+
+const _: () = assert!(size_of::<StepTwoAUnderADeclaredOrderUnpacked>() == 40);
+const _: () = assert!(align_of::<StepTwoAUnderADeclaredOrderUnpacked>() == 8);
 
 /// STEP THREE: THE THREE ONE-BYTE TERMS BECOME ONE FLAG GROUP -- AND IT ALSO BUYS NOTHING.
 ///
@@ -213,6 +246,12 @@ fn the_width_of_the_entry_at_each_step_toward_the_target_shape() {
             align_of::<StepTwoTheSameFieldSetPacked>(),
         ),
         (
+            "step 2a step 1, declared order, unpacked",
+            24,
+            size_of::<StepTwoAUnderADeclaredOrderUnpacked>(),
+            align_of::<StepTwoAUnderADeclaredOrderUnpacked>(),
+        ),
+        (
             "step 3  step 1, flags folded",
             22,
             size_of::<StepThreeTheFlagsFoldIntoOneByte>(),
@@ -257,6 +296,7 @@ fn the_width_of_the_entry_at_each_step_toward_the_target_shape() {
     // identity leaving, never its cost against the live entry alone.
     assert_eq!(size_of::<StepOneTheIdentityLeaves>(), 24);
     assert_eq!(size_of::<StepTwoTheSameFieldSetPacked>(), 24);
+    assert_eq!(size_of::<StepTwoAUnderADeclaredOrderUnpacked>(), 40);
     assert_eq!(size_of::<StepThreeTheFlagsFoldIntoOneByte>(), 24);
     assert_eq!(size_of::<StepFourTheAddressBecomesOneWord>(), 16);
     assert_eq!(size_of::<StepsThreeAndFourComposed>(), 16);
