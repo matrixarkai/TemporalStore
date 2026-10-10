@@ -5215,9 +5215,12 @@ pub(super) struct SeenSet {
 
 #[cfg(test)]
 mod component_lookup_tests {
-    //! WHAT HAPPENED TO THE NINE ARMS THIS MODULE HELD, so the collapse is auditable rather than
-    //! merely smaller. Recorded here because six of them were deleted, and a deletion leaves
-    //! nothing for a reviewer to read.
+    //! WHAT HAPPENED TO THE NINE ARMS THIS MODULE HELD, AND WHAT THE EIGHT HERE NOW ARE, so the
+    //! collapse is auditable rather than merely smaller. Four of the nine were deleted outright and
+    //! two more lost their names to a restatement, and neither a deletion nor a rename leaves
+    //! anything for a reviewer to read. The arithmetic is 9 - 4 deleted + 3 ADDED = 8, and every
+    //! term is named below; an earlier version of this note said "six of them were deleted", which
+    //! counted the two renames as deletions and did not account for the arms added at all.
     //!
     //! GONE, SUBJECT UNREPRESENTABLE -- there is one slot per object now, so there is no second
     //! component to order against, none to sort first, and no sibling to disturb:
@@ -5248,6 +5251,21 @@ mod component_lookup_tests {
     //!   * `a_single_ref_removal_keeps_the_counter_equal_to_what_is_present`
     //!   * `the_last_ref_of_the_slot_takes_the_slot_and_the_objects_key`
     //!   * `the_running_ref_total_is_decremented_by_what_the_slot_held`
+    //!
+    //! ADDED -- three, and they are why the module is eight arms and not six. The first two came
+    //! with the collapse and the third with the merge that joined this branch to the element-name
+    //! one:
+    //!
+    //!   * `the_insert_accumulates_an_objects_pages_into_the_one_slot` -- the half of the filing
+    //!     tripwire that HAS a discriminator, since the half about what a page carried cannot fail
+    //!     here. See the note on [`page`] for why.
+    //!   * `a_named_component_resolves_nothing_while_the_unnamed_one_resolves_everything` -- the
+    //!     `names_the_only_slot` predicate, asserted BOTH WAYS in one arm so that loosening it
+    //!     cannot satisfy a one-sided check.
+    //!   * `the_refs_in_the_only_slot_stay_sorted_for_the_search_that_removes_them` -- carried out
+    //!     of `components_of_one_object_stay_separate` in `part4.rs`, which the collapse deleted.
+    //!     The order claim it held belongs to `BlockRefs`, whose `insert` keeps the refs sorted and
+    //!     whose `remove` binary-searches them, and nothing else in the tree asserted it.
 
     use super::*;
 
