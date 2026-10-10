@@ -5866,33 +5866,29 @@ fn record_exists(shard: &ShardState, key: &str) -> bool {
 }
 
 fn record_exists_exact(shard: &ShardState, key: &str) -> bool {
-    let bucket_index_exists = if shard.bucket_index.object_block_lookup.is_empty() {
-        shard.bucket_index.bucket_map.values().any(|bucket| {
-            bucket.block_index
-                .values()
-                .any(|page| &*page.object_key == key && !page.deleted)
-        })
-    } else {
-        storage_model_kinds().iter().any(|kind| {
-            shard
-                .bucket_index
-                .object_block_refs(kind, key)
-                .map(|block_refs| {
-                    block_refs.iter().any(|block_ref| {
-                        shard
-                            .bucket_index
-                            .bucket_map
-                            .get(&block_ref.routing_bucket)
-                            .and_then(|bucket| bucket.block_index.get(&block_ref.block_ref_key))
-                            .map(|page| {
-                                !page.deleted && page.model_id.as_str() == *kind && &*page.object_key == key
-                            })
-                            .unwrap_or(false)
-                    })
+    // THE LOOKUP IS THE ONLY DOOR, and the second arm is gone. A whole-shard walk comparing
+    // every entry's identity stood in front of this for the case where the lookup held nothing;
+    // the decode fills the lookup now, so an object with no entry in it has no live page here. The
+    // identity is not re-compared inside the walk either -- the page was reached through that
+    // object's own ref list -- while the KIND still is, because the ref was keyed by it and a
+    // handle collision could hand back a page of another kind.
+    let bucket_index_exists = storage_model_kinds().iter().any(|kind| {
+        shard
+            .bucket_index
+            .object_block_refs(kind, key)
+            .map(|block_refs| {
+                block_refs.iter().any(|block_ref| {
+                    shard
+                        .bucket_index
+                        .bucket_map
+                        .get(&block_ref.routing_bucket)
+                        .and_then(|bucket| bucket.block_index.get(&block_ref.block_ref_key))
+                        .map(|page| !page.deleted && page.model_id.as_str() == *kind)
+                        .unwrap_or(false)
                 })
-                .unwrap_or(false)
-        })
-    };
+            })
+            .unwrap_or(false)
+    });
     bucket_index_exists
         || shard.strings.contains_key(key)
         || shard.hashes.contains_key(key)

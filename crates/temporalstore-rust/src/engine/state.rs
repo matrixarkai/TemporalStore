@@ -5390,7 +5390,11 @@ impl CoreIndex {
                     .map(|page| {
                         !page.deleted
                             && page.model_id.as_str() == model_id
-                            && &*page.object_key == object_key
+                            // THE IDENTITY IS NOT RE-COMPARED. This read
+                            // `&*page.object_key == object_key` against a page reached through
+                            // THAT object's own ref list, so it asked whether the lookup was
+                            // right rather than which object the page belongs to.
+                            //
                             // The entry carries no element name; `component.is_none()` is the old
                             // `page.component.as_deref() == component` with that constant folded
                             // in, so the kinds this answers for do not move.
@@ -5401,20 +5405,11 @@ impl CoreIndex {
             });
         }
 
-        if !self.object_block_lookup.is_empty() {
-            return false;
-        }
-
-        self.bucket_map.values().any(|bucket| {
-            bucket.block_index.values().any(|page| {
-                !page.deleted
-                    && page.model_id.as_str() == model_id
-                    && &*page.object_key == object_key
-                    // The no-lookup twin of the predicate above, translated the same way.
-                    && component.is_none()
-                    && same_block_address(&page.address, address)
-            })
-        })
+        // AND NO SECOND ARM. A whole-shard walk comparing every entry's identity stood here for
+        // the case where the lookup held nothing, which is an index with pages and no lookup --
+        // the window between a decode and the rebuild that used to fill it. The decode fills it
+        // now, so the object having no entry in the lookup means the object has no live page.
+        false
     }
 }
 

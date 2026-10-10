@@ -151,6 +151,26 @@ fn bucket_layout_name(layout: BucketLayoutState) -> &'static str {
     }
 }
 
+// THE LOOKUP IS THE ONLY DOOR ONTO ONE OBJECT'S PAGES, and these readers go through it.
+//
+// Each of them answered a question about ONE named object by walking every page of every bucket
+// and comparing the entry's own copy of the identity. That comparison is the thing that stops
+// being expressible when the entry carries no identity, and it was never the cheap way to ask: the
+// object lookup maps (kind, object key) straight to the `(routing_bucket, handle)` of each of that
+// object's pages, which is the same answer without the walk.
+//
+// WHAT THE WALK WAS GUARDING, AND WHY IT IS NOT NEEDED. Each site reached the walk only when the
+// lookup held NOTHING -- `object_block_lookup.is_empty()` -- which is an index with pages and no
+// lookup. That state was reachable between a decode and the rebuild that filled the lookup, and
+// the decode fills it now, so the arm is unreachable in production rather than merely rare. The
+// write path files every page it adds; `rebuild_bucket_block_ownership` files what it rebuilds.
+//
+// AND THE RE-COMPARISON AFTER THE WALK IS A CHECK, NOT A SOURCE. A page reached through its own
+// object's ref list has already been matched on identity by the list that produced it; comparing
+// the entry's copy again asks whether the lookup is right, not which object the page belongs to.
+// The kind is still compared, because `block_refs_for` takes the kind as a key and a ref that
+// survives a handle collision could name a page of another kind.
+
 /// Where a read resolves an object's page from.
 ///
 /// THIS IS THE READ PATH, not a reporting path: `read_bucket_index_value` is what
@@ -180,14 +200,17 @@ pub(super) fn bucket_index_block_address(
             };
             if !page.deleted
                 && page.model_id.as_str() == model_id
-                && &*page.object_key == object_key
-                // THE ENTRY HAS NO NAME TO MATCH, so the surviving question is whether the caller
-                // asked for a named element. This read `page.component.as_deref() == component`
-                // against entries whose component was already `None` for every kind, so the answer
-                // does not move: a point lookup BY component found nothing here before this change
-                // and finds nothing now -- hash's four such readers were moved onto `shard.hashes`
-                // for exactly that reason -- and a lookup with no component still resolves the
-                // kinds that converge on the object key.
+                // THE IDENTITY IS NOT RE-COMPARED -- see the note above this function on why a
+                // page reached through its own object's ref list has already been matched on it.
+                //
+                // THE ENTRY HAS NO NAME TO MATCH either, so the surviving question is whether the
+                // caller asked for a named element. This read
+                // `page.component.as_deref() == component` against entries whose component was
+                // already `None` for every kind, so the answer does not move: a point lookup BY
+                // component found nothing here before this change and finds nothing now -- hash's
+                // four such readers were moved onto `shard.hashes` for exactly that reason -- and
+                // a lookup with no component still resolves the kinds that converge on the object
+                // key.
                 && component.is_none()
             {
                 return Some(page.address.clone());
@@ -198,32 +221,14 @@ pub(super) fn bucket_index_block_address(
         );
     }
 
-    if !shard.bucket_index.object_block_lookup.is_empty() {
-        return super::storage_bucket_internals::released_bucket_block_address(
-            shard, model_id, object_key, component,
-        );
-    }
-
-    shard
-        .bucket_index
-        .bucket_map
-        .values()
-        .flat_map(|bucket| bucket.block_index.values())
-        .filter(|page| {
-            !page.deleted
-                && page.model_id.as_str() == model_id
-                && &*page.object_key == object_key
-                // The no-lookup twin of the predicate above, translated the same way and for the
-                // same reason.
-                && component.is_none()
-        })
-        .map(|page| page.address.clone())
-        .next()
-        .or_else(|| {
-            super::storage_bucket_internals::released_bucket_block_address(
-                shard, model_id, object_key, component,
-            )
-        })
+    // AND NO SECOND ARM. A whole-shard walk comparing every entry's identity stood here for the
+    // case where the lookup held nothing; the decode fills the lookup now, so an object with no
+    // entry in it has no resident page and the released-bucket door is the whole of the answer --
+    // which is what the arm above already falls through to when the lookup DOES name the object
+    // and no page answers.
+    super::storage_bucket_internals::released_bucket_block_address(
+        shard, model_id, object_key, component,
+    )
 }
 
 /// Every page this object resolves to, LIVE ENTRIES AND TOMBSTONED ALIKE.
@@ -246,10 +251,46 @@ pub(super) fn bucket_index_all_block_addresses_with_tombstones(
     model_id: &str,
     object_key: &str,
 ) -> Vec<ElementEntry> {
+    // TWO SOURCES, BECAUSE A TOMBSTONE IS NOT IN THE OBJECT LOOKUP.
+    //
+    // `insert_object_block_lookup` returns early on a deleted page, so the lookup names exactly
+    // this object's LIVE pages. The tombstoned ones are named by the rows a removal files beside
+    // the entries in the bucket it removed them from -- keyed by (object, kind, element) and
+    // valued by the page triple -- which is the one structure that still states which object a
+    // deleted page belonged to.
+    //
+    // THE ORDER THIS RETURNS IS NOT THE ORDER THE WALK RETURNED, and that is safe for a stated
+    // reason rather than by luck: the one caller is `container_membership::derive_membership`,
+    // which sorts by `append_position` and dedups on it before reading anything. Its own note
+    // says so -- "ORDER FIRST, THEN READ".
     let mut addresses = Vec::new();
+    if let Some(block_refs) = shard.bucket_index.object_block_refs(model_id, object_key) {
+        for block_ref in block_refs.iter() {
+            let Some(page) = shard
+                .bucket_index
+                .bucket_map
+                .get(&block_ref.routing_bucket)
+                .and_then(|bucket| bucket.block_index.get(&block_ref.block_ref_key))
+            else {
+                continue;
+            };
+            if page.model_id.as_str() == model_id {
+                addresses.push(page.address.clone());
+            }
+        }
+    }
     for bucket in shard.bucket_index.bucket_map.values() {
-        for page in bucket.block_index.values() {
-            if page.model_id.as_str() == model_id && &*page.object_key == object_key {
+        for row in bucket.tombstone_elements.iter() {
+            if row.model_id.as_str() != model_id || &*row.object_key != object_key {
+                continue;
+            }
+            // THE ROW NAMES A PAGE BY ITS TRIPLE, so the entry is found by address and not by
+            // identity. Bounded by the removals this bucket has seen, against the whole-shard page
+            // walk it replaces.
+            if let Some(page) = bucket.block_index.values().find(|page| {
+                page.deleted
+                    && crate::engine::state::tombstone_page_key(&page.address) == row.page
+            }) {
                 addresses.push(page.address.clone());
             }
         }
@@ -268,7 +309,7 @@ pub(super) fn bucket_index_component_block_addresses(
             .filter_map(|block_ref| {
                 let bucket = shard.bucket_index.bucket_map.get(&block_ref.routing_bucket)?;
                 let page = bucket.block_index.get(&block_ref.block_ref_key)?;
-                if !page.deleted && page.model_id.as_str() == model_id && &*page.object_key == object_key {
+                if !page.deleted && page.model_id.as_str() == model_id {
                     // `None` IN THE FIRST SLOT, AND THAT SLOT IS NOW DEAD ON BOTH ARMS -- said
                     // here rather than left to be rediscovered. `released_component_block_addresses`
                     // already hardcodes `(None, address)`, and this arm's `page.component` was
@@ -294,29 +335,14 @@ pub(super) fn bucket_index_component_block_addresses(
         return released_component_block_addresses(shard, model_id, object_key);
     }
 
-    if !shard.bucket_index.object_block_lookup.is_empty() {
-        return released_component_block_addresses(shard, model_id, object_key);
-    }
-
-    let mut refs = shard
-        .bucket_index
-        .bucket_map
-        .values()
-        .flat_map(|bucket| bucket.block_index.values())
-        .filter(|page| !page.deleted && page.model_id.as_str() == model_id && &*page.object_key == object_key)
-        // `None` for the same reason as the lookup arm above.
-        .map(|page| (None, page.address.clone()))
-        .collect::<Vec<_>>();
-    // AND THE SORT IS NOW A NO-OP, WHICH IS WORTH SAYING BECAUSE A READER ORDERS BY IT.
+    // AND NO SECOND ARM, for the reason given above this function: the walk that stood here
+    // compared every entry's identity, and it ran only when the lookup held nothing.
     //
-    // It sorts by the pair's first element, which is the same `None` for every row -- so the order
-    // this returns is the order the bucket walk produced, and `sort_by` is a stable sort, so that
-    // order is preserved rather than scrambled. The call is kept because the ORDERING CONTRACT is
-    // what callers were given (`hash_field_map`'s note and `element_ordinal_reuse` both cite it),
-    // and removing the sort would quietly convert "sorted by component" into "walk order" at the
-    // moment a component could come back.
-    refs.sort_by(|left: &(Option<Arc<str>>, _), right| left.0.cmp(&right.0));
-    refs
+    // THE SORT WENT WITH IT AND WAS ALREADY A NO-OP. It sorted by the pair's first element, which
+    // is the same `None` for every row. The ORDERING CONTRACT callers were given
+    // (`hash_field_map`'s note and `element_ordinal_reuse` both cite it) is kept by the arm above,
+    // which still sorts.
+    released_component_block_addresses(shard, model_id, object_key)
 }
 
 /// The whole-object form of the released-bucket lookup.
