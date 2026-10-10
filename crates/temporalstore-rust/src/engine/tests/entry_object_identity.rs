@@ -184,8 +184,6 @@ fn ids_by_object_key(engine: &TemporalEngine) -> BTreeMap<String, Vec<u64>> {
 fn entry_named(object_key: &str, component: Option<&str>) -> BlockIndex {
     let object_id = stable_block_object_id(1, FIXTURE_KIND.as_str(), object_key);
     BlockIndex {
-        kind: crate::index_log::IndexItemKind::Page,
-        routing_bucket: 7,
         object_key: Arc::from(object_key),
         model_id: FIXTURE_KIND,
         address: ElementEntry::from_parts(9, 4_096, 96, Some(7), Some(object_id)),
@@ -648,8 +646,6 @@ fn the_entry_is_unchanged_and_the_nodes_duplicated_slot_id_is_worth_nothing() {
         ("address", field_width(&sample.address), offset_of!(BlockIndex, address)),
         ("dirty", field_width(&sample.dirty), offset_of!(BlockIndex, dirty)),
         ("deleted", field_width(&sample.deleted), offset_of!(BlockIndex, deleted)),
-        ("kind", field_width(&sample.kind), offset_of!(BlockIndex, kind)),
-        ("routing_bucket", field_width(&sample.routing_bucket), offset_of!(BlockIndex, routing_bucket)),
     ];
     println!("\n=== the page entry, field by field at its REAL offset ===");
     for (name, width, offset) in &widths {

@@ -290,8 +290,6 @@ fn a_derivation_drops_the_entry_no_element_carries_any_more() {
             4_096, 8_192, 48, Some(7), None,
         );
         let page = crate::engine::state::BlockIndex {
-            kind: crate::index_log::IndexItemKind::Page,
-            routing_bucket,
             object_key: std::sync::Arc::from("heal/set"),
             model_id: crate::engine::storage_bucket_internals::stored_model_kind("set"),
             address: orphan,

@@ -670,8 +670,6 @@ fn capture_the_stored_spelling_of_a_page_entry() {
         flags: (bool, bool, bool),
     ) -> BlockIndex {
         BlockIndex {
-            kind: crate::index_log::IndexItemKind::Page,
-            routing_bucket: 7,
             object_key: Arc::from(key),
             model_id: crate::engine::storage_bucket_internals::stored_model_kind(model),
             address: ElementEntry::from_parts(
@@ -866,8 +864,6 @@ const OLD_STORE_PAGES: &[(&str, &str, Option<&str>, u64, u64, u64, bool, bool, b
 /// any golden has a chance to be re-goldened around it.
 pub(super) fn page_fixture(length: u64, flags: (bool, bool)) -> BlockIndex {
     BlockIndex {
-        kind: crate::index_log::IndexItemKind::Page,
-        routing_bucket: 7,
         object_key: Arc::from("k"),
         model_id: crate::engine::storage_bucket_internals::StoredModelKind::String,
         address: crate::block_store::ElementEntry::from_parts(

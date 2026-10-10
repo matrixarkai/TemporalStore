@@ -773,8 +773,6 @@ fn a_hash_page_naming_no_field_is_skipped_while_a_genuine_empty_field_name_is_ke
     // leaves the key out entirely and reads back as `None` -- an absent component round-trips as a
     // STABLE shape rather than as damage.
     let nameless_entry = BlockIndex {
-        kind: crate::index_log::IndexItemKind::Page,
-        routing_bucket: 7,
         object_key: Arc::from("ef-wire-probe"),
         model_id: stored_model_kind("hash"),
         address: ElementEntry::default(),

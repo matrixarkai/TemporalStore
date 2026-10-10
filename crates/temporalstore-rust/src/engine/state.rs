@@ -4432,26 +4432,6 @@ pub(super) enum BucketLayoutState {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub(super) struct BlockIndex {
-    /// LOG-ONLY, and SKIPPED on the named side: a resident entry is always a page.
-    ///
-    /// `skip` fills from `Default`, which is safe here only because `index_log`'s
-    /// `impl Default for IndexItemKind` is HAND-WRITTEN and returns `Page`. The named
-    /// round-trip test asserts that default, so a derive swap or an enum reorder goes
-    /// red instead of silently relabelling every decoded entry under a decoder that
-    /// refuses nothing.
-    #[serde(skip)]
-    pub(super) kind: crate::index_log::IndexItemKind,
-    /// LOG-ONLY, and SKIPPED on the named side because the NODE already names it.
-    ///
-    /// NOT a plain `skip`: `Default` is 0 and ZERO IS A LEGAL BUCKET, so skipping it
-    /// alone would fold every entry into bucket zero -- silently, because the named
-    /// decoder refuses nothing. `BucketNode`'s visitor INJECTS the node's own bucket
-    /// into each entry at its closing construction, where both are in scope, so this
-    /// never rides the named wire and cannot disagree with the node it is filed under.
-    /// That makes it the free-to-recompute kind of redundancy rather than the kind
-    /// that is stored so a reader answers with no I/O.
-    #[serde(skip)]
-    pub(super) routing_bucket: u32,
     pub(super) object_key: Arc<str>,
     pub(super) model_id: crate::engine::storage_bucket_internals::StoredModelKind,
     pub(super) address: ElementEntry,
@@ -4564,21 +4544,28 @@ const _: () = assert!(std::mem::align_of::<BlockIndex>() == 8);
 // pair of claims it was built to hold apart: the SUM of the field widths is 40, and the TYPE
 // measures 40, neither inferred from the other.
 const _: () = {
-    let field_sum = std::mem::size_of::<crate::index_log::IndexItemKind>()   // kind
-        + std::mem::size_of::<u32>()                                         // routing_bucket
-        + std::mem::size_of::<Arc<str>>()                                    // object_key
+    let field_sum = std::mem::size_of::<Arc<str>>()                          // object_key
         + std::mem::size_of::<crate::engine::storage_bucket_internals::StoredModelKind>() // model_id
         + std::mem::size_of::<ElementEntry>()                                // address
         + std::mem::size_of::<bool>()                                        // dirty
         + std::mem::size_of::<bool>();                                       // deleted
-    // SPELLED AS TYPES, NOT AS THE LITERALS 1 AND 4 THIS USED TO CARRY. A hand-written `1` for
-    // `kind` goes on being right by luck if the enum grows a payload; read off the type it goes
-    // red here instead.
-    assert!(field_sum == 40);
+    // SPELLED AS TYPES, NOT AS LITERALS. A hand-written `1` for the model spelling goes on being
+    // right by luck if the enum grows a payload; read off the type it goes red here instead.
+    assert!(field_sum == 35);
     assert!(std::mem::size_of::<BlockIndex>() == (field_sum + 7) / 8 * 8);
-    // ZERO SLACK, asserted as the claim: the next field here costs EIGHT bytes. It survived the
-    // removal -- 40 is a multiple of 8, so the field set still packs exactly.
-    assert!(field_sum == std::mem::size_of::<BlockIndex>());
+    // THE WIDTH DID NOT MOVE, AND THIS BLOCK HAS TO SAY SO OR IT PASSES BY COINCIDENCE.
+    //
+    // Two fields left the entry and `size_of` is still FORTY. Thirty-five rounds up to forty, so
+    // the removal bought five bytes of slack and no width. That matters twice over: nobody should
+    // read the commit that removed them as the step that moved the number, and this block itself
+    // would have gone on passing untouched -- it reconstructed the sum from the two retired TYPES,
+    // which still exist, so it summed to forty and compared equal to a forty-byte struct. It was
+    // true of nothing and would not have failed. Restated rather than left standing.
+    //
+    // WHAT WOULD MOVE IT: the sixteen-byte shared pointer to the object key. Thirty-five minus
+    // sixteen is nineteen, which rounds to twenty-four.
+    assert!(std::mem::size_of::<BlockIndex>() == 40);
+    assert!(std::mem::size_of::<BlockIndex>() - field_sum == 5);
 };
 
 // WHAT THE ENTRY WOULD BE IF ITS ADDRESS FIELD HELD THE BARE WORD: THIRTY-TWO, MEASURED.
@@ -5505,8 +5492,6 @@ mod component_lookup_tests {
     /// [`the_insert_accumulates_an_objects_pages_into_the_one_slot`].
     fn page(object: &str) -> BlockIndex {
         BlockIndex {
-            kind: crate::index_log::IndexItemKind::Page,
-            routing_bucket: 7,
             object_key: Arc::from(object.to_string()),
             model_id: crate::engine::storage_bucket_internals::StoredModelKind::Hash,
             address: ElementEntry::from_parts(0, 0, 0, None, Some(0)),

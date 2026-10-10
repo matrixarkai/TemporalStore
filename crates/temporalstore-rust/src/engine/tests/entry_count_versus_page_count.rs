@@ -530,8 +530,6 @@ fn how_many_index_entries_each_kind_files_for_the_same_element_count() {
 /// an element here is a compile error and not a silent no-op.
 fn page_at(slab: u64, offset: u64, length: u64) -> BlockIndex {
     BlockIndex {
-        kind: crate::index_log::IndexItemKind::Page,
-        routing_bucket: 7,
         object_key: std::sync::Arc::from("one-object"),
         model_id: crate::engine::storage_bucket_internals::StoredModelKind::Hash,
         address: crate::block_store::ElementEntry::from_parts(

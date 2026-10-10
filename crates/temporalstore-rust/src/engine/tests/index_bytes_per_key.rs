@@ -89,8 +89,6 @@ fn dirty_key_set_arm(set: &crate::engine::state::DirtyKeySet) -> &'static str {
 // Two call sites were passing a value that decided nothing.
 fn probe_page(object: &str, slot: u64) -> BlockIndex {
     BlockIndex {
-        kind: crate::index_log::IndexItemKind::Page,
-        routing_bucket: 7,
         object_key: Arc::from(object),
         model_id: crate::engine::storage_bucket_internals::StoredModelKind::String,
         address: ElementEntry::from_parts(1, slot * 64, 64, Some(slot), Some(slot)),

@@ -266,8 +266,6 @@ fn a_page_entry_carries_its_object_key_as_a_member_on_the_wire() {
     let mut live = BlockSlabLiveIndex::default();
     bucket.insert_page(
         BlockIndex {
-            kind: crate::index_log::IndexItemKind::Page,
-            routing_bucket: 3,
             object_key: Arc::from("an-object"),
             model_id: crate::engine::storage_bucket_internals::StoredModelKind::from_stored_name(
                 "string",

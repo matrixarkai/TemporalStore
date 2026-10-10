@@ -354,8 +354,6 @@ fn a_u16_ordinal_would_take_the_entry_from_forty_to_twenty_four_and_a_u8_adds_no
         ("address", offset_of!(BlockIndex, address), size_of::<ElementEntry>()),
         ("dirty", offset_of!(BlockIndex, dirty), size_of::<bool>()),
         ("deleted", offset_of!(BlockIndex, deleted), size_of::<bool>()),
-        ("kind", offset_of!(BlockIndex, kind), size_of::<crate::index_log::IndexItemKind>()),
-        ("routing_bucket", offset_of!(BlockIndex, routing_bucket), size_of::<u32>()),
     ];
     let (covered, slack) = account(&entry_fields, entry_total);
 

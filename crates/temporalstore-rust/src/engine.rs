@@ -4190,8 +4190,6 @@ fn fold_delta_block_items(
         // record's spelling is only rebuilt when the index is written back out.
         bucket.insert_page(
             BlockIndex {
-                kind: crate::index_log::IndexItemKind::Page,
-                routing_bucket: item.routing_bucket,
                 object_key: Arc::from(item.object_key.clone()),
                 model_id: crate::engine::storage_bucket_internals::stored_model_kind(
                     &item.model_id,

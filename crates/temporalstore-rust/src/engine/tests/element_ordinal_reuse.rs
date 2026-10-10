@@ -2436,8 +2436,6 @@ fn the_component_ordering_property_is_consumed_by_the_set_listing() {
     // The literal below names every field of `BlockIndex` with no `..`, so a component field
     // returning to the entry is a COMPILE ERROR here rather than a silently passing grep.
     let _no_component_field_exists = crate::engine::state::BlockIndex {
-        kind: crate::index_log::IndexItemKind::Page,
-        routing_bucket: 0,
         object_key: std::sync::Arc::from("eo-ordering-guard"),
         model_id: crate::engine::storage_bucket_internals::StoredModelKind::Set,
         address: crate::block_store::ElementEntry::from_parts(1, 0, 1, Some(0), Some(0)),

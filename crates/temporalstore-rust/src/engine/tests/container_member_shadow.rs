@@ -349,8 +349,6 @@ fn every_byte_of_a_zset_members_index_shadow_is_accounted_for() {
         ("address", offset_of!(BlockIndex, address), size_of::<crate::block_store::ElementEntry>()),
         ("dirty", offset_of!(BlockIndex, dirty), size_of::<bool>()),
         ("deleted", offset_of!(BlockIndex, deleted), size_of::<bool>()),
-        ("kind", offset_of!(BlockIndex, kind), size_of::<crate::index_log::IndexItemKind>()),
-        ("routing_bucket", offset_of!(BlockIndex, routing_bucket), size_of::<u32>()),
     ];
     let (index_covered, index_padding) = account(&index_fields, index_total);
 

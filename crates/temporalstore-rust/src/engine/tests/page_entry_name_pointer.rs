@@ -212,8 +212,6 @@ struct MirrorEntryThinNames {
     address: ElementEntry,
     dirty: bool,
     deleted: bool,
-    kind: crate::index_log::IndexItemKind,
-    routing_bucket: u32,
 }
 
 /// The page entry with `object_key` GONE -- step 1b, the key held on the bucket's object list.
@@ -424,12 +422,6 @@ fn one_remaining_name_slot_takes_the_entry_from_forty_to_thirty_two_and_the_chun
             field_width(&live.deleted),
             offset_of!(BlockIndex, deleted),
         ),
-        ("kind", field_width(&live.kind), offset_of!(BlockIndex, kind)),
-        (
-            "routing_bucket",
-            field_width(&live.routing_bucket),
-            offset_of!(BlockIndex, routing_bucket),
-        ),
     ];
 
     // --- THE PROJECTED ENTRY, THE SAME WAY, OFF THE MIRROR'S OWN FIELDS. ---
@@ -439,8 +431,6 @@ fn one_remaining_name_slot_takes_the_entry_from_forty_to_thirty_two_and_the_chun
         address: live.address.clone(),
         dirty: true,
         deleted: false,
-        kind: live.kind,
-        routing_bucket: live.routing_bucket,
     };
     let projected_fields = [
         (
@@ -467,12 +457,6 @@ fn one_remaining_name_slot_takes_the_entry_from_forty_to_thirty_two_and_the_chun
             "deleted",
             field_width(&projected.deleted),
             offset_of!(MirrorEntryThinNames, deleted),
-        ),
-        ("kind", field_width(&projected.kind), offset_of!(MirrorEntryThinNames, kind)),
-        (
-            "routing_bucket",
-            field_width(&projected.routing_bucket),
-            offset_of!(MirrorEntryThinNames, routing_bucket),
         ),
     ];
 
@@ -520,14 +504,11 @@ fn one_remaining_name_slot_takes_the_entry_from_forty_to_thirty_two_and_the_chun
     // A HAND-WRITTEN SUBJECT LIST, which is why it went stale when the field set moved: it named
     // a field that no longer exists and the lookup below panicked rather than the comparison
     // failing. The two locating fields are in BOTH tables identically, so they belong here too.
-    let untouched = [
-        "model_id",
-        "address",
-        "dirty",
-        "deleted",
-        "kind",
-        "routing_bucket",
-    ];
+    // THE TWO LOCATING FIELDS ARE GONE FROM BOTH TABLES, so they are gone from here. They were
+    // listed because they were in both identically; they are now in neither, and a name in this
+    // list that no entry declares makes the lookup below PANIC rather than the comparison fail --
+    // which is why the list is maintained rather than left to be permissive.
+    let untouched = ["model_id", "address", "dirty", "deleted"];
     let mut compared = 0usize;
     for name in untouched {
         let here = live_fields
@@ -1444,8 +1425,6 @@ fn an_entry_names_its_object_from_its_own_terms() {
     use std::sync::Arc;
 
     let entry = BlockIndex {
-        kind: crate::index_log::IndexItemKind::Page,
-        routing_bucket: 7,
         object_key: Arc::from("named-key"),
         model_id: stored_model_kind("string"),
         address: ElementEntry::from_parts(1, 2, 3, Some(4), None),

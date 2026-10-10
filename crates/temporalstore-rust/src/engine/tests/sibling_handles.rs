@@ -58,8 +58,6 @@ fn batched_page_address() -> ElementEntry {
 /// the whole of this module's restatement: two of these differ in nothing at all.
 fn entry_at(object_key: &str, address: ElementEntry) -> BlockIndex {
     BlockIndex {
-        kind: crate::index_log::IndexItemKind::Page,
-        routing_bucket: 7,
         object_key: std::sync::Arc::from(object_key),
         model_id: StoredModelKind::Hash,
         address,

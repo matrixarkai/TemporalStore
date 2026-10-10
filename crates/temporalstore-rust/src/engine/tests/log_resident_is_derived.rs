@@ -89,8 +89,6 @@ fn the_log_resident_fact_is_derived_from_the_address_alone() {
 
     // The entry the tombstone path builds. It no longer carries a log-resident flag to get wrong.
     let tombstone = BlockIndex {
-        kind: crate::index_log::IndexItemKind::Page,
-        routing_bucket: 7,
         object_key: std::sync::Arc::from("tenant/7/object/1"),
         model_id: crate::engine::storage_bucket_internals::StoredModelKind::Hash,
         address: in_log.clone(),
@@ -149,8 +147,6 @@ fn the_log_resident_fact_is_derived_from_the_address_alone() {
 fn the_stored_entry_has_dropped_the_flag_and_gained_no_key() {
 
     let page = BlockIndex {
-        kind: crate::index_log::IndexItemKind::Page,
-        routing_bucket: 7,
         object_key: std::sync::Arc::from("tenant/7/object/1"),
         model_id: crate::engine::storage_bucket_internals::StoredModelKind::Hash,
         address: ElementEntry::from_parts(42, 1_048_576, 4096, Some(7), None),

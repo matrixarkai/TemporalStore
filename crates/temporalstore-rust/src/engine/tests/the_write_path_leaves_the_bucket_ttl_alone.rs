@@ -59,8 +59,6 @@ fn a_bucket_holding_one_page(routing_bucket: u32, object_key: &str) -> BucketNod
     let mut live = BlockSlabLiveIndex::default();
     bucket.insert_page(
         BlockIndex {
-            kind: crate::index_log::IndexItemKind::Page,
-            routing_bucket,
             object_key: Arc::from(object_key),
             model_id: crate::engine::storage_bucket_internals::StoredModelKind::from_stored_name(
                 "string",

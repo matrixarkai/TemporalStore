@@ -53,8 +53,6 @@ fn a_shard_holding_one_clean_page(object_key: &str) -> (ShardState, u32) {
     let mut live = BlockSlabLiveIndex::default();
     bucket.insert_page(
         BlockIndex {
-            kind: crate::index_log::IndexItemKind::Page,
-            routing_bucket,
             object_key: Arc::from(object_key),
             model_id: crate::engine::storage_bucket_internals::StoredModelKind::from_stored_name(
                 "string",

@@ -1056,14 +1056,12 @@ fn the_entry_is_forty_bytes_and_every_one_is_accounted_for() {
     let flags = 3usize;
 
     println!("\n=== BlockIndex, field by field ===");
-    println!("  offsets: address@{} object_key@{} model_id@{} dirty@{} deleted@{} kind@{} routing_bucket@{}",
+    println!("  offsets: address@{} object_key@{} model_id@{} dirty@{} deleted@{}",
         offset_of!(BlockIndex, address),
         offset_of!(BlockIndex, object_key),
         offset_of!(BlockIndex, model_id),
         offset_of!(BlockIndex, dirty),
         offset_of!(BlockIndex, deleted),
-        offset_of!(BlockIndex, kind),
-        offset_of!(BlockIndex, routing_bucket),
     );
     println!(
         "  address {address} + object_key {object_key} + model_id {model} \
@@ -1391,8 +1389,6 @@ fn a_stored_spelling_with_no_row_is_refused_by_name_at_the_decode() {
 /// One page entry, for the tests that mutate a single field of a real encoding.
 fn sample_entry() -> BlockIndex {
     BlockIndex {
-        kind: crate::index_log::IndexItemKind::Page,
-        routing_bucket: 7,
         object_key: Arc::from("k"),
         model_id: StoredModelKind::String,
         address: crate::block_store::ElementEntry::from_parts(1, 2, 4, Some(5), Some(6)),

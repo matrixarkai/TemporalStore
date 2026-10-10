@@ -296,8 +296,6 @@ fn arm_census(engine: &TemporalEngine) -> ArmCensus {
 /// differ from a real one in `Arc` sharing and that is exactly what a clone-based instrument sees.
 fn one_real_page_free_standing() -> BlockIndex {
     BlockIndex {
-        kind: crate::index_log::IndexItemKind::Page,
-        routing_bucket: 7,
         object_key: std::sync::Arc::from("free-standing"),
         model_id: crate::engine::storage_bucket_internals::StoredModelKind::String,
         address: crate::block_store::ElementEntry::from_parts(1, 64, 32, Some(7), Some(11)),
