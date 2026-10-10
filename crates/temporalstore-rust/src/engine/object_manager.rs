@@ -92,7 +92,14 @@ pub(super) fn runtime_report(shard: &ShardState) -> ObjectManagerRuntimeReport {
                 (existing, None) => existing,
             };
         }
-        for page in bucket.block_index.values() {
+        let identities = shard.bucket_index.page_identities();
+        for (handle, page) in bucket.block_index.iter() {
+            // THE OBJECT COMES FROM BESIDE THE PAGE. A page whose neighbours do not name one is
+            // skipped, which is the one tombstone whose removal named no element -- this report is
+            // keyed by object id and has no row to put such a page in.
+            let Some(beside) = identities.identity_of(bucket, *handle, page) else {
+                continue;
+            };
             // A TOMBSTONE ENTRY IS NOT A LIVE BLOCK REF. It is counted below as a DELETED one, which
             // is what it is, and the field this line fills is named `live`. The distinction did not
             // exist before a container removal started leaving an entry behind: `deleted: true` was
@@ -101,7 +108,7 @@ pub(super) fn runtime_report(shard: &ShardState) -> ObjectManagerRuntimeReport {
             if !page.deleted {
                 live_block_ref_count = live_block_ref_count.saturating_add(1);
             }
-            let page_object_id = page.object_id(shard_id, &page.object_key);
+            let page_object_id = page.object_id(shard_id, beside.object_key);
             object_ids.insert(page_object_id);
             *object_ref_counts.entry(page_object_id).or_default() += 1;
             // `missing_object_owner_refs` STOOD HERE AND HAS BEEN RETIRED, not zeroed. It counted
@@ -156,8 +163,8 @@ pub(super) fn runtime_report(shard: &ShardState) -> ObjectManagerRuntimeReport {
                 (None, Some(next)) => Some(next),
                 (existing, None) => existing,
             };
-            if !object.object_keys.contains(&page.object_key.to_string()) {
-                object.object_keys.push(page.object_key.clone().to_string());
+            if !object.object_keys.contains(&beside.object_key.to_string()) {
+                object.object_keys.push(beside.object_key.to_string());
             }
             if !object.model_ids.contains(&page.model_id.to_string()) {
                 object.model_ids.push(page.model_id.clone().to_string());

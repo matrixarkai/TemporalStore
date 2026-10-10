@@ -1186,14 +1186,24 @@ impl TemporalEngine {
             return String::from("<no shard>");
         };
         let mut out = String::new();
+        let identities = shard.bucket_index.page_identities();
         for (routing_bucket, bucket) in &shard.bucket_index.bucket_map {
             for (block_ref_key, page) in &bucket.block_index {
+                // A page whose neighbours do not name an object prints an empty key and a zero
+                // id, which is what this shape has to say about a page nothing names.
+                let beside = identities.identity_of(bucket, *block_ref_key, page);
+                let object_key = beside
+                    .as_ref()
+                    .map_or("", |beside| beside.object_key.as_ref());
+                let object_id = beside
+                    .as_ref()
+                    .map_or(0, |beside| page.object_id(shard_id, beside.object_key));
                 out.push_str(&format!(
                     "bucket={routing_bucket} ref={block_ref_key} kind={} key={} object_id={} slab={} off={} len={} deleted={} log_backed={}
 ",
                     page.model_id,
-                    page.object_key,
-                    page.object_id(shard_id, &page.object_key),
+                    object_key,
+                    object_id,
                     page.address.block_slab_id(),
                     page.address.offset(),
                     page.address.length(),
@@ -2242,12 +2252,19 @@ impl TemporalEngine {
         if shard.wal_resident_blocks.is_empty() {
             return;
         }
+        let identities = shard.bucket_index.page_identities();
         for bucket in shard.bucket_index.bucket_map.values() {
-            for page in bucket.block_index.values() {
+            for (handle, page) in bucket.block_index.iter() {
                 if page.deleted {
                     continue;
                 }
-                let object_id = page.object_id(shard_id, &page.object_key);
+                // A LIVE page is named by the object lookup, which the decode fills -- so the
+                // `else` here is the window between a decode and that filing, which no longer
+                // exists on any path that reaches this.
+                let Some(beside) = identities.identity_of(bucket, *handle, page) else {
+                    continue;
+                };
+                let object_id = page.object_id(shard_id, beside.object_key);
                 // `None`: an entry names a page, not an element. See this function's doc for what
                 // that skips and why skipping is the safe direction.
                 let component = None;

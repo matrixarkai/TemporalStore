@@ -747,22 +747,40 @@ impl<'de> Deserialize<'de> for CoreIndex {
 /// be asked for its identity by the `(routing_bucket, handle)` it is filed under, which is the only
 /// thing a page's position actually says about it.
 ///
-/// BUILT ONLY IN DEBUG BUILDS, and that is the whole cost argument. Today the written key is still
-/// composed from the entry's own copy of the identity, so this is not what produces the bytes --
-/// it is what CHECKS them. A release build constructs none of it and pays nothing; a debug build
-/// pays one pass over the lookup per encode and then one comparison per page, which makes every
-/// dump in every test a proof that the two sources agree.
+/// BUILT IN EVERY BUILD NOW, AND THAT COSTS ONE PASS PER READER THAT NEEDS IT.
 ///
-/// WHY THAT PROOF IS THE POINT. The identity is leaving the entry, and when it does this becomes
-/// the source rather than the check. A swap is only safe if the two were already known to produce
-/// byte-identical keys, and "known" here means measured on every dump the suite performs rather
-/// than argued once in a comment.
-#[cfg(debug_assertions)]
-struct PageKeysByPosition<'a> {
+/// It was `#[cfg(debug_assertions)]`, because while the identity was still on the entry this was
+/// only a CHECK on the bytes the entry produced. It is a SOURCE now: the readers that group pages
+/// by object have no other way to ask which object a page belongs to, so the inversion has to
+/// exist in a release build.
+///
+/// WHAT THAT COSTS, STATED RATHER THAN GLOSSED. One pass over the lookup per reader that builds
+/// one, which is O(block refs) -- the same order as the walk over pages the reader is already
+/// doing. It is built ONCE per report and queried per page, never built per page, and never built
+/// by a point reader: a reader that starts from an object goes through `block_refs_for` in the
+/// forward direction and needs none of this.
+///
+/// THE DELETED PAGES ARE NOT IN IT, and that is the lookup's rule rather than this type's:
+/// `insert_object_block_lookup` returns early on a deleted page. [`page_identity`] is the door
+/// that knows about both sources, and every reader goes through it rather than through `get`.
+/// WHAT A PAGE'S NEIGHBOURS SAY ITS OBJECT IS.
+///
+/// The object key is handed back as the SHARED POINTER rather than as characters, because every
+/// caller that keeps it keeps a pointer -- the report rows, the filing map and the index-log items
+/// all held `page.object_key.clone()` and must go on costing one pointer rather than a copy of the
+/// characters.
+///
+/// The kind is handed back as `&str` because that is what both sources hold it as: the lookup keys
+/// on the shared name and a tombstone row holds the one-byte spelling, whose `as_str` is static.
+pub(super) struct PageObjectIdentity<'a> {
+    pub(super) model_id: &'a str,
+    pub(super) object_key: &'a Arc<str>,
+}
+
+pub(super) struct PageKeysByPosition<'a> {
     by_position: std::collections::HashMap<(u32, u64), (&'a Arc<str>, &'a Arc<str>)>,
 }
 
-#[cfg(debug_assertions)]
 impl<'a> PageKeysByPosition<'a> {
     fn from_lookup(lookup: &'a ObjectBlockLookup) -> Self {
         let mut by_position = std::collections::HashMap::new();
@@ -779,6 +797,38 @@ impl<'a> PageKeysByPosition<'a> {
 
     fn get(&self, routing_bucket: u32, handle: u64) -> Option<(&'a Arc<str>, &'a Arc<str>)> {
         self.by_position.get(&(routing_bucket, handle)).copied()
+    }
+
+    /// THE OBJECT A PAGE BELONGS TO, FROM WHICHEVER STRUCTURE BESIDE THE PAGE STATES IT.
+    ///
+    /// TWO SOURCES AND NOT ONE, because a page has one of two kinds of neighbour. A LIVE page is
+    /// named by the object lookup, inverted by the `(routing_bucket, handle)` it is filed under. A
+    /// DELETED page is not in that lookup at all -- `insert_object_block_lookup` returns early on
+    /// one -- and is named instead by the tombstone row the removal filed in the same bucket,
+    /// which is keyed by the page triple and carries both the object key and the kind.
+    ///
+    /// `None` HAS EXACTLY TWO CAUSES, both named so that a caller's skip is not a shrug. A live
+    /// page is missing from the lookup only between a decode and a rebuild, a window the decoder
+    /// closed by filing as it decodes. A deleted page is missing a row only when the removal that
+    /// made it named no element -- a tombstone with nothing to say about which member went -- and
+    /// that is the one page in this store whose object nothing beside it states.
+    pub(super) fn identity_of(
+        &self,
+        node: &'a BucketNode,
+        handle: u64,
+        page: &BlockIndex,
+    ) -> Option<PageObjectIdentity<'a>> {
+        if page.deleted {
+            return node.tombstone_element_at(&page.address).map(|row| PageObjectIdentity {
+                model_id: row.model_id.as_str(),
+                object_key: &row.object_key,
+            });
+        }
+        self.get(node.routing_bucket, handle)
+            .map(|(model_id, object_key)| PageObjectIdentity {
+                model_id,
+                object_key,
+            })
     }
 
     /// WHETHER THIS NAMES NO POSITION AT ALL, which is what an UNESTABLISHED lookup looks like.
@@ -2700,14 +2750,10 @@ impl Serialize for PageIndexAt<'_> {
 #[cfg(debug_assertions)]
 fn check_page_keys_against_their_siblings(node: &BucketNode, keys: &PageKeysByPosition<'_>) {
     for (handle, page) in node.block_index.iter() {
-        let beside: Option<(&str, &str)> = if page.deleted {
-            node.tombstone_element_at(&page.address)
-                .map(|row| (row.model_id.as_str(), &*row.object_key))
-        } else {
-            keys.get(node.routing_bucket, *handle)
-                .map(|(model_id, object_key)| (&**model_id, &**object_key))
-        };
-        let Some((model_id, object_key)) = beside else {
+        // THROUGH THE ONE DOOR, so the check and the readers cannot disagree about where an
+        // identity comes from. This held its own copy of the two-source rule while it was the only
+        // thing that needed it.
+        let Some(beside) = keys.identity_of(node, *handle, page) else {
             debug_assert!(
                 keys.is_unestablished(),
                 "a page written by bucket {} has no identity beside it while the lookup IS                  established, so this is not the decode-then-rebuild window: deleted={}",
@@ -2719,8 +2765,8 @@ fn check_page_keys_against_their_siblings(node: &BucketNode, keys: &PageKeysByPo
         debug_assert_eq!(
             block_index_written_key(&page.object_key, page),
             crate::index_log::block_ref_key_from_parts(
-                model_id,
-                object_key,
+                beside.model_id,
+                beside.object_key,
                 None,
                 page.address.block_slab_id(),
                 page.address.offset(),
@@ -5228,6 +5274,16 @@ impl CoreIndex {
                 *total = total.saturating_add(1);
             }
         }
+    }
+
+    /// EVERY PAGE'S OBJECT IDENTITY, INDEXED BY THE POSITION THE PAGE IS HELD AT.
+    ///
+    /// Built once by a reader that walks pages and needs to know which object each belongs to --
+    /// see [`PageKeysByPosition`] for what it costs and [`PageKeysByPosition::identity_of`] for
+    /// the two sources a page can be named by. A reader that starts FROM an object wants
+    /// [`Self::block_refs_for`] instead and should not build this.
+    pub(super) fn page_identities(&self) -> PageKeysByPosition<'_> {
+        PageKeysByPosition::from_lookup(&self.object_block_lookup)
     }
 
     /// Every block ref this object holds, for one component.

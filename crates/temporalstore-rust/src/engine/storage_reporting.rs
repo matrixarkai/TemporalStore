@@ -36,9 +36,17 @@ pub(super) fn storage_object_lifecycle_report_for_buckets(
 /// source's bucket and answered this for free; the index that ships with the image answers it now.
 fn filing_by_object_key(shard: &ShardState) -> HashMap<Arc<str>, u32> {
     let mut filed = HashMap::new();
+    // THE IDENTITY COMES FROM BESIDE THE PAGE, not off it -- one inversion of the object lookup
+    // for the whole walk, which is the same order as the walk. A page whose neighbours do not name
+    // it is skipped: the one such page is a tombstone whose removal named no element, and a filing
+    // map keyed by object cannot state an entry for an object it cannot name.
+    let identities = shard.bucket_index.page_identities();
     for (routing_bucket, bucket) in &shard.bucket_index.bucket_map {
-        for page in bucket.block_index.values() {
-            filed.insert(page.object_key.clone(), *routing_bucket);
+        for (handle, page) in bucket.block_index.iter() {
+            let Some(beside) = identities.identity_of(bucket, *handle, page) else {
+                continue;
+            };
+            filed.insert(Arc::clone(beside.object_key), *routing_bucket);
         }
     }
     filed
@@ -487,9 +495,15 @@ pub(super) fn storage_physical_index_report(
         // by the newest one reported the older manifest's WAL sequence and now reports 0. That
         // figure is not reconstructible from the newest manifest alone, and it was not readable
         // by anything that decided anything.
-        for page in runtime_bucket.block_index.values() {
+        let identities = shard.bucket_index.page_identities();
+        for (handle, page) in runtime_bucket.block_index.iter() {
+            // THE ROW NAMES AN OBJECT, so a page whose neighbours do not name one cannot produce a
+            // row. The one such page is a tombstone whose removal named no element.
+            let Some(beside) = identities.identity_of(runtime_bucket, *handle, page) else {
+                continue;
+            };
             let already_present = bucket.block_indexes.iter().any(|existing| {
-                existing.object_key.as_str() == page.object_key.as_ref()
+                existing.object_key.as_str() == beside.object_key.as_ref()
                     && existing.model_id.as_str() == page.model_id.as_str()
                     // THE COMPONENT TERM IS DROPPED AS A TAUTOLOGY. It compared
                     // `existing.component` against `page.component`; the report row's component
@@ -503,7 +517,7 @@ pub(super) fn storage_physical_index_report(
                 continue;
             }
             let mut block_index = StoragePhysicalBlockIndex {
-                object_key: page.object_key.clone().to_string(),
+                object_key: beside.object_key.to_string(),
                 model_id: page.model_id.clone().to_string(),
                 // `None`, AND THE REPORT'S SLOT IS KEPT. `StoragePhysicalBlockIndex::component` is
                 // a PUBLIC field of a serialized report, so retiring it is a schema change and not
@@ -516,7 +530,7 @@ pub(super) fn storage_physical_index_report(
                 offset: page.address.offset(),
                 length: page.address.length(),
                 block_id: page.address.block_id(),
-                object_id: Some(page.object_id(shard_id, &page.object_key)),
+                object_id: Some(page.object_id(shard_id, beside.object_key)),
                 stored_slab_id: page.address.slab_id(),
                 checksum: None,
                 dirty: page.dirty,
