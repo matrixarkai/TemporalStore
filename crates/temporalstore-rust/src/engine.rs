@@ -5245,8 +5245,11 @@ fn mark_bucket_index_object_deleted(shard: &mut ShardState, key: &str) -> bool {
             // it replaced had been repairing silently. All three arms of that reconcile are kept,
             // including the one that leaves the list alone on a bucket this delete has emptied:
             // that is how a deleted object's id survives to be reported as a tombstone.
+            // THE PROJECTION THIS LOOP ALREADY BUILT, handed over rather than re-derived.
             crate::engine::storage_bucket_internals::repair_object_index_against_its_pages(
-                shard_id, bucket,
+                shard_id,
+                bucket,
+                &names,
             );
             crate::engine::storage_bucket_internals::classify_bucket_layout_in_place(bucket);
             // Moved below the prune, which touches `object_index` and never this field. Nothing
@@ -5593,8 +5596,11 @@ fn mark_bucket_index_block_deleted_recording(
             bucket.set_in_memory(!bucket.block_index.is_empty());
             // THE REPAIR AT THE REMOVAL SITE, over this bucket's own pages rather than over the
             // set this call happened to drop. See [`repair_object_index_against_its_pages`].
+            // THE PROJECTION THIS LOOP ALREADY BUILT, handed over rather than re-derived.
             crate::engine::storage_bucket_internals::repair_object_index_against_its_pages(
-                shard_id, bucket,
+                shard_id,
+                bucket,
+                &names,
             );
             crate::engine::storage_bucket_internals::classify_bucket_layout_in_place(bucket);
         }

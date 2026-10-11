@@ -5892,13 +5892,35 @@ pub(super) fn next_block_index_for_object(
         .bucket_map
         .get(&routing_bucket)
         .and_then(|bucket| {
+            // THE IDENTITY COMES FROM BESIDE THE BLOCK, FROM BOTH SOURCES.
+            //
+            // A block id is an ordinal INSIDE its object and must never be reused: this store
+            // keeps a rewritten block's predecessor live, so an object numbering from zero again
+            // would have two live blocks claiming one position. The lookup holds LIVE pages only
+            // -- `insert_object_block_lookup` returns early on a deleted one -- so selecting on it
+            // alone would step back over a deleted block's ordinal and hand it out twice.
+            // `identity_of` reads the lookup for a live page and this bucket's own tombstone rows
+            // for a deleted one, which is why it is the door used here.
+            let identities = PageKeysByPosition::from_lookup(&bucket_index.object_block_lookup);
             bucket
                 .block_index
-                .values()
-                .filter(|block| {
-                    block.model_id.as_str() == model_id && block.object_key.as_ref() == object_key
+                .iter()
+                .filter(|(handle, block)| {
+                    block.model_id.as_str() == model_id
+                        && identities
+                            .identity_of(bucket, **handle, block)
+                            .is_some_and(|beside| {
+                                // THE TIE BACK TO THE ENTRY'S OWN COPY. It goes with the field.
+                                debug_assert_eq!(
+                                    &*block.object_key,
+                                    &**beside.object_key,
+                                    "the identity beside this block names a different object \
+                                     from the one on it"
+                                );
+                                &**beside.object_key == object_key
+                            })
                 })
-                .filter_map(|block| block.address.block_id())
+                .filter_map(|(_, block)| block.address.block_id())
                 .max()
         })
         .map_or(0, |highest| {

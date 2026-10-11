@@ -126,20 +126,25 @@ pub(super) fn runtime_report(shard: &ShardState) -> ObjectManagerRuntimeReport {
             // only while the lookup names no position at all. The check beside the page index
             // carries the same rule, for the same reason.
             //
-            // THE FALLBACK IS A SCAFFOLD WITH A LIFETIME. It reads the field this leg is removing,
-            // so it is one of the readers the removal has to answer for -- and the answer there is
-            // that the lookup must be established before this report walks, not that the report
-            // keeps a second source for good.
+            // THE FALLBACK IS GONE, AND THE ANSWER IS THE ONE ITS OWN NOTE GAVE: the lookup
+            // must be established before this report walks, not a second source kept for good.
+            //
+            // SO A LIVE PAGE NOTHING NAMES IS SKIPPED AND REFUSED, NOT GUESSED AT. A report is not
+            // the durability path -- a row it cannot key is a row it omits, where the ENCODER in
+            // the same state refuses outright -- and the `debug_assert!` keeps the skip inside the
+            // one window that explains it: the lookup names no position at all.
             let object_key = match identities.identity_of(bucket, *handle, page) {
                 Some(beside) => beside.object_key,
                 None if page.deleted => continue,
                 None => {
                     debug_assert!(
                         identities.names_no_position(),
-                        "bucket {} holds a live page the object lookup does not name while the                          lookup DOES name positions, so this report is falling back to the entry's                          own copy of the identity outside the one window that explains it",
+                        "bucket {} holds a live page the object lookup does not name while the \
+                         lookup DOES name positions, so this report is dropping a row outside the \
+                         one window that explains it",
                         bucket.routing_bucket
                     );
-                    &page.object_key
+                    continue;
                 }
             };
             // A TOMBSTONE ENTRY IS NOT A LIVE BLOCK REF. It is counted below as a DELETED one, which

@@ -882,20 +882,39 @@ pub(super) fn storage_topology_snapshot_with_samples_from_entries(
         }
     }
 
+    // THE IDENTITY COMES FROM BESIDE THE PAGE. The delete marker below states an object, and
+    // the entry is losing its own copy; the inversion is built once for the whole walk, which
+    // `shard` being immutable here makes free of any borrow to split.
+    let identities = crate::engine::state::PageKeysByPosition::from_lookup(
+        &shard.bucket_index.object_block_lookup,
+    );
     for (bucket_id, runtime_bucket) in &shard.bucket_index.bucket_map {
         let bucket = buckets.entry(*bucket_id).or_default();
         bucket.dirty_generation = bucket.dirty_generation.max(runtime_bucket.dirty_generation);
         bucket.object_refs
             .extend(runtime_bucket.object_index.iter().copied());
-        for page in runtime_bucket.block_index.values() {
+        for (handle, page) in runtime_bucket.block_index.iter() {
             if bucket.block_refs.len() >= MAX_STORAGE_TOPOLOGY_SAMPLES {
                 break;
             }
             bucket.block_refs
                 .push(storage_page_address_sample(shard_id, &page.address));
-            if page.deleted {
+            // A DELETED PAGE IS NAMED BY THIS BUCKET'S OWN TOMBSTONE ROW, which is the source
+            // `identity_of` reaches for one -- the lookup never holds a deleted page. A marker for
+            // a page nothing names would name no object, so it is not written.
+            if let Some(beside) = page
+                .deleted
+                .then(|| identities.identity_of(runtime_bucket, *handle, page))
+                .flatten()
+            {
+                // THE TIE BACK TO THE ENTRY'S OWN COPY. It goes with the field.
+                debug_assert_eq!(
+                    &*page.object_key,
+                    &**beside.object_key,
+                    "the identity beside this page names a different object from the one on it"
+                );
                 bucket.delete_markers
-                    .insert(format!("{}:{}", page.model_id, page.object_key));
+                    .insert(format!("{}:{}", page.model_id, beside.object_key));
             }
         }
     }
@@ -1866,11 +1885,35 @@ pub(super) fn collect_bucket_index_live_block_entries(shard: &ShardState) -> Vec
     // the supplement walk below either -- it charged what was RETURNED, while the walk
     // materializes the indexed blocks and then, whenever anything is released, the whole shard.
     let mut from_index = 0usize;
+    // THE IDENTITY COMES FROM BESIDE THE PAGE, once for the walk. `shard` is immutable here.
+    let identities = crate::engine::state::PageKeysByPosition::from_lookup(
+        &shard.bucket_index.object_block_lookup,
+    );
     for (routing_bucket, bucket) in &shard.bucket_index.bucket_map {
-        for page in bucket.block_index.values() {
+        for (handle, page) in bucket.block_index.iter() {
+            // A ROW THIS WALK CANNOT NAME IS NOT EMITTED. `LiveBlockEntry::object_key` is the
+            // whole point of the row -- five readers downstream key off it -- so a row carrying
+            // no object would be worse than an absent one. The skip is refused outside the one
+            // window that explains it.
+            let Some(beside) = identities.identity_of(bucket, *handle, page) else {
+                debug_assert!(
+                    identities.names_no_position(),
+                    "bucket {} holds a page the index cannot name while the lookup DOES name \
+                     positions, so this walk is dropping a row outside the one window that \
+                     explains it",
+                    bucket.routing_bucket
+                );
+                continue;
+            };
+            // THE TIE BACK TO THE ENTRY'S OWN COPY. It goes with the field.
+            debug_assert_eq!(
+                &*page.object_key,
+                &**beside.object_key,
+                "the identity beside this page names a different object from the one on it"
+            );
             from_index += 1;
             entries.push(LiveBlockEntry {
-                object_key: page.object_key.clone(),
+                object_key: Arc::clone(beside.object_key),
                 kind: page.model_id,
                 // `None`: THIS WALK IS OVER THE INDEX, AND AN INDEX ENTRY NAMES A PAGE.
                 //
@@ -2360,13 +2403,36 @@ pub(super) fn release_bucket_blocks(
         // The per-block terms, likewise. `find_map` stops at the first block that fails, which
         // is the same set as the `all` it replaces: `all` is false exactly when `find_map` is
         // Some.
-        let block_refusal = bucket.block_index.values().find_map(|block| {
+        // THE IDENTITY OF EVERY PAGE IN THIS BUCKET, TAKEN ONCE FOR THE FOUR READERS BELOW.
+        //
+        // All four asked each page which object it belonged to. The projection is OWNED, so it
+        // outlives the immutable borrow of the bucket and is still in hand when the un-filing
+        // further down takes the index mutably.
+        let names = crate::engine::state::page_identities_in(
+            bucket,
+            &crate::engine::state::PageKeysByPosition::from_lookup(
+                &shard.bucket_index.object_block_lookup,
+            ),
+        );
+        let block_refusal = bucket.block_index.iter().find_map(|(handle, block)| {
+            let Some(beside) = names.get(handle) else {
+                // A PAGE THE INDEX CANNOT NAME REFUSES THE RELEASE, and `LookupNotLocal` is
+                // exactly what that is: the lookup holds no entry for this page, so dropping this
+                // bucket's lookup entries cannot be shown to drop only its own.
+                return Some(BucketReleaseRefusal::LookupNotLocal);
+            };
+            // THE TIE BACK TO THE ENTRY'S OWN COPY. It goes with the field.
+            debug_assert_eq!(
+                &*block.object_key,
+                &**beside,
+                "the identity beside this page names a different object from the one on it"
+            );
             if block.dirty {
                 Some(BucketReleaseRefusal::BlockDirty)
             } else if block.deleted {
                 Some(BucketReleaseRefusal::BlockDeleted)
             } else if block_routing_bucket(
-                &block.object_key,
+                beside,
                 start_routing_bucket,
                 end_routing_bucket,
             ) != routing_bucket
@@ -2390,14 +2456,18 @@ pub(super) fn release_bucket_blocks(
         // The lookup refs for each block must point at THIS bucket, or dropping the block's lookup
         // entry below would also drop a ref some other bucket still owns.
         let lookup_is_local = !lookup_established
-            || bucket.block_index.values().all(|page| {
-                shard
-                    .bucket_index
-                    // `None`: the lookup files every page of an object under one nameless slot,
-                    // which is the slot an entry has always been filed in here.
-                    .block_refs_for(page.model_id.as_str(), &page.object_key, None)
-                    .map(|refs| refs.iter().all(|block_ref| block_ref.routing_bucket == routing_bucket))
-                    .unwrap_or(false)
+            || bucket.block_index.iter().all(|(handle, page)| {
+                names.get(handle).is_some_and(|beside| {
+                    shard
+                        .bucket_index
+                        // `None`: the lookup files every page of an object under one nameless
+                        // slot, which is the slot an entry has always been filed in here.
+                        .block_refs_for(page.model_id.as_str(), beside, None)
+                        .map(|refs| {
+                            refs.iter().all(|block_ref| block_ref.routing_bucket == routing_bucket)
+                        })
+                        .unwrap_or(false)
+                })
             });
         if !lookup_is_local {
             outcome.refuse(BucketReleaseRefusal::LookupNotLocal);
@@ -2405,15 +2475,21 @@ pub(super) fn release_bucket_blocks(
         }
         let resident: BTreeSet<ReleasedBlockIdentity> = bucket
             .block_index
-            .values()
-            .map(|page| {
-                released_block_identity(
-                    page.model_id.as_str(),
-                    &page.object_key,
-                    // `None`: the identity an entry can state is its page's, not its element's.
-                    None,
-                    &page.address,
-                )
+            .iter()
+            .filter_map(|(handle, page)| {
+                // A PAGE NOTHING NAMES CONTRIBUTES NO IDENTITY, which makes the resident set
+                // smaller than the derived one and refuses the release below. That is the safe
+                // direction: releasing across a disagreement loses blocks.
+                names.get(handle).map(|beside| {
+                    released_block_identity(
+                        page.model_id.as_str(),
+                        beside,
+                        // `None`: the identity an entry can state is its page's, not its
+                        // element's.
+                        None,
+                        &page.address,
+                    )
+                })
             })
             .collect();
         // THE WHOLE-STORE PASS, on first demand and once. Nothing above this line consulted it.
@@ -2429,8 +2505,10 @@ pub(super) fn release_bucket_blocks(
         }
         let dropped: Vec<(StoredModelKind, Arc<str>)> = bucket
             .block_index
-            .values()
-            .map(|page| (page.model_id, page.object_key.clone()))
+            .iter()
+            .filter_map(|(handle, page)| {
+                names.get(handle).map(|beside| (page.model_id, Arc::clone(beside)))
+            })
             .collect();
         let block_count = dropped.len();
         if lookup_established {
@@ -4728,16 +4806,28 @@ fn upsert_bucket_index_block_inner(
                 continue;
             };
             touched_buckets.push(block_ref.routing_bucket);
+            // THE OBJECT IS THIS UPSERT'S OWN, which is what the supersede predicate
+            // established: a page is superseded only when it matches this entry's (object key,
+            // kind, component), so the id derived here is derived from the same characters it
+            // always was.
             let removed_object_id = bucket
                 .block_index
                 .remove(&block_ref.block_ref_key, &mut shard.bucket_index.block_slab_live)
-                .map(|page| page.object_id(shard_id, &page.object_key));
+                .map(|page| page.object_id(shard_id, &entry.object_key));
             if let Some(removed_object_id) = removed_object_id {
-                if !bucket
-                    .block_index
-                    .values()
-                    .any(|page| page.object_id(shard_id, &page.object_key) == removed_object_id)
-                {
+                // AND WHETHER ANY SURVIVOR STILL CARRIES IT IS A QUESTION ABOUT THE BUCKET, so
+                // the survivors are named from beside themselves rather than from this entry.
+                let names = crate::engine::state::page_identities_in(
+                    bucket,
+                    &crate::engine::state::PageKeysByPosition::from_lookup(
+                        &shard.bucket_index.object_block_lookup,
+                    ),
+                );
+                if !bucket.block_index.iter().any(|(handle, page)| {
+                    names
+                        .get(handle)
+                        .is_some_and(|beside| page.object_id(shard_id, beside) == removed_object_id)
+                }) {
                     bucket.object_index.remove(&removed_object_id);
                 }
                 classify_bucket_layout_in_place(bucket);
@@ -4985,9 +5075,27 @@ pub(super) fn sync_bucket_index_object_blocks_with_mode(
         let Some(bucket) = shard.bucket_index.bucket_map.get_mut(&routing_bucket) else {
             continue;
         };
+        // NAMED BEFORE THE MUTATION, for the reason at `state::page_identities_in`.
+        let names = crate::engine::state::page_identities_in(
+            bucket,
+            &crate::engine::state::PageKeysByPosition::from_lookup(
+                &shard.bucket_index.object_block_lookup,
+            ),
+        );
         let before = bucket.block_index.len();
-        bucket.block_index.retain(&mut shard.bucket_index.block_slab_live, |_, page| {
-            let matches_object = page.model_id.as_str() == kind && &*page.object_key == object_key;
+        bucket.block_index.retain(&mut shard.bucket_index.block_slab_live, |handle, page| {
+            // `object_key` IS THIS FUNCTION'S ARGUMENT, so the comparison is against the same
+            // characters it always was -- read from beside the page rather than off it.
+            let matches_object = page.model_id.as_str() == kind
+                && names.get(handle).is_some_and(|beside| {
+                    // THE TIE BACK TO THE ENTRY'S OWN COPY. It goes with the field.
+                    debug_assert_eq!(
+                        &*page.object_key,
+                        &**beside,
+                        "the identity beside this page names a different object from the one on it"
+                    );
+                    &**beside == object_key
+                });
             if matches_object {
                 // THE SET THIS FILLS COLLAPSES TO AT MOST ONE ELEMENT, AND THAT IS NOT NEW.
                 //
@@ -5014,7 +5122,7 @@ pub(super) fn sync_bucket_index_object_blocks_with_mode(
             // here and was wrong; `repair_object_index_against_its_pages` carries the measurement
             // that says so. The pass is over this bucket's own pages, which this loop is already
             // walking, and it asks for no whole-shard inversion.
-            repair_object_index_against_its_pages(shard_id, bucket);
+            repair_object_index_against_its_pages(shard_id, bucket, &names);
             classify_bucket_layout_in_place(bucket);
         }
     }
@@ -5439,15 +5547,29 @@ pub(super) fn update_bucket_layout_with_live_objects(
 /// one's: a removal site needs an identity for its OWN bucket's live pages, which is a narrower
 /// question than the whole-shard inversion and is not answered here.
 #[cfg_attr(test, track_caller)]
-pub(super) fn repair_object_index_against_its_pages(shard_id: ShardId, bucket: &mut BucketNode) {
+/// THE IDENTITIES ARRIVE AS A PARAMETER, because the pages cannot be asked any more.
+///
+/// It read each live page's object key off the entry. Its three callers all hold the per-bucket
+/// projection already -- two of them built it for their own `retain` -- so this takes it rather
+/// than inverting a whole shard's lookup to recover what the caller is already carrying.
+///
+/// A PAGE THE PROJECTION DOES NOT NAME CONTRIBUTES NO ID, which is the conservative direction: the
+/// reconcile then does not claim an object this bucket cannot be shown to hold.
+pub(super) fn repair_object_index_against_its_pages(
+    shard_id: ShardId,
+    bucket: &mut BucketNode,
+    names: &std::collections::HashMap<u64, Arc<str>>,
+) {
     note_site(&bucket_visit_sites::LAYOUT, bucket.block_index.len());
     #[cfg(test)]
     layout_by_caller::note(std::panic::Location::caller(), bucket.block_index.len());
     let live_object_ids: BTreeSet<u64> = bucket
         .block_index
-        .values()
-        .filter(|page| !page.deleted)
-        .map(|page| page.object_id(shard_id, &page.object_key))
+        .iter()
+        .filter(|(_, page)| !page.deleted)
+        .filter_map(|(handle, page)| {
+            names.get(handle).map(|beside| page.object_id(shard_id, beside))
+        })
         .collect();
     reconcile_object_index_with_live_pages(bucket, &live_object_ids);
     // THE RECONCILE'S POSTCONDITION, ASSERTED -- AND IT IS NOT A RESTATEMENT OF THE LINE ABOVE.
@@ -5739,14 +5861,41 @@ fn refresh_one_bucket_runtime_flags(
                 bucket.ttl_ms = BucketTtl::ABSENT;
             } else {
                 note_site(&bucket_visit_sites::REFRESH_FLAGS, bucket.block_index.len());
-                bucket.ttl_ms = BucketTtl::from_ms(
-                    bucket
-                        .block_index
-                        .values()
-                        .filter_map(|page| expires_at_ms.get(page.object_key.as_ref()).copied())
-                        .map(|expires_at| expires_at.saturating_sub(now))
-                        .min(),
-                );
+                // THE ROLLUP NEEDS A SOURCE FOR EACH PAGE'S OBJECT, SO IT IS TIED TO THE
+                // IDENTITIES RATHER THAN TO A FLAG.
+                //
+                // `expires_at_ms` is keyed by OBJECT KEY, so this selection asked each page which
+                // object it belonged to. With the key beside the page, a refresh handed no
+                // inversion has nothing to select on -- and leaving the field stale is the only
+                // honest answer, which is exactly what the one caller that passes `None` already
+                // asks for by name.
+                match object_index_rebuild {
+                    Some(keys) => {
+                        bucket.ttl_ms = BucketTtl::from_ms(
+                            bucket
+                                .block_index
+                                .iter()
+                                .filter_map(|(handle, page)| {
+                                    let beside = keys.identity_of(bucket, *handle, page)?;
+                                    expires_at_ms.get(&**beside.object_key).copied()
+                                })
+                                .map(|expires_at| expires_at.saturating_sub(now))
+                                .min(),
+                        );
+                    }
+                    None => {
+                        // THE ONLY WAY TO BE HERE IS AN UNSTAMPED STATE. The sweep hands the
+                        // inversion whenever the state carries a shard id, and the targeted path
+                        // asks for `LeaveStale` by name. In production a served state is always
+                        // stamped: `install_shard_state` is the only caller of `set_shard_id`.
+                        debug_assert!(
+                            shard_id.is_none(),
+                            "a stamped state asked for a TTL recompute with no identities to \
+                             select on, so the rollup has no source and the field is being left \
+                             stale for the wrong reason"
+                        );
+                    }
+                }
             }
         }
     }
