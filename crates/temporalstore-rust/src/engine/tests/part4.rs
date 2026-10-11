@@ -14085,9 +14085,33 @@ fn what_one_block_costs_to_index() {
 
     // A report, not a threshold -- the point is the gap and where it comes from, and a bound here
     // would fail on unrelated changes. What must hold is that the measurement happened.
+    //
+    // AND THE FLOOR HAD TO MOVE OFF THE ENTRY, BECAUSE THE ENTRY IS THE ZERO NOW. It read
+    // `per_entry_heap > 0.0`, with the reason "every entry owns at least an object key, so zero
+    // heap means the walk found nothing". The entry owns no object key: `per_entry_heap` is a
+    // STRUCTURAL zero, and the old floor turned the finding into a failure.
+    //
+    // THE SAME TABLE'S SIBLING WAS FLOORED AND THIS ONE WAS MISSED, which is what makes it worth
+    // the words. `the_key_text_lives_in_four_structures` has the identical shape -- a page-index
+    // row gone to zero -- and it asserts the LOOKUP row is non-zero so the zero cannot be read as
+    // "this fixture wrote no keys". This floor was left pointing at the row that went to zero, and
+    // only running it said so: a structural zero and an empty walk are indistinguishable from
+    // inside the row itself.
+    //
+    // SO IT ASKS THE TWO QUESTIONS SEPARATELY. That entries were walked at all is asserted above
+    // on `entries`, which is the "did the measurement happen" half. What this adds is that the key
+    // text is held SOMEWHERE in this store -- in the object lookup, which is where it moved -- so
+    // a run over a store that genuinely wrote no keys still fails.
+    let lookup_key_bytes: usize = shard
+        .bucket_index
+        .object_block_lookup
+        .iter()
+        .map(|(_model, object, _refs)| object.len())
+        .sum();
     assert!(
-        per_entry_heap > 0.0,
-        "every entry owns at least an object key, so zero heap means the walk found nothing"
+        lookup_key_bytes > 0,
+        "the object lookup holds no key text, so the {per_entry_heap:.1} B of per-entry heap above \
+         cannot be read as the entry having given its key up -- this store never had one"
     );
 }
 
