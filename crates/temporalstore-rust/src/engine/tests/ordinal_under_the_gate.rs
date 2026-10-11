@@ -312,12 +312,35 @@ fn a_derivation_drops_the_entry_no_element_carries_any_more() {
             dirty: false,
             deleted: false,
         };
+        // AND THE PLANT FILES THE OBJECT LOOKUP TOO, WHICH IT HAD TO START DOING.
+        //
+        // `BucketNode::insert_page` files the BUCKET's page index and nothing else -- it is handed
+        // a `BlockSlabLiveIndex` and never sees the `CoreIndex` -- so a plant that stopped there
+        // left a page the shard's object lookup does not name. While the entry carried its own
+        // copy of the identity that cost nothing: every walk read the key off the page. The walks
+        // read it from BESIDE the page now, so an unfiled page is one they cannot attribute, and
+        // `entry_rows` counted ONE where this test asserts two.
+        //
+        // IT IS THE PLANT THAT WAS WRONG, NOT THE WALK. The write path files both halves -- the
+        // obligation `fold_delta_block_items` carries a note about -- so a plant that files one is
+        // planting a state this engine does not produce, and the test would have been measuring
+        // that instead of the stale entry it is about.
+        let handle = crate::engine::state::block_index_handle(&planted_key, &page);
         let bucket = shard
             .bucket_index
             .bucket_map
             .get_mut(&routing_bucket)
             .expect("the object's bucket exists after the writes above");
-        bucket.insert_page(&planted_key, page, &mut shard.bucket_index.block_slab_live);
+        let assigned =
+            bucket.insert_page(&planted_key, page.clone(), &mut shard.bucket_index.block_slab_live);
+        assert_eq!(
+            handle, assigned,
+            "the handle the bucket filed the plant under is not the one composed from the \
+             identity beside it, so the lookup row below would name a position the page is not at"
+        );
+        shard
+            .bucket_index
+            .insert_object_block_lookup(routing_bucket, assigned, &planted_key, &page);
     }
 
     let before = entry_rows(&engine, "heal/set");

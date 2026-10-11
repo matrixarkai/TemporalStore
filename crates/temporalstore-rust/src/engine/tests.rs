@@ -97,14 +97,34 @@ impl PageObjects {
 ///     and the bucket's own tombstone row for a deleted one. That is what this asks, so a caller
 ///     cannot get the tombstone case wrong by omitting to think about it.
 ///
-/// # A PAGE NAMED BY NOTHING IS A PANIC, NOT A SKIP
+/// # A LIVE PAGE NAMED BY NOTHING IS A PANIC; AN UNNAMED TOMBSTONE IS A SKIP
 ///
-/// There are exactly two states in which nothing beside a page states its object: between a decode
-/// and the rebuild that fills the lookup -- a window the decoder closed by filing as it decodes --
-/// and a removal that named no element, which the producer now refuses in every build. Both are
-/// states a test walking a store should fail on, loudly, with the handle in hand. A `filter_map`
-/// here would turn either into a count that is quietly short, which is the denominator mistake
-/// this campaign keeps re-finding in a new costume.
+/// THIS WAS A FLAT PANIC OVER BOTH STATES AND THAT WAS WRONG, AND THE SUITE IS WHAT SAID SO. The
+/// paragraph here read "A PAGE NAMED BY NOTHING IS A PANIC, NOT A SKIP ... Both are states a test
+/// walking a store should fail on, loudly", naming the window between a decode and its rebuild and
+/// a removal that named no element.
+///
+/// THE SECOND IS NOT A DEFECT, AND `identity_of`'s OWN DOC SAYS SO: a deleted page whose removal
+/// named no element "is the one page in this store whose object nothing beside it states".
+/// Production's `page_identities_in` skips it through a `filter_map`, with the note that in every
+/// caller it means "this page is not the one I am matching".
+///
+/// `hash_read_union_divergence::an_index_entry_marked_deleted_loses_no_field_and_is_not_counted`
+/// plants exactly that page -- it marks an entry deleted in place, with no tombstone row -- and
+/// the flat panic fired while this walk was still BUILDING its list, before any caller's
+/// `!page.deleted` filter could short-circuit. A test whose whole subject is that page could not
+/// run.
+///
+/// SO THE TWO STATES ARE SPLIT, and the assertion says which is which:
+///
+///   * a LIVE page the lookup does not name PANICS with the handle. That is the decode-before-
+///     rebuild window, which the decoder closed by filing as it decodes, so it is a defect.
+///   * a DELETED page no tombstone row names is SKIPPED. Its object is genuinely unstated and
+///     there is nothing for a walk to attribute it to.
+///
+/// A skip is still the dangerous direction, which is why only the second case gets one: a skip on
+/// the first would be a count quietly short, the denominator mistake this campaign keeps
+/// re-finding in a new costume.
 ///
 /// # WHAT THIS IS NOT FOR
 ///
@@ -120,12 +140,14 @@ pub(super) fn pages_with_identity(
     let mut out = Vec::new();
     for bucket in index.bucket_map.values() {
         for (handle, page) in &bucket.block_index {
-            let beside = keys.identity_of(bucket, *handle, page).unwrap_or_else(|| {
-                panic!(
-                    "the page at handle {handle} in bucket {} is named by nothing beside it:                      neither the object lookup nor a tombstone row in its own bucket states which                      object it belongs to, so a walk over this index has no object to attribute                      it to",
+            let Some(beside) = keys.identity_of(bucket, *handle, page) else {
+                assert!(
+                    page.deleted,
+                    "the LIVE page at handle {handle} in bucket {} is named by nothing beside \n                     it, and a live page is named by the object lookup unless the index is in \n                     the one window the decoder closed by filing as it decodes",
                     bucket.routing_bucket
-                )
-            });
+                );
+                continue;
+            };
             out.push((
                 bucket.routing_bucket,
                 *handle,
