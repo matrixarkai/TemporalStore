@@ -917,6 +917,37 @@ impl<'a> PageKeysByPosition<'a> {
     }
 }
 
+/// THE IDENTITY OF EVERY PAGE IN ONE BUCKET, OWNED, SO A MUTATION CAN HOLD THE BUCKET.
+///
+/// # WHY THIS EXISTS AND IS NOT JUST `identity_of` IN A LOOP
+///
+/// `BlockIndexMap::retain` borrows the page index MUTABLY, and [`PageKeysByPosition::identity_of`]
+/// needs the NODE -- because a deleted page's identity lives in the node's tombstone rows and not
+/// in the lookup. So a `retain` closure cannot ask which object the page it is looking at belongs
+/// to: the borrow checker refuses it, and rightly, since the answer is drawn in part from the
+/// structure being mutated.
+///
+/// Taken once BEFORE the mutation, from the same two sources, keyed by the handle the closure is
+/// handed. A handle the result does not contain is a page NEITHER source names -- the caller
+/// decides what that means, and in every current caller it means "this page is not the one I am
+/// matching", which is the conservative direction: a predicate cannot match an object key the
+/// page has none of, and widening it would take every sibling page of the bucket with it.
+///
+/// ONE PASS OVER ONE BUCKET, not over the shard. The inversion it is given is built once per
+/// caller and shared across that caller's buckets; this is the per-bucket projection of it.
+pub(super) fn page_identities_in(
+    node: &BucketNode,
+    keys: &PageKeysByPosition<'_>,
+) -> std::collections::HashMap<u64, Arc<str>> {
+    node.block_index
+        .iter()
+        .filter_map(|(handle, page)| {
+            keys.identity_of(node, *handle, page)
+                .map(|beside| (*handle, Arc::clone(beside.object_key)))
+        })
+        .collect()
+}
+
 /// THE ONE FIELD OF THIS STRUCT THAT REACHES THE WIRE, and the context the rest of the encode needs.
 ///
 /// Hand-written for the reason stated at the struct: the page index has to be composed where a

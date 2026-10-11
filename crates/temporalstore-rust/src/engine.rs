@@ -3388,13 +3388,43 @@ fn collect_command_index_items_for(
         .iter()
         .map(|key| block_routing_bucket(key, start_routing_bucket, end_routing_bucket))
         .collect();
+    // THE IDENTITY COMES FROM BESIDE THE PAGE, AND THE INVERSION IS HOISTED OUT OF THE WALK.
+    //
+    // Every row below states an object key and an object id derived from it. The entry is losing
+    // its own copy, so the source is the object lookup inverted by position -- built ONCE here and
+    // queried per page, never built per page. `shard` is held immutably throughout, so there is no
+    // borrow to split.
+    let identities = crate::engine::state::PageKeysByPosition::from_lookup(
+        &shard.bucket_index.object_block_lookup,
+    );
     let mut items = Vec::new();
     for routing_bucket in buckets {
         let Some(bucket) = shard.bucket_index.bucket_map.get(&routing_bucket) else {
             continue;
         };
         for (block_ref_key, page) in &bucket.block_index {
-            if !keys.contains(page.object_key.as_ref()) {
+            // BOTH SOURCES, THROUGH THE ONE DOOR: the lookup names a live page by position, and
+            // this bucket's own tombstone rows name a deleted one. A page neither names is
+            // skipped, and the skip is refused outside the window that explains it -- a report is
+            // not the durability path, where the same state is a refusal.
+            let Some(beside) = identities.identity_of(bucket, *block_ref_key, page) else {
+                debug_assert!(
+                    identities.names_no_position(),
+                    "bucket {} holds a page the index cannot name while the lookup DOES name \
+                     positions, so this walk is dropping a row outside the one window that \
+                     explains it",
+                    bucket.routing_bucket
+                );
+                continue;
+            };
+            // THE TIE BACK TO THE ENTRY'S OWN COPY, which is what makes this conversion checkable
+            // rather than merely compiling. It goes with the field.
+            debug_assert_eq!(
+                &*page.object_key,
+                &**beside.object_key,
+                "the identity held beside this page names a different object from the one on it"
+            );
+            if !keys.contains(beside.object_key.as_ref()) {
                 continue;
             }
             if let Some((kind, component)) = only {
@@ -3413,7 +3443,7 @@ fn collect_command_index_items_for(
                 block_ref_key: block_ref_key.to_string(),
                 // The resident entry already holds these as shared names, so the item
                 // takes the pointer instead of copying the characters per item.
-                object_key: page.object_key.clone(),
+                object_key: Arc::clone(beside.object_key),
                 model_id: page.model_id.clone().to_string(),
                 // THE ROW'S SLOT 5 STAYS AND THE FIELD IS GONE. This emission was already writing
                 // a constant `None` into it, so the bytes it produces do not move: the serializer
@@ -3426,7 +3456,7 @@ fn collect_command_index_items_for(
                 // parameter because the entry is losing its own copy -- which is a change to the
                 // call, not to the row. Keeping both means: no component term, and the key handed
                 // in explicitly.
-                object_id: page.object_id(shard_id, &page.object_key),
+                object_id: page.object_id(shard_id, beside.object_key),
                 deleted: page.deleted,
                 // `in_log` here was `page.log_backed()` -- the accessor added when the stored
                 // copy of this same fact was removed from the resident entry. One derivation,
@@ -4172,10 +4202,37 @@ fn fold_delta_block_items(
             // when a kind converges on the page, and on (kind, object key) alone when it converges
             // on the object. That distinction is `names_a_page`'s remaining job here, which is why
             // the binding above it is kept and only this comparison goes.
+            // THE IDENTITY OF EVERY PAGE IN THIS BUCKET, TAKEN BEFORE THE MUTATION.
+            //
+            // `retain` borrows the page index mutably and `identity_of` needs the NODE, so the
+            // closure cannot ask which object the page it is looking at belongs to. Taken once
+            // here, from the same two sources -- see `state::page_identities_in`.
+            //
+            // NO DESTRUCTURING IS NEEDED: `object_block_lookup`, `bucket_map` and
+            // `block_slab_live` are disjoint fields of `bucket_index`, which is why the line
+            // below could already take `&mut bucket_index.block_slab_live` while holding `bucket`.
+            let names = crate::engine::state::page_identities_in(
+                bucket,
+                &crate::engine::state::PageKeysByPosition::from_lookup(
+                    &bucket_index.object_block_lookup,
+                ),
+            );
             let routing_bucket = item.routing_bucket;
             bucket.block_index.retain(&mut bucket_index.block_slab_live, |handle, page| {
+                let Some(beside) = names.get(handle) else {
+                    // A PAGE NOTHING NAMES IS NOT SUPERSEDED BY THIS ITEM. It cannot match an
+                    // object key it has none of, and dropping it on the kind alone would take
+                    // every other page of the bucket with it.
+                    return true;
+                };
+                // THE TIE BACK TO THE ENTRY'S OWN COPY. It goes with the field.
+                debug_assert_eq!(
+                    &*page.object_key,
+                    &**beside,
+                    "the identity held beside this page names a different object from the one on it"
+                );
                 let drop = page.model_id.as_str() == item.model_id
-                    && page.object_key.as_ref() == item.object_key.as_ref()
+                    && &**beside == item.object_key.as_ref()
                     && match (names_a_page, here.as_ref()) {
                         (true, Some(here)) => live_page_key(&page.address) == *here,
                         _ => true,
@@ -4186,7 +4243,7 @@ fn fold_delta_block_items(
                     // page's are what was FILED -- and the handle is only knowable here.
                     unfiled.push((
                         page.model_id,
-                        Arc::clone(&page.object_key),
+                        Arc::clone(beside),
                         crate::engine::state::BlockLookupRef {
                             routing_bucket,
                             block_ref_key: *handle,
@@ -4200,16 +4257,31 @@ fn fold_delta_block_items(
         let CoreIndex {
             bucket_map,
             block_slab_live: live,
+            object_block_lookup,
             ..
         } = &mut *bucket_index;
+        // NAMED BEFORE THE MUTATION, for the reason at the upsert arm above. Here the destructure
+        // is what lets the inversion be read while the bucket map is held mutably.
+        let identities = crate::engine::state::PageKeysByPosition::from_lookup(object_block_lookup);
         for (routing_bucket, bucket) in bucket_map.iter_mut() {
             let routing_bucket = *routing_bucket;
+            let names = crate::engine::state::page_identities_in(bucket, &identities);
             bucket.block_index.retain(live, |handle, page| {
-                let drop = covered_keys.contains(page.object_key.as_ref());
+                let Some(beside) = names.get(handle) else {
+                    // NOT COVERED BY A KEY IT HAS NONE OF.
+                    return true;
+                };
+                // THE TIE BACK TO THE ENTRY'S OWN COPY. It goes with the field.
+                debug_assert_eq!(
+                    &*page.object_key,
+                    &**beside,
+                    "the identity held beside this page names a different object from the one on it"
+                );
+                let drop = covered_keys.contains(&**beside);
                 if drop {
                     unfiled.push((
                         page.model_id,
-                        Arc::clone(&page.object_key),
+                        Arc::clone(beside),
                         crate::engine::state::BlockLookupRef {
                             routing_bucket,
                             block_ref_key: *handle,
@@ -5133,9 +5205,28 @@ fn mark_bucket_index_object_deleted(shard: &mut ShardState, key: &str) -> bool {
             continue;
         };
         let mut deleted_object_ids = BTreeSet::new();
-        bucket.block_index.retain(&mut shard.bucket_index.block_slab_live, |_, page| {
-            if &*page.object_key == key {
-                deleted_object_ids.insert(page.object_id(shard_id, &page.object_key));
+        // NAMED BEFORE THE MUTATION, for the reason at `fold_delta_block_items`.
+        let names = crate::engine::state::page_identities_in(
+            bucket,
+            &crate::engine::state::PageKeysByPosition::from_lookup(
+                &shard.bucket_index.object_block_lookup,
+            ),
+        );
+        bucket.block_index.retain(&mut shard.bucket_index.block_slab_live, |handle, page| {
+            let Some(beside) = names.get(handle) else {
+                return true;
+            };
+            // THE TIE BACK TO THE ENTRY'S OWN COPY. It goes with the field.
+            debug_assert_eq!(
+                &*page.object_key,
+                &**beside,
+                "the identity held beside this page names a different object from the one on it"
+            );
+            if &**beside == key {
+                // THE KEY IS THIS FUNCTION'S ARGUMENT, and the match on the line above is what
+                // says this page belongs to it -- so the id is derived from the same characters
+                // it always was, read from the one place that still has them.
+                deleted_object_ids.insert(page.object_id(shard_id, key));
                 removed = true;
                 false
             } else {
@@ -5339,16 +5430,39 @@ fn mark_bucket_index_block_deleted_recording(
     //
     // Computed before the mutable walk below, both to keep the borrow simple and so it describes
     // the index as it was BEFORE this removal touched it.
+    // TAKEN FROM THE LOOKUP RATHER THAN FROM THE PAGES, AND IT IS THE SAME NUMBER.
+    //
+    // The walk asked for the lowest-numbered bucket holding a LIVE page of (kind, key), by
+    // iterating a `BTreeMap` in ascending order and taking the first match. The lookup holds
+    // exactly the live pages of that object -- `insert_object_block_lookup` returns early on a
+    // deleted one -- so the minimum routing bucket among its refs is that same bucket, without a
+    // walk over every page in the shard.
     let tombstone_bucket_for_a_page_named_kind: Option<u32> = shard
         .bucket_index
-        .bucket_map
-        .iter()
-        .find(|(_, bucket)| {
-            bucket.block_index.values().any(|page| {
-                !page.deleted && page.model_id.as_str() == model_id && &*page.object_key == key
+        .block_refs_for(model_id, key, None)
+        .and_then(|block_refs| {
+            block_refs
+                .iter()
+                .map(|block_ref| block_ref.routing_bucket)
+                .min()
+        });
+    // THE TIE BACK TO THE WALK IT REPLACES, FOR AS LONG AS THE ENTRY CARRIES A COPY TO WALK.
+    // It goes with the field.
+    debug_assert_eq!(
+        tombstone_bucket_for_a_page_named_kind,
+        shard
+            .bucket_index
+            .bucket_map
+            .iter()
+            .find(|(_, bucket)| {
+                bucket.block_index.values().any(|page| {
+                    !page.deleted && page.model_id.as_str() == model_id && &*page.object_key == key
+                })
             })
-        })
-        .map(|(routing_bucket, _)| *routing_bucket);
+            .map(|(routing_bucket, _)| *routing_bucket),
+        "the lookup and the page walk disagree about which bucket holds this object's first live \
+         page, so moving the identity off the entry would move where a tombstone is filed"
+    );
     let target_buckets = if shard.bucket_index.object_block_lookup.is_empty() {
         shard
             .bucket_index
@@ -5374,14 +5488,21 @@ fn mark_bucket_index_block_deleted_recording(
         };
         let mut bucket_removed = false;
         let mut deleted_object_ids = BTreeSet::new();
-        bucket.block_index.retain(&mut shard.bucket_index.block_slab_live, |_, page| {
+        // NAMED BEFORE THE MUTATION, for the reason at `fold_delta_block_items`.
+        let names = crate::engine::state::page_identities_in(
+            bucket,
+            &crate::engine::state::PageKeysByPosition::from_lookup(
+                &shard.bucket_index.object_block_lookup,
+            ),
+        );
+        bucket.block_index.retain(&mut shard.bucket_index.block_slab_live, |handle, page| {
             // THE THIRD COMPONENT `retain` IN THE ENGINE, AND THE ONLY ONE THAT WAS NOT VACUOUS.
             //
             // This read `page.component.as_deref() == component`, and with every entry's name
             // already `None` that comparison still DECIDED something, because the other side is
-            // this function's ARGUMENT and not another entry: `None == Some(member)` is false for a
-            // container and `None == None` true for the kinds that converge on the object key. So
-            // it is translated and NOT deleted as a tautology -- deleting it would widen the
+            // this function's ARGUMENT and not another entry: `None == Some(member)` is false for
+            // a container and `None == None` true for the kinds that converge on the object key.
+            // So it was translated and NOT deleted as a tautology -- deleting it would widen the
             // removal to take a container's whole page entry, and taking that entry takes every
             // sibling member on the page with it.
             //
@@ -5390,29 +5511,30 @@ fn mark_bucket_index_block_deleted_recording(
             // `control_state` and `context_node` converge on the object key and are removed here;
             // a container's removal matches nothing here and is recorded by the tombstone arm at
             // the end of this function instead.
+            let Some(beside) = names.get(handle) else {
+                return true;
+            };
+            // THE TIE BACK TO THE ENTRY'S OWN COPY. It goes with the field.
+            debug_assert_eq!(
+                &*page.object_key,
+                &**beside,
+                "the identity held beside this page names a different object from the one on it"
+            );
             let matches = page.model_id.as_str() == model_id
-                && &*page.object_key == key
+                && &**beside == key
                 && component.is_none();
             if matches {
-                deleted_object_ids.insert(page.object_id(shard_id, &page.object_key));
+                // THE KEY IS THIS FUNCTION'S ARGUMENT and the match above is what says this page
+                // belongs to it, so the id is derived from the same characters it always was.
+                deleted_object_ids.insert(page.object_id(shard_id, key));
                 bucket_removed = true;
                 removed = true;
                 // WHERE THE TOMBSTONE ENTRY MUST GO: the bucket the live entry was actually filed
-                // in, recorded here rather than recomputed later.
-                //
-                // THE FIRST VERSION RECOMPUTED IT AND WAS WRONG. It asked
-                // `block_routing_bucket(key, 0, u32::MAX)`, which is the form the WAL OUTCOME above
-                // uses and is a different number from `block_routing_bucket(key, start, end)` over
-                // the shard's own range -- so the tombstone was filed in a bucket that held nothing
-                // else for the object. Two consequences, both found by driving it: the bucket's every
-                // entry was then a tombstone, so `refresh_one_bucket_runtime_flags` marked it deleted
-                // and `object_manager::runtime_report` reported a twelve-member set as a DELETED
-                // OBJECT; and `validate_bucket_ownership_index_from_entries` found the entry's filed
-                // bucket disagreeing with the one its key routes to, so a compaction round REFUSED
-                // with `page_compaction_owner_mismatch` on any container that had had a removal.
-                //
-                // Taking the bucket from the entry cannot drift from the write path, because it IS
-                // the write path's answer, read back.
+                // in, recorded here rather than recomputed later. The first version recomputed it
+                // with `block_routing_bucket(key, 0, u32::MAX)` -- the form the WAL outcome uses,
+                // and a different number from the shard's own range -- so the tombstone landed in
+                // a bucket holding nothing else for the object, a twelve-member set was reported
+                // as a DELETED OBJECT, and a compaction round refused with an owner mismatch.
                 tombstone_bucket = Some(routing_bucket);
                 false
             } else {
@@ -5453,10 +5575,15 @@ fn mark_bucket_index_block_deleted_recording(
             // question the filter means to ask is whether a LIVE block carries the id, and that is
             // what it now asks. `a_keys_last_element_still_files_its_object_id` drives it.
             deleted_object_ids.retain(|object_id| {
-                !bucket
-                    .block_index
-                    .values()
-                    .any(|page| !page.deleted && page.object_id(shard_id, &page.object_key) == *object_id)
+                !bucket.block_index.iter().any(|(handle, page)| {
+                    // A TOMBSTONE ENTRY IS NOT A SURVIVING BLOCK, and a page the index cannot
+                    // name is not one either: it cannot be shown to carry the id, so it does not
+                    // keep the id claimed.
+                    !page.deleted
+                        && names.get(handle).is_some_and(|beside| {
+                            page.object_id(shard_id, beside) == *object_id
+                        })
+                })
             });
             bucket.deleted_object_index.extend(deleted_object_ids);
             bucket.set_dirty(true);
@@ -6753,6 +6880,25 @@ fn object_manager_stats(
                     shard.dirty_objects.len(),
                 )
             } else {
+                // THE TWO IDENTITY-DEPENDENT FIGURES ARE ZERO IN THIS BRANCH, AND THEY
+                // ALWAYS WERE -- WHICH IS WHY THIS IS A TRANSLATION AND NOT A GUESS.
+                //
+                // This arm is taken when `object_block_lookup` IS EMPTY. Both figures below
+                // counted DISTINCT OBJECTS over the live pages, reading each page's object key
+                // off the entry. With the key beside the page instead, an empty lookup names no
+                // position at all, so no page has an identity and the number of distinct objects
+                // this index can name is zero.
+                //
+                // THE THIRD FIGURE NEEDS NO IDENTITY AND IS KEPT. `live_blocks.len()` counts
+                // PAGES, and `block_ref_count` below takes `.max(secondary_block_ref_count)` over
+                // it -- so the one number this arm still contributes is preserved exactly.
+                //
+                // AND THE BRANCH ITSELF IS KEPT RATHER THAN DELETED. Deleting it and always
+                // reading the lookup looks equivalent and is not: `dirty_bucket_count`'s
+                // corresponding arm, further down, adds the target buckets of every dirty object,
+                // which the page walk does not -- so a shard with dirty objects and an empty
+                // bucket index would start reporting a different count. Translating the terms
+                // that need an identity, and only those, moves no reachable answer.
                 let live_blocks = shard
                     .bucket_index
                     .bucket_map
@@ -6760,30 +6906,7 @@ fn object_manager_stats(
                     .flat_map(|bucket| bucket.block_index.values())
                     .filter(|page| !page.deleted)
                     .collect::<Vec<_>>();
-                // A THIRD TUPLE TERM THAT WAS ALREADY CONSTANT, AND IS DROPPED RATHER THAN SET
-                // TO `None`.
-                //
-                // Both of these sets carried `(kind, object_key, hash_field)`, where the third
-                // term was `(model_id == "hash").then(|| page.component.as_deref()).flatten()`.
-                // Every entry's component was `None`, so the term evaluated to `None` for every
-                // page of every kind -- a constant, which adds nothing to a set's cardinality.
-                // Spelling it `None` would have kept a tuple slot that cannot distinguish two
-                // pages; the count is identical either way, so the slot goes and this note says
-                // what it used to mean: one entry per hash FIELD, back when an entry named one.
-                let bucket_object_count = live_blocks
-                    .iter()
-                    .map(|page| (page.model_id.as_str(), page.object_key.as_ref()))
-                    .collect::<BTreeSet<_>>()
-                    .len();
-                let bucket_dirty_object_count = live_blocks
-                    .iter()
-                    .filter(|page| page.dirty || shard.dirty_objects.contains(page.object_key.as_ref()))
-                    // The same constant third term as the count above, dropped for the same
-                    // reason and with the reason written there.
-                    .map(|page| (page.model_id.as_str(), page.object_key.as_ref()))
-                    .collect::<BTreeSet<_>>()
-                    .len();
-                (bucket_object_count, live_blocks.len(), bucket_dirty_object_count)
+                (0, live_blocks.len(), 0)
             };
         let secondary_object_count = shard.strings.len()
             + shard.hashes.len()
@@ -6879,7 +7002,14 @@ fn object_manager_stats(
                 .filter(|bucket| {
                     bucket.dirty()
                         || bucket.block_index.values().any(|page| {
-                            page.dirty || shard.dirty_objects.contains(page.object_key.as_ref())
+                            // THE SECOND DISJUNCT IS UNREACHABLE IN THIS ARM AND IS
+                            // DROPPED, not translated.
+                            //
+                            // This arm is taken when `object_block_lookup` IS EMPTY, so no page
+                            // has an identity beside it and `dirty_objects.contains(..)` could
+                            // never be satisfied for any page here. What is left is the one term
+                            // that needs no identity: the page's own dirty bit.
+                            page.dirty
                         })
                 })
                 .count()
