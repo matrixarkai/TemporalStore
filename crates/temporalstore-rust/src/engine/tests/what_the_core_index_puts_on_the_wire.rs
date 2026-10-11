@@ -422,29 +422,72 @@ fn a_decode_files_every_page_into_the_object_lookup() {
         node.set_in_memory(true);
         index.bucket_map.insert(routing_bucket, node);
     }
+    let placed: Vec<(u32, Arc<str>, BlockIndex)> = vec![
+        (3, Arc::from(LIVE_OBJECT), page(LIVE_OBJECT, 1, 0, false)),
+        (3, Arc::from(LIVE_OBJECT), page(LIVE_OBJECT, 1, 16, false)),
+        (11, Arc::from(DEAD_OBJECT), page(DEAD_OBJECT, 2, 0, true)),
+    ];
     {
         let CoreIndex {
             bucket_map,
             block_slab_live,
             ..
         } = &mut index;
-        let first = bucket_map.get_mut(&3).expect("bucket 3 was just inserted");
-        let a = page(LIVE_OBJECT, 1, 0, false);
-        let b = page(LIVE_OBJECT, 1, 16, false);
-        first.insert_page(&a.object_key.clone(), a, block_slab_live);
-        first.insert_page(&b.object_key.clone(), b, block_slab_live);
-        let second = bucket_map.get_mut(&11).expect("bucket 11 was just inserted");
-        let c = page(DEAD_OBJECT, 2, 0, true);
-        second.insert_page(&c.object_key.clone(), c, block_slab_live);
+        for (routing_bucket, object_key, entry) in &placed {
+            let node = bucket_map
+                .get_mut(routing_bucket)
+                .expect("the bucket was just inserted");
+            node.insert_page(object_key, entry.clone(), block_slab_live);
+        }
     }
 
-    // THE SUBJECT IS THE DECODE, so the lookup going in is empty -- nothing here files one.
-    assert!(
-        index.object_block_lookup.is_empty(),
-        "the fixture must not establish the lookup, or the decode is not what fills it"
-    );
+    // THE WRITING INDEX FILES ITS LOOKUP, WHICH IS WHAT CHANGED HERE AND WHY.
+    //
+    // This fixture used to leave the lookup empty and assert that it was, under "the subject is
+    // the decode, so the lookup going in is empty". That premise was about the WRONG index. The
+    // decode builds a fresh `CoreIndex` in its own visitor and fills the lookup from the page keys
+    // it reads, so what the ENCODING index held was never a term in the claim -- while an encode
+    // taken with no lookup is now refused outright, because the stored key is composed from the
+    // identity held beside each page and there was none.
+    //
+    // So the fixture files what a placement files, and the claim is restated where it belongs:
+    // the lookup is `skip_serializing`, so it must not be IN the bytes, and the decoded index must
+    // still have one. Those two together are the subject; the writer's own state is not.
+    for (routing_bucket, object_key, entry) in &placed {
+        let handle = crate::engine::state::block_index_handle(object_key, entry);
+        index.insert_object_block_lookup(*routing_bucket, handle, object_key, entry);
+    }
+
+    // AND THE DELETED PAGE IS NAMED BY A TOMBSTONE ROW, WHICH IS ITS OWN SOURCE AND NOT THE
+    // LOOKUP.
+    //
+    // `insert_object_block_lookup` returns early on a deleted page, so a tombstone is never in the
+    // lookup at all -- the structure beside it that states which object it belonged to is this
+    // bucket's own row, keyed by the page triple. The single producer of a tombstone entry
+    // (`register_block_tombstone_entry`) files one in the same call as the entry and
+    // `debug_assert!`s that an element was named, so a deleted page with no row is a state
+    // production does not reach. This fixture now files what that producer files.
+    for (routing_bucket, object_key, entry) in &placed {
+        if entry.deleted {
+            let bucket = index
+                .bucket_map
+                .get_mut(routing_bucket)
+                .expect("the bucket holding the tombstone was just inserted");
+            bucket.record_tombstone_element(
+                object_key,
+                stored_model_kind(KIND),
+                "the-removed-member",
+                &entry.address,
+            );
+        }
+    }
 
     let encoded = serde_json::to_string(&index).expect("a core index serializes");
+    assert!(
+        !encoded.contains("object_block_lookup"),
+        "the lookup is `skip_serializing`, so an index that HAS one must still not write it -- \
+         otherwise the decode below is reading a stored copy rather than rebuilding: {encoded}"
+    );
     let decoded: CoreIndex = serde_json::from_str(&encoded).expect("a core index deserializes");
 
     // CLAIM ONE: every live page is named, by the handle the decoded map holds it under.

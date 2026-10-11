@@ -154,7 +154,12 @@ fn the_stored_entry_has_dropped_the_flag_and_gained_no_key() {
         deleted: false,
     };
 
-    let encoded = serde_json::to_string(&page).expect("a page entry serializes");
+    // THROUGH THE WRAPPER, BECAUSE THE ENTRY HAS NO ENCODER OF ITS OWN. `object_key` is a
+    // serialized member and a derive can only read it off the entry, so the identity is named
+    // here -- by this fixture, which is the only thing that knows it -- and injected beside the
+    // page. These bytes are character-for-character the ones the derive wrote.
+    let named = crate::engine::state::PageEntryAt { page: &page, object_key: "tenant/7/object/1" };
+    let encoded = serde_json::to_string(&named).expect("a page entry serializes");
     println!("[log-resident] stored entry: {encoded}");
 
     assert!(
@@ -176,7 +181,9 @@ fn the_stored_entry_has_dropped_the_flag_and_gained_no_key() {
     // `deleted` change it cannot see a key leave either, and the assertions above would pass over
     // anything.
     let flipped = BlockIndex { deleted: true, ..page.clone() };
-    let flipped_encoded = serde_json::to_string(&flipped).expect("serializes");
+    let flipped_encoded =
+        serde_json::to_string(&crate::engine::state::PageEntryAt { page: &flipped, object_key: "tenant/7/object/1" })
+            .expect("serializes");
     assert_ne!(
         encoded, flipped_encoded,
         "CONTROL: flipping a surviving stored field must change the bytes, or this test cannot \

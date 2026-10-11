@@ -1381,10 +1381,20 @@ fn a_stored_spelling_with_no_row_is_refused_by_name_at_the_decode() {
     // PLANTED ON A REAL ENTRY. Encoding a hand-written map would make this test assert about an
     // address wire shape it has no business knowing; mutating one field of a genuine encoding
     // plants exactly the defect and nothing else.
-    let mut json = serde_json::to_value(&sample_entry()).expect("encode");
+    let mut json = serde_json::to_value(&crate::engine::state::PageEntryAt {
+        page: &sample_entry(),
+        object_key: SAMPLE_ENTRY_OBJECT_KEY,
+    })
+    .expect("encode");
     json["model_id"] = serde_json::Value::String("not_a_model_kind".to_string());
     let _: BlockIndex = serde_json::from_value(json).expect("the decode must be reached");
 }
+
+/// THE OBJECT [`sample_entry`] BELONGS TO, named once rather than at each encode.
+///
+/// The stored key is composed from the identity held BESIDE the page, so an arm that encodes one
+/// has to state which object it means. Same characters `sample_entry` puts on the entry.
+const SAMPLE_ENTRY_OBJECT_KEY: &str = "k";
 
 /// One page entry, for the tests that mutate a single field of a real encoding.
 fn sample_entry() -> BlockIndex {
@@ -1487,7 +1497,11 @@ fn the_two_derivations_of_the_report_byte_agree() {
 fn a_retired_spelling_still_decodes_into_a_page_entry() {
     let mut seen = 0usize;
     for spelling in ["sequence", "context_embedding"] {
-        let mut json = serde_json::to_value(&sample_entry()).expect("encode");
+        let mut json = serde_json::to_value(&crate::engine::state::PageEntryAt {
+            page: &sample_entry(),
+            object_key: SAMPLE_ENTRY_OBJECT_KEY,
+        })
+        .expect("encode");
         json["model_id"] = serde_json::Value::String(spelling.to_string());
         let page: BlockIndex = serde_json::from_value(json)
             .unwrap_or_else(|err| panic!("a store carrying {spelling:?} must still load: {err}"));
@@ -1539,9 +1553,13 @@ fn the_model_spelling_did_not_move_on_the_wire_and_the_entry_lost_three_steps_in
     // from an equal-valued map so the golden is the VALUE, not this type's own impl.
     let page = sample_entry();
 
-    let named = rmp_serde::to_vec_named(&page).expect("named encode");
-    let positional = rmp_serde::to_vec(&page).expect("positional encode");
-    let json = serde_json::to_value(&page).expect("json encode");
+    // THROUGH THE WRAPPER IN ALL THREE ENCODINGS, and the msgpack pair is why the wrapper counts
+    // its fields rather than hard-coding one: `to_vec` writes the entry POSITIONALLY, so a field
+    // count or an order that moved would move these bytes and not just the named form's.
+    let at = crate::engine::state::PageEntryAt { page: &page, object_key: SAMPLE_ENTRY_OBJECT_KEY };
+    let named = rmp_serde::to_vec_named(&at).expect("named encode");
+    let positional = rmp_serde::to_vec(&at).expect("positional encode");
+    let json = serde_json::to_value(&at).expect("json encode");
 
     println!(
         "\n=== the stored spelling ===\n  named {} B, positional {} B\n  json {}",

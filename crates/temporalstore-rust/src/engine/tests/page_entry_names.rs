@@ -684,23 +684,29 @@ fn capture_the_stored_spelling_of_a_page_entry() {
         }
     }
 
+    // THROUGH THE WRAPPER. The entry has no `Serialize` of its own any more: `object_key` is a
+    // serialized member, so the identity is named by the fixture and injected beside the page.
+    // Every page above is keyed `"k"`, which is what the fixture passed and what the derive read
+    // off the entry, so these four lines print the bytes they printed before.
+    fn encoded(entry: &BlockIndex) -> String {
+        serde_json::to_string(&crate::engine::state::PageEntryAt { page: entry, object_key: "k" }).unwrap()
+    }
+
     println!(
         "PLAIN          = {}",
-        serde_json::to_string(&page("k", "string", None, 1, 2, 3, (false, false, true))).unwrap()
+        encoded(&page("k", "string", None, 1, 2, 3, (false, false, true)))
     );
     println!(
         "WITH_COMPONENT = {}",
-        serde_json::to_string(&page("k", "string", Some("f0"), 1, 2, 3, (false, false, true)))
-            .unwrap()
+        encoded(&page("k", "string", Some("f0"), 1, 2, 3, (false, false, true)))
     );
     println!(
         "ALL_FLAGS      = {}",
-        serde_json::to_string(&page("k", "string", None, 1, 2, 3, (true, true, true))).unwrap()
+        encoded(&page("k", "string", None, 1, 2, 3, (true, true, true)))
     );
     println!(
         "OVER_WIDE      = {}",
-        serde_json::to_string(&page("k", "string", None, 1, 2, u64::MAX, (false, false, true)))
-            .unwrap()
+        encoded(&page("k", "string", None, 1, 2, u64::MAX, (false, false, true)))
     );
 
     // A whole index: one bucket, five pages of one object (one with a component) and a second
@@ -713,22 +719,48 @@ fn capture_the_stored_spelling_of_a_page_entry() {
         ..BucketNode::default()
     };
     node.object_index.insert(42);
+    // THE IDENTITY IS NAMED BESIDE EACH PAGE RATHER THAN READ OFF IT, which is what the fixture
+    // now has to do and what every production placement already does.
+    //
+    // THIS FIXTURE IS WHY THE REFUSAL IS WORTH HAVING. It built a `CoreIndex`, inserted a node
+    // holding six pages, and never filed the object lookup -- so the inversion named no position
+    // and every stored key below was composed from the entry's own copy. That was invisible while
+    // the entry held one. The encoder refuses it now, with the window named, and the fix is to
+    // file what a placement files: "bucket 7 holds a page whose stored key would name no object
+    // ... the inversion names NO position at all".
+    //
+    // THE BYTES DID NOT MOVE. `INDEX` below is character-for-character the 1,125 bytes this test
+    // printed before the identity became a neighbour, which is the whole claim of the step.
+    let pages: Vec<(Arc<str>, BlockIndex)> = (0..4u64)
+        .map(|offset| {
+            (
+                Arc::from("k"),
+                page("k", "string", None, 1, offset, 3, (false, false, true)),
+            )
+        })
+        .chain(std::iter::once((
+            Arc::from("k"),
+            page("k", "hash", Some("f0"), 1, 9, 3, (true, false, false)),
+        )))
+        .chain(std::iter::once((
+            Arc::from("other"),
+            page("other", "string", None, 2, 1, 5, (false, false, true)),
+        )))
+        .collect();
+
     let mut live = crate::engine::state::BlockSlabLiveIndex::default();
-    for offset in 0..4u64 {
-        node.block_index
-            .insert(&(page("k", "string", None, 1, offset, 3, (false, false, true))).object_key.clone(), page("k", "string", None, 1, offset, 3, (false, false, true)), &mut live);
+    for (object_key, entry) in &pages {
+        node.block_index.insert(object_key, entry.clone(), &mut live);
     }
-    node.block_index.insert(&(page("k", "hash", Some("f0"), 1, 9, 3, (true, false, false))).object_key.clone(), 
-        page("k", "hash", Some("f0"), 1, 9, 3, (true, false, false)),
-        &mut live,
-    );
-    node.block_index.insert(&(page("other", "string", None, 2, 1, 5, (false, false, true))).object_key.clone(), 
-        page("other", "string", None, 2, 1, 5, (false, false, true)),
-        &mut live,
-    );
 
     let mut index = CoreIndex::default();
     index.bucket_map.insert(7, node);
+    // ONE FILING PER PLACED PAGE, through the same door the engine files through, with the handle
+    // computed from the same terms the map keyed the page under.
+    for (object_key, entry) in &pages {
+        let handle = crate::engine::state::block_index_handle(object_key, entry);
+        index.insert_object_block_lookup(7, handle, object_key, entry);
+    }
     let text = serde_json::to_string(&index).unwrap();
     println!("INDEX_LEN      = {}", text.len());
     println!("INDEX          = {text}");
@@ -862,6 +894,14 @@ const OLD_STORE_PAGES: &[(&str, &str, Option<&str>, u64, u64, u64, bool, bool, b
 /// THE LITERAL IS EXHAUSTIVE AND HAS NO `..`, which is what makes it the tripwire the fourth shape
 /// used to be: an element-name field returning to the entry breaks THIS function to compile, before
 /// any golden has a chance to be re-goldened around it.
+/// THE OBJECT THIS FIXTURE'S PAGES BELONG TO, named once rather than at each encode.
+///
+/// The entry carries its own copy today and will not; what writes the stored key is the identity
+/// held BESIDE the page, so a fixture that encodes one has to state which object it means. This is
+/// the same characters `page_fixture` puts on the entry, and a test comparing the two would be
+/// comparing a constant with itself -- the goldens below are what hold them together.
+pub(super) const PAGE_FIXTURE_OBJECT_KEY: &str = "k";
+
 pub(super) fn page_fixture(length: u64, flags: (bool, bool)) -> BlockIndex {
     BlockIndex {
         object_key: Arc::from("k"),
@@ -921,12 +961,24 @@ pub(super) fn page_fixture(length: u64, flags: (bool, bool)) -> BlockIndex {
 /// drives.
 #[test]
 fn the_stored_spelling_of_a_page_entry_moved_in_exactly_one_slot() {
-    let plain =
-        serde_json::to_string(&page_fixture(3, (false, false))).expect("a page entry serializes");
-    let all_flags =
-        serde_json::to_string(&page_fixture(3, (true, true))).expect("a page entry serializes");
-    let over_wide = serde_json::to_string(&page_fixture(u64::MAX, (false, false)))
-        .expect("a page entry serializes");
+    // THROUGH THE WRAPPER, WITH THE KEY THE FIXTURE NAMES. `page_fixture` builds its entry with
+    // `object_key: Arc::from("k")`, so [`PAGE_FIXTURE_OBJECT_KEY`] is the same characters the
+    // derive used to read off the entry and these three encodings do not move.
+    let plain = serde_json::to_string(&crate::engine::state::PageEntryAt {
+        page: &page_fixture(3, (false, false)),
+        object_key: PAGE_FIXTURE_OBJECT_KEY,
+    })
+    .expect("a page entry serializes");
+    let all_flags = serde_json::to_string(&crate::engine::state::PageEntryAt {
+        page: &page_fixture(3, (true, true)),
+        object_key: PAGE_FIXTURE_OBJECT_KEY,
+    })
+    .expect("a page entry serializes");
+    let over_wide = serde_json::to_string(&crate::engine::state::PageEntryAt {
+        page: &page_fixture(u64::MAX, (false, false)),
+        object_key: PAGE_FIXTURE_OBJECT_KEY,
+    })
+    .expect("a page entry serializes");
 
     println!("PLAIN     = {plain}");
     println!("ALL_FLAGS = {all_flags}");

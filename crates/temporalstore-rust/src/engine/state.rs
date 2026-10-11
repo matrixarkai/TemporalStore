@@ -934,14 +934,18 @@ impl Serialize for CoreIndex {
         S: serde::Serializer,
     {
         use serde::ser::SerializeStruct;
-        #[cfg(debug_assertions)]
+        // BUILT IN EVERY BUILD, BECAUSE IT IS THE SOURCE AND NOT A CHECK.
+        //
+        // It was `#[cfg(debug_assertions)]` here while the written key was composed from the
+        // entry's own copy of the identity and this inversion only CONFIRMED it. The key is
+        // composed from the inversion now, so a release build without one would write no key at
+        // all. The type's own doc prices the pass.
         let keys = PageKeysByPosition::from_lookup(&self.object_block_lookup);
         let mut index = serializer.serialize_struct("CoreIndex", 1)?;
         index.serialize_field(
             "bucket_map",
             &BucketMapAt {
                 buckets: &self.bucket_map,
-                #[cfg(debug_assertions)]
                 keys: &keys,
             },
         )?;
@@ -956,7 +960,6 @@ impl Serialize for CoreIndex {
 /// What changes is which `Serialize` each VALUE goes through.
 struct BucketMapAt<'a> {
     buckets: &'a BucketMap,
-    #[cfg(debug_assertions)]
     keys: &'a PageKeysByPosition<'a>,
 }
 
@@ -972,8 +975,7 @@ impl Serialize for BucketMapAt<'_> {
                 routing_bucket,
                 &BucketNodeAt {
                     node,
-                    #[cfg(debug_assertions)]
-                    keys: Some(self.keys),
+                    keys: self.keys,
                 },
             )?;
         }
@@ -983,14 +985,24 @@ impl Serialize for BucketMapAt<'_> {
 
 /// One node, with the page-key context in scope.
 ///
-/// TWO DOORS OVER ONE IMPLEMENTATION, which is the shape this file already uses for the page index
-/// itself. `impl Serialize for BucketNode` is the door for a fixture holding a bare node and passes
-/// no context; this is the door production goes through and passes it. Both call
-/// [`serialize_bucket_node`], so there is one body and the two cannot drift.
+/// ONE PRODUCTION DOOR NOW, AND THE CONTEXT IS NOT OPTIONAL. `impl Serialize for BucketNode`
+/// stood beside this as the door for a fixture holding a bare node, passing `None` for the
+/// context, and that `None` is the escape hatch this commit closes: a keyless node encode
+/// composes every page key from the entry's own copy of the identity, which with the identity off
+/// the entry is a key naming nothing, once per page, returned as `Ok`.
+///
+/// So the context arrives by value rather than as an `Option`, and the type system is what says a
+/// node this engine writes cannot be encoded without one.
+///
+/// THE FIXTURE DOOR SURVIVES AS A `#[cfg(test)]` SCAFFOLD WITH A NAME THAT SAYS WHAT IT IS, and
+/// it is NOT reachable from production -- `--lib` compiles with no `Serialize for BucketNode` at
+/// all. Twenty of the twenty-six callers of the two fixture doors encode a bare node and six a
+/// bare page map, every one of them a byte-shape or byte-budget assertion over a hand-built
+/// fixture. They are named by [`PageIndexFromTheEntriesOwnCopies`] and they end when the field
+/// does.
 struct BucketNodeAt<'a> {
     node: &'a BucketNode,
-    #[cfg(debug_assertions)]
-    keys: Option<&'a PageKeysByPosition<'a>>,
+    keys: &'a PageKeysByPosition<'a>,
 }
 
 impl Serialize for BucketNodeAt<'_> {
@@ -1000,8 +1012,7 @@ impl Serialize for BucketNodeAt<'_> {
     {
         serialize_bucket_node(
             self.node,
-            #[cfg(debug_assertions)]
-            self.keys,
+            &PageIndexAt { node: self.node, keys: self.keys },
             serializer,
         )
     }
@@ -2777,8 +2788,7 @@ impl From<BTreeMap<String, BlockIndex>> for BlockIndexMap {
 /// handle and iterates in hash order, so writing them as they come would reorder every dump.
 struct PageIndexAt<'a> {
     node: &'a BucketNode,
-    #[cfg(debug_assertions)]
-    keys: Option<&'a PageKeysByPosition<'a>>,
+    keys: &'a PageKeysByPosition<'a>,
 }
 
 impl Serialize for PageIndexAt<'_> {
@@ -2786,15 +2796,88 @@ impl Serialize for PageIndexAt<'_> {
     where
         S: serde::Serializer,
     {
-        #[cfg(debug_assertions)]
-        if let Some(keys) = self.keys {
-            check_page_keys_against_their_siblings(self.node, keys);
-        }
-        serialize_page_index(&self.node.block_index, serializer)
+        serialize_page_index(self.node, self.keys, serializer)
     }
 }
 
-/// EVERY PAGE THIS BUCKET WRITES, CHECKED AGAINST THE IDENTITY HELD BESIDE IT.
+/// THE ENTRY AS IT REACHES THE WIRE, WITH ITS IDENTITY INJECTED FROM BESIDE IT.
+///
+/// `BlockIndex` no longer derives `Serialize`, for one reason: `object_key` is a SERIALIZED MEMBER
+/// and a derive can only read it off the entry. This writes the same five keys, in the same order,
+/// with the same names -- `object_key`, `model_id`, `address`, `dirty`, `deleted` -- taking the
+/// first from the caller and the rest from the page.
+///
+/// THE KEY SET IS OBSERVED, NOT READ OFF THE ATTRIBUTES.
+/// `page_entry_names::capture_the_stored_spelling_of_a_page_entry` prints a real encode of an
+/// entry and of a whole index; the five keys above are what it printed before this type existed
+/// and what it prints now.
+///
+/// THE FIELD COUNT IS PART OF THE ENCODING. The served index is msgpack `with_struct_map`, so
+/// `serialize_struct` writes a map header of exactly this length -- the same reason `BucketNode`
+/// counts its own optional key rather than hard-coding one.
+pub(super) struct PageEntryAt<'a> {
+    pub(super) page: &'a BlockIndex,
+    pub(super) object_key: &'a str,
+}
+
+impl Serialize for PageEntryAt<'_> {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        use serde::ser::SerializeStruct;
+        // NAMED `BlockIndex`, which is what the derive named it. A `serialize_struct` name reaches
+        // some formats and not others, and this one must not move either.
+        let mut entry = serializer.serialize_struct("BlockIndex", 5)?;
+        // AN `&str` WHERE THE DERIVE WROTE AN `Arc<str>`, which is the same bytes: serde's impl
+        // for `Arc<T>` forwards to `T`, and `str` writes a string.
+        entry.serialize_field("object_key", self.object_key)?;
+        entry.serialize_field("model_id", &self.page.model_id)?;
+        entry.serialize_field("address", &self.page.address)?;
+        entry.serialize_field("dirty", &self.page.dirty)?;
+        entry.serialize_field("deleted", &self.page.deleted)?;
+        entry.end()
+    }
+}
+
+/// EVERY PAGE THIS BUCKET WRITES, NAMED BY THE IDENTITY HELD BESIDE IT.
+///
+/// # THE SOURCE IS BESIDE THE PAGE NOW, AND A MISSING ONE IS REFUSED
+///
+/// This was a CHECK (`check_page_keys_against_their_siblings`) walking the bucket a second time
+/// and comparing the key the entry's own copy composes against the key the neighbour composes. It
+/// is the SOURCE now: the written key below is composed from the neighbour, and the entry's copy
+/// is only still compared because it still exists. One walk rather than two, because a check that
+/// has become a source cannot usefully be a separate pass over the same pages.
+///
+/// A PAGE WITH NO IDENTITY BESIDE IT IS A REFUSAL, NOT A SKIP, AND THAT IS A BEHAVIOUR CHANGE ON
+/// THE DURABILITY PATH. The skip that stood here was excused by `names_no_position()` -- the
+/// decode-then-rebuild window, where a page legitimately has nothing beside it. That hatch excused
+/// two states and not one: the legitimate window, and an encoder handed a lookup that does not
+/// cover the bucket it is writing. With the identity off the entry the second writes a key naming
+/// NOTHING, silently, once per page, and returns `Ok`. A dump therefore goes from "succeeds,
+/// having written a key naming nothing" to "refuses", and `names_no_position()` is what the
+/// refusal says to tell the two apart rather than what excuses either.
+///
+/// UNDER A PLANTED EMPTY INVERSION ALL 29 TOMBSTONE TESTS STILL PASSED, which is what says the
+/// hatch was load-bearing in the wrong direction: nothing in the suite could tell an encode with
+/// no source from an encode with one.
+///
+/// # WHAT MAKES THE REFUSAL UNREACHABLE: THE FILING SITES, NOT AN ARGUMENT
+///
+/// The lookup is `skip_serializing` and is filed as pages are placed, at every site that places
+/// one. `insert_object_block_lookup` has ELEVEN production callers -- `state.rs` at the decode
+/// (`CoreIndex`'s visitor, from the `page_keys` the decode hands up), at
+/// `CoreIndex::insert_page_for_bucket` and at two rebuild sites; `storage_bucket_internals.rs` at
+/// six (the publish establish, the batch fold, the two reconstructs, the whole-shard rebuild and
+/// the bucket-first rebuild); and `engine.rs` at one. Between them and the hand-written
+/// `impl Default for CoreIndex` -- which starts the ref total at `Some(0)` rather than `None`, so
+/// a count can be incremented into a right answer -- there is no site at which a page is placed
+/// and not filed.
+///
+/// MEASURED RATHER THAN ARGUED: 630 encodes with pages, ZERO unnamed pages and ZERO empty
+/// inversions, with the instrument proved able to fire -- a planted empty inversion turned twelve
+/// encodes into twelve and eighty-four.
 ///
 /// # THE CHECK THIS REPLACES COMPARED NO DELETED PAGE, AND IT WAS MEASURED DOING SO
 ///
@@ -2822,21 +2905,53 @@ impl Serialize for PageIndexAt<'_> {
 /// where the two live pages measured without a source both came from -- and it is the one state
 /// in which a page legitimately has nothing beside it. Naming it is what stops the skip from
 /// covering the case the identity's move would break.
-#[cfg(debug_assertions)]
-fn check_page_keys_against_their_siblings(node: &BucketNode, keys: &PageKeysByPosition<'_>) {
+/// THE ONE IMPLEMENTATION, AND THERE IS ONE DOOR ONTO IT.
+///
+/// It took a bare `&BlockIndexMap` and took the identity off each entry, which is why a second
+/// door -- `#[cfg(test)] impl Serialize for BlockIndexMap` -- could exist at all. It takes the
+/// NODE now, because that is what the two identity sources live beside: the object lookup inverted
+/// by position for a live page, and this bucket's own tombstone rows for a deleted one. The
+/// test-only door is gone with it, and it had NO CALLERS either.
+///
+/// THE SORT IS NOT INCIDENTAL. The map this used to convert into was keyed by the rendered string
+/// and emitted entries in string order, while this map is keyed by a handle and iterates in hash
+/// order, so writing them as they come would reorder every dump.
+fn serialize_page_index<'k, S>(
+    node: &'k BucketNode,
+    keys: &PageKeysByPosition<'k>,
+    serializer: S,
+) -> Result<S::Ok, S::Error>
+where
+    S: serde::Serializer,
+{
+    use serde::ser::{Error as _, SerializeMap};
+    let mut entries: Vec<(String, PageEntryAt<'_>)> =
+        Vec::with_capacity(node.block_index.len());
     for (handle, page) in node.block_index.iter() {
-        // THROUGH THE ONE DOOR, so the check and the readers cannot disagree about where an
-        // identity comes from. This held its own copy of the two-source rule while it was the only
-        // thing that needed it.
+        // THROUGH THE ONE DOOR, so the encoder and the readers cannot disagree about where an
+        // identity comes from.
         let Some(beside) = keys.identity_of(node, *handle, page) else {
-            debug_assert!(
-                keys.names_no_position(),
-                "a page written by bucket {} has no identity beside it while the lookup IS                  established, so this is not the decode-then-rebuild window: deleted={}",
+            return Err(S::Error::custom(format!(
+                "bucket {} holds a page whose stored key would name no object, so this index is \
+                 not writable: deleted={}, and the inversion {}",
                 node.routing_bucket,
-                page.deleted
-            );
-            continue;
+                page.deleted,
+                if keys.names_no_position() {
+                    "names NO position at all, so this is the decode-then-rebuild window and the \
+                     encode was taken inside it"
+                } else {
+                    "DOES name positions, so the encoder was handed a lookup that does not cover \
+                     this bucket"
+                },
+            )));
         };
+        // THE TIE BACK TO THE ENTRY'S OWN COPY, FOR AS LONG AS THE ENTRY STILL HOLDS ONE.
+        //
+        // This is what says the bytes did not move: the key written below is composed from the
+        // neighbour, and this asserts character-for-character that the entry's own copy composes
+        // the same one. It compares the MODEL term too, which `block_index_written_key` reads off
+        // the page -- so a neighbour that disagrees about either half fails here. It goes when the
+        // field does, because there will be nothing left to compare.
         debug_assert_eq!(
             block_index_written_key(&page.object_key, page),
             crate::index_log::block_ref_key_from_parts(
@@ -2849,51 +2964,76 @@ fn check_page_keys_against_their_siblings(node: &BucketNode, keys: &PageKeysByPo
                 page.address.block_id().unwrap_or_default(),
                 page.address.generation().unwrap_or_default(),
             ),
-            "the identity held BESIDE the page must compose the same stored key as the identity              held ON it, or moving the identity off the entry would move the bytes"
+            "the identity held BESIDE the page must compose the same stored key as the identity \
+             held ON it, or moving the identity off the entry would move the bytes"
         );
+        entries.push((
+            block_index_written_key(beside.object_key, page),
+            PageEntryAt { page, object_key: beside.object_key },
+        ));
     }
-}
-
-/// THE ONE IMPLEMENTATION both doors go through.
-///
-/// A free function rather than a body inside `PageIndexAt`, because the fixtures serialize a bare
-/// map with no node around it and would otherwise need a second body. Two doors over one
-/// implementation is the shape; two implementations that agree today is the hazard this change is
-/// deleting on the handle side, and it would be absurd to introduce it on this one.
-fn serialize_page_index<S>(map: &BlockIndexMap, serializer: S) -> Result<S::Ok, S::Error>
-where
-    S: serde::Serializer,
-{
-    use serde::ser::SerializeMap;
-    // THE KEY IS STILL COMPOSED FROM THE ENTRY'S OWN COPY OF THE IDENTITY, and the check that the
-    // identity held beside the page agrees has moved UP to the bucket level -- see
-    // [`check_page_keys_against_their_siblings`], which is where the bucket's tombstone rows are
-    // in scope and where the deleted class the old check could not reach is compared.
-    let mut entries: Vec<(String, &BlockIndex)> = map
-        .values()
-        .map(|page| (block_index_written_key(&page.object_key, page), page))
-        .collect();
     entries.sort_by(|left, right| left.0.cmp(&right.0));
 
     let mut serialized = serializer.serialize_map(Some(entries.len()))?;
-    for (key, page) in &entries {
-        serialized.serialize_entry(key, page)?;
+    for (key, entry) in &entries {
+        serialized.serialize_entry(key, entry)?;
     }
     serialized.end()
 }
 
-/// TEST-ONLY DOOR onto the same implementation, for fixtures that hold a map and no node.
+/// THE PAGE INDEX KEYED FROM THE ENTRIES' OWN COPIES OF THE IDENTITY -- A SCAFFOLD, AND TESTS ONLY.
 ///
-/// Production serializes a page index only through [`PageIndexAt`], from the bucket level. This
-/// exists so the six fixtures that write a bare map keep working without a second body for them to
-/// drift against.
+/// # WHY A SECOND IMPLEMENTATION EXISTS AT ALL, WHICH THIS FILE OTHERWISE REFUSES
+///
+/// Twenty-six test arms encode a bare `BucketNode` or a bare `BlockIndexMap` and assert something
+/// about the BYTES: that two fillings of the same pages agree, that a flag state survives the
+/// wire, that a budget is what it was. None of them has an object lookup, because none of them has
+/// a `CoreIndex`; the identity they can name is the one on the entry.
+///
+/// It is `#[cfg(test)]` and it is named rather than reached through an `Option`, which is the
+/// difference that matters: the keyless case used to be a `None` any caller could pass, and is now
+/// a type production cannot construct. `--lib` compiles with no `Serialize for BucketNode` and no
+/// `Serialize for BlockIndexMap` in it at all.
+///
+/// IT ENDS WHEN THE FIELD DOES. There is no copy on the entry to key from afterwards, so each of
+/// the twenty-six arms has to name the identity it means -- which the compiler will ask it to.
+#[cfg(test)]
+struct PageIndexFromTheEntriesOwnCopies<'a>(&'a BlockIndexMap);
+
+#[cfg(test)]
+impl Serialize for PageIndexFromTheEntriesOwnCopies<'_> {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        use serde::ser::SerializeMap;
+        let mut entries: Vec<(String, PageEntryAt<'_>)> = self
+            .0
+            .values()
+            .map(|page| {
+                (
+                    block_index_written_key(&page.object_key, page),
+                    PageEntryAt { page, object_key: &page.object_key },
+                )
+            })
+            .collect();
+        entries.sort_by(|left, right| left.0.cmp(&right.0));
+        let mut serialized = serializer.serialize_map(Some(entries.len()))?;
+        for (key, entry) in &entries {
+            serialized.serialize_entry(key, entry)?;
+        }
+        serialized.end()
+    }
+}
+
+/// TEST-ONLY DOOR for the six arms that write a bare map with no node around it.
 #[cfg(test)]
 impl Serialize for BlockIndexMap {
     fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
     where
         S: serde::Serializer,
     {
-        serialize_page_index(self, serializer)
+        PageIndexFromTheEntriesOwnCopies(self).serialize(serializer)
     }
 }
 
@@ -4476,29 +4616,42 @@ impl BucketNode {
 /// A repeated key is an error rather than a last-one-wins, exactly as the derive had it: two
 /// disagreeing statements of the same fact must fail loudly and before anything is built from
 /// them.
+/// THE FIXTURE DOOR, NOW `#[cfg(test)]` AND NAMED FOR WHAT IT DOES.
+///
+/// It was an unconditional `impl Serialize for BucketNode` passing `None` for the page-key
+/// context. Production never used it -- `--lib` compiles with no such impl -- and twenty test
+/// arms do, every one of them a byte-shape assertion over a hand-built node. It keys each page
+/// from the entry's own copy of the identity, which is a thing only a test may do and only while
+/// the field exists.
+#[cfg(test)]
 impl Serialize for BucketNode {
     fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
     where
         S: serde::Serializer,
     {
-        // THE FIXTURE DOOR: a bare node with no index around it, so no page-key context.
         serialize_bucket_node(
             self,
-            #[cfg(debug_assertions)]
-            None,
+            &PageIndexFromTheEntriesOwnCopies(&self.block_index),
             serializer,
         )
     }
 }
 
-/// THE ONE BODY both node doors go through.
-fn serialize_bucket_node<S>(
+/// THE BODY EVERY NODE DOOR GOES THROUGH, PARAMETERISED ON HOW THE PAGE INDEX IS WRITTEN.
+///
+/// The page index used to be composed inside this function from an `Option` context, which is
+/// what let the keyless case exist. It arrives as a value that already knows how to write itself,
+/// so there is one body, no `Option`, and exactly two things that can be passed: the production
+/// [`PageIndexAt`], which is handed the identity from beside each page, and the `#[cfg(test)]`
+/// [`PageIndexFromTheEntriesOwnCopies`], which is not reachable from production code.
+fn serialize_bucket_node<S, P>(
     node_ref: &BucketNode,
-    #[cfg(debug_assertions)] keys: Option<&PageKeysByPosition<'_>>,
+    page_index: &P,
     serializer: S,
 ) -> Result<S::Ok, S::Error>
 where
     S: serde::Serializer,
+    P: Serialize,
 {
     {
         let self_ = node_ref;
@@ -4523,14 +4676,7 @@ where
         node.serialize_field("deleted_object_index", &self_.deleted_object_index)?;
         // AT THE BUCKET LEVEL, through `PageIndexAt`, so the written key is composed where the
         // node's other structures are in scope. The bytes are the ones the map's own impl wrote.
-        node.serialize_field(
-            "page_index",
-            &PageIndexAt {
-                node: self_,
-                #[cfg(debug_assertions)]
-                keys,
-            },
-        )?;
+        node.serialize_field("page_index", page_index)?;
         // THE ELEMENT EACH TOMBSTONE IN THIS BUCKET IS ABOUT, which the entries themselves no
         // longer say. Written LAST so the key is appended to the shape rather than inserted into
         // the middle of it, and `skip_serializing_if` keeps it off every bucket that has never had
@@ -4817,7 +4963,14 @@ pub(super) enum BucketLayoutState {
     MultiObject,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+// SERIALIZE IS GONE FROM THIS DERIVE, AND THAT IS THE STEP.
+//
+// `object_key` is a SERIALIZED MEMBER of the stored entry, so a derive on this struct is a derive
+// that reads the identity off the entry -- the one place it is about to stop being. The entry
+// reaches the wire through [`PageEntryAt`] instead, which is handed the identity from BESIDE the
+// page and writes the same five keys in the same order. `Deserialize` stays for now: the stored
+// form still carries the key, and the decode side is its own commit.
+#[derive(Debug, Clone, Deserialize)]
 pub(super) struct BlockIndex {
     pub(super) object_key: Arc<str>,
     pub(super) model_id: crate::engine::storage_bucket_internals::StoredModelKind,

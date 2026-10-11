@@ -779,7 +779,11 @@ fn a_hash_page_naming_no_field_is_skipped_while_a_genuine_empty_field_name_is_ke
         dirty: false,
         deleted: false,
     };
-    let encoded = serde_json::to_string(&nameless_entry).expect("a page entry serializes");
+    let encoded = serde_json::to_string(&crate::engine::state::PageEntryAt {
+        page: &nameless_entry,
+        object_key: "ef-wire-probe",
+    })
+    .expect("a page entry serializes");
     assert!(
         encoded.len() > 32,
         "the encoded page entry is {} B, too short for the absence assertion below to mean anything",

@@ -1444,7 +1444,8 @@ fn an_entry_names_its_object_from_its_own_terms() {
         "the shard is a term of the identity, so two shards must not agree"
     );
     // AND IT SURVIVES THE STORED FORM: the id was never written, so nothing about it can be lost.
-    let written = serde_json::to_string(&entry).expect("a page entry serializes");
+    let written = serde_json::to_string(&crate::engine::state::PageEntryAt { page: &entry, object_key: "named-key" })
+        .expect("a page entry serializes");
     let read_back: BlockIndex = serde_json::from_str(&written).expect("a page entry deserializes");
     assert_eq!(read_back.object_id(1, &read_back.object_key), expected, "the terms survive the stored form");
     assert!(
