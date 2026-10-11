@@ -6171,24 +6171,70 @@ pub(in crate::engine) fn push_object_dirty_onto_its_existing_pages(
     shard: &mut ShardState,
     object_key: &str,
 ) {
-    // ESTABLISH THE LOOKUP ON THE FIRST MARK THAT FINDS IT UNBUILT, then take the cheap path
-    // thereafter -- the same bargain the delete path already makes, and for the same reason.
+    // A LIVE PAGE IS RESIDENT ONLY IF THE LOOKUP NAMES SOMETHING, AND THAT IS ASSERTED HERE
+    // RATHER THAN REPAIRED.
     //
-    // THE WINDOW IS REACHABLE, AND A DEBUG ASSERTION SAYING IT WAS NOT IS HOW THAT WAS FOUND.
-    // The first version of this function asserted that a mark could not reach a shard holding
-    // buckets whose lookup had not been built, reasoning that a load rebuilds before it returns
-    // the shard. Two tests fired it immediately. The reasoning was about ONE path into this
-    // function and the window belongs to the others, so the premise is replaced by the rebuild
-    // rather than by a more carefully worded claim.
+    // # WHAT STOOD HERE AND WHY IT IS GONE
     //
-    // Without this the push silently finds nothing: a marked object's pages stay clean, and the
-    // bucket predicate that now reads only `page.dirty` answers false for a dirty object. The
-    // rebuild is O(pages) and runs at most once per unbuilt lookup.
-    if shard.bucket_index.object_block_lookup.is_empty()
-        && !shard.bucket_index.bucket_map.is_empty()
-    {
-        shard.bucket_index.rebuild_object_block_lookup();
-    }
+    // A whole-shard `rebuild_object_block_lookup()` on the first mark that found the lookup
+    // unbuilt. It reads every page's object key off the entry, and it was the last production
+    // reader of that field.
+    //
+    // # THE PREMISE THAT FAILED FIRST, AND THE CENSUS THAT SETTLED IT
+    //
+    // An earlier version of this function asserted that a mark could not reach a shard holding
+    // buckets whose lookup was unbuilt, reasoning that a load rebuilds before returning the
+    // shard. TWO TESTS FIRED IT IMMEDIATELY, and the rebuild replaced the claim.
+    //
+    // Both of those tests, and the assertion, were about the wrong condition. Three successively
+    // narrower ones were measured here, each broader than the question:
+    //
+    //   * `!bucket_map.is_empty()` -- satisfied by buckets holding NO pages. Six of ten reaches
+    //     over a 107-name set were this: nothing to mark, nothing lost.
+    //   * "has pages" -- satisfied by TOMBSTONES, which a mark must not dirty. The two
+    //     non-fixture reaches were this.
+    //   * "has a LIVE page" -- the actual question. Two reaches of 97 verdicts, both hand-built
+    //     fixtures, each installing a page into `bucket_map` directly with NO filing anywhere in
+    //     the process.
+    //
+    // # AND THE CENSUS IS WHAT MAKES THAT STRUCTURAL RATHER THAN A SAMPLE
+    //
+    // Nine production sites install a page into a bucket's map, and all nine file it in the same
+    // enclosing function: `rebuild_bucket_block_ownership` (twice),
+    // `insert_container_tombstone_entry`, `upsert_bucket_index_block_inner`,
+    // `sync_bucket_index_object_blocks_with_mode`, `rebuild_bucket_first_index` (twice),
+    // `reload_released_bucket`, and `fold_delta_block_items`. The only doors that do not file are
+    // `FromIterator<(Arc<str>, BlockIndex)> for BlockIndexMap`, which has ZERO callers anywhere,
+    // and the two serde doors that drop a decoded node's page keys -- `impl Deserialize for
+    // BucketNode` and `BlockIndexMap`'s `serde(from = ..)` -- which compile out of `--lib` with
+    // zero errors, measured against a control in the same probe form that yields one.
+    //
+    // So a live page cannot enter a bucket's map in production without being filed in the same
+    // call, and the state this rebuild existed for is reachable only by writing into the map
+    // directly.
+    //
+    // # THE ASSERTION IS THE DESCRIPTION NOW, AND IT IS A BETTER ONE
+    //
+    // It was carried by one fixture that nobody re-reads; it is carried by every one of the 926
+    // tests that enter this function, on every run. That is the same oracle pattern this branch
+    // used twice already -- the ties for a substitution, the page-index agreement check for a
+    // deletion -- applied to a removal.
+    //
+    // WHAT IT CANNOT CATCH, said here because the gap is real: a tenth install site that does not
+    // file is caught only if a mark follows it. The pairing is a convention held by nine call
+    // sites rather than by a type -- there is no door that installs AND files -- and that is filed
+    // as its own design change rather than carried by a width step.
+    debug_assert!(
+        !shard.bucket_index.object_block_lookup.is_empty()
+            || !shard
+                .bucket_index
+                .bucket_map
+                .values()
+                .any(|bucket| bucket.block_index.values().any(|page| !page.deleted)),
+        "a live page is resident while the object lookup names nothing, so this mark can find no \
+         pages: every production site that installs a page files it in the same call, and this \
+         state is reachable only by writing into `bucket_map` directly"
+    );
     // COLLECTED FIRST, so the immutable loan on the lookup ends before the pages are taken
     // mutably. The two are disjoint fields of one struct, but the refs borrow from one of them.
     let mut refs: Vec<crate::engine::state::BlockLookupRef> = Vec::new();
