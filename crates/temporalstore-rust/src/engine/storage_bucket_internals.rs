@@ -5070,23 +5070,35 @@ pub(super) fn sync_bucket_index_object_blocks_with_mode(
             reload_released_bucket(shard, shard_id, routing_bucket);
         }
     }
-    // An empty lookup means "not established yet", which callers read as a signal to fall back to
-    // scanning. Establishing it still walks the buckets; maintaining an established one must not.
+    // TWO QUESTIONS WERE BEING ANSWERED BY ONE FLAG, AND ONLY ONE OF THEM SURVIVES.
     //
-    // The ref total counts as part of being established. Only a rebuild can set it -- a count that
-    // starts at "unknown" cannot be incremented into a right answer -- and the load path fills the
-    // lookup without it, so a shard can come up with entries and no total. The wholesale rebuild
-    // this replaces re-established the total on every series write, which hid that. Tie the two
-    // together instead: either both are established or the next write establishes both.
-    let lookup_needs_establishing = shard.bucket_index.object_block_lookup.is_empty()
-        || shard.bucket_index.object_component_block_refs.is_none();
+    // `lookup_needs_establishing` decided THREE unrelated things: which buckets this call visits,
+    // whether it files the pages it places, and whether to rebuild the whole shard's lookup at the
+    // end. That is the same defect as the single `Option` in `refresh_one_bucket_runtime_flags` --
+    // one parameter standing for a source and a decision at once -- and it would be a poor trade
+    // to leave it standing in the commit that removes its last consumer.
+    //
+    // WHAT IS LEFT IS THE TARGETING QUESTION, AND IT KEEPS THE OLD CONDITION under its own name:
+    // can the lookup be trusted to say which buckets hold this object's pages? When it cannot,
+    // every bucket is visited, which is what it always did. The filing question is answered
+    // unconditionally below, because this call holds the identity of every page it places.
+    //
+    // THE REF TOTAL IS PART OF THE CONDITION AND IS ALREADY DEAD AS A DISJUNCT. Only a rebuild
+    // could lift it from `None`, and no construction route leaves it there: `impl Default for
+    // CoreIndex` starts it at `Some(0)` and the decoder assigns `Some(0)` before it files. It is
+    // kept in the expression because the claim belongs where the condition is read, not because
+    // it can still be true.
+    let lookup_can_target = !(shard.bucket_index.object_block_lookup.is_empty()
+        || shard.bucket_index.object_component_block_refs.is_none());
     // Components whose blocks this call drops, so the lookup can be corrected for exactly those
     // instead of being rebuilt from every block in the shard.
     let mut removed_components: BTreeSet<Option<Arc<str>>> = BTreeSet::new();
     // THE ID THIS CALL SUPERSEDES IS NO LONGER COLLECTED HERE, because a delta over it was the
     // wrong shape: the membership a removal can change is not limited to what the removal caused.
     // See [`repair_object_index_against_its_pages`].
-    let target_buckets = if lookup_needs_establishing {
+    // TARGETING, THE ONE QUESTION THE FLAG STILL ANSWERS. A lookup that cannot be trusted
+    // cannot narrow the walk, so the walk is every bucket -- exactly as before.
+    let target_buckets = if !lookup_can_target {
         shard
             .bucket_index
             .bucket_map
@@ -5165,7 +5177,11 @@ pub(super) fn sync_bucket_index_object_blocks_with_mode(
         }
     }
 
-    if !lookup_needs_establishing {
+    // UN-FILED UNCONDITIONALLY. Only this object's own entries were dropped above, so only
+    // they need correcting -- and correcting an entry the lookup does not hold is a no-op, which
+    // is why this needs no condition once the filing below has none. Filing and un-filing are one
+    // obligation: a call that files what it places must un-file what it drops.
+    {
         // Only this object's own entries were dropped above, so only they need correcting.
         for component in &removed_components {
             shard.bucket_index.remove_object_block_lookup_entry(
@@ -5250,7 +5266,13 @@ pub(super) fn sync_bucket_index_object_blocks_with_mode(
         // whole object rather than the part of it being written.
         classify_bucket_layout_in_place(bucket);
         // The bucket borrow has to end before the lookup, which borrows the index itself.
-        if !lookup_needs_establishing {
+        // FILED AS IT IS PLACED, WHICH IS THE WHOLE OF THIS CHANGE.
+        //
+        // This was skipped whenever the lookup was being established, and a whole-shard rebuild at
+        // the end of the call filed it instead. The identity is right here -- `filed_object_key`,
+        // bound before the page took it -- so the rebuild was recovering, by walking every block
+        // in the shard, what this line already knows.
+        {
             shard
                 .bucket_index
                 .insert_object_block_lookup(
@@ -5289,8 +5311,27 @@ pub(super) fn sync_bucket_index_object_blocks_with_mode(
             }
         }
     }
-    if lookup_needs_establishing {
-        shard.bucket_index.rebuild_object_block_lookup();
+    // THE WHOLE-SHARD REBUILD THAT STOOD HERE IS GONE, AND THE PATH FILES AS IT PLACES.
+    //
+    // # IT WAS NOT A RARE WINDOW, WHICH IS WHY DELETING IT NEEDED THE FILING FIRST
+    //
+    // `lookup_needs_establishing` was taken on 32 of the 33 tests that enter this function,
+    // measured by replacing this branch with a panic and running it over exactly the named set an
+    // entry-side denominator produced. It is NOT the decode-then-rebuild window: the decoder files
+    // as it decodes and `Default` starts the ref total established, so what is left is
+    // `is_empty()` -- a FRESH INDEX ON ITS FIRST WRITE. The common case, not an exotic one.
+    //
+    // So this could not be deleted on an unreachability claim. What makes it unnecessary is that
+    // the pages this call places are now filed by this call.
+    //
+    // # AND THE AGREEMENT IS CHECKED WHERE THE REBUILD USED TO RUN
+    //
+    // Scoped to the case the rebuild existed for -- a lookup that could not be trusted to target
+    // -- so an established index pays nothing for it. It compares the lookup against every live
+    // page in the shard, which is the postcondition the rebuild used to deliver by construction.
+    #[cfg(debug_assertions)]
+    if !lookup_can_target {
+        shard.bucket_index.debug_assert_lookup_matches_the_pages();
     }
 }
 
