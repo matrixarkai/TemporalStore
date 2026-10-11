@@ -307,27 +307,41 @@ fn the_page_list_length_distribution_is_reported_as_a_histogram() {
 // 2. ORDER -- THE CENTRAL RISK, ANSWERED BY THE REPRESENTATION
 // =============================================================================================
 
-fn page(object_key: &str, component: Option<&str>, slab: u64, offset: u64) -> BlockIndex {
-    BlockIndex {
-        object_key: std::sync::Arc::from(object_key),
-        model_id: crate::engine::storage_bucket_internals::StoredModelKind::String,
-        address: crate::block_store::ElementEntry::from_parts(
-            slab,
-            offset,
-            32,
-            Some(7),
-            Some(11),
-        ),
-        dirty: false,
-        deleted: false,
-    }
+/// One page WITH ITS OBJECT KEY BESIDE IT rather than on it.
+///
+/// The pair is the shape every production site uses: `BlockIndexMap::insert`, `insert_released`
+/// and `block_index_handle` all take the identity as a PARAMETER, because the entry is losing its
+/// own copy. A fixture handing back a bare entry would force each caller to read the key off the
+/// page, which is the one thing this change removes.
+fn page(
+    object_key: &str,
+    component: Option<&str>,
+    slab: u64,
+    offset: u64,
+) -> (std::sync::Arc<str>, BlockIndex) {
+    (
+        std::sync::Arc::from(object_key),
+        BlockIndex {
+            object_key: std::sync::Arc::from(object_key),
+            model_id: crate::engine::storage_bucket_internals::StoredModelKind::String,
+            address: crate::block_store::ElementEntry::from_parts(
+                slab,
+                offset,
+                32,
+                Some(7),
+                Some(11),
+            ),
+            dirty: false,
+            deleted: false,
+        },
+    )
 }
 
-fn built_from(pages: &[BlockIndex]) -> BlockIndexMap {
+fn built_from(pages: &[(std::sync::Arc<str>, BlockIndex)]) -> BlockIndexMap {
     let mut live = BlockSlabLiveIndex::default();
     let mut index = BlockIndexMap::default();
-    for entry in pages {
-        index.insert(&entry.object_key.clone(), entry.clone(), &mut live);
+    for (object_key, entry) in pages {
+        index.insert(object_key, entry.clone(), &mut live);
     }
     index
 }
@@ -361,7 +375,7 @@ fn walk(index: &BlockIndexMap) -> Vec<u64> {
 /// rust-internal: page index ordering, no product behaviour
 #[test]
 fn an_unsorted_page_list_would_reorder_every_walk_of_this_index() {
-    let pages: Vec<BlockIndex> = (0..24)
+    let pages: Vec<(std::sync::Arc<str>, BlockIndex)> = (0..24)
         .map(|i| page("bag", Some(&format!("f{i}")), 1, i as u64 * 64))
         .collect();
 
@@ -371,7 +385,8 @@ fn an_unsorted_page_list_would_reorder_every_walk_of_this_index() {
     let backwards = walk(&built_from(&backwards_input));
     let mut shuffled_input = pages.clone();
     // A fixed permutation, not a random one: this has to fail the same way every run.
-    shuffled_input.sort_by_key(|entry| block_index_handle(&entry.object_key, entry).rotate_left(29));
+    shuffled_input
+        .sort_by_key(|(object_key, entry)| block_index_handle(object_key, entry).rotate_left(29));
     let shuffled = walk(&built_from(&shuffled_input));
 
     assert_eq!(
@@ -399,7 +414,7 @@ fn an_unsorted_page_list_would_reorder_every_walk_of_this_index() {
     // order it asserts, or the assertions above hold trivially.
     let appended: Vec<u64> = backwards_input
         .iter()
-        .map(|entry| block_index_handle(&entry.object_key, entry))
+        .map(|(object_key, entry)| block_index_handle(object_key, entry))
         .collect();
     assert_ne!(
         forwards, appended,
@@ -418,22 +433,23 @@ fn an_unsorted_page_list_would_reorder_every_walk_of_this_index() {
 fn the_walk_stays_ascending_across_removals_and_middle_inserts() {
     let mut live = BlockSlabLiveIndex::default();
     let mut index = BlockIndexMap::default();
-    let pages: Vec<BlockIndex> = (0..32)
+    let pages: Vec<(std::sync::Arc<str>, BlockIndex)> = (0..32)
         .map(|i| page("bag", Some(&format!("g{i}")), 2, i as u64 * 64))
         .collect();
-    for entry in &pages {
-        index.insert(&entry.object_key.clone(), entry.clone(), &mut live);
+    for (object_key, entry) in &pages {
+        index.insert(object_key, entry.clone(), &mut live);
     }
     let mut removed_any = false;
-    for entry in pages.iter().step_by(3) {
-        let handle = block_index_handle(&entry.object_key, entry);
+    for (object_key, entry) in pages.iter().step_by(3) {
+        let handle = block_index_handle(object_key, entry);
         if index.remove(&handle, &mut live).is_some() {
             removed_any = true;
         }
     }
     assert!(removed_any, "the fixture removed nothing, so nothing was exercised");
     for i in 32..48 {
-        index.insert(&(page("bag", Some(&format!("g{i}")), 2, i as u64 * 64)).object_key.clone(), page("bag", Some(&format!("g{i}")), 2, i as u64 * 64), &mut live);
+        let (object_key, entry) = page("bag", Some(&format!("g{i}")), 2, i as u64 * 64);
+        index.insert(&object_key, entry, &mut live);
     }
     let handles = walk(&index);
     assert!(
@@ -484,15 +500,15 @@ fn a_second_insert_of_the_same_page_replaces_it_rather_than_adding_beside_it() {
     // displaced address charges without discharging and DOUBLE-COUNTS the page. One page filed twice
     // must leave one live ref, not two, and that is what this asserts.
     let mut index = BlockIndexMap::default();
-    let only = page("solo", None, 5, 128);
-    let first = index.insert(&only.object_key.clone(), only.clone(), &mut live);
+    let (only_key, only) = page("solo", None, 5, 128);
+    let first = index.insert(&only_key, only.clone(), &mut live);
     assert_eq!(
         1,
         live.tally(5).block_refs,
         "one page filed once left {} live ref(s) on its slab, not 1",
         live.tally(5).block_refs
     );
-    let again = index.insert(&only.object_key.clone(), only.clone(), &mut live);
+    let again = index.insert(&only_key, only.clone(), &mut live);
     assert_eq!(first, again, "the same page took two different handles");
     assert_eq!(1, index.len(), "a rewrite on the One arm filed {} pages", index.len());
     assert!(
@@ -524,19 +540,19 @@ fn a_second_insert_of_the_same_page_replaces_it_rather_than_adding_beside_it() {
         // campaign keeps finding in a different costume, so the counter is scoped to what it counts.
         let mut live = BlockSlabLiveIndex::default();
         let mut index = BlockIndexMap::default();
-        let pages: Vec<BlockIndex> = (0..length)
+        let pages: Vec<(std::sync::Arc<str>, BlockIndex)> = (0..length)
             .map(|i| page("bag", Some(&format!("h{i}")), 9, i as u64 * 64))
             .collect();
-        for entry in &pages {
-            index.insert(&entry.object_key.clone(), entry.clone(), &mut live);
+        for (object_key, entry) in &pages {
+            index.insert(object_key, entry.clone(), &mut live);
         }
         assert_eq!(length, index.len(), "the fixture filed the wrong number of pages");
         assert!(
             matches!(index, BlockIndexMap::Many(_)),
             "a list of {length} did not reach the Many arm"
         );
-        let target = &pages[length / 2];
-        let handle = index.insert(&target.object_key.clone(), target.clone(), &mut live);
+        let (target_key, target) = &pages[length / 2];
+        let handle = index.insert(target_key, target.clone(), &mut live);
         assert_eq!(
             length,
             index.len(),
@@ -545,7 +561,7 @@ fn a_second_insert_of_the_same_page_replaces_it_rather_than_adding_beside_it() {
             index.len()
         );
         assert_eq!(
-            block_index_handle(&target.object_key, target),
+            block_index_handle(target_key, target),
             handle,
             "the rewrite was filed under a handle that is not the page's own"
         );
@@ -587,11 +603,11 @@ fn a_second_insert_of_the_same_page_replaces_it_rather_than_adding_beside_it() {
 fn replacing_a_page_discharges_the_address_it_displaced() {
     let mut live = BlockSlabLiveIndex::default();
     let mut index = BlockIndexMap::default();
-    let pages: Vec<BlockIndex> = (0..6)
+    let pages: Vec<(std::sync::Arc<str>, BlockIndex)> = (0..6)
         .map(|i| page("bag", Some(&format!("k{i}")), 4, i as u64 * 64))
         .collect();
-    for entry in &pages {
-        index.insert(&entry.object_key.clone(), entry.clone(), &mut live);
+    for (object_key, entry) in &pages {
+        index.insert(object_key, entry.clone(), &mut live);
     }
     let before = live.tally(4);
     assert_eq!(
@@ -599,7 +615,8 @@ fn replacing_a_page_discharges_the_address_it_displaced() {
         "the fixture charged {} pages to slab 4, not the six it filed",
         before.block_refs
     );
-    index.insert(&(pages[3].clone()).object_key.clone(), pages[3].clone(), &mut live);
+    let (replayed_key, replayed) = &pages[3];
+    index.insert(replayed_key, replayed.clone(), &mut live);
     let after = live.tally(4);
     assert_eq!(
         before, after,
@@ -612,15 +629,22 @@ fn replacing_a_page_discharges_the_address_it_displaced() {
 // 4. THE LOOKUP: TWO STRATEGIES ON ONE SORTED LIST, AND WHERE THEY CROSS
 // =============================================================================================
 
-fn sorted_list(length: usize) -> Vec<(u64, BlockIndex)> {
+/// THE LIST, AND THE ONE OBJECT KEY EVERY ENTRY IN IT BELONGS TO.
+///
+/// Every page here is a component of the same object, so ONE key names the whole list and the
+/// element type stays exactly `(u64, BlockIndex)`. That is load-bearing rather than tidy: two
+/// callers below measure `Vec<(u64, BlockIndex)>`'s own growth against this list's, and a key
+/// folded into the element would widen the very thing being measured and move both columns.
+fn sorted_list(length: usize) -> (std::sync::Arc<str>, Vec<(u64, BlockIndex)>) {
+    let object_key: std::sync::Arc<str> = std::sync::Arc::from("bag");
     let mut pages: Vec<(u64, BlockIndex)> = (0..length)
         .map(|i| {
-            let entry = page("bag", Some(&format!("m{i}")), 3, i as u64 * 64);
-            (block_index_handle(&entry.object_key, &entry), entry)
+            let (_, entry) = page("bag", Some(&format!("m{i}")), 3, i as u64 * 64);
+            (block_index_handle(&object_key, &entry), entry)
         })
         .collect();
     pages.sort_by_key(|(handle, _)| *handle);
-    pages
+    (object_key, pages)
 }
 
 /// BOTH STRATEGIES ANSWER IDENTICALLY, AT EVERY LENGTH, ON EVERY KEY.
@@ -640,7 +664,7 @@ fn the_walk_and_the_bisection_answer_identically_at_every_length() {
     let mut hits = 0usize;
     let mut misses = 0usize;
     for length in 0..=48 {
-        let pages = sorted_list(length);
+        let (_, pages) = sorted_list(length);
         for (handle, _) in &pages {
             assert_eq!(
                 scan_page(&pages, handle),
@@ -712,7 +736,7 @@ fn the_walk_and_the_bisection_cross_over_where_the_measurement_says() {
     let mut rows = 0usize;
     let mut at_thirty_nine: Option<(f64, f64)> = None;
     for length in [1usize, 2, 3, 4, 6, 8, 12, 16, 24, 32, 39, 50, 64] {
-        let pages = sorted_list(length);
+        let (_, pages) = sorted_list(length);
         assert_eq!(length, pages.len(), "the fixture built a list of the wrong length");
         let walk_entries = counted(|| {
             for (handle, _) in &pages {
@@ -781,7 +805,7 @@ fn the_walk_and_the_bisection_cross_over_where_the_measurement_says() {
 
     // THE SHIPPED DOOR IS THE BISECTION, asserted by what it CHARGES rather than by reading the
     // source: a door that quietly walked would charge the walk's entries here.
-    let long = sorted_list(39);
+    let (_, long) = sorted_list(39);
     let through_the_door = counted(|| {
         for (handle, _) in &long {
             let _ = std::hint::black_box(find_page(&long, handle));
@@ -826,7 +850,7 @@ fn counted(body: impl FnOnce()) -> u64 {
 #[test]
 fn the_entry_counter_recovers_a_planted_walk_exactly() {
     const PLANTED: usize = 37;
-    let pages = sorted_list(PLANTED);
+    let (_, pages) = sorted_list(PLANTED);
     assert_eq!(PLANTED, pages.len(), "the fixture built the wrong list");
     let touched = counted(|| {
         let _ = std::hint::black_box(scan_page(&pages, &u64::MAX));
@@ -951,16 +975,37 @@ fn the_page_index_of_a_real_store_costs_less_as_a_list_than_as_a_tree() {
         load_on(&engine, NARROW_END);
         let keys = seed_routed(&engine, records);
 
-        // The pages, bucket by bucket, exactly as the engine filed them.
-        let by_bucket: Vec<Vec<BlockIndex>> = {
+        // The pages, bucket by bucket, exactly as the engine filed them -- EACH WITH THE KEY
+        // THE BUCKET'S OWN LOOKUP NAMES IT BY. The entry carries no identity of its own, so the
+        // pair is taken from `page_identities_in`, which is the same per-bucket projection every
+        // production sweep uses. Built OUTSIDE the counted spans below, so the two container
+        // measurements are over the identical values they were before.
+        let by_bucket: Vec<Vec<(std::sync::Arc<str>, BlockIndex)>> = {
             let shards = engine.shards.read().expect("engine lock poisoned");
             let shard = shards.get(&1).expect("shard is loaded");
+            let keys = crate::engine::state::PageKeysByPosition::from_lookup(
+                &shard.bucket_index.object_block_lookup,
+            );
             shard
                 .bucket_index
                 .bucket_map
                 .values()
-                .map(|bucket| bucket.block_index.values().cloned().collect())
-                .filter(|pages: &Vec<BlockIndex>| !pages.is_empty())
+                .map(|bucket| {
+                    let named = crate::engine::state::page_identities_in(bucket, &keys);
+                    bucket
+                        .block_index
+                        .iter()
+                        .map(|(handle, page)| {
+                            let key = named.get(handle).unwrap_or_else(|| {
+                                panic!(
+                                    "the page at handle {handle} is named by nothing beside it,                                      so this fixture cannot hand it on"
+                                )
+                            });
+                            (std::sync::Arc::clone(key), page.clone())
+                        })
+                        .collect()
+                })
+                .filter(|pages: &Vec<(std::sync::Arc<str>, BlockIndex)>| !pages.is_empty())
                 .collect()
         };
         let pages: usize = by_bucket.iter().map(|b| b.len()).sum();
@@ -981,8 +1026,8 @@ fn the_page_index_of_a_real_store_costs_less_as_a_list_than_as_a_tree() {
         let (tree_bytes, tree_allocs) = span_counts(|| {
             for bucket in &by_bucket {
                 let mut tree: BTreeMap<u64, BlockIndex> = BTreeMap::new();
-                for page in bucket {
-                    tree.insert(block_index_handle(&page.object_key, page), page.clone());
+                for (object_key, page) in bucket {
+                    tree.insert(block_index_handle(object_key, page), page.clone());
                 }
                 trees.push(tree);
             }
@@ -992,8 +1037,8 @@ fn the_page_index_of_a_real_store_costs_less_as_a_list_than_as_a_tree() {
         let (list_bytes, list_allocs) = span_counts(|| {
             for bucket in &by_bucket {
                 let mut list = BlockIndexMap::default();
-                for page in bucket {
-                    list.insert_released(&page.object_key, page.clone());
+                for (object_key, page) in bucket {
+                    list.insert_released(object_key, page.clone());
                 }
                 lists.push(list);
             }
@@ -1071,7 +1116,7 @@ fn the_page_list_growth_step_is_what_keeps_the_slack_off_the_measurement() {
     let mut rows = 0usize;
     let mut worst = 0.0f64;
     for length in [3usize, 8, 12, 20, 33, 39, 50, 65] {
-        let pages = sorted_list(length);
+        let (object_key, pages) = sorted_list(length);
 
         // What `Vec`'s own growth leaves: push one at a time, no reserve.
         let mut doubling: Vec<(u64, BlockIndex)> = Vec::new();
@@ -1084,7 +1129,7 @@ fn the_page_list_growth_step_is_what_keeps_the_slack_off_the_measurement() {
         let mut stepped = BlockIndexMap::default();
         let (stepped_bytes, stepped_allocs) = span_counts(|| {
             for (_, page) in &pages {
-                stepped.insert_released(&page.object_key, page.clone());
+                stepped.insert_released(&object_key, page.clone());
             }
         });
 
@@ -1124,10 +1169,10 @@ fn the_page_list_growth_step_is_what_keeps_the_slack_off_the_measurement() {
     // THE SLACK ITSELF, off the live list rather than a clone: `Vec::clone` takes exactly `len`
     // capacity, so a clone cannot see the thing this policy exists to bound.
     for length in [3usize, 12, 20, 33, 39, 50, 65] {
-        let pages = sorted_list(length);
+        let (object_key, pages) = sorted_list(length);
         let mut list = BlockIndexMap::default();
         for (_, page) in &pages {
-            list.insert_released(&page.object_key, page.clone());
+            list.insert_released(&object_key, page.clone());
         }
         let slack = match &list {
             BlockIndexMap::Many(entries) => entries.capacity() - entries.len(),
@@ -1214,22 +1259,23 @@ enum MirrorInlineArm {
 #[ignore = "the counting allocator is process-wide; run by name"]
 fn the_inline_entry_no_longer_earns_its_width_and_this_is_the_occupancy_where_it_would() {
     // --- What the inline entry SAVED a bucket that holds one page: the whole heap cost of it. ---
-    let pages = sorted_list(1);
+    let (object_key, pages) = sorted_list(1);
     let single = pages[0].1.clone();
     let mut listed = BlockIndexMap::default();
-    listed.insert_released(&single.object_key, single.clone());
+    listed.insert_released(&object_key, single.clone());
     assert!(
         matches!(listed, BlockIndexMap::One(..)),
         "one page did not take the single-page arm, so this comparison is not about the arm that \
          shipped"
     );
     let (inline_bytes, inline_chunk, inline_allocs) = span_counts_both(|| {
-        let held = MirrorInlineArm::One(block_index_handle(&single.object_key, &single), single.clone());
+        let held =
+            MirrorInlineArm::One(block_index_handle(&object_key, &single), single.clone());
         std::hint::black_box(&held);
     });
     let (listed_bytes, listed_chunk, listed_allocs) = span_counts_both(|| {
         let mut held = BlockIndexMap::default();
-        held.insert_released(&single.object_key, single.clone());
+        held.insert_released(&object_key, single.clone());
         std::hint::black_box(&held);
     });
     println!(
@@ -1396,12 +1442,12 @@ fn the_inline_entry_no_longer_earns_its_width_and_this_is_the_occupancy_where_it
 /// rust-internal: page index wire shape, no product behaviour
 #[test]
 fn the_stored_page_index_is_byte_for_byte_what_the_tree_wrote() {
-    let pages = sorted_list(24);
+    let (object_key, pages) = sorted_list(24);
 
     let mut list = BlockIndexMap::default();
     let mut live = BlockSlabLiveIndex::default();
     for (_, entry) in &pages {
-        list.insert(&entry.object_key.clone(), entry.clone(), &mut live);
+        list.insert(&object_key, entry.clone(), &mut live);
     }
     let written = serde_json::to_vec(&list).expect("the page index serializes");
     assert!(
@@ -1414,7 +1460,7 @@ fn the_stored_page_index_is_byte_for_byte_what_the_tree_wrote() {
     // of the ordering guard above.
     let mut backwards = BlockIndexMap::default();
     for (_, entry) in pages.iter().rev() {
-        backwards.insert(&entry.object_key.clone(), entry.clone(), &mut live);
+        backwards.insert(&object_key, entry.clone(), &mut live);
     }
     let written_backwards = serde_json::to_vec(&backwards).expect("the page index serializes");
     assert_eq!(
@@ -1444,7 +1490,7 @@ fn the_stored_page_index_is_byte_for_byte_what_the_tree_wrote() {
         if at == 7 {
             entry.deleted = true;
         }
-        injected.insert(&entry.object_key.clone(), entry, &mut live);
+        injected.insert(&object_key, entry, &mut live);
     }
     let with_injection = serde_json::to_vec(&injected).expect("the page index serializes");
     assert_ne!(
@@ -1554,13 +1600,28 @@ fn every_written_page_sits_in_exactly_one_list_and_a_planted_loss_shows_up() {
     let (distinct, total, listed_keys) = {
         let shards = engine.shards.read().expect("engine lock poisoned");
         let shard = shards.get(&1).expect("shard is loaded");
+        // THE KEYS COME FROM THE LOOKUP BESIDE THE PAGES, not from the pages. That is a
+        // STRONGER claim than the field read was, and deliberately: a page the lookup does not
+        // name would have been counted under its own copy of the key before, and is refused
+        // here -- which is the state `insert_object_block_lookup` exists to rule out.
+        let keys = crate::engine::state::PageKeysByPosition::from_lookup(
+            &shard.bucket_index.object_block_lookup,
+        );
         let mut handles = std::collections::BTreeSet::new();
         let mut total = 0usize;
         let mut object_keys = std::collections::BTreeSet::new();
         for bucket in shard.bucket_index.bucket_map.values() {
-            for (handle, page) in &bucket.block_index {
+            let named = crate::engine::state::page_identities_in(bucket, &keys);
+            for (handle, _page) in &bucket.block_index {
                 handles.insert(*handle);
-                object_keys.insert(page.object_key.to_string());
+                object_keys.insert(
+                    named
+                        .get(handle)
+                        .unwrap_or_else(|| {
+                            panic!("the page at handle {handle} is named by nothing beside it")
+                        })
+                        .to_string(),
+                );
                 total += 1;
             }
         }
@@ -1584,20 +1645,43 @@ fn every_written_page_sits_in_exactly_one_list_and_a_planted_loss_shows_up() {
 
     // THE PLANTED LOSS. Take one page out from under the index and confirm the count above sees
     // it -- a residual that reads zero because it cannot count is worse than none.
+    // NAMED UNDER THE READ LOCK, REMOVED UNDER THE WRITE ONE. The key is drawn from the
+    // bucket's lookup, which is a SIBLING FIELD of the bucket map -- so naming the page and
+    // taking it out cannot be one borrow, and splitting them into two phases is simpler than
+    // splitting the borrow.
     let planted = {
+        let (routing_bucket, handle, key) = {
+            let shards = engine.shards.read().expect("engine lock poisoned");
+            let shard = shards.get(&1).expect("shard is loaded");
+            let keys = crate::engine::state::PageKeysByPosition::from_lookup(
+                &shard.bucket_index.object_block_lookup,
+            );
+            let mut found = None;
+            for bucket in shard.bucket_index.bucket_map.values() {
+                if let Some((handle, page)) = bucket.block_index.iter().next() {
+                    let beside = keys
+                        .identity_of(bucket, *handle, page)
+                        .expect("the page the index holds is named beside it");
+                    found =
+                        Some((bucket.routing_bucket, *handle, beside.object_key.to_string()));
+                    break;
+                }
+            }
+            found.expect("the index held at least one page to plant a loss in")
+        };
         let mut shards = engine.shards.write().expect("engine lock poisoned");
         let shard = shards.get_mut(&1).expect("shard is loaded");
         let mut live = BlockSlabLiveIndex::default();
-        let mut taken = None;
-        for bucket in shard.bucket_index.bucket_map.values_mut() {
-            if let Some((handle, page)) = bucket.block_index.iter().next() {
-                let (handle, key) = (*handle, page.object_key.to_string());
-                bucket.block_index.remove(&handle, &mut live);
-                taken = Some(key);
-                break;
-            }
-        }
-        taken.expect("the index held at least one page to plant a loss in")
+        let bucket = shard
+            .bucket_index
+            .bucket_map
+            .get_mut(&routing_bucket)
+            .expect("the bucket named a moment ago is still there");
+        assert!(
+            bucket.block_index.remove(&handle, &mut live).is_some(),
+            "the planted removal took nothing out, so the count below cannot have moved"
+        );
+        key
     };
     let after: usize = {
         let shards = engine.shards.read().expect("engine lock poisoned");
