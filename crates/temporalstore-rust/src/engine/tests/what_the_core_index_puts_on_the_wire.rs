@@ -599,8 +599,12 @@ fn the_identity_beside_a_deleted_page_is_its_tombstone_row_and_it_composes_the_s
             ..
         } = &mut index;
         let node = bucket_map.get_mut(&7).expect("the bucket was just inserted");
-        let live_handle = node.insert_page(&live.object_key.clone(), live.clone(), block_slab_live);
-        let dead_handle = node.insert_page(&dead.object_key.clone(), dead.clone(), block_slab_live);
+        // ONE KEY FOR BOTH PAGES, WHICH IS WHAT THE FIXTURE MEANT. The two differ in their
+        // address and their `deleted` bit; they are the same object by construction, so passing
+        // the literal twice says that, where reading one copy off each page did not.
+        let object_key: std::sync::Arc<str> = std::sync::Arc::from(OBJECT);
+        let live_handle = node.insert_page(&object_key, live.clone(), block_slab_live);
+        let dead_handle = node.insert_page(&object_key, dead.clone(), block_slab_live);
         node.record_tombstone_element(OBJECT, stored_model_kind(KIND), ELEMENT, &dead.address);
         (live_handle, dead_handle)
     };

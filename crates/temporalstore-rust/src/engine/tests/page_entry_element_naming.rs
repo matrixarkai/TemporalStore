@@ -1344,6 +1344,7 @@ fn the_stored_page_handle_decides_nothing_the_fold_files() {
             std::slice::from_ref(&item),
             false,
         );
+        let named = super::PageObjects::of(&index);
         let mut rows = Vec::new();
         for bucket in index.bucket_map.values() {
             for (allocated, page) in bucket.block_index.iter() {
@@ -1351,10 +1352,11 @@ fn the_stored_page_handle_decides_nothing_the_fold_files() {
                     // FROM THE NODE, WHICH IS WHERE THE BUCKET LIVES. This read
                     // `page.routing_bucket` until that field left the entry in
                     // `65c7fc562`; it is the same number, taken from the structure
-                    // that still holds it, so the census row is unchanged.
+                    // that still holds it, so the census row is unchanged. The object
+                    // key is the same move one field later.
                     bucket.routing_bucket,
                     page.model_id.as_str().to_string(),
-                    page.object_key.as_ref().to_string(),
+                    named.at(bucket.routing_bucket, *allocated).as_ref().to_string(),
                     page.address.block_slab_id(),
                     page.address.offset(),
                     page.address.length(),

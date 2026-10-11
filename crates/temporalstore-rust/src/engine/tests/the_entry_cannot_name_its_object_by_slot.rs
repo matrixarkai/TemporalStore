@@ -603,10 +603,11 @@ fn entries_naming(engine: &TemporalEngine, routing_bucket: u32, object_id: u64) 
     let Some(bucket) = shard.bucket_index.bucket_map.get(&routing_bucket) else {
         return (0, 0);
     };
+    let named = super::PageObjects::of(&shard.bucket_index);
     let mut live = 0usize;
     let mut tombstoned = 0usize;
-    for page in bucket.block_index.values() {
-        if page.object_id(SHARD, &page.object_key) != object_id {
+    for (handle, page) in &bucket.block_index {
+        if page.object_id(SHARD, named.at(routing_bucket, *handle)) != object_id {
             continue;
         }
         if page.deleted {

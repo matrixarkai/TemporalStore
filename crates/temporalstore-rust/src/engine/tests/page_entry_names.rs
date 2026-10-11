@@ -140,15 +140,16 @@ impl NameSpread {
 fn name_spread(engine: &TemporalEngine) -> NameSpread {
     let shards = engine.shards.read().expect("engine lock poisoned");
     let shard = shards.get(&1).expect("shard is loaded");
+    let named = super::PageObjects::of(&shard.bucket_index);
     let mut spread = NameSpread::default();
     for bucket in shard.bucket_index.bucket_map.values() {
         let mut keys: BTreeSet<&str> = BTreeSet::new();
         let mut models: BTreeSet<&str> = BTreeSet::new();
         let mut components: BTreeSet<Option<&str>> = BTreeSet::new();
         let mut held = 0usize;
-        for (_, page) in bucket.block_index.iter() {
+        for (handle, page) in bucket.block_index.iter() {
             held += 1;
-            keys.insert(page.object_key.as_ref());
+            keys.insert(named.at(bucket.routing_bucket, *handle));
             models.insert(page.model_id.as_str());
             // Every entry's name is the same absence, so this set holds one member for any
             // non-empty bucket. The histogram it feeds is restated where it is read.
@@ -765,11 +766,12 @@ fn capture_the_stored_spelling_of_a_page_entry() {
     println!("INDEX_LEN      = {}", text.len());
     println!("INDEX          = {text}");
     println!("PAGES ----------------------------------------------------------");
+    let named = super::PageObjects::of(&index);
     for bucket in index.bucket_map.values() {
-        for entry in bucket.block_index.values() {
+        for (handle, entry) in bucket.block_index.iter() {
             println!(
                 "        (\"{}\", \"{}\", {}, {}, {}, {}, {}, {}, {}),",
-                entry.object_key,
+                named.at(bucket.routing_bucket, *handle),
                 entry.model_id,
                 // The component column is `None` on every row now: an entry names a page. The
                 // column is kept in the printed shape so an existing golden still lines up.
@@ -1097,13 +1099,12 @@ fn an_index_written_before_this_change_loads_page_for_page() {
         .expect("the stored bucket must load");
 
     // --- Element by element, in the order the stored map spells them. ---
-    let mut loaded: Vec<(String, String, Option<String>, u64, u64, u64, bool, bool)> = index
-        .bucket_map
-        .values()
-        .flat_map(|bucket| bucket.block_index.values())
-        .map(|page| {
+    let mut loaded: Vec<(String, String, Option<String>, u64, u64, u64, bool, bool)> =
+        super::pages_with_identity(&index)
+            .into_iter()
+            .map(|(_, _, object_key, page)| {
             (
-                page.object_key.to_string(),
+                object_key.to_string(),
                 page.model_id.to_string(),
                 None::<String>,
                 page.address.block_slab_id(),
@@ -1975,14 +1976,12 @@ fn a_store_stamped_with_the_wrong_struct_version_is_refused_before_it_is_decoded
 fn page_tuples(
     shard: &crate::engine::state::ShardState,
 ) -> Vec<(String, String, Option<String>, u64, u64, u64, bool, bool, bool)> {
-    let mut pages: Vec<(String, String, Option<String>, u64, u64, u64, bool, bool, bool)> = shard
-        .bucket_index
-        .bucket_map
-        .values()
-        .flat_map(|bucket| bucket.block_index.values())
-        .map(|page| {
+    let mut pages: Vec<(String, String, Option<String>, u64, u64, u64, bool, bool, bool)> =
+        super::pages_with_identity(&shard.bucket_index)
+            .into_iter()
+            .map(|(_, _, object_key, page)| {
             (
-                page.object_key.to_string(),
+                object_key.to_string(),
                 page.model_id.to_string(),
                 None::<String>,
                 page.address.block_slab_id(),
@@ -2235,17 +2234,12 @@ fn a_record_whose_page_handle_was_omitted_still_names_its_page_after_the_fold() 
         .expect("the checked load must not refuse this log")
         .expect("the checked load must return a shard state");
 
-    let pages: Vec<&crate::engine::state::BlockIndex> = folded
-        .bucket_index
-        .bucket_map
-        .values()
-        .flat_map(|bucket| bucket.block_index.values())
-        .collect();
+    let pages = super::pages_with_identity(&folded.bucket_index);
     println!("=== after the fold: {} page(s) ===", pages.len());
-    for page in &pages {
+    for (_, _, object_key, page) in &pages {
         println!(
             "  key={:?} kind={} slab={} off={} len={} log_backed={}",
-            page.object_key,
+            object_key,
             page.model_id.as_str(),
             page.address.block_slab_id(),
             page.address.offset(),
@@ -2256,7 +2250,8 @@ fn a_record_whose_page_handle_was_omitted_still_names_its_page_after_the_fold() 
 
     let omitted_page = pages
         .iter()
-        .find(|page| page.object_key.as_ref() == KEY)
+        .find(|(_, _, object_key, _)| object_key.as_ref() == KEY)
+        .map(|(_, _, _, page)| *page)
         .unwrap_or_else(|| {
             panic!(
                 "THE OMITTED-HANDLE PAGE IS MISSING AFTER THE FOLD. If this ever fires, the \
@@ -2268,7 +2263,8 @@ fn a_record_whose_page_handle_was_omitted_still_names_its_page_after_the_fold() 
         });
     let nonsense_page = pages
         .iter()
-        .find(|page| page.object_key.as_ref() == WRONG_KEY)
+        .find(|(_, _, object_key, _)| object_key.as_ref() == WRONG_KEY)
+        .map(|(_, _, _, page)| *page)
         .expect(
             "the page whose stored handle is not any derivation is missing, so the stored handle \
              IS consulted somewhere on this path",
@@ -2382,20 +2378,20 @@ fn an_ungated_store_is_refused_before_it_is_served() {
          about",
         decoded.index_format_version
     );
-    let container_entries: Vec<(String, String, Option<String>)> = decoded
-        .bucket_index
-        .bucket_map
-        .values()
-        .flat_map(|bucket| bucket.block_index.values())
-        .filter(|page| matches!(page.model_id.as_str(), "hash" | "zset" | "set" | "list"))
-        .map(|page| {
-            (
-                page.object_key.to_string(),
-                page.model_id.as_str().to_string(),
-                element_name_of(page),
-            )
-        })
-        .collect();
+    let container_entries: Vec<(String, String, Option<String>)> =
+        super::pages_with_identity(&decoded.bucket_index)
+            .into_iter()
+            .filter(|(_, _, _, page)| {
+                matches!(page.model_id.as_str(), "hash" | "zset" | "set" | "list")
+            })
+            .map(|(_, _, object_key, page)| {
+                (
+                    object_key.to_string(),
+                    page.model_id.as_str().to_string(),
+                    element_name_of(page),
+                )
+            })
+            .collect();
     println!("\n=== a pre-change store, decoded by this binary ===");
     for row in &container_entries {
         println!("  {row:?}");

@@ -1424,6 +1424,7 @@ fn an_entry_names_its_object_from_its_own_terms() {
     use crate::engine::storage_bucket_internals::stored_model_kind;
     use std::sync::Arc;
 
+    let entry_key: Arc<str> = Arc::from("named-key");
     let entry = BlockIndex {
         object_key: Arc::from("named-key"),
         model_id: stored_model_kind("string"),
@@ -1434,13 +1435,21 @@ fn an_entry_names_its_object_from_its_own_terms() {
     // THE DERIVATION IS THE AUTHORITY, and this compares against it rather than against a second
     // copy -- there is no second copy, which is the change being recorded.
     let expected = crate::engine::hashing::stable_block_object_id(1, "string", "named-key");
-    assert_eq!(entry.object_id(1, &entry.object_key), expected, "an entry names its object from its own terms");
-    assert_ne!(entry.object_id(1, &entry.object_key), 0, "and the answer is not the silent zero this used to report");
+    assert_eq!(
+        entry.object_id(1, &entry_key),
+        expected,
+        "an entry names its object from the identity beside it"
+    );
+    assert_ne!(
+        entry.object_id(1, &entry_key),
+        0,
+        "and the answer is not the silent zero this used to report"
+    );
     // A DIFFERENT SHARD IS A DIFFERENT OBJECT, which is why the shard is a parameter and not a
     // guess: if this held, a zero default would have been harmless and it is not.
     assert_ne!(
-        entry.object_id(1, &entry.object_key),
-        entry.object_id(2, &entry.object_key),
+        entry.object_id(1, &entry_key),
+        entry.object_id(2, &entry_key),
         "the shard is a term of the identity, so two shards must not agree"
     );
     // AND IT SURVIVES THE STORED FORM: the id was never written, so nothing about it can be lost.

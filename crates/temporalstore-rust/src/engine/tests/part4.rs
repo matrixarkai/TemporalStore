@@ -4579,21 +4579,17 @@ fn dirty_objects_versus_the_blocks_own_dirty_flags() {
     let shards = engine.shards.read().expect("shards lock poisoned");
     let shard = shards.get(&1).expect("shard 1 loaded");
 
-    let blocks_marked_dirty: std::collections::BTreeSet<String> = shard
-        .bucket_index
-        .bucket_map
-        .values()
-        .flat_map(|bucket| bucket.block_index.values())
-        .filter(|page| page.dirty)
-        .map(|page| page.object_key.to_string())
-        .collect();
-    let any_block_at_all: std::collections::BTreeSet<String> = shard
-        .bucket_index
-        .bucket_map
-        .values()
-        .flat_map(|bucket| bucket.block_index.values())
-        .map(|page| page.object_key.to_string())
-        .collect();
+    let blocks_marked_dirty: std::collections::BTreeSet<String> =
+        super::pages_with_identity(&shard.bucket_index)
+            .into_iter()
+            .filter(|(_, _, _, page)| page.dirty)
+            .map(|(_, _, object_key, _)| object_key.to_string())
+            .collect();
+    let any_block_at_all: std::collections::BTreeSet<String> =
+        super::pages_with_identity(&shard.bucket_index)
+            .into_iter()
+            .map(|(_, _, object_key, _)| object_key.to_string())
+            .collect();
 
     let in_set_not_flagged: Vec<&str> = shard
         .dirty_objects
@@ -5199,15 +5195,17 @@ fn a_block_whose_address_carries_no_object_id_still_reports_one() {
 
     let shards = engine.shards.read().expect("shards lock poisoned");
     let shard = shards.get(&1).expect("shard 1 loaded");
+    let named = super::PageObjects::of(&shard.bucket_index);
     let mut seen = 0usize;
     for bucket in shard.bucket_index.bucket_map.values() {
-        for (_ref_key, page) in bucket.block_index.iter() {
-            if page.object_key.as_ref() != "orphan-key" {
+        for (ref_key, page) in bucket.block_index.iter() {
+            let object_key = named.at(bucket.routing_bucket, *ref_key);
+            if object_key.as_ref() != "orphan-key" {
                 continue;
             }
             seen += 1;
             assert_ne!(
-                page.object_id(1, &page.object_key),
+                page.object_id(1, object_key),
                 0,
                 "a page filed from an address with no object id must still report the computed one"
             );
@@ -5215,7 +5213,7 @@ fn a_block_whose_address_carries_no_object_id_still_reports_one() {
             // the same function and comparing it with itself: the bucket's object index was
             // populated from the id the write path actually used.
             assert!(
-                bucket.object_index.contains(&page.object_id(1, &page.object_key)),
+                bucket.object_index.contains(&page.object_id(1, object_key)),
                 "the id the page reports must be the one the write path filed it under"
             );
         }
@@ -5306,13 +5304,10 @@ fn rewriting_a_block_does_not_reuse_its_index_key() {
     let after_first: Vec<String> = {
         let shards = engine.shards.read().expect("shards lock poisoned");
         let shard = shards.get(&1).expect("shard 1 loaded");
-        shard
-            .bucket_index
-            .bucket_map
-            .values()
-            .flat_map(|bucket| bucket.block_index.iter())
-            .filter(|(_, page)| page.object_key.as_ref() == key)
-            .map(|(ref_key, _)| ref_key.to_string())
+        super::pages_with_identity(&shard.bucket_index)
+            .into_iter()
+            .filter(|(_, _, object_key, _)| object_key.as_ref() == key)
+            .map(|(_, handle, _, _)| handle.to_string())
             .collect()
     };
 
@@ -5323,13 +5318,10 @@ fn rewriting_a_block_does_not_reuse_its_index_key() {
     let after_second: Vec<String> = {
         let shards = engine.shards.read().expect("shards lock poisoned");
         let shard = shards.get(&1).expect("shard 1 loaded");
-        shard
-            .bucket_index
-            .bucket_map
-            .values()
-            .flat_map(|bucket| bucket.block_index.iter())
-            .filter(|(_, page)| page.object_key.as_ref() == key)
-            .map(|(ref_key, _)| ref_key.to_string())
+        super::pages_with_identity(&shard.bucket_index)
+            .into_iter()
+            .filter(|(_, _, object_key, _)| object_key.as_ref() == key)
+            .map(|(_, handle, _, _)| handle.to_string())
             .collect()
     };
 
@@ -5377,8 +5369,9 @@ fn installing_the_same_block_twice_replaces_it() {
 
     let mut map = crate::engine::state::BlockIndexMap::default();
     let mut live = crate::engine::state::BlockSlabLiveIndex::default();
-    let first = map.insert(&(page()).object_key.clone(), page(), &mut live);
-    let second = map.insert(&(page()).object_key.clone(), page(), &mut live);
+    let object_key: Arc<str> = Arc::from("twice");
+    let first = map.insert(&object_key, page(), &mut live);
+    let second = map.insert(&object_key, page(), &mut live);
 
     assert_eq!(first, second, "the same page must land on the same handle");
     assert_eq!(map.len(), 1, "installing it twice must not add a second entry");
@@ -5386,7 +5379,7 @@ fn installing_the_same_block_twice_replaces_it() {
     // A block differing in one identity field is a different block and keeps its own slot.
     let mut moved = page();
     moved.address = ElementEntry::from_parts(1, 64, 4, Some(1), Some(30));
-    let third = map.insert(&moved.object_key.clone(), moved, &mut live);
+    let third = map.insert(&object_key, moved, &mut live);
     assert_ne!(first, third, "a page at another offset is not the same page");
     assert_eq!(map.len(), 2);
 
@@ -5634,10 +5627,15 @@ fn the_block_index_still_writes_string_keys() {
     let (handle, page) = bucket.block_index.iter().next().expect("one page");
     assert!(*handle > 0, "the map assigns a handle");
 
-    // On the wire: the same rendered key it always wrote, rebuilt from the block.
+    // On the wire: the same rendered key it always wrote, rebuilt from the block AND the identity
+    // beside it -- which is where the renderer takes it from now.
+    let named = super::PageObjects::of(&shard.bucket_index);
     let json = serde_json::to_value(&bucket.block_index).unwrap();
     let written = json.as_object().expect("the wire form is a map of string keys");
-    let expected = crate::engine::state::block_index_written_key(&page.object_key, page);
+    let expected = crate::engine::state::block_index_written_key(
+        named.at(bucket.routing_bucket, *handle),
+        page,
+    );
     assert!(
         written.contains_key(&expected),
         "the dump must carry the rendered key {expected:?}, got {:?}",
@@ -7070,6 +7068,7 @@ fn a_bucket_holding_one_block_holds_no_node() {
     {
         let shards = engine.shards.read().expect("shards lock poisoned");
         let shard = shards.get(&1).expect("shard 1 loaded");
+        let named = super::PageObjects::of(&shard.bucket_index);
         let bucket = shard
             .bucket_index
             .bucket_map
@@ -7077,8 +7076,8 @@ fn a_bucket_holding_one_block_holds_no_node() {
             .find(|bucket| {
                 bucket
                     .block_index
-                    .values()
-                    .any(|page| &*page.object_key == "wide")
+                    .iter()
+                    .any(|(handle, _)| &**named.at(bucket.routing_bucket, *handle) == "wide")
             })
             .expect("the remaining field must still be filed");
         // THE DEMOTION IS NOW DEFERRED, NOT DEAD, AND THIS IS WHAT DEFERS IT.
@@ -7176,6 +7175,7 @@ fn a_bucket_holding_one_block_holds_no_node() {
     {
         let shards = engine.shards.read().expect("shards lock poisoned");
         let shard = shards.get(&1).expect("shard 1 loaded");
+        let named = super::PageObjects::of(&shard.bucket_index);
         let bucket = shard
             .bucket_index
             .bucket_map
@@ -7183,8 +7183,8 @@ fn a_bucket_holding_one_block_holds_no_node() {
             .find(|bucket| {
                 bucket
                     .block_index
-                    .values()
-                    .any(|page| &*page.object_key == "wide")
+                    .iter()
+                    .any(|(handle, _)| &**named.at(bucket.routing_bucket, *handle) == "wide")
             })
             .expect("the object must still be filed");
         let live = bucket.block_index.values().filter(|page| !page.deleted).count();
@@ -7231,6 +7231,7 @@ fn a_bucket_holding_one_block_holds_no_node() {
     {
         let shards = engine.shards.read().expect("shards lock poisoned");
         let shard = shards.get(&1).expect("shard 1 loaded");
+        let named = super::PageObjects::of(&shard.bucket_index);
         let held: usize = shard
             .bucket_index
             .bucket_map
@@ -7238,8 +7239,10 @@ fn a_bucket_holding_one_block_holds_no_node() {
             .map(|bucket| {
                 bucket
                     .block_index
-                    .values()
-                    .filter(|page| &*page.object_key == "wide")
+                    .iter()
+                    .filter(|(handle, _)| {
+                        &**named.at(bucket.routing_bucket, **handle) == "wide"
+                    })
                     .count()
             })
             .sum();
@@ -8340,14 +8343,15 @@ fn bucket_object_index_already_matches_a_from_scratch_recompute() {
 
     let shards = engine.shards.read().expect("shards lock poisoned");
     let shard = shards.get(&1).expect("shard 1 loaded");
+    let named = super::PageObjects::of(&shard.bucket_index);
     let mut checked = 0usize;
     let mut mismatches = Vec::new();
     for (routing_bucket, bucket) in shard.bucket_index.bucket_map.iter() {
         let recomputed: std::collections::BTreeSet<u64> = bucket
             .block_index
-            .values()
-            .filter(|page| !page.deleted)
-            .map(|page| page.object_id(1, &page.object_key))
+            .iter()
+            .filter(|(_, page)| !page.deleted)
+            .map(|(handle, page)| page.object_id(1, named.at(*routing_bucket, *handle)))
             .collect();
         // Mirrors update_bucket_layout: an empty live set over an empty block index leaves the
         // stored set untouched, so only compare where the rebuild would actually assign.
@@ -13767,15 +13771,16 @@ fn the_maintained_object_index_matches_a_full_rebuild() {
     let shard = shards.get(&1).expect("shard 1 loaded");
 
     let mut divergent = Vec::new();
+    let named = super::PageObjects::of(&shard.bucket_index);
     let mut checked = 0usize;
     let mut live_total = 0usize;
     for (routing_bucket, bucket) in shard.bucket_index.bucket_map.iter() {
         // What a rebuild would produce: the ids of the blocks that are not deleted.
         let rebuilt: crate::engine::state::ObjectIndex = bucket
             .block_index
-            .values()
-            .filter(|page| !page.deleted)
-            .map(|page| page.object_id(1, &page.object_key))
+            .iter()
+            .filter(|(_, page)| !page.deleted)
+            .map(|(handle, page)| page.object_id(1, named.at(*routing_bucket, *handle)))
             .collect();
         checked += 1;
         live_total += rebuilt.object_count();
@@ -13908,12 +13913,11 @@ fn whether_a_context_block_reaches_the_bucket_index() {
         .keys()
         .filter(|key| key.contains("ctx") || key.contains("context"))
         .count();
-    let context_blocks_in_index: usize = shard
-        .bucket_index
-        .bucket_map
-        .values()
-        .flat_map(|bucket| bucket.block_index.values())
-        .filter(|page| page.object_key.contains("ctx") || page.object_key.contains("context"))
+    let context_blocks_in_index: usize = super::pages_with_identity(&shard.bucket_index)
+        .into_iter()
+        .filter(|(_, _, object_key, _)| {
+            object_key.contains("ctx") || object_key.contains("context")
+        })
         .count();
 
     println!(
@@ -14172,17 +14176,19 @@ fn which_parts_of_a_block_address_restate_their_surroundings() {
     let shards = engine.shards.read().expect("shards lock poisoned");
     let shard = shards.get(&1).expect("shard 1 loaded");
 
+    let named = super::PageObjects::of(&shard.bucket_index);
     let mut pages = 0usize;
     let mut routing_matches_bucket = 0usize;
     for (bucket_key, bucket) in shard.bucket_index.bucket_map.iter() {
-        for page in bucket.block_index.values() {
+        for (handle, _page) in &bucket.block_index {
             pages += 1;
             // WHERE THE BLOCK IS, against where its KEY routes. This used to compare the
             // address's own copy of its bucket against the bucket holding it -- a comparison
             // between a value and the expression that wrote it. The address carries no bucket, so
             // the comparison is now between the container and the derivation, which is the one
             // form of it that can disagree.
-            if block_routing_bucket(&page.object_key, 0, u32::MAX) == *bucket_key {
+            if block_routing_bucket(named.at(*bucket_key, *handle), 0, u32::MAX) == *bucket_key
+            {
                 routing_matches_bucket += 1;
             }
             // `object_id_matches_entry` STOOD HERE and has gone with the field. It compared the
@@ -14277,21 +14283,17 @@ fn maintaining_the_index_during_ingest_matches_rebuilding_it() {
     let held: std::collections::BTreeMap<(u32, String), (String, String, Option<String>)> = {
         let shards = engine.shards.read().expect("shards lock poisoned");
         let shard = shards.get(&1).expect("shard 1 loaded");
-        shard
-            .bucket_index
-            .bucket_map
-            .iter()
-            .flat_map(|(bucket, node)| {
-                node.block_index.iter().map(move |(ref_key, page)| {
+        super::pages_with_identity(&shard.bucket_index)
+            .into_iter()
+            .map(|(bucket, handle, object_key, page)| {
+                (
+                    (bucket, handle.to_string()),
                     (
-                        (*bucket, ref_key.to_string()),
-                        (
-                            page.model_id.to_string(),
-                            page.object_key.to_string(),
-                            None::<String>,
-                        ),
-                    )
-                })
+                        page.model_id.to_string(),
+                        object_key.to_string(),
+                        None::<String>,
+                    ),
+                )
             })
             .collect()
     };
@@ -14311,21 +14313,17 @@ fn maintaining_the_index_during_ingest_matches_rebuilding_it() {
     let rebuilt: std::collections::BTreeMap<(u32, String), (String, String, Option<String>)> = {
         let shards = engine.shards.read().expect("shards lock poisoned");
         let shard = shards.get(&1).expect("shard 1 loaded");
-        shard
-            .bucket_index
-            .bucket_map
-            .iter()
-            .flat_map(|(bucket, node)| {
-                node.block_index.iter().map(move |(ref_key, page)| {
+        super::pages_with_identity(&shard.bucket_index)
+            .into_iter()
+            .map(|(bucket, handle, object_key, page)| {
+                (
+                    (bucket, handle.to_string()),
                     (
-                        (*bucket, ref_key.to_string()),
-                        (
-                            page.model_id.to_string(),
-                            page.object_key.to_string(),
-                            None::<String>,
-                        ),
-                    )
-                })
+                        page.model_id.to_string(),
+                        object_key.to_string(),
+                        None::<String>,
+                    ),
+                )
             })
             .collect()
     };
@@ -15961,19 +15959,10 @@ fn a_no_block_command_leaves_the_index_matching_a_rebuild() {
     let snapshot = |engine: &TemporalEngine| -> Vec<String> {
         let shards = engine.shards.read().expect("shards lock poisoned");
         let shard = shards.get(&1).expect("shard 1 loaded");
-        let mut rows: Vec<String> = shard
-            .bucket_index
-            .bucket_map
-            .iter()
-            .flat_map(|(routing_bucket, bucket)| {
-                bucket.block_index.values().map(move |page| {
-                    format!(
-                        "{routing_bucket}|{}|{}|{}",
-                        page.model_id,
-                        page.object_key,
-                        "-"
-                    )
-                })
+        let mut rows: Vec<String> = super::pages_with_identity(&shard.bucket_index)
+            .into_iter()
+            .map(|(routing_bucket, _handle, object_key, page)| {
+                format!("{routing_bucket}|{}|{}|{}", page.model_id, object_key, "-")
             })
             .collect();
         rows.sort();
@@ -16081,19 +16070,10 @@ fn a_no_block_command_in_a_batch_does_not_rebuild_the_index() {
     let block_rows = |engine: &TemporalEngine| -> Vec<String> {
         let shards = engine.shards.read().expect("shards lock poisoned");
         let shard = shards.get(&1).expect("shard 1 loaded");
-        let mut rows: Vec<String> = shard
-            .bucket_index
-            .bucket_map
-            .iter()
-            .flat_map(|(routing_bucket, bucket)| {
-                bucket.block_index.values().map(move |page| {
-                    format!(
-                        "{routing_bucket}|{}|{}|{}",
-                        page.model_id,
-                        page.object_key,
-                        "-"
-                    )
-                })
+        let mut rows: Vec<String> = super::pages_with_identity(&shard.bucket_index)
+            .into_iter()
+            .map(|(routing_bucket, _handle, object_key, page)| {
+                format!("{routing_bucket}|{}|{}|{}", page.model_id, object_key, "-")
             })
             .collect();
         rows.sort();
@@ -19268,26 +19248,22 @@ fn a_released_bucket_reloads_the_exact_block_list_it_released() {
 
     fn block_listing(engine: &TemporalEngine) -> Vec<(u32, String, String, Option<String>, u64, u64, u64)> {
         let shards = engine.shards.read().expect("shards lock poisoned");
-        let mut rows = shards
-            .get(&1)
-            .expect("loaded shard")
-            .bucket_index
-            .bucket_map
-            .iter()
-            .flat_map(|(routing_bucket, bucket)| {
-                bucket.block_index.values().map(move |page| {
-                    (
-                        *routing_bucket,
-                        page.model_id.to_string(),
-                        page.object_key.to_string(),
-                        None::<String>,
-                        page.address.block_slab_id(),
-                        page.address.offset(),
-                        page.address.length(),
-                    )
-                })
-            })
-            .collect::<Vec<_>>();
+        let mut rows = super::pages_with_identity(
+            &shards.get(&1).expect("loaded shard").bucket_index,
+        )
+        .into_iter()
+        .map(|(routing_bucket, _handle, object_key, page)| {
+            (
+                routing_bucket,
+                page.model_id.to_string(),
+                object_key.to_string(),
+                None::<String>,
+                page.address.block_slab_id(),
+                page.address.offset(),
+                page.address.length(),
+            )
+        })
+        .collect::<Vec<_>>();
         rows.sort();
         rows
     }

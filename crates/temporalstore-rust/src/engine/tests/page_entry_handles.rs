@@ -326,15 +326,19 @@ fn pages_per_object(engine: &TemporalEngine) -> PagesPerObject {
     let shard = shards.get(&1).expect("shard is loaded");
     let mut per_object: BTreeMap<(StoredModelKind, String), (usize, BTreeSet<String>)> =
         BTreeMap::new();
+    let named = super::PageObjects::of(&shard.bucket_index);
     let mut measured = PagesPerObject::default();
     for bucket in shard.bucket_index.bucket_map.values() {
         let mut bucket_components: BTreeSet<Option<&str>> = BTreeSet::new();
-        for (_, page) in bucket.block_index.iter() {
+        for (handle, page) in bucket.block_index.iter() {
             measured.pages += 1;
             // One member for any non-empty bucket: every entry carries the same absence.
             bucket_components.insert(None::<&str>);
             let slot = per_object
-                .entry((page.model_id, page.object_key.to_string()))
+                .entry((
+                    page.model_id,
+                    named.at(bucket.routing_bucket, *handle).to_string(),
+                ))
                 .or_default();
             slot.0 += 1;
             // NO ELEMENT NAME ON THE ENTRY, so the component columns of this census -- distinct
@@ -585,11 +589,17 @@ fn measure_object_key_table(engine: &TemporalEngine) -> TableCost {
     let shard = shards.get(&1).expect("shard is loaded");
     let mut pages = 0usize;
     // Collected first, so the probe charges the TABLE and not the walk that feeds it.
+    //
+    // THE NAMES COME FROM THE LOOKUP, WHICH IS WHERE THE ALLOCATION THEY MEASURE NOW LIVES. The
+    // table this prices interns shared names; the pages have none of their own, so the shared
+    // names the bucket's own lookup holds are the input, and that is the same set of `Arc`s the
+    // table would be fed in production.
+    let named = super::PageObjects::of(&shard.bucket_index);
     let mut names: Vec<Arc<str>> = Vec::new();
     for bucket in shard.bucket_index.bucket_map.values() {
-        for (_, page) in bucket.block_index.iter() {
+        for (handle, _page) in bucket.block_index.iter() {
             pages += 1;
-            names.push(Arc::clone(&page.object_key));
+            names.push(Arc::clone(named.at(bucket.routing_bucket, *handle)));
         }
     }
     let probe = Probe::start();
@@ -1342,15 +1352,13 @@ fn a_released_bucket_reloads_every_name_element_by_element() {
 fn page_triples(engine: &TemporalEngine) -> Vec<(String, String, Option<String>, u64, u64)> {
     let shards = engine.shards.read().expect("engine lock poisoned");
     let shard = shards.get(&1).expect("shard is loaded");
-    let mut triples: Vec<(String, String, Option<String>, u64, u64)> = shard
-        .bucket_index
-        .bucket_map
-        .values()
-        .flat_map(|bucket| bucket.block_index.iter())
-        .map(|(_, page)| {
+    let mut triples: Vec<(String, String, Option<String>, u64, u64)> =
+        super::pages_with_identity(&shard.bucket_index)
+            .into_iter()
+            .map(|(_, _, object_key, page)| {
             (
                 page.model_id.as_str().to_string(),
-                page.object_key.to_string(),
+                object_key.to_string(),
                 None::<String>,
                 page.address.block_slab_id(),
                 page.address.offset(),
@@ -2027,8 +2035,9 @@ fn an_empty_value_still_carries_a_length_so_the_zero_length_tombstone_is_open() 
     let mut zero_length_live = 0usize;
     let mut nonzero_length_live = 0usize;
     let mut deleted_pages = 0usize;
+    let named = super::PageObjects::of(&shard.bucket_index);
     for bucket in shard.bucket_index.bucket_map.values() {
-        for (_, page) in bucket.block_index.iter() {
+        for (handle, page) in bucket.block_index.iter() {
             if page.deleted {
                 deleted_pages += 1;
                 continue;
@@ -2038,7 +2047,7 @@ fn an_empty_value_still_carries_a_length_so_the_zero_length_tombstone_is_open() 
                 println!(
                     "  live zero-length page: model={} key={}",
                     page.model_id.as_str(),
-                    page.object_key
+                    named.at(bucket.routing_bucket, *handle)
                 );
             } else {
                 nonzero_length_live += 1;
