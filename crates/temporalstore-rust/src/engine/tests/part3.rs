@@ -2633,8 +2633,12 @@ fn bucket_store_reports_all_layout_states_and_runtime_flags() {
             layout: BucketLayoutState::SingleBlockObject,
             flags: BucketFlags::default().with(BucketFlags::META_LOADED, true).with(BucketFlags::IN_MEMORY, true),
             object_index: [30].into_iter().collect(),
+            // KEYED BY THE IDENTITY WRITTEN BESIDE THE PAGE. These literals used to carry a
+            // stored map key that was then THROWN AWAY and replaced by the page's own copy of
+            // the object key -- so the string said one thing and the index was keyed by another.
+            // The object key is simply stated once now, in the position the index is keyed by.
             block_index: [(
-                "string:k::1:0".to_string(),
+                std::sync::Arc::<str>::from("k"),
                 BlockIndex {
                     object_key: Arc::from("k".to_string()),
                     model_id: crate::engine::storage_bucket_internals::StoredModelKind::String,
@@ -2644,7 +2648,6 @@ fn bucket_store_reports_all_layout_states_and_runtime_flags() {
                 },
             )]
             .into_iter()
-            .map(|(_key, page): (String, BlockIndex)| (std::sync::Arc::clone(&page.object_key), page))
             .collect(),
             ..BucketNode::default()
         },
@@ -2658,7 +2661,7 @@ fn bucket_store_reports_all_layout_states_and_runtime_flags() {
             object_index: [40].into_iter().collect(),
             block_index: [
                 (
-                    "feature:k::2:0".to_string(),
+                    std::sync::Arc::<str>::from("feature-key"),
                     BlockIndex {
                         object_key: Arc::from("feature-key".to_string()),
                         model_id: crate::engine::storage_bucket_internals::StoredModelKind::Feature,
@@ -2668,7 +2671,7 @@ fn bucket_store_reports_all_layout_states_and_runtime_flags() {
                     },
                 ),
                 (
-                    "feature:k::2:4".to_string(),
+                    std::sync::Arc::<str>::from("feature-key"),
                     BlockIndex {
                         object_key: Arc::from("feature-key".to_string()),
                         model_id: crate::engine::storage_bucket_internals::StoredModelKind::Feature,
@@ -2679,7 +2682,6 @@ fn bucket_store_reports_all_layout_states_and_runtime_flags() {
                 ),
             ]
             .into_iter()
-            .map(|(_key, page): (String, BlockIndex)| (std::sync::Arc::clone(&page.object_key), page))
             .collect(),
             ..BucketNode::default()
         },
@@ -2693,7 +2695,7 @@ fn bucket_store_reports_all_layout_states_and_runtime_flags() {
             object_index: [50, 51].into_iter().collect(),
             block_index: [
                 (
-                    "hash:k:a:3:0".to_string(),
+                    std::sync::Arc::<str>::from("hash-key"),
                     BlockIndex {
                         object_key: Arc::from("hash-key".to_string()),
                         model_id: crate::engine::storage_bucket_internals::StoredModelKind::Hash,
@@ -2703,7 +2705,7 @@ fn bucket_store_reports_all_layout_states_and_runtime_flags() {
                     },
                 ),
                 (
-                    "hash:k:b:3:1".to_string(),
+                    std::sync::Arc::<str>::from("hash-key"),
                     BlockIndex {
                         object_key: Arc::from("hash-key".to_string()),
                         model_id: crate::engine::storage_bucket_internals::StoredModelKind::Hash,
@@ -2714,7 +2716,6 @@ fn bucket_store_reports_all_layout_states_and_runtime_flags() {
                 ),
             ]
             .into_iter()
-            .map(|(_key, page): (String, BlockIndex)| (std::sync::Arc::clone(&page.object_key), page))
             .collect(),
             ..BucketNode::default()
         },

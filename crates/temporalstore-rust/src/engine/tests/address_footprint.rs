@@ -1837,28 +1837,38 @@ fn the_capacity_ceilings_each_narrowing_would_impose() {
     let mut named: BTreeMap<String, (u64, bool)> = BTreeMap::new();
     let mut longest: Vec<(u64, String)> = Vec::new();
 
+    // EVERY ROW BELOW NAMES ITS OBJECT FROM THE STRUCTURE BESIDE THE PAGE. `identity_of` is
+    // used rather than the live-only inversion because this walk reports on DELETED pages too --
+    // two of its rows are about zero-length tombstones -- and a tombstone's object is named by
+    // the bucket's own removal row, not by the object lookup.
+    let keys = crate::engine::state::PageKeysByPosition::from_lookup(
+        &shard.bucket_index.object_block_lookup,
+    );
     for bucket in shard.bucket_index.bucket_map.values() {
         max_objects_in_a_bucket = max_objects_in_a_bucket.max(bucket.object_index.object_count());
         let mut blocks_here = 0usize;
-        for (_, page) in bucket.block_index.iter() {
+        for (handle, page) in bucket.block_index.iter() {
             blocks_here += 1;
             model_ids.insert(page.model_id.to_string());
-            *blocks_per_object.entry(page.object_id(1, &page.object_key)).or_default() += 1;
+            let named_key = keys
+                .identity_of(bucket, *handle, page)
+                .map(|beside| std::sync::Arc::clone(beside.object_key))
+                .unwrap_or_else(|| {
+                    panic!(
+                        "the page at handle {handle} is named by nothing beside it, so this                          footprint report has no object to attribute it to"
+                    )
+                });
+            *blocks_per_object.entry(page.object_id(1, &named_key)).or_default() += 1;
             max_length = max_length.max(page.address.length());
             max_page_id = max_page_id.max(page.address.block_id().unwrap_or(0));
-            longest.push((page.address.length(), page.object_key.to_string()));
-            if page.object_key.as_ref() == "big_value" || page.object_key.as_ref() == "empty_value"
-            {
-                named.insert(
-                    page.object_key.to_string(),
-                    (page.address.length(), page.deleted),
-                );
+            longest.push((page.address.length(), named_key.to_string()));
+            if named_key.as_ref() == "big_value" || named_key.as_ref() == "empty_value" {
+                named.insert(named_key.to_string(), (page.address.length(), page.deleted));
             }
             if !page.deleted {
                 live_blocks += 1;
                 if page.address.length() == 0 {
-                    live_zero_length
-                        .push((page.model_id.to_string(), page.object_key.to_string()));
+                    live_zero_length.push((page.model_id.to_string(), named_key.to_string()));
                 }
             } else if page.address.length() == 0 {
                 deleted_zero_length += 1;

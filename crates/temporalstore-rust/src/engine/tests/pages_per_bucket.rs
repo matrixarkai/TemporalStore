@@ -1621,7 +1621,8 @@ fn reading_a_page_out_of_line_costs_a_dependent_load_an_inline_entry_did_not() {
     let mut listed: Vec<(u64, BlockIndexMap)> = Vec::with_capacity(BUCKETS);
     for i in 0..BUCKETS {
         let mut index = BlockIndexMap::default();
-        let handle = index.insert(&(page_for(i as u64)).object_key.clone(), page_for(i as u64), &mut live);
+        let (object_key, entry) = page_for(i as u64);
+        let handle = index.insert(&object_key, entry, &mut live);
         listed.push((handle, index));
     }
     // THE DECLINED SHAPE, as a mirror: the entry held in the node's own bytes.
@@ -1799,39 +1800,45 @@ fn reading_a_page_out_of_line_costs_a_dependent_load_an_inline_entry_did_not() {
 // THE TRANSITION, IN BOTH DIRECTIONS, ELEMENT BY ELEMENT.
 // ---------------------------------------------------------------------------------------------
 
-fn page_for(seed: u64) -> BlockIndex {
-    BlockIndex {
-        object_key: Arc::from(format!("key-{seed}").as_str()),
+fn page_for(seed: u64) -> (Arc<str>, BlockIndex) {
+    (
+        Arc::from(format!("key-{seed}").as_str()),
+        BlockIndex {
+            object_key: Arc::from(format!("key-{seed}").as_str()),
         // Was `"strings"`, which is not a spelling the registry declares -- the plural was a
         // fixture typo that a free-form string field could not catch.
-        model_id: crate::engine::storage_bucket_internals::StoredModelKind::String,
-        address: ElementEntry::from_parts(
-            7,
-            seed * 128,
-            64,
-            Some(seed),
-            Some(seed.wrapping_mul(0x9E37_79B9_7F4A_7C15)),
-        ),
-        dirty: false,
-        deleted: false,
-    }
+            model_id: crate::engine::storage_bucket_internals::StoredModelKind::String,
+            address: ElementEntry::from_parts(
+                7,
+                seed * 128,
+                64,
+                Some(seed),
+                Some(seed.wrapping_mul(0x9E37_79B9_7F4A_7C15)),
+            ),
+            dirty: false,
+            deleted: false,
+        },
+    )
 }
 
-fn component_page(seed: u64, component: &str) -> BlockIndex {
-    BlockIndex {
-        object_key: Arc::from("container"),
-        // Was `"hashes"`, likewise not a declared spelling.
-        model_id: crate::engine::storage_bucket_internals::StoredModelKind::Hash,
-        address: ElementEntry::from_parts(
-            9,
-            seed * 256,
-            96,
-            Some(seed),
-            Some(seed.wrapping_mul(0x1000_0000_01B3)),
-        ),
-        dirty: true,
-        deleted: false,
-    }
+fn component_page(seed: u64, component: &str) -> (Arc<str>, BlockIndex) {
+    (
+        Arc::from("container"),
+        BlockIndex {
+            object_key: Arc::from("container"),
+            // Was `"hashes"`, likewise not a declared spelling.
+            model_id: crate::engine::storage_bucket_internals::StoredModelKind::Hash,
+            address: ElementEntry::from_parts(
+                9,
+                seed * 256,
+                96,
+                Some(seed),
+                Some(seed.wrapping_mul(0x1000_0000_01B3)),
+            ),
+            dirty: true,
+            deleted: false,
+        },
+    )
 }
 
 /// Every field of a block entry, compared one at a time, with the field that differs NAMED.
@@ -1840,10 +1847,18 @@ fn component_page(seed: u64, component: &str) -> BlockIndex {
 /// exactly the assertion that cannot see the failure this guards against. A block index that loses
 /// an entry is SILENT data loss: the block is still on the slab and nothing can find it.
 fn assert_same_page(context: &str, handle: u64, left: &BlockIndex, right: &BlockIndex) {
-    assert_eq!(
-        left.object_key, right.object_key,
-        "{context}: page {handle} changed object_key"
-    );
+    // THE OBJECT-KEY COMPARISON IS RETIRED RATHER THAN REWRITTEN, and where its claim went is
+    // the whole of the reason. The entry has no object key to compare: the identity lives beside
+    // the page, in the bucket's own lookup, and the two page indexes this is handed -- one of
+    // them read back out of the stored form -- carry no second copy of it to disagree about.
+    //
+    // THE CLAIM IT MADE IS STILL HELD, ONE LEVEL OUT. The object key reaches the stored form as
+    // part of each page's WRITTEN KEY, which is this index's own map key; a round trip that lost
+    // or altered it writes different bytes, and
+    // `the_serialized_shape_does_not_move_across_the_transition` asserts the node's bytes are
+    // identical twice over. The same test also asserts directly that the written key CARRIES the
+    // object key and that two pages differing only in it render different keys. So the term is
+    // covered where it is now observable, rather than compared where it no longer exists.
     assert_eq!(
         left.model_id, right.model_id,
         "{context}: page {handle} changed model_id"
@@ -1932,8 +1947,8 @@ fn a_bucket_that_grows_past_one_page_and_shrinks_back_holds_the_same_page_set() 
     );
 
     // --- One block, held in the single-block arm, whose entry is behind a pointer. ---
-    let first = page_for(1);
-    let first_handle = index.insert(&first.object_key.clone(), first.clone(), &mut live);
+    let (first_key, first) = page_for(1);
+    let first_handle = index.insert(&first_key, first.clone(), &mut live);
     assert!(
         matches!(index, BlockIndexMap::One(..)),
         "one page is not being held in the single-page arm, which is the shape the measurement \
@@ -1945,7 +1960,8 @@ fn a_bucket_that_grows_past_one_page_and_shrinks_back_holds_the_same_page_set() 
     // --- Grow to four: the list has to take the blocks in order. ---
     let mut handles = vec![first_handle];
     for seed in 2..=4u64 {
-        handles.push(index.insert(&(page_for(seed)).object_key.clone(), page_for(seed), &mut live));
+        let (object_key, entry) = page_for(seed);
+        handles.push(index.insert(&object_key, entry, &mut live));
     }
     assert!(
         matches!(index, BlockIndexMap::Many(_)),
@@ -1966,7 +1982,7 @@ fn a_bucket_that_grows_past_one_page_and_shrinks_back_holds_the_same_page_set() 
         let held = index
             .get(handle)
             .unwrap_or_else(|| panic!("page {handle} (seed {seed}) is not in the grown index"));
-        assert_same_page("in the grown index", *handle, &page_for(seed), held);
+        assert_same_page("in the grown index", *handle, &page_for(seed).1, held);
     }
 
     // --- A clone of a four-block index is the same four blocks. ---
@@ -2033,7 +2049,8 @@ fn a_bucket_that_grows_past_one_page_and_shrinks_back_holds_the_same_page_set() 
     let mut retained = BlockIndexMap::default();
     let mut retained_handles = Vec::new();
     for seed in 10..=13u64 {
-        retained_handles.push(retained.insert(&(page_for(seed)).object_key.clone(), page_for(seed), &mut live));
+        let (object_key, entry) = page_for(seed);
+        retained_handles.push(retained.insert(&object_key, entry, &mut live));
     }
     assert!(
         matches!(retained, BlockIndexMap::Many(_)),
@@ -2049,7 +2066,7 @@ fn a_bucket_that_grows_past_one_page_and_shrinks_back_holds_the_same_page_set() 
     let survivor = retained
         .get(&keep)
         .expect("the page retain was told to keep is gone");
-    assert_same_page("the page retain kept", keep, &page_for(12), survivor);
+    assert_same_page("the page retain kept", keep, &page_for(12).1, survivor);
 
     // --- And retain the last block away, which is the collapse that DOES still happen. ---
     retained.retain(&mut live, |_handle, _page| false);
@@ -2070,7 +2087,8 @@ fn a_bucket_that_grows_past_one_page_and_shrinks_back_holds_the_same_page_set() 
     // this case was added.
     let mut emptied = BlockIndexMap::default();
     for seed in 30..=33u64 {
-        emptied.insert(&(page_for(seed)).object_key.clone(), page_for(seed), &mut live);
+        let (object_key, entry) = page_for(seed);
+        emptied.insert(&object_key, entry, &mut live);
     }
     assert!(
         matches!(emptied, BlockIndexMap::Many(_)),
@@ -2112,8 +2130,10 @@ fn a_bucket_that_grows_past_one_page_and_shrinks_back_holds_the_same_page_set() 
     // collision is real, and that `index_entry_names_a_page` keeps it unreachable -- and this is the
     // one that sits beside the bucket distribution the loss would have shown up in.
     let mut components = BlockIndexMap::default();
-    let first_component = components.insert(&(component_page(20, "alpha")).object_key.clone(), component_page(20, "alpha"), &mut live);
-    let second_component = components.insert(&(component_page(20, "beta")).object_key.clone(), component_page(20, "beta"), &mut live);
+    let (alpha_key, alpha) = component_page(20, "alpha");
+    let first_component = components.insert(&alpha_key, alpha, &mut live);
+    let (beta_key, beta) = component_page(20, "beta");
+    let second_component = components.insert(&beta_key, beta, &mut live);
     assert_eq!(
         first_component, second_component,
         "two entries of one object at one address were given DIFFERENT handles. If they are \
@@ -2129,7 +2149,7 @@ fn a_bucket_that_grows_past_one_page_and_shrinks_back_holds_the_same_page_set() 
     assert_same_page(
         "the surviving entry",
         first_component,
-        &component_page(20, "alpha"),
+        &component_page(20, "alpha").1,
         components.get(&first_component).expect("the entry is filed"),
     );
 }
@@ -2157,7 +2177,10 @@ fn the_inline_and_mapped_arms_write_the_same_bytes_for_the_same_page_set() {
     // A node that has only ever held one block.
     let mut untouched = BucketNode::default();
     untouched.routing_bucket = 11;
-    let handle = untouched.block_index.insert(&(page_for(1)).object_key.clone(), page_for(1), &mut live);
+    let (untouched_key, untouched_page) = page_for(1);
+    let handle = untouched
+        .block_index
+        .insert(&untouched_key, untouched_page, &mut live);
     assert!(
         matches!(untouched.block_index, BlockIndexMap::One(..)),
         "the untouched node is not holding its one page in the single-page arm"
@@ -2166,10 +2189,14 @@ fn the_inline_and_mapped_arms_write_the_same_bytes_for_the_same_page_set() {
     // A node that grew to four blocks and shrank back to the same single block.
     let mut round_tripped = BucketNode::default();
     round_tripped.routing_bucket = 11;
-    round_tripped.block_index.insert(&(page_for(1)).object_key.clone(), page_for(1), &mut live);
+    let (round_tripped_key, round_tripped_page) = page_for(1);
+    round_tripped
+        .block_index
+        .insert(&round_tripped_key, round_tripped_page, &mut live);
     let mut extra = Vec::new();
     for seed in 2..=4u64 {
-        extra.push(round_tripped.block_index.insert(&(page_for(seed)).object_key.clone(), page_for(seed), &mut live));
+        let (object_key, entry) = page_for(seed);
+        extra.push(round_tripped.block_index.insert(&object_key, entry, &mut live));
     }
     assert!(
         matches!(round_tripped.block_index, BlockIndexMap::Many(_)),
@@ -2202,7 +2229,10 @@ fn the_inline_and_mapped_arms_write_the_same_bytes_for_the_same_page_set() {
     // Without it, two nodes that both serialized to nothing would pass the assertion above.
     let mut different = BucketNode::default();
     different.routing_bucket = 11;
-    different.block_index.insert(&(page_for(2)).object_key.clone(), page_for(2), &mut live);
+    let (different_key, different_page) = page_for(2);
+    different
+        .block_index
+        .insert(&different_key, different_page, &mut live);
     let different_bytes = serde_json::to_string(&different).expect("a node serializes");
     assert_ne!(
         untouched_bytes, different_bytes,
@@ -2239,20 +2269,19 @@ fn the_inline_and_mapped_arms_write_the_same_bytes_for_the_same_page_set() {
     // from the rendering and every key stays distinct. So the written key is asserted to carry the
     // object key, and two pages that differ only in their object key are asserted to render
     // different keys -- the same shape of claim, over the identity term the entry still has.
-    let here = component_page(5, "body");
-    let elsewhere_key = {
-        let mut other = component_page(5, "body");
-        other.object_key = std::sync::Arc::from("a-different-object");
-        other
-    };
-    let here_key = crate::engine::state::block_index_written_key(&here.object_key, &here);
-    let other_key = crate::engine::state::block_index_written_key(&elsewhere_key.object_key, &elsewhere_key);
+    // THE PERTURBATION MOVED TO THE KEY BESIDE THE PAGE, which is where the identity is. It
+    // used to overwrite the entry's own copy and then read that copy back out to render with;
+    // the two pages are byte-identical by construction, so handing the SAME page under two
+    // different keys says what it meant -- that the key is what moved.
+    let (here_object, here) = component_page(5, "body");
+    let elsewhere_object: std::sync::Arc<str> = std::sync::Arc::from("a-different-object");
+    let here_key = crate::engine::state::block_index_written_key(&here_object, &here);
+    let other_key = crate::engine::state::block_index_written_key(&elsewhere_object, &here);
     println!("  written key                     : {here_key}");
     println!("  written key, other object       : {other_key}");
     assert!(
-        here_key.contains(&*here.object_key),
-        "the written key does not carry the object key: {here_key:?} for {:?}",
-        here.object_key
+        here_key.contains(&*here_object),
+        "the written key does not carry the object key: {here_key:?} for {here_object:?}"
     );
     assert_ne!(
         here_key, other_key,
@@ -2265,9 +2294,11 @@ fn the_inline_and_mapped_arms_write_the_same_bytes_for_the_same_page_set() {
     let mut many = BucketNode::default();
     many.routing_bucket = 11;
     for seed in 1..=4u64 {
-        many.block_index.insert(&(page_for(seed)).object_key.clone(), page_for(seed), &mut live);
+        let (object_key, entry) = page_for(seed);
+        many.block_index.insert(&object_key, entry, &mut live);
     }
-    many.block_index.insert(&(component_page(5, "body")).object_key.clone(), component_page(5, "body"), &mut live);
+    let (body_key, body) = component_page(5, "body");
+    many.block_index.insert(&body_key, body, &mut live);
     assert_eq!(5, many.block_index.len(), "five pages, five entries");
     let written = serde_json::to_string(&many).expect("a node serializes");
     let read_back: BucketNode = serde_json::from_str(&written).expect("a node deserializes");

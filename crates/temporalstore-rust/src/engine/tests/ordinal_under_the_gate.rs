@@ -66,12 +66,17 @@ fn load_on(engine: &TemporalEngine) {
 fn pages_and_ordinals(engine: &TemporalEngine, object_key: &str) -> (usize, Vec<u64>) {
     let shards = engine.shards.read().expect("engine lock poisoned");
     let shard = shards.get(&1).expect("shard 1 loaded");
+    let keys = crate::engine::state::PageKeysByPosition::from_lookup(
+        &shard.bucket_index.object_block_lookup,
+    );
     let mut pages = std::collections::BTreeSet::new();
     let mut ordinals = std::collections::BTreeSet::new();
     for bucket in shard.bucket_index.bucket_map.values() {
-        for page in bucket.block_index.values() {
+        for (handle, page) in &bucket.block_index {
             if page.model_id.as_str() != "set"
-                || &*page.object_key != object_key
+                || !keys
+                    .live_identity(bucket.routing_bucket, *handle)
+                    .is_some_and(|(_, named)| &**named == object_key)
                 || page.deleted
             {
                 continue;
@@ -94,10 +99,20 @@ fn pages_and_ordinals(engine: &TemporalEngine, object_key: &str) -> (usize, Vec<
 fn entry_rows(engine: &TemporalEngine, object_key: &str) -> Vec<String> {
     let shards = engine.shards.read().expect("engine lock poisoned");
     let shard = shards.get(&1).expect("shard 1 loaded");
+    // `identity_of` RATHER THAN THE LIVE INVERSION, because this listing is the one that
+    // includes tombstones -- its rows print `deleted=` -- and a deleted page is named by the
+    // bucket's removal row instead of by the object lookup.
+    let keys = crate::engine::state::PageKeysByPosition::from_lookup(
+        &shard.bucket_index.object_block_lookup,
+    );
     let mut rows = Vec::new();
     for bucket in shard.bucket_index.bucket_map.values() {
-        for page in bucket.block_index.values() {
-            if page.model_id.as_str() != "set" || &*page.object_key != object_key {
+        for (handle, page) in &bucket.block_index {
+            if page.model_id.as_str() != "set"
+                || !keys
+                    .identity_of(bucket, *handle, page)
+                    .is_some_and(|beside| &**beside.object_key == object_key)
+            {
                 continue;
             }
             rows.push(format!(
@@ -289,6 +304,7 @@ fn a_derivation_drops_the_entry_no_element_carries_any_more() {
         let orphan = crate::block_store::ElementEntry::from_parts(
             4_096, 8_192, 48, Some(7), None,
         );
+        let planted_key: std::sync::Arc<str> = std::sync::Arc::from("heal/set");
         let page = crate::engine::state::BlockIndex {
             object_key: std::sync::Arc::from("heal/set"),
             model_id: crate::engine::storage_bucket_internals::stored_model_kind("set"),
@@ -301,7 +317,7 @@ fn a_derivation_drops_the_entry_no_element_carries_any_more() {
             .bucket_map
             .get_mut(&routing_bucket)
             .expect("the object's bucket exists after the writes above");
-        bucket.insert_page(&page.object_key.clone(), page, &mut shard.bucket_index.block_slab_live);
+        bucket.insert_page(&planted_key, page, &mut shard.bucket_index.block_slab_live);
     }
 
     let before = entry_rows(&engine, "heal/set");
@@ -405,10 +421,18 @@ fn a_derivation_drops_the_entry_no_element_carries_any_more() {
 fn live_ordinals_hash(engine: &TemporalEngine, object_key: &str) -> Vec<u64> {
     let shards = engine.shards.read().expect("engine lock poisoned");
     let shard = shards.get(&1).expect("shard 1 loaded");
+    let keys = crate::engine::state::PageKeysByPosition::from_lookup(
+        &shard.bucket_index.object_block_lookup,
+    );
     let mut ordinals = std::collections::BTreeSet::new();
     for bucket in shard.bucket_index.bucket_map.values() {
-        for page in bucket.block_index.values() {
-            if page.model_id.as_str() != "hash" || &*page.object_key != object_key || page.deleted {
+        for (handle, page) in &bucket.block_index {
+            if page.model_id.as_str() != "hash"
+                || !keys
+                    .live_identity(bucket.routing_bucket, *handle)
+                    .is_some_and(|(_, named)| &**named == object_key)
+                || page.deleted
+            {
                 continue;
             }
             if let Some(block_id) = page.address.block_id() {
@@ -574,13 +598,25 @@ fn a_component_less_hash_entry_is_still_answered_correctly_by_get_len_and_incrby
     let live_pages = {
         let shards = engine.shards.read().expect("engine lock poisoned");
         let shard = shards.get(&1).expect("shard 1 loaded");
+        let keys = crate::engine::state::PageKeysByPosition::from_lookup(
+            &shard.bucket_index.object_block_lookup,
+        );
         shard
             .bucket_index
             .bucket_map
             .values()
-            .flat_map(|bucket| bucket.block_index.values())
-            .filter(|page| {
-                page.model_id.as_str() == "hash" && &*page.object_key == KEY && !page.deleted
+            .flat_map(|bucket| {
+                bucket
+                    .block_index
+                    .iter()
+                    .map(move |(handle, page)| (bucket.routing_bucket, *handle, page))
+            })
+            .filter(|(routing_bucket, handle, page)| {
+                page.model_id.as_str() == "hash"
+                    && keys
+                        .live_identity(*routing_bucket, *handle)
+                        .is_some_and(|(_, named)| &**named == KEY)
+                    && !page.deleted
             })
             .count()
     };
@@ -651,20 +687,35 @@ fn a_component_less_hash_entry_is_still_answered_correctly_by_get_len_and_incrby
 fn named_hash_entries(engine: &TemporalEngine, key: &str) -> usize {
     let shards = engine.shards.read().expect("engine lock poisoned");
     let shard = shards.get(&1).expect("shard 1 loaded");
+    let keys = crate::engine::state::PageKeysByPosition::from_lookup(
+        &shard.bucket_index.object_block_lookup,
+    );
     shard
         .bucket_index
         .bucket_map
         .values()
-        .flat_map(|bucket| bucket.block_index.values())
-        .filter(|page| {
+        .flat_map(|bucket| {
+            bucket
+                .block_index
+                .iter()
+                .map(move |(handle, page)| (bucket.routing_bucket, *handle, page))
+        })
+        .filter(|(routing_bucket, handle, page)| {
             // THE `component.is_some()` TERM IS GONE and this counter is structurally zero. An
             // entry has no element name, so "how many hash entries name a field" has one answer
             // for every fixture. It is left as a counter rather than deleted because the arms
             // below PRINT it as a denominator beside the ordinal they are really about; each of
             // those is restated at its own assertion.
+            //
+            // THE OBJECT TERM IS KEPT AND NOW ASKS THE LOOKUP, in the same shape as the three
+            // other walks in this file. It decides nothing while `false` stands beside it, and
+            // it is kept exactly so that this walk does not read as a different kind of walk
+            // from its siblings if the `false` ever comes out.
             !page.deleted
                 && page.model_id.as_str() == "hash"
-                && &*page.object_key == key
+                && keys
+                    .live_identity(*routing_bucket, *handle)
+                    .is_some_and(|(_, named)| &**named == key)
                 && false
         })
         .count()

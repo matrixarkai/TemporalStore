@@ -263,15 +263,24 @@ fn seed_all_kinds(engine: &TemporalEngine, elements: usize) -> Vec<(&'static str
 fn entries_and_pages(engine: &TemporalEngine, kind: &str, object_key: &str) -> (usize, usize) {
     let shards = engine.shards.read().expect("engine lock poisoned");
     let shard = shards.get(&1).expect("shard is loaded");
+    // THE OBJECT A PAGE BELONGS TO COMES FROM THE LOOKUP BESIDE IT, not off the page. The
+    // model spelling is still the page's own field and is still read there.
+    let keys = crate::engine::state::PageKeysByPosition::from_lookup(
+        &shard.bucket_index.object_block_lookup,
+    );
     let mut entries = 0usize;
     let mut pages: BTreeSet<(u64, u64, u64)> = BTreeSet::new();
     for bucket in shard.bucket_index.bucket_map.values() {
-        for page in bucket.block_index.values() {
+        for (handle, page) in &bucket.block_index {
             if page.deleted {
                 continue;
             }
-            if page.model_id.as_str() != kind || &*page.object_key != object_key {
+            if page.model_id.as_str() != kind {
                 continue;
+            }
+            match keys.live_identity(bucket.routing_bucket, *handle) {
+                Some((_, named)) if &**named == object_key => {}
+                _ => continue,
             }
             entries += 1;
             pages.insert((
@@ -528,28 +537,43 @@ fn how_many_index_entries_each_kind_files_for_the_same_element_count() {
 /// SAME value, which is what quietly turned the old control into a comparison of a value with
 /// itself. It is REMOVED rather than renamed to `_component`, so a caller that still tries to name
 /// an element here is a compile error and not a silent no-op.
-fn page_at(slab: u64, offset: u64, length: u64) -> BlockIndex {
-    BlockIndex {
-        object_key: std::sync::Arc::from("one-object"),
-        model_id: crate::engine::storage_bucket_internals::StoredModelKind::Hash,
-        address: crate::block_store::ElementEntry::from_parts(
-            slab,
-            offset,
-            length,
-            Some(0),
-            Some(1),
-        ),
-        dirty: false,
-        deleted: false,
-    }
+///
+/// AND IT HANDS THE OBJECT KEY BESIDE THE PAGE, for the same reason: the identity is leaving the
+/// entry, and a fixture that handed back a bare page would make every caller read it off.
+fn page_at(slab: u64, offset: u64, length: u64) -> (std::sync::Arc<str>, BlockIndex) {
+    (
+        std::sync::Arc::from("one-object"),
+        BlockIndex {
+            object_key: std::sync::Arc::from("one-object"),
+            model_id: crate::engine::storage_bucket_internals::StoredModelKind::Hash,
+            address: crate::block_store::ElementEntry::from_parts(
+                slab,
+                offset,
+                length,
+                Some(0),
+                Some(1),
+            ),
+            dirty: false,
+            deleted: false,
+        },
+    )
 }
 
 /// The same page shape under a different object key, for the object-key control below.
-fn page_at_for_object(object_key: &str, slab: u64, offset: u64, length: u64) -> BlockIndex {
-    BlockIndex {
-        object_key: std::sync::Arc::from(object_key),
-        ..page_at(slab, offset, length)
-    }
+fn page_at_for_object(
+    object_key: &str,
+    slab: u64,
+    offset: u64,
+    length: u64,
+) -> (std::sync::Arc<str>, BlockIndex) {
+    let (_, page) = page_at(slab, offset, length);
+    (
+        std::sync::Arc::from(object_key),
+        BlockIndex {
+            object_key: std::sync::Arc::from(object_key),
+            ..page
+        },
+    )
 }
 
 /// ONE PAGE IS ONE ENTRY, BECAUSE THE HANDLE CAN NO LONGER NAME AN ELEMENT.
@@ -589,8 +613,8 @@ fn one_page_is_one_entry_because_the_handle_can_no_longer_name_an_element() {
     let shared_offset = 4_096u64;
     let shared_length = 512u64;
 
-    let first = page_at(shared_slab, shared_offset, shared_length);
-    let second = page_at(shared_slab, shared_offset, shared_length);
+    let (first_key, first) = page_at(shared_slab, shared_offset, shared_length);
+    let (second_key, second) = page_at(shared_slab, shared_offset, shared_length);
 
     // Same page, byte for byte. The premise, kept: without it the arm is not about a shared page.
     assert_eq!(
@@ -608,16 +632,16 @@ fn one_page_is_one_entry_because_the_handle_can_no_longer_name_an_element() {
     );
 
     assert_eq!(
-        block_index_handle(&first.object_key, &first),
-        block_index_handle(&second.object_key, &second),
+        block_index_handle(&first_key, &first),
+        block_index_handle(&second_key, &second),
         "two entries over one page hashed to two handles, so something per-element is back in \
          `block_index_handle` and the entry count is no longer the page count"
     );
 
     let mut live = BlockSlabLiveIndex::default();
     let mut index = BlockIndexMap::default();
-    index.insert(&first.object_key.clone(), first.clone(), &mut live);
-    index.insert(&second.object_key.clone(), second.clone(), &mut live);
+    index.insert(&first_key, first.clone(), &mut live);
+    index.insert(&second_key, second.clone(), &mut live);
     assert_eq!(
         index.len(),
         1,
@@ -626,17 +650,18 @@ fn one_page_is_one_entry_because_the_handle_can_no_longer_name_an_element() {
     );
 
     // CONTROL ONE: a DIFFERENT page is still a second entry.
-    let elsewhere = page_at(shared_slab, shared_offset + shared_length, shared_length);
+    let (elsewhere_key, elsewhere) =
+        page_at(shared_slab, shared_offset + shared_length, shared_length);
     assert_ne!(
-        block_index_handle(&first.object_key, &first),
-        block_index_handle(&elsewhere.object_key, &elsewhere),
+        block_index_handle(&first_key, &first),
+        block_index_handle(&elsewhere_key, &elsewhere),
         "two distinct pages hashed alike, so the handle no longer names the address and a lookup \
          would serve one page's bytes for the other"
     );
     let mut live_two = BlockSlabLiveIndex::default();
     let mut index_two = BlockIndexMap::default();
-    index_two.insert(&first.object_key.clone(), first.clone(), &mut live_two);
-    index_two.insert(&elsewhere.object_key.clone(), elsewhere, &mut live_two);
+    index_two.insert(&first_key, first.clone(), &mut live_two);
+    index_two.insert(&elsewhere_key, elsewhere, &mut live_two);
     assert_eq!(
         index_two.len(),
         2,
@@ -645,17 +670,17 @@ fn one_page_is_one_entry_because_the_handle_can_no_longer_name_an_element() {
     );
 
     // CONTROL TWO: the same page shape under a different object key stays apart.
-    let other_object =
+    let (other_object_key, other_object) =
         page_at_for_object("another-object", shared_slab, shared_offset, shared_length);
     assert_ne!(
-        block_index_handle(&first.object_key, &first),
-        block_index_handle(&other_object.object_key, &other_object),
+        block_index_handle(&first_key, &first),
+        block_index_handle(&other_object_key, &other_object),
         "two objects' pages hashed alike, so one object's entry would supersede another's"
     );
     let mut live_three = BlockSlabLiveIndex::default();
     let mut index_three = BlockIndexMap::default();
-    index_three.insert(&first.object_key.clone(), first, &mut live_three);
-    index_three.insert(&other_object.object_key.clone(), other_object, &mut live_three);
+    index_three.insert(&first_key, first, &mut live_three);
+    index_three.insert(&other_object_key, other_object, &mut live_three);
     assert_eq!(
         index_three.len(),
         2,
@@ -751,6 +776,11 @@ fn the_maps_the_delta_fold_restores_do_not_include_the_container_maps() {
     // made either map non-durable reddens here.
     let shards = engine.shards.read().expect("engine lock poisoned");
     let shard = shards.get(&1).expect("shard is loaded");
+    // EVERY PREDICATE BELOW ASKS THE LOOKUP WHICH OBJECT A PAGE BELONGS TO. The page has no
+    // answer of its own any more, and the lookup is the structure beside it that does.
+    let keys = crate::engine::state::PageKeysByPosition::from_lookup(
+        &shard.bucket_index.object_block_lookup,
+    );
     for (kind, key) in [
         ("hash", "fold-h"),
         ("set", "fold-t"),
@@ -761,9 +791,18 @@ fn the_maps_the_delta_fold_restores_do_not_include_the_container_maps() {
             .bucket_index
             .bucket_map
             .values()
-            .flat_map(|bucket| bucket.block_index.values())
-            .filter(|page| {
-                !page.deleted && page.model_id.as_str() == kind && &*page.object_key == key
+            .flat_map(|bucket| {
+                bucket
+                    .block_index
+                    .iter()
+                    .map(move |(handle, page)| (bucket.routing_bucket, *handle, page))
+            })
+            .filter(|(routing_bucket, handle, page)| {
+                !page.deleted
+                    && page.model_id.as_str() == kind
+                    && keys
+                        .live_identity(*routing_bucket, *handle)
+                        .is_some_and(|(_, named)| &**named == key)
             })
             .count();
         assert_eq!(
@@ -776,9 +815,18 @@ fn the_maps_the_delta_fold_restores_do_not_include_the_container_maps() {
         .bucket_index
         .bucket_map
         .values()
-        .flat_map(|bucket| bucket.block_index.values())
-        .filter(|page| {
-            !page.deleted && page.model_id.as_str() == "feature" && &*page.object_key == "fold-f"
+        .flat_map(|bucket| {
+            bucket
+                .block_index
+                .iter()
+                .map(move |(handle, page)| (bucket.routing_bucket, *handle, page))
+        })
+        .filter(|(routing_bucket, handle, page)| {
+            !page.deleted
+                && page.model_id.as_str() == "feature"
+                && keys
+                    .live_identity(*routing_bucket, *handle)
+                    .is_some_and(|(_, named)| &**named == "fold-f")
         })
         .count();
     assert_eq!(
@@ -850,15 +898,27 @@ fn what_one_element_read_fetches_today_and_what_a_batched_page_would_fetch() {
     let today_page_bytes = {
         let shards = engine.shards.read().expect("engine lock poisoned");
         let shard = shards.get(&1).expect("shard is loaded");
+        let keys = crate::engine::state::PageKeysByPosition::from_lookup(
+            &shard.bucket_index.object_block_lookup,
+        );
         let lengths = shard
             .bucket_index
             .bucket_map
             .values()
-            .flat_map(|bucket| bucket.block_index.values())
-            .filter(|page| {
-                !page.deleted && page.model_id.as_str() == "hash" && &*page.object_key == "read-h"
+            .flat_map(|bucket| {
+                bucket
+                    .block_index
+                    .iter()
+                    .map(move |(handle, page)| (bucket.routing_bucket, *handle, page))
             })
-            .map(|page| page.address.length())
+            .filter(|(routing_bucket, handle, page)| {
+                !page.deleted
+                    && page.model_id.as_str() == "hash"
+                    && keys
+                        .live_identity(*routing_bucket, *handle)
+                        .is_some_and(|(_, named)| &**named == "read-h")
+            })
+            .map(|(_, _, page)| page.address.length())
             .collect::<Vec<_>>();
         assert_eq!(
             lengths.len(),

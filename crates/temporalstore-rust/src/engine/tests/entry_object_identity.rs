@@ -163,16 +163,27 @@ fn seed_routed_strings(engine: &TemporalEngine) {
 fn ids_by_object_key(engine: &TemporalEngine) -> BTreeMap<String, Vec<u64>> {
     let shards = engine.shards.read().expect("engine lock poisoned");
     let shard = shards.get(&1).expect("shard is loaded");
+    // THE KEY A PAGE IS FILED UNDER COMES FROM THE LOOKUP BESIDE IT. It is both the grouping
+    // key below and the argument the id is derived from, so there is exactly one source for it
+    // here where there used to be one source read twice off the page.
+    let keys = crate::engine::state::PageKeysByPosition::from_lookup(
+        &shard.bucket_index.object_block_lookup,
+    );
     let mut by_key: BTreeMap<String, Vec<u64>> = BTreeMap::new();
     for bucket in shard.bucket_index.bucket_map.values() {
-        for page in bucket.block_index.values() {
+        for (handle, page) in &bucket.block_index {
             if page.deleted {
                 continue;
             }
+            let Some((_, named)) = keys.live_identity(bucket.routing_bucket, *handle) else {
+                panic!(
+                    "a live page at handle {handle} is named by nothing beside it, so this                      denominator would be short by one"
+                )
+            };
             by_key
-                .entry(page.object_key.to_string())
+                .entry(named.to_string())
                 .or_default()
-                .push(page.object_id(1, &page.object_key));
+                .push(page.object_id(1, named));
         }
     }
     by_key
@@ -181,15 +192,18 @@ fn ids_by_object_key(engine: &TemporalEngine) -> BTreeMap<String, Vec<u64>> {
 /// A free-standing entry at a FIXED address, whose object id is the one the engine would compute
 /// for it. Taken from `stable_block_object_id` rather than invented, so a comparison between two of
 /// these is about the field that differs and the id that follows from it.
-fn entry_named(object_key: &str, component: Option<&str>) -> BlockIndex {
+fn entry_named(object_key: &str, component: Option<&str>) -> (Arc<str>, BlockIndex) {
     let object_id = stable_block_object_id(1, FIXTURE_KIND.as_str(), object_key);
-    BlockIndex {
-        object_key: Arc::from(object_key),
-        model_id: FIXTURE_KIND,
-        address: ElementEntry::from_parts(9, 4_096, 96, Some(7), Some(object_id)),
-        dirty: false,
-        deleted: false,
-    }
+    (
+        Arc::from(object_key),
+        BlockIndex {
+            object_key: Arc::from(object_key),
+            model_id: FIXTURE_KIND,
+            address: ElementEntry::from_parts(9, 4_096, 96, Some(7), Some(object_id)),
+            dirty: false,
+            deleted: false,
+        },
+    )
 }
 
 // =================================================================================================
@@ -405,8 +419,8 @@ fn the_page_id_names_an_object_so_one_object_key_holds_exactly_one_id() {
 #[test]
 fn the_written_key_of_a_page_spells_its_object_key_so_an_id_cannot_render_it() {
     let object_key = "container";
-    let page = entry_named(object_key, Some("body"));
-    let written = crate::engine::state::block_index_written_key(&page.object_key, &page);
+    let (page_key, page) = entry_named(object_key, Some("body"));
+    let written = crate::engine::state::block_index_written_key(&page_key, &page);
     println!("\n=== the written key of one page ===\n  {written}");
 
     // --- THE PRECONDITION FOR SPLITTING IT, ENFORCED RATHER THAN PRINTED. ---
@@ -434,7 +448,7 @@ fn the_written_key_of_a_page_spells_its_object_key_so_an_id_cannot_render_it() {
     );
 
     // --- AND THE ID IS NOT IN IT, so the characters are not substitutable by the id. ---
-    let id = page.object_id(1, &page.object_key);
+    let id = page.object_id(1, &page_key);
     assert_ne!(
         0, id,
         "the fixture page carries no object id, so the comparison below is vacuous"
@@ -453,8 +467,9 @@ fn the_written_key_of_a_page_spells_its_object_key_so_an_id_cannot_render_it() {
         "the two keys differ in length as well as in text, so a difference below could be about the \
          length rather than about the characters"
     );
-    let other = entry_named(other_key, Some("body"));
-    let other_written = crate::engine::state::block_index_written_key(&other.object_key, &other);
+    let (other_object_key, other) = entry_named(other_key, Some("body"));
+    let other_written =
+        crate::engine::state::block_index_written_key(&other_object_key, &other);
     println!("  the same page under {other_key:?}\n  {other_written}");
     assert_ne!(
         written, other_written,
@@ -463,8 +478,8 @@ fn the_written_key_of_a_page_spells_its_object_key_so_an_id_cannot_render_it() {
     );
 
     // --- AND THE HANDLE MOVES WITH IT, which is what keeps the two from naming different pages. ---
-    let handle = crate::engine::state::block_index_handle(&page.object_key, &page);
-    let other_handle = crate::engine::state::block_index_handle(&other.object_key, &other);
+    let handle = crate::engine::state::block_index_handle(&page_key, &page);
+    let other_handle = crate::engine::state::block_index_handle(&other_object_key, &other);
     assert_ne!(
         handle, other_handle,
         "two pages differing only in their object key hash to one handle {handle}. \
@@ -636,7 +651,7 @@ fn the_entry_is_unchanged_and_the_nodes_duplicated_slot_id_is_worth_nothing() {
     fn field_width<T>(_field: &T) -> usize {
         size_of::<T>()
     }
-    let sample = entry_named("container", Some("body"));
+    let (_, sample) = entry_named("container", Some("body"));
     let widths = [
         ("object_key", field_width(&sample.object_key), offset_of!(BlockIndex, object_key)),
         ("model_id", field_width(&sample.model_id), offset_of!(BlockIndex, model_id)),
