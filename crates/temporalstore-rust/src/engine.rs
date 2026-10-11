@@ -5258,25 +5258,42 @@ fn mark_bucket_index_object_deleted(shard: &mut ShardState, key: &str) -> bool {
         }
     }
     if removed {
-        // Drop this object's own entries rather than rebuilding the lookup for the whole shard.
-        // The rebuild cloned every block in every bucket, so a single delete allocated in
-        // proportion to the store -- 409 allocations at 200 resident keys, 3,851 at 3,200 -- and
-        // deleting a store cost the square of its size.
+        // THIS OBJECT'S OWN ENTRIES ARE DROPPED, AND THAT IS NOW UNCONDITIONAL.
         //
-        // Except when the lookup is not established yet. The ref total counts as part of that:
-        // only a rebuild can set it, since a count that starts at "unknown" cannot be decremented
-        // into a right answer, and the load path fills the lookup without one. The rebuild this
-        // replaces was establishing the total on every delete, which hid that. So establish both
-        // here on the first delete that finds them unset, and take the cheap path thereafter --
-        // the same bargain the typed removal path makes.
-        if shard.bucket_index.object_block_lookup.is_empty()
-            || shard.bucket_index.object_component_block_refs.is_none()
-        {
-            shard.bucket_index.rebuild_object_block_lookup();
-        } else {
-            for kind in storage_model_kinds() {
-                shard.bucket_index.remove_object_from_block_lookup(kind, key);
-            }
+        // The whole-shard rebuild it used to fall back to cloned every block in every bucket, so a
+        // single delete allocated in proportion to the store -- 409 allocations at 200 resident
+        // keys, 3,851 at 3,200 -- and deleting a store cost the square of its size. The fallback
+        // was kept for one case: a lookup not yet established, where there would be nothing for
+        // the cheap path to drop.
+        //
+        // THAT CASE CANNOT CARRY A LIVE PAGE, which is what makes the fallback unnecessary rather
+        // than merely expensive. All nine production sites that install a page into a bucket's map
+        // file it in the same enclosing function; the only doors that do not file have no callers
+        // at all, or none outside tests and compile out of `--lib` with zero errors. So an empty
+        // lookup means no live page is resident -- and a rebuild over no live pages files nothing.
+        // `push_object_dirty_onto_its_existing_pages` carries the census and asserts the same
+        // invariant where it used to repair it.
+        //
+        // THE REF TOTAL'S DISJUNCT WAS ALREADY DEAD. It read
+        // `|| object_component_block_refs.is_none()`, on the reasoning that only a rebuild can
+        // lift the total from `None`. No construction route leaves it there: `impl Default for
+        // CoreIndex` starts it at `Some(0)` and the decoder assigns `Some(0)` before it files.
+        //
+        // AND DROPPING AN ENTRY THE LOOKUP DOES NOT HOLD IS A NO-OP, so the branch is not replaced
+        // by a condition -- it is replaced by nothing.
+        debug_assert!(
+            !shard.bucket_index.object_block_lookup.is_empty()
+                || !shard
+                    .bucket_index
+                    .bucket_map
+                    .values()
+                    .any(|bucket| bucket.block_index.values().any(|page| !page.deleted)),
+            "a live page is resident while the object lookup names nothing, so this delete would \
+             have rebuilt a lookup over pages nothing filed: every production site that installs \
+             a page files it in the same call"
+        );
+        for kind in storage_model_kinds() {
+            shard.bucket_index.remove_object_from_block_lookup(kind, key);
         }
     }
     removed || settled_released
