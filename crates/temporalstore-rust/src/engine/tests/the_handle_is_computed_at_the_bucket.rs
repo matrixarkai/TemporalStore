@@ -48,13 +48,21 @@ fn page(object: &str, component: Option<&str>, slab: u64, offset: u32, length: u
     }
 }
 
-/// The entries driven. Two share an object and differ by component; the rest differ by address.
-fn fixture() -> Vec<BlockIndex> {
+/// The entries driven, EACH WITH ITS OBJECT KEY BESIDE IT RATHER THAN ON IT.
+///
+/// The pair is the shape every production site now uses: `block_index_handle` and
+/// `BucketNode::insert_page` both take the identity as a PARAMETER, because the entry is losing
+/// its own copy. A fixture handing back bare entries would have to read the key off the page to
+/// call either, which is the one thing this change is removing -- so it hands back what the
+/// callers need.
+///
+/// Two share an object and differ by component; the rest differ by address.
+fn fixture() -> Vec<(Arc<str>, BlockIndex)> {
     vec![
-        page("tenant/1/obj/aaa", Some("f-1"), 7, 0, 64),
-        page("tenant/1/obj/aaa", Some("f-2"), 7, 64, 64),
-        page("tenant/1/obj/bbb", None, 9, 128, 32),
-        page("tenant/1/obj/ccc", Some("f-1"), 9, 160, 48),
+        (Arc::from("tenant/1/obj/aaa"), page("tenant/1/obj/aaa", Some("f-1"), 7, 0, 64)),
+        (Arc::from("tenant/1/obj/aaa"), page("tenant/1/obj/aaa", Some("f-2"), 7, 64, 64)),
+        (Arc::from("tenant/1/obj/bbb"), page("tenant/1/obj/bbb", None, 9, 128, 32)),
+        (Arc::from("tenant/1/obj/ccc"), page("tenant/1/obj/ccc", Some("f-1"), 9, 160, 48)),
     ]
 }
 
@@ -71,14 +79,14 @@ fn the_hoisted_handle_is_byte_identical_to_the_one_the_map_used_to_compute() {
     let mut reached_list = false;
     let mut handles = Vec::new();
 
-    for (at, entry) in entries.iter().enumerate() {
-        let expected = block_index_handle(&entry.object_key, entry);
-        let assigned = bucket.insert_page(&entry.object_key.clone(), entry.clone(), &mut live);
+    for (at, (object_key, entry)) in entries.iter().enumerate() {
+        let expected = block_index_handle(object_key, entry);
+        let assigned = bucket.insert_page(object_key, entry.clone(), &mut live);
         assert_eq!(
             expected, assigned,
-            "entry {at}: the bucket-level door assigned {assigned} where the handle read off the \
-             entry is {expected}. A handle that changed value invalidates every ref already written \
-             to disk, which is the one failure this hoist must not have"
+            "entry {at}: the bucket-level door assigned {assigned} where the handle composed from \
+             the identity beside the entry is {expected}. A handle that changed value invalidates \
+             every ref already written to disk, which is the one failure this hoist must not have"
         );
         handles.push(assigned);
         match &bucket.block_index {
@@ -112,20 +120,20 @@ fn the_hoisted_handle_is_byte_identical_to_the_one_the_map_used_to_compute() {
 
     // --- NEGATIVE CONTROL ONE: PERTURB AN ADDRESS TERM. The handle must move, or it is not
     //     reading the address at all and the equality above is insensitive to it. ---
-    let base = &entries[0];
+    let (base_key, base) = &entries[0];
     let mut longer = base.clone();
     longer.address = ElementEntry::from_parts(7, 0, 65, Some(7), Some(11));
     assert_ne!(
-        block_index_handle(&base.object_key, base),
-        block_index_handle(&longer.object_key, &longer),
+        block_index_handle(base_key, base),
+        block_index_handle(base_key, &longer),
         "changing the address LENGTH left the handle alone, so `length` is not hashed and the \
          address terms this hoist exists to free are not actually pinned by it"
     );
     let mut elsewhere = base.clone();
     elsewhere.address = ElementEntry::from_parts(7, 1, 64, Some(7), Some(11));
     assert_ne!(
-        block_index_handle(&base.object_key, base),
-        block_index_handle(&elsewhere.object_key, &elsewhere),
+        block_index_handle(base_key, base),
+        block_index_handle(base_key, &elsewhere),
         "changing the address OFFSET left the handle alone"
     );
 
@@ -163,18 +171,18 @@ fn the_released_door_assigns_the_same_handle_as_the_charged_one() {
     let mut live = BlockSlabLiveIndex::default();
 
     let mut compared = 0usize;
-    for entry in &entries {
-        let a = charged.insert_page(&entry.object_key.clone(), entry.clone(), &mut live);
-        let b = released.insert_released_page(&entry.object_key.clone(), entry.clone());
+    for (object_key, entry) in &entries {
+        let a = charged.insert_page(object_key, entry.clone(), &mut live);
+        let b = released.insert_released_page(object_key, entry.clone());
         assert_eq!(
             a, b,
             "the charged door assigned {a} and the released door {b} for one entry; they must \
-             agree, because `reload_released_bucket` re-files blocks whose refs were written by the \
-             charged path"
+             agree, because `reload_released_bucket` re-files blocks whose refs were written by \
+             the charged path"
         );
         assert_eq!(
-            block_index_handle(&entry.object_key, entry), a,
-            "neither door agrees with the handle read off the entry"
+            block_index_handle(object_key, entry), a,
+            "neither door agrees with the handle composed from the identity beside the entry"
         );
         compared += 1;
     }
@@ -194,8 +202,8 @@ fn the_released_door_assigns_the_same_handle_as_the_charged_one() {
 fn the_written_page_index_is_the_same_map_it_was_before_the_hoist() {
     let mut bucket = BucketNode::default();
     let mut live = BlockSlabLiveIndex::default();
-    for entry in fixture() {
-        bucket.insert_page(&entry.object_key.clone(), entry, &mut live);
+    for (object_key, entry) in fixture() {
+        bucket.insert_page(&object_key, entry, &mut live);
     }
     let written = serde_json::to_value(&bucket).expect("a node serializes");
     let page_index = written
