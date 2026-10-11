@@ -108,17 +108,20 @@
 //! may touch keys in many buckets. So the port's shape means one record per bucket per write.
 //!
 //! That matters because the field is load-bearing on the replay path and nothing else supplies
-//! it. `the_fold_takes_the_bucket_from_the_item_because_the_entry_comes_back_at_zero` drives both
-//! halves: the fold creates the `BucketNode` keyed by `item.routing_bucket`, and a `BucketNode`
-//! round-tripped through its own serde impls hands back entries whose `routing_bucket` is ZERO.
+//! it. `the_fold_takes_the_bucket_from_the_row_and_not_from_a_default` drives the half that still
+//! has a subject: the fold creates the `BucketNode` keyed by `item.routing_bucket`, and not a
+//! bucket zero.
 //!
-//! > THE DOC COMMENT ON `BlockIndex::routing_bucket` IS FALSE. It says "`BucketNode`'s visitor
-//! > INJECTS the node's own bucket into each entry at its closing construction, where both are in
-//! > scope, so this never rides the named wire and cannot disagree with the node it is filed
-//! > under." The visitor's closing construction installs `block_index: block_index
-//! > .unwrap_or_default()` and walks nothing. There is no injection, and zero is a legal bucket --
-//! > which is the exact trap the same comment warns about two sentences earlier. Prose describing
-//! > an unbuilt path, at the layer that DESCRIBES rather than the layer that DECIDES.
+//! > AND THE OTHER HALF HAS BEEN ACTED ON RATHER THAN WEAKENED. This module was written against an
+//! > entry that still declared `BlockIndex::routing_bucket`, and it recorded that the field was
+//! > WRITE-ONLY across a reload: `#[serde(skip)]`, no visitor injecting it despite a doc comment
+//! > on the field claiming one did, so a round-tripped entry came back at zero -- which that same
+//! > comment named, two sentences earlier, as the value that would fold every entry into bucket
+//! > zero silently. That was a true finding at the layer that DESCRIBES against the layer that
+//! > DECIDES, and `65c7fc562` retired the field on the strength of it. A field that is write-only
+//! > across a reload cannot be read back wrong once it does not exist, so the assertion is gone
+//! > and the finding is here. The row remains the only carrier, which is the half the port's
+//! > costing actually turns on.
 //!
 //! # THE FORMAT STAMP
 //!
@@ -477,92 +480,33 @@ fn the_fold_stores_the_rows_object_id_as_a_u64_and_the_truncation_is_not_a_membe
 // ROUTING BUCKET
 // =================================================================================================
 
-fn a_node_holding_one_entry(routing_bucket: u32) -> BucketNode {
-    let mut node = BucketNode {
-        routing_bucket,
-        flags: BucketFlags::default()
-            .with(BucketFlags::META_LOADED, true)
-            .with(BucketFlags::IN_MEMORY, true),
-        dirty_generation: 3,
-        ..BucketNode::default()
-    };
-    let mut live = BlockSlabLiveIndex::default();
-    node.insert_page(
-        BlockIndex {
-            kind: crate::index_log::IndexItemKind::Page,
-            routing_bucket,
-            object_key: Arc::from("the-key"),
-            model_id: crate::engine::storage_bucket_internals::stored_model_kind("string"),
-            address: ElementEntry::from_parts(1, 0, 16, None, None),
-            dirty: false,
-            deleted: false,
-        },
-        &mut live,
-    );
-    node
-}
-
-/// THE ENTRY COMES BACK AT BUCKET ZERO, SO THE INDEX-LOG ROW IS THE ONLY CARRIER -- AND THE DOC
-/// COMMENT THAT SAYS OTHERWISE IS FALSE.
+/// THE FOLD TAKES THE BUCKET FROM THE ROW, AND THE HALF ABOUT THE ENTRY HAS NO SUBJECT LEFT.
 ///
-/// `BlockIndex::routing_bucket` is `#[serde(skip)]`, and its own doc says "`BucketNode`'s visitor
-/// INJECTS the node's own bucket into each entry at its closing construction, where both are in
-/// scope". The visitor's closing construction installs `block_index: block_index
-/// .unwrap_or_default()` and walks nothing, so a reloaded entry carries zero -- which that same
-/// comment names, two sentences earlier, as the value that would "fold every entry into bucket
-/// zero, silently, because the named decoder refuses nothing".
+/// # WHY HALF OF THIS ARM IS GONE RATHER THAN REWRITTEN
 ///
-/// So the field is write-only across a reload, and `fold_delta_block_items` has to take the bucket
-/// from the ROW. Both halves are driven here, because either alone is a weaker claim: a row-only
-/// carrier matters because the entry loses it, and the entry losing it matters because a reader
-/// needs it.
+/// It was `the_fold_takes_the_bucket_from_the_item_because_the_entry_comes_back_at_zero` and it
+/// drove two halves. The first asserted that `BlockIndex::routing_bucket` is write-only across a
+/// reload, against a doc comment on the field claiming a visitor injected it. That was true and it
+/// was useful, and `65c7fc562` ACTED ON IT: the field is not on the entry any more, so the claim
+/// has nothing to be about. Keeping the arm by rewriting it to assert something else, under a name
+/// that still says "because the entry comes back at zero", is the shape this tree keeps a record
+/// of -- a test outliving its subject and reading as though it still covered it.
 ///
-/// THREE CONTROLS. The entry carries the bucket BEFORE the round trip (so the zero afterwards is
-/// a loss and not a value that was never set); the NODE's own `routing_bucket` survives (so the
-/// round trip is not simply dropping everything); and the fold's bucket is read back under the
-/// item's number rather than under any default.
+/// So the finding is carried in the module header and the assertion is retired. That is stronger
+/// than what it asserted, not weaker: a field that is write-only across a reload cannot be read
+/// back wrong once it does not exist. The helper that built a node holding one entry went with it
+/// -- this arm was its only caller, and it constructed two fields the entry no longer declares.
+///
+/// # WHAT SURVIVES IS THE HALF THE COSTING TURNS ON
+///
+/// The row is the carrier and `fold_delta_block_items` reads the bucket off it. The field's removal
+/// does not touch that, and it is what the port's one-record-per-bucket shape is priced against.
+///
+/// THE CONTROL IS THE LOAD-BEARING HALF: the bucket must appear under the ITEM's number and NOT
+/// under zero. Without it, a fold that ignored the row and defaulted to zero would still satisfy a
+/// one-sided "bucket 9 exists" check in any store that already held a bucket 9.
 #[test]
-fn the_fold_takes_the_bucket_from_the_item_because_the_entry_comes_back_at_zero() {
-    let node = a_node_holding_one_entry(7);
-
-    // CONTROL -- it is 7 in memory, before anything is written.
-    assert_eq!(
-        node.block_index
-            .values()
-            .next()
-            .expect("one entry")
-            .routing_bucket,
-        7,
-        "CONTROL: the entry carries the bucket before the round trip"
-    );
-
-    let text = serde_json::to_string(&node).expect("a node serializes");
-    let back: BucketNode = serde_json::from_str(&text).expect("and deserializes");
-
-    // CONTROL -- the round trip is not dropping everything.
-    assert_eq!(
-        back.routing_bucket, 7,
-        "CONTROL: the NODE's own routing bucket survives its round trip"
-    );
-    assert_eq!(
-        back.block_index.len(),
-        1,
-        "CONTROL: the entry itself survives, so the zero below is the FIELD and not the entry"
-    );
-
-    // THE CLAIM.
-    assert_eq!(
-        back.block_index
-            .values()
-            .next()
-            .expect("one entry")
-            .routing_bucket,
-        0,
-        "a reloaded entry's routing_bucket is ZERO: no visitor injects it, so the doc comment on \
-         BlockIndex::routing_bucket describes a path that does not exist"
-    );
-
-    // AND THE OTHER HALF: the fold reads the bucket off the ROW, which is why the row needs it.
+fn the_fold_takes_the_bucket_from_the_row_and_not_from_a_default() {
     let item = crate::index_log::IndexItem {
         kind: crate::index_log::IndexItemKind::Page,
         routing_bucket: 9,

@@ -1342,7 +1342,11 @@ fn the_stored_page_handle_decides_nothing_the_fold_files() {
         for bucket in index.bucket_map.values() {
             for (allocated, page) in bucket.block_index.iter() {
                 rows.push((
-                    page.routing_bucket,
+                    // FROM THE NODE, WHICH IS WHERE THE BUCKET LIVES. This read
+                    // `page.routing_bucket` until that field left the entry in
+                    // `65c7fc562`; it is the same number, taken from the structure
+                    // that still holds it, so the census row is unchanged.
+                    bucket.routing_bucket,
                     page.model_id.as_str().to_string(),
                     page.object_key.as_ref().to_string(),
                     page.address.block_slab_id(),
