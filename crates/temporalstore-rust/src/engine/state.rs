@@ -782,7 +782,15 @@ pub(super) struct PageKeysByPosition<'a> {
 }
 
 impl<'a> PageKeysByPosition<'a> {
-    fn from_lookup(lookup: &'a ObjectBlockLookup) -> Self {
+    /// REACHABLE FROM THE SIBLING MODULE THAT DERIVES, not only from this file's encoder.
+    ///
+    /// It was private while the only builder was `CoreIndex::serialize` one screen below. The
+    /// bucket-layout rebuild in `storage_bucket_internals` is a second builder, and it has to
+    /// hoist its own: the inversion borrows `object_block_lookup` while the rebuild holds
+    /// `bucket_map` mutably, and only the caller can split those two borrows apart by naming the
+    /// fields. `CoreIndex::page_identities` cannot be used there for exactly that reason -- it
+    /// borrows the whole index.
+    pub(super) fn from_lookup(lookup: &'a ObjectBlockLookup) -> Self {
         let mut by_position = std::collections::HashMap::new();
         for (model_id, object_key, refs) in lookup.iter() {
             for block_ref in refs.iter() {
@@ -795,7 +803,19 @@ impl<'a> PageKeysByPosition<'a> {
         Self { by_position }
     }
 
-    fn get(&self, routing_bucket: u32, handle: u64) -> Option<(&'a Arc<str>, &'a Arc<str>)> {
+    /// THE IDENTITY OF A LIVE PAGE AT A POSITION, AND ONLY OF A LIVE ONE.
+    ///
+    /// Named rather than spelled `get` because it answers for ONE of the two sources: the lookup
+    /// holds no deleted page, so a caller that may be looking at a tombstone wants
+    /// [`Self::identity_of`], which knows about both. A caller that has already filtered
+    /// `!page.deleted` wants this, and wants it WITHOUT the node: this borrows the lookup alone,
+    /// so it can be asked while the node is held mutably. `identity_of` cannot be -- it hands back
+    /// a tombstone row and so borrows the node for as long as the answer lives.
+    pub(super) fn live_identity(
+        &self,
+        routing_bucket: u32,
+        handle: u64,
+    ) -> Option<(&'a Arc<str>, &'a Arc<str>)> {
         self.by_position.get(&(routing_bucket, handle)).copied()
     }
 
@@ -824,7 +844,7 @@ impl<'a> PageKeysByPosition<'a> {
                 object_key: &row.object_key,
             });
         }
-        self.get(node.routing_bucket, handle)
+        self.live_identity(node.routing_bucket, handle)
             .map(|(model_id, object_key)| PageObjectIdentity {
                 model_id,
                 object_key,
@@ -837,7 +857,7 @@ impl<'a> PageKeysByPosition<'a> {
     /// so an encode taken in that window has no identity beside any page. That is a state with a
     /// NAME, and the check below refuses a missing source unless this is true -- which is the
     /// difference between a skip with a reason and a skip that hides the one case that matters.
-    fn is_unestablished(&self) -> bool {
+    pub(super) fn names_no_position(&self) -> bool {
         self.by_position.is_empty()
     }
 }
@@ -2755,7 +2775,7 @@ fn check_page_keys_against_their_siblings(node: &BucketNode, keys: &PageKeysByPo
         // thing that needed it.
         let Some(beside) = keys.identity_of(node, *handle, page) else {
             debug_assert!(
-                keys.is_unestablished(),
+                keys.names_no_position(),
                 "a page written by bucket {} has no identity beside it while the lookup IS                  established, so this is not the decode-then-rebuild window: deleted={}",
                 node.routing_bucket,
                 page.deleted

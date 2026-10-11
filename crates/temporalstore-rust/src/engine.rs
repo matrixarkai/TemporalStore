@@ -5078,13 +5078,27 @@ fn mark_bucket_index_object_deleted(shard: &mut ShardState, key: &str) -> bool {
         });
         if !deleted_object_ids.is_empty() {
             bucket.object_index.extend(deleted_object_ids.iter().copied());
-            bucket.deleted_object_index.extend(deleted_object_ids);
             bucket.set_dirty(true);
             bucket.set_deleted(bucket.block_index.is_empty());
             bucket.dirty_generation = bucket.dirty_generation.saturating_add(1);
             bucket.set_meta_loaded(true);
             bucket.set_in_memory(!bucket.block_index.is_empty());
-            update_bucket_layout(shard_id, bucket);
+            // THE PRUNE AT THE REMOVAL SITE. The `retain` above took every page of this one key,
+            // so this object's id is the only membership the bucket can have lost, and the site
+            // has it in hand -- where a re-derivation would have to invert the whole shard's
+            // object lookup to recover it. `prune_object_index_after_removal` keeps all three arms
+            // of the reconcile that used to run here, including the one that leaves the list alone
+            // on a bucket this delete has emptied: that is how a deleted object's id survives to
+            // be reported as a tombstone.
+            crate::engine::storage_bucket_internals::prune_object_index_after_removal(
+                shard_id,
+                bucket,
+                &deleted_object_ids,
+            );
+            crate::engine::storage_bucket_internals::classify_bucket_layout_in_place(bucket);
+            // Moved below the prune, which touches `object_index` and never this field. Nothing
+            // between them reads it.
+            bucket.deleted_object_index.extend(deleted_object_ids);
         }
     }
     if removed {
@@ -5345,6 +5359,12 @@ fn mark_bucket_index_block_deleted_recording(
         });
         if bucket_removed {
             bucket.object_index.extend(deleted_object_ids.iter().copied());
+            // CAPTURED BEFORE THE FILTER BELOW NARROWS IT, because the two sets answer different
+            // questions. What the prune owes is the id of every page this call DROPPED; what
+            // `deleted_object_ids` becomes after the `retain` is the narrower set that earns a
+            // TOMBSTONE. An id that keeps a live page elsewhere is still dropped from this bucket's
+            // list and is still not a deleted object.
+            let dropped_object_ids = deleted_object_ids.clone();
             // A DELETED ELEMENT IS NOT A DELETED OBJECT, AND THE ID NO LONGER SAYS WHICH IS WHICH.
             //
             // This function removes ONE element -- the `retain` above matches on
@@ -5388,7 +5408,13 @@ fn mark_bucket_index_block_deleted_recording(
             bucket.dirty_generation = bucket.dirty_generation.saturating_add(1);
             bucket.set_meta_loaded(true);
             bucket.set_in_memory(!bucket.block_index.is_empty());
-            update_bucket_layout(shard_id, bucket);
+            // THE PRUNE AT THE REMOVAL SITE, on the set captured before the tombstone filter.
+            crate::engine::storage_bucket_internals::prune_object_index_after_removal(
+                shard_id,
+                bucket,
+                &dropped_object_ids,
+            );
+            crate::engine::storage_bucket_internals::classify_bucket_layout_in_place(bucket);
         }
     }
     if removed {

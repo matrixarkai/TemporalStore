@@ -390,12 +390,16 @@ fn the_divergence_counter_moves_on_a_planted_disagreement_and_not_on_a_clean_reb
     {
         let mut shards = engine.shards.write().expect("shards lock poisoned");
         let shard = shards.get_mut(&1).expect("shard 1 loaded");
-        let bucket = shard
-            .bucket_index
+        // SPLIT BY NAMING THE FIELDS, the same way every production sweep does it: the rebuild
+        // reads the object lookup and this arm holds the bucket map mutably.
+        let index = &mut shard.bucket_index;
+        let page_keys =
+            crate::engine::state::PageKeysByPosition::from_lookup(&index.object_block_lookup);
+        let bucket = index
             .bucket_map
             .get_mut(&routing_bucket)
             .expect("the planted bucket");
-        crate::engine::storage_bucket_internals::update_bucket_layout(1, bucket);
+        crate::engine::storage_bucket_internals::update_bucket_layout(1, bucket, &page_keys);
     }
     let after_plant = engine.object_index_divergence_report();
     println!("  after the planted rebuild: {after_plant:?}");
@@ -452,12 +456,16 @@ fn the_divergence_counter_moves_on_a_planted_disagreement_and_not_on_a_clean_reb
     {
         let mut shards = engine.shards.write().expect("shards lock poisoned");
         let shard = shards.get_mut(&1).expect("shard 1 loaded");
-        let bucket = shard
-            .bucket_index
+        // SPLIT BY NAMING THE FIELDS, the same way every production sweep does it: the rebuild
+        // reads the object lookup and this arm holds the bucket map mutably.
+        let index = &mut shard.bucket_index;
+        let page_keys =
+            crate::engine::state::PageKeysByPosition::from_lookup(&index.object_block_lookup);
+        let bucket = index
             .bucket_map
             .get_mut(&routing_bucket)
             .expect("the planted bucket");
-        crate::engine::storage_bucket_internals::update_bucket_layout(1, bucket);
+        crate::engine::storage_bucket_internals::update_bucket_layout(1, bucket, &page_keys);
     }
     let after_clean = engine.object_index_divergence_report();
     println!("  after a clean rebuild of the same bucket: {after_clean:?}");

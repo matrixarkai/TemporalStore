@@ -8396,7 +8396,16 @@ fn bucket_object_index_already_matches_a_from_scratch_recompute() {
         slot_arrays_compared += 1;
         placeholders_seen += before.iter().filter(|slot| slot.is_none()).count();
         let mut rebuilt = bucket.clone();
-        crate::engine::storage_bucket_internals::update_bucket_layout(1, &mut rebuilt);
+        // THE IDENTITIES COME FROM THE SHARD, because the rebuild no longer reads them off the
+        // pages. The bucket under test is a CLONE, so the shard is still only borrowed immutably
+        // here and `page_identities` -- which borrows the whole index -- is available; the
+        // production sweeps have to split the two field borrows by hand instead.
+        let page_keys = shard.bucket_index.page_identities();
+        crate::engine::storage_bucket_internals::update_bucket_layout(
+            1,
+            &mut rebuilt,
+            &page_keys,
+        );
         let after = slots_of(&rebuilt.object_index);
         if before != after {
             renumbered.push(format!("  bucket {routing_bucket}: {before:?} -> {after:?}"));

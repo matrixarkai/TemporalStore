@@ -483,10 +483,26 @@ impl TemporalEngine {
             ));
         }
         if applied {
-            for bucket in shard.bucket_index.bucket_map.values_mut() {
-                update_bucket_layout(shard_id, bucket);
-            }
+            // THE LOOKUP IS REBUILT BEFORE THE LAYOUT PASS NOW, NOT AFTER IT.
+            //
+            // The pass below derives each bucket's live object set from the identity held beside
+            // its pages, and the lookup IS that identity -- so it has to describe the index AS
+            // FOLDED, not the one the decode filed before the fold moved pages about. The order
+            // between the two is free: the rebuild reads `block_index`, and the pass writes only
+            // `object_index`, `layout` and the tombstone rows, so the rebuild sees exactly what it
+            // saw when it ran second.
             shard.bucket_index.rebuild_object_block_lookup();
+            // THE INVERSION IS HOISTED, AND THE TWO BORROWS ARE SPLIT BY NAMING THE FIELDS. The derive
+            // reads the object lookup while this loop holds the bucket map mutably, and both are fields of
+            // one index -- so the split has to be written where the places are named, rather than inside a
+            // method that would borrow the whole index. Built ONCE above a whole-shard pass, which is the
+            // order that pass already pays; built per bucket it would be that order per bucket.
+            let index = &mut shard.bucket_index;
+            let keys =
+                crate::engine::state::PageKeysByPosition::from_lookup(&index.object_block_lookup);
+            for bucket in index.bucket_map.values_mut() {
+                update_bucket_layout(shard_id, bucket, &keys);
+            }
             // AFTER the page index has settled, because this asks of every carried element whether
             // the fold left a page at its address -- a question only the finished index can answer.
             fold_carried_container_elements(shard, &carried_container_elements);
