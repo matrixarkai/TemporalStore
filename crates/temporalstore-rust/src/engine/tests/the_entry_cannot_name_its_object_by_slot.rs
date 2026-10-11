@@ -975,7 +975,34 @@ fn the_page_entry_is_the_only_durable_home_of_an_object_keys_characters() {
             .bucket_map
             .get(&routing_bucket)
             .expect("APPARATUS: the bucket holding the key under test is not resident");
-        serde_json::to_value(bucket).expect("a bucket node serializes to its stored shape")
+        // EVERY OBJECT THIS BUCKET HOLDS, TAKEN FROM THE INDEX'S OWN LOOKUP.
+        //
+        // Naming only the key under test was wrong and the encoder said so on the first run: the
+        // forty filler keys route over the same slot space and at least one of them lands here,
+        // so a list of one left a page unaccounted for. That is the hole `NodeNamedBy` exists to
+        // refuse -- the keyless encode used to write a key naming nothing, once per page, and
+        // return `Ok` -- and it is also why this list is DERIVED rather than written out: a
+        // hand-written one goes stale the next time the fixture's key count or slot range moves.
+        //
+        // THE KEY UNDER TEST IS STILL ASSERTED TO BE AMONG THEM, because the arm below reads the
+        // serialized node for that key's characters and a bucket that did not hold it would make
+        // every row of that search vacuous.
+        let objects: Vec<&str> = shard
+            .bucket_index
+            .object_block_lookup
+            .iter()
+            .filter(|(_, _, refs)| {
+                refs.iter().any(|block_ref| block_ref.routing_bucket == routing_bucket)
+            })
+            .map(|(_, object, _)| object.as_ref())
+            .collect();
+        assert!(
+            objects.iter().any(|object| *object == PRESENT_KEY),
+            "APPARATUS: the bucket this test reads does not hold {PRESENT_KEY}, so the search \
+             below is over a node that never carried it"
+        );
+        serde_json::to_value(crate::engine::state::NodeNamedBy(bucket, &objects))
+            .expect("a bucket node serializes to its stored shape")
     };
     let members = node_wire.as_object().expect(
         "APPARATUS: a bucket node does not serialize as an object, so its members cannot be \

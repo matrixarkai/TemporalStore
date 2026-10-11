@@ -1903,7 +1903,9 @@ fn wire_fixture(ttl_ms: Option<u64>) -> BucketNode {
 #[test]
 fn the_stored_spelling_of_a_bucket_node_did_not_move() {
     // --- NEW WRITE: the exact bytes. ---
-    let with_ttl = serde_json::to_string(&wire_fixture(Some(5_000))).expect("a node serializes");
+    // `wire_fixture` HOLDS NO PAGES, so there is no object to name in any arm of this module.
+    let with_ttl =
+        serde_json::to_string(&crate::engine::state::NodeNamedBy(&wire_fixture(Some(5_000)), &[])).expect("a node serializes");
     assert_eq!(
         "{\"routing_slot\":7,\"layout\":\"SingleBlockObject\",\"dirty\":false,\"deleted\":false,\
          \"meta_loaded\":true,\"loading\":false,\"in_memory\":true,\"ttl_ms\":5000,\
@@ -1919,12 +1921,14 @@ fn the_stored_spelling_of_a_bucket_node_did_not_move() {
         !with_ttl.contains("last_dump_sequence"),
         "the node still writes a last_dump_sequence it does not hold: {with_ttl}"
     );
-    let without = serde_json::to_string(&wire_fixture(None)).expect("a node serializes");
+    let without =
+        serde_json::to_string(&crate::engine::state::NodeNamedBy(&wire_fixture(None), &[])).expect("a node serializes");
     assert!(
         without.contains("\"ttl_ms\":null"),
         "an absent countdown must still be written as null, not omitted: {without}"
     );
-    let at_zero = serde_json::to_string(&wire_fixture(Some(0))).expect("a node serializes");
+    let at_zero =
+        serde_json::to_string(&crate::engine::state::NodeNamedBy(&wire_fixture(Some(0)), &[])).expect("a node serializes");
     assert!(
         at_zero.contains("\"ttl_ms\":0"),
         "a countdown of zero must be written as 0, not as null and not as 1: {at_zero}"
@@ -1969,7 +1973,7 @@ fn the_stored_spelling_of_a_bucket_node_did_not_move() {
     // --- ROUND TRIP, at the values that discriminate. ---
     for ms in [None, Some(0), Some(1), Some(5_000), Some(u64::MAX - 1)] {
         let node = wire_fixture(ms);
-        let json = serde_json::to_string(&node).expect("a node serializes");
+        let json = serde_json::to_string(&crate::engine::state::NodeNamedBy(&node, &[])).expect("a node serializes");
         let back: BucketNode = serde_json::from_str(&json).expect("a node loads");
         assert_eq!(ms, back.ttl_ms.ms(), "a countdown of {ms:?} did not round-trip");
     }
@@ -3812,7 +3816,7 @@ fn the_stored_spelling_of_the_object_side_moved_in_exactly_the_live_object_list(
              expectation below is the captured string unmodified and proves nothing about the \
              removal"
         );
-        let written = serde_json::to_string(&node).expect("a node serializes");
+        let written = serde_json::to_string(&crate::engine::state::NodeNamedBy(&node, &[])).expect("a node serializes");
         assert_eq!(
             expected_now, written,
             "{name}: the stored spelling moved against what 5f86d420f wrote, in some way other \
@@ -3862,7 +3866,8 @@ fn the_stored_spelling_of_the_object_side_moved_in_exactly_the_live_object_list(
         // assertion below that the two expectations differ is what stops this reading as a
         // duplicate of the one above.
         let expected_round_trip = captured.replace("\"last_dump_sequence\":11,", "");
-        let round = serde_json::to_string(&loaded).expect("a loaded node re-serializes");
+        let round =
+            serde_json::to_string(&crate::engine::state::NodeNamedBy(&loaded, &[])).expect("a loaded node re-serializes");
         assert_eq!(
             expected_round_trip, round,
             "{name}: a load-then-write did not round-trip to the bytes it was read from, so \
@@ -3961,7 +3966,7 @@ fn a_bucket_nodes_tombstone_rows_survive_the_wire() {
         "the fixture did not record a row, so the round trip below would hold vacuously"
     );
 
-    let bytes = serde_json::to_string(&node).expect("a node serializes");
+    let bytes = serde_json::to_string(&crate::engine::state::NodeNamedBy(&node, &[])).expect("a node serializes");
     assert!(
         bytes.contains("\"tombstone_elements\":"),
         "a node holding a removal did not write the element it is about: {bytes}"
@@ -3972,7 +3977,8 @@ fn a_bucket_nodes_tombstone_rows_survive_the_wire() {
     );
 
     // AND THE EMPTY NODE IS STILL SILENT, stated here beside its opposite so the two cannot drift.
-    let empty = serde_json::to_string(&wire_fixture(Some(5_000))).expect("a node serializes");
+    let empty =
+        serde_json::to_string(&crate::engine::state::NodeNamedBy(&wire_fixture(Some(5_000)), &[])).expect("a node serializes");
     assert!(
         !empty.contains("tombstone_elements"),
         "a bucket that has never had a removal grew a key: {empty}"

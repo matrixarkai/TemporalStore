@@ -205,7 +205,13 @@ fn the_written_page_index_is_the_same_map_it_was_before_the_hoist() {
     for (object_key, entry) in fixture() {
         bucket.insert_page(&object_key, entry, &mut live);
     }
-    let written = serde_json::to_value(&bucket).expect("a node serializes");
+    // THE THREE OBJECTS `fixture()` WRITES. Two of its four pages are components of the same
+    // object, which is why this is a list of three rather than four.
+    let written = serde_json::to_value(&crate::engine::state::NodeNamedBy(
+        &bucket,
+        &["tenant/1/obj/aaa", "tenant/1/obj/bbb", "tenant/1/obj/ccc"],
+    ))
+    .expect("a node serializes");
     let page_index = written
         .get("page_index")
         .and_then(|value| value.as_object())

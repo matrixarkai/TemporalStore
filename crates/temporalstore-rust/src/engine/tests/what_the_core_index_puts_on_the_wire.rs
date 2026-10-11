@@ -300,7 +300,8 @@ fn a_page_entry_carries_its_object_key_as_a_member_on_the_wire() {
         &mut live,
     );
 
-    let encoded = serde_json::to_value(&bucket).expect("a bucket node serializes");
+    let encoded =
+        serde_json::to_value(&crate::engine::state::NodeNamedBy(&bucket, &["an-object"])).expect("a bucket node serializes");
     let page_index = encoded
         .get("page_index")
         .and_then(serde_json::Value::as_object)

@@ -306,7 +306,9 @@ fn flags_of(node: &BucketNode) -> Vec<bool> {
 fn every_flag_state_survives_the_stored_spelling_and_swapped_keys_do_not() {
     for state in 0u8..32 {
         let node = node_in_state(state);
-        let json = serde_json::to_string(&node).expect("a bucket node serializes");
+        // NO PAGES IN THIS FIXTURE, so there is no object to name -- and the empty list is
+        // CHECKED rather than ignored: a page it did not account for would panic.
+        let json = serde_json::to_string(&crate::engine::state::NodeNamedBy(&node, &[])).expect("a bucket node serializes");
         let back: BucketNode = serde_json::from_str(&json).expect("a bucket node deserializes");
         assert_eq!(
             flags_of(&node),
@@ -325,7 +327,7 @@ fn every_flag_state_survives_the_stored_spelling_and_swapped_keys_do_not() {
         node.loading() && !node.in_memory(),
         "the fixture for the swap must set exactly one of the two keys being exchanged"
     );
-    let written = serde_json::to_string(&node).expect("a bucket node serializes");
+    let written = serde_json::to_string(&crate::engine::state::NodeNamedBy(&node, &[])).expect("a bucket node serializes");
     let swapped = written
         .replace("\"loading\":true", "\"loading\":\x00")
         .replace("\"in_memory\":false", "\"in_memory\":true")
@@ -378,7 +380,7 @@ fn every_flag_state_survives_the_stored_spelling_and_swapped_keys_do_not() {
 #[test]
 fn a_bucket_node_that_omits_a_required_key_is_refused_and_an_optional_one_is_not() {
     let node = node_in_state(0b10101);
-    let json = serde_json::to_string(&node).expect("a bucket node serializes");
+    let json = serde_json::to_string(&crate::engine::state::NodeNamedBy(&node, &[])).expect("a bucket node serializes");
 
     /// Remove one top-level key and its value from a flat JSON object.
     fn without(json: &str, key: &str) -> String {
@@ -477,7 +479,7 @@ fn a_bucket_node_that_omits_a_required_key_is_refused_and_an_optional_one_is_not
 #[test]
 fn a_retired_bucket_node_key_is_still_recognised_type_checked_and_refused_twice() {
     let node = node_in_state(0b10101);
-    let written = serde_json::to_string(&node).expect("a bucket node serializes");
+    let written = serde_json::to_string(&crate::engine::state::NodeNamedBy(&node, &[])).expect("a bucket node serializes");
     assert!(
         !written.contains("last_dump_sequence"),
         "this engine still writes a last_dump_sequence the node does not hold: {written}"

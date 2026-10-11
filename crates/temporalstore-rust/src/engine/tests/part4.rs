@@ -5460,7 +5460,8 @@ fn dumping_the_block_index_does_not_copy_it_first() {
             .expect("the writes must produce pages");
 
         let probe = crate::alloc_probe::Probe::start();
-        let json = serde_json::to_string(&bucket.block_index).expect("the index serializes");
+        let json = serde_json::to_string(&crate::engine::state::PageIndexNamedBy(&bucket.block_index, &["dumped"]))
+            .expect("the index serializes");
         let counts = probe.stop();
         assert!(!json.is_empty());
         counts.allocs
@@ -5520,7 +5521,8 @@ fn the_block_index_dump_is_ordered_by_its_written_key() {
         .find(|b| b.block_index.len() > 4)
         .expect("the writes must produce several pages in one bucket");
 
-    let json = serde_json::to_string(&bucket.block_index).expect("the index serializes");
+    let json = serde_json::to_string(&crate::engine::state::PageIndexNamedBy(&bucket.block_index, &["ordered"]))
+        .expect("the index serializes");
     let value: serde_json::Value = serde_json::from_str(&json).expect("valid json");
     let keys: Vec<String> = value
         .as_object()
@@ -5656,7 +5658,7 @@ fn the_block_index_still_writes_string_keys() {
     // On the wire: the same rendered key it always wrote, rebuilt from the block AND the identity
     // beside it -- which is where the renderer takes it from now.
     let named = super::PageObjects::of(&shard.bucket_index);
-    let json = serde_json::to_value(&bucket.block_index).unwrap();
+    let json = serde_json::to_value(&crate::engine::state::PageIndexNamedBy(&bucket.block_index, &["dumped"])).unwrap();
     let written = json.as_object().expect("the wire form is a map of string keys");
     let expected = crate::engine::state::block_index_written_key(
         named.at(bucket.routing_bucket, *handle),

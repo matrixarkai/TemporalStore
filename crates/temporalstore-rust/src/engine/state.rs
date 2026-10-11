@@ -3128,25 +3128,74 @@ where
 /// a type production cannot construct. `--lib` compiles with no `Serialize for BucketNode` and no
 /// `Serialize for BlockIndexMap` in it at all.
 ///
-/// IT ENDS WHEN THE FIELD DOES. There is no copy on the entry to key from afterwards, so each of
-/// the twenty-six arms has to name the identity it means -- which the compiler will ask it to.
+/// # IT STOPPED READING THE ENTRY, AND THE FIXTURE NAMES THE OBJECTS INSTEAD
+///
+/// It was `PageIndexFromTheEntriesOwnCopies`, and it keyed each page from the entry's own copy of
+/// the identity -- which is the copy that is going. A bare node has no object lookup to invert,
+/// so the only remaining source for a page's object is the FIXTURE, and the fixture is handed in.
+///
+/// WHAT IS HANDED IN IS THE OBJECT KEYS, NOT A HANDLE MAP, and the match is the map's own. A page
+/// is filed under `block_index_handle(object_key, page)`, so for each page exactly one of the
+/// named objects reproduces the handle it is filed under. The caller writes the string literals
+/// its own fixture wrote -- usually one -- and this recomputes the pairing rather than being told
+/// it. A wrong literal does not quietly key a page under the wrong name: it matches nothing.
+///
+/// A PAGE NO NAMED OBJECT ACCOUNTS FOR IS A PANIC, and so is a list with an object that accounts
+/// for no page. The first is the hole this door exists to close -- the keyless encode that wrote
+/// a key naming nothing, once per page, and returned `Ok`. The second is a stale list, which is
+/// how this kind of hand-written argument rots: a fixture that stops writing an object and leaves
+/// its name here would otherwise go on passing.
 #[cfg(test)]
-struct PageIndexFromTheEntriesOwnCopies<'a>(&'a BlockIndexMap);
+pub(super) struct PageIndexNamedBy<'a>(pub(super) &'a BlockIndexMap, pub(super) &'a [&'a str]);
 
 #[cfg(test)]
-impl Serialize for PageIndexFromTheEntriesOwnCopies<'_> {
+impl PageIndexNamedBy<'_> {
+    /// The object each page is filed under, matched by the handle the map keyed it with.
+    fn pairs(&self) -> Vec<(&str, &BlockIndex)> {
+        let mut used = vec![false; self.1.len()];
+        let paired: Vec<(&str, &BlockIndex)> = self
+            .0
+            .iter()
+            .map(|(handle, page)| {
+                let at = self
+                    .1
+                    .iter()
+                    .position(|object| block_index_handle(object, page) == *handle)
+                    .unwrap_or_else(|| {
+                        panic!(
+                            "no object named by this fixture is filed at handle {handle}; the                              named objects are {:?}",
+                            self.1
+                        )
+                    });
+                used[at] = true;
+                (self.1[at], page)
+            })
+            .collect();
+        if let Some(at) = used.iter().position(|hit| !hit) {
+            panic!(
+                "this fixture names the object {:?}, which accounts for none of the {} page(s)                  in the map; a name left behind by a fixture that stopped writing it would go on                  passing",
+                self.1[at],
+                paired.len()
+            );
+        }
+        paired
+    }
+}
+
+#[cfg(test)]
+impl Serialize for PageIndexNamedBy<'_> {
     fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
     where
         S: serde::Serializer,
     {
         use serde::ser::SerializeMap;
         let mut entries: Vec<(String, PageEntryAt<'_>)> = self
-            .0
-            .values()
-            .map(|page| {
+            .pairs()
+            .into_iter()
+            .map(|(object_key, page)| {
                 (
-                    block_index_written_key(&page.object_key, page),
-                    PageEntryAt { page, object_key: &page.object_key },
+                    block_index_written_key(object_key, page),
+                    PageEntryAt { page, object_key },
                 )
             })
             .collect();
@@ -3159,14 +3208,21 @@ impl Serialize for PageIndexFromTheEntriesOwnCopies<'_> {
     }
 }
 
-/// TEST-ONLY DOOR for the six arms that write a bare map with no node around it.
+/// TEST-ONLY DOOR for the arms that write a bare NODE, with the objects its fixture wrote.
 #[cfg(test)]
-impl Serialize for BlockIndexMap {
+pub(super) struct NodeNamedBy<'a>(pub(super) &'a BucketNode, pub(super) &'a [&'a str]);
+
+#[cfg(test)]
+impl Serialize for NodeNamedBy<'_> {
     fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
     where
         S: serde::Serializer,
     {
-        PageIndexFromTheEntriesOwnCopies(self).serialize(serializer)
+        serialize_bucket_node(
+            self.0,
+            &PageIndexNamedBy(&self.0.block_index, self.1),
+            serializer,
+        )
     }
 }
 
@@ -4749,26 +4805,18 @@ impl BucketNode {
 /// A repeated key is an error rather than a last-one-wins, exactly as the derive had it: two
 /// disagreeing statements of the same fact must fail loudly and before anything is built from
 /// them.
-/// THE FIXTURE DOOR, NOW `#[cfg(test)]` AND NAMED FOR WHAT IT DOES.
-///
-/// It was an unconditional `impl Serialize for BucketNode` passing `None` for the page-key
-/// context. Production never used it -- `--lib` compiles with no such impl -- and twenty test
-/// arms do, every one of them a byte-shape assertion over a hand-built node. It keys each page
-/// from the entry's own copy of the identity, which is a thing only a test may do and only while
-/// the field exists.
-#[cfg(test)]
-impl Serialize for BucketNode {
-    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
-    where
-        S: serde::Serializer,
-    {
-        serialize_bucket_node(
-            self,
-            &PageIndexFromTheEntriesOwnCopies(&self.block_index),
-            serializer,
-        )
-    }
-}
+// THE BLANKET FIXTURE DOORS ARE GONE, AND THAT IS THE POINT RATHER THAN A TIDY-UP.
+//
+// `#[cfg(test)] impl Serialize for BucketNode` and the matching one for `BlockIndexMap` let a
+// test write `serde_json::to_string(&node)` and get bytes whose page keys were composed from the
+// entries' own copies of the identity. With that copy gone the only thing such an impl could
+// compose is a key naming nothing, once per page, returned as `Ok` -- and an inherent impl on the
+// type is reachable from anywhere in the test tree, so nothing would ask the caller for the
+// identity it means.
+//
+// [`NodeNamedBy`] and [`PageIndexNamedBy`] replace them. They are wrappers, so every one of the
+// twenty-six arms now states the objects its fixture wrote, and the compiler asked each of them
+// to. Their doc carries why the objects are matched by handle rather than listed per page.
 
 /// THE BODY EVERY NODE DOOR GOES THROUGH, PARAMETERISED ON HOW THE PAGE INDEX IS WRITTEN.
 ///

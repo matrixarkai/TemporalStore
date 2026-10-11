@@ -2213,8 +2213,12 @@ fn the_inline_and_mapped_arms_write_the_same_bytes_for_the_same_page_set() {
         "the round-tripped node did not drain back to the single-page arm"
     );
 
-    let untouched_bytes = serde_json::to_string(&untouched).expect("a node serializes");
-    let round_tripped_bytes = serde_json::to_string(&round_tripped).expect("a node serializes");
+    // BOTH NODES HOLD `page_for(1)` AND NOTHING ELSE -- the round-tripped one grew to four and
+    // drained back to this one page, which is the whole subject of the comparison.
+    let untouched_bytes =
+        serde_json::to_string(&crate::engine::state::NodeNamedBy(&untouched, &["key-1"])).expect("a node serializes");
+    let round_tripped_bytes =
+        serde_json::to_string(&crate::engine::state::NodeNamedBy(&round_tripped, &["key-1"])).expect("a node serializes");
     println!("\n=== the stored spelling across the transition ===");
     println!("  never left the inline arm : {} B", untouched_bytes.len());
     println!("  grew to four and shrank   : {} B", round_tripped_bytes.len());
@@ -2233,7 +2237,8 @@ fn the_inline_and_mapped_arms_write_the_same_bytes_for_the_same_page_set() {
     different
         .block_index
         .insert(&different_key, different_page, &mut live);
-    let different_bytes = serde_json::to_string(&different).expect("a node serializes");
+    let different_bytes =
+        serde_json::to_string(&crate::engine::state::NodeNamedBy(&different, &["key-2"])).expect("a node serializes");
     assert_ne!(
         untouched_bytes, different_bytes,
         "a node holding a DIFFERENT page serializes to the same bytes; the comparison above \
@@ -2300,7 +2305,9 @@ fn the_inline_and_mapped_arms_write_the_same_bytes_for_the_same_page_set() {
     let (body_key, body) = component_page(5, "body");
     many.block_index.insert(&body_key, body, &mut live);
     assert_eq!(5, many.block_index.len(), "five pages, five entries");
-    let written = serde_json::to_string(&many).expect("a node serializes");
+    // FIVE PAGES OVER FIVE OBJECTS: four `page_for` keys and the container.
+    const MANY_OBJECTS: &[&str] = &["key-1", "key-2", "key-3", "key-4", "container"];
+    let written = serde_json::to_string(&crate::engine::state::NodeNamedBy(&many, MANY_OBJECTS)).expect("a node serializes");
     let read_back: BucketNode = serde_json::from_str(&written).expect("a node deserializes");
     assert_same_page_set(
         "a five-page bucket through the stored form",
@@ -2309,7 +2316,7 @@ fn the_inline_and_mapped_arms_write_the_same_bytes_for_the_same_page_set() {
     );
     assert_eq!(
         written,
-        serde_json::to_string(&read_back).expect("a node serializes"),
+        serde_json::to_string(&crate::engine::state::NodeNamedBy(&read_back, MANY_OBJECTS)).expect("a node serializes"),
         "a node that has been through the stored form writes different bytes the second time"
     );
     std::hint::black_box(handle);
