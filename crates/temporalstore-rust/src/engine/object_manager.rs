@@ -94,11 +94,53 @@ pub(super) fn runtime_report(shard: &ShardState) -> ObjectManagerRuntimeReport {
         }
         let identities = shard.bucket_index.page_identities();
         for (handle, page) in bucket.block_index.iter() {
-            // THE OBJECT COMES FROM BESIDE THE PAGE. A page whose neighbours do not name one is
-            // skipped, which is the one tombstone whose removal named no element -- this report is
-            // keyed by object id and has no row to put such a page in.
-            let Some(beside) = identities.identity_of(bucket, *handle, page) else {
-                continue;
+            // THE OBJECT COMES FROM BESIDE THE PAGE, AND A LIVE PAGE NOTHING BESIDE IT NAMES IS
+            // NO LONGER SKIPPED.
+            //
+            // # THE SKIP WAS SILENTLY UNDERCOUNTING THIS REPORT
+            //
+            // This read `page.object_key` before the identity was hoisted off the entry. Hoisted,
+            // it became `identity_of` with a `continue` on `None` -- and `None` covers TWO states,
+            // only one of which is the tombstone the old comment named. The other is a bucket whose
+            // pages are not in the object lookup at all, and for such a bucket EVERY live page was
+            // skipped, so `live_block_ref_count` and every `block_ref_count` came back zero while
+            // the object rows themselves were still built from `object_index`. A report saying
+            // "one object, zero block refs" for an object with two pages is not a smaller answer,
+            // it is a wrong one.
+            //
+            // MEASURED BY `two_buckets_holding_one_object_id_are_reported_as_one_object`, which
+            // asserts two refs and read zero. Attributed to the hoist and not to anything after
+            // it: that test, this walk and the fixture are byte-identical to the commit the hoist
+            // landed on, and the fixture cannot file a lookup entry -- `BlockIndexMap::insert`
+            // cannot reach a `CoreIndex`.
+            //
+            // # SO THE TWO STATES ARE SEPARATED
+            //
+            // A DELETED page nothing names is still skipped, for the reason the old comment gave:
+            // it is the one tombstone whose removal named no element, and a report keyed by object
+            // id has no row to put it in. A LIVE page falls back to the entry's own copy, which is
+            // the source this walk used before the hoist and is still there.
+            //
+            // AND THE FALLBACK IS REFUSED OUTSIDE THE ONE WINDOW THAT EXPLAINS IT, which is what
+            // stops it quietly becoming the normal path again: a live page has nothing beside it
+            // only while the lookup names no position at all. The check beside the page index
+            // carries the same rule, for the same reason.
+            //
+            // THE FALLBACK IS A SCAFFOLD WITH A LIFETIME. It reads the field this leg is removing,
+            // so it is one of the readers the removal has to answer for -- and the answer there is
+            // that the lookup must be established before this report walks, not that the report
+            // keeps a second source for good.
+            let object_key = match identities.identity_of(bucket, *handle, page) {
+                Some(beside) => beside.object_key,
+                None if page.deleted => continue,
+                None => {
+                    debug_assert!(
+                        identities.names_no_position(),
+                        "bucket {} holds a live page the object lookup does not name while the                          lookup DOES name positions, so this report is falling back to the entry's                          own copy of the identity outside the one window that explains it",
+                        bucket.routing_bucket
+                    );
+                    &page.object_key
+                }
             };
             // A TOMBSTONE ENTRY IS NOT A LIVE BLOCK REF. It is counted below as a DELETED one, which
             // is what it is, and the field this line fills is named `live`. The distinction did not
@@ -108,7 +150,7 @@ pub(super) fn runtime_report(shard: &ShardState) -> ObjectManagerRuntimeReport {
             if !page.deleted {
                 live_block_ref_count = live_block_ref_count.saturating_add(1);
             }
-            let page_object_id = page.object_id(shard_id, beside.object_key);
+            let page_object_id = page.object_id(shard_id, object_key);
             object_ids.insert(page_object_id);
             *object_ref_counts.entry(page_object_id).or_default() += 1;
             // `missing_object_owner_refs` STOOD HERE AND HAS BEEN RETIRED, not zeroed. It counted
@@ -163,8 +205,8 @@ pub(super) fn runtime_report(shard: &ShardState) -> ObjectManagerRuntimeReport {
                 (None, Some(next)) => Some(next),
                 (existing, None) => existing,
             };
-            if !object.object_keys.contains(&beside.object_key.to_string()) {
-                object.object_keys.push(beside.object_key.to_string());
+            if !object.object_keys.contains(&object_key.to_string()) {
+                object.object_keys.push(object_key.to_string());
             }
             if !object.model_ids.contains(&page.model_id.to_string()) {
                 object.model_ids.push(page.model_id.clone().to_string());
