@@ -78,10 +78,28 @@ fn a_shard_with_expiring_pages(buckets: u32) -> ShardState {
     let mut shard = ShardState::default();
     for routing_bucket in 0..buckets {
         let object_key = format!("expiring-{routing_bucket}");
-        shard
-            .bucket_index
-            .bucket_map
-            .insert(routing_bucket, a_bucket_holding_one_page(routing_bucket, &object_key));
+        let bucket = a_bucket_holding_one_page(routing_bucket, &object_key);
+        // THE PLACED PAGES, READ OUT BEFORE THE BUCKET IS HANDED OVER, so the lookup can be filed
+        // from the same (handle, page) pairs the map keyed them under.
+        let placed: Vec<(u64, BlockIndex)> = bucket
+            .block_index
+            .iter()
+            .map(|(handle, page)| (*handle, page.clone()))
+            .collect();
+        shard.bucket_index.bucket_map.insert(routing_bucket, bucket);
+        // AND THE LOOKUP IS FILED, AS EVERY PRODUCTION PLACEMENT FILES IT.
+        //
+        // The TTL rollup selects pages whose OBJECT is in `expires_at_ms`, and the object a page
+        // belongs to is stated beside the page, not on it. A hand-built index that files nothing
+        // names no page, so the rollup selected nothing and the control below -- "the sweep must
+        // still compute the minimum" -- failed. That is the fixture being unlike production, not
+        // the rollup being broken: it is the same shape the page-index encoder refuses outright.
+        let key: std::sync::Arc<str> = std::sync::Arc::from(object_key.as_str());
+        for (handle, page) in &placed {
+            shard
+                .bucket_index
+                .insert_object_block_lookup(routing_bucket, *handle, &key, page);
+        }
         crate::engine::set_expiry(&mut shard, object_key, FAR_FUTURE_MS);
     }
     assert!(

@@ -5829,13 +5829,23 @@ fn refresh_one_bucket_runtime_flags(
     // the set and chose not to consult it rather than never having had access to it.
     _dirty_objects: &DirtyObjectIndex,
     expires_at_ms: &BTreeMap<String, u64>,
-    // THE IDENTITIES, OR NONE AT ALL, WHERE A `bool` USED TO SAY WHETHER TO REBUILD.
+    // THE IDENTITIES, AND SEPARATELY THE DECISION TO REBUILD. ONE PARAMETER WAS CARRYING BOTH
+    // AND THAT WAS WRONG IN A WAY A TEST CAUGHT.
     //
-    // The set can only be rebuilt from a source that names each live page, so the decision and the
-    // source are now one thing: a caller that wants the rebuild hands over the inversion it
-    // hoisted, and a caller that does not hands `None`. A `bool` could ask for a rebuild with
-    // nothing to rebuild from, and the rebuild would then have had to invent its own source.
-    object_index_rebuild: Option<&crate::engine::state::PageKeysByPosition<'_>>,
+    // It was a single `Option<&PageKeysByPosition>`, where `Some` meant both "here is the source"
+    // and "rebuild the object index". That was sound while the identities had exactly one consumer.
+    // The TTL rollup is a second consumer and it does NOT want the rebuild's answer to its
+    // question: `refresh_bucket_runtime_flags_after_reconstruct` asks for a TTL recompute while
+    // deliberately skipping the object-index rescan, so it passed `None` and the rollup lost its
+    // source. Driven by `the_write_path_leaves_the_bucket_ttl_alone`, whose control asserts the
+    // sweep still computes a minimum.
+    //
+    // SO: `identities` is the SOURCE, present whenever any consumer here needs one, and
+    // `rebuild_object_index` is the DECISION. The objection the single `Option` was built to
+    // answer -- that a `bool` can ask for a rebuild with nothing to rebuild from -- is answered by
+    // asserting the implication instead of by conflating the two.
+    identities: Option<&crate::engine::state::PageKeysByPosition<'_>>,
+    rebuild_object_index: bool,
     // SEPARATE FROM `object_index_rebuild` ON PURPOSE -- see [`BucketTtlRollup`]. The two
     // agree at every call site today and they answer different questions.
     ttl_rollup: BucketTtlRollup,
@@ -5877,6 +5887,11 @@ fn refresh_one_bucket_runtime_flags(
     // touches essentially all of them. Gating on the traversal would therefore have left the cost
     // exactly where it was on the configuration that matters. The question is whether this is a
     // WRITE-path refresh, which is what [`BucketTtlRollup`] names.
+    debug_assert!(
+        !rebuild_object_index || identities.is_some(),
+        "the object index was asked to be rebuilt with no identities to rebuild it from, so the \
+         rebuild would have had to invent its own source"
+    );
     match ttl_rollup {
         BucketTtlRollup::LeaveStale => {}
         BucketTtlRollup::Recompute => {
@@ -5895,37 +5910,38 @@ fn refresh_one_bucket_runtime_flags(
                 // inversion has nothing to select on -- and leaving the field stale is the only
                 // honest answer, which is exactly what the one caller that passes `None` already
                 // asks for by name.
-                match object_index_rebuild {
+                debug_assert!(
+                    identities.is_some(),
+                    "a TTL recompute was asked for with no identities to select on; the sweep \
+                     builds the inversion whenever the rollup is `Recompute`, so this \
+                     combination has no caller"
+                );
+                match identities {
                     Some(keys) => {
-                        bucket.ttl_ms = BucketTtl::from_ms(
-                            bucket
-                                .block_index
-                                .iter()
-                                .filter_map(|(handle, page)| {
-                                    let beside = keys.identity_of(bucket, *handle, page)?;
-                                    expires_at_ms.get(&**beside.object_key).copied()
-                                })
-                                .map(|expires_at| expires_at.saturating_sub(now))
-                                .min(),
-                        );
+                        // COMPUTED THEN ASSIGNED, so the selection's borrow of the bucket ends
+                        // before the field is written.
+                        let soonest = bucket
+                            .block_index
+                            .iter()
+                            .filter_map(|(handle, page)| {
+                                let beside = keys.identity_of(bucket, *handle, page)?;
+                                expires_at_ms.get(&**beside.object_key).copied()
+                            })
+                            .map(|expires_at| expires_at.saturating_sub(now))
+                            .min();
+                        bucket.ttl_ms = BucketTtl::from_ms(soonest);
                     }
                     None => {
-                        // THE ONLY WAY TO BE HERE IS AN UNSTAMPED STATE. The sweep hands the
-                        // inversion whenever the state carries a shard id, and the targeted path
-                        // asks for `LeaveStale` by name. In production a served state is always
-                        // stamped: `install_shard_state` is the only caller of `set_shard_id`.
-                        debug_assert!(
-                            shard_id.is_none(),
-                            "a stamped state asked for a TTL recompute with no identities to \
-                             select on, so the rollup has no source and the field is being left \
-                             stale for the wrong reason"
-                        );
+                        // THE FIELD IS LEFT STALE, and the assertion above is what says this
+                        // combination has no caller. There is nothing to select on, so writing
+                        // `ABSENT` here would clear a TTL this pass could not read rather than
+                        // report one it could not compute.
                     }
                 }
             }
         }
     }
-    match (object_index_rebuild, shard_id) {
+    match (rebuild_object_index.then_some(identities).flatten(), shard_id) {
         (Some(keys), Some(shard_id)) => update_bucket_layout(shard_id, bucket, keys),
         _ => classify_bucket_layout_in_place(bucket),
     }
@@ -5983,7 +5999,10 @@ fn refresh_all_bucket_runtime_flags(
     // has no use for the identities and must not pay for them: this is the write path's traversal
     // as well as the maintenance one.
     let index = &mut shard.bucket_index;
-    let keys = if rebuild_object_index {
+    // BUILT WHENEVER A CONSUMER NEEDS IT, WHICH IS NOT THE SAME QUESTION AS WHETHER THE OBJECT
+    // INDEX IS BEING REBUILT. The TTL rollup selects pages by the object held BESIDE them, so a
+    // `Recompute` needs the inversion even on the reconstruct path, which skips the rescan.
+    let keys = if rebuild_object_index || matches!(ttl_rollup, BucketTtlRollup::Recompute) {
         Some(crate::engine::state::PageKeysByPosition::from_lookup(
             &index.object_block_lookup,
         ))
@@ -5998,6 +6017,7 @@ fn refresh_all_bucket_runtime_flags(
             &shard.dirty_objects,
             &shard.expires_at_ms,
             keys.as_ref(),
+            rebuild_object_index,
             ttl_rollup,
         );
     }
@@ -6057,9 +6077,11 @@ pub(super) fn refresh_pending_bucket_runtime_flags(shard: &mut ShardState) {
             now,
             &shard.dirty_objects,
             &shard.expires_at_ms,
-            // The targeted path is the write path, so the object-index rebuild stays off and
-            // there is nothing to hand it. See `refresh_all_bucket_runtime_flags`.
+            // The targeted path is the write path, so the object-index rebuild stays off, the
+            // TTL is left stale by name, and there is no source to hand over. See
+            // `refresh_all_bucket_runtime_flags`.
             None,
+            false,
             BucketTtlRollup::LeaveStale,
         );
     }
