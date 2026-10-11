@@ -4955,16 +4955,9 @@ pub(super) fn sync_bucket_index_object_blocks_with_mode(
     // Components whose blocks this call drops, so the lookup can be corrected for exactly those
     // instead of being rebuilt from every block in the shard.
     let mut removed_components: BTreeSet<Option<Arc<str>>> = BTreeSet::new();
-    // THE ONE ID THIS CALL CAN DROP FROM AN OBJECT LIST, derived once rather than per bucket.
-    //
-    // Every address published here belongs to ONE object key -- the comment on the released-bucket
-    // reload above says so in as many words, "the set was a set of one" -- and the `retain` below
-    // matches a page on `(kind, object_key)`. So the only membership any bucket can lose to this
-    // call is this object's, whichever buckets it turns out to have pages in.
-    let superseded_object_ids: BTreeSet<u64> =
-        [crate::engine::hashing::stable_block_object_id(shard_id, kind, object_key)]
-            .into_iter()
-            .collect();
+    // THE ID THIS CALL SUPERSEDES IS NO LONGER COLLECTED HERE, because a delta over it was the
+    // wrong shape: the membership a removal can change is not limited to what the removal caused.
+    // See [`repair_object_index_against_its_pages`].
     let target_buckets = if lookup_needs_establishing {
         shard
             .bucket_index
@@ -5017,11 +5010,11 @@ pub(super) fn sync_bucket_index_object_blocks_with_mode(
                 bucket.dirty_generation = bucket.dirty_generation.saturating_add(1);
             }
             bucket.set_in_memory(!bucket.block_index.is_empty());
-            // THE PRUNE AT THE REMOVAL SITE, which is what this path is. Re-deriving the whole
-            // bucket's live set here would mean inverting the whole shard's object lookup --
-            // O(block refs), PER CALL, on the whole-object publish path -- to recover an answer
-            // the site already holds in one id.
-            prune_object_index_after_removal(shard_id, bucket, &superseded_object_ids);
+            // THE REPAIR AT THE REMOVAL SITE. A delta over the id this call superseded stood
+            // here and was wrong; `repair_object_index_against_its_pages` carries the measurement
+            // that says so. The pass is over this bucket's own pages, which this loop is already
+            // walking, and it asks for no whole-shard inversion.
+            repair_object_index_against_its_pages(shard_id, bucket);
             classify_bucket_layout_in_place(bucket);
         }
     }
@@ -5284,8 +5277,9 @@ pub mod layout_by_caller {
 /// hides the one case this move would break.
 ///
 /// AND THE PRUNING A REMOVAL OWES IS NOT TAKEN HERE ANY MORE. The three sites that drop an object's
-/// pages know which object they dropped and call [`prune_object_index_after_removal`], which needs
-/// no identity, no inversion and no walk of the bucket.
+/// pages call [`repair_object_index_against_its_pages`] instead, which reconciles the ONE bucket
+/// they are holding against its own live pages and asks for no inversion. It was briefly a delta
+/// over the ids a removal had dropped; that was wrong, and the measurement that says so is on it.
 ///
 /// A caller that genuinely has no shard uses [`classify_bucket_layout_in_place`] instead, which
 /// takes `object_index` as already correct. That function is also what the write path uses to skip
@@ -5400,79 +5394,80 @@ pub(super) fn update_bucket_layout_with_live_objects(
     bucket.layout = classify_bucket_layout(bucket.object_index.object_count(), bucket.block_index.len());
 }
 
-/// WHAT A REMOVAL OWES THE OBJECT LIST, TAKEN WHERE THE REMOVAL IS AND NEEDING NO IDENTITY.
+/// WHAT A REMOVAL OWES THE OBJECT LIST: A REPAIR OF THE BUCKET IT HOLDS, NOT A DELTA.
 ///
-/// THE THREE SITES THIS SERVES ALL HAVE ONE SHAPE: a `retain` over one bucket that drops every
-/// page of ONE object -- live and tombstoned alike, because the predicate at each of them matches
-/// on `(kind, object_key)` and nothing else -- and then has to say what became of that object's id.
-/// They used to say it by re-deriving the whole bucket's live set and letting the reconcile notice
-/// the difference. The difference is one id, and the site knows which.
+/// # THE DELTA THAT STOOD HERE WAS WRONG, AND ITS OWN SCAFFOLD IS WHAT SAID SO
 ///
-/// IT REPRODUCES ALL THREE ARMS OF [`reconcile_object_index_with_live_pages`], which is why it is
-/// one function and not three lines at each site:
+/// It removed exactly the ids whose pages the call had dropped, on the argument that no other
+/// object's pages had changed so no other id's membership could have. That argument is sound about
+/// THIS CALL and it is not the whole claim: `reconcile_object_index_with_live_pages` removed every
+/// held id that no live page named -- a REPAIR -- so drift that existed before the call was
+/// silently fixed by it, and a delta cannot fix what it did not cause.
 ///
-///   * NO PAGES LEFT AT ALL -> the list is left exactly as it is. That is the reconcile's early
-///     return, and it is what lets the resident delete path keep a deleted object's id on a bucket
-///     it has emptied. Dropping this arm would drop the tombstone the object manager reports.
-///   * PAGES LEFT BUT NONE LIVE -> the list is cleared. A bucket whose every remaining page is a
-///     tombstone names no object, whatever it held a moment ago -- and that is answerable with no
-///     identity at all, because `all(page.deleted)` is a question about flags.
-///   * OTHERWISE -> the dropped object's id goes and NOTHING ELSE MOVES. No page was added, and
-///     the only object that can have lost its last live page is the one whose pages were just
-///     taken, so no other id's membership can have changed.
+/// MEASURED, by the assertion that shipped beside the delta rather than by reasoning:
+/// `dirty_bucket_count_matches_the_unshortened_scan` and
+/// `dirty_objects_versus_the_blocks_own_dirty_flags` both drive a `StringSet` and then a
+/// `CommonDelete`, and both reddened with the bucket and both id sets -- bucket 50 holding
+/// `{9978707636403695476, 11659942300020297180}` where its live pages named only the second, and
+/// bucket 7 the same shape. The drift is real and it has a source: a delete that empties a bucket
+/// keeps the deleted object's id deliberately (see `engine.rs`'s resident delete path, where that
+/// is how a tombstone comes to be reported at all), the bucket is later re-populated, and the write
+/// path reclassifies in place without reconciling -- so the stale id sits there until something
+/// repairs the set.
 ///
-/// WHY THE THIRD ARM IS EXACT RATHER THAN HOPEFUL, since a prune at the removal site is where this
-/// could silently under-prune. `retain` removed EVERY page matching the object, so no live page of
-/// it survives and the id is owed removal unconditionally. And it cannot over-prune: an id is
-/// removed only if it was held, and the ids handed in are the ids of the pages the call dropped.
+/// # AND THE REPAIR IS NOT THE PASS THAT WAS REMOVED
 ///
-/// THE COUNTERS ARE THE ONES THE RECONCILE WOULD HAVE CHARGED, deliberately. A rebuild is noted
-/// because a maintenance step happened, and a removed id is noted as a list holding an object no
-/// page names -- which is what it is. A test reading those counters reads the same event under the
-/// same name as before.
-pub(super) fn prune_object_index_after_removal(
-    // THE SHARD IS HERE FOR THE SCAFFOLD AT THE BOTTOM AND FOR NOTHING ELSE, and goes with it when
-    // the entry stops carrying a key. The prune itself asks no identity question.
-    #[cfg_attr(not(debug_assertions), allow(unused_variables))] shard_id: ShardId,
-    bucket: &mut BucketNode,
-    dropped_object_ids: &BTreeSet<u64>,
-) {
-    object_index_divergence::note_rebuild();
-    if bucket.block_index.is_empty() {
-        return;
-    }
-    if bucket.block_index.values().all(|page| page.deleted) {
-        bucket.object_index.clear();
-        return;
-    }
-    // Against a collected vector and not `ObjectIndex::contains`, for the reason
-    // `reconcile_object_index_with_live_pages` gives: `contains` charges the probe counter that
-    // `the_join_a_name_reader_would_pay` reads, and this is a maintenance step.
-    let held: Vec<u64> = bucket.object_index.iter().copied().collect();
-    for object_id in dropped_object_ids {
-        if held.contains(object_id) {
-            object_index_divergence::note_list_held_an_object_no_page_names(*object_id);
-            bucket.object_index.remove(object_id);
-        }
-    }
-    // THE SAME SCAFFOLD THE DERIVE CARRIES, and for the same reason: a prune taken at the removal
-    // site is the one arm of this change that no inversion checks, so while the entry still holds
-    // a key the result is compared against what the re-derivation would have produced. Both go
-    // when the field does.
+/// Worth stating because the two are easy to confuse. `update_bucket_layout` only ever walked the
+/// bucket it was GIVEN; what was expensive at a removal site was never that walk but the O(block
+/// refs) inversion the derive needs once the identity leaves the entry. So reconciling this
+/// bucket's set against this bucket's own live pages costs one pass over pages the caller is
+/// already walking, reproduces the previous semantics exactly, and asks for no inversion.
+///
+/// EXACTLY THE PREVIOUS SEMANTICS, line for line: the old call was derive, reconcile, reconcile the
+/// tombstone rows, classify. This is the first two, and [`classify_bucket_layout_in_place`] beside
+/// it at every call site is the last two -- including the visit counters, so nothing reading them
+/// sees a site stop reporting.
+///
+/// THE EARLY RETURN ON AN EMPTIED BUCKET IS KEPT, inside the reconcile where it already lives. That
+/// arm is what makes the deliberate retention above work, and a repair that cleared it would drop
+/// the tombstone the object manager is meant to report.
+///
+/// # WHAT THIS STILL READS, AND WHAT THAT COSTS THE NEXT STEP
+///
+/// `page.object_key`, once per live page. The three sites it serves therefore keep three of the
+/// identity reads this leg is removing, and they are the removal step's problem rather than this
+/// one's: a removal site needs an identity for its OWN bucket's live pages, which is a narrower
+/// question than the whole-shard inversion and is not answered here.
+#[cfg_attr(test, track_caller)]
+pub(super) fn repair_object_index_against_its_pages(shard_id: ShardId, bucket: &mut BucketNode) {
+    note_site(&bucket_visit_sites::LAYOUT, bucket.block_index.len());
+    #[cfg(test)]
+    layout_by_caller::note(std::panic::Location::caller(), bucket.block_index.len());
+    let live_object_ids: BTreeSet<u64> = bucket
+        .block_index
+        .values()
+        .filter(|page| !page.deleted)
+        .map(|page| page.object_id(shard_id, &page.object_key))
+        .collect();
+    reconcile_object_index_with_live_pages(bucket, &live_object_ids);
+    // THE RECONCILE'S POSTCONDITION, ASSERTED -- AND IT IS NOT A RESTATEMENT OF THE LINE ABOVE.
+    //
+    // What it checks is that `ObjectIndex` actually REALIZES the set the reconcile asked for. That
+    // type is a slot array whose positions are durable, `insert` hands out slots and `remove`
+    // leaves holes, and this branch keeps a record of what a mis-indexed slot costs -- so "the
+    // reconcile was called" and "the bucket now names these objects" are two claims and this is
+    // the second.
+    //
+    // SCOPED TO A BUCKET THAT STILL HOLDS PAGES, which is the reconcile's own early return and the
+    // one state in which the set is deliberately NOT equal to the live pages.
     #[cfg(debug_assertions)]
-    {
-        let from_the_pages: BTreeSet<u64> = bucket
-            .block_index
-            .values()
-            .filter(|page| !page.deleted)
-            .map(|page| page.object_id(shard_id, &page.object_key))
-            .collect();
+    if !bucket.block_index.is_empty() {
         let held_now: BTreeSet<u64> = bucket.object_index.iter().copied().collect();
         debug_assert_eq!(
-            held_now, from_the_pages,
-            "bucket {}: pruning the removed object's id left the object list saying {:?} where a \
-             re-derivation from the surviving pages says {:?}",
-            bucket.routing_bucket, held_now, from_the_pages
+            held_now, live_object_ids,
+            "bucket {}: after the repair the object list says {:?} where its own live pages name \
+             {:?}",
+            bucket.routing_bucket, held_now, live_object_ids
         );
     }
 }
