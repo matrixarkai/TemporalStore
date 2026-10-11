@@ -4116,6 +4116,22 @@ fn fold_delta_block_items(
     items: &[crate::index_log::IndexItem],
     upsert: bool,
 ) {
+    // FILING AND UN-FILING ARE ONE OBLIGATION, AND THIS SITE OWED BOTH.
+    //
+    // This function writes page entries and NOT the object lookup -- the tree says so in as many
+    // words at `page_entry_element_naming`'s fold fixture -- and it was covered by a whole-shard
+    // `rebuild_object_block_lookup` immediately after it on the load path. With that rebuild gone
+    // the two halves are not symmetrical in consequence: an unfiled page is a page the readers
+    // cannot name, and an un-un-filed position is a position that SURVIVES ITS PAGE and names an
+    // entry that no longer exists. The second is worse, and it is the one a "file as you go"
+    // change forgets.
+    //
+    // Both are collected rather than applied inline: filing and un-filing take the whole index
+    // mutably while each loop below holds one bucket out of it, which is the same borrow split
+    // `reload_released_bucket` and the two refile loops already work around.
+    let mut unfiled: Vec<(crate::engine::storage_bucket_internals::StoredModelKind, Arc<str>, crate::engine::state::BlockLookupRef)> =
+        Vec::new();
+    let mut filed_pages: Vec<(u32, u64, Arc<str>, BlockIndex)> = Vec::new();
     if upsert {
         // Upsert record: each item replaces exactly its (kind, object, component) predecessor,
         // the same replacement the write path performed in memory. The predecessor lives in the
@@ -4156,13 +4172,28 @@ fn fold_delta_block_items(
             // when a kind converges on the page, and on (kind, object key) alone when it converges
             // on the object. That distinction is `names_a_page`'s remaining job here, which is why
             // the binding above it is kept and only this comparison goes.
-            bucket.block_index.retain(&mut bucket_index.block_slab_live, |_, page| {
-                !(page.model_id.as_str() == item.model_id
+            let routing_bucket = item.routing_bucket;
+            bucket.block_index.retain(&mut bucket_index.block_slab_live, |handle, page| {
+                let drop = page.model_id.as_str() == item.model_id
                     && page.object_key.as_ref() == item.object_key.as_ref()
                     && match (names_a_page, here.as_ref()) {
                         (true, Some(here)) => live_page_key(&page.address) == *here,
                         _ => true,
-                    })
+                    };
+                if drop {
+                    // ITS POSITION GOES WITH IT. Recorded from the page being dropped rather than
+                    // recomputed from the item, because the item's terms are what MATCHED and the
+                    // page's are what was FILED -- and the handle is only knowable here.
+                    unfiled.push((
+                        page.model_id,
+                        Arc::clone(&page.object_key),
+                        crate::engine::state::BlockLookupRef {
+                            routing_bucket,
+                            block_ref_key: *handle,
+                        },
+                    ));
+                }
+                !drop
             });
         }
     } else if !covered_keys.is_empty() {
@@ -4171,10 +4202,22 @@ fn fold_delta_block_items(
             block_slab_live: live,
             ..
         } = &mut *bucket_index;
-        for bucket in bucket_map.values_mut() {
-            bucket
-                .block_index
-                .retain(live, |_, page| !covered_keys.contains(page.object_key.as_ref()));
+        for (routing_bucket, bucket) in bucket_map.iter_mut() {
+            let routing_bucket = *routing_bucket;
+            bucket.block_index.retain(live, |handle, page| {
+                let drop = covered_keys.contains(page.object_key.as_ref());
+                if drop {
+                    unfiled.push((
+                        page.model_id,
+                        Arc::clone(&page.object_key),
+                        crate::engine::state::BlockLookupRef {
+                            routing_bucket,
+                            block_ref_key: *handle,
+                        },
+                    ));
+                }
+                !drop
+            });
         }
     }
     for item in items {
@@ -4195,7 +4238,8 @@ fn fold_delta_block_items(
         bucket.object_index.insert(item.object_id);
         // The record's key is not carried into memory: the map assigns a handle, and the
         // record's spelling is only rebuilt when the index is written back out.
-        bucket.insert_page(&item.object_key.clone(), 
+        let object_key: Arc<str> = Arc::from(item.object_key.clone());
+        let handle = bucket.insert_page(&object_key, 
             BlockIndex {
                 object_key: Arc::from(item.object_key.clone()),
                 model_id: crate::engine::storage_bucket_internals::stored_model_kind(
@@ -4226,6 +4270,28 @@ fn fold_delta_block_items(
             },
             &mut bucket_index.block_slab_live,
         );
+        // TAKEN BACK OUT BY ITS HANDLE rather than cloned on the way in, so the position the
+        // lookup records names the entry the map HOLDS -- the decoder's rule, for the decoder's
+        // reason: a page whose handle collided with an earlier one is not in the map twice and
+        // must not be in the lookup twice either.
+        if let Some(placed) = bucket.block_index.get(&handle) {
+            filed_pages.push((item.routing_bucket, handle, object_key, placed.clone()));
+        }
+    }
+    // UN-FILE BEFORE FILING, AND THE ORDER IS LOAD-BEARING. A fold can drop a page and place one
+    // at the SAME handle in the same call -- an upsert of the same object at the same address is
+    // exactly that -- so filing first and un-filing second would remove the position just
+    // established and leave the surviving page unnamed.
+    for (model_id, object_key, block_ref) in &unfiled {
+        bucket_index.remove_object_block_lookup_ref(
+            model_id.as_str(),
+            object_key,
+            None,
+            block_ref,
+        );
+    }
+    for (routing_bucket, handle, object_key, page) in &filed_pages {
+        bucket_index.insert_object_block_lookup(*routing_bucket, *handle, object_key, page);
     }
 }
 
