@@ -341,7 +341,7 @@ fn live_entry_field_sum() -> usize {
 
 /// rust-internal: arithmetic over this crate's own types, no external surface
 #[test]
-fn the_ordinal_would_make_the_entry_thirty_two_which_is_now_the_target() {
+fn the_width_an_object_ordinal_would_reach_against_the_live_entrys_own() {
     println!("\n=== THE WIDTH, AT THIS COMMIT ===");
     println!(
         "  live BlockIndex      field_sum {:>3}  size_of {:>3}",

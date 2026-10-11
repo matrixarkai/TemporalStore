@@ -1053,7 +1053,7 @@ fn the_component_name_is_hex_text_for_numbers_and_that_half_is_measured() {
 /// AND WHAT EACH OF THE THREE NAMES WOULD BE WORTH, measured on mirrors rather than projected, so
 /// the remaining two verdicts are stated against the same arithmetic as the one that shipped.
 #[test]
-fn the_entry_is_forty_bytes_and_every_one_is_accounted_for() {
+fn every_byte_of_the_entry_is_accounted_for_by_the_fields_it_holds() {
     use std::mem::{align_of, offset_of, size_of};
 
     let address = size_of::<crate::block_store::ElementEntry>();

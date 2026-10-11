@@ -339,7 +339,7 @@ fn reconstruct(fields: &[(&'static str, usize, usize)], word: usize) -> usize {
 ///
 /// rust-internal: reads this crate's own type layout, no product behaviour
 #[test]
-fn a_u16_ordinal_would_take_the_entry_from_forty_to_twenty_four_and_a_u8_adds_nothing() {
+fn a_u8_ordinal_buys_nothing_over_a_u16_because_both_tails_round_the_same() {
     use std::mem::{align_of, offset_of, size_of};
 
     let entry_total = size_of::<BlockIndex>();

@@ -548,7 +548,7 @@ fn round_up_to_eight(bytes: usize) -> usize {
 /// #1997's warning is the reason: a sibling's sixteen-bit ordinal was worth exactly nothing because
 /// the tail rounded back, and a bare `== 48` would not have shown that.
 #[test]
-fn the_entry_without_a_component_is_forty_and_the_stride_forty_eight() {
+fn the_entry_and_its_stride_are_reconstructed_from_the_fields_not_quoted() {
     // --- THE LIVE ENTRY, RECONSTRUCTED. ---
     //
     // THE COMPONENT TERM IS GONE FROM THIS SUM, which is this module's whole subject arriving. The
