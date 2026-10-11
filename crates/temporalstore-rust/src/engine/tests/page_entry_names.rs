@@ -514,12 +514,27 @@ fn key_allocation_census(engine: &TemporalEngine) -> KeyAllocationCensus {
     // (model_id, object_key) -> the distinct allocation addresses its pages hold.
     let mut by_object: BTreeMap<(String, String), (BTreeSet<usize>, BTreeSet<usize>, usize)> =
         BTreeMap::new();
+    // READ THROUGH THE POSITION MAP, AND THE OBJECT-KEY COLUMN IS NOW A STRUCTURAL CONTROL.
+    //
+    // This counted the distinct ALLOCATIONS of one object key that its own pages held, and
+    // `surplus_object_key_allocations` was the copies beyond the first. A page entry holds no
+    // key, so there is nothing per page to be a copy OF: the pages of an object are all handed
+    // the one `Arc` their bucket's lookup holds, and the column reads 1 BY CONSTRUCTION.
+    //
+    // KEPT, FOR THE REASON THE `model_id` COLUMN BESIDE IT IS KEPT -- and the comment there says
+    // it first. It is no longer evidence that a sharing pool was consulted; it still
+    // DISCRIMINATES, because a read path that copied the text per page instead of cloning the
+    // `Arc` would report two here. That is not hypothetical: forty walks in this module tree take
+    // a key per page through this same inversion, and a copy per page would reinstate the exact
+    // duplication this change removed.
+    let named = super::PageObjects::of(&shard.bucket_index);
     for bucket in shard.bucket_index.bucket_map.values() {
-        for (_, page) in bucket.block_index.iter() {
+        for (handle, page) in bucket.block_index.iter() {
+            let object_key = named.at(bucket.routing_bucket, *handle);
             let slot = by_object
-                .entry((page.model_id.to_string(), page.object_key.to_string()))
+                .entry((page.model_id.to_string(), object_key.to_string()))
                 .or_default();
-            slot.0.insert(page.object_key.as_ptr() as usize);
+            slot.0.insert(object_key.as_ptr() as usize);
             // The spelling is a `&'static str` off the registry now, not an allocation: one
             // address per kind for the whole process, so this census reads 1 BY CONSTRUCTION
             // rather than because a pool happened to be consulted. Kept as the control it was.
@@ -1448,156 +1463,36 @@ fn an_old_store_whose_generation_disagrees_is_refused_before_the_decode() {
 // THE READ PATH, and the footprint on the counting allocator.
 // ---------------------------------------------------------------------------------------------
 
-/// Give every page its OWN allocation of its object key, leaving the contents identical.
-///
-/// This is the shape the write path produced before this change, rebuilt inside one binary so the
-/// two can be compared without a second build. It changes nothing a reader can observe except
-/// which allocation it lands on, which is exactly the variable under test.
-fn unshare_object_keys(engine: &TemporalEngine) {
-    let mut shards = engine.shards.write().expect("engine lock poisoned");
-    let shard = shards.get_mut(&1).expect("shard is loaded");
-    for bucket in shard.bucket_index.bucket_map.values_mut() {
-        for page in bucket.block_index.blocks_mut_unaccounted() {
-            page.object_key = Arc::from(&*page.object_key);
-        }
-    }
-}
-
-/// Distinct object-key allocations behind the widest object in the store.
-fn widest_object_key_allocations(engine: &TemporalEngine) -> usize {
-    key_allocation_census(engine)
-        .object_key
-        .keys()
-        .copied()
-        .next_back()
-        .unwrap_or_default()
-}
-
-/// Walk every page and fold its three names into a checksum.
-///
-/// Reads the NAMES, which is the only thing this change touches, and folds them so the compiler
-/// cannot drop the loads.
-fn fold_every_name(engine: &TemporalEngine) -> u64 {
-    let shards = engine.shards.read().expect("engine lock poisoned");
-    let shard = shards.get(&1).expect("shard is loaded");
-    let mut sum: u64 = 0;
-    for bucket in shard.bucket_index.bucket_map.values() {
-        for (_, page) in bucket.block_index.iter() {
-            for byte in page.object_key.as_bytes() {
-                sum = sum.wrapping_mul(31).wrapping_add(*byte as u64);
-            }
-            for byte in page.model_id.as_str().as_bytes() {
-                sum = sum.wrapping_mul(31).wrapping_add(*byte as u64);
-            }
-            // No element name on the entry, so nothing to fold into the sum from it.
-        }
-    }
-    sum
-}
-
-/// READING A NAME IS NOT SLOWER WHEN THE PAGES OF AN OBJECT SHARE ONE ALLOCATION.
-///
-/// The shape this line of work first considered -- names hoisted out of the entry, the entry
-/// holding a handle -- would add a dependent load to every read of a name, and that cost is not
-/// visible in any footprint measurement. This change does not do that: the entry still holds its
-/// own `Arc<str>` and reads it exactly as before. What moves is which allocation the pointer
-/// lands on, and a hundred pages landing on ONE allocation is a hundred pages sharing a cache
-/// line rather than touching a hundred.
-///
-/// Measured ABBA, because an A-then-B ordering charges the second arm with whatever the first
-/// warmed -- and interleaving does not cancel an order effect, ABBA does. Both arms are asserted
-/// to be IN THE SHAPE THEY ARE NAMED FOR before anything is timed, and their checksums are
-/// asserted equal and non-zero: two arms that both read nothing would time identically.
-#[test]
-#[ignore = "timing; run by name"]
-fn reading_a_name_is_not_slower_when_an_objects_pages_share_one_allocation() {
-    let shared_dir = tempfile::tempdir().expect("tempdir");
-    let unshared_dir = tempfile::tempdir().expect("tempdir");
-    assert_eq!(
-        shared_dir.path().as_os_str().len(),
-        unshared_dir.path().as_os_str().len(),
-        "the store path length moved between arms"
-    );
-
-    let shared = probe_engine(shared_dir.path());
-    load_shard_over(&shared, u32::MAX);
-    seed_container_keys(&shared, 40, 100);
-
-    let unshared = probe_engine(unshared_dir.path());
-    load_shard_over(&unshared, u32::MAX);
-    seed_container_keys(&unshared, 40, 100);
-    unshare_object_keys(&unshared);
-
-    // --- PROVE THE TREATMENT RAN. An arm that is not in the shape it is named for is a broken
-    // arm, and a broken arm looks exactly like a winning one. ---
-    let shared_widest = widest_object_key_allocations(&shared);
-    let unshared_widest = widest_object_key_allocations(&unshared);
-    println!("shared arm: widest object holds {shared_widest} object-key allocation(s)");
-    println!("unshared arm: widest object holds {unshared_widest} object-key allocation(s)");
-    assert_eq!(
-        1, shared_widest,
-        "the shared arm is not shared: its widest object holds {shared_widest} allocations"
-    );
-    assert!(
-        unshared_widest >= 100,
-        "the unshared arm is not unshared: its widest object holds {unshared_widest} allocations, \
-         so this comparison has two identical arms and would report 1.00x whatever the truth is"
-    );
-
-    let want = fold_every_name(&shared);
-    assert_ne!(0, want, "the walk folded nothing; both arms would time an empty loop");
-    assert_eq!(
-        want,
-        fold_every_name(&unshared),
-        "the two arms do not hold the same names, so any difference below is a difference of \
-         contents and not of representation"
-    );
-
-    const ROUNDS: usize = 40;
-    let mut shared_ns: u128 = 0;
-    let mut unshared_ns: u128 = 0;
-    let mut guard: u64 = 0;
-    for _ in 0..ROUNDS {
-        // A ... B ... B ... A, so whatever the first arm warms is paid by both equally.
-        let t = std::time::Instant::now();
-        guard = guard.wrapping_add(fold_every_name(&shared));
-        shared_ns += t.elapsed().as_nanos();
-
-        let t = std::time::Instant::now();
-        guard = guard.wrapping_add(fold_every_name(&unshared));
-        unshared_ns += t.elapsed().as_nanos();
-
-        let t = std::time::Instant::now();
-        guard = guard.wrapping_add(fold_every_name(&unshared));
-        unshared_ns += t.elapsed().as_nanos();
-
-        let t = std::time::Instant::now();
-        guard = guard.wrapping_add(fold_every_name(&shared));
-        shared_ns += t.elapsed().as_nanos();
-    }
-    assert_ne!(0, guard, "the timed work was folded away");
-
-    let pages = key_allocation_census(&shared).pages;
-    assert!(pages > 0, "denominator: no pages walked");
-    let shared_per = shared_ns as f64 / (2 * ROUNDS * pages) as f64;
-    let unshared_per = unshared_ns as f64 / (2 * ROUNDS * pages) as f64;
-    println!(
-        "\n  names read, {pages} pages x {} walks an arm:\n    pages of an object sharing one \
-         key allocation : {shared_per:.2} ns a page\n    each page holding its own              \
-              : {unshared_per:.2} ns a page  ({:.3}x)",
-        2 * ROUNDS,
-        unshared_per / shared_per
-    );
-
-    // The claim is NOT that sharing is faster -- that would be a claim about this box's caches.
-    // It is that it is not SLOWER, which is what a representation change has to earn.
-    assert!(
-        shared_per <= unshared_per * 1.25,
-        "reading a name costs {shared_per:.2} ns a page when the pages share one allocation \
-         against {unshared_per:.2} ns when each holds its own; a representation that makes the \
-         common path slower to make the store smaller is declined"
-    );
-}
+// THE SHARED-VERSUS-COPIED TIMING A/B IS RETIRED, WITH ITS THREE HELPERS, AND THIS IS WHAT IT
+// MEASURED AND WHY NO VERSION OF IT SURVIVES.
+//
+// `reading_a_name_is_not_slower_when_an_objects_pages_share_one_allocation` timed two stores
+// holding identical text in two REPRESENTATIONS: one where the pages of an object all pointed at
+// one `Arc<str>`, and one where `unshare_object_keys` had given each page its own. Its question
+// was whether sharing cost a dependent load on the read path.
+//
+// ITS PREMISE WAS THE FIELD, STATED IN ITS OWN DOC, AND THE DOC HAD BECOME FALSE. It read: "This
+// change does not do that: the entry still holds its own `Arc<str>` and reads it exactly as
+// before. What moves is which allocation the pointer lands on." The entry holds no `Arc<str>`.
+// There is no pointer on it to land anywhere, no second representation to build, and
+// `unshare_object_keys` cannot be written at all -- there is no field to reseat.
+//
+// WHY IT IS NOT RESTATED AGAINST THE LOOKUP. The question it asked is answerable only where two
+// arms differ, and the surviving store has ONE arm: every page of an object is handed the one
+// allocation its bucket's lookup holds, and an engine that gave each page its own copy is not a
+// state this tree can reach. Its own guard said what a one-armed comparison is worth -- "this
+// comparison has two identical arms and would report 1.00x whatever the truth is" -- so keeping
+// it with the treatment arm removed is the failure it was built to refuse.
+//
+// AND THE COST IT WAS WATCHING FOR IS NOW A DIFFERENT COST, MEASURED ELSEWHERE. What a reader
+// pays to learn a page's object is no longer a pointer chase through the entry; it is a lookup
+// inversion, built once per walk. `page_identities_in` and `PageKeysByPosition` carry that price
+// in their own docs, and `the_block_and_the_lookup_point_at_one_object_key` holds the property
+// this A/B's "shared" arm stood for: the identity a reader is handed IS the lookup's allocation
+// and not a copy of its text.
+//
+// `widest_object_key_allocations` and `fold_every_name` went with it; both had this one caller.
+// `key_allocation_census`, which the first wrapped, has three others and stays.
 
 /// BYTES AND ALLOCATIONS PER PAGE, on the counting allocator, at two corpus sizes.
 ///

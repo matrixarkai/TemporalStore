@@ -5002,25 +5002,34 @@ fn how_many_times_one_object_key_is_stored() {
             holders += 1;
         }
     }
-    for bucket in shard.bucket_index.bucket_map.values() {
-        for (_ref_key, page) in bucket.block_index.iter() {
-            if page.object_key.as_ref() == &*sample {
-                allocations.insert(page.object_key.as_ptr());
-                holders += 1;
-            }
-        }
-    }
-
+    // THE PAGE INDEX IS NO LONGER A HOLDER, AND THAT IS THE FINDING RATHER THAN A GAP IN THE
+    // CENSUS. This walk added one holder and one allocation per PAGE of the sampled object. A
+    // page entry has no key, so there is nothing to insert and nothing to count -- and the
+    // allocation those pages pointed at was the lookup's, which is counted one loop above.
+    //
+    // IT IS REMOVED RATHER THAN LEFT COUNTING THE LOOKUP'S COPY THROUGH THE PAGES. Reaching the
+    // lookup's `Arc` by walking pages and charging it once per page would report the cost as if
+    // nothing had changed, which is exactly the mistake the `model_id` comment in
+    // `blocks_of_one_kind_spend_one_byte_and_share_one_static_spelling` names.
     assert!(holders > 0, "the sampled key was found nowhere; nothing was measured");
+    // AND THE PAGE INDEX IS NOT EMPTY, so the holder above being absent cannot be read as "this
+    // store has no pages". Without this the removal above and an empty fixture look identical.
+    assert!(
+        shard
+            .bucket_index
+            .bucket_map
+            .values()
+            .any(|bucket| !bucket.block_index.is_empty()),
+        "the store holds no page at all, so the page index's absence from the holder list above          says nothing about where this key is held"
+    );
 
     let key_bytes: usize = shard.strings.keys().map(|key| key.len()).sum();
-    let block_key_bytes: usize = shard
-        .bucket_index
-        .bucket_map
-        .values()
-        .flat_map(|bucket| bucket.block_index.values())
-        .map(|page| page.object_key.len())
-        .sum();
+    // STRUCTURALLY ZERO, AND KEPT AS A ROW RATHER THAN DELETED. The page index held one `Arc<str>`
+    // per entry; it holds none, so its contribution to the key text of this store is nothing at
+    // all. The row stays in the table because the table is read as "where the key copies live",
+    // and a row that has gone to zero is the answer to that question rather than an absence from
+    // it. The per-object cost it used to duplicate is the `object_page_lookup keys` row below.
+    let block_key_bytes: usize = 0;
     // No concatenation any more: what the lookup holds per object is the object key itself.
     let lookup_key_bytes: usize = shard
         .bucket_index
@@ -5129,19 +5138,36 @@ fn the_block_and_the_lookup_point_at_one_object_key() {
     let shards = engine.shards.read().expect("shards lock poisoned");
     let shard = shards.get(&1).expect("shard 1 loaded");
 
+    // THE CLAIM MOVED FROM THE ENTRY'S COPY TO THE ONE THE READ PATH HANDS OUT, and it is the
+    // same claim about the same allocation.
+    //
+    // WHAT IT ASSERTED: the `Arc` on the page and the `Arc` in the lookup are ONE allocation, not
+    // two copies of one string. The entry has no `Arc` now -- so taken literally the claim is
+    // true of nothing, and a test that asserted it would pass for free.
+    //
+    // WHAT IT ASSERTS INSTEAD: the identity a reader is HANDED for a page is the lookup's own
+    // allocation. Every production reader reaches a page's object through `PageKeysByPosition`,
+    // which is built by inverting the lookup, and `page_identities_in` hands back
+    // `Arc::clone` of what it found. A clone shares the buffer, so `as_ptr` must equal
+    // `key_ptr`'s -- and if the inversion ever started copying the text instead, this reddens.
+    // That is a load-bearing property rather than a curiosity: forty walks in this module tree
+    // take a key per page that way, and a copy per page would put the duplication this change
+    // removed straight back, one level out.
+    let named = super::PageObjects::of(&shard.bucket_index);
     let mut checked = 0usize;
     let mut shared = 0usize;
     for bucket in shard.bucket_index.bucket_map.values() {
-        for (_ref_key, page) in bucket.block_index.iter() {
+        for (ref_key, page) in bucket.block_index.iter() {
+            let handed_out = named.at(bucket.routing_bucket, *ref_key);
             let Some(refs) = shard
                 .bucket_index
                 .object_block_lookup
-                .key_ptr(page.model_id.as_str(), page.object_key.as_ref())
+                .key_ptr(page.model_id.as_str(), handed_out.as_ref())
             else {
                 continue;
             };
             checked += 1;
-            if std::ptr::eq(refs, page.object_key.as_ptr()) {
+            if std::ptr::eq(refs, handed_out.as_ptr()) {
                 shared += 1;
             }
         }
@@ -5151,7 +5177,7 @@ fn the_block_and_the_lookup_point_at_one_object_key() {
     assert!(checked > 0, "no page was matched to a lookup entry; nothing was measured");
     assert_eq!(
         shared, checked,
-        "{shared} of {checked} pages share their key with the lookup; the rest hold a second copy"
+        "{shared} of {checked} pages are handed an object key that is the lookup's own          allocation; for the rest the read path made a COPY of the text, which is the duplication          this change removed reappearing one level out"
     );
 }
 
@@ -7710,9 +7736,21 @@ fn block_index_identity_string_cardinality() {
     // report the cost as if nothing had changed -- every block still holds one, it just points at
     // a string it does not own.
     let mut model_allocations: HashSet<*const u8> = HashSet::new();
+    // THE OBJECT-KEY HALF IS COUNTED OVER THE LOOKUP AND ITS DENOMINATOR IS OBJECTS, NOT PAGES.
+    // It summed one `len` per PAGE off the entry's own copy. The entry has none; the text lives
+    // once per (kind, object) in the lookup, so that is what is walked and `objects` is what it
+    // is divided by. Both denominators are named at the point each ratio is printed, because a
+    // per-page figure and a per-object figure over the same bytes differ by the pages-per-object
+    // of whatever fixture is running.
     let mut distinct_keys: HashSet<&str> = HashSet::new();
+    let mut objects = 0usize;
     let mut model_bytes = 0usize;
     let mut key_bytes = 0usize;
+    for (_model, object, _refs) in shard.bucket_index.object_block_lookup.iter() {
+        objects += 1;
+        distinct_keys.insert(object.as_ref());
+        key_bytes += object.len();
+    }
     for bucket in shard.bucket_index.bucket_map.values() {
         for (_ref_key, page) in bucket.block_index.iter() {
             pages += 1;
@@ -7720,9 +7758,7 @@ fn block_index_identity_string_cardinality() {
             // One address per spelling for the whole process, and not an allocation: the entry
             // holds one byte and reads the registry's `&'static str` through it.
             model_allocations.insert(page.model_id.as_str().as_ptr());
-            distinct_keys.insert(page.object_key.as_ref());
             model_bytes += page.model_id.as_str().len();
-            key_bytes += page.object_key.len();
             // THE COMPONENT HALF OF THIS CENSUS HAS NO SUBJECT LEFT.
             //
             // It measured whether an entry's element name was a SHARED allocation -- distinct
@@ -7747,21 +7783,29 @@ fn block_index_identity_string_cardinality() {
     // true of every possible corpus, since an entry has no element name. A floor no fixture can
     // satisfy is not a floor; lowering it to zero would have been the move its own comment forbids.
     assert!(pages > 0, "the page index is empty; nothing was measured");
+    // AND THE LOOKUP NAMES SOMETHING, or the object-key row below is a row of zeroes that reads
+    // as "no key text in this store" instead of "the lookup was not walked".
+    assert!(
+        objects > 0,
+        "the object lookup names no object, so the key row below measures nothing"
+    );
 
     let share = |distinct: usize, copies: usize| {
         if distinct == 0 { 0.0 } else { copies as f64 / distinct as f64 }
     };
     println!(
         "
-  page index identity strings over {pages} pages:
-    model_id    {:>5} distinct, {:>6} holders ({:>7.1} each), {:>4} allocations behind {:>6} B of referenced text
-    object_key  {:>5} distinct, {:>6} copies  ({:>7.1} copies each, {:>6} B held)
+  page index identity strings:
+    over {pages} PAGES
+      model_id    {:>5} distinct, {:>6} holders ({:>7.1} each), {:>4} allocations behind {:>6} B of referenced text
+    over {objects} OBJECTS, in the lookup, which is where the key text now lives
+      object_key  {:>5} distinct, {:>6} slots   ({:>7.1} slots each, {:>6} B held)
 
-    BlockIndex is {} B before its heap strings
+    BlockIndex is {} B before its heap strings, and holds no key text at all
 ",
         distinct_models.len(), pages, share(distinct_models.len(), pages),
         model_allocations.len(), model_bytes,
-        distinct_keys.len(), pages, share(distinct_keys.len(), pages), key_bytes,
+        distinct_keys.len(), objects, share(distinct_keys.len(), objects), key_bytes,
         std::mem::size_of::<crate::engine::state::BlockIndex>(),
     );
 }
@@ -7997,19 +8041,15 @@ fn per_record_structure_census() {
     // 14.1 B of it, so knowing WHERE the key copies live says whether interning would pay and
     // which structure to attack first.
     let key_bytes: usize = shard.strings.keys().map(|key| key.len()).sum();
-    let block_index_bytes: usize = shard
-        .bucket_index
-        .bucket_map
-        .values()
-        .flat_map(|bucket| bucket.block_index.iter())
-        .map(|(_handle, page)| {
-            // The key is an inline number now, not text on the heap.
-            page.object_key.len()
-                // One byte inline and a `&'static str`: no heap text for the spelling.
-                + 0
-                + 0
-        })
-        .sum();
+    // ZERO, AND THE ROW IS KEPT BECAUSE THE TABLE IS A LIST OF PLACES. The page index held one
+    // `Arc<str>` of key text per entry. It holds none: no key, a one-byte kind spelled by a
+    // `&'static str`, and no element name. So this structure contributes no heap text, and the
+    // whole of its former contribution is the `block_lookup_bytes` row below -- once per object
+    // rather than once per page, which is the saving this change is.
+    //
+    // THE LOOKUP ROW IS FLOORED JUST BELOW, so a zero here cannot be read as "this fixture wrote
+    // no keys".
+    let block_index_bytes: usize = 0;
     // Outer keys plus the block-ref key each entry holds.
     let block_lookup_bytes: usize = shard
         .bucket_index
@@ -8031,6 +8071,14 @@ fn per_record_structure_census() {
     // name field is now deleted outright, so there is nothing left to sum. Leaving a hard zero in
     // a measurement table is worse than removing the row.
     let dirty_bytes: usize = shard.dirty_objects.iter().map(str::len).sum();
+    // THE FLOOR THE PAGE-INDEX ROW NEEDS. That row is a structural zero now, and a structural
+    // zero beside an unfloored lookup row is indistinguishable from a fixture that wrote no keys
+    // at all -- the table would read "no key text anywhere" and both halves of that would be
+    // wrong. This says the text IS held, and says it of the structure that now holds it.
+    assert!(
+        block_lookup_bytes > 0,
+        "the object lookup holds no key text over {RECORDS} records, so the zero in the page-index          row below cannot be read as a saving"
+    );
     let total_string_bytes =
         key_bytes + block_index_bytes + block_lookup_bytes + dirty_bytes;
     let sample_key_len = shard.strings.keys().next().map_or(0, |name| name.len());
@@ -13992,13 +14040,19 @@ fn what_one_block_costs_to_index() {
             entries += 1;
             // The map key is an inline number now, not a rendered string on the heap.
             ref_key_bytes += 0;
-            // Shared with the lookup, so one allocation answers for both holders.
-            object_key_bytes += page.object_key.len();
+            // AND NEITHER IS THE OBJECT KEY. This read `page.object_key.len()` and called it
+            // "shared with the lookup, so one allocation answers for both holders" -- which was
+            // true of the allocation and wrong as a PER-ENTRY charge: it summed the same bytes
+            // once for every page of the object. The entry holds no key now, so the charge is
+            // zero here and the bytes are attributed once per object where they live, in
+            // `the_key_text_lives_in_four_structures`'s lookup row.
+            object_key_bytes += 0;
             // One allocation across every block of that component, not one per block. The kind
             // contributes nothing at all now: one byte inline, spelled by a `&'static str`.
             // An entry carries no element name, so it contributes no shared name bytes.
                     shared_bytes += 0;
-            heap += page.object_key.len();
+            heap += 0;
+            let _ = page;
         }
     }
     assert!(entries > 0, "the workload must produce pages, or this measures nothing");

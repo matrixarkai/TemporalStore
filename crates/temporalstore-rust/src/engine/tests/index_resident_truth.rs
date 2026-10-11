@@ -199,34 +199,46 @@ pub(super) fn walk(engine: &TemporalEngine) -> IndexWalk {
                 *out.list_lengths.entry(pages.len()).or_insert(0) += 1;
             }
         }
-        for (_handle, page) in bucket.block_index.iter() {
+        for (_handle, _page) in bucket.block_index.iter() {
             out.pages += 1;
-            let key_len = page.object_key.len();
-            out.key_request_per_entry += arc_str_request(key_len) as u64;
-            let key_ptr = page.object_key.as_ptr() as usize;
-            let slot = seen_keys.entry(key_ptr).or_insert((key_len, 0));
-            slot.1 += 1;
+            // NO KEY REQUEST PER ENTRY EITHER, AND THIS CENSUS IS THE PAGE INDEX'S OWN BYTES.
+            //
+            // This asked the allocator-request model what one entry's `Arc<str>` of key text
+            // costs, and deduplicated by pointer so that pages of one object charged it once.
+            // The entry has no key, so the page index requests NOTHING on that account -- the
+            // counter is a structural zero and the ownership pass below has nothing to attribute.
+            //
+            // THE BYTES DID NOT VANISH AND THIS IS NOT WHERE THEY ARE. One allocation per
+            // (kind, object) lives in the bucket index's object lookup, which this walk does not
+            // enter: it walks `bucket_map` and reports what the PAGE INDEX holds resident.
+            // `index_bytes_per_key::walk_bucket_index_strings` is the walk that enters both and
+            // charges each allocation once, and it is where the key text is counted now.
+            //
+            // THE COUNTER IS KEPT AT ZERO RATHER THAN REMOVED because the arms below print it as
+            // a column of the per-entry request table, beside the page-list and entry strides
+            // that still have a subject.
+            //
             // NO COMPONENT REQUEST PER ENTRY: the entry carries no element name, so it asks the
             // allocator for nothing on that account. The counter and the `seen_components` census
             // therefore stay at zero by construction rather than by measurement.
         }
     }
-    // A second pass for the ownership census: the number of entries holding each allocation is
-    // only complete once the whole index has been walked.
-    for bucket in shard.bucket_index.bucket_map.values() {
-        for (_handle, page) in bucket.block_index.iter() {
-            let key_ptr = page.object_key.as_ptr() as usize;
-            if let Some((len, held_here)) = seen_keys.remove(&key_ptr) {
-                out.key_allocs += 1;
-                out.key_request += arc_str_request(len) as u64;
-                if std::sync::Arc::strong_count(&page.object_key) > held_here {
-                    out.keys_held_outside += 1;
-                }
-            }
-            // No element name on the entry, so no second shared allocation to attribute: the
-            // component columns of this census stay at zero by construction.
-        }
-    }
+    // THE SECOND PASS IS GONE WITH THE FIRST, AND ITS THREE COUNTERS ARE STRUCTURAL ZEROES.
+    //
+    // It existed to settle how many entries held each key allocation, which can only be known
+    // after the whole index has been walked, and then to ask whether anything OUTSIDE the page
+    // index held that allocation too -- `strong_count` against the count of entries holding it.
+    // With no key on the entry, `seen_keys` is empty, `key_allocs` and `key_request` are zero,
+    // and `keys_held_outside` has no question left: the page index holds no key allocation at
+    // all, so there is no "outside" to compare against. Every key in this store is held outside
+    // it, which is the change rather than a finding this census could report.
+    //
+    // RETIRED RATHER THAN LEFT RUNNING OVER AN EMPTY MAP. A loop over `seen_keys` would still
+    // compile, still pass, and print three zeroes that read as a measurement.
+    debug_assert!(
+        seen_keys.is_empty(),
+        "the first pass recorded a key allocation on a page entry, which has no key field"
+    );
     out
 }
 

@@ -691,19 +691,28 @@ fn page_census(engine: &TemporalEngine) -> PageCensus {
     let mut component_allocations: BTreeMap<usize, usize> = BTreeMap::new();
     let mut pages_by_object: BTreeMap<(StoredModelKind, String), usize> = BTreeMap::new();
 
+    // KEYED BY THE ALLOCATION THE LOOKUP HOLDS, which is the only one there is.
+    //
+    // `key_allocations` is a map from ALLOCATION ADDRESS to length, so it already counted one
+    // entry per allocation however many pages pointed at it -- the deduplication was the point.
+    // What changes is where the address comes from: the pages have no key, so the address is the
+    // one their bucket's lookup holds and hands out. The map's contents are therefore the same
+    // set they were, because the pages' `Arc`s and the lookup's were one allocation.
+    let named = super::PageObjects::of(&shard.bucket_index);
     for bucket in shard.bucket_index.bucket_map.values() {
         let mut held = 0usize;
         let mut objects_here: BTreeSet<String> = BTreeSet::new();
-        for (_, page) in bucket.block_index.iter() {
+        for (handle, page) in bucket.block_index.iter() {
             held += 1;
-            key_allocations.insert(page.object_key.as_ptr() as usize, page.object_key.len());
+            let object_key = named.at(bucket.routing_bucket, *handle);
+            key_allocations.insert(object_key.as_ptr() as usize, object_key.len());
             // EVERY page is without a component now, so `component_allocations` stays empty and
             // this counter is the page count. Kept as the census column it is read as; the arms
             // that compared the two are restated where they are read.
             census.pages_without_component += 1;
-            objects_here.insert(page.object_key.to_string());
+            objects_here.insert(object_key.to_string());
             *pages_by_object
-                .entry((page.model_id, page.object_key.to_string()))
+                .entry((page.model_id, object_key.to_string()))
                 .or_default() += 1;
         }
         census.per_bucket_key_bytes.push((

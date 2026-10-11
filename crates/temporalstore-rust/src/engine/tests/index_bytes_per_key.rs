@@ -554,8 +554,14 @@ fn walk_bucket_index_strings(
 ) -> u64 {
     let mut bytes = 0u64;
     for bucket in bucket_index.bucket_map.values() {
-        for (_handle, page) in bucket.block_index.iter() {
-            bytes += arc_str_bytes(seen, &page.object_key);
+        for (_handle, _page) in bucket.block_index.iter() {
+            // THE ENTRY'S OWN KEY LINE IS GONE AND THE TOTAL DID NOT MOVE, which is the one case
+            // in this change where that is true rather than argued. It read
+            // `arc_str_bytes(seen, &page.object_key)`, and `seen` is shared with the lookup walk
+            // twenty lines below -- the page's `Arc` and the lookup's were THE SAME ALLOCATION,
+            // so whichever reached it first charged it and the other found it already seen. With
+            // the entry holding no key, the lookup is simply the one that reaches it.
+            //
             // The page's model spelling is one byte inline and a `&'static str`, so it holds no
             // shared allocation for this walk to find. The lookup's `by_model` head below still
             // does, and is still counted -- once, which is the point of the walk.

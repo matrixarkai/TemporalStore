@@ -1017,27 +1017,42 @@ fn the_object_key_is_stored_twice_and_this_prices_the_second_copy() {
             .map(|k| k.len() + std::mem::size_of::<String>())
             .sum();
 
-        // COPY TWO: the index side. Counted by DISTINCT Arc allocation, plus the per-entry
-        // pointer that every page carries regardless.
+        // COPY TWO: the index side. Counted by DISTINCT Arc allocation.
+        //
+        // THE TEXT IS READ THROUGH THE POSITION MAP AND THE PER-ENTRY POINTER IS GONE. A page
+        // entry holds no `Arc<str>`, so there is no per-entry pointer to charge and no copy on
+        // the page to deduplicate; what the index side costs for this object's TEXT is what the
+        // bucket's own lookup holds, which is one allocation per (kind, object). That is reached
+        // here through the same inversion every reader uses, so the pointer set is still a set of
+        // real allocations and `distinct` still answers the question this census asks: how many
+        // allocations of the key text does the index side hold.
+        //
+        // `arc_pointer_bytes` WAS `entries * size_of::<Arc<str>>()` AND IS NOW ZERO. It was the
+        // fat pointer every page carried whether or not it shared the text, and it was a third of
+        // this comparison. It is stated as a zero with the entry width beside it rather than
+        // dropped, because a table that simply lost the row would read as the pointer having been
+        // forgotten rather than retired.
+        let named = super::PageObjects::of(&shard.bucket_index);
         let mut distinct: std::collections::HashSet<*const u8> = std::collections::HashSet::new();
         let mut entries = 0usize;
         let mut distinct_text_bytes = 0usize;
         let mut keys_per_bucket: Vec<usize> = Vec::new();
         for bucket in shard.bucket_index.bucket_map.values() {
             let mut in_bucket: std::collections::HashSet<&str> = std::collections::HashSet::new();
-            for page in bucket.block_index.values() {
+            for (handle, _page) in bucket.block_index.iter() {
                 entries += 1;
-                in_bucket.insert(&*page.object_key);
-                let ptr = page.object_key.as_ptr();
+                let object_key = named.at(bucket.routing_bucket, *handle);
+                in_bucket.insert(object_key);
+                let ptr = object_key.as_ptr();
                 if distinct.insert(ptr) {
-                    distinct_text_bytes += page.object_key.len();
+                    distinct_text_bytes += object_key.len();
                 }
             }
             if !in_bucket.is_empty() {
                 keys_per_bucket.push(in_bucket.len());
             }
         }
-        let arc_pointer_bytes = entries * std::mem::size_of::<Arc<str>>();
+        let arc_pointer_bytes = 0usize;
 
         assert_eq!(
             keys, model_keys,
