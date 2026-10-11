@@ -35,6 +35,63 @@ use crate::{ElementEntry, BlockStoreOptions, BlockStore};
 
 
 
+/// EVERY PAGE OF ONE CORE INDEX, WITH THE OBJECT THAT THE STRUCTURES BESIDE IT NAME.
+///
+/// # WHY THIS IS SHARED AND NOT A WALK PER TEST
+///
+/// `BlockIndex` carries no object key. Every test that walked a real store's buckets and asked a
+/// page which object it belonged to now has to ask the bucket instead, and there are some forty
+/// such walks across this module tree. Written out one by one they are forty chances to pick the
+/// WRONG DOOR, and the wrong door fails silently rather than loudly:
+///
+///   * [`PageKeysByPosition::live_identity`] answers from the object lookup alone, and
+///     `insert_object_block_lookup` returns early on a deleted page -- so it names NO tombstone.
+///     A walk that reports on deleted pages and asks that door drops every one of them and comes
+///     back with a smaller, entirely plausible number.
+///   * [`PageKeysByPosition::identity_of`] knows about both sources: the lookup for a live page,
+///     and the bucket's own tombstone row for a deleted one. That is what this asks, so a caller
+///     cannot get the tombstone case wrong by omitting to think about it.
+///
+/// # A PAGE NAMED BY NOTHING IS A PANIC, NOT A SKIP
+///
+/// There are exactly two states in which nothing beside a page states its object: between a decode
+/// and the rebuild that fills the lookup -- a window the decoder closed by filing as it decodes --
+/// and a removal that named no element, which the producer now refuses in every build. Both are
+/// states a test walking a store should fail on, loudly, with the handle in hand. A `filter_map`
+/// here would turn either into a count that is quietly short, which is the denominator mistake
+/// this campaign keeps re-finding in a new costume.
+///
+/// # WHAT THIS IS NOT FOR
+///
+/// A test whose SUBJECT is a page filed under a bucket its key does not route to. This asks by
+/// POSITION, and the lookup names such a page at the position it was filed under, not the one it
+/// now sits in -- so this would panic on the very state that test is driving.
+/// [`PageKeysByPosition::identity_anywhere`] is the door for that, and
+/// `bucket_fill`'s mis-filing walk uses it directly and says so.
+pub(super) fn pages_with_identity(
+    index: &crate::engine::state::CoreIndex,
+) -> Vec<(u32, u64, std::sync::Arc<str>, &crate::engine::state::BlockIndex)> {
+    let keys = crate::engine::state::PageKeysByPosition::from_lookup(&index.object_block_lookup);
+    let mut out = Vec::new();
+    for bucket in index.bucket_map.values() {
+        for (handle, page) in &bucket.block_index {
+            let beside = keys.identity_of(bucket, *handle, page).unwrap_or_else(|| {
+                panic!(
+                    "the page at handle {handle} in bucket {} is named by nothing beside it:                      neither the object lookup nor a tombstone row in its own bucket states which                      object it belongs to, so a walk over this index has no object to attribute                      it to",
+                    bucket.routing_bucket
+                )
+            });
+            out.push((
+                bucket.routing_bucket,
+                *handle,
+                std::sync::Arc::clone(beside.object_key),
+                page,
+            ));
+        }
+    }
+    out
+}
+
 fn wait_for_fresh_admission_second() {
     loop {
         let elapsed = SystemTime::now()

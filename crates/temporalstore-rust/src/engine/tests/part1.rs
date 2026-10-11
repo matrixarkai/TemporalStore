@@ -1582,33 +1582,20 @@ fn block_compaction_rewrites_live_addresses_and_allows_old_slab_gc() {
         // is asserted against the ids the write path stored.
         // WHERE THE BLOCK IS FILED, not what the address claims -- the address carries no bucket.
         // The bucket map's key is the container's answer, and it has to be the key's own bucket.
-        assert_eq!(
-            shard
-                .bucket_index
-                .bucket_map
+        // WHICH BUCKET HOLDS A PAGE OF THIS OBJECT, asked of the structures beside the pages.
+        let placed = super::pages_with_identity(&shard.bucket_index);
+        let buckets_holding = |object: &str| -> Vec<u32> {
+            let mut found: Vec<u32> = placed
                 .iter()
-                .filter(|(_, bucket)| bucket
-                    .block_index
-                    .values()
-                    .any(|page| page.object_key.as_ref() == "k"))
-                .map(|(routing_bucket, _)| *routing_bucket)
-                .collect::<Vec<_>>(),
-            vec![block_routing_bucket("k", 0, u32::MAX)]
-        );
+                .filter(|(_, _, named, _)| named.as_ref() == object)
+                .map(|(routing_bucket, ..)| *routing_bucket)
+                .collect();
+            found.dedup();
+            found
+        };
+        assert_eq!(buckets_holding("k"), vec![block_routing_bucket("k", 0, u32::MAX)]);
         // As above: the id is derived from the entry's terms, not read off the address.
-        assert_eq!(
-            shard
-                .bucket_index
-                .bucket_map
-                .iter()
-                .filter(|(_, bucket)| bucket
-                    .block_index
-                    .values()
-                    .any(|page| page.object_key.as_ref() == "h"))
-                .map(|(routing_bucket, _)| *routing_bucket)
-                .collect::<Vec<_>>(),
-            vec![block_routing_bucket("h", 0, u32::MAX)]
-        );
+        assert_eq!(buckets_holding("h"), vec![block_routing_bucket("h", 0, u32::MAX)]);
     }
 
     let gc = block_store
@@ -2686,37 +2673,23 @@ fn durable_writes_stamp_stable_object_ids_on_block_addresses() {
     // write no longer stamps an id onto the address, so what this asserted is now a property of the
     // entry. The FILING assertions below are the part of this test that still reads the address.
     // The FILING, on a shard loaded 10..20 -- see the note at the string arm above.
-    assert_eq!(
-        shard
-            .bucket_index
-            .bucket_map
+    let placed = super::pages_with_identity(&shard.bucket_index);
+    let buckets_holding = |object: &str| -> Vec<u32> {
+        let mut found: Vec<u32> = placed
             .iter()
-            .filter(|(_, bucket)| bucket
-                .block_index
-                .values()
-                .any(|page| page.object_key.as_ref() == "k"))
-            .map(|(routing_bucket, _)| *routing_bucket)
-            .collect::<Vec<_>>(),
-        vec![block_routing_bucket("k", 10, 20)]
-    );
+            .filter(|(_, _, named, _)| named.as_ref() == object)
+            .map(|(routing_bucket, ..)| *routing_bucket)
+            .collect();
+        found.dedup();
+        found
+    };
+    assert_eq!(buckets_holding("k"), vec![block_routing_bucket("k", 10, 20)]);
     assert_eq!(
         string_address.slab_id(),
         Some(string_address.block_slab_id())
     );
     // As above.
-    assert_eq!(
-        shard
-            .bucket_index
-            .bucket_map
-            .iter()
-            .filter(|(_, bucket)| bucket
-                .block_index
-                .values()
-                .any(|page| page.object_key.as_ref() == "h"))
-            .map(|(routing_bucket, _)| *routing_bucket)
-            .collect::<Vec<_>>(),
-        vec![block_routing_bucket("h", 10, 20)]
-    );
+    assert_eq!(buckets_holding("h"), vec![block_routing_bucket("h", 10, 20)]);
     assert_eq!(hash_address.slab_id(), Some(hash_address.block_slab_id()));
     // TWO KEYS STILL GET TWO IDS, which is the claim this line was making; it is now stated over
     // the derivation rather than over two fields that no longer exist.
@@ -4344,15 +4317,28 @@ fn deep_compare_the_index_a_reconstruct_produces() {
     fn deep(engine: &TemporalEngine) -> Vec<String> {
         let shards = engine.shards.read().expect("engine lock poisoned");
         let shard = shards.get(&1).expect("loaded shard");
+        // THE IDENTITY, TAKEN ONCE AND KEYED BY POSITION. The walk itself has to stay per
+        // bucket because it also emits a row per object-index and per deleted-object-index
+        // member, which belong to the bucket and not to any page.
+        let named: std::collections::HashMap<(u32, u64), std::sync::Arc<str>> =
+            super::pages_with_identity(&shard.bucket_index)
+                .into_iter()
+                .map(|(routing_bucket, handle, object_key, _page)| {
+                    ((routing_bucket, handle), object_key)
+                })
+                .collect();
         let mut rows: Vec<String> = Vec::new();
         for (routing_bucket, bucket) in shard.bucket_index.bucket_map.iter() {
             for (field_key, page) in bucket.block_index.iter() {
+                let object_key = named
+                    .get(&(*routing_bucket, *field_key))
+                    .expect("every page walked above was named beside it");
                 rows.push(format!(
                     "{routing_bucket}|{field_key}|{}|{}|{:?}|{}|{}|{}|{}|{}|{}|{}|{}",
-                    page.object_key,
+                    object_key,
                     page.model_id,
                     None::<std::sync::Arc<str>>,
-                    page.object_id(1, &page.object_key),
+                    page.object_id(1, object_key),
                     page.address.block_slab_id(),
                     page.address.offset(),
                     page.address.length(),

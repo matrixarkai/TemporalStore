@@ -264,17 +264,17 @@ fn pages_per_bucket(engine: &TemporalEngine) -> BlocksPerBucket {
 fn bucket_key_sets(engine: &TemporalEngine) -> BTreeMap<u32, BTreeSet<String>> {
     let shards = engine.shards.read().expect("engine lock poisoned");
     let shard = shards.get(&1).expect("shard is loaded");
+    // A BUCKET THAT HOLDS NO PAGE CONTRIBUTES NO ROW, which is what the `is_empty` skip said.
+    // It falls out of the walk rather than being tested for: a bucket with no pages yields
+    // nothing to group under it.
     let mut contents: BTreeMap<u32, BTreeSet<String>> = BTreeMap::new();
-    for (routing_bucket, bucket) in &shard.bucket_index.bucket_map {
-        let keys: BTreeSet<String> = bucket
-            .block_index
-            .values()
-            .map(|page| page.object_key.to_string())
-            .collect();
-        if keys.is_empty() {
-            continue;
-        }
-        contents.insert(*routing_bucket, keys);
+    for (routing_bucket, _handle, object_key, _page) in
+        super::pages_with_identity(&shard.bucket_index)
+    {
+        contents
+            .entry(routing_bucket)
+            .or_default()
+            .insert(object_key.to_string());
     }
     contents
 }
@@ -1468,15 +1468,16 @@ fn deriving_an_objects_blocks_from_the_flat_list_walks_the_whole_bucket() {
         let shards = engine.shards.read().expect("engine lock poisoned");
         let shard = shards.get(&1).expect("shard is loaded");
         let mut walk = Walk::default();
-        for bucket in shard.bucket_index.bucket_map.values() {
-            let entries: Vec<(u64, String)> = bucket
-                .block_index
-                .iter()
-                .map(|(handle, page)| (*handle, page.object_key.to_string()))
-                .collect();
-            if entries.is_empty() {
-                continue;
-            }
+        let mut by_bucket: BTreeMap<u32, Vec<(u64, String)>> = BTreeMap::new();
+        for (routing_bucket, handle, object_key, _page) in
+            super::pages_with_identity(&shard.bucket_index)
+        {
+            by_bucket
+                .entry(routing_bucket)
+                .or_default()
+                .push((handle, object_key.to_string()));
+        }
+        for entries in by_bucket.values() {
             let mut per_object: BTreeMap<String, Vec<usize>> = BTreeMap::new();
             for (at, (_handle, key)) in entries.iter().enumerate() {
                 per_object.entry(key.clone()).or_default().push(at);
@@ -1696,22 +1697,24 @@ fn the_bucket_a_block_is_filed_in_is_the_bucket_its_key_computes_within_one_rang
     fn check(engine: &TemporalEngine, end_routing_bucket: u32) -> Verdict {
         let shards = engine.shards.read().expect("engine lock poisoned");
         let shard = shards.get(&1).expect("shard is loaded");
+        // THE COMPARISON IS DERIVED-AGAINST-FILED AND THAT IS WHY THE POSITION DOOR IS RIGHT
+        // HERE. What is recomputed is where a key WOULD route on this range; the lookup records
+        // the bucket each page was FILED under, which is the bucket it sits in. So the inversion
+        // answers for every page, and a disagreement between the two is the finding rather than
+        // a missing name.
         let mut verdict = Verdict { blocks: 0, filed_elsewhere: Vec::new() };
-        for (routing_bucket, bucket) in &shard.bucket_index.bucket_map {
-            for page in bucket.block_index.values() {
-                if page.deleted {
-                    continue;
-                }
-                verdict.blocks += 1;
-                let computed =
-                    block_routing_bucket(&page.object_key, 0, end_routing_bucket);
-                if computed != *routing_bucket {
-                    verdict.filed_elsewhere.push((
-                        page.object_key.to_string(),
-                        *routing_bucket,
-                        computed,
-                    ));
-                }
+        for (routing_bucket, _handle, object_key, page) in
+            super::pages_with_identity(&shard.bucket_index)
+        {
+            if page.deleted {
+                continue;
+            }
+            verdict.blocks += 1;
+            let computed = block_routing_bucket(&object_key, 0, end_routing_bucket);
+            if computed != routing_bucket {
+                verdict
+                    .filed_elsewhere
+                    .push((object_key.to_string(), routing_bucket, computed));
             }
         }
         verdict
@@ -2063,17 +2066,16 @@ fn a_pre_stamp_store_built_narrow_is_adopted_onto_a_range_that_cannot_compute_it
     );
 
     // --- Does a recomputation on the ADOPTED range find the blocks? ---
+    let placed = super::pages_with_identity(&shard.bucket_index);
     let mut blocks = 0usize;
     let mut computed_elsewhere = 0usize;
-    for (routing_bucket, bucket) in &shard.bucket_index.bucket_map {
-        for page in bucket.block_index.values() {
-            if page.deleted {
-                continue;
-            }
-            blocks += 1;
-            if block_routing_bucket(&page.object_key, start, end) != *routing_bucket {
-                computed_elsewhere += 1;
-            }
+    for (routing_bucket, _handle, object_key, page) in &placed {
+        if page.deleted {
+            continue;
+        }
+        blocks += 1;
+        if block_routing_bucket(object_key, start, end) != *routing_bucket {
+            computed_elsewhere += 1;
         }
     }
     assert!(
@@ -2084,14 +2086,10 @@ fn a_pre_stamp_store_built_narrow_is_adopted_onto_a_range_that_cannot_compute_it
     // The index still answers, which is what makes the derived answer the thing that would break.
     let mut lookup_correct = 0usize;
     for (_model, object, refs) in shard.bucket_index.object_block_lookup.iter() {
-        let sits_in: Option<u32> = shard
-            .bucket_index
-            .bucket_map
+        let sits_in: Option<u32> = placed
             .iter()
-            .find(|(_, bucket)| {
-                bucket.block_index.values().any(|page| &*page.object_key == object.as_ref())
-            })
-            .map(|(routing_bucket, _)| *routing_bucket);
+            .find(|(_, _, named, _)| named.as_ref() == object.as_ref())
+            .map(|(routing_bucket, ..)| *routing_bucket);
         if refs.iter().all(|block_ref| Some(block_ref.routing_bucket) == sits_in) {
             lookup_correct += 1;
         }

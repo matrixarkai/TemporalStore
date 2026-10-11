@@ -385,17 +385,14 @@ fn pages_of(engine: &TemporalEngine, kind: &str, key: &str) -> Vec<(Option<Strin
     let shards = engine.shards.read().expect("engine lock poisoned");
     let shard = shards.get(&1).expect("shard 1 is loaded");
     let mut held = Vec::new();
-    for bucket in shard.bucket_index.bucket_map.values() {
-        for (_, page) in bucket.block_index.iter() {
-            if page.deleted {
-                continue;
-            }
-            if page.model_id.as_str() == kind && &*page.object_key == key {
-                held.push((
-                    None::<String>,
-                    page.address.block_id(),
-                ));
-            }
+    for (_routing_bucket, _handle, object_key, page) in
+        super::pages_with_identity(&shard.bucket_index)
+    {
+        if page.deleted {
+            continue;
+        }
+        if page.model_id.as_str() == kind && &*object_key == key {
+            held.push((None::<String>, page.address.block_id()));
         }
     }
     held.sort();
@@ -410,12 +407,16 @@ fn pages_of(engine: &TemporalEngine, kind: &str, key: &str) -> Vec<(Option<Strin
 fn tombstone_ordinals_of(engine: &TemporalEngine, kind: &str, key: &str) -> Vec<Option<u64>> {
     let shards = engine.shards.read().expect("engine lock poisoned");
     let shard = shards.get(&1).expect("shard 1 is loaded");
+    // TOMBSTONES ARE THE SUBJECT HERE, so the object has to come from the door that names a
+    // deleted page -- the bucket's own removal row. The object lookup holds no deleted page at
+    // all, and a walk that asked it would come back empty and read as "no tombstone kept an
+    // ordinal", which is the claim this exists to refute.
     let mut held = Vec::new();
-    for bucket in shard.bucket_index.bucket_map.values() {
-        for (_, page) in bucket.block_index.iter() {
-            if page.deleted && page.model_id.as_str() == kind && &*page.object_key == key {
-                held.push(page.address.block_id());
-            }
+    for (_routing_bucket, _handle, object_key, page) in
+        super::pages_with_identity(&shard.bucket_index)
+    {
+        if page.deleted && page.model_id.as_str() == kind && &*object_key == key {
+            held.push(page.address.block_id());
         }
     }
     held.sort();
@@ -427,11 +428,11 @@ fn tombstoned_pages_of(engine: &TemporalEngine, kind: &str, key: &str) -> usize 
     let shards = engine.shards.read().expect("engine lock poisoned");
     let shard = shards.get(&1).expect("shard 1 is loaded");
     let mut count = 0usize;
-    for bucket in shard.bucket_index.bucket_map.values() {
-        for (_, page) in bucket.block_index.iter() {
-            if page.model_id.as_str() == kind && &*page.object_key == key && page.deleted {
-                count += 1;
-            }
+    for (_routing_bucket, _handle, object_key, page) in
+        super::pages_with_identity(&shard.bucket_index)
+    {
+        if page.model_id.as_str() == kind && &*object_key == key && page.deleted {
+            count += 1;
         }
     }
     count
@@ -1311,9 +1312,11 @@ fn what_an_element_ordinal_would_mean_for_each_kind() {
             let shard = shards.get(&1).expect("shard 1 is loaded");
             let mut addresses: Vec<crate::block_store::ElementEntry> = Vec::new();
             let mut live = 0usize;
-            for bucket in shard.bucket_index.bucket_map.values() {
-                for page in bucket.block_index.values() {
-                    if page.model_id.as_str() == kind && &*page.object_key == key {
+            {
+                for (_routing_bucket, _handle, object_key, page) in
+                    super::pages_with_identity(&shard.bucket_index)
+                {
+                    if page.model_id.as_str() == kind && &*object_key == key {
                         if !page.deleted {
                             live += 1;
                         }
@@ -1833,14 +1836,14 @@ fn component_census(engine: &TemporalEngine) -> Vec<(String, String, Option<usiz
     let shards = engine.shards.read().expect("engine lock poisoned");
     let shard = shards.get(&1).expect("shard 1 is loaded");
     let mut rows = Vec::new();
-    for bucket in shard.bucket_index.bucket_map.values() {
-        for (_, page) in bucket.block_index.iter() {
-            rows.push((
-                page.model_id.as_str().to_string(),
-                page.object_key.to_string(),
-                None::<usize>,
-            ));
-        }
+    for (_routing_bucket, _handle, object_key, page) in
+        super::pages_with_identity(&shard.bucket_index)
+    {
+        rows.push((
+            page.model_id.as_str().to_string(),
+            object_key.to_string(),
+            None::<usize>,
+        ));
     }
     rows
 }

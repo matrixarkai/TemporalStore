@@ -223,16 +223,18 @@ fn pages_and_index_rows(
     let shard = shards.get(&1).expect("shard 1 is loaded");
     let mut pages = 0usize;
     let mut rows: BTreeSet<u64> = BTreeSet::new();
-    for bucket in shard.bucket_index.bucket_map.values() {
-        for page in bucket.block_index.values() {
-            if page.deleted || page.model_id.as_str() != kind {
-                continue;
-            }
-            if !keys.contains(&*page.object_key) {
-                continue;
-            }
-            pages += 1;
+    for (_routing_bucket, _handle, object_key, page) in
+        super::pages_with_identity(&shard.bucket_index)
+    {
+        if page.deleted || page.model_id.as_str() != kind {
+            continue;
         }
+        if !keys.contains(&*object_key) {
+            continue;
+        }
+        pages += 1;
+    }
+    for bucket in shard.bucket_index.bucket_map.values() {
         for object_id in &bucket.object_index {
             if wanted.contains(object_id) {
                 rows.insert(*object_id);
@@ -253,11 +255,11 @@ fn pages_of_key(engine: &TemporalEngine, kind: &str, key: &str) -> usize {
     let shards = engine.shards.read().expect("engine lock poisoned");
     let shard = shards.get(&1).expect("shard 1 is loaded");
     let mut held = 0usize;
-    for bucket in shard.bucket_index.bucket_map.values() {
-        for page in bucket.block_index.values() {
-            if !page.deleted && page.model_id.as_str() == kind && &*page.object_key == key {
-                held += 1;
-            }
+    for (_routing_bucket, _handle, object_key, page) in
+        super::pages_with_identity(&shard.bucket_index)
+    {
+        if !page.deleted && page.model_id.as_str() == kind && &*object_key == key {
+            held += 1;
         }
     }
     held
