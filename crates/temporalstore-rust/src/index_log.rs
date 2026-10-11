@@ -606,7 +606,7 @@ impl Default for IndexItemKind {
 /// `BlockIndex` the whole-index serialization would have produced. `deleted` is a
 /// tombstone: replaying it removes the entry.
 #[derive(Debug, Clone, PartialEq, Deserialize)]
-#[serde(from = "IndexItemWire")]
+#[serde(from = "IndexItemRow")]
 pub struct IndexItem {
     #[serde(
         rename = "k",
@@ -698,15 +698,24 @@ pub struct IndexItem {
     /// holds a name and "invalid type: unit value, expected u64" when it holds nil. In both cases
     /// the shift put a string or a nil where a `u64` was expected. Nothing counted the slots.
     ///
-    /// AND A ROW SHORT AT THE TAIL IS ACCEPTED. Every field here carries `#[serde(default)]`, so a
-    /// seq that simply ENDS EARLY has the rest filled in: measured, a row missing only its last
-    /// slot decodes with `deleted: false` on a row that never said so. A tombstone read as live is
-    /// a resurrection, so the TAIL is the one position where a slot leaving is silent rather than
-    /// loud, and that is a property of position rather than of length.
+    /// AND A ROW SHORT AT THE TAIL WAS ACCEPTED, WHICH IS WHAT [`IndexItemRow`] NOW REFUSES.
+    /// Every field here carries `#[serde(default)]`, so a seq that simply ENDS EARLY had the rest
+    /// filled in: measured, a row missing only its last slot decoded with `deleted: false` on a
+    /// row that never said so, and a tombstone read as live is a resurrection. The TAIL was the
+    /// one position where a slot leaving was silent rather than loud -- a property of position
+    /// rather than of length, which is why nothing about slot typing could have caught it.
+    ///
+    /// THERE IS A LENGTH CHECK NOW, AND ONLY ON THE ROW. [`IndexItemRow`] reads the arity off the
+    /// msgpack array header before any element is touched and refuses anything that is not
+    /// [`INDEX_ITEM_SLOTS`]; measured, arities 11, 10, 9 and 8 were all accepted before it and
+    /// are all refused after. The NAMED map arm is untouched, because a map has no tail to be
+    /// short at. [`IndexDeltaRecord`] is deliberately left alone: its slots have GROWN at its own
+    /// tail, so an older record really is short there and must keep loading.
     ///
     /// Leaving the false sentence in place beside a change that relies on slot typing would be
     /// worse than having no sentence: it is the shape that has misdirected decisions in this file
-    /// before, which is why the wrong version is quoted rather than quietly replaced.
+    /// before, which is why the wrong version is quoted rather than quietly replaced -- and the
+    /// correction's own conclusion is restated above rather than deleted, for the same reason.
     #[serde(skip)]
     pub entry: Option<ElementEntry>,
     #[serde(rename = "d", alias = "deleted", default)]
@@ -814,6 +823,166 @@ pub fn derived_slot_disagreements() -> usize {
 /// Reset the disagreement count, so a test measures its own rows and not another test's.
 pub fn reset_derived_slot_disagreements() {
     DERIVED_SLOT_DISAGREEMENTS.store(0, std::sync::atomic::Ordering::Relaxed);
+}
+
+/// How many positional slots a stored index-log row carries.
+///
+/// ONE PLACE, because [`IndexItem`]'s serializer writes this many and [`IndexItemRow`] refuses a
+/// row that does not carry this many. Two spellings of one arity is how a reader comes to refuse
+/// what the writer beside it just wrote.
+const INDEX_ITEM_SLOTS: usize = 12;
+
+/// THE ARITY GATE ON THE POSITIONAL ROW: a row SHORT AT ITS TAIL is refused here.
+///
+/// # THE DEFECT THIS CLOSES
+///
+/// Every slot of [`IndexItemWire`] carries `#[serde(default)]`. The NAMED map arm needs that and
+/// the POSITIONAL arm must not have it: serde's derived `visit_seq` fills a slot the array never
+/// reached with `Default`, so an eleven-slot row loaded as a twelve-slot one whose last slot said
+/// `false`. The last slot is `deleted`. A stored TOMBSTONE therefore decoded as a LIVE row and
+/// the object it had removed came back, with no error anywhere -- which is the one outcome this
+/// log's replay exists to prevent. The slot before it drops `in_log`, the one before that drops
+/// the whole `address`, and each is the same failure wearing another field's name.
+///
+/// # WHY AN ARITY MAY BE CHECKED AT ALL
+///
+/// Because no legitimately-written row is ever short. The positional row landed carrying twelve
+/// slots and `IndexItem::serialize` has written `INDEX_ITEM_SLOTS` of them unconditionally ever
+/// since: there is no `skip_serializing_if` anywhere on the row, and no older writer emitted
+/// fewer.
+///
+/// THAT IS NOT TRUE ONE LEVEL OUT, and the difference is the whole reason this gate is on the
+/// ROW and not on the record. [`IndexDeltaRecord`] has GROWN slots at its tail -- `upsert` says
+/// "every record written before this field existed", and `shared_object_key` says "appended at
+/// the END, which is the only safe place to add to a positional record" -- so records written by
+/// an older binary really are short and must keep loading. The record's arity is not checked and
+/// must not be.
+///
+/// # WHAT WAS ALREADY REFUSED, AND WHAT WAS NOT
+///
+/// `rmp_serde` compares the array header against the slots the visitor consumed and refuses what
+/// is LEFT OVER -- "array had incorrect length, expected 12" -- so a row longer than this build
+/// reads has always been refused. Nothing looked at the other side. This makes the two sides
+/// symmetric, and that is the whole of the change.
+///
+/// # REFUSED, NOT PADDED
+///
+/// Substituting a safe value for an absent slot is the same defect with better manners: the row
+/// did not say `false`, and a reader that invents an answer cannot be told from one that read a
+/// real one.
+///
+/// # IT IS AN `Encoding` ERROR AND NOT `Corruption`, DELIBERATELY
+///
+/// A short row cannot be torn bytes. The msgpack array header states the arity BEFORE the
+/// elements, so losing bytes off the end leaves the header still claiming twelve and the decode
+/// already fails on the marker it cannot read -- and `log_framing::next_frame` refuses a torn
+/// tail earlier still, returning `Ok(None)` when fewer bytes are present than the frame declares
+/// and `Err` when a complete record's CRC32C disagrees. So a WELL-FORMED eleven-slot array can
+/// only have been written by something that writes eleven, which is a question about shape, and
+/// [`IndexLogError::Encoding`] is defined as exactly that -- a malformed payload, "distinct from
+/// `Corruption` because the framing envelope already passed". `decode_index_payload` already
+/// maps every serde failure there, so the class follows from where the check lives rather than
+/// from a special case that could drift away from it.
+///
+/// # WHERE IT DOES NOT REACH
+///
+/// Slot 8 is the address, which is ITSELF a positional array of five
+/// (`block_store::BlockAddressWire`). This gate checks the ROW's arity, not the address's: an
+/// address sub-array short at its tail still loads with `generation` absent, and that field's own
+/// documentation says its PRESENCE is a meaning. Same class, one struct down, not closed here.
+struct IndexItemRow(IndexItemWire);
+
+impl From<IndexItemRow> for IndexItem {
+    fn from(row: IndexItemRow) -> Self {
+        IndexItem::from(row.0)
+    }
+}
+
+impl<'de> serde::Deserialize<'de> for IndexItemRow {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        /// Refuses to report exhaustion, so a derived `visit_seq` cannot default a slot the array
+        /// never reached. The arity check below catches a short row first on every format that
+        /// states an array's length up front -- msgpack does, and msgpack is the only shape this
+        /// log is written in -- and this is what holds when one does not.
+        struct EverySlotPresent<A>(A);
+
+        impl<'de, A> serde::de::SeqAccess<'de> for EverySlotPresent<A>
+        where
+            A: serde::de::SeqAccess<'de>,
+        {
+            type Error = A::Error;
+
+            fn next_element_seed<T>(&mut self, seed: T) -> Result<Option<T::Value>, Self::Error>
+            where
+                T: serde::de::DeserializeSeed<'de>,
+            {
+                match self.0.next_element_seed(seed)? {
+                    Some(value) => Ok(Some(value)),
+                    None => Err(<A::Error as serde::de::Error>::custom(format!(
+                        "index-log row ran out of positional slots before all \
+                         {INDEX_ITEM_SLOTS} were read; a missing tail slot reads back as its \
+                         default, which turns a stored tombstone into a live row"
+                    ))),
+                }
+            }
+
+            fn size_hint(&self) -> Option<usize> {
+                self.0.size_hint()
+            }
+        }
+
+        struct EitherShape;
+
+        impl<'de> serde::de::Visitor<'de> for EitherShape {
+            type Value = IndexItemRow;
+
+            fn expecting(&self, out: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                write!(
+                    out,
+                    "an index-log row: {INDEX_ITEM_SLOTS} positional slots, or a named map"
+                )
+            }
+
+            /// THE POSITIONAL ARM, WHICH IS THE ONE THAT IS STRICT.
+            fn visit_seq<A>(self, seq: A) -> Result<Self::Value, A::Error>
+            where
+                A: serde::de::SeqAccess<'de>,
+            {
+                if let Some(slots) = seq.size_hint() {
+                    if slots != INDEX_ITEM_SLOTS {
+                        return Err(<A::Error as serde::de::Error>::custom(format!(
+                            "index-log row carries {slots} positional slots, not \
+                             {INDEX_ITEM_SLOTS}: a missing tail slot reads back as its default, \
+                             which turns a stored tombstone into a live row"
+                        )));
+                    }
+                }
+                <IndexItemWire as serde::Deserialize>::deserialize(
+                    serde::de::value::SeqAccessDeserializer::new(EverySlotPresent(seq)),
+                )
+                .map(IndexItemRow)
+            }
+
+            /// THE NAMED ARM, WHICH STAYS TOLERANT ON PURPOSE. A map has no tail to be short at:
+            /// an absent key is an absent key wherever it sits, the aliases on [`IndexItemWire`]
+            /// are evidence this shape was once read, and the compatibility arms in this file
+            /// build their fixtures this way. Nothing here changes for it.
+            fn visit_map<A>(self, map: A) -> Result<Self::Value, A::Error>
+            where
+                A: serde::de::MapAccess<'de>,
+            {
+                <IndexItemWire as serde::Deserialize>::deserialize(
+                    serde::de::value::MapAccessDeserializer::new(map),
+                )
+                .map(IndexItemRow)
+            }
+        }
+
+        deserializer.deserialize_any(EitherShape)
+    }
 }
 
 impl From<IndexItemWire> for IndexItem {
@@ -1363,7 +1532,7 @@ impl serde::Serialize for IndexItem {
             }
         }
 
-        let mut row = serializer.serialize_seq(Some(12))?;
+        let mut row = serializer.serialize_seq(Some(INDEX_ITEM_SLOTS))?;
         row.serialize_element(&Kind(&self.kind))?;
         row.serialize_element(&self.routing_bucket)?;
         row.serialize_element(&Handle(&self.block_ref_key))?;
@@ -7485,9 +7654,11 @@ mod tests {
             slots.len(),
             "the row has {} slots, not 12. The index log is positional and carries no version, \
              and the format stamp cannot help because it guards the NAMED served index. A slot \
-             leaving or arriving in the MIDDLE stops stored rows decoding -- by slot typing, not by \
-             any length check -- and one leaving the TAIL is worse, because `serde(default)` fills \
-             it in and the row then decodes wrongly in silence.",
+             leaving or arriving in the MIDDLE stops stored rows decoding -- by slot typing, not \
+             by any length check -- and one leaving the TAIL used to be worse, because \
+             `serde(default)` filled it in and the row then decoded wrongly in silence. \
+             `IndexItemRow` now refuses a row that does not carry INDEX_ITEM_SLOTS slots, so the \
+             tail is loud too; this count is still what the writer must keep emitting.",
             slots.len(),
         );
 
@@ -9620,6 +9791,310 @@ flag exists to say",
                     "the fold refused, but not for continuity: {text}"
                 );
             }
+        }
+    }
+
+    /// The byte offset just past each of the twelve slots of `A_STORED_ROW_THAT_NAMES_ITS_ELEMENT`.
+    ///
+    /// THAT CONST IS REUSED RATHER THAN RE-CAPTURED. It already holds 44 bytes of a positional row
+    /// a previous build stored, with its capture helper beside it as provenance, and it is a
+    /// golden recording YESTERDAY'S INPUT -- the kind whose bytes must not move. Its subject is
+    /// slot 5; this one's is the arity. One fixture, two statements about it, and no second copy
+    /// of the literal to drift.
+    ///
+    /// NOT TRUSTED, CHECKED. The test below rebuilds every prefix from these and asserts each one
+    /// decodes as an array whose elements are the full row's own leading elements, so an offset
+    /// that does not land on an element boundary fails there rather than producing a row that is
+    /// short for the wrong reason.
+    const SLOT_ENDS: [usize; 12] = [2, 5, 6, 19, 20, 23, 24, 25, 41, 42, 43, 44];
+
+    /// The leading `slots` elements of a captured twelve-slot row, as a well-formed msgpack array.
+    ///
+    /// The fixarray header is REWRITTEN rather than left alone, which is what makes this a short
+    /// ROW and not a truncated FILE: a byte-truncated row keeps a header claiming twelve and
+    /// fails on a marker it cannot read, which was never the defect.
+    fn leading_slots_of(row: &[u8], slots: usize) -> Vec<u8> {
+        assert_eq!(0x9c, row[0], "the captured row does not start as a twelve-element fixarray");
+        assert!((1..=15).contains(&slots), "a fixarray header can only say 0..=15");
+        let mut out = Vec::with_capacity(1 + SLOT_ENDS[slots - 1]);
+        out.push(0x90 | slots as u8);
+        out.extend_from_slice(&row[1..SLOT_ENDS[slots - 1]]);
+        out
+    }
+
+    /// A STORED ROW SHORT AT ITS TAIL IS REFUSED, SO A TOMBSTONE CANNOT COME BACK LIVE.
+    ///
+    /// # THE DEFECT
+    ///
+    /// The index-log row is a POSITIONAL twelve-slot msgpack array and every slot of
+    /// `IndexItemWire` carries `#[serde(default)]`. serde's derived `visit_seq` fills a slot the
+    /// array never reached with `Default`, so an eleven-slot row decoded as a twelve-slot one
+    /// whose last slot said `false` -- and the last slot is `deleted`. A stored tombstone read
+    /// back as a LIVE row, which resurrects the object it had removed, with no error anywhere.
+    ///
+    /// # WHY IT IS DRIVEN FROM CAPTURED BYTES
+    ///
+    /// Because the shape under test is what a WRITER put on disk, and nothing in this crate can
+    /// be asked to write an eleven-slot row -- `IndexItem::serialize` writes
+    /// `INDEX_ITEM_SLOTS` unconditionally. Encoding a row with this binary and chopping it would
+    /// test this binary's output against itself; these bytes came off a build that stored them.
+    ///
+    /// # THE CLASS, NOT ONE FIELD
+    ///
+    /// Four arities are driven. Eleven loses `deleted` (a tombstone goes live), ten also loses
+    /// `in_log`, nine also loses the size sentinel, and eight loses the whole ADDRESS -- an entry
+    /// that named a block reads back naming none. Every one of those defaults is a lie the row
+    /// never told.
+    ///
+    /// # AND THE SIDE THAT WAS ALREADY REFUSED
+    ///
+    /// Asserted too, because a change that made the short side loud by making the long side quiet
+    /// would look identical from the short side alone.
+    #[test]
+    fn a_stored_row_short_at_its_tail_is_refused_and_a_tombstone_stays_dead() {
+        let stored = hex::decode(A_STORED_ROW_THAT_NAMES_ITS_ELEMENT)
+            .expect("the golden is valid hex");
+        assert_eq!(
+            44,
+            stored.len(),
+            "the golden is {} B, not the 44 B that were captured -- the literal has been edited",
+            stored.len(),
+        );
+
+        // POSITIVE CONTROL ON THE INSTRUMENT: the sound row still decodes, and it decodes as the
+        // row it is. A refusal that also refused this would be a broken decoder, not a gate.
+        let sound: IndexItem =
+            rmp_serde::from_slice(&stored).expect("the captured twelve-slot row must still decode");
+        assert_eq!(
+            "ungated/hash",
+            &*sound.object_key,
+            "the golden decoded as some other row",
+        );
+        assert!(sound.entry.is_some(), "the golden carries an address");
+        assert!(!sound.deleted, "the captured row is a live row");
+
+        // THE OFFSET TABLE IS CHECKED, NOT TRUSTED. Every prefix must decode as an array whose
+        // elements ARE the full row's leading elements, which is what makes "short at the tail"
+        // mean an element boundary rather than an arbitrary byte.
+        let full = match rmp_serde::from_slice::<serde_json::Value>(&stored) {
+            Ok(serde_json::Value::Array(slots)) => slots,
+            other => panic!("the golden is not an array: {other:?} -- the log is POSITIONAL"),
+        };
+        assert_eq!(12, full.len(), "the golden holds {} slots, not 12", full.len());
+        for slots in 1..=12usize {
+            let prefix = leading_slots_of(&stored, slots);
+            let decoded = match rmp_serde::from_slice::<serde_json::Value>(&prefix) {
+                Ok(serde_json::Value::Array(values)) => values,
+                other => panic!("the {slots}-slot prefix is not a well-formed array: {other:?}"),
+            };
+            assert_eq!(
+                full[..slots],
+                decoded[..],
+                "SLOT_ENDS[{}] does not land on an element boundary of the golden",
+                slots - 1,
+            );
+        }
+
+        // THE TOMBSTONE THIS IS ABOUT. The captured row is live, so its last slot is flipped from
+        // msgpack false to msgpack true -- a one-byte change at an element boundary the loop above
+        // just proved, producing exactly the bytes the writer emits for a removal.
+        let mut tombstone = stored.clone();
+        assert_eq!(0xc2, tombstone[43], "slot 11 of the golden is not msgpack false");
+        tombstone[43] = 0xc3;
+        let dead: IndexItem = rmp_serde::from_slice(&tombstone)
+            .expect("the tombstone variant must be a decodable twelve-slot row");
+        assert!(
+            dead.deleted,
+            "the flip did not land on `deleted`, so nothing below is about a tombstone",
+        );
+
+        // THE DEFECT, ON THE TOMBSTONE. Eleven slots: the row never said anything about
+        // `deleted`, and before the arity was checked it read back as `false`.
+        let short = leading_slots_of(&tombstone, 11);
+        assert_eq!(43, short.len(), "dropping one slot of msgpack true drops exactly one byte");
+        // It is WELL-FORMED msgpack -- so a refusal below is the arity gate talking, not a parser
+        // running off the end of the buffer.
+        let eleven = match rmp_serde::from_slice::<serde_json::Value>(&short) {
+            Ok(serde_json::Value::Array(values)) => values,
+            other => panic!("the eleven-slot row is not well-formed msgpack: {other:?}"),
+        };
+        assert_eq!(11, eleven.len(), "the eleven-slot row holds {} slots", eleven.len());
+
+        let refused = rmp_serde::from_slice::<IndexItem>(&short);
+        match &refused {
+            Err(error) => println!("[short] 11 slots refused: {error}"),
+            Ok(item) => println!("[short] 11 slots ACCEPTED, deleted={}", item.deleted),
+        }
+        assert!(
+            refused.is_err(),
+            "an eleven-slot row decoded into an IndexItem whose `deleted` is {:?}; the row never \
+             said so, and a tombstone read as live resurrects the object it removed",
+            refused.as_ref().map(|item| item.deleted).ok(),
+        );
+        let message = refused.unwrap_err().to_string();
+        assert!(
+            message.contains("positional slots"),
+            "the refusal does not say the arity was what was wrong: {message}",
+        );
+
+        // THE CLASS. Each shorter arity drops one more trailing slot, and each of those defaults
+        // is a value the row never carried.
+        for (slots, what_would_be_lost) in [
+            (11usize, "deleted -- a tombstone reads live"),
+            (10, "in_log -- an entry reads as not log-resident"),
+            (9, "the size sentinel"),
+            (8, "the whole address -- an entry reads as naming no block"),
+        ] {
+            let candidate = leading_slots_of(&tombstone, slots);
+            assert!(
+                rmp_serde::from_slice::<serde_json::Value>(&candidate).is_ok(),
+                "the {slots}-slot row is not well-formed msgpack, so it tests the wrong thing",
+            );
+            let outcome = rmp_serde::from_slice::<IndexItem>(&candidate);
+            println!(
+                "[class] {slots} slots -> {}",
+                if outcome.is_err() { "refused" } else { "ACCEPTED" }
+            );
+            assert!(
+                outcome.is_err(),
+                "a {slots}-slot row was accepted, losing {what_would_be_lost}",
+            );
+        }
+
+        // THE SIDE THAT WAS ALREADY REFUSED, so a change cannot trade one for the other.
+        let mut longer = vec![0x9du8];
+        longer.extend_from_slice(&tombstone[1..]);
+        longer.push(0xc0);
+        assert!(
+            rmp_serde::from_slice::<IndexItem>(&longer).is_err(),
+            "a thirteen-slot row must still be refused -- rmp_serde refuses the leftover element",
+        );
+        // And a BYTE-truncated row, whose header still claims twelve, was never the defect: it
+        // fails as malformed msgpack. Asserted so the two failures are not confused for each
+        // other, here or in a later reading of this file.
+        assert!(
+            rmp_serde::from_slice::<IndexItem>(&tombstone[..43]).is_err(),
+            "a byte-truncated row must fail as malformed msgpack",
+        );
+
+        // THE TOLERANT PATH, UNTOUCHED. The NAMED shape is deliberately missing-key tolerant and
+        // the compatibility arms in this file depend on it. A map has no tail to be short at.
+        let named = serde_json::json!({
+            "k": "page",
+            "rb": 8539,
+            "ok": "ungated/hash",
+            "mi": "hash",
+        });
+        let packed = rmp_serde::to_vec_named(&named).expect("pack the named shape");
+        let tolerated: IndexItem = rmp_serde::from_slice(&packed)
+            .expect("a named row with no `d` key must keep loading -- that tolerance is on purpose");
+        assert!(!tolerated.deleted, "the named arm fills an absent `d` with its default, as before");
+        println!("[named] a map with four of twelve keys still loads");
+    }
+
+    /// A RECORD CARRYING A SHORT ROW IS REFUSED AS AN `Encoding` ERROR, NOT AS `Corruption`.
+    ///
+    /// # WHY THE CLASS IS THIS ONE
+    ///
+    /// `Corruption` is defined in this file as a record that failed its per-record integrity
+    /// envelope -- the framing length or digest -- or that broke delta sequence continuity. A
+    /// short row fails none of those: the frame's length matched and its CRC32C matched, so the
+    /// bytes arrived exactly as they were written. `Encoding` is defined as a malformed payload
+    /// behind an envelope that already passed, which is what this is. It also cannot be torn
+    /// bytes: a msgpack array states its arity before its elements, so byte loss leaves a header
+    /// claiming twelve, and `log_framing::next_frame` stops at a torn tail before the row decoder
+    /// is reached at all.
+    ///
+    /// # DRIVEN THROUGH `decode_index_payload`
+    ///
+    /// Because that is where the class is decided, and a test asserting it anywhere else would be
+    /// asserting its own arrangement. The short row is SPLICED into a record this binary wrote,
+    /// so the envelope around it is a real one.
+    #[test]
+    fn a_record_carrying_a_short_row_is_refused_as_an_encoding_error() {
+        let shard: ShardId = 1;
+        let address = crate::block_store::ElementEntry::from_parts(42, 1_048_576, 4096, Some(7), None);
+        let item = IndexItem {
+            kind: IndexItemKind::Page,
+            routing_bucket: 8539,
+            block_ref_key: String::new(),
+            object_key: "ungated/hash".into(),
+            model_id: "hash".to_string(),
+            object_id: 0,
+            entry: Some(address),
+            deleted: true,
+        };
+        let row = rmp_serde::to_vec(&item).expect("encode the row");
+        assert_eq!(0x9c, row[0], "the writer no longer emits a twelve-element fixarray");
+        assert_eq!(
+            0xc3,
+            row[row.len() - 1],
+            "the last slot of a tombstone row is not msgpack true, so the drop below is not `deleted`",
+        );
+        let mut short_row = vec![0x9bu8];
+        short_row.extend_from_slice(&row[1..row.len() - 1]);
+
+        let record = IndexDeltaRecord {
+            shard_id: shard,
+            sequence: 1,
+            items: vec![item],
+            meta: None,
+            applied_wal_sequence: Some(1),
+            upsert: true,
+            key_states: Vec::new(),
+            shared_object_key: None,
+        };
+        let payload = encode_index_payload(&record, INDEX_LOG_SHAPE_DELTA).expect("encode");
+
+        // POSITIVE CONTROL: the record decodes and the tombstone is a tombstone.
+        let sound: IndexDeltaRecord =
+            decode_index_payload(&payload).expect("the unspliced record must decode");
+        assert_eq!(1, sound.items.len(), "the control record carries one item");
+        assert!(sound.items[0].deleted, "the control item must be a tombstone");
+
+        // THE SPLICE. The row's bytes appear verbatim inside the record, exactly once.
+        let at = payload
+            .windows(row.len())
+            .position(|window| window == row.as_slice())
+            .expect("the row bytes are not in the record, so this splices nothing");
+        assert_eq!(
+            1,
+            payload.windows(row.len()).filter(|w| *w == row.as_slice()).count(),
+            "the row bytes occur more than once, so the splice is ambiguous",
+        );
+        let mut spliced = Vec::with_capacity(payload.len() - 1);
+        spliced.extend_from_slice(&payload[..at]);
+        spliced.extend_from_slice(&short_row);
+        spliced.extend_from_slice(&payload[at + row.len()..]);
+        assert_eq!(
+            payload.len() - 1,
+            spliced.len(),
+            "the splice did not drop exactly one byte",
+        );
+
+        let outcome = decode_index_payload::<IndexDeltaRecord>(&spliced);
+        match &outcome {
+            Err(error) => println!("[record] refused: {error}"),
+            Ok(decoded) => println!(
+                "[record] ACCEPTED with deleted={:?}",
+                decoded.items.first().map(|item| item.deleted),
+            ),
+        }
+        match outcome {
+            Err(IndexLogError::Encoding(message)) => {
+                assert!(
+                    message.contains("positional slots"),
+                    "the refusal does not name the arity: {message}",
+                );
+            }
+            Err(other) => panic!(
+                "a short row must be an Encoding error -- the framing envelope passed and the \
+                 bytes arrived intact -- and it came back as {other:?}",
+            ),
+            Ok(decoded) => panic!(
+                "a record whose row lost its last slot decoded, with deleted={:?}",
+                decoded.items.first().map(|item| item.deleted),
+            ),
         }
     }
 }

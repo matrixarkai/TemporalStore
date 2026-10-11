@@ -625,6 +625,15 @@ fn the_stamp_this_adoption_was_costed_against() {
 ///
 /// THE CONTROL IS THE HEADER BYTE ITSELF. A twelve-element msgpack array is `0x9c`; asserting the
 /// count without asserting that the row IS an array would pass against any encoding at all.
+///
+/// AND THIS ARM DRIVES THE WRITER, NOT THE REFUSAL -- WHICH IS WORTH SAYING BECAUSE THE QUOTE
+/// ABOVE IS ABOUT THE READER. It proves the writer still emits twelve slots. It cannot see what a
+/// reader does with eleven, and until `index_log::IndexItemRow` existed the answer was that an
+/// eleven-slot row loaded with its missing tail slot defaulted -- a stored tombstone read back
+/// live. The refusal itself is driven by
+/// `index_log::tests::a_stored_row_short_at_its_tail_is_refused_and_a_tombstone_stays_dead`,
+/// off captured bytes, and by its record-level twin. A header byte read off this binary's own
+/// output is not evidence about the decoder.
 #[test]
 fn an_index_log_row_states_its_shape_only_by_its_slot_count() {
     let item = crate::index_log::IndexItem {

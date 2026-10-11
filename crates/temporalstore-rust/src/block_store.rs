@@ -139,11 +139,22 @@ const ADDRESS_HAS_GENERATION: u8 = 1 << 3;
 ///
 ///   * THE INDEX LOG IS POSITIONAL. `index_log::encode_index_payload_into` builds a plain
 ///     `rmp_serde::Serializer`, so a field is a POSITION and not a name, and a row is an array.
-///     A row whose length does not match the struct decoding it is REFUSED -- measured, "array
-///     had incorrect length, expected 4" -- and `index_log`'s replay propagates that with `?`
-///     rather than skipping the row, deliberately: "a sweep that quietly skips what it cannot
-///     read is how committed corruption becomes silent data loss". So this path fails HARD and
-///     it fails LOUDLY, and that asymmetry is a decision rather than an oversight.
+///     A row LONGER than the struct decoding it is REFUSED -- measured, "array had incorrect
+///     length, expected 5" -- and `index_log`'s replay propagates that with `?` rather than
+///     skipping the row, deliberately: "a sweep that quietly skips what it cannot read is how
+///     committed corruption becomes silent data loss". So this path fails HARD and it fails
+///     LOUDLY, and that asymmetry is a decision rather than an oversight.
+///
+///     A ROW SHORTER THAN THE STRUCT IS NOT REFUSED, AND THIS PARAGRAPH USED TO SAY IT WAS.
+///     "A row whose length does not match" was half of a length check and there is no length
+///     check: serde's derived `visit_seq` fills a slot the array never reached with `Default`.
+///     Measured on this struct, arities 4, 3 and 2 all load -- arity 4 loads an address whose
+///     `generation` is absent, which is the one slot below whose PRESENCE is a meaning. What
+///     looks like a refusal is arity 1 and under, and that is the absent `#[serde(default)]` on
+///     `length` reported as "invalid length 1, expected struct BlockAddressWire with 5
+///     elements": a missing REQUIRED FIELD, not an arity the decoder checked. `index_log`'s
+///     `IndexItemRow` closes the same hole one struct up by reading the arity off the array
+///     header; nothing closes it here yet.
 ///
 ///   * THE SERVED INDEX IS NAMED. `engine::encode_index_bytes` builds its serializer
 ///     `.with_struct_map()`, so a row is a map and a reader simply DROPS the keys its struct no
@@ -313,10 +324,17 @@ impl TryFrom<BlockAddressWire> for ElementEntry {
 /// AND THAT IS WHY THE SLOTS DID NOT MOVE. The wire struct is untouched: five slots, same names,
 /// same order, same values. The alternative -- dropping `l` and `pi` because the address no longer
 /// declares them -- was never available. The index log packs this struct POSITIONALLY with a plain
-/// `rmp_serde::Serializer` and carries NO struct version, so a shortened array is refused as "array
-/// had incorrect length" on every row already written, and the served index's format stamp cannot
+/// `rmp_serde::Serializer` and carries NO struct version, so a row that stopped declaring a slot
+/// would be read by a build that still declares it, and the served index's format stamp cannot
 /// help because it guards the NAMED path only. A stamp-free change was therefore the requirement,
 /// not the happy accident, and moving this impl up one level is what buys it.
+///
+/// WHICH WAY ROUND THAT BITES IS NOT WHAT THIS USED TO SAY. "A shortened array is refused as
+/// array had incorrect length" was the wrong direction: measured, a LONGER array is refused that
+/// way and a SHORTER one is accepted with its missing tail slots read back as defaults. So the
+/// risk in dropping a slot here is not a loud refusal of every stored row -- it is a SILENT
+/// reinterpretation of every stored row by a reader that still expects the slot, which is worse
+/// and was being counted as the safe case.
 impl From<ElementEntry> for BlockAddressWire {
     fn from(entry: ElementEntry) -> Self {
         Self {
