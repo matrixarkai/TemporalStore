@@ -91,7 +91,6 @@ fn probe_page(object: &str, slot: u64) -> (Arc<str>, BlockIndex) {
     (
         Arc::from(object),
         BlockIndex {
-            object_key: Arc::from(object),
             model_id: crate::engine::storage_bucket_internals::StoredModelKind::String,
             address: ElementEntry::from_parts(1, slot * 64, 64, Some(slot), Some(slot)),
             dirty: false,

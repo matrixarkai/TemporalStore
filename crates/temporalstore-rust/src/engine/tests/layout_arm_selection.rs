@@ -302,12 +302,11 @@ fn report_group(label: &str, groups: &BTreeMap<impl Ord, usize>) -> (usize, usiz
     (counts.len(), max)
 }
 
-/// The width of a field, taken FROM THE FIELD. Naming the type at the call site compiles whatever
-/// the field became, which is how `pages_per_bucket` came to charge two fat pointers for a
-/// seventeen-byte group after `model_id` stopped being a pointer (#1994, paid down in #1997).
-fn field_width<T>(_field: &T) -> usize {
-    std::mem::size_of::<T>()
-}
+// `field_width` IS GONE WITH ITS ONE CALLER. It took a width FROM THE FIELD rather than from a
+// type named at the call site, which is how `pages_per_bucket` came to charge two fat pointers for
+// a seventeen-byte group (#1994, paid down in #1997). Its only use here was
+// `name_pointer_width`, which read the entry's name field; the entry has no name field, so there
+// is no field left to take a width from and the helper has nothing to infer from.
 
 /// For each occupied bucket, the page count of every distinct `(kind, key)` inside it.
 ///
@@ -337,16 +336,22 @@ fn bucket_key_breakdown(engine: &TemporalEngine) -> Vec<Vec<usize>> {
     out
 }
 
-/// The width of the name pointer a page entry spends today, read off a real entry's own field.
-fn name_pointer_width(engine: &TemporalEngine) -> usize {
-    let shards = engine.shards.read().expect("engine lock poisoned");
-    let shard = shards.get(&1).expect("shard is loaded");
-    for node in shard.bucket_index.bucket_map.values() {
-        for entry in node.block_index.values() {
-            return field_width(&entry.object_key);
-        }
-    }
-    panic!("no page entry to read a field width from");
+/// THE WIDTH A PAGE ENTRY SPENDS ON A NAME POINTER -- ZERO, AND IT IS READ OFF THE TYPE NOW.
+///
+/// It read `field_width(&entry.object_key)` off a real entry, which is what made it a measurement
+/// rather than a literal. The entry holds no name pointer at all, so there is no field to read and
+/// the honest answer is zero.
+///
+/// IT IS KEPT AS A FUNCTION RATHER THAN FOLDED INTO ITS CALLER because the arm below prints it as
+/// a column and divides by it in one place, and a zero that arrives through the same door the
+/// measurement did is a zero a reader can trace. What it costs is the engine argument, which is
+/// now unused and is named so.
+///
+/// AND WHERE THOSE SIXTEEN BYTES WENT IS NOT NOWHERE: one shared pointer per (kind, object) in
+/// `CoreIndex::object_block_lookup`, which `page_entry_name_pointer`'s surviving allocation arm
+/// prices. A per-PAGE pointer became a per-OBJECT one; this column is the per-page half.
+fn name_pointer_width(_engine: &TemporalEngine) -> usize {
+    0
 }
 
 /// THE ARM POPULATION, AND THE ONE NUMBER AN OBJECT LIST AMORTISES OVER.

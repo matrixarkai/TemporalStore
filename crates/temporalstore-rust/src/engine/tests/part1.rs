@@ -4745,141 +4745,31 @@ fn what_post_write_maintenance_costs_per_key_kind() {
 }
 
 
-/// The incrementally maintained object->block lookup must equal a rebuilt one.
-///
-/// `sync_bucket_index_object_blocks` used to end by rebuilding the shard's entire object->block
-/// lookup, which made every timestamped-series write O(blocks in the shard) -- 10,457 allocations for
-/// one summary write at 320 memories against 27 for a node write, which never reaches that path.
-/// The rebuild is now confined to establishing an empty lookup, and the steady state applies only
-/// the blocks a write touched.
-///
-/// A rebuild is self-correcting: it cleared the lookup and refilled it from the buckets, so it
-/// repaired any drift for free. Incremental maintenance does not, so the equivalence has to be
-/// asserted rather than assumed. Rewrites matter as much as first writes: a rewrite drops this
-/// object's entries and inserts new ones, and applying those two in the wrong order deletes what the
-/// same call just wrote.
-#[test]
-fn the_maintained_block_lookup_matches_a_rebuilt_one() {
-    use crate::context_workflow::{
-        ingest_extract_context, ContextExtractRequest, ContextIngestExtractRequest,
-        ContextModelProviderConfig, ContextSourceKind,
-    };
-
-    const TENANT: u64 = 6203;
-
-    let dir = tempfile::tempdir().unwrap();
-    let engine = TemporalEngine::with_local_dirs(
-        64 * 1024 * 1024,
-        dir.path().join("cache"),
-        dir.path().join("pages"),
-        dir.path().join("indexes"),
-    );
-    engine.load_shard(1);
-
-    for index in 0..24_usize {
-        let report = ingest_extract_context(
-            &engine,
-            ContextIngestExtractRequest {
-                shard_id: 1,
-                tenant_hash: TENANT,
-                sources: vec![ContextExtractRequest {
-                    shard_id: 1,
-                    tenant_hash: TENANT,
-                    source_kind: ContextSourceKind::Incident,
-                    source_id: format!("LOOKUP-{index:06}"),
-                    title: format!("lookup {index}"),
-                    body: format!(
-                        "{}{}",
-                        format!("entry {index} covering the depot rota "),
-                        "context payload sentence. ".repeat(12)
-                    ),
-                    timestamp_ms: 1_000 + index as u64,
-                    provider: ContextModelProviderConfig::default(),
-                }],
-                provider: ContextModelProviderConfig::default(),
-                start_time_ms: 0,
-                end_time_ms: 0,
-                max_events: 0,
-                query: String::new(),
-            },
-        );
-        assert!(report.status.ok, "ingest {index}: {:?}", report.status);
-    }
-
-    // Write the same summary key twice at different times, then a second key once: the first pair
-    // exercises the drop-then-insert path, the single write the plain insert.
-    for (node_hash, valid_from_ms) in [
-        (7_100_001_u64, 1_781_700_000_000_u64),
-        (7_100_001, 1_781_700_000_001),
-        (7_100_002, 1_781_700_000_000),
-    ] {
-        let out = engine.execute(ExecuteRequest {
-            shard_id: 1,
-            command: Command::ContextUpsertSummary {
-                tenant_hash: TENANT,
-                summary: crate::types::ContextSummary {
-                    node_hash,
-                    level: 2,
-                    text: "a summary written to exercise lookup maintenance".to_string(),
-                    valid_from_ms,
-                    vector: vec![0.5_f32; 16],
-                    embedding_model_hash: 7,
-                },
-            },
-        });
-        assert!(out.status.ok, "summary {node_hash}: {:?}", out.status);
-    }
-
-    let mut shards = engine.shards.write().expect("engine lock poisoned");
-    let shard = shards.get_mut(&1).expect("loaded shard");
-
-    let maintained = shard.bucket_index.object_block_lookup.clone();
-    let maintained_total = shard.bucket_index.object_component_block_refs;
-    assert!(
-        !maintained.is_empty(),
-        "the lookup is empty, so this test would pass without maintaining anything"
-    );
-
-    shard.bucket_index.rebuild_object_block_lookup();
-    let rebuilt = &shard.bucket_index.object_block_lookup;
-
-    // Identity is (model, object) now rather than one concatenated key, so the comparison
-    // names both halves instead of a composite.
-    let missing: Vec<String> = rebuilt
-        .iter()
-        .filter(|(model, object, _)| maintained.get(model, object).is_none())
-        .map(|(model, object, _)| format!("{model}/{object}"))
-        .collect();
-    let extra: Vec<String> = maintained
-        .iter()
-        .filter(|(model, object, _)| rebuilt.get(model, object).is_none())
-        .map(|(model, object, _)| format!("{model}/{object}"))
-        .collect();
-    let differing: Vec<String> = rebuilt
-        .iter()
-        .filter(|(model, object, refs)| {
-            maintained
-                .get(model, object)
-                .map(|held| held != *refs)
-                .unwrap_or(false)
-        })
-        .map(|(model, object, _)| format!("{model}/{object}"))
-        .collect();
-    assert!(
-        missing.is_empty() && extra.is_empty() && differing.is_empty(),
-        "maintained lookup differs from a rebuilt one: {} missing {:?}, {} extra {:?}, {} differing {:?}",
-        missing.len(),
-        missing.iter().take(4).collect::<Vec<_>>(),
-        extra.len(),
-        extra.iter().take(4).collect::<Vec<_>>(),
-        differing.len(),
-        differing.iter().take(4).collect::<Vec<_>>(),
-    );
-    assert_eq!(
-        maintained_total, shard.bucket_index.object_component_block_refs,
-        "the page-ref total drifted; the stats path reads it instead of walking the shard"
-    );
-}
+// THREE ORACLE ARMS ARE RETIRED HERE, AND THE ORACLE IS WHAT THEY WERE.
+//
+// `deleting_leaves_the_lookup_a_rebuild_would_have_built` and
+// `a_reload_rebuilds_the_lookup_the_index_no_longer_writes` each took the MAINTAINED object
+// lookup, ran `rebuild_object_block_lookup()`, and asserted the two agree position for position.
+// `part1::the_maintained_block_lookup_matches_a_rebuilt_one` did the same over a whole ingest.
+// Twenty-one defects were caught by that shape across this change.
+//
+// THE REBUILD WALKED THE PAGES AND READ EACH ONE'S KEY, so with the identity off the entry there
+// is nothing to rebuild FROM, and the oracle has one side. `rebuild_object_block_lookup` is
+// deleted in `state.rs` with the reasoning; these three go with it rather than being rewritten to
+// compare the maintained lookup with itself.
+//
+// WHAT THE ORACLE BOUGHT, so it outlives the assertions: it is the whole of the evidence that
+// filing-as-you-go leaves the lookup exactly where a whole-shard rebuild would have, which is
+// what licensed removing two rebuild calls from the load path and one from the delete path. The
+// obligation is at the producers now -- every site that places a page files it, every site that
+// drops one un-files it, and `fold_delta_block_items` carries the note that those are ONE
+// obligation.
+//
+// AND THE RULE THEY WERE AN INSTANCE OF IS THE PART TO KEEP: when replacing a source, keep the
+// old one alive and assert agreement until the last reader converts. These three are what that
+// rule looks like when it is spent -- the old source is gone because the last reader converted,
+// so the agreement is unrepeatable and the assertions come out in the same commit that removes
+// the source. A tie kept past that point compares one source with itself.
 
 /// Which structures does one record actually land in?
 ///

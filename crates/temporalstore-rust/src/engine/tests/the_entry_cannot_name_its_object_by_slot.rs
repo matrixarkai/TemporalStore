@@ -326,14 +326,17 @@ fn both_gone_field_sum() -> usize {
 /// one. A parallel literal would have gone on summing a field that was no longer there.
 fn live_entry_field_sum() -> usize {
     let probe = BlockIndex {
-        object_key: Arc::from("slot-probe"),
         model_id: StoredModelKind::String,
         address: an_address(),
         dirty: false,
         deleted: false,
     };
-    std::mem::size_of_val(&probe.object_key)
-        + std::mem::size_of_val(&probe.model_id)
+    // FOUR TERMS NOW. The `object_key` term went with the field, and this function is the one
+    // that EARNED its shape twice: it builds a real `BlockIndex` and reads `size_of_val` off each
+    // field, so a field leaving the declaration stops it compiling. A parallel list of widths
+    // would have gone on summing a term that was no longer there, which is what happened to four
+    // mirrors elsewhere in this tree.
+    std::mem::size_of_val(&probe.model_id)
         + std::mem::size_of_val(&probe.address)
         + std::mem::size_of_val(&probe.dirty)
         + std::mem::size_of_val(&probe.deleted)
@@ -369,17 +372,18 @@ fn the_width_an_object_ordinal_would_reach_against_the_live_entrys_own() {
     // sum is taken off a real instance rather than a parallel literal, so a field that leaves the
     // declaration cannot leave the sum silently.
     assert_eq!(
-        40,
+        24,
         std::mem::size_of::<BlockIndex>(),
-        "the live entry is {} bytes, not 40, so every figure below is anchored on a width that \
+        "the live entry is {} bytes, not 24, so every figure below is anchored on a width that \
          has moved",
         std::mem::size_of::<BlockIndex>()
     );
     assert_eq!(
-        35,
+        19,
         live_entry_field_sum(),
-        "the live entry's fields add up to {} rather than 35; two LOG-ONLY fields left the entry, so the ZERO SLACK this leg was priced \
-         against is gone",
+        "the live entry's fields add up to {} rather than 19; the identity has left the entry on \
+         top of the two LOG-ONLY fields that went before it, so the ZERO SLACK this leg was \
+         priced against has been gone for two legs",
         live_entry_field_sum()
     );
 
@@ -447,30 +451,42 @@ fn the_width_an_object_ordinal_would_reach_against_the_live_entrys_own() {
         println!("  {what:<20} tail {} bytes", width - field_sum);
     }
 
-    // AND THE SECOND TIE RE-ANCHORS, BECAUSE `OrdinalEntry` IS NO LONGER THE LIVE ENTRY WITH ONE
-    // FIELD SWAPPED. It read `live_entry_field_sum() == ordinal_entry_field_sum() - u32 +
-    // Arc<str>`, which held while the live entry carried an element name. It does not now: 44 - 4
-    // + 16 is 56, which is the PRE-REMOVAL entry. So the identity is stated against that entry,
-    // expressed as the live sum plus the field that left -- which keeps it tied to `BlockIndex`
-    // rather than to the literal 56.
+    // AND THE SECOND TIE RE-ANCHORS FOR THE THIRD TIME, WHICH IS ITSELF THE FINDING.
+    //
+    // It began as `live_entry_field_sum() == ordinal_entry_field_sum() - u32 + Arc<str>` -- the
+    // live entry is the ordinal mirror with one field swapped back. Every leg since has taken a
+    // field off the live entry and left the mirror alone, so the left side has grown a term per
+    // leg: the element name, then `kind` and `routing_bucket`, and now the object key itself. The
+    // mirror models an entry that is four fields away from the live one.
+    //
+    // IT IS RE-ANCHORED RATHER THAN RETIRED BECAUSE THE TIE IS STILL THE ONLY THING HOLDING THE
+    // MIRROR TO A REAL STRUCTURE: without it the ordinal's 44 is a number about nothing. But a
+    // tie that needs a growing list of retired terms is a mirror that should be rebuilt against
+    // the live field set, and that is the next thing this module owes -- recorded here rather
+    // than done in a commit about the width, where a rebuilt mirror would move the ordinal
+    // figures this module's verdict rests on.
     assert_eq!(
         live_entry_field_sum() + std::mem::size_of::<Option<Arc<str>>>()
         + std::mem::size_of::<crate::index_log::IndexItemKind>()   // kind, retired
         + std::mem::size_of::<u32>()                               // routing_bucket, retired
+        + std::mem::size_of::<Arc<str>>()                          // object_key, retired here
             ,
         ordinal_entry_field_sum() - std::mem::size_of::<u32>() + std::mem::size_of::<Arc<str>>(),
         "the ordinal mirror does not reconstruct to the entry it was measured against -- the live \
          sum plus the element name's {} bytes -- so it is not that entry with one field swapped",
         std::mem::size_of::<Option<Arc<str>>>()
     );
-    // AND THE TARGET IS NOW ONE FIELD FROM THE LIVE ENTRY, NOT TWO. This read
+    // AND THE TARGET IS NOW TWO FIELDS FROM THE LIVE ENTRY AGAIN, HAVING BEEN ONE. This read
     // `both_gone_field_sum() - u32 + Arc<str> + Option<Arc<str>>`, naming both fields that had to
-    // leave. One of them has: the element name is off `BlockIndex`, so putting it back here would
-    // double-count it and the identity would miss by sixteen.
+    // leave; the element name then left `BlockIndex` and the term came out, because putting it
+    // back would have double-counted it. The IDENTITY has now left too, so the key's own sixteen
+    // bytes go back on this side for the same reason -- the mirror still carries a key and the
+    // live entry does not.
     assert_eq!(
         live_entry_field_sum()
         + std::mem::size_of::<crate::index_log::IndexItemKind>()   // kind, retired
         + std::mem::size_of::<u32>()                               // routing_bucket, retired
+        + std::mem::size_of::<Arc<str>>()                          // object_key, retired here
             ,
         both_gone_field_sum() - std::mem::size_of::<u32>() + std::mem::size_of::<Arc<str>>(),
         "28 does not reconstruct to the live {} by putting the key back, so the 32 probe is not \

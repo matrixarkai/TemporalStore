@@ -38,8 +38,6 @@
 //! traversal would therefore have left the cost where it was on the configuration that matters,
 //! which is why it rides its own parameter -- and why both arms are asserted here.
 
-use std::sync::Arc;
-
 use crate::engine::state::{BlockIndex, BlockSlabLiveIndex, BucketNode, ShardState};
 use crate::engine::storage_bucket_internals::{
     note_bucket_flags_stale, refresh_bucket_runtime_flags, refresh_pending_bucket_runtime_flags,
@@ -59,7 +57,6 @@ fn a_bucket_holding_one_page(routing_bucket: u32, object_key: &str) -> BucketNod
     let mut live = BlockSlabLiveIndex::default();
     bucket.insert_page(&object_key, 
         BlockIndex {
-            object_key: Arc::from(object_key),
             model_id: crate::engine::storage_bucket_internals::StoredModelKind::from_stored_name(
                 "string",
             )

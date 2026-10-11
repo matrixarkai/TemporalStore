@@ -125,24 +125,25 @@ fn budget() -> Vec<Budgeted> {
             name: "BlockIndex",
             size: size_of::<BlockIndex>(),
             align: align_of::<BlockIndex>(),
-            // object_key           : Arc<str>
             // model_id             : StoredModelKind, ONE BYTE -- it was a second `Arc<str>`
             //                        until the spelling became the one-byte discriminant of the
             //                        seventeen-element set `model_kind_registry` declares
             // address              : BlockAddress
             // dirty/deleted       : bool x 2
-            // kind                : IndexItemKind, ONE BYTE, absorbed from the index-log row
-            // routing_bucket      : u32, absorbed from the same row
             //
-            // `component: Option<Arc<str>>` STOOD BETWEEN `model_id` AND `address` AND IS GONE.
-            // Sixteen bytes, which is the whole of this row's 56 -> 40. The `opt_arc_str` binding is
-            // gone from the top of this function too: no row in this list holds one any more.
-            fields: arc_str
-                + size_of::<crate::engine::storage_bucket_internals::StoredModelKind>()
+            // `component: Option<Arc<str>>` STOOD BETWEEN `model_id` AND `address` AND WENT ONE LEG
+            // AGO: sixteen bytes, the whole of this row's 56 -> 40. `object_key: Arc<str>` goes
+            // here: another sixteen, and the whole of 40 -> 24.
+            //
+            // AND THREE TERMS CAME OUT THAT HAD NO FIELD BEHIND THEM AT ALL. This list carried
+            // `kind: IndexItemKind` and `routing_bucket: u32` after `65c7fc562` retired both from
+            // `BlockIndex`, and the row's own impossibility check -- fields must fit inside the
+            // struct -- did not fire, because 40 bytes of claimed field fit inside a 40-byte
+            // struct exactly. It fires the moment the width moves, which is how this was found:
+            // the sixth live instance of a decomposition that had stopped describing the type.
+            fields: size_of::<crate::engine::storage_bucket_internals::StoredModelKind>()
                 + size_of::<ElementEntry>()
-                + 2 * size_of::<bool>()
-                + size_of::<crate::index_log::IndexItemKind>()
-                + size_of::<u32>(),
+                + 2 * size_of::<bool>(),
             per_item: true,
         },
         Budgeted {
@@ -372,7 +373,7 @@ fn every_per_item_structure_states_its_width_and_its_padding() {
     // -- "BlockIndex is 39, so 40 is an upper bound here" -- asserted a reachability an
     // 8-aligned type does not have. The alignments are pinned below instead, where this
     // module's own `padding()` column is taken over them.
-    assert_eq!(40, size_of::<BlockIndex>(), "BlockIndex width moved");
+    assert_eq!(24, size_of::<BlockIndex>(), "BlockIndex width moved");
     assert_eq!(24, size_of::<BlockIndexMap>(), "BlockIndexMap width moved");
     assert_eq!(96, size_of::<BucketNode>(), "BucketNode width moved");
     assert_eq!(16, size_of::<BlockLookupRef>(), "BlockLookupRef width moved");
@@ -754,7 +755,14 @@ fn only_the_structures_that_hold_an_address_moved() {
                 // for exactly the reason the comment above gives: without it the row would fail
                 // saying "something else moved with it unaccounted" -- true, and it would read as
                 // an address defect.
-                "BlockIndex" => 16i64,
+                //
+                // AND SIXTEEN MORE AGAIN, BECAUSE THE ENTRY THEN GAVE UP ITS OWN COPY OF THE
+                // IDENTITY. `BlockIndex::object_key` was an `Arc<str>` in the eight-aligned group
+                // -- a fat pointer, two whole words -- so this row's total delta is 40 where the
+                // address alone accounts for 8. The two name terms are named and subtracted for
+                // one reason: without them the row fails saying "something else moved with it
+                // unaccounted", which is true and reads as an address defect.
+                "BlockIndex" => 32i64,
                 _ => 0,
             };
             assert_eq!(

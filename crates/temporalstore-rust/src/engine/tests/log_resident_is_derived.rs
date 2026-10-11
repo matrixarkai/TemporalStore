@@ -89,7 +89,6 @@ fn the_log_resident_fact_is_derived_from_the_address_alone() {
 
     // The entry the tombstone path builds. It no longer carries a log-resident flag to get wrong.
     let tombstone = BlockIndex {
-        object_key: std::sync::Arc::from("tenant/7/object/1"),
         model_id: crate::engine::storage_bucket_internals::StoredModelKind::Hash,
         address: in_log.clone(),
         dirty: true,
@@ -147,7 +146,6 @@ fn the_log_resident_fact_is_derived_from_the_address_alone() {
 fn the_stored_entry_has_dropped_the_flag_and_gained_no_key() {
 
     let page = BlockIndex {
-        object_key: std::sync::Arc::from("tenant/7/object/1"),
         model_id: crate::engine::storage_bucket_internals::StoredModelKind::Hash,
         address: ElementEntry::from_parts(42, 1_048_576, 4096, Some(7), None),
         dirty: false,
@@ -190,13 +188,14 @@ fn the_stored_entry_has_dropped_the_flag_and_gained_no_key() {
          detect a field leaving at all",
     );
 
-    // AND THE WIDTH IS 40, WHICH IS NOT THIS MODULE'S CHANGE AND IS PINNED HERE ANYWAY.
+    // AND THE WIDTH IS 24, WHICH IS NOT THIS MODULE'S CHANGE AND IS PINNED HERE ANYWAY.
     //
     // This read 56 under "the width is unchanged, so nobody reads this as a footprint change" --
     // a pin on the width THIS module's change did not move, so that a reader could not mistake a
-    // stored-format change for a footprint one. The entry is 40 now because it stopped naming its
-    // element, which is a different change; the claim the pin exists to make is unaffected and the
-    // number it names is not.
+    // stored-format change for a footprint one. It then read 40, because the entry stopped naming
+    // its element; it reads 24 now, because the entry stopped carrying its object identity as well.
+    // Both are different changes from this module's, the claim the pin exists to make is unaffected
+    // by either, and the number it names is not.
     //
     // PINNED, AND NOT BRACKETED -- which is a change from what stood here. The note read
     // "BRACKETED, so it reads as a measurement rather than a literal adjusted until it
@@ -206,7 +205,7 @@ fn the_stored_entry_has_dropped_the_flag_and_gained_no_key() {
     // check` cannot see an `assert_eq!` in a test body, so this compiled clean through the
     // whole width step and only running it said so.
     assert_eq!(
-        40,
+        24,
         std::mem::size_of::<BlockIndex>(),
         "the entry is {} bytes; this module's change was never a footprint change and the body \
          says so",

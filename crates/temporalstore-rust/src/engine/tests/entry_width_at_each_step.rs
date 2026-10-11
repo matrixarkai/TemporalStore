@@ -1,14 +1,30 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright 2026 MatrixArkAI
 
-//! WHAT THE PAGE INDEX ENTRY WEIGHS AT EACH STEP TOWARD TWENTY-FOUR, COMPOSED RATHER THAN LONE.
+//! WHAT THE PAGE INDEX ENTRY WEIGHS AT EACH STEP -- AND STEP ONE HAS LANDED.
 //!
-//! The target shape for this entry is twenty-four bytes carrying NO IDENTITY OF ITS OWN: a flag
-//! group, a model spelling, and an address, with the identity supplied by the position the entry
-//! is held at. This file measures what each step toward that width actually costs, because every
-//! per-field reading of this structure in this campaign has been wrong in the same direction --
-//! `size_of` steps at a word, so one to seven bytes of field saving moves it by nothing, and two
-//! savings that are each worth nothing can compose to a whole word.
+//! The target shape was twenty-four bytes carrying NO IDENTITY OF ITS OWN: a flag group, a model
+//! spelling, and an address, with the identity supplied by the position the entry is held at. THE
+//! ENTRY IS THAT SHAPE. `state.rs` pins it at twenty-four with nineteen bytes of field and five of
+//! slack, and the identity is resolved through `PageKeysByPosition` from the position the page is
+//! filed at.
+//!
+//! # SO STEP ZERO AND STEP ONE ARE ONE SHAPE, AND THE MIRROR FOLDED INTO THE LIVE TYPE
+//!
+//! `StepOneTheIdentityLeaves` existed to measure what the entry WOULD weigh with the identity
+//! gone. It is gone, so the thing that mirror was a model of is the live entry, and two
+//! declarations of one shape are two things to keep in step. The mirror is deleted and step zero
+//! measures the live type; every row that was "composed on step one" is composed on step zero,
+//! which is the same field set under its real name.
+//!
+//! THAT IS THE SECOND FOLD THIS FILE HAS TAKEN FOR THE SAME REASON, and `state.rs` has taken two:
+//! a probe whose justification is "the number has to be real before anyone starts" is spent the
+//! moment the number is the live type's own.
+//!
+//! This file still measures what each REMAINING step costs, because every per-field reading of
+//! this structure in this campaign has been wrong in the same direction -- `size_of` steps at a
+//! word, so one to seven bytes of field saving moves it by nothing, and two savings that are each
+//! worth nothing can compose to a whole word.
 //!
 //! # EVERY MIRROR HERE DECLARED TWO FIELDS THE LIVE ENTRY NO LONGER HAS
 //!
@@ -72,21 +88,25 @@ use crate::engine::storage_bucket_internals::StoredModelKind;
 /// Spelled as types rather than as a literal so that a field whose own width moves elsewhere fails
 /// here instead of leaving this file describing the old one. Every row below is this sum with
 /// terms taken away, which is what makes the differences readable as the cost of one step.
-const LIVE_FIELD_SUM: usize = size_of::<Arc<str>>()        // object_key
-    + size_of::<StoredModelKind>()                         // model_id
+const LIVE_FIELD_SUM: usize = size_of::<StoredModelKind>() // model_id
     + size_of::<ElementEntry>()                            // address
     + size_of::<bool>()                                    // dirty
     + size_of::<bool>(); // deleted
-const _: () = assert!(LIVE_FIELD_SUM == 35);
+const _: () = assert!(LIVE_FIELD_SUM == 19);
 
 /// STEP ZERO: the field set the live entry has, mirrored field for field and in declaration order.
 ///
-/// FIVE fields, thirty-five bytes of field in forty, and so five bytes of slack. It read "Seven
-/// fields, forty bytes of field in forty" while two of those seven had already left the live
-/// entry -- see the module docs for what that hid.
+/// FOUR fields, nineteen bytes of field in twenty-four, and so five bytes of slack. AND IT IS WHAT
+/// STEP ONE USED TO MEASURE: the identity has left, so "the live entry" and "the entry with the
+/// identity gone" are one field set and this is it.
+///
+/// ITS HISTORY IS THE WARNING THE MODULE DOC CARRIES. It read "Seven fields, forty bytes of field
+/// in forty" while two of those seven had already left the live entry, then "FIVE fields,
+/// thirty-five bytes of field in forty" while the key was still on it. Each was a decomposition
+/// that had stopped describing the type, and each survived a leg because `size_of` steps at a
+/// word. The OFFSET pins below are what that bought.
 #[allow(dead_code)]
 struct StepZeroTheLiveEntry {
-    object_key: Arc<str>,
     model_id: StoredModelKind,
     address: ElementEntry,
     dirty: bool,
@@ -108,7 +128,7 @@ struct StepZeroTheLiveEntry {
 /// assertions did not notice for a whole commit.
 const _: () = assert!(size_of::<StepZeroTheLiveEntry>() == size_of::<BlockIndex>());
 const _: () = assert!(align_of::<StepZeroTheLiveEntry>() == align_of::<BlockIndex>());
-const _: () = assert!(size_of::<StepZeroTheLiveEntry>() == 40);
+const _: () = assert!(size_of::<StepZeroTheLiveEntry>() == 24);
 
 /// THE CONTROL THAT CAN SEE THE FIELD LIST: every field at the same offset in the mirror as in the
 /// live entry.
@@ -120,14 +140,14 @@ const _: () = assert!(size_of::<StepZeroTheLiveEntry>() == 40);
 /// mirror put the model spelling at thirty-seven while the live entry puts it at thirty-two, and
 /// an offset pin would have refused the commit that retired them.
 ///
-/// EXHAUSTIVE OVER THE LIVE ENTRY'S FIELDS, five of five. A field ADDED to `BlockIndex` does not
+/// EXHAUSTIVE OVER THE LIVE ENTRY'S FIELDS, four of four. A field ADDED to `BlockIndex` does not
 /// fail here -- nothing in a list of offsets is forced to mention it -- so this is not a
 /// substitute for the destructuring guards elsewhere; it is the check that the terms named here
 /// are where the live type puts them.
-const _: () = assert!(
-    std::mem::offset_of!(StepZeroTheLiveEntry, object_key)
-        == std::mem::offset_of!(BlockIndex, object_key)
-);
+///
+/// THE `object_key` PAIR IS GONE WITH THE FIELD, and it could not have been left behind: an
+/// `offset_of!` of a field that does not exist does not compile. That is exactly the property
+/// this list was added for after the width pins let two retired fields through.
 const _: () = assert!(
     std::mem::offset_of!(StepZeroTheLiveEntry, model_id)
         == std::mem::offset_of!(BlockIndex, model_id)
@@ -145,7 +165,7 @@ const _: () = assert!(
 /// AND THE FIELD SUM, which is the half that moves when a field's own WIDTH moves rather than when
 /// the list does. Built from the live entry's field types, so a term that widens elsewhere fails
 /// here instead of leaving every decomposition below describing the old one.
-const _: () = assert!(LIVE_FIELD_SUM == 35);
+const _: () = assert!(LIVE_FIELD_SUM == 19);
 const _: () = assert!(size_of::<StepZeroTheLiveEntry>() - LIVE_FIELD_SUM == 5);
 
 /// THE NEGATIVE CONTROL: the same mirror with one word added, which must NOT measure the live
@@ -156,12 +176,11 @@ const _: () = assert!(size_of::<StepZeroTheLiveEntry>() - LIVE_FIELD_SUM == 5);
 /// than the field set. This shows the comparison REFUSES when the field set genuinely differs,
 /// which is what makes its passing informative.
 ///
-/// AND IT REFUSES BY A WHOLE WORD, which is the limit of what it proves. Forty-three bytes of
-/// field measures forty-eight, so this control is decisive against a mirror that is a WORD wrong
+/// AND IT REFUSES BY A WHOLE WORD, which is the limit of what it proves. Twenty-seven bytes of
+/// field measures thirty-two, so this control is decisive against a mirror that is a WORD wrong
 /// and silent against one that is a BYTE wrong -- which is exactly the error that stood here.
 #[allow(dead_code)]
 struct StepZeroWithOneWordTooMany {
-    object_key: Arc<str>,
     model_id: StoredModelKind,
     address: ElementEntry,
     dirty: bool,
@@ -170,34 +189,28 @@ struct StepZeroWithOneWordTooMany {
 }
 
 const _: () = assert!(size_of::<StepZeroWithOneWordTooMany>() != size_of::<BlockIndex>());
-const _: () = assert!(size_of::<StepZeroWithOneWordTooMany>() == 48);
+const _: () = assert!(size_of::<StepZeroWithOneWordTooMany>() == 32);
 
-/// STEP ONE: THE IDENTITY LEAVES THE ENTRY, and that is the whole of the width step.
-///
-/// Four fields, NINETEEN bytes of field in twenty-four. The shared pointer to the object key is a
-/// sixteen-byte fat pointer, so this is a TWO-WORD step rather than one word and some rounding.
-///
-/// AND IT LEAVES FIVE BYTES OF SLACK, WHICH INVERTS THE RULE THIS ENTRY IS GOVERNED BY. This read
-/// "twenty-four bytes of field in twenty-four ... so it lands exactly and leaves no slack for the
-/// next field to be added into free of charge" -- true of a mirror carrying five bytes the live
-/// entry had already lost, and false of the live field set. Nineteen is not a multiple of eight,
-/// so an eight-aligned struct holding it has five bytes standing empty BY CONSTRUCTION. At forty
-/// the entry has five bytes of slack as well; what changes at twenty-four is only that a field up
-/// to five bytes wide is free in both, and that has to be re-priced rather than inherited from the
-/// decomposition that was written when the entry was believed to be exactly full.
-#[allow(dead_code)]
-struct StepOneTheIdentityLeaves {
-    model_id: StoredModelKind,
-    address: ElementEntry,
-    dirty: bool,
-    deleted: bool,
-}
-
-const STEP_ONE_FIELD_SUM: usize = LIVE_FIELD_SUM - size_of::<Arc<str>>();
-const _: () = assert!(STEP_ONE_FIELD_SUM == 19);
-const _: () = assert!(size_of::<StepOneTheIdentityLeaves>() == 24);
-const _: () = assert!(align_of::<StepOneTheIdentityLeaves>() == 8);
-const _: () = assert!(size_of::<StepOneTheIdentityLeaves>() - STEP_ONE_FIELD_SUM == 5);
+// STEP ONE HAS LANDED AND ITS MIRROR IS FOLDED INTO STEP ZERO.
+//
+// `StepOneTheIdentityLeaves` declared `model_id`, `address`, `dirty`, `deleted` -- which is now
+// field for field what `BlockIndex` holds, and therefore field for field what the step-zero mirror
+// above declares. Two declarations of one shape are two things to keep in step, and this file has
+// already recorded what that costs: its step-zero control passed for a whole commit while
+// describing a field set the live entry had lost.
+//
+// WHAT IT MEASURED IS NOT LOST, IT IS PINNED ON THE LIVE TYPE. Nineteen bytes of field in
+// twenty-four with five of slack is asserted thirty lines above as step zero, and `state.rs`
+// asserts the same reconstruction on `BlockIndex` itself.
+//
+// AND THE CLAIM IT WAS WRITTEN TO CORRECT IS WORTH KEEPING. It once read "twenty-four bytes of
+// field in twenty-four ... so it lands exactly and leaves no slack for the next field to be added
+// into free of charge" -- true of a mirror carrying five bytes the live entry had already lost,
+// and false of the live field set. Nineteen is not a multiple of eight, so an eight-aligned struct
+// holding it has five bytes standing empty BY CONSTRUCTION. The entry had five bytes of slack at
+// forty too; what twenty-four changes is the width, not the room in it, and every field decision
+// taken here while the entry was believed to be exactly full still has to be re-priced.
+const STEP_ONE_FIELD_SUM: usize = LIVE_FIELD_SUM;
 
 /// STEP TWO: THE SAME FIELD SET, PACKED -- AND IT BUYS FIVE BYTES, NOT NOTHING.
 ///
@@ -249,7 +262,7 @@ struct StepTwoAUnderADeclaredOrderUnpacked {
 const _: () = assert!(size_of::<StepTwoAUnderADeclaredOrderUnpacked>() == 32);
 const _: () = assert!(align_of::<StepTwoAUnderADeclaredOrderUnpacked>() == 8);
 const _: () =
-    assert!(size_of::<StepTwoAUnderADeclaredOrderUnpacked>() - size_of::<StepOneTheIdentityLeaves>() == 8);
+    assert!(size_of::<StepTwoAUnderADeclaredOrderUnpacked>() - size_of::<StepZeroTheLiveEntry>() == 8);
 
 /// STEP THREE: THE TWO FLAGS BECOME ONE FLAG GROUP -- AND IT BUYS NOTHING.
 ///
@@ -293,7 +306,7 @@ struct StepFourTheAddressBecomesOneWord {
     deleted: bool,
 }
 
-const STEP_FOUR_FIELD_SUM: usize = STEP_ONE_FIELD_SUM - size_of::<ElementEntry>() + size_of::<u64>();
+const STEP_FOUR_FIELD_SUM: usize = LIVE_FIELD_SUM - size_of::<ElementEntry>() + size_of::<u64>();
 const _: () = assert!(STEP_FOUR_FIELD_SUM == 11);
 const _: () = assert!(size_of::<StepFourTheAddressBecomesOneWord>() == 16);
 const _: () = assert!(align_of::<StepFourTheAddressBecomesOneWord>() == 8);
@@ -323,8 +336,13 @@ const _: () =
 /// page, so the handle travels with every entry and the element is what a page actually costs
 /// resident. Stated here beside the entry widths so that a width step is never reported as a
 /// footprint step without the element it lands in.
-const _: () = assert!(size_of::<(u64, BlockIndex)>() == 48);
-const _: () = assert!(size_of::<(u64, StepOneTheIdentityLeaves)>() == 32);
+const _: () = assert!(size_of::<(u64, BlockIndex)>() == 32);
+// AND THE SECOND LINE OF THIS PAIR WAS THE STEP-ONE ELEMENT, WHICH IS NOW THE FIRST. It read
+// `size_of::<(u64, StepOneTheIdentityLeaves)>() == 32` -- the element the list WOULD hold once the
+// identity left. It left: the live element is thirty-two, asserted above, and a second assertion
+// of the same number over a mirror of the same shape would be the duplicate this file has twice
+// folded away. The 48 it was measured against is what the element cost before this leg.
+const _: () = assert!(size_of::<Arc<str>>() == 16);
 
 /// THE PART OF THE IDENTITY THAT DOES NOT LEAVE THE PROCESS WHEN IT LEAVES THE ENTRY.
 ///
@@ -338,37 +356,31 @@ const _: () = assert!(size_of::<Arc<str>>() == 16);
 fn the_width_of_the_entry_at_each_step_toward_the_target_shape() {
     let rows: Vec<(&str, usize, usize, usize)> = vec![
         (
-            "step 0  the live entry, five fields",
+            "step 0  the live entry, four fields -- STEP ONE, LANDED",
             LIVE_FIELD_SUM,
             size_of::<StepZeroTheLiveEntry>(),
             align_of::<StepZeroTheLiveEntry>(),
         ),
         (
-            "step 1  the identity leaves",
-            STEP_ONE_FIELD_SUM,
-            size_of::<StepOneTheIdentityLeaves>(),
-            align_of::<StepOneTheIdentityLeaves>(),
-        ),
-        (
-            "step 2  step 1, packed",
+            "step 2  step 0, packed",
             STEP_ONE_FIELD_SUM,
             size_of::<StepTwoTheSameFieldSetPacked>(),
             align_of::<StepTwoTheSameFieldSetPacked>(),
         ),
         (
-            "step 2a step 1, declared order, unpacked",
+            "step 2a step 0, declared order, unpacked",
             STEP_ONE_FIELD_SUM,
             size_of::<StepTwoAUnderADeclaredOrderUnpacked>(),
             align_of::<StepTwoAUnderADeclaredOrderUnpacked>(),
         ),
         (
-            "step 3  step 1, flags folded",
+            "step 3  step 0, flags folded",
             STEP_THREE_FIELD_SUM,
             size_of::<StepThreeTheFlagsFoldIntoOneByte>(),
             align_of::<StepThreeTheFlagsFoldIntoOneByte>(),
         ),
         (
-            "step 4  step 1, address one word",
+            "step 4  step 0, address one word",
             STEP_FOUR_FIELD_SUM,
             size_of::<StepFourTheAddressBecomesOneWord>(),
             align_of::<StepFourTheAddressBecomesOneWord>(),
@@ -406,7 +418,7 @@ fn the_width_of_the_entry_at_each_step_toward_the_target_shape() {
     // Read off the live entry's own field TYPES, so a mirror that stops describing that field set
     // fails even when it rounds to the same width.
     assert_eq!(
-        35, LIVE_FIELD_SUM,
+        19, LIVE_FIELD_SUM,
         "the live entry's field sum moved; the rows above are decompositions of the old one"
     );
     assert_eq!(
@@ -415,9 +427,10 @@ fn the_width_of_the_entry_at_each_step_toward_the_target_shape() {
         "the live entry's slack moved, so what the next field added here costs has moved with it"
     );
 
-    // EVERY STEP IS COMPOSED ON STEP ONE, so each row is the cost of that step ON TOP of the
-    // identity leaving, never its cost against the live entry alone.
-    assert_eq!(size_of::<StepOneTheIdentityLeaves>(), 24);
+    // EVERY STEP IS COMPOSED ON STEP ZERO, WHICH IS WHAT STEP ONE BECAME. Each row below is the
+    // cost of that step on top of the identity having left -- and the identity has left, so that
+    // base is the live entry rather than a mirror of one.
+    assert_eq!(size_of::<StepZeroTheLiveEntry>(), 24);
     assert_eq!(size_of::<StepTwoTheSameFieldSetPacked>(), 19);
     assert_eq!(size_of::<StepTwoAUnderADeclaredOrderUnpacked>(), 32);
     assert_eq!(size_of::<StepThreeTheFlagsFoldIntoOneByte>(), 24);

@@ -288,7 +288,6 @@ fn a_page_entry_carries_its_object_key_as_a_member_on_the_wire() {
     let mut live = BlockSlabLiveIndex::default();
     bucket.insert_page(&"an-object", 
         BlockIndex {
-            object_key: Arc::from("an-object"),
             model_id: crate::engine::storage_bucket_internals::StoredModelKind::from_stored_name(
                 "string",
             )
@@ -405,9 +404,12 @@ fn a_decode_files_every_page_into_the_object_lookup() {
     const LIVE_OBJECT: &str = "live-object";
     const DEAD_OBJECT: &str = "dead-object";
 
-    fn page(object: &str, slab: u64, offset: u64, deleted: bool) -> BlockIndex {
+    // THE `object` PARAMETER IS GONE, NOT RENAMED `_object`. The entry has no field for it, and a
+    // caller that still tries to name an object through this builder should stop compiling rather
+    // than be ignored -- the treatment `entry_count_versus_page_count::page_at` took for its own
+    // dead `component` argument. The object each page belongs to is named where it is filed.
+    fn page(slab: u64, offset: u64, deleted: bool) -> BlockIndex {
         BlockIndex {
-            object_key: Arc::from(object),
             model_id: stored_model_kind(KIND),
             address: ElementEntry::from_parts(slab, offset, 16, Some(offset / 16 + 1), None),
             dirty: false,
@@ -424,9 +426,9 @@ fn a_decode_files_every_page_into_the_object_lookup() {
         index.bucket_map.insert(routing_bucket, node);
     }
     let placed: Vec<(u32, Arc<str>, BlockIndex)> = vec![
-        (3, Arc::from(LIVE_OBJECT), page(LIVE_OBJECT, 1, 0, false)),
-        (3, Arc::from(LIVE_OBJECT), page(LIVE_OBJECT, 1, 16, false)),
-        (11, Arc::from(DEAD_OBJECT), page(DEAD_OBJECT, 2, 0, true)),
+        (3, Arc::from(LIVE_OBJECT), page(1, 0, false)),
+        (3, Arc::from(LIVE_OBJECT), page(1, 16, false)),
+        (11, Arc::from(DEAD_OBJECT), page(2, 0, true)),
     ];
     {
         let CoreIndex {
@@ -579,14 +581,12 @@ fn the_identity_beside_a_deleted_page_is_its_tombstone_row_and_it_composes_the_s
     index.bucket_map.insert(7, node);
 
     let live = BlockIndex {
-        object_key: Arc::from(OBJECT),
         model_id: stored_model_kind(KIND),
         address: ElementEntry::from_parts(SLAB, LIVE_OFFSET, LENGTH, Some(1), None),
         dirty: false,
         deleted: false,
     };
     let dead = BlockIndex {
-        object_key: Arc::from(OBJECT),
         model_id: stored_model_kind(KIND),
         address: ElementEntry::from_parts(SLAB, DEAD_OFFSET, LENGTH, Some(2), None),
         dirty: true,

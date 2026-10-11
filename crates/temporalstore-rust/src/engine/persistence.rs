@@ -345,11 +345,12 @@ impl TemporalEngine {
         // line the lookup already describes the index and the whole-shard rebuild that stood here
         // had nothing left to discover.
         //
-        // The claim is checked instead of taken: see
-        // [`CoreIndex::debug_assert_lookup_matches_the_pages`] for why it is answerable without
-        // doing the pass, and why it is a scaffold with a lifetime.
-        #[cfg(debug_assertions)]
-        shard.bucket_index.debug_assert_lookup_matches_the_pages();
+        // THE DEBUG CROSS-CHECK THAT STOOD HERE IS SPENT WITH ITS SCAFFOLD. It compared the
+        // object lookup against the pages' OWN copies of the identity, and the pages have none;
+        // `state.rs` carries why a version of it over one source would compare that source with
+        // itself. What licensed removing the whole-shard rebuild from this path is that every
+        // producer files as it places and un-files as it drops, and that obligation sits at the
+        // producers rather than in a pass after them.
         // No base and nothing to fold -> genuinely nothing persisted yet.
         if !base_present
             && shard.bucket_index.bucket_map.is_empty()
@@ -499,8 +500,9 @@ impl TemporalEngine {
             // order, so there is no window between the fold and this pass in which a position
             // names a page that has gone or a page has no position. A whole-shard rebuild stood
             // here to close that window and is no longer closing anything.
-            #[cfg(debug_assertions)]
-            shard.bucket_index.debug_assert_lookup_matches_the_pages();
+            //
+            // AND THE DEBUG CROSS-CHECK IS SPENT TOO, for the reason `state.rs` records: it read
+            // the pages' own copies of the identity, which are gone.
             // THE INVERSION IS HOISTED, AND THE TWO BORROWS ARE SPLIT BY NAMING THE FIELDS. The derive
             // reads the object lookup while this loop holds the bucket map mutably, and both are fields of
             // one index -- so the split has to be written where the places are named, rather than inside a

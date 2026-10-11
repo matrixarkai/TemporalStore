@@ -197,7 +197,6 @@ fn entry_named(object_key: &str, component: Option<&str>) -> (Arc<str>, BlockInd
     (
         Arc::from(object_key),
         BlockIndex {
-            object_key: Arc::from(object_key),
             model_id: FIXTURE_KIND,
             address: ElementEntry::from_parts(9, 4_096, 96, Some(7), Some(object_id)),
             dirty: false,
@@ -653,7 +652,10 @@ fn the_entry_is_unchanged_and_the_nodes_duplicated_slot_id_is_worth_nothing() {
     }
     let (_, sample) = entry_named("container", Some("body"));
     let widths = [
-        ("object_key", field_width(&sample.object_key), offset_of!(BlockIndex, object_key)),
+        // THE `object_key` ROW IS GONE WITH THE FIELD, and it could not have been written any
+        // other way: `field_width` infers `T` from the field it is HANDED, so a row for a field
+        // that does not exist does not compile. That is the property this list was built for and
+        // this is the second field it has caught leaving.
         ("model_id", field_width(&sample.model_id), offset_of!(BlockIndex, model_id)),
         // The `component` row is gone with the field. `field_width` infers from the field it is
         // handed, so a row for a field that does not exist cannot be written at all -- which is
@@ -704,23 +706,27 @@ fn the_entry_is_unchanged_and_the_nodes_duplicated_slot_id_is_worth_nothing() {
         align_of::<BlockIndex>()
     );
 
-    // --- AND THE KEY IS STILL A FAT POINTER, which is what a handle would be replacing. ---
-    assert_eq!(
-        size_of::<Arc<str>>(),
-        field_width(&sample.object_key),
-        "the object key is {} B, not the {} B of a shared-pointer-to-text. Every figure in the \
-         handle measurement is about swapping that pointer for a four-byte index",
-        field_width(&sample.object_key),
-        size_of::<Arc<str>>()
-    );
-    let without_the_key = field_sum - field_width(&sample.object_key);
-    println!(
-        "  dropping object_key entirely -> {without_the_key} B of field, rounds to {} B (the entry \
-         would lose {} B)",
-        without_the_key.div_ceil(align_of::<BlockIndex>()) * align_of::<BlockIndex>(),
-        size_of::<BlockIndex>()
-            - without_the_key.div_ceil(align_of::<BlockIndex>()) * align_of::<BlockIndex>()
-    );
+    // --- THE KEY IS NOT A FIELD AT ALL, AND THESE TWO WERE THE COUNTERFACTUAL THAT SAID WHAT
+    //     THAT WOULD BE WORTH. ---
+    //
+    // The assertion here read "the object key is {} B, not the {} B of a shared-pointer-to-text",
+    // and the line under it printed "dropping object_key entirely -> N B of field, rounds to ...
+    // (the entry would lose M B)". Both are spent: the entry has dropped it, the field sum is
+    // nineteen, the width is twenty-four, and M was sixteen.
+    //
+    // THEY ARE NOT RE-POINTED AT `Arc<str>` ON ITS OWN. `field_width` took its type from the
+    // FIELD, which is what made the figure a measurement of this entry rather than a fact about
+    // `Arc`; with no field to hand it, `size_of::<Arc<str>>() == 16` is a true statement about a
+    // standard library type and says nothing about `BlockIndex`. It is pinned where it is a claim
+    // about something -- `entry_width_at_each_step` holds it as the part of the identity that did
+    // not leave the process when it left the entry, and
+    // `page_entry_name_pointer::an_arc_str_allocation_is_two_header_words_and_the_characters`
+    // prices the allocation the lookup now holds one of per object.
+    //
+    // WHAT THE COUNTERFACTUAL SAID, recorded because the next reader will want the number and
+    // should not have to re-derive it: 35 bytes of field minus the key's 16 is 19, which rounds
+    // to 24 against the 40 it was, so the entry lost a whole two words. The pins in `state.rs`
+    // assert that outcome directly now.
 
     // --- THE NODE, RECONSTRUCTED, so the tail arithmetic below is about this structure. ---
     //

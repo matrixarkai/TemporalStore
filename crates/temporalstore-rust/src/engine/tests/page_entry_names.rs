@@ -686,7 +686,6 @@ fn capture_the_stored_spelling_of_a_page_entry() {
         flags: (bool, bool, bool),
     ) -> BlockIndex {
         BlockIndex {
-            object_key: Arc::from(key),
             model_id: crate::engine::storage_bucket_internals::stored_model_kind(model),
             address: ElementEntry::from_parts(
                 slab,
@@ -921,7 +920,6 @@ pub(super) const PAGE_FIXTURE_OBJECT_KEY: &str = "k";
 
 pub(super) fn page_fixture(length: u64, flags: (bool, bool)) -> BlockIndex {
     BlockIndex {
-        object_key: Arc::from("k"),
         model_id: crate::engine::storage_bucket_internals::StoredModelKind::String,
         address: crate::block_store::ElementEntry::from_parts(
             1,

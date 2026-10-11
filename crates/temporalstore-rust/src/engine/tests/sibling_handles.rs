@@ -60,7 +60,6 @@ fn entry_at(object_key: &str, address: ElementEntry) -> (std::sync::Arc<str>, Bl
     (
         std::sync::Arc::from(object_key),
         BlockIndex {
-            object_key: std::sync::Arc::from(object_key),
             model_id: StoredModelKind::Hash,
             address,
             dirty: false,

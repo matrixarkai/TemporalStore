@@ -907,12 +907,6 @@ pub(super) fn storage_topology_snapshot_with_samples_from_entries(
                 .then(|| identities.identity_of(runtime_bucket, *handle, page))
                 .flatten()
             {
-                // THE TIE BACK TO THE ENTRY'S OWN COPY. It goes with the field.
-                debug_assert_eq!(
-                    &*page.object_key,
-                    &**beside.object_key,
-                    "the identity beside this page names a different object from the one on it"
-                );
                 bucket.delete_markers
                     .insert(format!("{}:{}", page.model_id, beside.object_key));
             }
@@ -1480,7 +1474,6 @@ pub(super) fn rebuild_bucket_block_ownership(
         let handle = bucket.insert_page(
             &object_key,
             BlockIndex {
-                object_key: entry.object_key,
                 model_id: entry.kind,
                 address: entry.address,
                 dirty: entry.dirty,
@@ -1599,10 +1592,10 @@ pub(super) fn rebuild_bucket_block_ownership(
     // structure that is the identity BESIDE a page, which is circular and is why it has to go
     // rather than be rewritten to take the identities as a parameter.
     //
-    // In a release build this is one fewer O(blocks) pass per compaction round. In a debug build
-    // the agreement is verified on every run, which is what earns the removal.
-    #[cfg(debug_assertions)]
-    shard.bucket_index.debug_assert_lookup_matches_the_pages();
+    // In a release build this is one fewer O(blocks) pass per compaction round, and the debug
+    // verification that earned the removal has now been spent: it compared the lookup against the
+    // pages' own copies of the identity and the pages have none. `state.rs` carries why a version
+    // of it over one source would compare that source with itself.
     // THE INVERSION IS HOISTED, AND THE TWO BORROWS ARE SPLIT BY NAMING THE FIELDS. The derive
     // reads the object lookup while this loop holds the bucket map mutably, and both are fields of
     // one index -- so the split has to be written where the places are named, rather than inside a
@@ -1917,12 +1910,6 @@ pub(super) fn collect_bucket_index_live_block_entries(shard: &ShardState) -> Vec
                 );
                 continue;
             };
-            // THE TIE BACK TO THE ENTRY'S OWN COPY. It goes with the field.
-            debug_assert_eq!(
-                &*page.object_key,
-                &**beside,
-                "the identity beside this page names a different object from the one on it"
-            );
             from_index += 1;
             entries.push(LiveBlockEntry {
                 object_key: Arc::clone(beside),
@@ -2433,12 +2420,6 @@ pub(super) fn release_bucket_blocks(
                 // bucket's lookup entries cannot be shown to drop only its own.
                 return Some(BucketReleaseRefusal::LookupNotLocal);
             };
-            // THE TIE BACK TO THE ENTRY'S OWN COPY. It goes with the field.
-            debug_assert_eq!(
-                &*block.object_key,
-                &**beside,
-                "the identity beside this page names a different object from the one on it"
-            );
             if block.dirty {
                 Some(BucketReleaseRefusal::BlockDirty)
             } else if block.deleted {
@@ -2589,7 +2570,6 @@ pub(super) fn reload_released_bucket(
         pages.push((
             Arc::clone(&entry.object_key),
             BlockIndex {
-                object_key: entry.object_key,
                 model_id: entry.kind,
                 address,
                 // The model maps carry no per-block dirty/deleted bit, which is exactly why
@@ -4531,7 +4511,6 @@ pub(super) fn insert_container_tombstone_entry(
         return;
     };
     let page = BlockIndex {
-        object_key: std::sync::Arc::from(object_key),
         model_id: stored_model_kind(kind),
         // NO COMPONENT SLOT AT ALL NOW, where this used to spell `component: None` under a note
         // about the entry carrying no name on any path. The entry has no field for a name, so the
@@ -4956,7 +4935,6 @@ fn upsert_bucket_index_block_inner(
     // it once the page has none to read.
     let filed_object_key = Arc::clone(&entry.object_key);
     let block_index = BlockIndex {
-        object_key: entry.object_key,
         model_id: entry.kind,
         address,
         dirty: entry.dirty,
@@ -5137,15 +5115,7 @@ pub(super) fn sync_bucket_index_object_blocks_with_mode(
             // `object_key` IS THIS FUNCTION'S ARGUMENT, so the comparison is against the same
             // characters it always was -- read from beside the page rather than off it.
             let matches_object = page.model_id.as_str() == kind
-                && names.get(handle).is_some_and(|beside| {
-                    // THE TIE BACK TO THE ENTRY'S OWN COPY. It goes with the field.
-                    debug_assert_eq!(
-                        &*page.object_key,
-                        &**beside,
-                        "the identity beside this page names a different object from the one on it"
-                    );
-                    &**beside == object_key
-                });
+                && names.get(handle).is_some_and(|beside| &**beside == object_key);
             if matches_object {
                 // THE SET THIS FILLS COLLAPSES TO AT MOST ONE ELEMENT, AND THAT IS NOT NEW.
                 //
@@ -5245,7 +5215,6 @@ pub(super) fn sync_bucket_index_object_blocks_with_mode(
         // be given it once the page has none.
         let filed_object_key = Arc::clone(&entry.object_key);
         let page = BlockIndex {
-            object_key: entry.object_key,
             model_id: entry.kind,
             address: {
                 let mut address = entry.address;
@@ -5329,10 +5298,8 @@ pub(super) fn sync_bucket_index_object_blocks_with_mode(
     // Scoped to the case the rebuild existed for -- a lookup that could not be trusted to target
     // -- so an established index pays nothing for it. It compares the lookup against every live
     // page in the shard, which is the postcondition the rebuild used to deliver by construction.
-    #[cfg(debug_assertions)]
-    if !lookup_can_target {
-        shard.bucket_index.debug_assert_lookup_matches_the_pages();
-    }
+    // The debug verification that stood here is spent with its scaffold -- see `state.rs`.
+    let _ = lookup_can_target;
 }
 
 /// The label a bucket wears, from how many objects it holds and how many blocks are resident.
@@ -5527,22 +5494,15 @@ pub(super) fn update_bucket_layout(
         //
         // This is the scaffold that makes the whole suite a check on the MOVE rather than on the
         // compile: every call through here compares the set derived from beside the pages against
-        // the set derived from the pages themselves. It goes when the field does -- there will be
-        // nothing left to compare -- and until then it is the only thing that can catch a caller
-        // whose hoisted inversion does not cover the bucket it is handed.
-        #[cfg(debug_assertions)]
-        debug_assert_eq!(
-            live_object_ids,
-            bucket
-                .block_index
-                .values()
-                .filter(|page| !page.deleted)
-                .map(|page| page.object_id(shard_id, &page.object_key))
-                .collect::<BTreeSet<u64>>(),
-            "bucket {routing_bucket}: the identity held BESIDE its live pages names a different \
-             set of objects from the identity held ON them, so moving the identity off the entry \
-             would move which objects this bucket says it holds"
-        );
+        // the set derived from the pages themselves. IT HAS GONE WITH THE FIELD, exactly as the
+        // sentence above it said it would: there is nothing left to compare, because the pages
+        // hold no identity of their own to derive a second set from.
+        //
+        // WHAT IT CAUGHT, so the next reader knows what is no longer caught: a caller whose
+        // hoisted inversion does not cover the bucket it is handed. That now shows up as a page
+        // the inversion cannot name, which `page_identities_in` omits -- so the failure mode moved
+        // from a set disagreement to a short set, and the guard that would see it is a count on
+        // the caller's side rather than an equality here.
         reconcile_object_index_with_live_pages(bucket, &live_object_ids);
     } else {
         debug_assert!(
@@ -6347,7 +6307,6 @@ pub(super) fn rebuild_bucket_first_index(
         let handle = bucket.insert_page(
             &object_key,
             BlockIndex {
-                object_key: entry.object_key,
                 model_id: entry.kind,
                 address: entry.address,
                 dirty: block_dirty,
@@ -6469,11 +6428,10 @@ pub(super) fn rebuild_bucket_first_index(
     for (routing_bucket, handle, object_key, page) in &filed_pages {
         bucket_index.insert_object_block_lookup(*routing_bucket, *handle, object_key, page);
     }
-    // The same removal as in `rebuild_bucket_block_ownership`, and the same verification in its
-    // place. See [`CoreIndex::debug_assert_lookup_matches_the_pages`] for why the claim is
-    // checkable without doing the pass, and why the check is a scaffold with a lifetime.
-    #[cfg(debug_assertions)]
-    bucket_index.debug_assert_lookup_matches_the_pages();
+    // The same removal as in `rebuild_bucket_block_ownership`, and the verification that stood in
+    // its place is spent with its scaffold: it read the pages' own copies of the identity, which
+    // the entry no longer holds. `state.rs` carries the reasoning and names what the obligation
+    // moved to.
     shard.bucket_index = bucket_index;
     // The local index charged every block it filed, and it arrived empty, so the tally travelled
     // here with it and is already right. Same reason as `rebuild_bucket_block_ownership`: a walk to
@@ -7686,7 +7644,6 @@ mod release_refusal_guards {
 
     fn block(key: &str, model_id: &str, component: Option<&str>, address: ElementEntry) -> BlockIndex {
         BlockIndex {
-            object_key: Arc::from(key),
             model_id: super::stored_model_kind(model_id),
             address,
             dirty: false,

@@ -1649,11 +1649,27 @@ fn the_bucket_index_holds_one_page_out_of_line_and_the_series_maps_hold_none() {
          Any excess means an arm has stopped riding a pointer niche and the node is paying for a \
          tag again"
     );
+    // THE PREDICATE IS AGAINST THE PAIR, NOT THE PAGE, BECAUSE THE PAGE DREW LEVEL WITH THE
+    // HEADER. It read `split < page` -- the map cannot be wide enough to hold a whole entry inline
+    // -- and that stopped discriminating the moment the entry reached twenty-four: a page-list
+    // header is a `Vec` header, which is also twenty-four, so the map and the page it must not be
+    // able to hold are now the SAME WIDTH and a strict `<` is simply false.
+    //
+    // THAT IS A COINCIDENCE OF WIDTHS AND NOT THE INLINE ARM COMING BACK, which is the distinction
+    // worth getting right rather than relaxing the `<` to a `<=`. `<=` would be satisfied by the
+    // real shape AND by a map that had grown to exactly fit a page, which is the mutation this
+    // guard exists to catch -- the one-sided comparison satisfied on the side the change moves.
+    //
+    // WHAT THE INLINE ARM WOULD ACTUALLY COST IS THE PAIR, not the entry alone: the `One` variant
+    // holds a handle AND its entry, so an inline map is at least `(u64, BlockIndex)` wide. That is
+    // the width the control below constructs and measures, and asserting against it restores the
+    // gap the original `<` had -- twenty-four against thirty-two -- without weakening the relation.
+    let pair = std::mem::size_of::<(u64, BlockIndex)>();
     assert!(
-        split < page,
-        "BlockIndexMap must NOT be able to hold a whole {page}-byte BlockIndex inline any more; it \
-         is {split} B. If it has grown to fit one, the inline arm has come back and every node in \
-         the bucket map is paying for it"
+        split < pair,
+        "BlockIndexMap must NOT be able to hold a handle and a whole {page}-byte BlockIndex inline \
+         any more; that pair is {pair} B and the map is {split} B. If it has grown to fit one, the \
+         inline arm has come back and every node in the bucket map is paying for it"
     );
 
     // POSITIVE CONTROL for the predicate above, so a passing assert is not just a narrow enum.
@@ -1671,16 +1687,18 @@ fn the_bucket_index_holds_one_page_out_of_line_and_the_series_maps_hold_none() {
     }
     let inline = std::mem::size_of::<InlineShape>();
     println!("  positive control: the same shape with One held inline is {inline} B");
+    // AGAINST THE PAIR TOO, for the same reason the subject assert is: `inline >= page` was true of
+    // any shape at least as wide as a lone entry, and an inline `One` holds a handle beside it.
     assert!(
-        inline >= page,
-        "the control must HOLD a page inline: an inline One is {inline} B against a {page}-byte \
-         page. If this ever reads as narrow, the predicate above cannot tell an inline page from a \
-         pointer to one and the guard is vacuous"
+        inline >= pair,
+        "the control must HOLD a handle and a page inline: an inline One is {inline} B against a \
+         {pair}-byte pair. If this ever reads as narrow, the predicate above cannot tell an inline \
+         page from a pointer to one and the guard is vacuous"
     );
     assert!(
-        !(inline == list && inline < page),
+        !(inline == list && inline < pair),
         "the control must FAIL the predicate the real shape passes ({inline} B inline, {list} B \
-         list header, {page} B page)"
+         list header, {pair} B pair, {page} B page)"
     );
 
     // (2) All six timestamped series maps are one container. This binding is the guard: it is a
@@ -2597,7 +2615,6 @@ fn two_buckets_holding_one_object_id_are_reported_as_one_object() {
         bucket.block_index.insert(
             &"one-key",
             BlockIndex {
-                object_key: std::sync::Arc::from("one-key"),
                 model_id: crate::engine::storage_bucket_internals::StoredModelKind::String,
                 address: ElementEntry::from_parts(1, offset, 64, Some(0), None),
                 dirty: false,
@@ -3077,10 +3094,18 @@ fn the_priced_shapes_for_an_address_and_its_siblings() {
     const WAS_MAP_VALUE: usize = 16;
     const WAS_STRIDE: usize = 24;
     const WAS_OPTION_VALUE: usize = 24;
-    // 40, not 56: the entry gave up its element name, which is a LATER change than the address
-    // relocation this module prices. This module's own claim -- that the relocation changes neither
-    // the entry nor the map by one byte -- is untouched; what moved is the baseline it says it about.
-    const WAS_ENTRY: usize = 40;
+    // 24, HAVING BEEN 40 AND 56, AND BOTH STEPS WERE LATER CHANGES THAN THE ADDRESS RELOCATION
+    // THIS MODULE PRICES. The entry gave up its element name, and then its OBJECT IDENTITY, which
+    // lives once per object in `CoreIndex::object_block_lookup` instead of once per page; sixteen
+    // bytes each time. This module's own claim -- that the relocation changes neither the entry nor
+    // the map by one byte -- is untouched by either; what moved is the baseline it says it about.
+    //
+    // AND THE REASON THE CLAIM SURVIVES A BASELINE MOVING TWICE IS WORTH STATING, because a
+    // constant edited on every unrelated change starts to look like a number adjusted until it
+    // passed. The claim is about the ADDRESS FIELD: it is sixteen bytes wide before the relocation
+    // and sixteen after, so the entry's width cannot move BECAUSE OF the relocation whatever else
+    // it is carrying. The assert below says exactly that in its message.
+    const WAS_ENTRY: usize = 24;
     const WAS_ENTRY_MAP: usize = 24;
 
     println!("\n=== the address word itself ===");

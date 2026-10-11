@@ -1729,13 +1729,19 @@ fn the_width_an_element_ordinal_would_take_and_the_ceiling_that_implies() {
     // RECONSTRUCTED FROM THE TYPES, so a field whose own width moves elsewhere fails HERE rather
     // than passing beside a stale literal. This was the literal `56`, and the literal is how a
     // stale sum and a stale slack came to agree with each other once before.
-    let field_bytes_now = std::mem::size_of::<crate::index_log::IndexItemKind>()
-        + std::mem::size_of::<u32>()
-        + std::mem::size_of::<std::sync::Arc<str>>()
-        + std::mem::size_of::<crate::engine::storage_bucket_internals::StoredModelKind>()
-        + std::mem::size_of::<crate::block_store::ElementEntry>()
-        + std::mem::size_of::<bool>()
-        + std::mem::size_of::<bool>();
+    // AND THREE TERMS CAME OUT OF IT THAT HAD NO FIELD BEHIND THEM, WHICH IS WHY THE ZERO-SLACK
+    // CLAIM BELOW WAS PASSING. `kind: IndexItemKind` and `routing_bucket: u32` left `BlockIndex`
+    // in `65c7fc562` and this sum kept adding their five bytes; `object_key: Arc<str>` left on
+    // this leg. With the two retired terms in, the sum came to exactly forty against a forty-byte
+    // entry -- so `field_bytes_now == entry_now` held, and what it was asserting was that a stale
+    // over-count happened to equal the width. The comment above says "the literal is how a stale
+    // sum and a stale slack came to agree with each other once before"; this is the second time,
+    // in a sum built from types rather than a literal, because the TERM LIST was what had drifted.
+    let field_bytes_now =
+        std::mem::size_of::<crate::engine::storage_bucket_internals::StoredModelKind>()
+            + std::mem::size_of::<crate::block_store::ElementEntry>()
+            + std::mem::size_of::<bool>()
+            + std::mem::size_of::<bool>();
     // ADDITION, NOT SUBSTITUTION. There is no name left to trade.
     let field_bytes_with_u16 = field_bytes_now + u16_ordinal;
     let field_bytes_with_u32 = field_bytes_now + u32_ordinal;
@@ -1751,18 +1757,25 @@ fn the_width_an_element_ordinal_would_take_and_the_ceiling_that_implies() {
     );
 
     assert_eq!(
-        entry_now, 40,
-        "the page entry is {entry_now} bytes, not the 40 this arithmetic is written against; \
+        entry_now, 24,
+        "the page entry is {entry_now} bytes, not the 24 this arithmetic is written against; \
          re-derive the field sum before trusting the two numbers above"
     );
-    // ZERO SLACK, as an equality rather than a difference. It read `field_bytes_now <= entry_now`
-    // once, and a one-sided comparison is satisfied on exactly the side a change moves: a stale
-    // over-count fails it and a stale under-count passes, and a matched pair of stale numbers
-    // passes either way. Equality states the zero slack directly.
+    // FIVE BYTES OF SLACK, NOT ZERO, AND THIS IS THE ASSERTION THAT WAS WRONG. It read
+    // `field_bytes_now == entry_now` -- zero slack, stated as an equality precisely because a
+    // one-sided comparison is satisfied on whichever side a change moves. The equality was the
+    // right SHAPE and the term list feeding it was not: an over-count of exactly five met a width
+    // of forty, which is a matched pair of stale numbers agreeing, the failure its own comment
+    // names.
+    //
+    // THE SLACK IS ASSERTED AS THE DIFFERENCE, which is the form that names the quantity the
+    // conclusion below turns on rather than only that two sums met.
     assert_eq!(
-        field_bytes_now, entry_now,
-        "the reconstructed field sum is {field_bytes_now} B against a {entry_now} B entry. This \
-         type has no slack left, so those must be equal"
+        5,
+        entry_now - field_bytes_now,
+        "the reconstructed field sum is {field_bytes_now} B inside a {entry_now} B entry, so the \
+         slack is {} and not the five every figure below is priced against",
+        entry_now - field_bytes_now
     );
 
     // THE INVERSION, ASSERTED IN THE DIRECTION IT NOW RUNS. This read
@@ -1775,15 +1788,37 @@ fn the_width_an_element_ordinal_would_take_and_the_ceiling_that_implies() {
          {field_bytes_now}. With no element name left on the entry there is nothing for an ordinal \
          to be traded against, so it can only add"
     );
-    // AND IT COSTS A WHOLE WORD, WHICH IS THE ANSWER THAT MATTERS. "Costs something" and "costs
-    // eight bytes" are different numbers, and both ordinal widths land on the same one: 40 is a
-    // multiple of eight, so the first field added here rounds the type up by a full word.
+    // AND IT COSTS NOTHING IN WIDTH, WHICH IS THE OPPOSITE OF WHAT THIS ARM CONCLUDED.
+    //
+    // It asserted `(48, 48)` under "both ordinal widths land on the same one: 40 is a multiple of
+    // eight, so the first field added here rounds the type up by a full word". That reasoning was
+    // sound ON A FORTY-BYTE ENTRY WITH NO SLACK, and the entry has neither: nineteen bytes of
+    // field in twenty-four leaves FIVE standing empty, and both candidate ordinals fit inside
+    // them. Two bytes or four, the entry stays twenty-four.
+    //
+    // SO THIS MODULE'S THIRD REFUSAL IS WITHDRAWN, AND SAYING SO IS THE POINT OF CORRECTING IT
+    // RATHER THAN THE NUMBER. The width objection to a TWO-BYTE element ordinal is gone: it is
+    // free. A four-byte one still costs a word, which the divergence below measures.
+    // What still refuses the route is what this module's first two refusals always were, and
+    // neither mentions width: the ordinal DOES NOT EXIST for `zset`, `set`, `list` or `hash`, and
+    // the durable model maps are the sole source for an element's identity. A reader who comes
+    // here for the width argument should find it withdrawn rather than quietly re-numbered.
+    //
+    // AND IT RE-PRICES EVERY "THE NEXT FIELD COSTS A WORD" CLAIM IN THE TREE. `state.rs`'s own
+    // prose now says a field up to five bytes wide is free here; this is that statement measured.
+    //
+    // AND THE TWO WIDTHS DIVERGE FOR THE FIRST TIME, WHICH NO EARLIER READING OF THIS ARM COULD
+    // HAVE SHOWN. `Option<u16>` is four bytes and `Option<u32>` is eight -- neither carries a
+    // niche -- so nineteen plus four is twenty-three and fits inside the slack, while nineteen
+    // plus eight is twenty-seven and does not. The u16 is FREE and the u32 costs a whole word.
+    // On the forty-byte entry both cost a word and the choice between them was width-neutral; it
+    // is not any more, and that is a decision this arm had no reason to record until now.
     assert_eq!(
         (width_with_u16, width_with_u32),
-        (48, 48),
+        (24, 32),
         "a u16 ordinal takes the entry to {width_with_u16} B and a u32 to {width_with_u32} B, not \
-         48 and 48 -- the zero-slack claim above says the next field costs a whole word, and these \
-         are what that costs"
+         24 and 32 -- the five bytes of slack above are what the u16 fits inside and the u32 \
+         does not, and if the u16 starts crossing then the slack has gone"
     );
 
     // The ceiling, stated. Sixteen bits is the existing ordinal's width after #1994.
@@ -2439,7 +2474,6 @@ fn the_component_ordering_property_is_consumed_by_the_set_listing() {
     // The literal below names every field of `BlockIndex` with no `..`, so a component field
     // returning to the entry is a COMPILE ERROR here rather than a silently passing grep.
     let _no_component_field_exists = crate::engine::state::BlockIndex {
-        object_key: std::sync::Arc::from("eo-ordering-guard"),
         model_id: crate::engine::storage_bucket_internals::StoredModelKind::Set,
         address: crate::block_store::ElementEntry::from_parts(1, 0, 1, Some(0), Some(0)),
         dirty: false,
@@ -2898,10 +2932,15 @@ fn an_ordinal_loses_the_member_the_fold_delivers_without_a_durable_entry() {
         //
         // AND THE PROPOSAL IT REFUSED IS SUPERSEDED RATHER THAN STILL PENDING. The experiment was
         // pricing a NARROWING -- sixteen bytes of name down to two -- and asking whether it was
-        // safe. The name was not narrowed, it was REMOVED: `state.rs` pins the entry at 40 bytes
-        // against the 56 it was, so all sixteen came back and the question of whether two of them
-        // could be kept safely does not arise.
-        shard.bucket_index.rebuild_object_block_lookup();
+        // safe. The name was not narrowed, it was REMOVED -- and the identity went the same way
+        // one leg later: `state.rs` pins the entry at 24 bytes against the 56 it was, so all
+        // sixteen of the name's bytes and all sixteen of the key's came back, and the question of
+        // whether two of them could be kept safely does not arise.
+        //
+        // AND THE REBUILD THAT STOOD HERE IS GONE WITH THE FUNCTION. The fold above files the
+        // object lookup as it places, so there was nothing for a whole-shard rebuild to add; with
+        // the identity off the entry there is nothing for it to read a key from either.
+        let _ = &shard.bucket_index;
         println!(
             "  [fold] dropped the doomed member from the durable map; the entry names no member \
              at any width"

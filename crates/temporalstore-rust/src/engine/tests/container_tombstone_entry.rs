@@ -1082,9 +1082,12 @@ fn a_re_add_clears_the_tombstone_entry_so_churn_on_one_element_does_not_accumula
                     member: b"decoy".to_vec(),
                 },
             );
-            let mut shards = engine.shards.write().expect("engine lock poisoned");
-            let shard = shards.get_mut(&1).expect("shard is loaded");
-            shard.bucket_index.rebuild_object_block_lookup();
+            // THE REBUILD THAT STOOD HERE IS REDUNDANT AND IS GONE WITH THE FUNCTION. The decoy
+            // write above goes through the write path, which files the object lookup as it places
+            // the page -- so the lookup is established by the time this block ends. The rebuild
+            // was a belt over that brace, and with the identity off the entry a whole-shard
+            // rebuild has nothing to read a key from.
+            let _ = &engine;
         }
         let is_established = {
             let shards = engine.shards.read().expect("engine lock poisoned");

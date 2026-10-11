@@ -334,7 +334,11 @@ fn every_byte_of_a_zset_members_index_shadow_is_accounted_for() {
 
     let index_total = size_of::<BlockIndex>();
     let index_fields: Vec<(&'static str, usize, usize)> = vec![
-        ("object_key", offset_of!(BlockIndex, object_key), size_of::<std::sync::Arc<str>>()),
+        // THE `object_key` ROW IS GONE WITH THE FIELD -- sixteen bytes of fat pointer, the whole
+        // of the 40 -> 24 step. Each of these reconstructions is DERIVED from the field list it
+        // holds rather than totalled as a literal, which is what makes deleting a row safe: a
+        // list that stops matching the type fails at the reconstruction rather than describing a
+        // structure that moved.
         // ONE BYTE since #1974, not a sixteen-byte fat pointer. The compiler did NOT catch this
         // line when the field's type changed -- `size_of` of the wrong type still compiles -- so
         // the reconstruction assertion below is what caught it, which is the reason it exists.

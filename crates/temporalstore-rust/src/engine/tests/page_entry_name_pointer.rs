@@ -379,7 +379,6 @@ fn an_entry_names_its_object_from_its_own_terms() {
 
     let entry_key: Arc<str> = Arc::from("named-key");
     let entry = BlockIndex {
-        object_key: Arc::from("named-key"),
         model_id: stored_model_kind("string"),
         address: ElementEntry::from_parts(1, 2, 3, Some(4), None),
         dirty: false,

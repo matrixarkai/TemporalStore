@@ -1058,7 +1058,10 @@ fn every_byte_of_the_entry_is_accounted_for_by_the_fields_it_holds() {
 
     let address = size_of::<crate::block_store::ElementEntry>();
     let model = size_of::<StoredModelKind>();
-    let object_key = size_of::<Arc<str>>();
+    // THE WIDTH THE KEY USED TO COST, kept as a counterfactual beside `component`'s for the
+    // same reason: the verdicts below are stated against what each of the three names WOULD be
+    // worth, and that arithmetic needs the term even though no field carries it.
+    let object_key_when_it_was_a_field = size_of::<Arc<str>>();
     // `component` IS NO LONGER A FIELD OF THE ENTRY. The local is kept as the WIDTH THE NAME USED
     // TO COST, because the verdicts below are stated against that arithmetic -- what each of the
     // three names would be worth -- and it is now a counterfactual rather than a measurement.
@@ -1077,18 +1080,17 @@ fn every_byte_of_the_entry_is_accounted_for_by_the_fields_it_holds() {
     let flags = size_of::<bool>() + size_of::<bool>();
 
     println!("\n=== BlockIndex, field by field ===");
-    println!("  offsets: address@{} object_key@{} model_id@{} dirty@{} deleted@{}",
+    println!("  offsets: address@{} model_id@{} dirty@{} deleted@{}",
         offset_of!(BlockIndex, address),
-        offset_of!(BlockIndex, object_key),
         offset_of!(BlockIndex, model_id),
         offset_of!(BlockIndex, dirty),
         offset_of!(BlockIndex, deleted),
     );
     println!(
-        "  address {address} + object_key {object_key} + model_id {model} \
-         + flags {flags} = {} bytes of field in {} B \
-         (a name on the entry would have added {component_when_it_was_a_field} more)",
-        address + object_key + model + flags,
+        "  address {address} + model_id {model} + flags {flags} = {} bytes of field in {} B \
+         (the key would have added {object_key_when_it_was_a_field} more and a name \
+          {component_when_it_was_a_field} on top of that)",
+        address + model + flags,
         size_of::<BlockIndex>()
     );
 
@@ -1098,10 +1100,11 @@ fn every_byte_of_the_entry_is_accounted_for_by_the_fields_it_holds() {
     // THE RECONSTRUCTION. The 8-aligned fields form the group; the model byte and the three
     // flag bytes are the tail, and the tail is rounded once to the alignment.
     //
-    // TWO 8-ALIGNED FIELDS NOW, NOT THREE: `component` was the third and it is gone, which is the
-    // 56 -> 40 step. The reconstruction is what proves the arithmetic rather than the comment --
-    // if the field set and this sum part, it fails here.
-    let eight_aligned = address + object_key;
+    // ONE 8-ALIGNED FIELD NOW. `component` was one of three and went at 56 -> 40; `object_key`
+    // was the second and goes at 40 -> 24; the address is what is left. The reconstruction is what
+    // proves the arithmetic rather than the comment -- if the field set and this sum part, it
+    // fails here.
+    let eight_aligned = address;
     let tail = model + flags;
     let round_up = |value: usize, to: usize| (value + to - 1) / to * to;
     assert_eq!(
@@ -1118,12 +1121,12 @@ fn every_byte_of_the_entry_is_accounted_for_by_the_fields_it_holds() {
     // NOTHING BUT RUNNING IT COULD HAVE SAID SO. That sentence was already here for the 72 -> 64
     // step and it earned itself again: a scan for `const _: () = assert!(size_of...)` does not see
     // an `assert_eq!` in a test body, so this pin compiled clean and failed at run time.
-    // FORTY NOW, AND THE SENTENCE ABOVE EARNED ITSELF A THIRD TIME. It was written for the
-    // 72 -> 64 step, repeated for 64 -> 56, and this is 56 -> 40: the RECONSTRUCTION above needed
-    // no change, which is the point of reconstructing rather than totalling, and this literal did.
-    // `cargo check` cannot see an `assert_eq!` in a test body, so the pin compiled clean and only
-    // running it said so.
-    assert_eq!(40, size_of::<BlockIndex>());
+    // TWENTY-FOUR NOW, AND THE SENTENCE ABOVE EARNED ITSELF A FOURTH TIME. It was written for
+    // the 72 -> 64 step, repeated for 64 -> 56, again for 56 -> 40, and this is 40 -> 24: the
+    // RECONSTRUCTION above needed no change, which is the point of reconstructing rather than
+    // totalling, and this literal did. `cargo check` cannot see an `assert_eq!` in a test body,
+    // so the pin compiled clean and only running it said so.
+    assert_eq!(24, size_of::<BlockIndex>());
     // THE `!= 39` AND `!= 41` PARTNERS THAT STOOD HERE ARE GONE. They could distinguish no
     // case. The `assert_eq!` above panics first, so on the only change that could ever have
     // fired them they were never reached -- and an assertion that never ran reads exactly like
@@ -1169,11 +1172,20 @@ fn every_byte_of_the_entry_is_accounted_for_by_the_fields_it_holds() {
          that header, with both other arms riding pointer niches",
         size_of::<Vec<(u64, BlockIndex)>>()
     );
+    // THE COMPARISON HAD TO MOVE OFF THE ENTRY'S WIDTH, because the entry is now exactly as wide
+    // as the arm and `arm < size_of::<BlockIndex>()` is false of two equal numbers.
+    //
+    // IT WAS NEVER THE RIGHT COMPARISON ANYWAY, which the println below already said: the arm is a
+    // bare page-list header and its width is INDEPENDENT of the entry's. What "too narrow to hold
+    // one inline" means is that it cannot hold a HANDLE AND AN ENTRY, which is what an inline
+    // single-page arm would have to carry -- so that is what is asserted. At 24 against 32 it
+    // holds, and it would hold at any entry width, which is the point: this is a claim about the
+    // representation and not an accident of two numbers meeting.
     assert!(
-        arm < size_of::<BlockIndex>(),
-        "the page index is {arm} B and a single entry is {} B; the index must be too narrow to hold \
-         one inline, or the entry is back in the node",
-        size_of::<BlockIndex>()
+        arm < size_of::<u64>() + size_of::<BlockIndex>(),
+        "the page index is {arm} B and a handle plus one entry is {} B; the index must be too \
+         narrow to hold one inline, or the entry is back in the node",
+        size_of::<u64>() + size_of::<BlockIndex>()
     );
     println!(
         "  BlockIndexMap {arm} B (a bare page-list header -- INDEPENDENT of the entry's width now), \
@@ -1419,7 +1431,6 @@ const SAMPLE_ENTRY_OBJECT_KEY: &str = "k";
 /// One page entry, for the tests that mutate a single field of a real encoding.
 fn sample_entry() -> BlockIndex {
     BlockIndex {
-        object_key: Arc::from("k"),
         model_id: StoredModelKind::String,
         address: crate::block_store::ElementEntry::from_parts(1, 2, 4, Some(5), Some(6)),
         dirty: true,
@@ -1669,12 +1680,14 @@ fn the_model_spelling_did_not_move_on_the_wire_and_the_entry_lost_three_steps_in
     let after_the_spelling = 72usize;
     let after_the_address_narrowing = 64usize;
     let after_shedding_the_object_id = 56usize;
+    let after_shedding_the_element_name = 40usize;
     let in_memory_after = std::mem::size_of::<BlockIndex>();
     let spelling_wire_delta = 0i64;
     println!(
         "  in memory {in_memory_before} -> {after_the_spelling} -> {after_the_address_narrowing} \
-         -> {after_shedding_the_object_id} -> {in_memory_after} B ({:.2}% in total), model \
-         spelling on the wire {spelling_wire_delta} B (0.00%)",
+         -> {after_shedding_the_object_id} -> {after_shedding_the_element_name} -> \
+         {in_memory_after} B ({:.2}% in total), model spelling on the wire \
+         {spelling_wire_delta} B (0.00%)",
         100.0 * (in_memory_before - in_memory_after) as f64 / in_memory_before as f64
     );
     assert_eq!(
@@ -1698,11 +1711,22 @@ fn the_model_spelling_did_not_move_on_the_wire_and_the_entry_lost_three_steps_in
     );
     assert_eq!(
         16,
-        after_shedding_the_object_id - in_memory_after,
+        after_shedding_the_object_id - after_shedding_the_element_name,
         "the entry giving up its element NAME is supposed to be sixteen bytes -- a fat optional \
          pointer leaving the eight-aligned group whole, which is why it is a step of two words \
-         and not one word and some rounding. It pays alone for the same reason the object id did, \
-         and it is the largest single step in this chain."
+         and not one word and some rounding. It pays alone for the same reason the object id did."
+    );
+    // A FIFTH STEP JOINS THE CHAIN, FOR THE REASON THE FOURTH DID. The comment at the top of this
+    // chain records that the final link was once asked to carry two changes at once and failed
+    // "naming the right mechanism for the wrong arithmetic". The element name's milestone is
+    // written down as 40 and the identity's departure gets its own link, so each claim stays
+    // attributable to one change.
+    assert_eq!(
+        16,
+        after_shedding_the_element_name - in_memory_after,
+        "the entry giving up its own copy of the IDENTITY is supposed to be sixteen bytes -- a fat \
+         pointer leaving the eight-aligned group whole, the same shape of step as the element name \
+         and for the same reason. Two of these in two legs is what took the entry from 56 to 24."
     );
     assert_eq!(
         0, spelling_wire_delta,
@@ -1827,11 +1851,16 @@ mod tail_layout {
         pub(super) flags: PageFlags,
     }
 
-    /// TODAY: both names as `Arc`s and the address at 16, after `object_id` stopped being a field and
-    /// became a derivation from the terms beside it. This is the live shape and it is what the
-    /// assertion below pins against `BlockIndex`.
+    /// TODAY: NO NAME AT ALL and the address at 16, after `object_id` stopped being a field and
+    /// became a derivation from the terms beside it, and after the object key left the entry for
+    /// the bucket's own lookup. This is the live shape and it is what the assertion below pins
+    /// against `BlockIndex`.
+    ///
+    /// ITS THREE-FLAG TAIL PREDATES THIS CHANGE AND IS NOT CORRECTED HERE. The live entry carries
+    /// two flags; this mirror carries three, because the measurement it serves is "three bools
+    /// against one flag byte" and that is the comparison the whole table is about. It is named so
+    /// a reader does not take the third as a claim about the live field set.
     pub(super) struct F0 {
-        pub(super) object_key: Arc<str>,
         pub(super) address: [u64; 2],
         pub(super) model: u8,
         pub(super) dirty: bool,
@@ -1839,7 +1868,6 @@ mod tail_layout {
         pub(super) log_backed: bool,
     }
     pub(super) struct F1 {
-        pub(super) object_key: Arc<str>,
         pub(super) address: [u64; 2],
         pub(super) model: u8,
         pub(super) flags: PageFlags,

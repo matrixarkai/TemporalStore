@@ -2640,7 +2640,6 @@ fn bucket_store_reports_all_layout_states_and_runtime_flags() {
             block_index: [(
                 std::sync::Arc::<str>::from("k"),
                 BlockIndex {
-                    object_key: Arc::from("k".to_string()),
                     model_id: crate::engine::storage_bucket_internals::StoredModelKind::String,
                     address: ElementEntry::from_parts(1, 0, 4, Some(1), Some(30)),
                     dirty: false,
@@ -2663,7 +2662,6 @@ fn bucket_store_reports_all_layout_states_and_runtime_flags() {
                 (
                     std::sync::Arc::<str>::from("feature-key"),
                     BlockIndex {
-                        object_key: Arc::from("feature-key".to_string()),
                         model_id: crate::engine::storage_bucket_internals::StoredModelKind::Feature,
                         address: ElementEntry::from_parts(2, 0, 4, Some(2), Some(40)),
                         dirty: false,
@@ -2673,7 +2671,6 @@ fn bucket_store_reports_all_layout_states_and_runtime_flags() {
                 (
                     std::sync::Arc::<str>::from("feature-key"),
                     BlockIndex {
-                        object_key: Arc::from("feature-key".to_string()),
                         model_id: crate::engine::storage_bucket_internals::StoredModelKind::Feature,
                         address: ElementEntry::from_parts(2, 4, 4, Some(3), Some(40)),
                         dirty: false,
@@ -2697,7 +2694,6 @@ fn bucket_store_reports_all_layout_states_and_runtime_flags() {
                 (
                     std::sync::Arc::<str>::from("hash-key"),
                     BlockIndex {
-                        object_key: Arc::from("hash-key".to_string()),
                         model_id: crate::engine::storage_bucket_internals::StoredModelKind::Hash,
                         address: ElementEntry::from_parts(3, 0, 1, Some(4), Some(50)),
                         dirty: false,
@@ -2707,7 +2703,6 @@ fn bucket_store_reports_all_layout_states_and_runtime_flags() {
                 (
                     std::sync::Arc::<str>::from("hash-key"),
                     BlockIndex {
-                        object_key: Arc::from("hash-key".to_string()),
                         model_id: crate::engine::storage_bucket_internals::StoredModelKind::Hash,
                         address: ElementEntry::from_parts(3, 1, 1, Some(5), Some(51)),
                         dirty: false,

@@ -544,7 +544,6 @@ fn page_at(slab: u64, offset: u64, length: u64) -> (std::sync::Arc<str>, BlockIn
     (
         std::sync::Arc::from("one-object"),
         BlockIndex {
-            object_key: std::sync::Arc::from("one-object"),
             model_id: crate::engine::storage_bucket_internals::StoredModelKind::Hash,
             address: crate::block_store::ElementEntry::from_parts(
                 slab,
@@ -570,7 +569,6 @@ fn page_at_for_object(
     (
         std::sync::Arc::from(object_key),
         BlockIndex {
-            object_key: std::sync::Arc::from(object_key),
             ..page
         },
     )

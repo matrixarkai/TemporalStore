@@ -296,7 +296,6 @@ fn arm_census(engine: &TemporalEngine) -> ArmCensus {
 /// differ from a real one in `Arc` sharing and that is exactly what a clone-based instrument sees.
 fn one_real_page_free_standing() -> BlockIndex {
     BlockIndex {
-        object_key: std::sync::Arc::from("free-standing"),
         model_id: crate::engine::storage_bucket_internals::StoredModelKind::String,
         address: crate::block_store::ElementEntry::from_parts(1, 64, 32, Some(7), Some(11)),
         dirty: false,
@@ -1720,8 +1719,13 @@ fn what_the_narrower_entry_is_worth_on_the_heap_now_that_it_is_behind_a_pointer(
         let census = arm_census(&engine);
         census.assert_denominators(&format!("{label} @ {records}"));
         let page = one_real_page(&engine);
+        // THE MIRROR'S KEY IS NAMED HERE BECAUSE THE PAGE HAS NONE. The mirror models the entry as
+        // it was WHEN IT WAS WIDE, and the term it is modelling is a sixteen-byte shared pointer:
+        // what the pointer points AT decides nothing about the width or the heap this arm
+        // measures, so the fixture names a key of the length a routed key has rather than
+        // pretending to recover the one this page belongs to.
         let wide_page = MirrorWideEntry {
-            object_key: std::sync::Arc::clone(&page.object_key),
+            object_key: std::sync::Arc::from("mirror-of-a-wide-entry"),
             model_id: page.model_id,
             // The MIRROR models the entry as it was WHEN IT WAS WIDE, so it keeps the slot and
             // fills it with the absence a real entry no longer has a field for.

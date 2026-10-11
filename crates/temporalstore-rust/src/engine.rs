@@ -3417,13 +3417,6 @@ fn collect_command_index_items_for(
                 );
                 continue;
             };
-            // THE TIE BACK TO THE ENTRY'S OWN COPY, which is what makes this conversion checkable
-            // rather than merely compiling. It goes with the field.
-            debug_assert_eq!(
-                &*page.object_key,
-                &**beside.object_key,
-                "the identity held beside this page names a different object from the one on it"
-            );
             if !keys.contains(beside.object_key.as_ref()) {
                 continue;
             }
@@ -4225,12 +4218,6 @@ fn fold_delta_block_items(
                     // every other page of the bucket with it.
                     return true;
                 };
-                // THE TIE BACK TO THE ENTRY'S OWN COPY. It goes with the field.
-                debug_assert_eq!(
-                    &*page.object_key,
-                    &**beside,
-                    "the identity held beside this page names a different object from the one on it"
-                );
                 let drop = page.model_id.as_str() == item.model_id
                     && &**beside == item.object_key.as_ref()
                     && match (names_a_page, here.as_ref()) {
@@ -4271,12 +4258,6 @@ fn fold_delta_block_items(
                     // NOT COVERED BY A KEY IT HAS NONE OF.
                     return true;
                 };
-                // THE TIE BACK TO THE ENTRY'S OWN COPY. It goes with the field.
-                debug_assert_eq!(
-                    &*page.object_key,
-                    &**beside,
-                    "the identity held beside this page names a different object from the one on it"
-                );
                 let drop = covered_keys.contains(&**beside);
                 if drop {
                     unfiled.push((
@@ -4313,7 +4294,6 @@ fn fold_delta_block_items(
         let object_key: Arc<str> = Arc::from(item.object_key.clone());
         let handle = bucket.insert_page(&object_key, 
             BlockIndex {
-                object_key: Arc::from(item.object_key.clone()),
                 model_id: crate::engine::storage_bucket_internals::stored_model_kind(
                     &item.model_id,
                 ),
@@ -5216,12 +5196,6 @@ fn mark_bucket_index_object_deleted(shard: &mut ShardState, key: &str) -> bool {
             let Some(beside) = names.get(handle) else {
                 return true;
             };
-            // THE TIE BACK TO THE ENTRY'S OWN COPY. It goes with the field.
-            debug_assert_eq!(
-                &*page.object_key,
-                &**beside,
-                "the identity held beside this page names a different object from the one on it"
-            );
             if &**beside == key {
                 // THE KEY IS THIS FUNCTION'S ARGUMENT, and the match on the line above is what
                 // says this page belongs to it -- so the id is derived from the same characters
@@ -5466,23 +5440,11 @@ fn mark_bucket_index_block_deleted_recording(
                 .map(|block_ref| block_ref.routing_bucket)
                 .min()
         });
-    // THE TIE BACK TO THE WALK IT REPLACES, FOR AS LONG AS THE ENTRY CARRIES A COPY TO WALK.
-    // It goes with the field.
-    debug_assert_eq!(
-        tombstone_bucket_for_a_page_named_kind,
-        shard
-            .bucket_index
-            .bucket_map
-            .iter()
-            .find(|(_, bucket)| {
-                bucket.block_index.values().any(|page| {
-                    !page.deleted && page.model_id.as_str() == model_id && &*page.object_key == key
-                })
-            })
-            .map(|(routing_bucket, _)| *routing_bucket),
-        "the lookup and the page walk disagree about which bucket holds this object's first live \
-         page, so moving the identity off the entry would move where a tombstone is filed"
-    );
+    // THE TIE BACK TO THE WALK THIS REPLACES IS SPENT WITH THE FIELD, and what it established is
+    // why the lookup may answer for the walk at all: the minimum routing bucket among an object's
+    // refs is the lowest-numbered bucket holding a live page of it, asserted against the walk on
+    // every debug run for as long as the pages carried a key to walk by. There is no second source
+    // to compare against now, so the claim is spent rather than weakened.
     let target_buckets = if shard.bucket_index.object_block_lookup.is_empty() {
         shard
             .bucket_index
@@ -5534,12 +5496,6 @@ fn mark_bucket_index_block_deleted_recording(
             let Some(beside) = names.get(handle) else {
                 return true;
             };
-            // THE TIE BACK TO THE ENTRY'S OWN COPY. It goes with the field.
-            debug_assert_eq!(
-                &*page.object_key,
-                &**beside,
-                "the identity held beside this page names a different object from the one on it"
-            );
             let matches = page.model_id.as_str() == model_id
                 && &**beside == key
                 && component.is_none();

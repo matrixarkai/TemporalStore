@@ -529,7 +529,6 @@ fn the_shard_index_writes_a_durable_map_for_all_four_container_kinds() {
 /// dropping one field, which is the step #2005 named.
 #[allow(dead_code)]
 struct MirrorEntryNoComponent {
-    object_key: Arc<str>,
     model_id: StoredModelKind,
     address: ElementEntry,
     dirty: bool,
@@ -551,16 +550,20 @@ fn round_up_to_eight(bytes: usize) -> usize {
 fn the_entry_and_its_stride_are_reconstructed_from_the_fields_not_quoted() {
     // --- THE LIVE ENTRY, RECONSTRUCTED. ---
     //
-    // THE COMPONENT TERM IS GONE FROM THIS SUM, which is this module's whole subject arriving. The
-    // reconstruction read `+ size_of::<Option<Arc<str>>>()` for the component and came to 56; the
-    // live entry has no such field, so it comes to 40 -- the number this module PREDICTED off a
-    // mirror, now measured on the live type.
-    let live_fields = size_of::<Arc<str>>()          // object_key
-        + size_of::<StoredModelKind>()               // model_id
+    // THE COMPONENT TERM WENT ONE LEG AGO AND THE `object_key` TERM GOES HERE. The
+    // reconstruction read `+ size_of::<Option<Arc<str>>>()` for the component and came to 56;
+    // without it, 35; without the key's sixteen-byte fat pointer, NINETEEN, which rounds to the
+    // twenty-four the live type measures.
+    let live_fields = size_of::<StoredModelKind>() // model_id
         + size_of::<ElementEntry>()                  // address
         + 2 * size_of::<bool>()                      // dirty, deleted
-        + size_of::<crate::index_log::IndexItemKind>() // kind
-        + size_of::<u32>();                          // routing_bucket
+        ;
+    // THE `kind` AND `routing_bucket` TERMS ARE GONE FROM THIS SUM TOO, and they were a SEVENTH
+    // live instance of a decomposition that had stopped describing the type: `65c7fc562` retired
+    // both from `BlockIndex` and this sum kept adding their five bytes. It passed because forty and
+    // thirty-five both round to forty -- the same rounding that hid the same two fields in four
+    // mirrors in `an_assigned_durable_id_defeats_ground_one_only` and in `pages_per_bucket`'s
+    // reconstruction. `size_of` steps at a word and a sum does not.
     assert_eq!(
         round_up_to_eight(live_fields),
         size_of::<BlockIndex>(),
@@ -579,12 +582,25 @@ fn the_entry_and_its_stride_are_reconstructed_from_the_fields_not_quoted() {
         16, component_width,
         "the component slot was {component_width} B, not the sixteen this module is about"
     );
+    // THE BASELINE MOVED BECAUSE THE KEY LEFT TOO, AND BOTH ENDS ARE PINNED SO NEITHER DRIFTS.
+    //
+    // Adding the name slot back to TODAY'S entry gives forty. The fifty-six this module measured
+    // the step down from was that PLUS the key's own sixteen-byte fat pointer, which left on the
+    // next leg -- so 56 is still the right number for the entry this module was written against,
+    // and it is reconstructed from the types rather than left as a literal nobody can check.
+    assert_eq!(
+        40,
+        round_up_to_eight(live_fields + component_width),
+        "the entry with a name slot added back is {} B, not the forty today's field set plus a \
+         name slot comes to",
+        round_up_to_eight(live_fields + component_width)
+    );
     assert_eq!(
         56,
-        round_up_to_eight(live_fields + component_width),
-        "the entry with a name slot added back is {} B, not the 56 this module measured the step \
-         DOWN from -- so the saving it reports is quoted against the wrong baseline",
-        round_up_to_eight(live_fields + component_width)
+        round_up_to_eight(live_fields + component_width + size_of::<Arc<str>>()),
+        "the entry this module measured the step DOWN from is {} B, not the 56 it quotes -- so \
+         the saving it reports is against the wrong baseline",
+        round_up_to_eight(live_fields + component_width + size_of::<Arc<str>>())
     );
 
     // --- THE MIRROR, WHICH IS NOW THE SAME SHAPE AS THE LIVE ENTRY. ---
@@ -594,6 +610,13 @@ fn the_entry_and_its_stride_are_reconstructed_from_the_fields_not_quoted() {
     // landing, not the instrument breaking -- and it is asserted as an EQUALITY, so a mirror that
     // drifts from the live entry reddens here rather than going on describing a shape the engine
     // no longer has.
+    //
+    // IT DRIFTED, AND THE EQUALITY IS WHAT CAUGHT IT. The mirror kept its own `object_key` through
+    // the leg that took the field off `BlockIndex`, so it measured forty against a twenty-four
+    // byte entry -- the convergence this paragraph claims, stated and then broken by the next
+    // change. The field is off the mirror now. Its `log_backed` bool is a fourth term the live
+    // entry does not carry either; that one is deliberate and predates this change, because the
+    // flag was a field when the mirror was written and the tail it models is the three-bool one.
     let mirror_fields = live_fields;
     assert_eq!(
         round_up_to_eight(mirror_fields),
@@ -630,23 +653,29 @@ fn the_entry_and_its_stride_are_reconstructed_from_the_fields_not_quoted() {
     );
 
     // --- THE VERDICT, AS NUMBERS. ---
-    // THE ENTRY IS THE MIRROR NOW, WHICH IS THIS MODULE'S OWN STEP TAKEN. It pinned 56 for the
-    // live entry against 40 for `MirrorEntryNoComponent`; the live entry no longer has a component
-    // either, so it IS 40 and the two sides have converged. That is the step landing rather than
-    // the measurement breaking -- and it is why the stride pin below moves from 64 to 48 with it.
-    assert_eq!(40, size_of::<BlockIndex>(), "the entry pin moved");
+    // THE ENTRY IS THE MIRROR NOW, WHICH IS THIS MODULE'S OWN STEP TAKEN -- AND THEN A SECOND
+    // STEP TOOK BOTH OF THEM. It pinned 56 for the live entry against 40 for
+    // `MirrorEntryNoComponent`; the component left and they converged on 40; the IDENTITY then
+    // left as well and they converged again on 24. The mirror had to lose its own `object_key` to
+    // follow, which the convergence equality above is what caught.
+    assert_eq!(24, size_of::<BlockIndex>(), "the entry pin moved");
     // THE `!= 39` AND `!= 41` PARTNERS ARE GONE, dominated by the equality above them, which
     // panics first and so left them unreachable on every change that could have fired them.
     // The width is also pinned as a const beside `BlockIndex` in `state.rs`, with the alignment
     // pin a width pin does not entail. What this module adds is the STRIDE reconstructed from
     // that width, and the stride pin below is the claim here that can still move.
-    assert_eq!(48, live_stride, "the stride pin moved");
+    // THIRTY-TWO, AND THE STRIDE MOVED WITH THE ENTRY RATHER THAN BY ITSELF. The element is a
+    // handle plus an entry, so an entry losing sixteen bytes takes the element from 48 to 32 --
+    // the same two words, because 8 + 24 lands on a multiple of eight with no rounding to
+    // absorb any of it. This is the pin the module doc calls the one that can still move, and
+    // it is reconstructed from the width above rather than quoted beside it.
+    assert_eq!(32, live_stride, "the stride pin moved");
     assert_eq!(
-        40,
+        24,
         size_of::<MirrorEntryNoComponent>(),
-        "the component-less entry is not 40"
+        "the component-less entry is not 24"
     );
-    assert_eq!(48, mirror_stride, "the component-less stride is not 48");
+    assert_eq!(32, mirror_stride, "the component-less stride is not 32");
 
     // THE STEP IS NOW ZERO, AND THAT IS THE STEP BEING TAKEN RATHER THAN BEING WORTHLESS.
     //
@@ -665,10 +694,14 @@ fn the_entry_and_its_stride_are_reconstructed_from_the_fields_not_quoted() {
          agree now that the entry carries no name; a difference means one of the two is not the \
          shape it claims to be"
     );
+    // FORTY-EIGHT, BECAUSE THE BASELINE MOVED WITH THE ENTRY. Adding a name slot back to TODAY'S
+    // entry gives forty, and a handle plus forty strides at forty-eight. The sixty-four this
+    // module quoted its eight bytes a page against was that plus the key's own sixteen, which
+    // left on the next leg -- and that baseline is pinned from the types two assertions above.
     assert_eq!(
-        64,
+        48,
         round_up_to_eight(size_of::<u64>() + round_up_to_eight(live_fields + component_width)),
-        "the stride of an entry with a name slot added back is {} B, not the 64 the per-page \
+        "the stride of an entry with a name slot added back is {} B, not the 48 the per-page \
          saving was quoted against",
         round_up_to_eight(size_of::<u64>() + round_up_to_eight(live_fields + component_width))
     );
@@ -773,7 +806,6 @@ fn a_hash_page_naming_no_field_is_skipped_while_a_genuine_empty_field_name_is_ke
     // leaves the key out entirely and reads back as `None` -- an absent component round-trips as a
     // STABLE shape rather than as damage.
     let nameless_entry = BlockIndex {
-        object_key: Arc::from("ef-wire-probe"),
         model_id: stored_model_kind("hash"),
         address: ElementEntry::default(),
         dirty: false,
@@ -975,10 +1007,13 @@ fn a_hash_page_naming_no_field_is_skipped_while_a_genuine_empty_field_name_is_ke
             std::slice::from_ref(&nameless_item),
             false,
         );
-        // The same step `load_index_inner` takes between the fold and the reconcile. The fold writes
-        // page entries and NOT the object lookup, so without this the serving accelerator still
-        // describes the pre-fold index and the counts read below would be measuring the fixture.
-        shard.bucket_index.rebuild_object_block_lookup();
+        // THE REBUILD THAT STOOD HERE IS GONE, AND SO IS THE CLAIM THAT MADE IT NECESSARY. This
+        // comment read "The fold writes page entries and NOT the object lookup, so without this
+        // the serving accelerator still describes the pre-fold index" -- which was true when it
+        // was written and is not now. `fold_delta_block_items` files what it places and un-files
+        // what it drops, and carries a note saying those are ONE obligation; it took that on when
+        // the whole-shard rebuild came off the load path. So the fold above leaves the lookup
+        // describing the post-fold index, and the counts below measure what they claim to.
         collect_bucket_index_live_block_entries(shard)
             .into_iter()
             // SELECTED BY ADDRESS, NOT BY THE ABSENCE OF A NAME.

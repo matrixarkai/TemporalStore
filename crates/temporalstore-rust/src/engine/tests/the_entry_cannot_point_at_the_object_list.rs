@@ -133,9 +133,23 @@ const MEMBERS_PER_KEY: usize = 25;
 /// was the identity on it and its trade has a ceiling of zero. Both facts are asserted, not assumed.
 const ROUTED_KEYS: usize = 200;
 
-/// What the entry gives up per page if `object_key` becomes a `u16` ordinal. Derived below, never
-/// asserted as this literal.
-const CLAIMED_SAVING_PER_PAGE: usize = 16;
+/// What the entry gives up per page if `object_key` becomes a `u16` ordinal -- NOTHING, NOW.
+///
+/// It was sixteen, and the sixteen were real: an `Arc<str>` on every page against a two-byte
+/// ordinal. THOSE SIXTEEN BYTES HAVE BEEN TAKEN, by a different route. The identity left the entry
+/// altogether and lives once per object in `CoreIndex::object_block_lookup`; the entry is
+/// twenty-four bytes and the stride thirty-two, which is exactly where the ordinal would have
+/// landed. So an ordinal now narrows nothing at all.
+///
+/// AND THAT IS NOT THIS MODULE'S ROUTE BEING ADOPTED. Section 3 refuses the entry POINTING AT THE
+/// BUCKET'S OBJECT LIST, on identity grounds that have nothing to do with width -- a list ordinal
+/// is a position, and a position is not a way back to the characters. The lookup is a different
+/// structure that already held one key per object before this change and holds exactly one now.
+/// What changed is that the saving this module's section 1 priced is spent, so the refusal rests
+/// on the identity grounds it always had PLUS the observation that there is nothing left to buy.
+///
+/// Derived below and asserted against the derivation, never read as this literal.
+const CLAIMED_SAVING_PER_PAGE: usize = 0;
 
 // =================================================================================================
 // HARNESS
@@ -348,7 +362,11 @@ fn a_u8_ordinal_buys_nothing_over_a_u16_because_both_tails_round_the_same() {
     // The product entry. One `offset_of!` per named field; `size_of` of the WRONG type still
     // compiles, which is what the reconstruction assertion below is for.
     let entry_fields: Vec<(&'static str, usize, usize)> = vec![
-        ("object_key", offset_of!(BlockIndex, object_key), size_of::<Arc<str>>()),
+        // THE `object_key` ROW IS GONE WITH THE FIELD -- sixteen bytes of fat pointer, the whole
+        // of the 40 -> 24 step. Each of these reconstructions is DERIVED from the field list it
+        // holds rather than totalled as a literal, which is what makes deleting a row safe: a
+        // list that stops matching the type fails at the reconstruction rather than describing a
+        // structure that moved.
         ("model_id", offset_of!(BlockIndex, model_id), size_of::<StoredModelKind>()),
         // The `component` row is gone with the field: sixteen bytes between `model_id` and
         // `address`, and the whole of the 56 -> 40 step. The reconstruction assertion below is
@@ -417,9 +435,15 @@ fn a_u8_ordinal_buys_nothing_over_a_u16_because_both_tails_round_the_same() {
         "the stride is not a handle plus an entry, so the page list is not the shape this \
          measurement prices"
     );
-    assert!(
-        u16_total < entry_total,
-        "a u16 ordinal does not narrow the entry at all: {u16_total} against {entry_total}"
+    // THE ORDINAL LANDS EXACTLY WHERE THE ENTRY ALREADY IS, which is why this is an equality and
+    // not a `<`. It asserted `u16_total < entry_total` -- the ordinal narrows the entry -- and that
+    // held while the entry carried an `Arc<str>`. The identity left; both are twenty-four.
+    assert_eq!(
+        u16_total, entry_total,
+        "a u16 ordinal lands on {u16_total} against the live entry's {entry_total}. The sixteen \
+         bytes a page it was priced at have already been taken by the identity leaving the entry, \
+         so it must land on exactly the same width -- if it narrows further, something else has \
+         moved and this module's arithmetic needs remeasuring"
     );
     assert_eq!(
         u16_total, u8_total,
@@ -438,8 +462,10 @@ fn a_u8_ordinal_buys_nothing_over_a_u16_because_both_tails_round_the_same() {
          this number and must be recomputed"
     );
     println!(
-        "  VERDICT: the arithmetic is SOUND -- {saving} bytes a page, and the u8 adds nothing. \
-         What follows is why the route is still refused."
+        "  VERDICT: the arithmetic is SPENT -- {saving} bytes a page, because the sixteen it \
+         priced were taken by the identity leaving the entry. The u8 adds nothing to the u16 and \
+         the u16 adds nothing to today. What follows is why the route was refused on identity \
+         grounds that never depended on the width."
     );
 }
 
@@ -840,17 +866,29 @@ fn the_row_collapse_does_not_reopen_the_route_because_the_routed_arm_did_not_mov
          measures"
     );
 
-    // THE CONTAINER ARM, where #2019's collapse actually lands.
+    // THE CONTAINER ARM'S TWO CEILING ASSERTIONS ARE RETIRED, BECAUSE THE SAVING THEY WERE A
+    // CEILING AGAINST IS ZERO.
+    //
+    // They read `hash_net > 0.0` and `hash_net < saving as f64`, where
+    // `hash_net = (saving * pages - row_cost * rows) / pages`. The stride saving an ordinal would
+    // buy is now nothing -- `CLAIMED_SAVING_PER_PAGE` carries why -- so `hash_net` is the row cost
+    // with a minus sign, and a ceiling expressed as a fraction of a zero saving is not a ceiling.
+    //
+    // THE FIRST ONE'S OWN MESSAGE SAYS WHAT TO CONCLUDE: "If containers have stopped paying,
+    // nothing pays and the route is refuted even more cheaply." Nothing pays, because there is
+    // nothing left to pay for. That is the conclusion rather than the failure, and it is recorded
+    // here rather than asserted as a negative ceiling that would pass for the wrong reason.
+    //
+    // AND THIS TEST'S OWN SUBJECT IS UNTOUCHED, which is why it survives rather than being
+    // retired whole. Its name is the claim: the row collapse does not reopen the route BECAUSE
+    // THE ROUTED ARM DID NOT MOVE, and the control above -- one row per page on the string arm,
+    // with a ceiling at or below zero -- is what holds that. Both of those still assert and both
+    // still pass.
     assert!(
-        hash_net > 0.0,
-        "the container arm's ceiling is {hash_net:+.4} B/page. If containers have stopped paying, \
-         nothing pays and the route is refuted even more cheaply"
-    );
-    assert!(
-        hash_net < saving as f64,
+        hash_net <= 0.0,
         "the container arm's ceiling is {hash_net:+.4} B/page against a {saving} B/page stride \
-         saving. The list's own rows cannot cost zero -- if they read as zero the row cost is not \
-         being charged and this ceiling is not one"
+         saving. With nothing left to save, the only thing this expression can report is the \
+         list's own row cost as a negative -- a positive here would mean the saving is back"
     );
 
     println!(

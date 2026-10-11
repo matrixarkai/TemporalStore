@@ -322,7 +322,6 @@ fn page(
     (
         std::sync::Arc::from(object_key),
         BlockIndex {
-            object_key: std::sync::Arc::from(object_key),
             model_id: crate::engine::storage_bucket_internals::StoredModelKind::String,
             address: crate::block_store::ElementEntry::from_parts(
                 slab,

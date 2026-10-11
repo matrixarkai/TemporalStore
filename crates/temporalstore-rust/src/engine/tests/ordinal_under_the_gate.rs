@@ -306,7 +306,6 @@ fn a_derivation_drops_the_entry_no_element_carries_any_more() {
         );
         let planted_key: std::sync::Arc<str> = std::sync::Arc::from("heal/set");
         let page = crate::engine::state::BlockIndex {
-            object_key: std::sync::Arc::from("heal/set"),
             model_id: crate::engine::storage_bucket_internals::stored_model_kind("set"),
             address: orphan,
             dirty: false,

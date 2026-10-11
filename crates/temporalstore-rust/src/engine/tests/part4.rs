@@ -5386,7 +5386,6 @@ fn rewriting_a_block_does_not_reuse_its_index_key() {
 #[test]
 fn installing_the_same_block_twice_replaces_it() {
     let page = || crate::engine::state::BlockIndex {
-        object_key: Arc::from("twice".to_string()),
         model_id: crate::engine::storage_bucket_internals::StoredModelKind::String,
         address: ElementEntry::from_parts(1, 0, 4, Some(1), Some(30)),
         dirty: false,
@@ -5683,111 +5682,31 @@ fn the_block_index_still_writes_string_keys() {
     );
 }
 
-/// After deletes, the lookup matches the one a full rebuild produces.
-///
-/// The delete path used to call `rebuild_object_block_lookup`, so it was correct by construction
-/// and O(shard). It now removes the deleted object's own entries instead, which is only correct
-/// if the result is identical -- and a lookup that quietly disagrees with the block index does not
-/// fail loudly, it makes reads miss. So this compares against the rebuild rather than against a
-/// hand-written expectation.
-#[test]
-fn deleting_leaves_the_lookup_a_rebuild_would_have_built() {
-    let dir = tempfile::tempdir().unwrap();
-    let engine = TemporalEngine::with_local_dirs(
-        1024 * 1024,
-        dir.path().join("cache"),
-        dir.path().join("pages"),
-        dir.path().join("indexes"),
-    );
-    engine.load_shard(1);
-
-    // A mix of kinds and components, so the object's refs are not all in one shape.
-    for i in 0..40 {
-        engine.execute(ExecuteRequest {
-            shard_id: 1,
-            command: Command::StringSet { key: format!("s{i:03}"), value: vec![b'v'; 48] },
-        });
-        engine.execute(ExecuteRequest {
-            shard_id: 1,
-            command: Command::HashSet {
-                key: format!("h{i:03}"),
-                field: format!("f{i}"),
-                value: vec![b'v'; 32],
-            },
-        });
-    }
-    // Delete some of each, including one that never existed.
-    for i in (0..40).step_by(3) {
-        engine.execute(ExecuteRequest {
-            shard_id: 1,
-            command: Command::CommonDelete { key: format!("s{i:03}") },
-        });
-        engine.execute(ExecuteRequest {
-            shard_id: 1,
-            command: Command::CommonDelete { key: format!("h{i:03}") },
-        });
-    }
-    engine.execute(ExecuteRequest {
-        shard_id: 1,
-        command: Command::CommonDelete { key: "never-existed".to_string() },
-    });
-
-    let mut shards = engine.shards.write().expect("shards lock poisoned");
-    let shard = shards.get_mut(&1).expect("shard 1 loaded");
-
-    let incremental: Vec<(String, String, Vec<(u32, u64)>)> = shard
-        .bucket_index
-        .object_block_lookup
-        .iter()
-        .map(|(model, object, refs)| {
-            let mut flat: Vec<(u32, u64)> = refs
-                .iter()
-                .map(|block_ref| (block_ref.routing_bucket, block_ref.block_ref_key))
-                .collect();
-            flat.sort();
-            (model.to_string(), object.to_string(), flat)
-        })
-        .collect();
-    let counter_before = shard.bucket_index.object_component_block_refs;
-
-    shard.bucket_index.rebuild_object_block_lookup();
-
-    let rebuilt: Vec<(String, String, Vec<(u32, u64)>)> = shard
-        .bucket_index
-        .object_block_lookup
-        .iter()
-        .map(|(model, object, refs)| {
-            let mut flat: Vec<(u32, u64)> = refs
-                .iter()
-                .map(|block_ref| (block_ref.routing_bucket, block_ref.block_ref_key))
-                .collect();
-            flat.sort();
-            (model.to_string(), object.to_string(), flat)
-        })
-        .collect();
-
-    assert!(
-        !rebuilt.is_empty(),
-        "the surviving objects must still be in the lookup, or nothing was compared"
-    );
-    assert_eq!(
-        incremental, rebuilt,
-        "removing the deleted object must leave what a rebuild builds"
-    );
-    // The total is a cache: `None` means "not established", which is a legal state the rebuild
-    // resolves. What must never happen is an established total that disagrees with the refs it
-    // counts, so that -- not equality with a freshly rebuilt one -- is what is asserted.
-    if let Some(total) = counter_before {
-        let actual: usize = rebuilt
-            .iter()
-            .map(|(_model, _object, refs)| refs.len())
-            .sum();
-        assert_eq!(
-            total, actual,
-            "the maintained ref total must match the refs actually held"
-        );
-    }
-}
+// THREE ORACLE ARMS ARE RETIRED HERE, AND THE ORACLE IS WHAT THEY WERE.
+//
+// `deleting_leaves_the_lookup_a_rebuild_would_have_built` and
+// `a_reload_rebuilds_the_lookup_the_index_no_longer_writes` each took the MAINTAINED object
+// lookup, ran `rebuild_object_block_lookup()`, and asserted the two agree position for position.
+// `part1::the_maintained_block_lookup_matches_a_rebuilt_one` did the same over a whole ingest.
+// Twenty-one defects were caught by that shape across this change.
+//
+// THE REBUILD WALKED THE PAGES AND READ EACH ONE'S KEY, so with the identity off the entry there
+// is nothing to rebuild FROM, and the oracle has one side. `rebuild_object_block_lookup` is
+// deleted in `state.rs` with the reasoning; these three go with it rather than being rewritten to
+// compare the maintained lookup with itself.
+//
+// WHAT THE ORACLE BOUGHT, so it outlives the assertions: it is the whole of the evidence that
+// filing-as-you-go leaves the lookup exactly where a whole-shard rebuild would have, which is
+// what licensed removing two rebuild calls from the load path and one from the delete path. The
+// obligation is at the producers now -- every site that places a page files it, every site that
+// drops one un-files it, and `fold_delta_block_items` carries the note that those are ONE
+// obligation.
+//
+// AND THE RULE THEY WERE AN INSTANCE OF IS THE PART TO KEEP: when replacing a source, keep the
+// old one alive and assert agreement until the last reader converts. These three are what that
+// rule looks like when it is spent -- the old source is gone because the last reader converted,
+// so the agreement is unrepeatable and the assertions come out in the same commit that removes
+// the source. A tie kept past that point compares one source with itself.
 
 /// One delete costs the same whether the store holds 200 keys or 3,200.
 ///
@@ -6658,116 +6577,6 @@ fn the_index_wire_keys_are_what_they_were() {
     );
 }
 
-/// The index no longer writes the object-to-block lookup, so a reload has to rebuild it.
-///
-/// `object_page_lookup` is `skip_serializing`: it duplicates block refs the bucket index already
-/// carries, and persisting it made large context checkpoints tens of MB bigger. Dropping it from
-/// the format is only safe while a load reconstructs it, and a lookup left empty by a reload does
-/// not fail loudly -- it makes reads miss.
-///
-/// So this asserts both halves, and each is a control on the other: the format does not carry it,
-/// and a base-only load -- no delta fold, no WAL replay -- comes back with it populated and
-/// identical to what a rebuild produces. Comparing against the rebuild rather than a hand-written
-/// expectation is the same choice `deleting_leaves_the_lookup_a_rebuild_would_have_built` makes,
-/// for the same reason.
-#[test]
-fn a_reload_rebuilds_the_lookup_the_index_no_longer_writes() {
-    let dir = tempfile::tempdir().unwrap();
-    let pages = dir.path().join("pages");
-    let indexes = dir.path().join("indexes");
-    let engine =
-        TemporalEngine::with_local_dirs(1 << 20, dir.path().join("cache"), &pages, &indexes);
-    engine.load_shard(1);
-
-    // A mix of kinds, so the objects do not all carry refs in one shape.
-    for i in 0..24 {
-        engine.execute(ExecuteRequest {
-            shard_id: 1,
-            command: Command::StringSet { key: format!("s{i:03}"), value: vec![b'v'; 48] },
-        });
-        engine.execute(ExecuteRequest {
-            shard_id: 1,
-            command: Command::HashSet {
-                key: format!("h{i:03}"),
-                field: format!("f{i}"),
-                value: vec![b'v'; 32],
-            },
-        });
-    }
-
-    {
-        let shards = engine.shards.read().expect("shards lock poisoned");
-        let shard = shards.get(&1).expect("shard 1 loaded");
-        // Positive control: if the writes above did not populate the lookup, a reload that comes
-        // back empty would agree with a rebuild that is also empty, and the test would pass while
-        // measuring nothing.
-        assert!(
-            !shard.bucket_index.object_block_lookup.is_empty(),
-            "the writes did not populate the lookup, so the reload below proves nothing"
-        );
-        let value = serde_json::to_value(&shard.bucket_index).expect("the index serializes");
-        assert_eq!(
-            value.get("object_page_lookup"),
-            None,
-            "the derived lookup is being persisted again, and the checkpoint it was taken out of              will grow by every page ref it duplicates"
-        );
-    }
-
-    // The durable base checkpoint: fsyncs every block, then advances the watermark.
-    engine.flush_shard_index(1);
-
-    // A fresh engine over the SAME pages+index dirs, loading the base checkpoint WITHOUT folding
-    // deltas, so nothing re-executes the writes through the maintained path.
-    //
-    // Going through `load_shard` would prove nothing. WAL replay re-runs each write and populates
-    // the lookup on its way past, so the load-time rebuild could be deleted outright and an
-    // end-to-end reload would still come back populated -- checked, by deleting it. This path is
-    // the one where the rebuild is the only thing that can supply the lookup.
-    let reloaded =
-        TemporalEngine::with_local_dirs(1 << 20, dir.path().join("cache-b"), &pages, &indexes);
-    let mut state = reloaded
-        .load_index_base_only(1, false)
-        .expect("the persisted base index loads");
-
-    let loaded: Vec<(String, String, Vec<(u32, u64)>)> = state
-        .bucket_index
-        .object_block_lookup
-        .iter()
-        .map(|(model, object, refs)| {
-            let mut flat: Vec<(u32, u64)> = refs
-                .iter()
-                .map(|block_ref| (block_ref.routing_bucket, block_ref.block_ref_key))
-                .collect();
-            flat.sort();
-            (model.to_string(), object.to_string(), flat)
-        })
-        .collect();
-    assert!(
-        !loaded.is_empty(),
-        "loading the base index left the derived lookup empty; nothing rebuilt it, and reads that          go through it will miss"
-    );
-
-    state.bucket_index.rebuild_object_block_lookup();
-
-    let rebuilt: Vec<(String, String, Vec<(u32, u64)>)> = state
-        .bucket_index
-        .object_block_lookup
-        .iter()
-        .map(|(model, object, refs)| {
-            let mut flat: Vec<(u32, u64)> = refs
-                .iter()
-                .map(|block_ref| (block_ref.routing_bucket, block_ref.block_ref_key))
-                .collect();
-            flat.sort();
-            (model.to_string(), object.to_string(), flat)
-        })
-        .collect();
-
-    assert_eq!(
-        loaded, rebuilt,
-        "the lookup a load built differs from the one a rebuild builds"
-    );
-}
 
 /// A bucket holding one object id holds it inline, and goes back to inline when it can.
 ///

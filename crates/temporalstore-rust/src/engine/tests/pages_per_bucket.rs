@@ -491,11 +491,19 @@ fn every_byte_of_the_page_index_is_accounted_for() {
     // TWO EIGHT-ALIGNED FIELDS, NOT THREE: `opt_arc_str` was the component and it is gone, which
     // is the 56 -> 40 step. `opt_arc_str` stays bound above as the width the name USED to cost,
     // because the paragraphs here are stated against that arithmetic.
-    let index_eight_aligned = arc_str + size_of::<ElementEntry>();
+    // ONE EIGHT-ALIGNED FIELD NOW, AND THE TAIL LOST TWO TERMS IT SHOULD NEVER HAVE HAD. The
+    // address is the only eight-aligned field left -- `arc_str` stays bound above as the width the
+    // KEY used to cost, for the same reason `opt_arc_str` does for the name.
+    //
+    // AND `kind` AND `routing_bucket` WERE IN THIS TAIL WITH NO FIELD BEHIND THEM. `65c7fc562`
+    // retired both from `BlockIndex` and this reconstruction kept adding their five bytes: the
+    // tail came to eight and rounded to eight, so it reached forty and passed. Three terms round
+    // to the same word as eight, which is exactly the blindness this file's own
+    // `every_byte_of_the_page_index_is_accounted_for` exists to narrow -- and it was the
+    // reconstruction that finally caught it, on a leg where the width moved.
+    let index_eight_aligned = size_of::<ElementEntry>();
     let index_tail = size_of::<crate::engine::storage_bucket_internals::StoredModelKind>()
-        + 2 * size_of::<bool>()
-        + size_of::<crate::index_log::IndexItemKind>()
-        + size_of::<u32>();
+        + 2 * size_of::<bool>();
     let index_rounded_tail = round_up_to(index_tail, 8);
     println!(
         "BlockIndex: {index_eight_aligned} B eight-aligned + {index_tail} B tail rounded to \
@@ -523,9 +531,9 @@ fn every_byte_of_the_page_index_is_accounted_for() {
     // THE ALIGNMENT PIN IS NOT DOMINATED, and here it is a premise rather than a flourish: the
     // reconstruction above rounds the tail up to `align_of::<BlockIndex>()`, and the per-bucket
     // arithmetic later in this module uses it as the modulus again. A width pin admits every
-    // alignment that divides it, so `== 40` is equally true at align 1, 2, 4 and 8 and says
+    // alignment that divides it, so `== 24` is equally true at align 1, 2, 4 and 8 and says
     // nothing about the modulus those sums are taken over.
-    assert_eq!(40, size_of::<BlockIndex>(), "the page entry's budgeted width moved");
+    assert_eq!(24, size_of::<BlockIndex>(), "the page entry's budgeted width moved");
     assert_eq!(
         8,
         std::mem::align_of::<BlockIndex>(),
@@ -545,16 +553,24 @@ fn every_byte_of_the_page_index_is_accounted_for() {
     // asserted as itself: packing the two flags into one byte leaves a tail that rounds to the
     // same eight. A `<` here would go red on a true statement, which is what it just did.
     let flags_packed_tail = index_tail - 2 * size_of::<bool>() + 1;
-    // AND "NO SLACK LEFT" IS ASSERTED AS EQUALITY, because equality is the form of it that can
-    // FAIL. `index_tail <= index_rounded_tail` cannot state it at all: `index_rounded_tail` IS
-    // `round_up_to(index_tail, 8)`, so that comparison holds for every tail any structure could
-    // ever have, and no change to this type could turn it red. It reads as a check and is none.
-    // Equality can go red -- in either direction -- and it is what the sentence above means: the
-    // same claim `state.rs` carries beside the width as `field_sum == size_of`.
+    // AND THE SLACK IS FIVE, NOT ZERO, WHICH IS WHAT THIS ASSERTION NOW SAYS.
+    //
+    // It asserted `index_tail == index_rounded_tail` -- "no slack left anywhere in this
+    // structure" -- and it held while the tail carried `kind` and `routing_bucket` on top of the
+    // model byte and the two flags: eight bytes in eight. Those two had already left `BlockIndex`
+    // and this reconstruction kept adding them, so the equality went on passing over a tail the
+    // entry did not have. The tail is three bytes and the rounding is eight.
+    //
+    // IT IS STILL AN EQUALITY, FOR THE REASON THE PARAGRAPH IT REPLACES GIVES. A `<=` cannot
+    // state a slack claim at all -- `index_rounded_tail` IS `round_up_to(index_tail, 8)`, so the
+    // comparison holds for every tail any structure could have and no change could turn it red.
+    // An equality on the DIFFERENCE can go red in either direction, which is what makes it a
+    // check: it is the same claim `state.rs` carries beside the width as `size_of - field_sum`.
     assert_eq!(
-        index_tail, index_rounded_tail,
+        5,
+        index_rounded_tail - index_tail,
         "the tail is {index_tail} B inside a {index_rounded_tail} B rounding, so this entry has \
-         {} B of slack again and the claim that the next field here costs a whole word is stale",
+         {} B of slack rather than the five it is priced against",
         index_rounded_tail - index_tail
     );
     assert_eq!(
@@ -719,7 +735,6 @@ enum MirrorInlineAddress {
 /// field rather than narrowing one.
 #[allow(dead_code)]
 struct MirrorPageNoDeleted {
-    object_key: Arc<str>,
     model_id: crate::engine::storage_bucket_internals::StoredModelKind,
     address: ElementEntry,
     dirty: bool,
@@ -729,7 +744,6 @@ struct MirrorPageNoDeleted {
 /// The block entry with all three flags folded into a single byte.
 #[allow(dead_code)]
 struct MirrorPageOneFlagByte {
-    object_key: Arc<str>,
     model_id: crate::engine::storage_bucket_internals::StoredModelKind,
     address: ElementEntry,
     flags: u8,
@@ -738,7 +752,6 @@ struct MirrorPageOneFlagByte {
 /// The block entry with all three flags gone entirely.
 #[allow(dead_code)]
 struct MirrorPageNoFlags {
-    object_key: Arc<str>,
     model_id: crate::engine::storage_bucket_internals::StoredModelKind,
     address: ElementEntry,
 }
@@ -749,7 +762,6 @@ struct MirrorPageNoFlags {
 /// below rather than as a proposal: the spelling is not removable, it is what names the kind.
 #[allow(dead_code)]
 struct MirrorPageEmptyTail {
-    object_key: Arc<str>,
     address: ElementEntry,
 }
 
@@ -1804,7 +1816,6 @@ fn page_for(seed: u64) -> (Arc<str>, BlockIndex) {
     (
         Arc::from(format!("key-{seed}").as_str()),
         BlockIndex {
-            object_key: Arc::from(format!("key-{seed}").as_str()),
         // Was `"strings"`, which is not a spelling the registry declares -- the plural was a
         // fixture typo that a free-form string field could not catch.
             model_id: crate::engine::storage_bucket_internals::StoredModelKind::String,
@@ -1825,7 +1836,6 @@ fn component_page(seed: u64, component: &str) -> (Arc<str>, BlockIndex) {
     (
         Arc::from("container"),
         BlockIndex {
-            object_key: Arc::from("container"),
             // Was `"hashes"`, likewise not a declared spelling.
             model_id: crate::engine::storage_bucket_internals::StoredModelKind::Hash,
             address: ElementEntry::from_parts(

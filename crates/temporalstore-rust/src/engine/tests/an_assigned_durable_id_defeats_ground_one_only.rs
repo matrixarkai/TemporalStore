@@ -208,7 +208,6 @@ const _: () = assert!(align_of::<TheIdCarriedAsAFieldInstead>() == 8);
 /// the case.
 #[allow(dead_code)]
 struct TheLiveEntryForComparison {
-    object_key: Arc<str>,
     model_id: StoredModelKind,
     address: ElementEntry,
     dirty: bool,
@@ -222,7 +221,6 @@ const _: () = assert!(align_of::<TheLiveEntryForComparison>() == align_of::<Bloc
 /// comparison above is not discriminating at all.
 #[allow(dead_code)]
 struct TheLiveEntryWithOneWordTooMany {
-    object_key: Arc<str>,
     model_id: StoredModelKind,
     address: ElementEntry,
     dirty: bool,
@@ -253,9 +251,26 @@ struct TheEntryWithNoIdentityTerm {
 
 const _: () = assert!(size_of::<TheEntryWithNoIdentityTerm>() == 24);
 
-/// PER ENTRY, NODE AGAINST NODE. The map arm holds the key beside the entry either way, so these
-/// two are what a page costs resident today and under the proposal.
-const _: () = assert!(size_of::<(u64, BlockIndex)>() == 48);
+/// AND THIS MIRROR IS NOW THE LIVE ENTRY, WHICH IS ASSERTED RATHER THAN LEFT TO BE NOTICED.
+///
+/// It was built to measure "the entry with no identity term" against an entry that had one. The
+/// entry has none: the identity lives once per object in `CoreIndex::object_block_lookup` and is
+/// resolved from the position the page is filed at. So the proposal's ENTRY SIDE and the shipped
+/// entry are one field set, and every arithmetic below that subtracts one from the other is zero.
+///
+/// THE MIRROR IS KEPT RATHER THAN FOLDED, AND ONLY BECAUSE THIS EQUALITY IS WRITTEN. Two
+/// declarations of one shape are two things to keep in step -- `entry_width_at_each_step` folded
+/// its step-one mirror away for exactly that reason, and `state.rs` has folded two probes. What
+/// keeps this one honest is that its collapse into the live type is a CHECKED claim: if either
+/// shape moves, this line fails rather than the two quietly drifting apart.
+const _: () = assert!(size_of::<TheEntryWithNoIdentityTerm>() == size_of::<BlockIndex>());
+
+/// PER ENTRY, NODE AGAINST NODE -- AND THE TWO COLUMNS HAVE MET.
+///
+/// The map arm holds the key beside the entry either way, so this is what a page costs resident.
+/// It was 48 with the identity on the entry and the proposal's side was 32; the identity left and
+/// the live element IS 32. The second assertion of this pair is the equality above.
+const _: () = assert!(size_of::<(u64, BlockIndex)>() == 32);
 const _: () = assert!(size_of::<(u64, TheEntryWithNoIdentityTerm)>() == 32);
 
 /// PER OBJECT, TOTAL AGAINST TOTAL. What a persisted key-to-id map holds for one object, payload
@@ -265,8 +280,19 @@ const _: () = assert!(size_of::<Arc<str>>() + size_of::<u64>() == 24);
 /// AND THE TOTAL ITSELF, RECONSTRUCTED FROM THE TERMS RATHER THAN RESTATED AS A LITERAL.
 ///
 /// Written this way so that a term whose width moves fails HERE instead of leaving a stale literal
-/// standing. The left side is today's per-object cost at one page per object; the right side is the
-/// proposal's, and it is larger.
+/// standing -- and this is the leg where one did move. The `> ` still holds and the difference does
+/// not: it was EIGHT and it is TWENTY-FOUR, because the entry side of the comparison got smaller
+/// and the map side did not.
+///
+/// THE PROPOSAL'S ENTRY SIDE IS NOW LEVEL WITH THE SHIPPED ONE, asserted twenty lines above, so
+/// its whole remaining cost is the per-object key-to-id map: one shared pointer to the characters
+/// and one id. That is the restatement -- the verdict is unchanged and the ARITHMETIC behind it is
+/// now entirely the map, where before it was the map minus an entry-side saving.
+///
+/// SO THE REFUSAL GOT STRONGER RATHER THAN WEAKER, which is worth saying because a number moving
+/// usually means the opposite. A proposal that cost eight bytes an object against a forty-byte
+/// entry costs twenty-four against a twenty-four-byte one: the saving it was partly paying for has
+/// already been taken by this change, and it was taken WITHOUT the map.
 const _: () = assert!(
     size_of::<(u64, TheEntryWithNoIdentityTerm)>() + size_of::<Arc<str>>() + size_of::<u64>()
         > size_of::<(u64, BlockIndex)>()
@@ -274,7 +300,14 @@ const _: () = assert!(
 const _: () = assert!(
     size_of::<(u64, TheEntryWithNoIdentityTerm)>() + size_of::<Arc<str>>() + size_of::<u64>()
         - size_of::<(u64, BlockIndex)>()
-        == 8
+        == 24
+);
+/// AND THE DIFFERENCE IS THE MAP, EXACTLY, which is the form that cannot go stale: it says the
+/// entry sides cancel and names what is left.
+const _: () = assert!(
+    size_of::<(u64, TheEntryWithNoIdentityTerm)>() + size_of::<Arc<str>>() + size_of::<u64>()
+        - size_of::<(u64, BlockIndex)>()
+        == size_of::<Arc<str>>() + size_of::<u64>()
 );
 
 #[test]
@@ -303,7 +336,11 @@ fn an_assigned_durable_id_is_priced_and_the_numbers_are_reconstructed_from_the_t
         proposal_per_object > today_per_object,
         "the per-object total is the denominator this proposal loses in"
     );
-    assert_eq!(proposal_per_object - today_per_object, 8);
+    // TWENTY-FOUR, NOT EIGHT, AND IT IS THE BASELINE THAT MOVED. The proposal's entry side is
+    // now identical to the shipped entry -- the identity has already left -- so what it adds is
+    // the per-object key-to-id map and only the map. The const block under claim 6 carries the
+    // reasoning and asserts the same difference as `Arc<str>` plus a `u64`.
+    assert_eq!(proposal_per_object - today_per_object, 24);
 }
 
 // =================================================================================================
@@ -372,13 +409,19 @@ const _: fn(crate::engine::state::ModelKey) -> Box<str> = |key| key;
 const _: fn(&crate::engine::state::ShardState) -> Vec<crate::engine::storage_bucket_internals::LiveBlockEntry> =
     crate::engine::storage_bucket_internals::collect_model_live_block_entries;
 
-/// CLAIM 7, AS ARITHMETIC. The corrected per-object total: a saving, not a regression.
+/// CLAIM 7, AS ARITHMETIC -- AND IT HAS LANDED, SO IT IS WIDTHS NOW AND NOT A DIFFERENCE.
 ///
-/// Reconstructed from the terms, with NO map term, because there is no map to add. Compare with
-/// the assertions under claim 6, which keep the superseded arithmetic beside its premise.
-const _: () = assert!(
-    size_of::<(u64, BlockIndex)>() - size_of::<(u64, TheEntryWithNoIdentityTerm)>() == 16
-);
+/// It read `size_of::<(u64, BlockIndex)>() - size_of::<(u64, TheEntryWithNoIdentityTerm)>() == 16`:
+/// the per-page saving from reading the identity out of existing structure instead of holding it
+/// on the entry. That is what this change did. Both sides are now the same type, so the difference
+/// is ZERO and an assertion of sixteen over it is false -- while an assertion of zero would be a
+/// comparison of a value with itself wearing the name of a saving.
+///
+/// SO THE CLAIM IS STATED AS THE TWO WIDTHS IT IS ABOUT. The element was 48 and is 32; the sixteen
+/// is the shared pointer that left, which is pinned as a term rather than as a subtraction. A
+/// reader who wants the saving reads it off the pair.
+const _: () = assert!(size_of::<(u64, BlockIndex)>() == 32);
+const _: () = assert!(size_of::<Arc<str>>() == 16);
 
 // =================================================================================================
 // CLAIM 8 -- THE BUCKET TTL GATES NOTHING OPERATIONAL, SO THE TTL HALF OF THE PER-WRITE REFRESH IS

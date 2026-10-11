@@ -825,10 +825,20 @@ impl<'de> Deserialize<'de> for CoreIndex {
 /// all held `page.object_key.clone()` and must go on costing one pointer rather than a copy of the
 /// characters.
 ///
-/// The kind is handed back as `&str` because that is what both sources hold it as: the lookup keys
-/// on the shared name and a tombstone row holds the one-byte spelling, whose `as_str` is static.
+/// THE KIND TERM IS GONE FROM THIS STRUCT, AND THE COMPILER IS WHAT SAID SO.
+///
+/// It carried `model_id: &'a str` beside the key, "because that is what both sources hold it as:
+/// the lookup keys on the shared name and a tombstone row holds the one-byte spelling, whose
+/// `as_str` is static". Its only readers were the agreement ties that compared the identity beside
+/// a page against the copy ON it -- those ties compared the MODEL term as well as the key, which
+/// is what made a neighbour disagreeing about either half fail. The ties went with the field and
+/// `dead_code` named this immediately.
+///
+/// IT IS REMOVED RATHER THAN KEPT FOR A FUTURE READER. Both sources still hold the kind and
+/// `identity_of` can hand it back again in one line; what a field with no reader buys is a term
+/// every caller has to pattern-match past, and the entry's own `model_id` is in scope at every one
+/// of those call sites anyway.
 pub(super) struct PageObjectIdentity<'a> {
-    pub(super) model_id: &'a str,
     pub(super) object_key: &'a Arc<str>,
 }
 
@@ -918,16 +928,12 @@ impl<'a> PageKeysByPosition<'a> {
         page: &BlockIndex,
     ) -> Option<PageObjectIdentity<'a>> {
         if page.deleted {
-            return node.tombstone_element_at(&page.address).map(|row| PageObjectIdentity {
-                model_id: row.model_id.as_str(),
-                object_key: &row.object_key,
-            });
+            return node
+                .tombstone_element_at(&page.address)
+                .map(|row| PageObjectIdentity { object_key: &row.object_key });
         }
         self.live_identity(node.routing_bucket, handle)
-            .map(|(model_id, object_key)| PageObjectIdentity {
-                model_id,
-                object_key,
-            })
+            .map(|(_model_id, object_key)| PageObjectIdentity { object_key })
     }
 
     /// WHETHER THIS NAMES NO POSITION AT ALL, which is what an UNESTABLISHED lookup looks like.
@@ -2940,10 +2946,9 @@ impl StoredPageEntry {
             deleted,
         } = self;
         let page = BlockIndex {
-            // STILL ASSIGNED, AND THIS LINE GOES WITH THE FIELD. The entry holds a copy for one
-            // more commit; the pointer is cloned rather than moved precisely so the identity is
-            // handed back as well, which is the half the load path needs.
-            object_key: Arc::clone(&object_key),
+            // AND THE IDENTITY IS NOT ASSIGNED TO IT, WHICH IS WHY THE RETURN IS A PAIR. The
+            // pointer is not cloned either: it is MOVED out as the first element, so the load
+            // path is handed the key beside the page at the cost of nothing.
             model_id,
             address,
             dirty,
@@ -3078,28 +3083,26 @@ where
                 },
             )));
         };
-        // THE TIE BACK TO THE ENTRY'S OWN COPY, FOR AS LONG AS THE ENTRY STILL HOLDS ONE.
+        // THE TIE BACK TO THE ENTRY'S OWN COPY IS GONE WITH THE COPY, AND WHAT IT ESTABLISHED
+        // IS WHY THIS ENCODER IS TRUSTED.
         //
-        // This is what says the bytes did not move: the key written below is composed from the
-        // neighbour, and this asserts character-for-character that the entry's own copy composes
-        // the same one. It compares the MODEL term too, which `block_index_written_key` reads off
-        // the page -- so a neighbour that disagrees about either half fails here. It goes when the
-        // field does, because there will be nothing left to compare.
-        debug_assert_eq!(
-            block_index_written_key(&page.object_key, page),
-            crate::index_log::block_ref_key_from_parts(
-                beside.model_id,
-                beside.object_key,
-                None,
-                page.address.block_slab_id(),
-                page.address.offset(),
-                page.address.length(),
-                page.address.block_id().unwrap_or_default(),
-                page.address.generation().unwrap_or_default(),
-            ),
-            "the identity held BESIDE the page must compose the same stored key as the identity \
-             held ON it, or moving the identity off the entry would move the bytes"
-        );
+        // It asserted, character for character, that the key composed from the NEIGHBOUR is the
+        // key the entry's own copy composed -- on every page of every run of this suite while
+        // both sources existed. That is the whole of the evidence that moving the identity off
+        // the entry did not move the stored bytes, and it is unrepeatable now: there is one
+        // source, so anything written here would compare a renderer with itself.
+        //
+        // IT IS DELETED RATHER THAN POINTED AT THE SURVIVING SOURCE, and the mutation is tempting
+        // and wrong: the left side would become `block_index_written_key(beside.object_key, page)`
+        // while the right side already renders `beside.object_key`, so the result is a comparison
+        // of two RENDERERS of one input wearing the name of a comparison of two SOURCES. A reader
+        // would inherit the stronger claim from the prose.
+        //
+        // WHERE THE CLAIM LIVES NOW, and it is a golden rather than a tie:
+        // `page_entry_names::the_stored_spelling_of_a_page_entry_moved_in_exactly_one_slot` pins
+        // the four written forms byte for byte, and
+        // `an_index_written_before_this_change_loads_page_for_page` pins that a row written by a
+        // binary that still had the field decodes.
         entries.push((
             block_index_written_key(beside.object_key, page),
             PageEntryAt { page, object_key: beside.object_key },
@@ -5160,31 +5163,40 @@ pub(super) enum BucketLayoutState {
 // key; what changes is that the thing it is read into is not the entry.
 #[derive(Debug, Clone)]
 pub(super) struct BlockIndex {
-    pub(super) object_key: Arc<str>,
     pub(super) model_id: crate::engine::storage_bucket_internals::StoredModelKind,
     pub(super) address: ElementEntry,
     pub(super) dirty: bool,
     pub(super) deleted: bool,
 }
 
-/// One per stored block. TWO shared names, a one-byte model spelling, an address, and three
-/// flags -- 40 bytes of field in 40, WITH NO SLACK LEFT.
+/// One per stored block, AND IT CARRIES NO IDENTITY OF ITS OWN: a one-byte model spelling, an
+/// address, and two flags -- 19 bytes of field in 24, with FIVE OF SLACK.
 ///
-/// THE DECOMPOSITION IN THIS PARAGRAPH WAS STALE AND THE CONST ASSERT BELOW WAS NOT. It read "56
-/// bytes of field in 56 ... It was 52 of field in 56 before the entry absorbed the index-log row's
-/// two locating fields and shed the flag nothing maintained", and at the flags it read "at 60 four
-/// again -- and at 56 it is ZERO". The element-name field has since been removed: the entry is 40
-/// of field in 40, the const assert thirty lines below reconstructs that sum FROM THE TYPES, and a
-/// prose decomposition is the one form of this that nothing can fail. It is corrected here rather
-/// than deleted, because the history is what tells the next reader that every field decision in
-/// this structure was priced against slack it no longer has.
+/// THIS PARAGRAPH CONTRADICTED THE CONST ASSERT THIRTY LINES BELOW IT, TWICE OVER, AND THAT IS WHY
+/// IT IS WRITTEN UP RATHER THAN QUIETLY FIXED. It read "TWO shared names ... 40 bytes of field in
+/// 40, WITH NO SLACK LEFT" and then, a paragraph later, "the entry is 40 of field in 40". The const
+/// block asserted `field_sum == 35` and `size_of - field_sum == 5` on the same revision. Both
+/// numbers in the prose were wrong and the const assert was right -- and the prose is the form
+/// nothing can fail, so it went on being read as the summary of a block that said something else.
 ///
-/// 40, NOT 56, SINCE THE ELEMENT NAME LEFT: `Option<Arc<str>>` is a sixteen-byte fat pointer with a
-/// niche, so the field set went 56 -> 40 and the width with it -- a whole two words rather than one
-/// word and some rounding. SO THE NEXT FIELD ADDED HERE STILL COSTS EIGHT BYTES, NOT NONE: 40 is a
-/// multiple of eight, so the field set packs exactly and the first addition rounds the type up by a
-/// full word. `element_ordinal_reuse::the_width_an_element_ordinal_would_take_and_the_ceiling_that_
-/// implies` prices both candidate ordinal widths at 48 for that reason.
+/// THE HISTORY IS KEPT BECAUSE IT IS THE WARNING. Earlier drafts read "56 bytes of field in 56",
+/// before that "52 of field in 56", and at the flags "at 60 four again -- and at 56 it is ZERO".
+/// Every one of those was a decomposition that had stopped describing the type, and each survived
+/// because `size_of` steps at a word: a field set can lose five bytes and round to the same
+/// number. Every field decision taken here while the entry was believed to be exactly full has to
+/// be RE-PRICED rather than inherited.
+///
+/// 24, NOT 40, SINCE THE IDENTITY LEFT: `Arc<str>` is a sixteen-byte fat pointer, so the field set
+/// went 35 -> 19 and the width 40 -> 24 -- a whole two words rather than one word and some
+/// rounding. That is the SECOND two-word step out of this structure in two legs; the first was
+/// 56 -> 40 when the element name left, which was `Option<Arc<str>>`, sixteen bytes with a niche.
+///
+/// AND A FIELD UP TO FIVE BYTES WIDE IS STILL FREE HERE. Nineteen is not a multiple of eight, so
+/// an eight-aligned struct holding it has five bytes standing empty by construction -- as it did
+/// at 40, where the field sum was thirty-five. What changed is the width, not the room in it.
+/// `element_ordinal_reuse::the_width_an_element_ordinal_would_take_and_the_ceiling_that_implies`
+/// prices both candidate ordinal widths against the OLD width and has to be re-read against this
+/// one.
 ///
 /// 56, not 64, since the address inside it is 16 bytes and not 24; 64, not 72, before that, since
 /// the address shed the `routing_bucket` the read path now derives from the key and narrowed its
@@ -5201,14 +5213,14 @@ pub(super) struct BlockIndex {
 /// counterfactuals beside the width, because the arithmetic is the claim and it was the per-field
 /// reading of it that declared this blocked.
 ///
-/// AND THE FLAGS STILL DO NOT PAY, THOUGH NO LONGER BECAUSE OF SLACK. At 99 bytes of field the
-/// slack was five, at 91 five, at 83 five, at 68 four, at 60 four again, at 56 it was ZERO -- and
-/// at 40 it is ZERO still, because 40 packs exactly as 56 did. Packing the TWO flags that remain
-/// would reclaim nothing, because the tail rounds to one word with or without them, and it would
-/// still move the stored index, which spells each of them as its own key. What changed is that the
-/// slack this claim used to be READ OFF is gone, so the claim is asserted directly in
-/// `pages_per_bucket::every_byte_of_the_page_index_is_accounted_for` instead of through the room
-/// left over beside it.
+/// AND THE FLAGS STILL DO NOT PAY, THOUGH THE SLACK TABLE IN THIS PARAGRAPH WAS PART OF THE
+/// CONTRADICTION. It read "at 56 it was ZERO -- and at 40 it is ZERO still, because 40 packs
+/// exactly as 56 did", against a const block asserting five on the same revision. The slack was
+/// FIVE at 40 and is FIVE at 24. Packing the two flags that remain would reclaim nothing, because
+/// the tail rounds to one word with or without them, and it would still move the stored index,
+/// which spells each of them as its own key. The claim is asserted directly in
+/// `pages_per_bucket::every_byte_of_the_page_index_is_accounted_for` rather than read off the room
+/// beside it.
 ///
 /// AND THE WIRE DID MOVE, IN EXACTLY ONE SLOT. This paragraph said "WHAT DID NOT MOVE IS THE WIRE
 /// -- the spelling is still written and read as the string it always was; only the in-memory width
@@ -5249,7 +5261,7 @@ pub(super) struct BlockIndex {
 // rather than a curiosity: `page_entry_handles`, `pages_per_bucket` and `per_item_byte_budget`
 // each reconstruct this width as eight-aligned field plus a tail rounded up to
 // `align_of::<BlockIndex>()`, so this value is the modulus of those decompositions.
-const _: () = assert!(std::mem::size_of::<BlockIndex>() == 40);
+const _: () = assert!(std::mem::size_of::<BlockIndex>() == 24);
 const _: () = assert!(std::mem::align_of::<BlockIndex>() == 8);
 
 // THE WIDTH, MEASURED AT THIS COMMIT -- not a target.
@@ -5258,10 +5270,10 @@ const _: () = assert!(std::mem::align_of::<BlockIndex>() == 8);
 // they are made of, so a field whose own width moves elsewhere fails HERE rather than
 // passing silently.
 //
-// THE `component` TERM IS GONE FROM THIS SUM, which is the whole of the step. It stood between
-// `model_id` and `address` and was `size_of::<Option<Arc<str>>>()` -- sixteen bytes, a fat pointer
-// with a niche -- so the field set went 56 -> 40 and the width with it, a whole two words rather
-// than one word and some rounding.
+// THE `object_key` TERM IS GONE FROM THIS SUM, which is the whole of the step. It was
+// `size_of::<Arc<str>>()` -- sixteen bytes, a fat pointer -- so the field set went 35 -> 19 and
+// the width 40 -> 24, a whole two words rather than one word and some rounding. The `component`
+// term went the same way one leg earlier, from 56 -> 40.
 //
 // AND THIS BLOCK IS NOW THE ONLY DECOMPOSITION OF THIS STRUCT. `TheEntryWithoutAnElementName`
 // stood below it: a second struct listing the same fields minus one, which recorded what the entry
@@ -5272,27 +5284,34 @@ const _: () = assert!(std::mem::align_of::<BlockIndex>() == 8);
 // pair of claims it was built to hold apart: the SUM of the field widths is 40, and the TYPE
 // measures 40, neither inferred from the other.
 const _: () = {
-    let field_sum = std::mem::size_of::<Arc<str>>()                          // object_key
-        + std::mem::size_of::<crate::engine::storage_bucket_internals::StoredModelKind>() // model_id
+    let field_sum = std::mem::size_of::<crate::engine::storage_bucket_internals::StoredModelKind>() // model_id
         + std::mem::size_of::<ElementEntry>()                                // address
         + std::mem::size_of::<bool>()                                        // dirty
         + std::mem::size_of::<bool>();                                       // deleted
     // SPELLED AS TYPES, NOT AS LITERALS. A hand-written `1` for the model spelling goes on being
     // right by luck if the enum grows a payload; read off the type it goes red here instead.
-    assert!(field_sum == 35);
+    assert!(field_sum == 19);
     assert!(std::mem::size_of::<BlockIndex>() == (field_sum + 7) / 8 * 8);
-    // THE WIDTH DID NOT MOVE, AND THIS BLOCK HAS TO SAY SO OR IT PASSES BY COINCIDENCE.
+    // AND THE WIDTH DID MOVE THIS TIME, WHICH IS WHY THE PAIR ABOVE IS NOT ENOUGH ON ITS OWN.
     //
-    // Two fields left the entry and `size_of` is still FORTY. Thirty-five rounds up to forty, so
-    // the removal bought five bytes of slack and no width. That matters twice over: nobody should
-    // read the commit that removed them as the step that moved the number, and this block itself
-    // would have gone on passing untouched -- it reconstructed the sum from the two retired TYPES,
-    // which still exist, so it summed to forty and compared equal to a forty-byte struct. It was
-    // true of nothing and would not have failed. Restated rather than left standing.
+    // The previous leg removed two fields and `size_of` stayed at FORTY, because thirty-five
+    // rounds back to forty; this leg removes sixteen bytes and forty becomes twenty-four. So the
+    // two claims this block has always held apart matter in opposite directions: last time the
+    // sum moved and the width did not, this time both moved.
     //
-    // WHAT WOULD MOVE IT: the sixteen-byte shared pointer to the object key. Thirty-five minus
-    // sixteen is nineteen, which rounds to twenty-four.
-    assert!(std::mem::size_of::<BlockIndex>() == 40);
+    // THE FOUR LINES TOGETHER ADMIT ONLY TWENTY-FOUR, which is the property asked for rather than
+    // a literal restated. `field_sum == 19` fixes the sum; `size_of == (field_sum + 7) / 8 * 8`
+    // then forces the width to be nineteen rounded up, which is twenty-four and nothing else;
+    // `size_of == 24` says it independently; and the slack line says the five bytes are real. A
+    // sixteen-byte or thirty-two-byte struct satisfies none of them -- sixteen cannot hold a
+    // nineteen-byte field set and thirty-two is not nineteen rounded up -- so no other width can
+    // pass this block by coincidence.
+    //
+    // AND NO NEIGHBOUR INEQUALITY IS WRITTEN BESIDE THEM. An `== 24` entails `!= 23` and `!= 25`
+    // over the same expression, so a bracket could fail in no state the equality admits; thirteen
+    // such pairs were removed from this tree for exactly that reason. The alignment pin above is
+    // NOT dominated the same way, because a width admits every alignment that divides it.
+    assert!(std::mem::size_of::<BlockIndex>() == 24);
     assert!(std::mem::size_of::<BlockIndex>() - field_sum == 5);
 };
 
@@ -5379,25 +5398,25 @@ const _: () = {
 const _: () = {
     #[allow(dead_code)]
     struct TheEntryHoldingOneAddressWord {
-        object_key: Arc<str>,
         model_id: crate::engine::storage_bucket_internals::StoredModelKind,
         address: crate::block_store::BlockAddress,
         dirty: bool,
         deleted: bool,
     }
-    let field_sum = std::mem::size_of::<Arc<str>>()
-        + std::mem::size_of::<crate::engine::storage_bucket_internals::StoredModelKind>()
+    let field_sum = std::mem::size_of::<crate::engine::storage_bucket_internals::StoredModelKind>()
         + std::mem::size_of::<crate::block_store::BlockAddress>()
         + std::mem::size_of::<bool>()
         + std::mem::size_of::<bool>();
-    // THE PROBE LOST THE TERM THE LIVE ENTRY LOST, WHICH IS WHY THE NUMBER MOVED FROM 48 TO 32.
+    // THE PROBE LOST THE TERM THE LIVE ENTRY LOST, FOR THE SECOND TIME, AND THE NUMBER WENT
+    // 48 -> 32 -> 16.
     //
-    // It carried a `component: Option<Arc<str>>` -- sixteen bytes -- and measured 48, because it
-    // was written against an entry that still named its element. This branch removed that field
-    // from `BlockIndex`, and the probe's whole job is to answer "what would THIS entry measure if
-    // its address field held the bare word". Keeping the term would have the probe measure a
-    // structure that cannot exist here, and the tie at the bottom of this block is what stops that
-    // -- it is the assertion that went red on the merge.
+    // It carried a `component: Option<Arc<str>>` and measured 48; that field left `BlockIndex` one
+    // leg ago and the probe went to 32. It carried an `object_key: Arc<str>` and has now lost that
+    // too, which takes it to 16. The probe's whole job is to answer "what would THIS entry measure
+    // if its address field held the bare word", so keeping either term would have it measure a
+    // structure that cannot exist here -- and the tie at the bottom of this block is what stops
+    // that. It is the assertion that went red on the previous merge, and it is why the probe was
+    // corrected rather than left describing the old entry.
     //
     // THE REFUSAL ABOVE IS UNTOUCHED BY ANY OF THIS, which is worth saying because only the width
     // moved. Three of the four terms the holder carries are read through this field; the census
@@ -5406,33 +5425,35 @@ const _: () = {
     // not whether it can be taken.
     //
     // THE TWO NUMBERS THE STEP IS ABOUT, both asserted and neither inferred from the other.
-    assert!(field_sum == 27);
-    assert!(std::mem::size_of::<TheEntryHoldingOneAddressWord>() == 32);
-    // AND THE SLACK IS FIVE, NOT ZERO -- RESTATED, BECAUSE THE PROBE WAS DESCRIBING TWO FIELDS
-    // THIS ENTRY NO LONGER HAS.
+    assert!(field_sum == 11);
+    assert!(std::mem::size_of::<TheEntryHoldingOneAddressWord>() == 16);
+    // AND THE SLACK IS FIVE, WHICH IT HAS BEEN THROUGH EVERY CORRECTION OF THIS BLOCK.
     //
-    // It read "ZERO SLACK SURVIVES THE NARROWING: 32 is a multiple of eight, so the step is a
-    // whole word and not a word of field plus some rounding", and asserted it as
+    // It once read "ZERO SLACK SURVIVES THE NARROWING: 32 is a multiple of eight, so the step is a
+    // whole word and not a word of field plus some rounding", asserted as
     // `size_of::<probe>() == field_sum`. That was true of a probe carrying `kind` and
-    // `routing_bucket` -- 32 bytes of field in 32 -- and those two left `BlockIndex` in
-    // `65c7fc562`. Without them the probe holds TWENTY-SEVEN bytes of field in thirty-two.
+    // `routing_bucket`, which left `BlockIndex` in `65c7fc562` -- and the width did not move when
+    // they went, because 32 and 27 both round to 32, so the width pin and the tie both went on
+    // passing while the DECOMPOSITION was false. Eleven rounds to sixteen and the slack is five
+    // again.
     //
-    // THE WIDTH DID NOT MOVE AND THAT IS WHY NOTHING FAILED. 32 and 27 both round to 32, so the
-    // width pin above went on passing and so did the tie below; what was false was the
-    // DECOMPOSITION, which is the half a width cannot check. The same shape is recorded against
-    // `entry_width_at_each_step`, where the step-zero control passed through the identical error
-    // and is now pinned by field OFFSETS for exactly that reason.
+    // THAT THE SLACK IS FIVE AT 40, AT 32, AT 24 AND AT 16 IS NOT A COINCIDENCE WORTH TRUSTING:
+    // it is three bytes of tail -- a one-byte model spelling and two flags -- rounding to a word
+    // in every one of those shapes. It is asserted rather than inferred for the same reason the
+    // width is.
     assert!(std::mem::size_of::<TheEntryHoldingOneAddressWord>() - field_sum == 5);
     // TIED TO `BlockIndex` ITSELF, so this cannot go on describing a type that moved. The real
     // entry must equal the probe plus exactly what the holder carries over the bare word.
     //
-    // THE EXPRESSION IS UNCHANGED AND IT IS THE PROBE THAT MOVED. 32 + (16 - 8) is 40, which is
-    // what the live entry measures; it was 48 + (16 - 8) = 56 against main's. So the tie did its
-    // job twice over: it refused the merge, and it still holds with no term added to it.
+    // THE EXPRESSION IS UNCHANGED AND IT IS THE PROBE THAT MOVED, FOR THE THIRD TIME.
+    // 16 + (16 - 8) is 24, which is what the live entry measures; it was 32 + (16 - 8) = 40 before
+    // this leg and 48 + (16 - 8) = 56 before the one before. So the tie has now held across three
+    // different pairs of widths with no term touched, which is what a reconstruction is for.
     //
-    // AND IT IS A TIE BETWEEN TWO WIDTHS, so it could not see the two retired fields either --
-    // the probe's width is 32 whether or not they are declared on it. Recorded here rather than
-    // left as an apparent success.
+    // AND IT IS A TIE BETWEEN TWO WIDTHS, so it could not see the retired fields: the probe's
+    // width was 32 whether or not `kind` and `routing_bucket` were declared on it. It cannot
+    // check a decomposition, only a relation between two of them. Recorded here rather than left
+    // as an apparent success.
     assert!(
         std::mem::size_of::<BlockIndex>()
             == std::mem::size_of::<TheEntryHoldingOneAddressWord>()
@@ -5473,27 +5494,24 @@ const _: () = {
 // it is one. Every field decision taken here while the entry was believed to be exactly full has
 // to be re-priced rather than inherited.
 const _: () = {
-    #[allow(dead_code)]
-    struct TheEntryAtTheEndOfTheNarrowings {
-        object_key: u32,
-        model_id: crate::engine::storage_bucket_internals::StoredModelKind,
-        address: crate::block_store::BlockAddress,
-        dirty: bool,
-        deleted: bool,
-    }
-    let field_sum = std::mem::size_of::<u32>()
-        + std::mem::size_of::<crate::engine::storage_bucket_internals::StoredModelKind>()
-        + std::mem::size_of::<crate::block_store::BlockAddress>()
-        + std::mem::size_of::<bool>()
-        + std::mem::size_of::<bool>();
-    // THE TWO NUMBERS, asserted independently and neither read off the other.
-    assert!(field_sum == 15);
-    assert!(std::mem::size_of::<TheEntryAtTheEndOfTheNarrowings>() == 16);
-    // THE ROUNDING RELATION, so a field set that stops rounding to 24 fails here.
-    assert!(std::mem::size_of::<TheEntryAtTheEndOfTheNarrowings>() == (field_sum + 7) / 8 * 8);
-    // THE SLACK, MEASURED AT ONE. Written as its own assertion because this block exists to
-    // correct the claim, and the claim has now been wrong twice -- at zero, then at four.
-    assert!(std::mem::size_of::<TheEntryAtTheEndOfTheNarrowings>() - field_sum == 1);
+    // THIS PROBE HAS FOLDED INTO THE ONE ABOVE, AND THE IDENTITY LEAVING IS WHAT DID IT.
+    //
+    // It declared `object_key: u32` -- the object key as an ORDINAL rather than a shared name --
+    // and measured the shape at the end of the leg: 15 bytes of field in 16, slack one. The
+    // ordinal was the narrowing it was waiting for; what happened instead is that the key LEFT,
+    // so the shape at the end of the leg has no object term at all and is field for field the
+    // `TheEntryHoldingOneAddressWord` declared thirty lines above: 11 of field in 16, slack five.
+    //
+    // TWO PROBES OF ONE SHAPE ARE TWO THINGS TO KEEP IN STEP, and the block above has already
+    // recorded what that costs -- `TheEntryWithoutAnElementName` stood below it for exactly this
+    // reason and was folded in for exactly this reason. So the declaration is gone and what is
+    // kept here is the half this block alone held: the live entry's own sum and slack, and the
+    // relation between the live entry and the end of the leg.
+    //
+    // THE NUMBERS IT PUBLISHED ARE NOT SILENTLY DROPPED. "15 of field in 16, slack one" was
+    // arithmetic about an ordinal that is not being added; the end of the leg is 11 of field in
+    // 16 with five of slack, asserted above. A reader who comes looking for the one-byte slack
+    // should find this paragraph rather than the assertion.
     // TIED TO `BlockIndex` ITSELF, through its field sum rather than its width -- the widths
     // differ by a rounding and the field sums differ by exactly the narrowings.
     //
@@ -5506,35 +5524,49 @@ const _: () = {
     // exactly the five bytes of slack that opened up, and 40 == 40 went on passing. It was
     // arithmetic about two fields that do not exist.
     //
-    // SO THE SUM IS THE LIVE FIVE TERMS AND THE RELATION IS A ROUNDING, not an equality. The live
-    // entry holds 35 bytes of field in 40, and an equality between a field sum and a width can
+    // SO THE SUM IS THE LIVE FOUR TERMS AND THE RELATION IS A ROUNDING, not an equality. The live
+    // entry holds 19 bytes of field in 24, and an equality between a field sum and a width can
     // only be written for a field set that happens to pack exactly -- which is a coincidence to
     // assert, not an invariant.
-    let live_field_sum = std::mem::size_of::<Arc<str>>()
-        + std::mem::size_of::<crate::engine::storage_bucket_internals::StoredModelKind>()
-        + std::mem::size_of::<ElementEntry>()
+    // THE END OF THE LEG'S OWN SUM, RECOMPUTED HERE RATHER THAN READ OFF A SECOND STRUCT.
+    //
+    // It used to come from `TheEntryAtTheEndOfTheNarrowings`, which is folded away: the shape is
+    // field for field `TheEntryHoldingOneAddressWord` above. The sum is spelled from the TYPES so
+    // the relation below is still a reconstruction, and it is asserted on its own line so that a
+    // term whose width moves fails here instead of inside the relation.
+    let field_sum = std::mem::size_of::<crate::engine::storage_bucket_internals::StoredModelKind>()
+        + std::mem::size_of::<crate::block_store::BlockAddress>()
         + std::mem::size_of::<bool>()
         + std::mem::size_of::<bool>();
-    assert!(live_field_sum == 35);
+    assert!(field_sum == 11);
+    let live_field_sum =
+        std::mem::size_of::<crate::engine::storage_bucket_internals::StoredModelKind>()
+            + std::mem::size_of::<ElementEntry>()
+            + std::mem::size_of::<bool>()
+            + std::mem::size_of::<bool>();
+    assert!(live_field_sum == 19);
     assert!(std::mem::size_of::<BlockIndex>() == (live_field_sum + 7) / 8 * 8);
     assert!(std::mem::size_of::<BlockIndex>() - live_field_sum == 5);
-    // AND THE DELTAS ARE TWO NOW, NOT THREE. This read `field_sum + (ElementEntry - BlockAddress)
-    // + size_of::<Option<Arc<str>>>() + (Arc<str> - u32)`, naming the three narrowings that stood
-    // between the live entry and the end of the leg. The middle one -- the element name leaving --
-    // HAS LANDED on this branch, so it is no longer a difference between the two shapes and
-    // naming it here would double-count it. What is left between 35 of field and 15 is the address
-    // word and the object key: eight bytes and twelve.
+    // AND THE DELTA IS ONE NOW, NOT TWO AND NOT THREE. This read `field_sum +
+    // (ElementEntry - BlockAddress) + size_of::<Option<Arc<str>>>() + (Arc<str> - u32)`, naming
+    // the three narrowings that stood between the live entry and the end of the leg. Two have
+    // landed: the element name left one leg ago and the identity left on this one. Naming either
+    // here would double-count it.
     //
-    // THE EXPRESSION IS UNCHANGED AND BOTH SIDES MOVED BY THE FIVE BYTES THE RETIRED FIELDS
-    // CARRIED -- 40 == 20 + 8 + 12 became 35 == 15 + 8 + 12 -- which is why this one assertion
-    // survives the restatement with no term touched. That is also why it could not have caught
-    // the staleness: the two retired terms appeared on BOTH sides and cancelled.
+    // WHAT IS LEFT BETWEEN 19 OF FIELD AND 11 IS THE ADDRESS WORD AND NOTHING ELSE -- eight
+    // bytes, the one narrowing this structure still has in front of it, and the one its own block
+    // above refuses on three measured grounds rather than on width.
+    //
+    // SO THE SHAPE OF THIS ASSERTION CHANGED AND THAT IS THE POINT. It used to survive each leg
+    // untouched because the retired terms appeared on BOTH sides and cancelled -- which is also
+    // why it could never have caught the staleness. The `(Arc<str> - u32)` term does not cancel:
+    // it was the ordinal narrowing, and with the key gone there is no object term on either side
+    // for it to describe. Removing it is the whole of the fold.
     assert!(
         live_field_sum
             == field_sum
                 + (std::mem::size_of::<ElementEntry>()
                     - std::mem::size_of::<crate::block_store::BlockAddress>())
-                + (std::mem::size_of::<Arc<str>>() - std::mem::size_of::<u32>())
     );
 };
 
@@ -5629,94 +5661,37 @@ impl CoreIndex {
     /// tombstone refile owes the lookup nothing and why the two sites this serves can do their
     /// tombstone pass after their live pass with no filing in between.
     ///
-    /// AND IT IS A SCAFFOLD WITH A LIFETIME, said here so the next reader does not inherit it as
-    /// furniture. It reads `page.object_key`, so it is one of the readers that has to go when the
-    /// identity leaves the entry -- at which point its only possible source would be the lookup it
-    /// is checking, and the check would be comparing the lookup with itself. It exists to earn the
-    /// removal of the two rebuild calls, and it is spent once the field is gone.
-    #[cfg(debug_assertions)]
-    #[track_caller]
-    pub(super) fn debug_assert_lookup_matches_the_pages(&self) {
-        let from_the_lookup = self.lookup_positions_for_comparison();
-        let mut from_the_pages: Vec<(String, String, u32, u64)> = self
-            .bucket_map
-            .iter()
-            .flat_map(|(routing_bucket, bucket)| {
-                bucket
-                    .block_index
-                    .iter()
-                    .filter(|(_, page)| !page.deleted)
-                    .map(move |(handle, page)| {
-                        (
-                            page.model_id.as_str().to_string(),
-                            page.object_key.to_string(),
-                            *routing_bucket,
-                            *handle,
-                        )
-                    })
-            })
-            .collect();
-        from_the_pages.sort();
-        debug_assert_eq!(
-            from_the_lookup,
-            from_the_pages,
-            "the object lookup does not describe this index's live pages: {} position(s) in the \
-             lookup against {} named by the pages. A site that files a page is not filing the \
-             lookup for it, or is filing it differently from the way a rebuild would",
-            from_the_lookup.len(),
-            from_the_pages.len()
-        );
-    }
-
-    /// The lookup as a comparable set of (kind, object key, bucket, handle).
-    ///
-    /// Sorted rather than hashed, so a disagreement prints in a stable order; and built from
-    /// `iter()` rather than from a `PartialEq` on the lookup, because the arms that would collapse
-    /// -- which slot an id sits in, how a tier is represented -- are not part of the claim. What
-    /// the claim is about is which positions name which object.
-    #[cfg(debug_assertions)]
-    fn lookup_positions_for_comparison(&self) -> Vec<(String, String, u32, u64)> {
-        let mut rows: Vec<(String, String, u32, u64)> = self
-            .object_block_lookup
-            .iter()
-            .flat_map(|(model_id, object_key, refs)| {
-                refs.iter().map(move |block_ref| {
-                    (
-                        model_id.to_string(),
-                        object_key.to_string(),
-                        block_ref.routing_bucket,
-                        block_ref.block_ref_key,
-                    )
-                })
-            })
-            .collect();
-        rows.sort();
-        rows
-    }
-
-    pub(super) fn rebuild_object_block_lookup(&mut self) {
-        // The rebuild is already O(blocks); establishing the total here costs nothing extra and
-        // is what lets the stats path stop walking the shard.
-        self.object_component_block_refs = Some(0);
-        self.object_block_lookup.clear();
-        let refs = self
-            .bucket_map
-            .iter()
-            .flat_map(|(routing_bucket, bucket)| {
-                bucket.block_index.iter().map(move |(block_ref_key, page)| {
-                    (*routing_bucket, *block_ref_key, page.clone())
-                })
-            })
-            .collect::<Vec<_>>();
-        for (routing_bucket, block_ref_key, page) in refs {
-            self.insert_object_block_lookup(
-                routing_bucket,
-                block_ref_key,
-                &Arc::clone(&page.object_key),
-                &page,
-            );
-        }
-    }
+    // AND IT WAS SPENT, EXACTLY AS ITS OWN DOC SAID IT WOULD BE. The paragraph that stood here
+    // read: "It reads `page.object_key`, so it is one of the readers that has to go when the
+    // identity leaves the entry -- at which point its only possible source would be the lookup it
+    // is checking, and the check would be comparing the lookup with itself. It exists to earn the
+    // removal of the two rebuild calls, and it is spent once the field is gone."
+    //
+    // THE FIELD IS GONE AND `debug_assert_lookup_matches_the_pages` IS DELETED, with
+    // `lookup_positions_for_comparison`, which had no other caller. It is not pointed at the
+    // surviving source for the reason it gave itself: there is one source now, so any version of
+    // it would compare that source with itself and pass on every store including a damaged one.
+    //
+    // WHAT IT BOUGHT AND WHERE THAT OBLIGATION SITS NOW. It licensed the removal of two
+    // whole-shard `rebuild_object_block_lookup()` calls on the load path by verifying, on every
+    // debug run of every test, that filing-as-you-go leaves the lookup exactly where a rebuild
+    // would have. The obligation moved to the producers: every site that places a page files it,
+    // every site that drops one un-files it, and `fold_delta_block_items` carries the note that
+    // those two are ONE obligation.
+    //
+    // WHAT IS LOST IS THE WHOLE-INDEX CROSS-CHECK, and that is stated rather than papered over.
+    // The checkable half that survives is the converse -- every position the lookup names holds a
+    // live page -- and it is NOT written here, because a new assertion has to be driven red
+    // before it is worth anything and this commit is not the place to drive one. It is the next
+    // guard this area owes.
+    //
+    // `rebuild_object_block_lookup` GOES WITH THEM, AND IT IS THE SAME ARGUMENT ONE LEVEL UP. It
+    // rebuilt the lookup by walking the pages and reading each one's key -- so with the key off
+    // the entry there is nothing to rebuild FROM. The load path does not need it: the decode
+    // returns `BucketNodeWithPageKeys`, the identities beside the pages, and files as it decodes.
+    // It had no production caller left and six test callers, each of which either compared the
+    // maintained lookup against a fresh rebuild -- an oracle with only one side now -- or used it
+    // to establish a lookup the write path already establishes.
 
     /// Takes the handle the block index filed this block under, so the two cannot name different
     /// things. It used to take the rendered key by shared pointer; the key is a number now and
@@ -6007,16 +5982,7 @@ pub(super) fn next_block_index_for_object(
                     block.model_id.as_str() == model_id
                         && identities
                             .identity_of(bucket, **handle, block)
-                            .is_some_and(|beside| {
-                                // THE TIE BACK TO THE ENTRY'S OWN COPY. It goes with the field.
-                                debug_assert_eq!(
-                                    &*block.object_key,
-                                    &**beside.object_key,
-                                    "the identity beside this block names a different object \
-                                     from the one on it"
-                                );
-                                &**beside.object_key == object_key
-                            })
+                            .is_some_and(|beside| &**beside.object_key == object_key)
                 })
                 .filter_map(|(_, block)| block.address.block_id())
                 .max()
@@ -6353,9 +6319,13 @@ mod component_lookup_tests {
     /// name to file, so the clause after "whatever" has no values to range over and the assertion
     /// would pass on any insert at all. The half that can still move is asserted instead -- see
     /// [`the_insert_accumulates_an_objects_pages_into_the_one_slot`].
-    fn page(object: &str) -> BlockIndex {
+    /// AND THE `object` PARAMETER IS REMOVED RATHER THAN RENAMED `_object`, which is the
+    /// treatment `entry_count_versus_page_count::page_at` already took for a dead `component`
+    /// argument and for the same reason: a caller that still tries to name an object here should
+    /// be a compile error and not a silent no-op. The entry has no field for it; the callers pass
+    /// the key to `insert_object_block_lookup` themselves.
+    fn page() -> BlockIndex {
         BlockIndex {
-            object_key: Arc::from(object.to_string()),
             model_id: crate::engine::storage_bucket_internals::StoredModelKind::Hash,
             address: ElementEntry::from_parts(0, 0, 0, None, Some(0)),
             dirty: false,
@@ -6450,14 +6420,10 @@ mod component_lookup_tests {
         // increments only `if let Some(total)`, so a count that starts at "unknown" cannot be
         // incremented into a right answer.
         let mut index = index;
+        let object_key: Arc<str> = Arc::from(object);
         for i in 0..pages {
-            let filed = page(object);
-            index.insert_object_block_lookup(
-                i,
-                u64::from(i),
-                &std::sync::Arc::clone(&filed.object_key),
-                &filed,
-            );
+            let filed = page();
+            index.insert_object_block_lookup(i, u64::from(i), &object_key, &filed);
         }
         index
     }
@@ -6531,14 +6497,10 @@ mod component_lookup_tests {
         // The counter must be established before the inserts, for the reason `core_with` gives.
         index.object_component_block_refs = Some(0);
         // DESCENDING: (3,3), (2,2), (1,1), (0,0).
+        let object_key: Arc<str> = Arc::from("k");
         for i in (0..PAGES).rev() {
-            let filed = page("k");
-            index.insert_object_block_lookup(
-                i,
-                u64::from(i),
-                &std::sync::Arc::clone(&filed.object_key),
-                &filed,
-            );
+            let filed = page();
+            index.insert_object_block_lookup(i, u64::from(i), &object_key, &filed);
         }
 
         let refs = index
