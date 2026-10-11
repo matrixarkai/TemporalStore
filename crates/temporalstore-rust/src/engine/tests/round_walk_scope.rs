@@ -389,15 +389,17 @@ fn scoped_live_page_summaries(
     end: u32,
 ) -> (BTreeMap<u32, u64>, u64) {
     let dirty: Vec<u32> = shard.dirty_objects.bucket_ids().collect();
+    let named = super::PageObjects::of(&shard.bucket_index);
     let mut credited = BTreeMap::<u32, u64>::new();
     let mut visits = 0u64;
     for routing_bucket in dirty {
         let Some(bucket) = shard.bucket_index.bucket_map.get(&routing_bucket) else {
             continue;
         };
-        for page in bucket.block_index.values() {
+        for (handle, _page) in &bucket.block_index {
             visits += 1;
-            let credited_to = block_routing_bucket(&page.object_key, start, end);
+            let credited_to =
+                block_routing_bucket(named.at(bucket.routing_bucket, *handle), start, end);
             *credited.entry(credited_to).or_default() += 1;
         }
     }
@@ -727,10 +729,12 @@ fn the_two_ranges_still_place_a_page_differently_and_the_summary_walk_follows_th
         let only_summarised: Vec<u32> = summarised.difference(&filed).copied().collect();
 
         // How many PAGES are credited to a bucket other than the one they are filed in.
+        let named = super::PageObjects::of(&shard.bucket_index);
         let mut misplaced = 0usize;
         for (routing_bucket, bucket) in &shard.bucket_index.bucket_map {
-            for page in bucket.block_index.values() {
-                let credited = block_routing_bucket(&page.object_key, start, end);
+            for (handle, _page) in &bucket.block_index {
+                let credited =
+                    block_routing_bucket(named.at(*routing_bucket, *handle), start, end);
                 if credited != *routing_bucket {
                     misplaced += 1;
                 }
@@ -853,11 +857,13 @@ fn scoping_is_exact_only_while_every_page_carries_the_shards_own_placement() {
         // HALF ONE -- CAN THE SCOPED WALK REACH THE PAGE AT ALL? It enters at
         // `bucket_map[dirty bucket]`, so a page of a dirty object FILED anywhere else is a page
         // the scoped walk never looks at. This is the half that loses data.
+        let named = super::PageObjects::of(&shard.bucket_index);
         let mut unreachable = 0usize;
         let mut miscredited = 0usize;
         for (routing_bucket, bucket) in &shard.bucket_index.bucket_map {
-            for page in bucket.block_index.values() {
-                if !shard.dirty_objects.contains(&page.object_key) {
+            for (handle, _page) in &bucket.block_index {
+                let object_key = named.at(*routing_bucket, *handle);
+                if !shard.dirty_objects.contains(object_key) {
                     continue;
                 }
                 if !witness.contains(routing_bucket) {
@@ -866,7 +872,7 @@ fn scoping_is_exact_only_while_every_page_carries_the_shards_own_placement() {
                 // HALF TWO -- WOULD IT CREDIT THE PAGE TO THE RIGHT BUCKET? Asserted separately,
                 // because a page that is reachable and credited elsewhere is a different defect
                 // from one that cannot be reached.
-                let credited = block_routing_bucket(&page.object_key, start, end);
+                let credited = block_routing_bucket(object_key, start, end);
                 if !witness.contains(&credited) {
                     miscredited += 1;
                 }

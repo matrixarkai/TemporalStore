@@ -121,12 +121,22 @@ fn map_state(engine: &TemporalEngine, kind: &str, key: &str) -> (usize, Vec<Stri
 fn live_entries(engine: &TemporalEngine, kind: &str, key: &str) -> usize {
     let shards = engine.shards.read().expect("engine lock poisoned");
     let shard = shards.get(&1).expect("shard is loaded");
+    let named = super::PageObjects::of(&shard.bucket_index);
     shard
         .bucket_index
         .bucket_map
         .values()
-        .flat_map(|bucket| bucket.block_index.values())
-        .filter(|page| !page.deleted && page.model_id.as_str() == kind && &*page.object_key == key)
+        .flat_map(|bucket| {
+            bucket
+                .block_index
+                .iter()
+                .map(move |(handle, page)| (bucket.routing_bucket, *handle, page))
+        })
+        .filter(|(routing_bucket, handle, page)| {
+            !page.deleted
+                && page.model_id.as_str() == kind
+                && &**named.at(*routing_bucket, *handle) == key
+        })
         .count()
 }
 

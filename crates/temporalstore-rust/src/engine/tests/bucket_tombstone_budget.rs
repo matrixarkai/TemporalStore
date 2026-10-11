@@ -472,6 +472,7 @@ fn a_tombstone_outlives_every_page_that_could_have_carried_it() {
     ) = {
         let shards = engine.shards.read().expect("engine lock poisoned");
         let shard = shards.get(&TOMB_SHARD).expect("shard is loaded");
+        let named = super::PageObjects::of(&shard.bucket_index);
         let mut target: Option<(u32, u64)> = None;
         let mut buckets_with_tombstone = 0usize;
         let mut buckets_outliving = 0usize;
@@ -487,8 +488,8 @@ fn a_tombstone_outlives_every_page_that_could_have_carried_it() {
             buckets_with_tombstone += 1;
             let paged: std::collections::BTreeSet<u64> = bucket
                 .block_index
-                .values()
-                .map(|page| page.object_id(1, &page.object_key))
+                .iter()
+                .map(|(handle, page)| page.object_id(1, named.at(*routing_bucket, *handle)))
                 .collect();
             let orphaned: Vec<u64> = bucket
                 .deleted_object_index
@@ -599,6 +600,7 @@ fn a_tombstone_outlives_every_page_that_could_have_carried_it() {
     {
         let shards = engine.shards.read().expect("engine lock poisoned");
         let shard = shards.get(&TOMB_SHARD).expect("shard is loaded");
+        let named = super::PageObjects::of(&shard.bucket_index);
         let bucket = shard
             .bucket_index
             .bucket_map
@@ -614,8 +616,10 @@ fn a_tombstone_outlives_every_page_that_could_have_carried_it() {
             bucket.object_index.contains(&object_id),
             bucket
                 .block_index
-                .values()
-                .filter(|page| page.object_id(1, &page.object_key) == object_id)
+                .iter()
+                .filter(|(handle, page)| {
+                    page.object_id(1, named.at(routing_bucket, **handle)) == object_id
+                })
                 .count(),
             bucket.deleted(),
             bucket.deleted_object_index.contains(&object_id),
@@ -630,8 +634,10 @@ fn a_tombstone_outlives_every_page_that_could_have_carried_it() {
             0,
             bucket
                 .block_index
-                .values()
-                .filter(|page| page.object_id(1, &page.object_key) == object_id)
+                .iter()
+                .filter(|(handle, page)| {
+                    page.object_id(1, named.at(routing_bucket, **handle)) == object_id
+                })
                 .count(),
             "a page in bucket {routing_bucket} still carries object {object_id}, so a per-page \
              `deleted` bit COULD have carried this deletion and this is not the state the module \

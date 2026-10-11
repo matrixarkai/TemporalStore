@@ -125,11 +125,13 @@ fn entry_census(engine: &TemporalEngine) -> (usize, std::collections::BTreeSet<(
     // being caught by a counter here. The `written` keys this census still collects are the
     // second guard: `block_index_written_key` renders the stored spelling, and a name on an entry
     // would show up in it.
+    let named = super::PageObjects::of(&shard.bucket_index);
     let mut pages = std::collections::BTreeSet::new();
     let mut written = Vec::new();
     for bucket in shard.bucket_index.bucket_map.values() {
-        for page in bucket.block_index.values() {
-            if page.deleted || page.model_id.as_str() != "set" || &*page.object_key != KEY {
+        for (handle, page) in &bucket.block_index {
+            let object_key = named.at(bucket.routing_bucket, *handle);
+            if page.deleted || page.model_id.as_str() != "set" || &**object_key != KEY {
                 continue;
             }
             live += 1;
@@ -138,7 +140,7 @@ fn entry_census(engine: &TemporalEngine) -> (usize, std::collections::BTreeSet<(
                 page.address.offset(),
                 page.address.length(),
             ));
-            written.push(crate::engine::state::block_index_written_key(&page.object_key, page));
+            written.push(crate::engine::state::block_index_written_key(object_key, page));
         }
     }
     written.sort();
@@ -425,11 +427,15 @@ fn a_component_less_kind_rewritten_still_resolves_to_one_page() {
     let (live, pages) = {
         let shards = engine.shards.read().expect("engine lock poisoned");
         let shard = shards.get(&1).expect("shard 1 loaded");
+        let named = super::PageObjects::of(&shard.bucket_index);
         let mut live = 0usize;
         let mut pages = std::collections::BTreeSet::new();
         for bucket in shard.bucket_index.bucket_map.values() {
-            for page in bucket.block_index.values() {
-                if page.deleted || page.model_id.as_str() != "string" || &*page.object_key != key {
+            for (handle, page) in &bucket.block_index {
+                if page.deleted
+                    || page.model_id.as_str() != "string"
+                    || &**named.at(bucket.routing_bucket, *handle) != key
+                {
                     continue;
                 }
                 live += 1;
@@ -490,10 +496,14 @@ fn remove(engine: &TemporalEngine, member: Vec<u8>) {
 fn tombstones(engine: &TemporalEngine) -> Vec<Option<String>> {
     let shards = engine.shards.read().expect("engine lock poisoned");
     let shard = shards.get(&1).expect("shard 1 loaded");
+    let named = super::PageObjects::of(&shard.bucket_index);
     let mut out = Vec::new();
     for bucket in shard.bucket_index.bucket_map.values() {
-        for page in bucket.block_index.values() {
-            if page.deleted && page.model_id.as_str() == "set" && &*page.object_key == KEY {
+        for (handle, page) in &bucket.block_index {
+            if page.deleted
+                && page.model_id.as_str() == "set"
+                && &**named.at(bucket.routing_bucket, *handle) == KEY
+            {
                 out.push(
                     bucket
                         .tombstone_element_at(&page.address)

@@ -121,12 +121,15 @@ fn page_and_entry_counts(
 ) -> (usize, usize, usize) {
     let shards = engine.shards.read().expect("engine lock poisoned");
     let shard = shards.get(&1).expect("shard 1 is loaded");
+    let named = super::PageObjects::of(&shard.bucket_index);
     let mut pages = std::collections::BTreeSet::new();
     let mut live = 0usize;
     let mut tombstoned = 0usize;
     for bucket in shard.bucket_index.bucket_map.values() {
-        for page in bucket.block_index.values() {
-            if page.model_id.as_str() != "set" || &*page.object_key != object_key {
+        for (handle, page) in &bucket.block_index {
+            if page.model_id.as_str() != "set"
+                || &**named.at(bucket.routing_bucket, *handle) != object_key
+            {
                 continue;
             }
             if page.deleted {
@@ -153,10 +156,13 @@ fn components_the_pages_still_state(
 ) -> std::collections::BTreeSet<String> {
     let shards = engine.shards.read().expect("engine lock poisoned");
     let shard = shards.get(&1).expect("shard 1 is loaded");
+    let named = super::PageObjects::of(&shard.bucket_index);
     let mut stated = std::collections::BTreeSet::new();
     for bucket in shard.bucket_index.bucket_map.values() {
-        for page in bucket.block_index.values() {
-            if page.model_id.as_str() != "set" || &*page.object_key != object_key {
+        for (handle, page) in &bucket.block_index {
+            if page.model_id.as_str() != "set"
+                || &**named.at(bucket.routing_bucket, *handle) != object_key
+            {
                 continue;
             }
             let Ok(bytes) = engine.block_store.read(&page.address) else {
@@ -191,10 +197,14 @@ fn components_the_pages_still_state(
 fn live_page_addresses(engine: &TemporalEngine, object_key: &str) -> Vec<ElementEntry> {
     let shards = engine.shards.read().expect("engine lock poisoned");
     let shard = shards.get(&1).expect("shard 1 is loaded");
+    let named = super::PageObjects::of(&shard.bucket_index);
     let mut addresses = Vec::new();
     for bucket in shard.bucket_index.bucket_map.values() {
-        for page in bucket.block_index.values() {
-            if page.model_id.as_str() != "set" || &*page.object_key != object_key || page.deleted {
+        for (handle, page) in &bucket.block_index {
+            if page.model_id.as_str() != "set"
+                || &**named.at(bucket.routing_bucket, *handle) != object_key
+                || page.deleted
+            {
                 continue;
             }
             addresses.push(page.address.clone());
@@ -245,13 +255,18 @@ fn components_at(
 fn drop_live_entries(engine: &TemporalEngine, object_key: &str, how_many: usize) -> usize {
     let mut shards = engine.shards.write().expect("engine lock poisoned");
     let shard = shards.get_mut(&1).expect("shard 1 is loaded");
+    // TAKEN BEFORE THE `retain`, AND OWNING ITS KEYS SO IT CAN BE. The keys live in a sibling
+    // field of the index whose bucket map this holds mutably; a map that borrowed would be
+    // refused here.
+    let named = super::PageObjects::of(&shard.bucket_index);
     let mut dropped = 0usize;
     for bucket in shard.bucket_index.bucket_map.values_mut() {
+        let routing_bucket = bucket.routing_bucket;
         bucket
             .block_index
-            .retain(&mut shard.bucket_index.block_slab_live, |_handle, page| {
+            .retain(&mut shard.bucket_index.block_slab_live, |handle, page| {
                 let mine = page.model_id.as_str() == "set"
-                    && &*page.object_key == object_key
+                    && &**named.at(routing_bucket, *handle) == object_key
                     && !page.deleted;
                 if mine && dropped < how_many {
                     dropped += 1;

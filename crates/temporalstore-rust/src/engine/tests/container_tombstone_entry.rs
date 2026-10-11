@@ -205,11 +205,14 @@ fn read(engine: &TemporalEngine, command: Command) -> crate::types::CommandRespo
 fn entry_counts(engine: &TemporalEngine, kind: &str, key: &str) -> (usize, usize) {
     let shards = engine.shards.read().expect("engine lock poisoned");
     let shard = shards.get(&1).expect("shard is loaded");
+    let named = super::PageObjects::of(&shard.bucket_index);
     let mut live = 0usize;
     let mut tombstoned = 0usize;
     for bucket in shard.bucket_index.bucket_map.values() {
-        for page in bucket.block_index.values() {
-            if page.model_id.as_str() != kind || &*page.object_key != key {
+        for (handle, page) in &bucket.block_index {
+            if page.model_id.as_str() != kind
+                || &**named.at(bucket.routing_bucket, *handle) != key
+            {
                 continue;
             }
             if page.deleted {
@@ -226,10 +229,14 @@ fn entry_counts(engine: &TemporalEngine, kind: &str, key: &str) -> (usize, usize
 fn tombstoned_components(engine: &TemporalEngine, kind: &str, key: &str) -> BTreeSet<String> {
     let shards = engine.shards.read().expect("engine lock poisoned");
     let shard = shards.get(&1).expect("shard is loaded");
+    let named = super::PageObjects::of(&shard.bucket_index);
     let mut held = BTreeSet::new();
     for bucket in shard.bucket_index.bucket_map.values() {
-        for page in bucket.block_index.values() {
-            if page.deleted && page.model_id.as_str() == kind && &*page.object_key == key {
+        for (handle, page) in &bucket.block_index {
+            if page.deleted
+                && page.model_id.as_str() == kind
+                && &**named.at(bucket.routing_bucket, *handle) == key
+            {
                 // AN ENTRY NAMES NO ELEMENT, so this set is always empty. It is restated where
                 // it is read -- the element a tombstone is about is recorded in the bucket's
                 // `tombstone_elements` rows, not on the entry.
@@ -614,13 +621,23 @@ fn a_removal_retains_one_entry_and_nothing_yet_collects_it() {
     let live_pages_folded = {
         let shards = engine.shards.read().expect("engine lock poisoned");
         let shard = shards.get(&1).expect("shard is loaded");
+        let named = super::PageObjects::of(&shard.bucket_index);
         shard
             .bucket_index
             .bucket_map
             .values()
-            .flat_map(|bucket| bucket.block_index.values())
-            .filter(|page| !page.deleted && page.model_id.as_str() == "set" && &*page.object_key == key)
-            .map(|page| {
+            .flat_map(|bucket| {
+                bucket
+                    .block_index
+                    .iter()
+                    .map(move |(handle, page)| (bucket.routing_bucket, *handle, page))
+            })
+            .filter(|(routing_bucket, handle, page)| {
+                !page.deleted
+                    && page.model_id.as_str() == "set"
+                    && &**named.at(*routing_bucket, *handle) == key
+            })
+            .map(|(_, _, page)| {
                 (
                     page.address.block_slab_id(),
                     page.address.offset(),
@@ -691,12 +708,13 @@ fn a_keys_last_element_still_files_its_object_id() {
     let filed = |engine: &TemporalEngine| -> bool {
         let shards = engine.shards.read().expect("engine lock poisoned");
         let shard = shards.get(&1).expect("shard is loaded");
+        let named = super::PageObjects::of(&shard.bucket_index);
         shard.bucket_index.bucket_map.values().any(|bucket| {
             bucket.deleted_object_index.contains(&object_id)
                 && bucket
                     .block_index
-                    .values()
-                    .any(|page| &*page.object_key == key)
+                    .iter()
+                    .any(|(handle, _)| &**named.at(bucket.routing_bucket, *handle) == key)
         })
     };
 

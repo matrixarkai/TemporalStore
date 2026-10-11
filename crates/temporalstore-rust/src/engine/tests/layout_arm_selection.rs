@@ -243,6 +243,7 @@ struct Population {
 fn population(engine: &TemporalEngine) -> Population {
     let shards = engine.shards.read().expect("engine lock poisoned");
     let shard = shards.get(&1).expect("shard is loaded");
+    let named = super::PageObjects::of(&shard.bucket_index);
     let mut out = Population::default();
     for arm in EVERY_ARM {
         out.arms.insert(arm, (0, 0));
@@ -262,18 +263,19 @@ fn population(engine: &TemporalEngine) -> Population {
             out.pages_per_bucket.push(pages);
             out.objects_per_bucket.push(objects);
         }
-        for entry in node.block_index.values() {
+        for (handle, entry) in &node.block_index {
+            let object_key = named.at(node.routing_bucket, *handle);
             // DERIVED, not read off the address. `pages_without_object_id` is therefore structurally
             // zero and is left at zero rather than removed from the shape: every page can name its
             // object now, which is the fact that used to be worth counting.
-            let id = entry.object_id(1, &entry.object_key);
+            let id = entry.object_id(1, object_key);
             *out.by_object_id.entry(id).or_default() += 1;
             // EVERY page is component-free now -- an entry has no element name -- so this control
             // group is the whole population rather than a subset of it. Kept because the CONTROL
             // it feeds still has a subject: it compares grouping by the engine's object id against
             // grouping by (kind, key), and those two can still disagree.
             *out.component_free_by_object_id.entry(id).or_default() += 1;
-            let kind_key = format!("{:?}\u{1}{}", entry.model_id, entry.object_key);
+            let kind_key = format!("{:?}\u{1}{}", entry.model_id, object_key);
             *out.by_kind_key.entry(kind_key.clone()).or_default() += 1;
             *out.component_free_by_kind_key.entry(kind_key).or_default() += 1;
         }
@@ -314,15 +316,20 @@ fn field_width<T>(_field: &T) -> usize {
 fn bucket_key_breakdown(engine: &TemporalEngine) -> Vec<Vec<usize>> {
     let shards = engine.shards.read().expect("engine lock poisoned");
     let shard = shards.get(&1).expect("shard is loaded");
+    let named = super::PageObjects::of(&shard.bucket_index);
     let mut out: Vec<Vec<usize>> = Vec::new();
     for node in shard.bucket_index.bucket_map.values() {
         if node.block_index.len() == 0 {
             continue;
         }
         let mut per_key: BTreeMap<String, usize> = BTreeMap::new();
-        for entry in node.block_index.values() {
+        for (handle, entry) in &node.block_index {
             *per_key
-                .entry(format!("{:?}\u{1}{}", entry.model_id, entry.object_key))
+                .entry(format!(
+                    "{:?}\u{1}{}",
+                    entry.model_id,
+                    named.at(node.routing_bucket, *handle)
+                ))
                 .or_default() += 1;
         }
         out.push(per_key.into_values().collect());

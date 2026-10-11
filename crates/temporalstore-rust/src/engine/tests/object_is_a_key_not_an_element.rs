@@ -172,13 +172,14 @@ fn pages_and_index_rows(
     let shards = engine.shards.read().expect("engine lock poisoned");
     let shard = shards.get(&1).expect("shard 1 is loaded");
     let mut pages = 0usize;
+    let named = super::PageObjects::of(&shard.bucket_index);
     let mut rows: BTreeSet<u64> = BTreeSet::new();
     for bucket in shard.bucket_index.bucket_map.values() {
-        for page in bucket.block_index.values() {
+        for (handle, page) in &bucket.block_index {
             if page.deleted || page.model_id.as_str() != kind {
                 continue;
             }
-            if !keys.contains(&*page.object_key) {
+            if !keys.contains(&**named.at(bucket.routing_bucket, *handle)) {
                 continue;
             }
             pages += 1;
@@ -216,10 +217,14 @@ fn tombstone_holds(engine: &TemporalEngine, object_id: u64) -> bool {
 fn live_page_count(engine: &TemporalEngine, kind: &str, key: &str) -> usize {
     let shards = engine.shards.read().expect("engine lock poisoned");
     let shard = shards.get(&1).expect("shard 1 is loaded");
+    let named = super::PageObjects::of(&shard.bucket_index);
     let mut held = 0usize;
     for bucket in shard.bucket_index.bucket_map.values() {
-        for page in bucket.block_index.values() {
-            if !page.deleted && page.model_id.as_str() == kind && &*page.object_key == key {
+        for (handle, page) in &bucket.block_index {
+            if !page.deleted
+                && page.model_id.as_str() == kind
+                && &**named.at(bucket.routing_bucket, *handle) == key
+            {
                 held += 1;
             }
         }

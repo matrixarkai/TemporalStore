@@ -226,12 +226,13 @@ fn the_older_index_door_is_the_identity() {
 
 /// Every bucket that holds at least one page, with the object keys it holds, sorted.
 fn bucket_contents(shard: &crate::engine::state::ShardState) -> BTreeMap<u32, Vec<String>> {
+    let named = super::PageObjects::of(&shard.bucket_index);
     let mut contents: BTreeMap<u32, Vec<String>> = BTreeMap::new();
     for (routing_bucket, bucket) in &shard.bucket_index.bucket_map {
         let mut keys: Vec<String> = bucket
             .block_index
-            .values()
-            .map(|page| page.object_key.to_string())
+            .iter()
+            .map(|(handle, _page)| named.at(*routing_bucket, *handle).to_string())
             .collect();
         if keys.is_empty() {
             continue;
@@ -251,15 +252,22 @@ fn reader_attribution(
     let total = entries.len();
     let mut agrees_with_filing = 0usize;
     let mut whole_range_agrees = 0usize;
+    let filed_names = super::PageObjects::of(&shard.bucket_index);
     let filed: BTreeMap<(String, u64), u32> = shard
         .bucket_index
         .bucket_map
         .iter()
         .flat_map(|(bucket_id, bucket)| {
-            bucket
-                .block_index
-                .values()
-                .map(move |page| ((page.object_key.to_string(), page.address.offset()), *bucket_id))
+            let filed_names = &filed_names;
+            bucket.block_index.iter().map(move |(handle, page)| {
+                (
+                    (
+                        filed_names.at(*bucket_id, *handle).to_string(),
+                        page.address.offset(),
+                    ),
+                    *bucket_id,
+                )
+            })
         })
         .collect();
     for entry in &entries {

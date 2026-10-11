@@ -35,6 +35,51 @@ use crate::{ElementEntry, BlockStoreOptions, BlockStore};
 
 
 
+/// THE OBJECT OF EVERY PAGE IN ONE INDEX, KEYED BY THE POSITION THE PAGE IS FILED AT.
+///
+/// # WHY THIS AND NOT ONLY [`pages_with_identity`]
+///
+/// Half the walks that have to be converted cannot give up their own nesting. They need the
+/// BUCKET as well as the page -- to read a tombstone row out of it, to count its object index, to
+/// `retain` over it -- and a flat list of pages does not carry the bucket. This composes with
+/// whatever walk is already there: take it once, then ask it per page.
+///
+/// IT OWNS ITS KEYS AND BORROWS NOTHING, which is what lets a `retain` use it. `retain` holds the
+/// bucket map mutably and the keys are drawn from a SIBLING field of the same index, so a map that
+/// borrowed would be refused; the `Arc` clones cost one refcount bump each and the borrow ends
+/// when this returns.
+pub(super) struct PageObjects {
+    by_position: std::collections::HashMap<(u32, u64), std::sync::Arc<str>>,
+}
+
+impl PageObjects {
+    /// Taken in ONE pass over the index, from the same two sources [`pages_with_identity`] reads.
+    pub(super) fn of(index: &crate::engine::state::CoreIndex) -> Self {
+        Self {
+            by_position: pages_with_identity(index)
+                .into_iter()
+                .map(|(routing_bucket, handle, object_key, _page)| {
+                    ((routing_bucket, handle), object_key)
+                })
+                .collect(),
+        }
+    }
+
+    /// The object the page at this position belongs to.
+    ///
+    /// A PANIC AND NOT AN `Option`, for [`pages_with_identity`]'s reason: a page that nothing
+    /// beside it names is a state the producer refuses, and a caller handed `None` would reach
+    /// for a skip. Every caller here is walking the same index this was taken from, so the only
+    /// way to miss is to ask at a position that does not exist.
+    pub(super) fn at(&self, routing_bucket: u32, handle: u64) -> &std::sync::Arc<str> {
+        self.by_position.get(&(routing_bucket, handle)).unwrap_or_else(|| {
+            panic!(
+                "no page is filed at bucket {routing_bucket} handle {handle} in the index this                  was taken from"
+            )
+        })
+    }
+}
+
 /// EVERY PAGE OF ONE CORE INDEX, WITH THE OBJECT THAT THE STRUCTURES BESIDE IT NAME.
 ///
 /// # WHY THIS IS SHARED AND NOT A WALK PER TEST

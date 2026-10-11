@@ -225,6 +225,7 @@ fn an_index_entry_marked_deleted_loses_no_field_and_is_not_counted() {
         // THE HANDLES FIRST, THEN THE MARK. `BlockIndexMap` has no `values_mut` -- it is an enum
         // over an inline entry and a sorted vector -- so the matching handles are collected under
         // the read side of the walk and marked through `get_mut` one at a time.
+        let named = super::PageObjects::of(&shard.bucket_index);
         let targets: Vec<(u32, u64)> = shard
             .bucket_index
             .bucket_map
@@ -233,10 +234,10 @@ fn an_index_entry_marked_deleted_loses_no_field_and_is_not_counted() {
                 bucket
                     .block_index
                     .iter()
-                    .filter(|(_, page)| {
+                    .filter(|(handle, page)| {
                         !page.deleted
                             && page.model_id.as_str() == "hash"
-                            && &*page.object_key == PLANTED_KEY
+                            && &**named.at(*routing_bucket, **handle) == PLANTED_KEY
                     })
                     .map(|(handle, _)| (*routing_bucket, *handle))
                     .collect::<Vec<_>>()
@@ -304,10 +305,14 @@ fn an_index_entry_marked_deleted_loses_no_field_and_is_not_counted() {
 fn live_hash_entries(engine: &TemporalEngine, key: &str) -> usize {
     let shards = engine.shards.read().expect("engine lock poisoned");
     let shard = shards.get(&1).expect("shard is loaded");
+    let named = super::PageObjects::of(&shard.bucket_index);
     let mut live = 0usize;
     for bucket in shard.bucket_index.bucket_map.values() {
-        for page in bucket.block_index.values() {
-            if !page.deleted && page.model_id.as_str() == "hash" && &*page.object_key == key {
+        for (handle, page) in &bucket.block_index {
+            if !page.deleted
+                && page.model_id.as_str() == "hash"
+                && &**named.at(bucket.routing_bucket, *handle) == key
+            {
                 live += 1;
             }
         }
@@ -360,12 +365,13 @@ fn under_the_gate_a_hash_entry_names_no_field_so_the_divergence_is_unreachable()
     let live = {
         let shards = engine.shards.read().expect("engine lock poisoned");
         let shard = shards.get(&1).expect("shard is loaded");
+        let named = super::PageObjects::of(&shard.bucket_index);
         let mut live = 0usize;
         for bucket in shard.bucket_index.bucket_map.values() {
-            for page in bucket.block_index.values() {
+            for (handle, page) in &bucket.block_index {
                 if page.deleted
                     || page.model_id.as_str() != "hash"
-                    || &*page.object_key != PLANTED_KEY
+                    || &**named.at(bucket.routing_bucket, *handle) != PLANTED_KEY
                 {
                     continue;
                 }

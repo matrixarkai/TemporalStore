@@ -237,12 +237,19 @@ fn an_older_index_decodes_to_exactly_the_same_address() {
 /// Every bucket that holds at least one block, with the object keys it holds, sorted. The element
 /// by element picture a count cannot give.
 fn bucket_contents(shard: &crate::engine::state::ShardState) -> BTreeMap<u32, Vec<String>> {
+    // THE POSITION DOOR, AND THIS FILE IS WHERE THAT NEEDS SAYING. One test here MOVES a node
+    // under a bucket its key does not route to, and the object lookup names such a page at the
+    // position it was FILED under rather than the one it now sits in. No caller of this helper is
+    // inside that test -- it is called by the five rebuild and adoption arms, each over an index
+    // whose pages sit where they were filed -- and a page this cannot name panics with its handle
+    // rather than being dropped from a listing that is compared element by element.
+    let named = super::PageObjects::of(&shard.bucket_index);
     let mut contents: BTreeMap<u32, Vec<String>> = BTreeMap::new();
     for (routing_bucket, bucket) in &shard.bucket_index.bucket_map {
         let mut keys: Vec<String> = bucket
             .block_index
-            .values()
-            .map(|page| page.object_key.to_string())
+            .iter()
+            .map(|(handle, _page)| named.at(*routing_bucket, *handle).to_string())
             .collect();
         if keys.is_empty() {
             continue;

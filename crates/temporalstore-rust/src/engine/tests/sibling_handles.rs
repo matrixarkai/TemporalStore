@@ -56,14 +56,17 @@ fn batched_page_address() -> ElementEntry {
 
 /// An entry for one object at one address. There is no element name to vary any more, which is
 /// the whole of this module's restatement: two of these differ in nothing at all.
-fn entry_at(object_key: &str, address: ElementEntry) -> BlockIndex {
-    BlockIndex {
-        object_key: std::sync::Arc::from(object_key),
-        model_id: StoredModelKind::Hash,
-        address,
-        dirty: false,
-        deleted: false,
-    }
+fn entry_at(object_key: &str, address: ElementEntry) -> (std::sync::Arc<str>, BlockIndex) {
+    (
+        std::sync::Arc::from(object_key),
+        BlockIndex {
+            object_key: std::sync::Arc::from(object_key),
+            model_id: StoredModelKind::Hash,
+            address,
+            dirty: false,
+            deleted: false,
+        },
+    )
 }
 
 /// rust-internal: hashes entries this test builds, no product behaviour
@@ -73,7 +76,7 @@ fn two_entries_of_one_object_at_one_address_share_a_handle() {
     const ENTRIES: usize = 40;
 
     let address = batched_page_address();
-    let at_one_page: Vec<BlockIndex> = (0..ENTRIES)
+    let at_one_page: Vec<(std::sync::Arc<str>, BlockIndex)> = (0..ENTRIES)
         .map(|_| entry_at(OBJECT, address.clone()))
         .collect();
 
@@ -81,7 +84,7 @@ fn two_entries_of_one_object_at_one_address_share_a_handle() {
     // address and one object key, or the collision below is not about a batched page.
     let addresses: std::collections::BTreeSet<String> = at_one_page
         .iter()
-        .map(|page| format!("{:?}", page.address))
+        .map(|(_, page)| format!("{:?}", page.address))
         .collect();
     assert_eq!(
         1,
@@ -90,14 +93,13 @@ fn two_entries_of_one_object_at_one_address_share_a_handle() {
         addresses.len(),
     );
     let keys: std::collections::BTreeSet<&str> =
-        at_one_page.iter().map(|page| &*page.object_key).collect();
+        at_one_page.iter().map(|(object_key, _)| &**object_key).collect();
     assert_eq!(1, keys.len(), "they must also share one object key");
 
-    let handles: std::collections::BTreeSet<u64> =
-        at_one_page
-            .iter()
-            .map(|page| block_index_handle(&page.object_key, page))
-            .collect();
+    let handles: std::collections::BTreeSet<u64> = at_one_page
+        .iter()
+        .map(|(object_key, page)| block_index_handle(object_key, page))
+        .collect();
     println!(
         "[sibling-handles] {ENTRIES} entries of one object at one address -> {} distinct handle(s)",
         handles.len()

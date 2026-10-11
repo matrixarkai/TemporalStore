@@ -184,9 +184,12 @@ fn a_folded_pages_membership_now_states_the_member_the_live_index_no_longer_name
     let mut addresses: Vec<crate::block_store::ElementEntry> = Vec::new();
     let mut live_entries = 0usize;
     let mut tombstone_entries = 0usize;
+    let named = super::PageObjects::of(&shard.bucket_index);
     for bucket in shard.bucket_index.bucket_map.values() {
-        for page in bucket.block_index.values() {
-            if page.model_id.as_str() != "set" || &*page.object_key != "folded" {
+        for (handle, page) in &bucket.block_index {
+            if page.model_id.as_str() != "set"
+                || &**named.at(bucket.routing_bucket, *handle) != "folded"
+            {
                 continue;
             }
             if page.deleted {

@@ -87,14 +87,17 @@ fn dirty_key_set_arm(set: &crate::engine::state::DirtyKeySet) -> &'static str {
 // The `component: Option<&str>` parameter this took was DEAD and is gone: it was accepted and
 // never mentioned in the `BlockIndex` below, because the field it used to fill came off the entry.
 // Two call sites were passing a value that decided nothing.
-fn probe_page(object: &str, slot: u64) -> BlockIndex {
-    BlockIndex {
-        object_key: Arc::from(object),
-        model_id: crate::engine::storage_bucket_internals::StoredModelKind::String,
-        address: ElementEntry::from_parts(1, slot * 64, 64, Some(slot), Some(slot)),
-        dirty: false,
-        deleted: false,
-    }
+fn probe_page(object: &str, slot: u64) -> (Arc<str>, BlockIndex) {
+    (
+        Arc::from(object),
+        BlockIndex {
+            object_key: Arc::from(object),
+            model_id: crate::engine::storage_bucket_internals::StoredModelKind::String,
+            address: ElementEntry::from_parts(1, slot * 64, 64, Some(slot), Some(slot)),
+            dirty: false,
+            deleted: false,
+        },
+    )
 }
 /// THE SHRINK QUESTION, on every path that can shrink.
 ///
@@ -158,7 +161,8 @@ fn every_inline_shape_collapses_back_on_a_fill_and_drain() {
         let mut map = BlockIndexMap::default();
         let mut handles: Vec<u64> = Vec::new();
         for slot in 0..FILL {
-            handles.push(map.insert(&(probe_page("o", slot)).object_key.clone(), probe_page("o", slot), &mut live));
+            let (object_key, entry) = probe_page("o", slot);
+            handles.push(map.insert(&object_key, entry, &mut live));
         }
         if map.len() != FILL as usize {
             failures.push(format!("BlockIndexMap filled to {} pages, not {FILL}", map.len()));
@@ -185,7 +189,8 @@ fn every_inline_shape_collapses_back_on_a_fill_and_drain() {
         let mut map = BlockIndexMap::default();
         let mut handles: Vec<u64> = Vec::new();
         for slot in 0..FILL {
-            handles.push(map.insert(&(probe_page("o", slot)).object_key.clone(), probe_page("o", slot), &mut live));
+            let (object_key, entry) = probe_page("o", slot);
+            handles.push(map.insert(&object_key, entry, &mut live));
         }
         let mut remaining = FILL as usize;
         while remaining > 0 {

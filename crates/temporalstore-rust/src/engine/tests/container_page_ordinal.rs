@@ -142,13 +142,16 @@ fn read(engine: &TemporalEngine, command: Command) -> crate::types::CommandRespo
 fn pages_of(engine: &TemporalEngine, kind: &str, key: &str) -> Vec<Option<u64>> {
     let shards = engine.shards.read().expect("engine lock poisoned");
     let shard = shards.get(&1).expect("shard 1 is loaded");
+    let named = super::PageObjects::of(&shard.bucket_index);
     let mut held = Vec::new();
     for bucket in shard.bucket_index.bucket_map.values() {
-        for page in bucket.block_index.values() {
+        for (handle, page) in &bucket.block_index {
             if page.deleted {
                 continue;
             }
-            if page.model_id.as_str() == kind && &*page.object_key == key {
+            if page.model_id.as_str() == kind
+                && &**named.at(bucket.routing_bucket, *handle) == key
+            {
                 held.push(page.address.block_id());
             }
         }
@@ -172,10 +175,14 @@ fn tombstone_pages_of(
 ) -> Vec<(Option<String>, Option<u64>)> {
     let shards = engine.shards.read().expect("engine lock poisoned");
     let shard = shards.get(&1).expect("shard 1 is loaded");
+    let named = super::PageObjects::of(&shard.bucket_index);
     let mut held = Vec::new();
     for bucket in shard.bucket_index.bucket_map.values() {
-        for page in bucket.block_index.values() {
-            if page.deleted && page.model_id.as_str() == kind && &*page.object_key == key {
+        for (handle, page) in &bucket.block_index {
+            if page.deleted
+                && page.model_id.as_str() == kind
+                && &**named.at(bucket.routing_bucket, *handle) == key
+            {
                 held.push((
                     bucket
                         .tombstone_element_at(&page.address)

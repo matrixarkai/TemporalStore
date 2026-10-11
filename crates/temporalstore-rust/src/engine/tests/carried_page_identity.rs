@@ -204,9 +204,10 @@ fn live_pages(engine: &TemporalEngine, kind: &str) -> Vec<(String, Option<String
             }
         }
     }
+    let named = super::PageObjects::of(&shard.bucket_index);
     let mut held = Vec::new();
     for bucket in shard.bucket_index.bucket_map.values() {
-        for page in bucket.block_index.values() {
+        for (handle, page) in &bucket.block_index {
             if page.deleted || page.model_id.as_str() != kind {
                 continue;
             }
@@ -215,7 +216,10 @@ fn live_pages(engine: &TemporalEngine, kind: &str) -> Vec<(String, Option<String
                 page.address.offset(),
                 page.address.length(),
             );
-            held.push((page.object_key.to_string(), element_at.get(&at).cloned()));
+            held.push((
+                named.at(bucket.routing_bucket, *handle).to_string(),
+                element_at.get(&at).cloned(),
+            ));
         }
     }
     held.sort();
@@ -1116,13 +1120,21 @@ fn a_hash_pages_field_name_is_held_beside_the_id_and_survives_a_component_free_i
         let (pages, recovered) = {
             let shards = engine.shards.read().expect("engine lock poisoned");
             let shard = shards.get(&1).expect("shard 1 is loaded");
+            let named = super::PageObjects::of(&shard.bucket_index);
             let pages = shard
                 .bucket_index
                 .bucket_map
                 .values()
-                .flat_map(|bucket| bucket.block_index.values())
-                .filter(|page| {
-                    !page.deleted && page.model_id.as_str() == "hash" && &*page.object_key == key
+                .flat_map(|bucket| {
+                    bucket
+                        .block_index
+                        .iter()
+                        .map(move |(handle, page)| (bucket.routing_bucket, *handle, page))
+                })
+                .filter(|(routing_bucket, handle, page)| {
+                    !page.deleted
+                        && page.model_id.as_str() == "hash"
+                        && &**named.at(*routing_bucket, *handle) == key
                 })
                 .count();
             let recovered: BTreeSet<String> = shard

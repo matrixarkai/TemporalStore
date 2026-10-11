@@ -159,11 +159,15 @@ fn bytes_of(width: usize, index: usize) -> Vec<u8> {
 fn addresses_and_entries(engine: &TemporalEngine, kind: &str, object_key: &str) -> (usize, usize) {
     let shards = engine.shards.read().expect("engine lock poisoned");
     let shard = shards.get(&1).expect("shard is loaded");
+    let named = super::PageObjects::of(&shard.bucket_index);
     let mut addresses = BTreeSet::new();
     let mut entries = 0usize;
     for bucket in shard.bucket_index.bucket_map.values() {
-        for page in bucket.block_index.values() {
-            if page.deleted || page.model_id.as_str() != kind || &*page.object_key != object_key {
+        for (handle, page) in &bucket.block_index {
+            if page.deleted
+                || page.model_id.as_str() != kind
+                || &**named.at(bucket.routing_bucket, *handle) != object_key
+            {
                 continue;
             }
             entries += 1;
@@ -911,13 +915,14 @@ fn what_the_fold_is_worth_per_element_in_bytes() {
         let stored_bytes = |kind: &str| -> u64 {
             let shards = engine.shards.read().expect("engine lock poisoned");
             let shard = shards.get(&1).expect("shard is loaded");
+            let named = super::PageObjects::of(&shard.bucket_index);
             let mut seen = BTreeSet::new();
             let mut total = 0u64;
             for bucket in shard.bucket_index.bucket_map.values() {
-                for page in bucket.block_index.values() {
+                for (handle, page) in &bucket.block_index {
                     if page.deleted
                         || page.model_id.as_str() != kind
-                        || &*page.object_key != "priced"
+                        || &**named.at(bucket.routing_bucket, *handle) != "priced"
                     {
                         continue;
                     }

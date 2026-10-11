@@ -280,10 +280,13 @@ fn durable(engine: &TemporalEngine) -> PerKind {
 fn live_entries(engine: &TemporalEngine, model_id: &str, object_key: &str) -> usize {
     let shards = engine.shards.read().expect("engine lock poisoned");
     let shard = shards.get(&1).expect("shard 1 loaded");
+    let named = super::PageObjects::of(&shard.bucket_index);
     let mut live = 0usize;
     for bucket in shard.bucket_index.bucket_map.values() {
-        for page in bucket.block_index.values() {
-            if page.deleted || page.model_id.as_str() != model_id || &*page.object_key != object_key
+        for (handle, page) in &bucket.block_index {
+            if page.deleted
+                || page.model_id.as_str() != model_id
+                || &**named.at(bucket.routing_bucket, *handle) != object_key
             {
                 continue;
             }

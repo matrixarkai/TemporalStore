@@ -1052,10 +1052,13 @@ fn an_unnamed_hash_page_is_skipped_and_the_durable_map_keeps_the_field() {
             "the durable map does not hold both fields, so this fixture cannot create the state it \
              needs and the assertions below would be about nothing"
         );
+        let named = super::PageObjects::of(&shard.bucket_index);
         let mut entries = 0usize;
         for bucket in shard.bucket_index.bucket_map.values() {
-            for page in bucket.block_index.values() {
-                if page.model_id.as_str() == "hash" && &*page.object_key == "un-hash" {
+            for (handle, page) in &bucket.block_index {
+                if page.model_id.as_str() == "hash"
+                    && &**named.at(bucket.routing_bucket, *handle) == "un-hash"
+                {
                     entries += 1;
                 }
             }
@@ -1243,10 +1246,13 @@ fn an_empty_zset_member_is_a_whole_component_and_survives_the_fold_shape() {
         let addresses = {
             let shards = engine.shards.read().expect("engine lock poisoned");
             let shard = shards.get(&1).expect("shard is loaded");
+            let named = super::PageObjects::of(&shard.bucket_index);
             let mut addresses: Vec<crate::block_store::ElementEntry> = Vec::new();
             for bucket in shard.bucket_index.bucket_map.values() {
-                for page in bucket.block_index.values() {
-                    if page.model_id.as_str() == "zset" && &*page.object_key == "mt-zset" {
+                for (handle, page) in &bucket.block_index {
+                    if page.model_id.as_str() == "zset"
+                        && &**named.at(bucket.routing_bucket, *handle) == "mt-zset"
+                    {
                         addresses.push(page.address.clone());
                     }
                 }

@@ -295,9 +295,11 @@ fn the_id_a_served_shard_carries_derives_the_object_id_already_stored_on_its_pag
         let carried = state
             .shard_id()
             .expect("a served shard carries its id; part 1 of this module holds that");
+        let named = super::PageObjects::of(&state.bucket_index);
         let mut pages_here = 0usize;
         for bucket in state.bucket_index.bucket_map.values() {
-            for (_handle, page) in bucket.block_index.iter() {
+            for (handle, page) in bucket.block_index.iter() {
+                let object_key = named.at(bucket.routing_bucket, *handle);
                 // THE INDEPENDENT SIDE IS NOW THE WRITE PATH'S OWN COPY, and it has to be: the
                 // address used to hold one and does not any more. `bucket.object_index` was filled
                 // by the write path from the id it ACTUALLY USED, before this field existed and
@@ -306,7 +308,7 @@ fn the_id_a_served_shard_carries_derives_the_object_id_already_stored_on_its_pag
                 let derived = crate::engine::hashing::stable_block_object_id(
                     carried,
                     page.model_id.as_str(),
-                    &page.object_key,
+                    object_key,
                 );
                 pages_here += 1;
                 checked += 1;
@@ -316,7 +318,7 @@ fn the_id_a_served_shard_carries_derives_the_object_id_already_stored_on_its_pag
                         "shard {routed_under} kind {} key {} derived {derived}, which the bucket's \
                          own object index does not hold",
                         page.model_id.as_str(),
-                        page.object_key
+                        object_key
                     ));
                 }
             }

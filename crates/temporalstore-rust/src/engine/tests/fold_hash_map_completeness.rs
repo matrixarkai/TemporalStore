@@ -98,10 +98,13 @@ fn both_sources(
         // TOMBSTONE ENTRIES INCLUDED, no `page.deleted` skip. A tombstone is how a page STATES a
         // removal, so a walk that filtered them would read the page set as it stood before the
         // removal and would derive the removed field as live.
+        let named = super::PageObjects::of(&shard.bucket_index);
         let mut addresses: Vec<crate::block_store::ElementEntry> = Vec::new();
         for bucket in shard.bucket_index.bucket_map.values() {
-            for page in bucket.block_index.values() {
-                if page.model_id.as_str() == "hash" && &*page.object_key == key {
+            for (handle, page) in &bucket.block_index {
+                if page.model_id.as_str() == "hash"
+                    && &**named.at(bucket.routing_bucket, *handle) == key
+                {
                     addresses.push(page.address.clone());
                 }
             }
@@ -254,10 +257,11 @@ fn the_fold_leaves_the_durable_hash_map_naming_exactly_the_fields_the_pages_deri
     let pages: Vec<(u64, String, String)> = {
         let shards = engine.shards.write().expect("engine lock poisoned");
         let shard = shards.get(&1).expect("shard is loaded");
+        let named = super::PageObjects::of(&shard.bucket_index);
         let mut found = Vec::new();
         for bucket in shard.bucket_index.bucket_map.values() {
             for (handle, page) in bucket.block_index.iter() {
-                if &*page.object_key == KEY {
+                if &**named.at(bucket.routing_bucket, *handle) == KEY {
                     found.push((
                         *handle,
                         "<none>".to_string(),
