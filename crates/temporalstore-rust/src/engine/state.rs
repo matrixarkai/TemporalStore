@@ -834,6 +834,25 @@ pub(super) struct PageObjectIdentity<'a> {
 
 pub(super) struct PageKeysByPosition<'a> {
     by_position: std::collections::HashMap<(u32, u64), (&'a Arc<str>, &'a Arc<str>)>,
+    /// THE SAME ANSWER WITHOUT THE BUCKET, FOR THE ONE QUESTION POSITION CANNOT ANSWER.
+    ///
+    /// `by_position` is the right index for every reader that asks "which object is the page at
+    /// this position", because position is what a page's filing states about it. It cannot answer
+    /// for a page that is filed in the WRONG bucket -- the lookup names it at the position it was
+    /// filed under, so asking at the position it now sits in finds nothing.
+    ///
+    /// THAT STATE IS NOT HYPOTHETICAL AND IT IS NOT AN ERROR TO SWALLOW. It is precisely what
+    /// `validate_bucket_ownership_index_from_entries` exists to find, and
+    /// `bucket_filing_range::the_ownership_report_names_a_page_filed_where_its_key_does_not_route`
+    /// drives it: a node moved under a bucket its key does not route to must be NAMED, once per
+    /// page. A walk that dropped those rows would hand the validator an empty set and the report
+    /// would say the index is healthy.
+    ///
+    /// SO THIS IS A SECOND INDEX AND NOT A REPLACEMENT. Only the entry-collecting walk reads it,
+    /// through [`Self::identity_anywhere`], and the doc there says why. A handle is hashed from a
+    /// block's identity and its address, so two pages share one only by being the same block --
+    /// which is the same assumption `BlockIndexMap` already keys on.
+    by_handle: std::collections::HashMap<u64, (&'a Arc<str>, &'a Arc<str>)>,
 }
 
 impl<'a> PageKeysByPosition<'a> {
@@ -847,15 +866,20 @@ impl<'a> PageKeysByPosition<'a> {
     /// borrows the whole index.
     pub(super) fn from_lookup(lookup: &'a ObjectBlockLookup) -> Self {
         let mut by_position = std::collections::HashMap::new();
+        let mut by_handle = std::collections::HashMap::new();
         for (model_id, object_key, refs) in lookup.iter() {
             for block_ref in refs.iter() {
                 by_position.insert(
                     (block_ref.routing_bucket, block_ref.block_ref_key),
                     (model_id, object_key),
                 );
+                by_handle.insert(block_ref.block_ref_key, (model_id, object_key));
             }
         }
-        Self { by_position }
+        Self {
+            by_position,
+            by_handle,
+        }
     }
 
     /// THE IDENTITY OF A LIVE PAGE AT A POSITION, AND ONLY OF A LIVE ONE.
@@ -914,6 +938,32 @@ impl<'a> PageKeysByPosition<'a> {
     /// difference between a skip with a reason and a skip that hides the one case that matters.
     pub(super) fn names_no_position(&self) -> bool {
         self.by_position.is_empty()
+    }
+
+    /// THE OBJECT A PAGE BELONGS TO, WHEREVER IT IS FILED -- FOR ONE CALLER AND ONE REASON.
+    ///
+    /// Every other reader asks by POSITION, because what a page's filing states about it is where
+    /// it sits. This asks by HANDLE alone, which answers for a page the lookup names at a
+    /// different position than the one it is now in.
+    ///
+    /// # WHY THAT IS NOT A LOOPHOLE
+    ///
+    /// The one caller is `collect_bucket_index_live_block_entries`, whose rows feed
+    /// `validate_bucket_ownership_index_from_entries` -- a check whose entire content is comparing
+    /// where a page IS against where its key ROUTES. A mis-filed page is the subject of that
+    /// check, so a walk that could not name one would hand it an empty set and the report would
+    /// call a damaged index healthy. Measured: moving one node under a bucket its key does not
+    /// route to must produce one mismatch per page, and does.
+    ///
+    /// IT IS STRICTLY WIDER THAN `identity_of` AND NEVER DISAGREES WITH IT. A page the position
+    /// index names is named here with the same pair, because both are filled from the same refs.
+    /// What it adds is an answer where the position index has none.
+    ///
+    /// DELETED PAGES ARE STILL NOT IN IT, for the lookup's own reason:
+    /// `insert_object_block_lookup` returns early on one. A caller that must answer for a
+    /// tombstone wants [`Self::identity_of`], which knows about the bucket's rows as well.
+    pub(super) fn identity_anywhere(&self, handle: u64) -> Option<(&'a Arc<str>, &'a Arc<str>)> {
+        self.by_handle.get(&handle).copied()
     }
 }
 

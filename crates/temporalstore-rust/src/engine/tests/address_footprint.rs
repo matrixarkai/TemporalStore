@@ -2565,13 +2565,27 @@ fn two_buckets_holding_one_object_id_are_reported_as_one_object() {
     // The same object id filed in two different buckets. Reachable without any tampering: the
     // routing range is the MODULUS, so a store re-ranged between writes files one key's blocks under
     // two buckets, and `bucket_map` holds both.
+    // AND THE LOOKUP IS FILED, WHICH IS WHAT THE REPORT NOW READS THE IDENTITY FROM.
+    //
+    // `runtime_report` used to fall back to the entry's own copy for a live page nothing named,
+    // under a note calling that fallback "a scaffold with a lifetime" whose answer was that "the
+    // lookup must be established before this report walks". The fallback is gone, so this fixture
+    // has to establish it -- and it CAN, which that note doubted: it said the fixture cannot file
+    // a lookup entry because `BlockIndexMap::insert` cannot reach a `CoreIndex`. True of that
+    // method, and beside the point: `CoreIndex::insert_object_block_lookup` is reachable from
+    // here, and it is the door every production placement goes through.
+    //
+    // The handle is read back out of the map rather than recomputed, so the lookup records the
+    // position the map actually filed the page under.
+    let key: std::sync::Arc<str> = std::sync::Arc::from("one-key");
     for (routing_bucket, offset) in [(11u32, 0u64), (2_222u32, 4_096u64)] {
         let mut bucket = BucketNode {
             routing_bucket,
             ..BucketNode::default()
         };
         bucket.object_index.insert(object_id);
-        bucket.block_index.insert(&"one-key", 
+        bucket.block_index.insert(
+            &"one-key",
             BlockIndex {
                 object_key: std::sync::Arc::from("one-key"),
                 model_id: crate::engine::storage_bucket_internals::StoredModelKind::String,
@@ -2581,7 +2595,17 @@ fn two_buckets_holding_one_object_id_are_reported_as_one_object() {
             },
             &mut Default::default(),
         );
+        let placed: Vec<(u64, BlockIndex)> = bucket
+            .block_index
+            .iter()
+            .map(|(handle, page)| (*handle, page.clone()))
+            .collect();
         shard.bucket_index.bucket_map.insert(routing_bucket, bucket);
+        for (handle, page) in &placed {
+            shard
+                .bucket_index
+                .insert_object_block_lookup(routing_bucket, *handle, &key, page);
+        }
     }
 
     // DENOMINATOR: the fixture really does hold the id twice, in two buckets.

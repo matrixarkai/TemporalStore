@@ -1895,12 +1895,24 @@ pub(super) fn collect_bucket_index_live_block_entries(shard: &ShardState) -> Vec
             // whole point of the row -- five readers downstream key off it -- so a row carrying
             // no object would be worse than an absent one. The skip is refused outside the one
             // window that explains it.
-            let Some(beside) = identities.identity_of(bucket, *handle, page) else {
+            // NAMED WHEREVER IT IS FILED, which is what this walk's consumer needs.
+            //
+            // `identity_of` asks by POSITION and so cannot name a page filed in a bucket the
+            // lookup does not record it under -- and that page is exactly the subject of
+            // `validate_bucket_ownership_index_from_entries`, which these rows feed. Dropping it
+            // would hand that check an empty set and have it report a damaged index as healthy.
+            // So: the position index first, for a deleted page's tombstone row as well, then the
+            // handle index for a live page the lookup names somewhere else.
+            let beside = identities
+                .identity_of(bucket, *handle, page)
+                .map(|named| named.object_key)
+                .or_else(|| identities.identity_anywhere(*handle).map(|(_, key)| key));
+            let Some(beside) = beside else {
                 debug_assert!(
                     identities.names_no_position(),
-                    "bucket {} holds a page the index cannot name while the lookup DOES name \
-                     positions, so this walk is dropping a row outside the one window that \
-                     explains it",
+                    "bucket {} holds a page the index cannot name at any position while the \
+                     lookup DOES name positions, so this walk is dropping a row outside the one \
+                     window that explains it",
                     bucket.routing_bucket
                 );
                 continue;
@@ -1908,12 +1920,12 @@ pub(super) fn collect_bucket_index_live_block_entries(shard: &ShardState) -> Vec
             // THE TIE BACK TO THE ENTRY'S OWN COPY. It goes with the field.
             debug_assert_eq!(
                 &*page.object_key,
-                &**beside.object_key,
+                &**beside,
                 "the identity beside this page names a different object from the one on it"
             );
             from_index += 1;
             entries.push(LiveBlockEntry {
-                object_key: Arc::clone(beside.object_key),
+                object_key: Arc::clone(beside),
                 kind: page.model_id,
                 // `None`: THIS WALK IS OVER THE INDEX, AND AN INDEX ENTRY NAMES A PAGE.
                 //
