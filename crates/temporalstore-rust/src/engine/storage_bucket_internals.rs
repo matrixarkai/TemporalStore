@@ -7694,15 +7694,73 @@ mod release_refusal_guards {
         }
     }
 
+    /// THE HANDLE THESE FIXTURES FILE THEIR ONE PAGE UNDER.
+    ///
+    /// [`node`] builds `BlockIndexMap::One` directly rather than going through `insert_page`,
+    /// because which ARM the page sits in is part of what these guards are about. So the handle is
+    /// this region's own literal rather than `block_index_handle`'s -- and the object lookup has
+    /// to be filed at the SAME position or the two halves name different places. It is a named
+    /// constant precisely so that cannot drift: there is one place to read it from.
+    const FIXTURE_HANDLE: u64 = 1;
+
     fn node(routing_bucket: u32, held: BlockIndex) -> BucketNode {
         BucketNode {
             routing_bucket,
             flags: BucketFlags::default().with(BucketFlags::DIRTY, false).with(BucketFlags::DELETED, false).with(BucketFlags::META_LOADED, true).with(BucketFlags::LOADING, false).with(BucketFlags::IN_MEMORY, true),
             object_index: ObjectIndex::One(OBJECT_ID),
             // The single-block arm, which holds its entry behind a POINTER rather than inline.
-            block_index: BlockIndexMap::One(1, Box::new(held)),
+            block_index: BlockIndexMap::One(FIXTURE_HANDLE, Box::new(held)),
             ..BucketNode::default()
         }
+    }
+
+    /// PLACE A PAGE IN A BUCKET AND FILE IT IN THE OBJECT LOOKUP -- ONE DOOR, BECAUSE THEY ARE ONE
+    /// OBLIGATION.
+    ///
+    /// # WHY THIS EXISTS, AND IT IS A FIFTEEN-TEST RED
+    ///
+    /// Every fixture in this region used to poke `bucket_map.insert` directly and stop there. That
+    /// left a page the shard's OBJECT LOOKUP does not name -- and while the entry carried its own
+    /// copy of the identity it cost nothing, because every reader read the key off the page.
+    ///
+    /// THE READERS READ IT FROM BESIDE THE PAGE NOW. `release_bucket_blocks` takes
+    /// `page_identities_in` over the bucket and refuses a page it cannot name with
+    /// `LookupNotLocal` BEFORE it reaches any per-block term; `collect_bucket_index_live_block_
+    /// entries` and the released supplement do the same. So fifteen guards across four modules
+    /// were refusing or miscounting for a reason that had nothing to do with the term each was
+    /// written to pin: six refusal guards, three supplement guards, three walk-scale arms and
+    /// three scan-coverage arms, every one of them reporting `lookup_not_local` where it asserted
+    /// something else.
+    ///
+    /// IT IS THE FIXTURES THAT WERE WRONG AND NOT THE READERS. The write path files both halves --
+    /// that is the obligation `fold_delta_block_items` carries a note about -- so a fixture that
+    /// files one is building a state this engine cannot produce, and a guard over it is a guard
+    /// over nothing.
+    ///
+    /// AND ONE DOOR RATHER THAN A FILING CALL BESIDE EACH `insert`, for the reason the whole
+    /// campaign keeps re-finding: two obligations spelled at six call sites are six chances to
+    /// spell one. A fixture added here from now on gets both or neither.
+    fn install_page(shard: &mut ShardState, routing_bucket: u32, key: &str, page: BlockIndex) {
+        shard
+            .bucket_index
+            .bucket_map
+            .insert(routing_bucket, node(routing_bucket, page.clone()));
+        file_page(shard, routing_bucket, key, &page);
+    }
+
+    /// File an ALREADY-PLACED page's position in the object lookup.
+    ///
+    /// Separate from [`install_page`] for the one fixture that MOVES a node after building it: the
+    /// move has to carry the filing with it, or the page stops being named and the guard refuses
+    /// on the wrong term.
+    fn file_page(shard: &mut ShardState, routing_bucket: u32, key: &str, page: &BlockIndex) {
+        let object_key: Arc<str> = Arc::from(key);
+        shard.bucket_index.insert_object_block_lookup(
+            routing_bucket,
+            FIXTURE_HANDLE,
+            &object_key,
+            page,
+        );
     }
 
     /// One bucket that satisfies every precondition: resident, not loading, clean, undeleted,
@@ -7722,10 +7780,7 @@ mod release_refusal_guards {
         let key = key_routing_to(key_prefix, routing_bucket);
         let held = address(routing_bucket, 64);
         shard.strings.insert(key.as_str().into(), held.clone());
-        shard
-            .bucket_index
-            .bucket_map
-            .insert(routing_bucket, node(routing_bucket, block(&key, "string", None, held)));
+        install_page(shard, routing_bucket, &key, block(&key, "string", None, held));
         key
     }
 
@@ -7743,10 +7798,7 @@ mod release_refusal_guards {
         let routing_bucket = crate::engine::hashing::block_routing_bucket(key, 0, u32::MAX);
         let held = address(routing_bucket, 64);
         shard.strings.insert(key.to_string().into_boxed_str(), held.clone());
-        shard
-            .bucket_index
-            .bucket_map
-            .insert(routing_bucket, node(routing_bucket, block(key, "string", None, held)));
+        install_page(shard, routing_bucket, key, block(key, "string", None, held));
         routing_bucket
     }
 
@@ -7772,10 +7824,7 @@ mod release_refusal_guards {
             dirty: true,
             ..block(&key, "string", None, held)
         };
-        shard
-            .bucket_index
-            .bucket_map
-            .insert(routing_bucket, node(routing_bucket, dirty));
+        install_page(shard, routing_bucket, &key, dirty);
         key
     }
 
@@ -7870,10 +7919,7 @@ mod release_refusal_guards {
         shard
             .hashes
             .insert_element_for_test(&key, "field".to_string(), held.clone());
-        shard.bucket_index.bucket_map.insert(
-            7,
-            node(7, block(&key, "hash", Some("field"), held)),
-        );
+        install_page(&mut shard, 7, &key, block(&key, "hash", Some("field"), held));
 
         let outcome = release_bucket_blocks(&mut shard, &[7]);
 
@@ -7936,10 +7982,25 @@ mod release_refusal_guards {
                 *candidate != crate::engine::hashing::block_routing_bucket(&key, 0, RELEASE_RANGE_END)
             })
             .expect("some bucket is not the key's");
+        // THE MOVE CARRIES THE FILING WITH IT, or this guard refuses on the wrong term.
+        //
+        // The lookup is keyed BY POSITION -- `page_identities_in` asks
+        // `live_identity(node.routing_bucket, handle)` -- so a node moved to another bucket while
+        // its lookup ref still names the old one is a page the reader cannot name, and it refuses
+        // with `LookupNotLocal` before the routing term is ever reached. That is a DIFFERENT
+        // defect from the one this guard is about: this one is a page whose KEY does not route to
+        // the bucket it SITS in, both halves agreeing about where it sits.
+        let moved = node
+            .block_index
+            .get(&FIXTURE_HANDLE)
+            .expect("the fixture's one page")
+            .clone();
+        shard.bucket_index.object_block_lookup.remove("string", &key);
         shard.bucket_index.bucket_map.insert(
             elsewhere,
             BucketNode { routing_bucket: elsewhere, ..node },
         );
+        file_page(&mut shard, elsewhere, &key, &moved);
 
         let outcome = release_bucket_blocks(&mut shard, &[elsewhere]);
 
@@ -8037,10 +8098,7 @@ mod release_refusal_guards {
         shard
             .hashes
             .insert_element_for_test(&kind_key, "field".to_string(), held.clone());
-        shard
-            .bucket_index
-            .bucket_map
-            .insert(4, node(4, block(&kind_key, "hash", Some("field"), held)));
+        install_page(&mut shard, 4, &kind_key, block(&kind_key, "hash", Some("field"), held));
         shard.strings.insert(disagreement_key.into_boxed_str(), address(5, 4_096));
 
         let candidates = [1u32, 2, 3, 4, 5];
