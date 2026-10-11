@@ -4482,15 +4482,42 @@ pub(super) fn insert_container_tombstone_entry(
     // now, from `model_id` and `object_key` -- which on this path are `kind` and `object_key`, the
     // same two terms that fed the stamp -- so the value is unchanged by construction and the shard
     // is no longer needed here to produce it.
-    // A TOMBSTONE MUST NAME AN ELEMENT, because its row is the only thing that will state which
-    // object its page belonged to once the entry carries no identity. Every caller passes one
-    // today -- measured over 272 tests, never once reached with `None`, with the detector proved
-    // live by inverting it -- and this is what keeps that true rather than merely observed.
+    // A TOMBSTONE MUST NAME AN ELEMENT, AND THAT IS A REFUSAL IN EVERY BUILD NOW.
+    //
+    // Its row is the only thing that will state which object its page belonged to once the entry
+    // carries no identity: a deleted page is never in the object lookup, so the row beside it is
+    // the whole of its identity.
+    //
+    // WHY A `debug_assert!` ALONE IS THE WRONG SHAPE FOR THIS ONE. The encoder now REFUSES to
+    // write a page whose stored key would name no object, and that refusal is a release-build
+    // behaviour. Leaving the invariant it depends on to a debug-only predicate is a guard that
+    // cannot fire where it matters -- the same shape as the `names_no_position()` hatch this leg
+    // already closed, and as the deleted class the old key check could not reach. The failure it
+    // would leave is a dump refusing for a reason nothing at the point of cause recorded.
+    //
+    // SO THE TWO BUILDS FAIL DIFFERENTLY AND BOTH FAIL EARLIER THAN THE DUMP. A debug build still
+    // panics here, where the stack is the diagnosis. A release build DECLINES: it files no page
+    // and no row, leaving the index exactly as it found it.
+    //
+    // AND DECLINING LOSES NOTHING, which is what makes this a tightening rather than a product
+    // change. The page it would have filed is already discarded by its only consumer -- the
+    // refile in `rebuild_unserialized_model_maps_from_bucket_index` hits `let Some(element) =
+    // element else { continue }` on exactly this case, under a note saying a tombstone naming no
+    // element cannot be refiled and is dropped rather than filed under a guessed identity. What
+    // changes is that it is not written in the first place.
+    //
+    // MEASURED NOT TO ARISE: 272 tests across the nine removal-shaped filters, never once reached
+    // with `None`, with the detector proved live by inverting it -- 22 hits under
+    // `container_tombstone` when it asked for the opposite. So the refusal costs nothing anyone is
+    // doing, and anything it catches is a defect.
     debug_assert!(
         component.is_some(),
         "a tombstone entry with no element to name leaves a deleted page nothing beside it can \
-         identify, so a rebuild cannot refile it"
+         identify, so no rebuild can refile it and no dump can compose a key for it"
     );
+    let Some(named_element) = component else {
+        return;
+    };
     let page = BlockIndex {
         object_key: std::sync::Arc::from(object_key),
         model_id: stored_model_kind(kind),
@@ -4532,18 +4559,17 @@ pub(super) fn insert_container_tombstone_entry(
     // derives the rows from the deleted entries and would drop a row filed before its entry
     // existed.
     //
-    // A removal with NO component files no row, and that is honest rather than lossy: the only
-    // caller that passes `None` here is a path with no element to name, and a row spelling one
-    // would invent an identity.
-    if let Some(component) = component {
-        if let Some(bucket) = shard.bucket_index.bucket_map.get_mut(&routing_bucket) {
-            bucket.record_tombstone_element(
-                object_key,
-                stored_model_kind(kind),
-                component,
-                &address,
-            );
-        }
+    // THE ELEMENT IS NAMED UNCONDITIONALLY NOW, because a call that could not name one has
+    // already returned above. This was `if let Some(component) = component`, under a note saying a
+    // removal with no component files no row and that this was honest rather than lossy. It was --
+    // but what it left behind was a PAGE with no row, which is the half that cannot be served.
+    if let Some(bucket) = shard.bucket_index.bucket_map.get_mut(&routing_bucket) {
+        bucket.record_tombstone_element(
+            object_key,
+            stored_model_kind(kind),
+            named_element,
+            &address,
+        );
     }
     if let Some(bucket) = shard.bucket_index.bucket_map.get_mut(&routing_bucket) {
         classify_bucket_layout_in_place(bucket);
