@@ -5275,6 +5275,84 @@ impl BlockIndex {
 }
 
 impl CoreIndex {
+    /// THE LOOKUP ALREADY DESCRIBES THE PAGES, CHECKED WITHOUT REBUILDING IT.
+    ///
+    /// This is what replaces a `rebuild_object_block_lookup()` at a site whose filing now files
+    /// the lookup as it goes. The rebuild is an O(blocks) whole-shard pass; the claim it was
+    /// standing in for is that the lookup and the page index agree, and that is checkable without
+    /// doing the work. So in a release build the pass is simply gone, and in a debug build the
+    /// claim is verified on every run instead of being asserted in a comment.
+    ///
+    /// DELETED PAGES ARE NOT IN EITHER SIDE. `insert_object_block_lookup` returns early on a
+    /// deleted page, so the reconstruction below applies the same filter -- which is also why a
+    /// tombstone refile owes the lookup nothing and why the two sites this serves can do their
+    /// tombstone pass after their live pass with no filing in between.
+    ///
+    /// AND IT IS A SCAFFOLD WITH A LIFETIME, said here so the next reader does not inherit it as
+    /// furniture. It reads `page.object_key`, so it is one of the readers that has to go when the
+    /// identity leaves the entry -- at which point its only possible source would be the lookup it
+    /// is checking, and the check would be comparing the lookup with itself. It exists to earn the
+    /// removal of the two rebuild calls, and it is spent once the field is gone.
+    #[cfg(debug_assertions)]
+    #[track_caller]
+    pub(super) fn debug_assert_lookup_matches_the_pages(&self) {
+        let from_the_lookup = self.lookup_positions_for_comparison();
+        let mut from_the_pages: Vec<(String, String, u32, u64)> = self
+            .bucket_map
+            .iter()
+            .flat_map(|(routing_bucket, bucket)| {
+                bucket
+                    .block_index
+                    .iter()
+                    .filter(|(_, page)| !page.deleted)
+                    .map(move |(handle, page)| {
+                        (
+                            page.model_id.as_str().to_string(),
+                            page.object_key.to_string(),
+                            *routing_bucket,
+                            *handle,
+                        )
+                    })
+            })
+            .collect();
+        from_the_pages.sort();
+        debug_assert_eq!(
+            from_the_lookup,
+            from_the_pages,
+            "the object lookup does not describe this index's live pages: {} position(s) in the \
+             lookup against {} named by the pages. A site that files a page is not filing the \
+             lookup for it, or is filing it differently from the way a rebuild would",
+            from_the_lookup.len(),
+            from_the_pages.len()
+        );
+    }
+
+    /// The lookup as a comparable set of (kind, object key, bucket, handle).
+    ///
+    /// Sorted rather than hashed, so a disagreement prints in a stable order; and built from
+    /// `iter()` rather than from a `PartialEq` on the lookup, because the arms that would collapse
+    /// -- which slot an id sits in, how a tier is represented -- are not part of the claim. What
+    /// the claim is about is which positions name which object.
+    #[cfg(debug_assertions)]
+    fn lookup_positions_for_comparison(&self) -> Vec<(String, String, u32, u64)> {
+        let mut rows: Vec<(String, String, u32, u64)> = self
+            .object_block_lookup
+            .iter()
+            .flat_map(|(model_id, object_key, refs)| {
+                refs.iter().map(move |block_ref| {
+                    (
+                        model_id.to_string(),
+                        object_key.to_string(),
+                        block_ref.routing_bucket,
+                        block_ref.block_ref_key,
+                    )
+                })
+            })
+            .collect();
+        rows.sort();
+        rows
+    }
+
     pub(super) fn rebuild_object_block_lookup(&mut self) {
         // The rebuild is already O(blocks); establishing the total here costs nothing extra and
         // is what lets the stats path stop walking the shard.

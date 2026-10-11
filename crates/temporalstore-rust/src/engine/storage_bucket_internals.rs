@@ -1394,6 +1394,16 @@ pub(super) fn rebuild_bucket_block_ownership(
         })
         .collect();
     shard.bucket_index.bucket_map.clear();
+    // AND THE LOOKUP WITH IT, because it describes the map that was just emptied.
+    //
+    // It used to survive this clear and be rebuilt wholesale at the end of the function. Now that
+    // the refile below files each page as it goes, a surviving pre-compaction entry would be a
+    // position naming a page that no longer exists -- so the structure has to start empty for the
+    // filing to be the whole story. The ref total goes back to the zero a fresh index carries, for
+    // the same reason: `insert_object_block_lookup` counts up from it, and a total carried over
+    // from the emptied map would count pages twice.
+    shard.bucket_index.object_block_lookup.clear();
+    shard.bucket_index.object_component_block_refs = Some(0);
     // The tally counts the map that was just emptied. Emptied with it, and re-earned by the
     // charges the inserts below make -- not by a walk afterwards, which is the walk this whole
     // change exists to remove and which a compaction round would pay twice.
@@ -1402,6 +1412,12 @@ pub(super) fn rebuild_bucket_block_ownership(
     // bucket at a time. Nothing is released afterwards, and a registry that outlived the map it
     // names would make the block walk supplement buckets that are already whole.
     shard.bucket_index.released_buckets.clear();
+    // WHAT THE REFILE PLACES, SO THE LOOKUP CAN BE FILED FROM IT.
+    //
+    // Collected rather than filed inside the loop: the filing takes the whole index mutably and
+    // the loop holds one bucket out of it, so it cannot happen there -- the same shape
+    // `reload_released_bucket` already uses for the same reason.
+    let mut filed_pages: Vec<(u32, u64, Arc<str>, BlockIndex)> = Vec::new();
     for entry in collect_model_live_block_entries(shard) {
         let routing_bucket =
             block_routing_bucket(&entry.object_key, start_routing_bucket, end_routing_bucket);
@@ -1441,7 +1457,9 @@ pub(super) fn rebuild_bucket_block_ownership(
         // of this rebuild. Both, deliberately: the charge keeps this site honest if the shape of
         // the function changes, and the seed is what makes the result independent of whatever the
         // tally held before `bucket_map.clear()` above.
-        bucket.insert_page(&entry.object_key.clone(), 
+        let object_key = Arc::clone(&entry.object_key);
+        let handle = bucket.insert_page(
+            &object_key,
             BlockIndex {
                 object_key: entry.object_key,
                 model_id: entry.kind,
@@ -1451,6 +1469,18 @@ pub(super) fn rebuild_bucket_block_ownership(
             },
             &mut shard.bucket_index.block_slab_live,
         );
+        // THE PAGE IS TAKEN BACK OUT BY ITS HANDLE rather than cloned on the way in, so the
+        // entry the lookup records is the entry the map HOLDS. A page whose handle collided
+        // with an earlier one is not in the map twice and must not be in the lookup twice
+        // either; that is the decoder's rule, read off the same reasoning.
+        if let Some(placed) = bucket.block_index.get(&handle) {
+            filed_pages.push((routing_bucket, handle, object_key, placed.clone()));
+        }
+    }
+    for (routing_bucket, handle, object_key, page) in &filed_pages {
+        shard
+            .bucket_index
+            .insert_object_block_lookup(*routing_bucket, *handle, object_key, page);
     }
     // FILE THE TOMBSTONE ENTRIES BACK, after the live rebuild and before the flag pass below, so the
     // `every_page_deleted` computation sees the finished bucket rather than a half-built one.
@@ -1542,7 +1572,18 @@ pub(super) fn rebuild_bucket_block_ownership(
         tombstones_refiled += 1;
     }
     note_tombstones_refiled(tombstones_refiled);
-    shard.bucket_index.rebuild_object_block_lookup();
+    // THE WHOLE-SHARD REBUILD IS GONE FROM HERE, and the claim it stood for is checked instead.
+    //
+    // It cleared the lookup and re-filed every page in the shard, reading the object key off each
+    // one. The refile above files as it goes, so there is nothing left for it to discover -- and
+    // the rebuild was the last whole-shard reader of the identity ON a page, rebuilding the very
+    // structure that is the identity BESIDE a page, which is circular and is why it has to go
+    // rather than be rewritten to take the identities as a parameter.
+    //
+    // In a release build this is one fewer O(blocks) pass per compaction round. In a debug build
+    // the agreement is verified on every run, which is what earns the removal.
+    #[cfg(debug_assertions)]
+    shard.bucket_index.debug_assert_lookup_matches_the_pages();
     // THE INVERSION IS HOISTED, AND THE TWO BORROWS ARE SPLIT BY NAMING THE FIELDS. The derive
     // reads the object lookup while this loop holds the bucket map mutably, and both are fields of
     // one index -- so the split has to be written where the places are named, rather than inside a
@@ -6027,6 +6068,10 @@ pub(super) fn rebuild_bucket_first_index(
     let mut live_object_ids_by_bucket: BTreeMap<u32, BTreeSet<u64>> = BTreeMap::new();
     let no_live_objects: BTreeSet<u64> = BTreeSet::new();
     let mut bucket_index = CoreIndex::default();
+    // WHAT THIS RECONSTRUCT PLACES, in the same shape and for the same reason as the refile in
+    // `rebuild_bucket_block_ownership`. The index starts empty here, so the filing below is the
+    // whole of what the lookup should hold.
+    let mut filed_pages: Vec<(u32, u64, Arc<str>, BlockIndex)> = Vec::new();
     for entry in collect_model_live_block_entries(shard) {
         let routing_bucket =
             block_routing_bucket(&entry.object_key, start_routing_bucket, end_routing_bucket);
@@ -6053,7 +6098,9 @@ pub(super) fn rebuild_bucket_first_index(
         }
         bucket.set_in_memory(bucket.in_memory() | true);
         bucket.object_index.insert(object_id);
-        bucket.insert_page(&entry.object_key.clone(), 
+        let object_key = Arc::clone(&entry.object_key);
+        let handle = bucket.insert_page(
+            &object_key,
             BlockIndex {
                 object_key: entry.object_key,
                 model_id: entry.kind,
@@ -6063,6 +6110,13 @@ pub(super) fn rebuild_bucket_first_index(
             },
             &mut bucket_index.block_slab_live,
         );
+        // THE PAGE IS TAKEN BACK OUT BY ITS HANDLE rather than cloned on the way in, so the
+        // entry the lookup records is the entry the map HOLDS. A page whose handle collided
+        // with an earlier one is not in the map twice and must not be in the lookup twice
+        // either; that is the decoder's rule, read off the same reasoning.
+        if let Some(placed) = bucket.block_index.get(&handle) {
+            filed_pages.push((routing_bucket, handle, object_key, placed.clone()));
+        }
         update_bucket_layout_with_live_objects(
             bucket,
             live_object_ids_by_bucket
@@ -6161,7 +6215,20 @@ pub(super) fn rebuild_bucket_first_index(
         );
     }
     note_tombstones_refiled(refiled);
-    bucket_index.rebuild_object_block_lookup();
+    // FILED FROM WHAT THIS RECONSTRUCT PLACED, where a whole-shard rebuild used to re-derive it.
+    //
+    // After the tombstone pass rather than before it, which costs nothing and leaves the two loops
+    // in the order they already had: a tombstone is never in this structure --
+    // `insert_object_block_lookup` returns early on a deleted page -- so nothing the second loop
+    // files could belong here anyway.
+    for (routing_bucket, handle, object_key, page) in &filed_pages {
+        bucket_index.insert_object_block_lookup(*routing_bucket, *handle, object_key, page);
+    }
+    // The same removal as in `rebuild_bucket_block_ownership`, and the same verification in its
+    // place. See [`CoreIndex::debug_assert_lookup_matches_the_pages`] for why the claim is
+    // checkable without doing the pass, and why the check is a scaffold with a lifetime.
+    #[cfg(debug_assertions)]
+    bucket_index.debug_assert_lookup_matches_the_pages();
     shard.bucket_index = bucket_index;
     // The local index charged every block it filed, and it arrived empty, so the tally travelled
     // here with it and is already right. Same reason as `rebuild_bucket_block_ownership`: a walk to
