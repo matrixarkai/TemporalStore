@@ -524,7 +524,7 @@ impl ShardState {
 // that was landed against the derive for exactly this moment: its discriminating pair is that the
 // legacy spelling decodes POPULATED and an unrecognised one decodes EMPTY, which is the only form
 // of the claim that is not true of any input whatsoever.
-#[derive(Debug, Default, Clone)]
+#[derive(Debug, Clone)]
 pub(super) struct CoreIndex {
     pub(super) bucket_map: BucketMap,
     /// Per-slab live block refs and live bytes, maintained by every mutation of the map above.
@@ -615,6 +615,54 @@ pub(super) struct CoreIndex {
     ///
     /// Not serialized in either direction; the decoder below names no arm for it.
     pub(super) released_buckets: BTreeSet<u32>,
+}
+
+/// HAND-WRITTEN FOR ONE FIELD, AND BECAUSE A LIST OF CONSTRUCTION SITES COULD NOT BE EXHAUSTIVE.
+///
+/// `object_component_block_refs` is `Some(0)` from birth rather than `None`. `None` means "nobody
+/// has established this count", and `insert_object_block_lookup` increments only `if let Some`, so
+/// a count left at `None` can never be incremented into a right answer -- it has to START at a
+/// number. The decoder already said exactly that and set zero before its first filing; this makes
+/// the same statement for every other way an index comes into existence.
+///
+/// # WHY NOT VISIT THE CONSTRUCTION SITES INSTEAD -- ENUMERATED BY THE COMPILER, NOT GREPPED
+///
+/// Taking `Default` off the derive and compiling names every construction. There are two EXPLICIT
+/// production sites -- `rebuild_bucket_first_index` and the decoder -- and THREE IMPLICIT routes
+/// that no site list can cover:
+///
+///   * `ShardState` derives `Default`, so `ShardState::default()` builds one;
+///   * `bucket_index` carries `#[serde(default)]`, so a stored index that omits `slot_index`
+///     decodes through THIS and not through the hand-written `Deserialize` that sets zero -- which
+///     is the route that matters, because it is a real file on a real load; and
+///   * any `..Default::default()` in a struct update.
+///
+/// A site list would also go stale the first time someone adds a fourth route, with nothing
+/// failing. Put on the type, the claim holds for every route that exists and every route anyone
+/// adds, and a field added to this struct later is a COMPILE ERROR here rather than a silent
+/// `Default::default()` nobody chose.
+///
+/// AN EMPTY INDEX'S REF TOTAL IS NOT UNKNOWN, IT IS ZERO, which is the other half of why this is a
+/// correction rather than a convenience. The two production readers test
+/// `object_block_lookup.is_empty() || object_component_block_refs.is_none()` and read either half
+/// as "needs establishing". The FIRST half still answers for an index holding pages its lookup
+/// does not name, so what this removes is only the arm that called a known zero unknown -- and in
+/// exchange, an index that files as it goes now carries a maintained total without a rebuild
+/// having to establish one.
+///
+/// `a_default_index_reports_a_ref_total_of_zero_by_every_route_one_is_built` drives all three
+/// implicit routes plus both decode paths.
+impl Default for CoreIndex {
+    fn default() -> Self {
+        Self {
+            bucket_map: BucketMap::default(),
+            block_slab_live: BlockSlabLiveIndex::default(),
+            object_block_lookup: ObjectBlockLookup::default(),
+            kind_pool: std::collections::HashSet::default(),
+            object_component_block_refs: Some(0),
+            released_buckets: BTreeSet::default(),
+        }
+    }
 }
 
 /// WHICH KEY OF A STORED INDEX THIS IS, including the one spelling that is only ever read.
@@ -715,6 +763,13 @@ impl<'de> Deserialize<'de> for CoreIndex {
                 // ZERO BEFORE THE FIRST FILING, not after the last. `insert_object_block_lookup`
                 // increments only `if let Some(total)`, so a count left at `None` can never be
                 // incremented into a right answer -- it has to START at a number.
+                //
+                // KEPT THOUGH `Default` NOW SAYS THE SAME THING, because this decoder does not go
+                // through `Default` for this field in every arm it could gain, and because the
+                // statement belongs where the filing loop below can be read beside it. It is a
+                // restatement rather than a second mechanism: both write the same zero, and
+                // `impl Default for CoreIndex` carries the argument for why a site list cannot be
+                // relied on to.
                 index.object_component_block_refs = Some(0);
                 for (routing_bucket, decoded) in buckets.unwrap_or_default() {
                     for (handle, object_key) in &decoded.page_keys {
@@ -5867,6 +5922,71 @@ mod component_lookup_tests {
         }
     }
 
+    /// EVERY ROUTE BY WHICH A `CoreIndex` COMES INTO EXISTENCE REPORTS A REF TOTAL OF ZERO.
+    ///
+    /// `None` on this field means "nobody has established this count", and an increment against it
+    /// is dropped on purpose -- so an index built by a route that leaves it `None` can never
+    /// arrive at a right answer by filing. The claim is therefore about the ROUTES, not about one
+    /// constructor, and the routes are the ones the compiler named when `Default` came off the
+    /// derive: two explicit sites, and three that no site list could have covered.
+    ///
+    /// THE THIRD ROUTE IS THE ONE THAT MATTERS AND IT IS A REAL FILE. `bucket_index` carries
+    /// `#[serde(default)]`, so an index whose stored bytes have no `slot_index` key decodes
+    /// through `Default` and never reaches the hand-written `Deserialize` that sets zero. That
+    /// arm is driven here by TAKING THE KEY OUT of a serialized shard rather than by hand-writing
+    /// JSON, so the input is the shape this engine actually writes minus one key.
+    ///
+    /// AND BOTH DECODE PATHS ARE ASSERTED, which is what keeps this from passing on half the
+    /// claim: an index WITH the key must come back established too, or the arm above would be
+    /// satisfied by a decoder that established nothing and a `Default` that did all the work.
+    ///
+    /// rust-internal: index construction invariant, no product behaviour
+    #[test]
+    fn a_default_index_reports_a_ref_total_of_zero_by_every_route_one_is_built() {
+        assert_eq!(
+            Some(0),
+            CoreIndex::default().object_component_block_refs,
+            "the explicit route left the ref total unestablished"
+        );
+        assert_eq!(
+            Some(0),
+            ShardState::default().bucket_index.object_component_block_refs,
+            "a default shard's index left the ref total unestablished, so every route through \
+             `ShardState::default()` starts with a counter no filing can correct"
+        );
+
+        // --- The serde(default) route: the same bytes this engine writes, minus the one key. ---
+        let mut stored = serde_json::to_value(ShardState::default())
+            .expect("a default shard serializes");
+        let object = stored
+            .as_object_mut()
+            .expect("a serialized shard is a JSON object");
+        assert!(
+            object.remove("slot_index").is_some(),
+            "the serialized shard carried no `slot_index` key, so removing it is not the arm this \
+             test means to drive and the decode below would prove nothing"
+        );
+        let without_the_key: ShardState =
+            serde_json::from_value(stored).expect("a shard without the index key decodes");
+        assert_eq!(
+            Some(0),
+            without_the_key.bucket_index.object_component_block_refs,
+            "a stored index with no `slot_index` key decoded to a counter no filing can correct, \
+             which is the route a site list cannot cover"
+        );
+
+        // --- And the decode path that DOES carry the key, so this is not half a claim. ---
+        let with_the_key: ShardState = serde_json::from_value(
+            serde_json::to_value(ShardState::default()).expect("a default shard serializes"),
+        )
+        .expect("a shard with the index key decodes");
+        assert_eq!(
+            Some(0),
+            with_the_key.bucket_index.object_component_block_refs,
+            "the decoder left the ref total unestablished on an index that carried the key"
+        );
+    }
+
     /// Built through the real insert rather than assembled by hand, and that is deliberate rather
     /// than convenient: these arms turn on what the insert does with an object's second and third
     /// page, and a fixture that imitates it can agree with an insert that has stopped doing it.
@@ -5874,20 +5994,21 @@ mod component_lookup_tests {
     /// Each page gets its own `(routing_bucket, block_ref_key)` -- `(i, i)` -- so `pages` DISTINCT
     /// refs go in, and a count below is not a count of one ref filed repeatedly.
     fn core_with(object: &str, pages: u32) -> CoreIndex {
-        let mut index = CoreIndex::default();
-        // ESTABLISH THE REF COUNTER FIRST, WHICH IS WHAT A REBUILD DOES AND WHAT A DEFAULT
-        // `CoreIndex` DOES NOT.
+        let index = CoreIndex::default();
+        // THE COUNTER IS ESTABLISHED BY THE TYPE NOW, AND THIS FIXTURE USED TO DO IT BY HAND.
         //
-        // `object_component_block_refs` is `None` on a default index, and `None` means UNKNOWN
-        // rather than zero: `insert_object_block_lookup` increments only `if let Some(total)`, so
-        // on an unestablished counter every increment is dropped on purpose -- a count that starts
-        // at "unknown" cannot be incremented into a right answer. `rebuild_object_block_lookup`
-        // sets it to `Some(0)` before it re-inserts, and that is the state every arm below is
-        // about, so the fixture reaches it the same way instead of asserting over `None`.
+        // It read "`object_component_block_refs` is `None` on a default index, and `None` means
+        // UNKNOWN rather than zero", and set `Some(0)` itself with a note that three arms here had
+        // asserted `Some(n)` without the line and read back `None`. `impl Default for CoreIndex`
+        // writes that zero now, so the line was a no-op -- and a no-op that STILL COMPILED and
+        // still read as the thing establishing the state, which is the shape this tree keeps a
+        // record of. Removed rather than left, so the arms below depend on the type's claim and go
+        // red with it if anyone takes it away.
         //
-        // CAUGHT BY ITS OWN FAILURE: three arms here asserted `Some(n)` without this line and read
-        // back `None`. The fixture was wrong, not the counter.
-        index.object_component_block_refs = Some(0);
+        // The reasoning itself has not changed and has only moved: `insert_object_block_lookup`
+        // increments only `if let Some(total)`, so a count that starts at "unknown" cannot be
+        // incremented into a right answer.
+        let mut index = index;
         for i in 0..pages {
             let filed = page(object);
             index.insert_object_block_lookup(
