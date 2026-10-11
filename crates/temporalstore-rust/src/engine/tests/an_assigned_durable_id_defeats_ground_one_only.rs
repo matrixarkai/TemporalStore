@@ -137,7 +137,6 @@ use std::sync::Arc;
 use crate::block_store::ElementEntry;
 use crate::engine::state::BlockIndex;
 use crate::engine::storage_bucket_internals::StoredModelKind;
-use crate::index_log::IndexItemKind;
 
 /// CLAIM 1, AS A TYPE. The stable object id is produced by CONSUMING the key bytes.
 ///
@@ -157,17 +156,34 @@ const _: fn(&str, u32, u32) -> u32 = crate::engine::hashing::block_routing_bucke
 
 /// CLAIM 2, AS A MEASUREMENT. The id carried as a FIELD lands the entry at thirty-two.
 ///
-/// The live entry with its shared pointer to the key replaced by an eight-byte id: one plus four
-/// plus eight plus one plus sixteen plus one plus one is thirty-two bytes of field, and thirty-two
-/// is a multiple of the alignment, so it lands there exactly. NOT twenty-four.
+/// # EVERY MIRROR IN THIS FILE DECLARED TWO FIELDS THE LIVE ENTRY LOST TWO LEGS AGO
 ///
-/// So the proposal reaches twenty-four only in the form where the id is the KEY OF THE HOLDING MAP
+/// All four carried `kind: IndexItemKind` and `routing_bucket: u32` -- five bytes between them --
+/// and `65c7fc562` removed both from `BlockIndex`. NOT ONE ASSERTION MOVED WHEN THEY WERE
+/// CORRECTED, which is exactly why this is written up rather than quietly fixed: the comparison
+/// mirror held forty bytes of field against a live entry holding thirty-five, and FORTY AND
+/// THIRTY-FIVE BOTH ROUND TO FORTY, so `size_of::<mirror>() == size_of::<BlockIndex>()` went on
+/// passing while the mirror described a field set the entry did not have.
+///
+/// THIS IS THE THIRD RECORDED INSTANCE OF THAT SHAPE AND THE SECOND STILL LIVE.
+/// `entry_width_at_each_step`'s module doc records it for its own step-zero mirror and answers it
+/// with field OFFSET pins, saying in as many words that its width controls "discriminate at WORD
+/// granularity and no finer". `state.rs`'s address-word probe records it for itself. This file
+/// read both notes and carried the defect anyway, because nothing here reads an offset.
+///
+/// SO THE ARITHMETIC IN THIS PARAGRAPH WAS WRONG TOO, and it is the half a width cannot check. It
+/// read "one plus four plus eight plus one plus sixteen plus one plus one is thirty-two bytes of
+/// field, and thirty-two is a multiple of the alignment, so it lands there exactly". With the two
+/// retired terms gone it is eight plus one plus sixteen plus one plus one: TWENTY-SEVEN bytes of
+/// field in thirty-two, with five of slack. It lands at thirty-two by ROUNDING, not exactly --
+/// which is the same correction `state.rs`'s probe took for the same reason.
+///
+/// THE VERDICT IS UNCHANGED AND THAT IS NOT LUCK: thirty-two is still not twenty-four, so the
+/// proposal still reaches twenty-four only in the form where the id is the KEY OF THE HOLDING MAP
 /// and the entry carries no identity term. That form is the one Ground 2 is about, which is why
 /// this mirror is the bridge between the width claim and the refusal.
 #[allow(dead_code)]
 struct TheIdCarriedAsAFieldInstead {
-    kind: IndexItemKind,
-    routing_bucket: u32,
     object_id: u64,
     model_id: StoredModelKind,
     address: ElementEntry,
@@ -178,15 +194,20 @@ struct TheIdCarriedAsAFieldInstead {
 const _: () = assert!(size_of::<TheIdCarriedAsAFieldInstead>() == 32);
 const _: () = assert!(align_of::<TheIdCarriedAsAFieldInstead>() == 8);
 
-/// THE CONTROL FOR THAT MIRROR, and it is the same control the width module needed.
+/// THE CONTROL FOR THAT MIRROR, and it is the control that was passing over a stale field set.
 ///
 /// The mirror is the live entry with one term swapped, so it is only evidence if the UNSWAPPED
-/// mirror measures the live entry. Asserted at word granularity, which is the granularity every
-/// number here is read at -- see the width module for what that control cannot see.
+/// mirror measures the live entry. This is the one that held forty bytes of field against the live
+/// entry's thirty-five and compared equal anyway, for the reason the claim-2 doc gives: it is
+/// asserted at WORD granularity, and the five bytes the two retired fields contributed were
+/// absorbed by the rounding.
+///
+/// IT IS STILL ASSERTED AT WORD GRANULARITY, and this file does not pretend otherwise. The
+/// stronger instrument is a field OFFSET pin, and `entry_width_at_each_step` carries it for the
+/// same structure; what this file owes is a mirror whose field list is the live one, which is now
+/// the case.
 #[allow(dead_code)]
 struct TheLiveEntryForComparison {
-    kind: IndexItemKind,
-    routing_bucket: u32,
     object_key: Arc<str>,
     model_id: StoredModelKind,
     address: ElementEntry,
@@ -201,8 +222,6 @@ const _: () = assert!(align_of::<TheLiveEntryForComparison>() == align_of::<Bloc
 /// comparison above is not discriminating at all.
 #[allow(dead_code)]
 struct TheLiveEntryWithOneWordTooMany {
-    kind: IndexItemKind,
-    routing_bucket: u32,
     object_key: Arc<str>,
     model_id: StoredModelKind,
     address: ElementEntry,
@@ -215,12 +234,17 @@ const _: () = assert!(size_of::<TheLiveEntryWithOneWordTooMany>() != size_of::<B
 
 /// CLAIM 6, AS ARITHMETIC. Each term of the totals, pinned where the total is written.
 ///
-/// The entry with no identity term, for the per-object total below. Twenty-four, with the same
-/// zero slack the width module measures.
+/// The entry with no identity term, for the per-object total below. Twenty-four -- and NINETEEN
+/// bytes of field in it, with FIVE of slack, not the zero this doc used to claim.
+///
+/// BOTH HALVES OF THAT SENTENCE WERE WRONG AND THE WIDTH WAS RIGHT. It read "Twenty-four, with the
+/// same zero slack the width module measures", and the width module measures five: its step-one
+/// row is "NINETEEN bytes of field in twenty-four, with FIVE bytes of slack", under a heading
+/// saying that reading inverts the rule this entry is governed by. This mirror carried the two
+/// retired fields on top of that, so it held twenty-four bytes of field in twenty-four and the
+/// zero claim was true OF THE MIRROR and of nothing else.
 #[allow(dead_code)]
 struct TheEntryWithNoIdentityTerm {
-    kind: IndexItemKind,
-    routing_bucket: u32,
     model_id: StoredModelKind,
     address: ElementEntry,
     dirty: bool,

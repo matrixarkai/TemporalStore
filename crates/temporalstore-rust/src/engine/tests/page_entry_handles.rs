@@ -1063,7 +1063,18 @@ fn the_entry_is_forty_bytes_and_every_one_is_accounted_for() {
     // TO COST, because the verdicts below are stated against that arithmetic -- what each of the
     // three names would be worth -- and it is now a counterfactual rather than a measurement.
     let component_when_it_was_a_field = size_of::<Option<Arc<str>>>();
-    let flags = 3usize;
+    // TWO FLAG BYTES, NOT THREE, AND THE ROUNDING HID THE THIRD.
+    //
+    // This read `3usize`. The entry holds `dirty` and `deleted` and nothing else -- `log_backed`
+    // is an accessor over the address, not a field -- so the tail is two bytes. The
+    // reconstruction below went on passing anyway: a tail of three and a tail of four both round
+    // to one word, so the sum reached the same width either way. That is the same word-granularity
+    // blindness `entry_width_at_each_step` documents for its own mirror and
+    // `an_assigned_durable_id_defeats_ground_one_only` carried in four of them.
+    //
+    // SPELLED AS THE TYPES, so a flag that stops being a `bool` fails here instead of leaving a
+    // literal right by luck.
+    let flags = size_of::<bool>() + size_of::<bool>();
 
     println!("\n=== BlockIndex, field by field ===");
     println!("  offsets: address@{} object_key@{} model_id@{} dirty@{} deleted@{}",
