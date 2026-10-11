@@ -982,7 +982,7 @@ fn the_page_index_of_a_real_store_costs_less_as_a_list_than_as_a_tree() {
             for bucket in &by_bucket {
                 let mut tree: BTreeMap<u64, BlockIndex> = BTreeMap::new();
                 for page in bucket {
-                    tree.insert(block_index_handle(page), page.clone());
+                    tree.insert(block_index_handle(&page.object_key, page), page.clone());
                 }
                 trees.push(tree);
             }
@@ -993,7 +993,7 @@ fn the_page_index_of_a_real_store_costs_less_as_a_list_than_as_a_tree() {
             for bucket in &by_bucket {
                 let mut list = BlockIndexMap::default();
                 for page in bucket {
-                    list.insert_released(page.clone());
+                    list.insert_released(&page.object_key, page.clone());
                 }
                 lists.push(list);
             }
@@ -1084,7 +1084,7 @@ fn the_page_list_growth_step_is_what_keeps_the_slack_off_the_measurement() {
         let mut stepped = BlockIndexMap::default();
         let (stepped_bytes, stepped_allocs) = span_counts(|| {
             for (_, page) in &pages {
-                stepped.insert_released(page.clone());
+                stepped.insert_released(&page.object_key, page.clone());
             }
         });
 
@@ -1127,7 +1127,7 @@ fn the_page_list_growth_step_is_what_keeps_the_slack_off_the_measurement() {
         let pages = sorted_list(length);
         let mut list = BlockIndexMap::default();
         for (_, page) in &pages {
-            list.insert_released(page.clone());
+            list.insert_released(&page.object_key, page.clone());
         }
         let slack = match &list {
             BlockIndexMap::Many(entries) => entries.capacity() - entries.len(),
@@ -1217,19 +1217,19 @@ fn the_inline_entry_no_longer_earns_its_width_and_this_is_the_occupancy_where_it
     let pages = sorted_list(1);
     let single = pages[0].1.clone();
     let mut listed = BlockIndexMap::default();
-    listed.insert_released(single.clone());
+    listed.insert_released(&single.object_key, single.clone());
     assert!(
         matches!(listed, BlockIndexMap::One(..)),
         "one page did not take the single-page arm, so this comparison is not about the arm that \
          shipped"
     );
     let (inline_bytes, inline_chunk, inline_allocs) = span_counts_both(|| {
-        let held = MirrorInlineArm::One(block_index_handle(&single), single.clone());
+        let held = MirrorInlineArm::One(block_index_handle(&single.object_key, &single), single.clone());
         std::hint::black_box(&held);
     });
     let (listed_bytes, listed_chunk, listed_allocs) = span_counts_both(|| {
         let mut held = BlockIndexMap::default();
-        held.insert_released(single.clone());
+        held.insert_released(&single.object_key, single.clone());
         std::hint::black_box(&held);
     });
     println!(
