@@ -794,8 +794,10 @@ fn a_hash_page_naming_no_field_is_skipped_while_a_genuine_empty_field_name_is_ke
         "a component-less page entry still wrote a component key, so the absent shape this finding \
          rests on is not what the encoder produces: {encoded}"
     );
-    let decoded: BlockIndex =
-        serde_json::from_str(&encoded).expect("a component-less page entry decodes");
+    let decoded = serde_json::from_str::<crate::engine::state::StoredPageEntry>(&encoded)
+        .expect("a component-less page entry decodes")
+        .into_parts()
+        .1;
     // THE DECODER CANNOT ADMIT A NAME INTO AN ENTRY ANY MORE, so this assertion is gone.
     //
     // It decoded a component-less entry and asserted the decoded value carried no component, to

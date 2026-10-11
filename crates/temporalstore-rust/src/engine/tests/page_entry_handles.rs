@@ -1387,7 +1387,8 @@ fn a_stored_spelling_with_no_row_is_refused_by_name_at_the_decode() {
     })
     .expect("encode");
     json["model_id"] = serde_json::Value::String("not_a_model_kind".to_string());
-    let _: BlockIndex = serde_json::from_value(json).expect("the decode must be reached");
+    let _ = serde_json::from_value::<crate::engine::state::StoredPageEntry>(json)
+        .expect("the decode must be reached");
 }
 
 /// THE OBJECT [`sample_entry`] BELONGS TO, named once rather than at each encode.
@@ -1503,7 +1504,7 @@ fn a_retired_spelling_still_decodes_into_a_page_entry() {
         })
         .expect("encode");
         json["model_id"] = serde_json::Value::String(spelling.to_string());
-        let page: BlockIndex = serde_json::from_value(json)
+        let page = serde_json::from_value::<crate::engine::state::StoredPageEntry>(json)
             .unwrap_or_else(|err| panic!("a store carrying {spelling:?} must still load: {err}"));
         assert_eq!(
             spelling,
@@ -1580,14 +1581,33 @@ fn the_model_spelling_did_not_move_on_the_wire_and_the_entry_lost_three_steps_in
 
     // And it round-trips through both encoders, positionally included -- which is the encoder a
     // shifted field would break.
-    let from_named: BlockIndex = rmp_serde::from_slice(&named).expect("named decode");
-    let from_positional: BlockIndex = rmp_serde::from_slice(&positional).expect("positional decode");
-    for (label, decoded) in [("named", &from_named), ("positional", &from_positional)] {
+    // DECODED INTO THE STORED SHAPE, which is what the wire holds: the entry itself has no
+    // `Deserialize`, and the positional encode is exactly why that matters -- a field count or an
+    // order that moved between the two wrappers would land here and nowhere else.
+    let (named_key, from_named) =
+        rmp_serde::from_slice::<crate::engine::state::StoredPageEntry>(&named)
+            .expect("named decode")
+            .into_parts();
+    let (positional_key, from_positional) =
+        rmp_serde::from_slice::<crate::engine::state::StoredPageEntry>(&positional)
+            .expect("positional decode")
+            .into_parts();
+    for (label, key, decoded) in [
+        ("named", &named_key, &from_named),
+        ("positional", &positional_key, &from_positional),
+    ] {
         assert_eq!(
             page.model_id, decoded.model_id,
             "{label}: the spelling did not survive the round trip"
         );
-        assert_eq!(page.object_key, decoded.object_key, "{label}: object_key moved");
+        // THE IDENTITY IS COMPARED AGAINST WHAT THE FIXTURE NAMED, not against a copy on the
+        // decoded entry. It arrives BESIDE the entry now, which is the whole of the move: the key
+        // the encoder was handed is the key the decoder hands back.
+        assert_eq!(
+            SAMPLE_ENTRY_OBJECT_KEY,
+            &**key,
+            "{label}: object_key moved across the round trip"
+        );
         // No component on the entry, so there is no such field to survive a round trip.
         assert_eq!(page.dirty, decoded.dirty, "{label}: dirty moved");
         assert_eq!(page.deleted, decoded.deleted, "{label}: deleted moved");

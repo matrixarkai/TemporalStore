@@ -1811,7 +1811,7 @@ impl<'de> Deserialize<'de> for DeletedObjectIndex {
 /// disk, so a handle has to mean the same block in every process that reads the file. Assigning
 /// them from a counter compiled, round-tripped, and lost an object on the first reload.
 #[derive(Debug, Default, Clone, Deserialize)]
-#[serde(from = "BTreeMap<String, BlockIndex>")]
+#[serde(from = "BTreeMap<String, StoredPageEntry>")]
 pub(super) enum BlockIndexMap {
     /// A bucket holding nothing: no list, no node, no allocation.
     ///
@@ -2746,12 +2746,14 @@ impl FromIterator<(Arc<str>, BlockIndex)> for BlockIndexMap {
 /// is derived AFTER a load by `reconcile_block_slab_live`. Charging here would count a loaded index
 /// twice over.
 fn page_index_and_identities(
-    flat: BTreeMap<String, BlockIndex>,
+    flat: BTreeMap<String, StoredPageEntry>,
 ) -> (BlockIndexMap, Vec<(u64, Arc<str>)>) {
     let mut map = BlockIndexMap::default();
     let mut identities = Vec::with_capacity(flat.len());
-    for page in flat.into_values() {
-        let object_key = Arc::clone(&page.object_key);
+    for stored in flat.into_values() {
+        // READ ONCE, FROM THE ONE PLACE THAT STILL HAS IT, and handed both to the handle and to
+        // the caller. The key is MOVED out of the stored entry rather than cloned off it.
+        let (object_key, page) = stored.into_parts();
         let handle = block_index_handle(&object_key, &page);
         map.insert_unaccounted(handle, page);
         identities.push((handle, object_key));
@@ -2763,8 +2765,8 @@ fn page_index_and_identities(
 ///
 /// It discards the identities because it has nobody to hand them to. One implementation and two
 /// doors; two builders that agree today is the hazard this file keeps a record of.
-impl From<BTreeMap<String, BlockIndex>> for BlockIndexMap {
-    fn from(flat: BTreeMap<String, BlockIndex>) -> Self {
+impl From<BTreeMap<String, StoredPageEntry>> for BlockIndexMap {
+    fn from(flat: BTreeMap<String, StoredPageEntry>) -> Self {
         page_index_and_identities(flat).0
     }
 }
@@ -2818,6 +2820,56 @@ impl Serialize for PageIndexAt<'_> {
 pub(super) struct PageEntryAt<'a> {
     pub(super) page: &'a BlockIndex,
     pub(super) object_key: &'a str,
+}
+
+/// THE ENTRY AS IT ARRIVES FROM THE WIRE, WITH THE IDENTITY STILL BESIDE IT.
+///
+/// The counterpart of [`PageEntryAt`], and it exists for a sharper reason than symmetry. A derived
+/// `Deserialize` on `BlockIndex` keeps COMPILING once `object_key` is not a field: serde's derive
+/// ignores a key it has no field for unless `deny_unknown_fields` is set. So the removal would
+/// have taken the identity off the load path without a single error, and `object_block_lookup` --
+/// `skip_serializing`, rebuilt from what the decode reads -- would have come back empty on every
+/// load. That is the exact state the encoder refuses to write.
+///
+/// THE FIVE FIELDS ARE THE DERIVE'S, UNCHANGED AND UNATTRIBUTED. `BlockIndex` carried no
+/// `#[serde(default)]` and no `rename`, so all five keys are required and spelled as declared;
+/// adding an attribute here would be a stored-format change wearing a refactor's clothes.
+/// `page_entry_names::an_index_written_before_this_change_loads_page_for_page` is what drives it.
+#[derive(Debug, Clone, Deserialize)]
+pub(super) struct StoredPageEntry {
+    pub(super) object_key: Arc<str>,
+    pub(super) model_id: crate::engine::storage_bucket_internals::StoredModelKind,
+    pub(super) address: ElementEntry,
+    pub(super) dirty: bool,
+    pub(super) deleted: bool,
+}
+
+impl StoredPageEntry {
+    /// The identity, and the entry that no longer holds it.
+    ///
+    /// Taken apart by VALUE so the shared pointer moves rather than being cloned: every caller
+    /// keeps the key -- the filing map and the identities handed up to the decode both do -- so
+    /// this has to go on costing one pointer and not a copy of the characters.
+    pub(super) fn into_parts(self) -> (Arc<str>, BlockIndex) {
+        let StoredPageEntry {
+            object_key,
+            model_id,
+            address,
+            dirty,
+            deleted,
+        } = self;
+        let page = BlockIndex {
+            // STILL ASSIGNED, AND THIS LINE GOES WITH THE FIELD. The entry holds a copy for one
+            // more commit; the pointer is cloned rather than moved precisely so the identity is
+            // handed back as well, which is the half the load path needs.
+            object_key: Arc::clone(&object_key),
+            model_id,
+            address,
+            dirty,
+            deleted,
+        };
+        (object_key, page)
+    }
 }
 
 impl Serialize for PageEntryAt<'_> {
@@ -4842,7 +4894,7 @@ impl<'de> Deserialize<'de> for BucketNodeWithPageKeys {
                 // threw the stored map's keys away inside the conversion; the page identities have
                 // to come out of this decode, so the flat form is what is held and the conversion
                 // happens where both halves can be kept.
-                let mut block_index: Option<BTreeMap<String, BlockIndex>> = None;
+                let mut block_index: Option<BTreeMap<String, StoredPageEntry>> = None;
                 // DEFAULTS WHEN ABSENT, and that is not a compatibility affordance: an index
                 // written before this key existed is REFUSED by its stamp before it reaches here
                 // (`persistence` compares `<` and falls back to WAL replay), so the only node that
@@ -4963,14 +5015,21 @@ pub(super) enum BucketLayoutState {
     MultiObject,
 }
 
-// SERIALIZE IS GONE FROM THIS DERIVE, AND THAT IS THE STEP.
+// NEITHER HALF OF SERDE IS ON THIS DERIVE ANY MORE, AND THAT IS THE STEP.
 //
 // `object_key` is a SERIALIZED MEMBER of the stored entry, so a derive on this struct is a derive
 // that reads the identity off the entry -- the one place it is about to stop being. The entry
 // reaches the wire through [`PageEntryAt`] instead, which is handed the identity from BESIDE the
-// page and writes the same five keys in the same order. `Deserialize` stays for now: the stored
-// form still carries the key, and the decode side is its own commit.
-#[derive(Debug, Clone, Deserialize)]
+// page and writes the same five keys in the same order.
+//
+// AND IT ARRIVES THROUGH [`StoredPageEntry`], FOR THE MIRROR-IMAGE REASON. A derived
+// `Deserialize` would go on compiling with the field gone -- serde IGNORES an unknown key on a
+// derived struct unless `deny_unknown_fields` is set -- and would silently drop the one term the
+// load path cannot do without. `object_block_lookup` is `skip_serializing` and is rebuilt from
+// what the decode reads, so an `object_key` quietly discarded here is an index that loads with no
+// lookup, which is the state the encoder now refuses to write. The stored form still CARRIES the
+// key; what changes is that the thing it is read into is not the entry.
+#[derive(Debug, Clone)]
 pub(super) struct BlockIndex {
     pub(super) object_key: Arc<str>,
     pub(super) model_id: crate::engine::storage_bucket_internals::StoredModelKind,
