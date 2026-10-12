@@ -2621,3 +2621,297 @@ fn the_shared_install_pairs_a_carried_page_to_an_outcome_by_an_id_that_cannot_di
         held.len()
     );
 }
+
+/// THE PATH A `--lib` FIXTURE COULD NOT SEE: THE PAGE IS UNREACHABLE AND THE OUTCOME STILL NAMES
+/// THE ELEMENT.
+///
+/// # WHY THIS ARM EXISTS, AND WHAT IT COSTS TO HAVE LEARNED IT THE OTHER WAY
+///
+/// The container arms were landed on the claim that the page always names the element, measured at
+/// "0 block reads, structurally zero, because `block_in_wal::stage` is unconditional". That claim
+/// was measured on records carrying ONE page each, and it is true of them. The proxy binary's
+/// `matrixark_publish_visibility_can_target_only_written_keys` then refused a shard load, and the
+/// refusal message named the cause: "address resolved, page UNREADABLE or names nothing, component
+/// present, 27 chars".
+///
+/// DRIVEN FROM THE PROXY SUITE RATHER THAN GUESSED, with a temporary print on the fallback arm: 24
+/// of 24 fallbacks were `kind=hash`, `component=Some(27)`, and
+///
+/// ```text
+///     the record carries several pages of this object, so the carried page cannot be told apart,
+///     and the address is not in the block store
+/// ```
+///
+/// So BOTH routes to the page failed and NEITHER is about the frame. The pages are framed. A
+/// `HashMultiSet` of several fields of one key carries several pages under one `object_id`, which
+/// cannot tell them apart, and that test runs with async storage so the block the address names was
+/// still buffered. `stage` being unconditional says a page is CARRIED; it says nothing about
+/// whether it can be told apart from its siblings, or whether the address is readable yet.
+///
+/// # WHAT THIS ARM DRIVES
+///
+/// The same shape, in `--lib`, so the path is covered here and not only by a binary's suite: a
+/// multi-field `HashMultiSet` replayed into a store that does NOT have the pages. Both routes fail
+/// exactly as they did in the wild, and the load must SUCCEED on the outcome's own copy.
+///
+/// THE COUNTERS ARE WHAT MAKE IT A MEASUREMENT RATHER THAN A PASS. `outcome_element_name_sources`
+/// reports (from the page, from the component, refused for disagreeing), and this asserts the
+/// fallback actually FIRED -- a green arm that silently resolved from the page would be covering
+/// nothing. Reset first, because a count read off a process-global without one is a reading.
+///
+/// rust-internal: drives the replay fallback, no product behaviour changes
+#[test]
+fn a_replay_whose_page_is_unreachable_installs_from_the_outcomes_own_name() {
+    const KEY: &str = "unreachable-hash";
+    let fields = ["alpha", "beta", "gamma"];
+    let expected: std::collections::BTreeSet<String> =
+        fields.iter().map(|field| (*field).to_string()).collect();
+
+    let source = tempfile::tempdir().unwrap();
+    let engine = engine_on(source.path());
+    load_on(&engine, OPERATOR_END);
+    // ONE RECORD, SEVERAL PAGES OF ONE KEY -- which is the shape whose carried pages cannot be told
+    // apart. A multi-field set in one command is how the proxy's append produces it.
+    write(
+        &engine,
+        Command::HashMultiSet {
+            key: KEY.to_string(),
+            entries: fields
+                .iter()
+                .map(|field| ((*field).to_string(), format!("v-{field}").into_bytes()))
+                .collect(),
+        },
+    );
+
+    let lines = engine
+        .write_ahead_log_store()
+        .scan(1, 0, u64::MAX, u64::MAX)
+        .expect("the log scans");
+    let records: Vec<crate::wal::WriteAheadLogRecord> = lines
+        .iter()
+        .map(|(sequence, line)| {
+            crate::wal::decode_wal_line(line)
+                .unwrap_or_else(|error| panic!("record {sequence} does not decode: {error}"))
+        })
+        .collect();
+
+    // THE PRECONDITION, ASSERTED: some record really does carry several pages under ONE object id.
+    // Without it this arm is about a shape it does not reproduce.
+    let ambiguous = records.iter().any(|record| {
+        let mut seen: std::collections::BTreeMap<u64, usize> = std::collections::BTreeMap::new();
+        for page in &record.staged_blocks {
+            *seen.entry(page.object_id).or_default() += 1;
+        }
+        seen.values().any(|count| *count > 1)
+    });
+    let carried: usize = records.iter().map(|r| r.staged_blocks.len()).sum();
+    println!(
+        "[unreachable] {} records, {carried} carried pages, several-under-one-object={ambiguous}",
+        records.len()
+    );
+    assert!(
+        ambiguous,
+        "no record carries several pages of one object, so the carried-page route would succeed \
+         and this arm would not exercise the fallback at all"
+    );
+    // AND EVERY OUTCOME STILL NAMES ITS ELEMENT, which is the other half of the precondition: the
+    // fallback has something to fall back TO.
+    let named = records
+        .iter()
+        .flat_map(|record| record.outcomes.iter())
+        .filter(|item| item.kind == "hash")
+        .filter(|item| item.component.is_some())
+        .count();
+    assert_eq!(
+        fields.len(),
+        named,
+        "{named} of {} hash outcomes name their element",
+        fields.len()
+    );
+
+    // REPLAYED INTO A STORE THAT DOES NOT HAVE THE PAGES. The log is rebuilt from the records and
+    // the page directory is NOT copied, so the address route fails the way async storage makes it
+    // fail in the wild -- the block is simply not there.
+    let into = tempfile::tempdir().unwrap();
+    let fresh = engine_on(into.path());
+    let log = fresh.write_ahead_log_store();
+    for record in &records {
+        log.append_replayed_record(record.clone())
+            .expect("the replayed record appends");
+    }
+    crate::engine::lifecycle::reset_outcome_element_name_sources();
+    let response = fresh.load_shard_with(crate::control::LoadShardRequest {
+        shard_id: 1,
+        table_name: "durable-outranks".to_string(),
+        shard_uri: "local://durable-outranks/1".to_string(),
+        start_routing_bucket: 0,
+        end_routing_bucket: OPERATOR_END,
+        readonly: false,
+        load_version: 1,
+        local_node_id: Some(1),
+    });
+    let (from_page, from_component, disagreed) =
+        crate::engine::lifecycle::outcome_element_name_sources();
+    let held: std::collections::BTreeSet<String> = if response.status.ok {
+        let shards = fresh.shards.read().expect("engine lock poisoned");
+        shards
+            .get(&1)
+            .and_then(|shard| shard.hashes.get(KEY))
+            .map(|fields| fields.keys().cloned().collect())
+            .unwrap_or_default()
+    } else {
+        std::collections::BTreeSet::new()
+    };
+    println!(
+        "[unreachable] load ok={} fields={held:?}; names from page={from_page} from \
+         component={from_component} disagreed={disagreed}",
+        response.status.ok
+    );
+    assert!(
+        response.status.ok,
+        "THE LOAD WAS REFUSED: {:?}. The page is out of reach and every outcome names its element, \
+         so refusing throws away a name that is sitting in the record -- which is the regression \
+         the proxy suite caught",
+        response.status
+    );
+    assert_eq!(
+        expected, held,
+        "the replay restored {held:?} and the write touched {expected:?}"
+    );
+    assert!(
+        from_component >= fields.len() as u64,
+        "the fallback reports {from_component} resolutions from the outcome's own name for {} \
+         fields. Below that, these fields came back some other way and this arm is not covering \
+         the path it exists for",
+        fields.len()
+    );
+    assert_eq!(
+        0, disagreed,
+        "{disagreed} outcomes were refused for disagreeing with their page, on a fixture where no \
+         page was readable at all -- so the disagreement check is firing on something it cannot \
+         have compared"
+    );
+}
+
+/// A PAGE AND AN OUTCOME THAT NAME DIFFERENT ELEMENTS IS REFUSED, NOT RESOLVED EITHER WAY.
+///
+/// # WHY THIS IS THE CLAUSE WORTH HAVING
+///
+/// The fallback above makes the outcome's own name usable when the page cannot be reached. The
+/// danger that creates is the opposite case: a page that IS readable and names something else. That
+/// happens when the page in hand is not the page this outcome is about, which is the `object_id`
+/// pairing defect -- and there, installing the page's name files this element's address under
+/// another element's name, while installing the component's files another page's bytes under this
+/// one. Both are corruption, so neither is chosen.
+///
+/// DRIVEN BY PLANTING THE DISAGREEMENT, because no fixture produces it on purpose: a real record is
+/// taken and its outcome's component is renamed to an element the page does not hold. The page
+/// stays readable, which is what separates this from the arm above.
+///
+/// THE CONTROL IS THE SAME RECORD UNRENAMED. Without it a refusal here could be the fixture failing
+/// to load for any other reason, and the assertion would be measuring nothing.
+///
+/// rust-internal: drives the disagreement refusal, no product behaviour changes
+#[test]
+fn a_page_and_an_outcome_that_disagree_about_the_element_refuse_the_load() {
+    const KEY: &str = "disagree-hash";
+
+    let source = tempfile::tempdir().unwrap();
+    let engine = engine_on(source.path());
+    load_on(&engine, OPERATOR_END);
+    write(
+        &engine,
+        Command::HashSet {
+            key: KEY.to_string(),
+            field: "the-real-field".to_string(),
+            value: b"v".to_vec(),
+        },
+    );
+    let lines = engine
+        .write_ahead_log_store()
+        .scan(1, 0, u64::MAX, u64::MAX)
+        .expect("the log scans");
+    let records: Vec<crate::wal::WriteAheadLogRecord> = lines
+        .iter()
+        .filter_map(|(_, line)| crate::wal::decode_wal_line(line).ok())
+        .collect();
+
+    let replay = |rename: bool| -> (bool, String, u64) {
+        let into = tempfile::tempdir().unwrap();
+        // The pages ARE copied here: this arm is about a page that can be read and disagrees, so
+        // the page has to be reachable or it would exercise the fallback instead.
+        let copied = std::process::Command::new("cp")
+            .arg("-a")
+            .arg(source.path().join("pages"))
+            .arg(into.path().join("pages"))
+            .status()
+            .expect("the page directory copies");
+        assert!(copied.success(), "copying the pages failed");
+        let fresh = engine_on(into.path());
+        let log = fresh.write_ahead_log_store();
+        for record in &records {
+            let mut record = record.clone();
+            if rename {
+                for item in record.outcomes.iter_mut() {
+                    if item.kind == "hash" && item.component.is_some() {
+                        item.component = Some("a-field-the-page-does-not-hold".to_string());
+                    }
+                }
+            }
+            log.append_replayed_record(record)
+                .expect("the replayed record appends");
+        }
+        crate::engine::lifecycle::reset_outcome_element_name_sources();
+        let response = fresh.load_shard_with(crate::control::LoadShardRequest {
+            shard_id: 1,
+            table_name: "durable-outranks".to_string(),
+            shard_uri: "local://durable-outranks/1".to_string(),
+            start_routing_bucket: 0,
+            end_routing_bucket: OPERATOR_END,
+            readonly: false,
+            load_version: 1,
+            local_node_id: Some(1),
+        });
+        let (_, _, disagreed) = crate::engine::lifecycle::outcome_element_name_sources();
+        (
+            response.status.ok,
+            format!("{:?}", response.status),
+            disagreed,
+        )
+    };
+
+    // THE CONTROL: unrenamed, the page and the outcome agree, the load works.
+    let (control_ok, control_status, control_disagreed) = replay(false);
+    println!("[disagree] CONTROL ok={control_ok} disagreed={control_disagreed}");
+    assert!(
+        control_ok,
+        "the unrenamed replay did not load: {control_status}. Then the refusal below is about the \
+         fixture and not about the disagreement"
+    );
+    assert_eq!(
+        0, control_disagreed,
+        "the unrenamed replay counted {control_disagreed} disagreements, so the page and the \
+         outcome do not agree even before anything is planted"
+    );
+
+    // THE SUBJECT: the outcome names an element the page does not hold.
+    let (renamed_ok, renamed_status, renamed_disagreed) = replay(true);
+    println!(
+        "[disagree] RENAMED ok={renamed_ok} disagreed={renamed_disagreed} status={renamed_status}"
+    );
+    assert!(
+        !renamed_ok,
+        "a replay whose outcome names an element its page does not hold LOADED ANYWAY. One of the \
+         two names is wrong and nothing can say which, so installing either files a name against \
+         the wrong address"
+    );
+    assert!(
+        renamed_disagreed >= 1,
+        "the load failed but counted {renamed_disagreed} disagreements, so it failed for some \
+         other reason and this arm is not driving the check it names"
+    );
+    assert!(
+        renamed_status.contains("wal_replay_outcome_refused"),
+        "the load failed, but not as a refused replay outcome: {renamed_status}"
+    );
+}
