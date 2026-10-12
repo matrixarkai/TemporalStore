@@ -1577,7 +1577,40 @@ impl TemporalEngine {
             // to stage -- replay installs a removal that was already recorded, and staging another
             // would record the recovery as a write of its own.
             "string" | "hash" | "set" | "list" | "zset" if item.deleted => {
-                let component = item.component.clone();
+                // THE TOMBSTONE PAGE NAMES WHAT WAS REMOVED, so a removal reads its element the
+                // same way an insert does.
+                //
+                // `remove_container_element` appends `container_pages::tombstone_page(kind,
+                // component)` before it records anything, and the outcome carries THAT page's
+                // address -- the comment on the re-filing below already says the address travels
+                // for the entry's sake. The page it names is a frame whose item for the removed
+                // element has `deleted` set, which is the whole reason the v2 page shape exists.
+                // So the element the removal is about is readable from the page, and the recorded
+                // outcome does not have to spell it.
+                //
+                // A REMOVAL WITH NO TOMBSTONE PAGE IS REFUSED, and that is a deliberate narrowing
+                // rather than a gap left open. `tombstone_page` answers `None` for a kind with no
+                // element-key spelling and counts it, and the append can fail and is counted by
+                // `TOMBSTONE_APPEND_FAILURES`. In either case the removal was never recorded IN THE
+                // PAGES -- so a derivation after the replay would resurrect the element whatever
+                // this arm did with it. Refusing the load says so; installing from a name the
+                // outcome happened to carry would hide it. `"string"` is untouched: its page is its
+                // whole object, it has no element, and it never had a component.
+                let from_the_page: Option<Vec<String>> = page_elements.as_ref().map(|elements| {
+                    elements
+                        .iter()
+                        .filter(|(_, deleted)| *deleted)
+                        .map(|(component, _)| component.clone())
+                        .collect()
+                });
+                // ONE REMOVAL AT A TIME, asserted by taking the page's SINGLE removed element and
+                // refusing a page that names several. A tombstone page is written per removal and
+                // holds exactly one removed item; a frame naming two would mean one outcome stood
+                // for two removals, and dropping both from a record that recorded one is a guess.
+                let component = match from_the_page.as_deref() {
+                    Some([only]) => Some(only.clone()),
+                    _ => None,
+                };
                 match (item.kind.as_str(), component.as_deref()) {
                     ("string", _) => {
                         super::mark_bucket_index_object_deleted(shard, &item.object_key);
@@ -1766,57 +1799,86 @@ impl TemporalEngine {
                 }
                 true
             }
-            // set: the component is the member, hex encoded.
+            // set: the PAGE spells the member, and the page's key IS the member.
+            //
+            // THE SAME MOVE AS THE HASH ARM AND ONE DEGREE MORE DIRECT. For `ElementKeySpelling::Hex`
+            // the element key stored in the page is the member's own bytes, and the component is
+            // `hex::encode` of them -- so the hex round trip below is undoing a rendering that only
+            // ever existed to put the member in a `String`. It is kept rather than short-circuited
+            // because `elements_the_outcome_page_holds` answers in components for every kind, which
+            // is what lets all four arms share one resolver instead of each decoding the frame its
+            // own way.
             "set" => {
-                let (Some(address), Some(component)) =
-                    (item.resolved_address(), item.component.clone())
+                let (Some(address), Some(elements)) =
+                    (item.resolved_address(), page_elements.as_ref())
                 else {
                     return false;
                 };
-                let Ok(member) = hex::decode(&component) else {
+                if elements.is_empty() {
                     return false;
-                };
+                }
+                for (component, deleted) in elements {
+                    if *deleted {
+                        continue;
+                    }
+                    let Ok(member) = hex::decode(component) else {
+                        return false;
+                    };
+                    let component = component.clone();
+                    let address = address.clone();
                 // RECORDED, NOT AN EXCEPTION. This arm re-files the block in the bucket index
                 // before installing, so it goes through the ordinary recorded path. Hash's
                 // `context_node` arm needed an exception because it installs and files nothing;
                 // this one does not, which is the per-kind difference worth noticing.
-                super::recorded_map::install_element::<super::recorded_map::SetKind>(
-                    shard,
-                    shard_id,
-                    &item.object_key,
-                    Some(component),
-                    member,
-                    address.clone(),
-                    true,
-                    address,
-                );
+                    super::recorded_map::install_element::<super::recorded_map::SetKind>(
+                        shard,
+                        shard_id,
+                        &item.object_key,
+                        Some(component),
+                        member,
+                        address.clone(),
+                        true,
+                        address,
+                    );
+                }
                 true
             }
-            // list: sixteen hex digits of the sequence, biased so the text sorts in list order.
+            // list: the PAGE spells the sequence, as sixteen hex digits of a biased word so the
+            // text sorts in list order.
             "list" => {
-                let (Some(address), Some(component)) =
-                    (item.resolved_address(), item.component.clone())
+                let (Some(address), Some(elements)) =
+                    (item.resolved_address(), page_elements.as_ref())
                 else {
                     return false;
                 };
-                let Ok(biased) = u64::from_str_radix(&component, 16) else {
+                if elements.is_empty() {
                     return false;
-                };
-                let sequence = biased.wrapping_add(i64::MIN as u64) as i64;
+                }
+                for (component, deleted) in elements {
+                    if *deleted {
+                        continue;
+                    }
+                    let Ok(biased) = u64::from_str_radix(component, 16) else {
+                        return false;
+                    };
+                    let sequence = biased.wrapping_add(i64::MIN as u64) as i64;
+                    let component = component.clone();
+                    let address = address.clone();
                 // THE STANDALONE UPSERT IS GONE BECAUSE THE OPERATION DOES IT. Leaving both
                 // filed the record twice, which a replay would then install twice -- the mirror
                 // image of the defect the container exists to stop, and the compiler caught it as
                 // a moved `component` rather than as a double write.
-                super::recorded_map::install_element::<super::recorded_map::ListKind>(
-                    shard,
-                    shard_id,
-                    &item.object_key,
-                    Some(component),
-                    sequence,
-                    address.clone(),
-                    true,
-                    address,
-                );
+                    super::recorded_map::install_element::<super::recorded_map::ListKind>(
+                        shard,
+                        shard_id,
+                        &item.object_key,
+                        Some(component),
+                        sequence,
+                        address.clone(),
+                        true,
+                        address,
+                    );
+                }
                 true
             }
             // zset: the member in hex. THE SCORE NO LONGER RIDES THE COMPONENT -- it rides
@@ -1825,15 +1887,25 @@ impl TemporalEngine {
             // old does not exist, because this replay arm and the writer that feeds it moved in
             // the same change, and a value-less zset insert outcome is therefore always a replay
             // this arm cannot recover -- refuse rather than install a wrong score.
+            // zset: the PAGE spells the member. THE SCORE STILL COMES FROM THE OUTCOME, and that
+            // is deliberate rather than an oversight.
+            //
+            // The page's key for this spelling is eight bytes of biased score followed by the
+            // member, so the score IS in the page -- but `component_from_element_key` drops those
+            // eight bytes, because the component stopped spelling a score when zset collapsed to
+            // one entry a page. Reading the score back out of the key would mean this arm decoding
+            // the frame itself instead of going through the shared resolver, for a value the
+            // outcome already carries in `value`. The member is what was duplicated; the score was
+            // not.
             "zset" => {
-                let (Some(address), Some(component)) =
-                    (item.resolved_address(), item.component.clone())
+                let (Some(address), Some(elements)) =
+                    (item.resolved_address(), page_elements.as_ref())
                 else {
                     return false;
                 };
-                let Ok(member) = hex::decode(&component) else {
+                if elements.is_empty() {
                     return false;
-                };
+                }
                 let Some(biased) = item
                     .value
                     .as_deref()
@@ -1842,20 +1914,30 @@ impl TemporalEngine {
                 else {
                     return false;
                 };
+                for (component, deleted) in elements {
+                    if *deleted {
+                        continue;
+                    }
+                    let Ok(member) = hex::decode(component) else {
+                        return false;
+                    };
+                    let component = component.clone();
+                    let address = address.clone();
                 // THE STANDALONE UPSERT IS GONE BECAUSE THE OPERATION DOES IT. Leaving both
                 // filed the record twice, which a replay would then install twice -- the mirror
                 // image of the defect the container exists to stop, and the compiler caught it as
                 // a moved `component` rather than as a double write.
-                super::recorded_map::install_element::<super::recorded_map::ZSetKind>(
-                    shard,
-                    shard_id,
-                    &item.object_key,
-                    Some(component),
-                    member,
-                    (biased, address.clone()),
-                    true,
-                    address,
-                );
+                    super::recorded_map::install_element::<super::recorded_map::ZSetKind>(
+                        shard,
+                        shard_id,
+                        &item.object_key,
+                        Some(component),
+                        member,
+                        (biased, address.clone()),
+                        true,
+                        address,
+                    );
+                }
                 true
             }
             // Every timestamped series is the same shape: stored key -> block, with the key in
