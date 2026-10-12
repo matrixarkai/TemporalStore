@@ -1941,3 +1941,377 @@ fn a_container_carry_does_not_clear_the_key_state_it_does_not_name() {
          capture still removes what it does not name"
     );
 }
+
+/// WHO READS THE RECONSTRUCTION, ASKED OF THE WAL RECORD'S ELEMENT NAME.
+///
+/// # WHY THIS ARM EXISTS
+///
+/// `index_log.rs` states the rule, in the order the questions have to be asked: for a stored field
+/// omitted because it is derivable, find WHO READS THE RECONSTRUCTION first; if nothing does, the
+/// field is dead weight and may go. The index-log row's element name was settled that way and came
+/// off. `wal::WalOutcomeItem::component` was then put to the same question, and this arm is the
+/// measurement -- because the candidate answer is the claim THIS MODULE'S OWN DOC makes: that "the
+/// four resident maps are durable and are the sole authority for which elements exist", with the
+/// page payload naming every element on it.
+///
+/// # THE ANSWER IS THAT REPLAY READS IT, AND NOTHING ELSE SPELLS IT
+///
+/// Both halves of the candidate fail, and they fail for different reasons, so both are driven:
+///
+///   * THE DURABLE MAP CANNOT SUPPLY IT IN THE WINDOW THAT MATTERS. The four maps are durable by
+///     being written into the INDEX SNAPSHOT. Replay runs over exactly the records that the
+///     snapshot does not cover -- the last checkpoint to the log tail -- so for those records the
+///     map is EMPTY by construction, which is the vacuity check below. A field the map already
+///     holds needs no replaying; a field only the tail records carry is the whole case.
+///   * AND THE RECORD CARRIES NO SECOND SPELLING. `TS_WAL_DATA_ONLY` and
+///     `TS_WAL_OUTCOME_ITEMS` are BOTH default ON, and the first one's own doc says what that
+///     means: "records no longer carry both", so the operation -- `Command::HashSet`, which names
+///     the field -- is no longer written at all. Counted here rather than quoted.
+///
+/// # WHAT IS ASSERTED, AND WHY EACH SIDE IS NEEDED
+///
+/// The control installs the recorded outcomes UNTOUCHED into a fresh shard and gets every field
+/// back. The treatment installs the same outcomes with the element name CLEARED and gets none. A
+/// one-sided version of this says nothing: an install that failed for any other reason -- a shard
+/// that was not loaded, an address that does not resolve -- would produce the treatment's result
+/// with no help from the field, and the control is what rules that out.
+///
+/// SO THIS IS A REPORT OF A REFUSAL, NOT A STEP TOWARDS A REMOVAL. Removing this field is data
+/// loss rather than a format change, and being pre-release does not make unreconstructible state
+/// acceptable -- a store would load with every hash field silently gone. The arm is kept so the
+/// next lane that reaches for the field meets the measurement instead of the reasoning.
+///
+/// rust-internal: drives the recorded-outcome install path, no product behaviour changes
+#[test]
+fn a_recorded_outcome_without_its_element_name_replays_no_hash_field_at_all() {
+    const KEY: &str = "wo-hash";
+    let fields: [(&str, &[u8]); 3] = [("alpha", b"1"), ("beta", b"22"), ("gamma", b"333")];
+    let expected: std::collections::BTreeSet<String> =
+        fields.iter().map(|(field, _)| (*field).to_string()).collect();
+
+    let source = tempfile::tempdir().unwrap();
+    let engine = engine_on(source.path());
+    load_on(&engine, OPERATOR_END);
+    for (field, value) in fields {
+        write(
+            &engine,
+            Command::HashSet {
+                key: KEY.to_string(),
+                field: field.to_string(),
+                value: value.to_vec(),
+            },
+        );
+    }
+
+    // THE DENOMINATOR, read before anything is taken apart: the write path really did put all
+    // three fields in the durable map.
+    {
+        let shards = engine.shards.read().expect("engine lock poisoned");
+        let shard = shards.get(&1).expect("shard is loaded");
+        let held: std::collections::BTreeSet<String> = shard
+            .hashes
+            .get(KEY)
+            .map(|held| held.keys().cloned().collect())
+            .unwrap_or_default();
+        assert_eq!(
+            expected, held,
+            "the fixture did not write the three fields it is about, so nothing below is a \
+             measurement"
+        );
+    }
+
+    // ---------------------------------------------------------------------------------------
+    // WHAT THE RECORDS ACTUALLY CARRY.
+    // ---------------------------------------------------------------------------------------
+    let lines = engine
+        .write_ahead_log_store()
+        .scan(1, 0, u64::MAX, u64::MAX)
+        .expect("the log scans");
+    let records: Vec<crate::wal::WriteAheadLogRecord> = lines
+        .iter()
+        .map(|(sequence, line)| {
+            crate::wal::decode_wal_line(line)
+                .unwrap_or_else(|error| panic!("record {sequence} does not decode: {error}"))
+        })
+        .collect();
+    assert!(
+        records.len() >= fields.len(),
+        "the log holds {} records for {} writes, so the scan is not seeing them",
+        records.len(),
+        fields.len()
+    );
+
+    // (1) THE OPERATION IS NOT A SECOND SPELLING OF THE FIELD NAME, because it is not written.
+    // `Command::HashSet` names the field, so a record carrying one would be a second durable
+    // copy and the whole question would be different. Counted, not quoted.
+    let carrying_a_command = records.iter().filter(|record| record.command.is_some()).count();
+    println!(
+        "[outcome-name] {} records, {carrying_a_command} carrying an operation",
+        records.len()
+    );
+    assert_eq!(
+        0, carrying_a_command,
+        "{carrying_a_command} of {} records carry their operation. Both TS_WAL_DATA_ONLY and \
+         TS_WAL_OUTCOME_ITEMS default ON, which is what takes the command out -- if a command is \
+         back, the field name has a second durable home and this measurement is about a \
+         configuration nobody runs",
+        records.len()
+    );
+
+    // (2) AND EVERY RECORDED OUTCOME NAMES ITS FIELD. Asserted as the SET, not as a count: three
+    // outcomes all naming `alpha` would satisfy a count and would already be the data loss this
+    // arm is about.
+    let outcomes: Vec<crate::wal::WalOutcomeItem> = records
+        .iter()
+        .flat_map(|record| record.outcomes.iter().cloned())
+        .collect();
+    let blocks: Vec<crate::wal::StagedBlock> = records
+        .iter()
+        .flat_map(|record| record.staged_blocks.iter().cloned())
+        .collect();
+    let recorded_names: std::collections::BTreeSet<String> = outcomes
+        .iter()
+        .filter(|item| item.kind == "hash")
+        .filter_map(|item| item.component.clone())
+        .collect();
+    println!(
+        "[outcome-name] {} outcomes ({} hash), {} staged pages, names={recorded_names:?}",
+        outcomes.len(),
+        outcomes.iter().filter(|item| item.kind == "hash").count(),
+        blocks.len()
+    );
+    assert_eq!(
+        expected, recorded_names,
+        "the recorded outcomes name {recorded_names:?} and the write touched {expected:?}"
+    );
+
+    // (3) THE CANDIDATE REPLACEMENT, MEASURED: does the page payload name the element? A page the
+    // record carries is the only other thing in the record that could, and the count is printed
+    // with its denominator so a zero cannot be read as "nothing was looked at".
+    let payloads_naming_a_field = blocks
+        .iter()
+        .filter(|page| {
+            fields.iter().any(|(field, _)| {
+                page.bytes
+                    .windows(field.len())
+                    .any(|window| window == field.as_bytes())
+            })
+        })
+        .count();
+    println!(
+        "[outcome-name] of {} staged page payload(s), {payloads_naming_a_field} spell a field name",
+        blocks.len()
+    );
+    // AND THIS IS THE HALF OF THE CANDIDATE REPLACEMENT THAT IS TRUE, pinned so a later reading of
+    // this arm does not take the verdict below for "the name is nowhere else in the record". It IS
+    // there, in every carried payload. What the treatment arm then shows is that NOTHING READS IT:
+    // `apply_outcome_item`'s hash arm asks the OUTCOME for the field and refuses when it is absent,
+    // so taking the field off is not a deletion of a derivable value -- it is a rewrite of the
+    // replay path, and until that rewrite exists the field is the only spelling anything READS.
+    //
+    // Asserted against the denominator rather than as a bare count: a zero here with zero blocks
+    // would read exactly like a payload that names nothing.
+    assert!(
+        blocks.len() >= fields.len(),
+        "the records carry {} page payload(s) for {} writes, so the search below has nothing to \
+         find and its result means nothing",
+        blocks.len(),
+        fields.len()
+    );
+    assert_eq!(
+        blocks.len(),
+        payloads_naming_a_field,
+        "{payloads_naming_a_field} of {} carried payloads spell a field name. The verdict of this \
+         arm does NOT rest on this number -- a payload that stopped naming its elements would make \
+         the field even more load-bearing, not less -- but the claim \"the page payload names every \
+         element on it\" is checked here rather than assumed either way",
+        blocks.len()
+    );
+
+    // ---------------------------------------------------------------------------------------
+    // THE CONTROL: the recorded outcomes, untouched, into a shard that holds nothing.
+    // ---------------------------------------------------------------------------------------
+    let install = |strip: bool| -> (bool, std::collections::BTreeSet<String>) {
+        let into = tempfile::tempdir().unwrap();
+        let fresh = engine_on(into.path());
+        load_on(&fresh, OPERATOR_END);
+        // VACUITY, AND IT IS THE POINT RATHER THAN HYGIENE: this stands for the state replay
+        // starts from. The durable maps are written into the index snapshot, and a snapshot older
+        // than these records does not hold their fields -- so the map the candidate replacement
+        // would read is EMPTY here, exactly as it is in the window replay covers.
+        {
+            let shards = fresh.shards.read().expect("engine lock poisoned");
+            let shard = shards.get(&1).expect("shard is loaded");
+            assert!(
+                shard.hashes.get(KEY).is_none(),
+                "the fresh shard already holds this key, so the install below is not what puts \
+                 the fields there"
+            );
+        }
+        let (outcomes, blocks) = if strip {
+            (
+                outcomes
+                    .iter()
+                    .cloned()
+                    .map(|mut item| {
+                        item.component = None;
+                        item
+                    })
+                    .collect::<Vec<_>>(),
+                blocks
+                    .iter()
+                    .cloned()
+                    .map(|mut page| {
+                        page.component = None;
+                        page
+                    })
+                    .collect::<Vec<_>>(),
+            )
+        } else {
+            (outcomes.clone(), blocks.clone())
+        };
+        let installed = fresh.install_shared_outcomes_with_blocks(1, &outcomes, &blocks);
+        let shards = fresh.shards.read().expect("engine lock poisoned");
+        let shard = shards.get(&1).expect("shard is loaded");
+        let held = shard
+            .hashes
+            .get(KEY)
+            .map(|held| held.keys().cloned().collect())
+            .unwrap_or_default();
+        (installed, held)
+    };
+
+    let (control_ok, control_fields) = install(false);
+    println!("[outcome-name] CONTROL   installed={control_ok} fields={control_fields:?}");
+    assert!(
+        control_ok,
+        "installing the recorded outcomes UNTOUCHED was refused, so the treatment below would \
+         fail for a reason that has nothing to do with the element name"
+    );
+    assert_eq!(
+        expected, control_fields,
+        "the untouched outcomes restored {control_fields:?} and the write touched {expected:?}"
+    );
+
+    // ---------------------------------------------------------------------------------------
+    // THE TREATMENT: the same outcomes, with the element name taken out.
+    // ---------------------------------------------------------------------------------------
+    let (stripped_ok, stripped_fields) = install(true);
+    println!("[outcome-name] TREATMENT installed={stripped_ok} fields={stripped_fields:?}");
+    assert!(
+        !stripped_ok,
+        "the install ACCEPTED outcomes that name no element. Then it put something in the map \
+         without being told which field it was, and whatever it put there is wrong"
+    );
+    assert!(
+        stripped_fields.is_empty(),
+        "an outcome naming no element still restored {stripped_fields:?}. If that is real, the \
+         field name IS recoverable from somewhere else and this arm's conclusion has to be \
+         re-read; if it is not, the install is inventing a field name"
+    );
+
+    // ---------------------------------------------------------------------------------------
+    // AND THE SAME QUESTION PUT TO THE REAL REPLAY LOOP, because the install above is the SHARED
+    // path and `load_shard` is the one a restart takes. The records are re-appended into a fresh
+    // log with `append_replayed_record` -- so the log is a real log, framed and sequenced by the
+    // append path -- and then the shard is LOADED.
+    //
+    // WHAT THIS ADDS over the install arm: the replay loop's own answer to a refused outcome, which
+    // is not "install nothing" but `Err(wal_replay_outcome_refused)` -- it REFUSES THE LOAD rather
+    // than serving a shard missing the element, and its message already names `component missing`.
+    // So the consequence of taking this field off is a store that will not open, not one that opens
+    // short; both are blockers, and which one it is belongs in the record.
+    // ---------------------------------------------------------------------------------------
+    let replay = |strip: bool| -> (bool, String, std::collections::BTreeSet<String>) {
+        let into = tempfile::tempdir().unwrap();
+        let fresh = engine_on(into.path());
+        let log = fresh.write_ahead_log_store();
+        for record in &records {
+            let mut record = record.clone();
+            if strip {
+                for item in record.outcomes.iter_mut() {
+                    item.component = None;
+                }
+                for page in record.staged_blocks.iter_mut() {
+                    page.component = None;
+                }
+            }
+            log.append_replayed_record(record).expect("the replayed record appends");
+        }
+        let response = fresh.load_shard_with(crate::control::LoadShardRequest {
+            shard_id: 1,
+            table_name: "durable-outranks".to_string(),
+            shard_uri: "local://durable-outranks/1".to_string(),
+            start_routing_bucket: 0,
+            end_routing_bucket: OPERATOR_END,
+            readonly: false,
+            load_version: 1,
+            local_node_id: Some(1),
+        });
+        let held = if response.status.ok {
+            let shards = fresh.shards.read().expect("engine lock poisoned");
+            shards
+                .get(&1)
+                .and_then(|shard| shard.hashes.get(KEY))
+                .map(|held| held.keys().cloned().collect())
+                .unwrap_or_default()
+        } else {
+            std::collections::BTreeSet::new()
+        };
+        (
+            response.status.ok,
+            format!("{:?}", response.status),
+            held,
+        )
+    };
+
+    let (loaded_ok, loaded_status, loaded_fields) = replay(false);
+    println!("[outcome-name] REPLAY CONTROL   ok={loaded_ok} fields={loaded_fields:?}");
+    assert!(
+        loaded_ok,
+        "a log of UNTOUCHED records did not load: {loaded_status}. Then the refusal below would be \
+         about the fixture and not about the element name"
+    );
+    assert_eq!(
+        expected, loaded_fields,
+        "replaying the untouched log restored {loaded_fields:?} and the write touched {expected:?}"
+    );
+
+    let (stripped_load_ok, stripped_status, stripped_load_fields) = replay(true);
+    println!(
+        "[outcome-name] REPLAY TREATMENT ok={stripped_load_ok} fields={stripped_load_fields:?} \
+         status={stripped_status}"
+    );
+    assert!(
+        !stripped_load_ok,
+        "A SHARD WHOSE RECORDED OUTCOMES NAME NO ELEMENT LOADED ANYWAY, holding \
+         {stripped_load_fields:?}. Either the field name came back from somewhere this arm has not \
+         found -- in which case the verdict has to be re-read -- or the load served a shard with \
+         its hash fields silently gone, which is worse than refusing"
+    );
+    assert!(
+        stripped_status.contains("wal_replay_outcome_refused"),
+        "the load failed, but not as a refused replay outcome: {stripped_status}. A refusal for an \
+         unintended reason is not a passing control"
+    );
+    assert!(
+        stripped_status.contains("component missing"),
+        "the refusal does not say the element name was what was missing: {stripped_status}. That \
+         string is what makes the failure diagnosable, and it is the one thing this arm exists to \
+         keep"
+    );
+
+    println!(
+        "[outcome-name] VERDICT: the recorded outcome's element name is the ONLY durable spelling \
+         of a hash field that anything READS. With it, {} of {} fields come back through the \
+         shared install and {} through a real load; without it, {} and the load is REFUSED. The \
+         record carries no operation to re-derive it from, and the durable map is empty for exactly \
+         the records replay covers. It is a page payload that spells the name as well -- but no \
+         replay site reads the payload, so removing the field is a rewrite of the replay path and \
+         not the deletion of a derivable value",
+        control_fields.len(),
+        expected.len(),
+        loaded_fields.len(),
+        stripped_load_fields.len()
+    );
+}
