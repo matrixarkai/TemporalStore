@@ -160,6 +160,22 @@
 //! map, which is the second index this leg exists to avoid. So the leg is refused on Ground 2, and
 //! Ground 1 is the reason a partial fix would not rescue it.
 //!
+//! AND GROUND 2 HAS SINCE BEEN ANSWERED FOR THIRTEEN OF THE FIFTEEN LIVE KINDS, WHICH IS WHY THIS
+//! PARAGRAPH IS NO LONGER THE LAST WORD ON IT. The sentence above asks for a durable
+//! ordinal-to-characters map and calls it a second index. What
+//! [`super::where_the_characters_are_durable_per_kind`] measures is that no such map has to be
+//! ADDED: the characters are already held durably, per kind, by the model map that kind's objects
+//! live in, recoverable from a decode with no page read. Twelve kinds hand the key back from their
+//! own map, `context_entity` by composing two durable terms, `context_event` only from the time
+//! index -- with a constructed hole where even that fails -- and `context_index` not at all.
+//!
+//! SO THIS MODULE'S GROUND 2 SURVIVES FOR ONE KIND AND NOT FOR THIRTEEN, and the leg's remaining
+//! cost moved to the OTHER direction: an assigned id needs `characters -> id`, which the per-kind
+//! maps do not carry. [`super::what_an_assigned_id_costs_the_object_lookup`] prices the three
+//! places that direction can live and finds exactly one that pays for itself. Nothing measured in
+//! this module is retracted -- the ordinal is still refused on Ground 1, and the slot positions
+//! still do not survive a reload.
+//!
 //! AND ONE THING THE WIDTH WORK SETTLED ON THE WAY, found by a mutation and not by argument: the
 //! ORDINAL'S WIDTH DOES NOT MOVE THE ENTRY. u8, u16, u32 and u64 all land it at 48, because the
 //! tail carries four bytes of padding and the address is eight-aligned. A fail-first mutation that

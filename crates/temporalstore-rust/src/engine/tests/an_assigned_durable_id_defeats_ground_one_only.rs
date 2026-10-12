@@ -28,6 +28,24 @@
 //! Ground 2. ASSIGNED VERSUS COMPUTED IS ORTHOGONAL TO THE BINDING OBJECTION, and the pins below
 //! are what say so rather than the paragraph.
 //!
+//! AND THE THING THIS MODULE SAID WAS UNANSWERED HAS SINCE BEEN ANSWERED, FOR THIRTEEN KINDS OF
+//! FIFTEEN. The claim above is that a `u64` hands nobody the characters, and it is still true of
+//! the `u64`. What changed is that the characters do not have to come from the id:
+//! [`super::where_the_characters_are_durable_per_kind`] measures them as already durable, per
+//! kind, in the model map that kind's objects live in -- so `id -> characters` costs no new
+//! storage, and Claim 6's "at least twenty-four for a persisted key-to-id map" is not what that
+//! direction costs any more.
+//!
+//! WHAT CLAIM 6 STILL PRICES CORRECTLY IS THE OTHER DIRECTION, and this module is where the next
+//! reader should start from rather than stop at. An ASSIGNED id -- unlike a computed one -- needs
+//! `characters -> id`, and the per-kind maps are keyed BY the characters and carry no id.
+//! [`super::what_an_assigned_id_costs_the_object_lookup`] prices the three homes that direction
+//! can have: a new durable map (this leg's refused shape), a resident map rebuilt on load --
+//! sixteen bytes per object worse at the floor, which is Claim 6's sign by another road -- and the
+//! id carried inside the per-kind map's EXISTING value, where the two eight-byte terms cancel and
+//! the net saving is exactly the characters' heap payload. Claim 5's one site is reopened there
+//! too: it needs the characters, and after the census it has a source for them.
+//!
 //! # CLAIM 1 -- A DURABLE, RESTART-STABLE OBJECT ID ALREADY EXISTS, AND IT CONSUMES THE CHARACTERS
 //!
 //! `hashing::stable_block_object_id` at `hashing.rs:175` is FNV-1a over the shard, the kind and
