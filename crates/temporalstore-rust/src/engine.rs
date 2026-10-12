@@ -4942,6 +4942,32 @@ fn ttl_ms(shard: &mut ShardState, key: &str) -> i64 {
 /// `scan_budget` bounds the walk: a long run of keys that `keep` rejects -- every resident key,
 /// when the sweep is looking for the non-resident ones -- would otherwise still walk the set. The
 /// cursor advances regardless, so the next round resumes past them and the sweep keeps moving.
+///
+/// # TEST-ONLY. NO PRODUCTION PATH CALLS THIS, AND KEY-ORDERED EXPIRY IS REFUSED ON MEASUREMENT
+///
+/// This has **zero production callers**. Every call site is a test
+/// (`engine::tests::part4`, four of them), and
+/// `the_key_ordered_expiry_window_has_no_production_callers` holds that -- so if something wires
+/// this into a live path, a guard fails rather than a reviewer noticing.
+///
+/// IT IS KEPT AS A COMPARISON POINT, NOT AS A SUPPORTED SHAPE. A reader who finds a `pub(crate)`
+/// ordered walk over `expires_at_ms` has every reason to assume key-ordered expiry is available.
+/// It is not. Walking deadlines in KEY order makes time-to-expire a function of the KEYSPACE
+/// rather than of how many keys are actually due: measured at keyspace/scan_budget rounds, so
+/// **ten expired keys sitting behind ten thousand live ones survived more than sixty rounds**.
+/// That is the measurement, and it is why the live sweep does not read this.
+///
+/// WHAT THE LIVE SWEEP READS INSTEAD is [`due_window`], over `ShardState::expiry_by_deadline`,
+/// where the keys that are due are a PREFIX -- so a round costs the number of keys that are due
+/// and stops at the first deadline in the future. `engine::tests::expiry_scale` carries the
+/// evidence, including why a bounded round-robin cursor should not replace an ordered index here.
+///
+/// IF THIS IS EVER DELETED, two of its four tests carry coverage that is NOT about this function
+/// and must be repointed at [`due_window`] rather than dropped with it:
+/// `the_default_expiry_bound_truncates_a_round_and_the_next_one_resumes`, which proves the shipped
+/// `max_expire_hot_buckets_per_round` reaches a mechanism rather than merely being set, and
+/// `a_run_of_rejected_keys_does_not_stall_the_sweep`, whose hazard [`due_window`] shares. The
+/// other two are about this cursor API, which [`due_window`] does not have, and go with it.
 pub(crate) fn expiry_window<F>(
     deadlines: &std::collections::BTreeMap<String, u64>,
     cursor: Option<&str>,

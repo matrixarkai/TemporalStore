@@ -775,3 +775,389 @@ fn how_often_a_real_store_needs_the_layout_arm() {
     assert_eq!(needs_layout, converted_layout, "the layout count and the layout conversions disagree");
     assert_eq!(total, converted_inline + converted_layout, "not every live address converted");
 }
+
+/// A probe engine on an EXPLICIT routing range.
+///
+/// Spelled here rather than reused from the census probe for the reason the local heap helper is:
+/// that module's loader is private to it. The range matters -- on the legacy whole-word default
+/// every key gets a bucket of its own, so a per-round bucket cap would bind against a bucket count
+/// equal to the key count and the cadence below would read as a different regime.
+#[cfg(feature = "alloc-probe")]
+fn probe_engine_on_for_record(
+    dir: &std::path::Path,
+    end_routing_bucket: u32,
+) -> std::sync::Arc<TemporalEngine> {
+    let engine = std::sync::Arc::new(TemporalEngine::with_local_dirs(
+        64 * 1024 * 1024,
+        dir.join("cache"),
+        dir.join("pages"),
+        dir.join("indexes"),
+    ));
+    let response = engine.load_shard_with(crate::control::LoadShardRequest {
+        shard_id: 1,
+        table_name: "one-record-cadence".to_string(),
+        shard_uri: "local://one-record-cadence/1".to_string(),
+        start_routing_bucket: 0,
+        end_routing_bucket,
+        readonly: false,
+        load_version: 1,
+        local_node_id: Some(1),
+    });
+    assert!(
+        response.status.ok,
+        "the fixture could not load shard 1 on 0..{end_routing_bucket}: {:?}",
+        response.status
+    );
+    engine
+}
+
+/// WHETHER THE TRIGGER THAT WOULD MAKE A DIRTY BIT REDUNDANT IS ACTUALLY PULLED.
+///
+/// The costing for this record argued that its dirty-bit half duplicates a lever that already
+/// exists: a dump hands back the whole dirty cost, so a trigger is cheaper than a type change.
+/// THAT ARGUMENT HAS A PRECONDITION NOBODY HAD CHECKED -- that dumps run in the deployment -- and
+/// the figure behind it was taken on the WRONG PATH.
+///
+/// The 151.9 B/object the census reported recovered came from `apply_storage_eviction(.., dump =
+/// true, ..)`. That path is reached only through `StorageManagerOptions::enable_evict`, which
+/// ships FALSE (`data_node.rs:1058`), and `runtime_storage.rs:723` records the skip as
+/// `"evict_disabled"`. So the number was measured on a path a deployment does not take.
+///
+/// The path a deployment DOES take is `apply_storage_lifecycle`, which is ungated -- only
+/// `dry_run` skips it (`storage_manager_cycle.rs:546`) -- and whose dump is released by
+/// `min_undumped_wal_records` or `min_undumped_wal_bytes`, whichever is crossed first.
+///
+/// # TWO ARMS, BECAUSE THE GATE COUNTS SOMETHING DIFFERENT FROM WHAT THE COST COUNTS
+///
+/// The gate counts undumped WAL RECORDS. The dirty index costs per OBJECT. **A batch append is
+/// ONE record however many objects it carries**, so those two quantities diverge by the batch
+/// size, and which side of the threshold a store sits on depends on how it writes rather than on
+/// how much it has written. So:
+///
+///   * BATCHED writes an object count far above the threshold in a record count far below it.
+///   * SINGLE writes crosses the record threshold at the object count that equals it.
+///
+/// Both arms print the plan's OWN decision -- `dump_delayed`, the record count, the object count,
+/// the buckets selected -- before any round runs. A round that hands back zero has two opposite
+/// explanations, the cadence declining and the cap binding, and a probe that cannot separate them
+/// would publish the wrong headline. An earlier revision of this test did exactly that: it saw
+/// zero drained across 24 rounds and concluded the saving was collected at a bounded rate, when
+/// what had actually happened was that 4,000 objects arrived as FOUR WAL records and the cadence
+/// correctly declined.
+///
+/// THE DEFAULTS ARE READ FROM THE OPTIONS STRUCT, NOT COPIED AS LITERALS, so a probe cannot keep
+/// passing against a cadence that has since moved.
+///
+/// rust-internal: measures this crate's own resident structures, no product behaviour
+#[test]
+#[cfg(feature = "alloc-probe")]
+fn what_the_default_dump_cadence_actually_drains() {
+    const SHIPPED_END: u32 = 1023;
+    const MAX_ROUNDS: usize = 20;
+
+    let shipped = crate::data_node::StorageManagerOptions::default();
+    println!(
+        "shipped dump cadence: min_undumped_wal_records={}, min_undumped_wal_bytes={}, \
+         max_dump_buckets_per_round={}, enable_evict={}, eviction_dump_before_evict={}",
+        shipped.min_undumped_wal_records,
+        shipped.min_undumped_wal_bytes,
+        shipped.max_dump_buckets_per_round,
+        shipped.enable_evict,
+        shipped.eviction_dump_before_evict,
+    );
+    // THE TWO FACTS THE WHOLE READING RESTS ON, asserted so this fails loudly if either moves
+    // rather than silently costing the wrong lever.
+    assert!(
+        !shipped.enable_evict,
+        "enable_evict now ships ON -- the eviction dump path is reachable by default and the \
+         census figure taken on it is no longer the wrong path's figure. Re-cost the dirty half."
+    );
+    assert!(
+        shipped.max_dump_buckets_per_round > 0,
+        "max_dump_buckets_per_round now ships at 0, which means UNCAPPED -- one released round \
+         would drain the whole dirty set and the cap arm below is void"
+    );
+
+    // Enough single writes to cross the record threshold, and the same object count batched.
+    let objects = (shipped.min_undumped_wal_records as usize + 100).max(1_100);
+    let mut declined_arm: Option<(u64, u64)> = None;
+    let mut released_arm: Option<(usize, usize, usize)> = None;
+
+    for (arm, batched) in [("BATCHED (one WAL record per batch)", true), ("SINGLE writes", false)] {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let engine = probe_engine_on_for_record(dir.path(), SHIPPED_END);
+        if batched {
+            for chunk in (0..objects).step_by(1_000) {
+                let commands = (chunk..(chunk + 1_000).min(objects))
+                    .map(|i| Command::StringSet {
+                        key: format!("cadence-{i}"),
+                        value: vec![b'v'; 32],
+                    })
+                    .collect::<Vec<_>>();
+                let response = engine.batch_execute(crate::types::BatchExecuteRequest {
+                    shard_id: 1,
+                    commands,
+                });
+                assert!(response.status.ok, "seed must ack: {:?}", response.status);
+            }
+        } else {
+            for i in 0..objects {
+                let response = engine.execute(ExecuteRequest {
+                    shard_id: 1,
+                    command: Command::StringSet {
+                        key: format!("cadence-{i}"),
+                        value: vec![b'v'; 32],
+                    },
+                });
+                assert!(response.status.ok, "seed must ack: {:?}", response.status);
+            }
+        }
+
+        let dirty_state = |engine: &TemporalEngine| -> (usize, u64, usize) {
+            let shards = engine.shards.read().expect("engine lock poisoned");
+            let shard = shards.get(&1).expect("shard is loaded");
+            (
+                shard.dirty_objects.len(),
+                deep_heap_bytes(&shard.dirty_objects),
+                shard.bucket_index.bucket_map.values().count(),
+            )
+        };
+        let (dirty0, bytes0, buckets) = dirty_state(&engine);
+        assert!(dirty0 > 0, "non-vacuity: nothing is dirty on the {arm} arm");
+
+        let request = |shard_id: crate::types::ShardId| StorageLifecycleRequest {
+            shard_id,
+            max_dump_buckets_per_round: shipped.max_dump_buckets_per_round,
+            min_undumped_wal_records: shipped.min_undumped_wal_records,
+            min_undumped_wal_bytes: shipped.min_undumped_wal_bytes,
+            ..StorageLifecycleRequest::default()
+        };
+
+        println!();
+        println!("=== {arm}: {objects} objects written ===");
+        println!(
+            "  {dirty0} dirty objects, {bytes0} B of dirty index, over {buckets} buckets \
+             (a released round may dump {} of them)",
+            shipped.max_dump_buckets_per_round
+        );
+
+        // THE PLAN'S OWN DECISION, read rather than inferred.
+        let plan = engine.storage_lifecycle_plan(request(1));
+        println!(
+            "  plan: dump_delayed={}, undumped_wal_records={}, undumped_wal_objects={}, \
+             dirty_buckets={}, selected_dump_buckets={}",
+            plan.dump_delayed,
+            plan.undumped_wal_records,
+            plan.undumped_wal_objects,
+            plan.dirty_buckets.len(),
+            plan.selected_dump_buckets.len(),
+        );
+        if plan.dump_delayed {
+            println!(
+                "  => THE CADENCE DECLINED: {} undumped records is below the threshold of {}, so \
+                 no bucket was selected. The cadence is WORKING. Note the object count beside it \
+                 -- {} objects are dirty and the gate cannot see them, because it counts records.",
+                plan.undumped_wal_records, shipped.min_undumped_wal_records, plan.undumped_wal_objects
+            );
+            declined_arm = Some((plan.undumped_wal_records, plan.undumped_wal_objects));
+        } else {
+            println!(
+                "  => THE CADENCE RELEASED THE DUMP and selected {} of {} dirty buckets, so what \
+                 the rounds below drain is the per-round CAP binding, not the threshold declining.",
+                plan.selected_dump_buckets.len(),
+                plan.dirty_buckets.len()
+            );
+        }
+
+        let mut previous = dirty0;
+        let mut rounds_to_clear: Option<usize> = None;
+        let mut first_round_drain = 0usize;
+        for round in 1..=MAX_ROUNDS {
+            let _report = engine.apply_storage_lifecycle(request(1));
+            let (dirty, bytes, _) = dirty_state(&engine);
+            let drained = previous.saturating_sub(dirty);
+            if round == 1 {
+                first_round_drain = drained;
+            }
+            if round <= 3 || dirty == 0 || round == MAX_ROUNDS {
+                println!(
+                    "    round {round:>2}: {dirty:>6} dirty left ({:>5.1}%), {bytes:>9} B, \
+                     drained {drained} this round",
+                    100.0 * dirty as f64 / dirty0 as f64
+                );
+            }
+            if dirty == 0 {
+                rounds_to_clear = Some(round);
+                break;
+            }
+            previous = dirty;
+        }
+        let (dirty_end, bytes_end, _) = dirty_state(&engine);
+        println!(
+            "  after {} rounds: {dirty_end} of {dirty0} still dirty; dirty heap {bytes0} -> \
+             {bytes_end} B (handed back {} B = {:.1} B per object that started dirty)",
+            rounds_to_clear.unwrap_or(MAX_ROUNDS),
+            bytes0.saturating_sub(bytes_end),
+            bytes0.saturating_sub(bytes_end) as f64 / dirty0 as f64
+        );
+        match rounds_to_clear {
+            Some(n) => println!("  the cadence CLEARED the dirty set in {n} rounds"),
+            None => println!("  the cadence did NOT clear the dirty set in {MAX_ROUNDS} rounds"),
+        }
+        if !plan.dump_delayed {
+            released_arm = Some((first_round_drain, dirty0, rounds_to_clear.unwrap_or(0)));
+        }
+    }
+
+    // --- THE FINDING, AS ASSERTIONS RATHER THAN AS PROSE. ---
+    let (declined_records, declined_objects) = declined_arm
+        .expect("the batched arm must reach the cadence, delayed or not, for this to mean anything");
+    assert!(
+        declined_objects > declined_records,
+        "the batched arm wrote {declined_objects} objects in {declined_records} records; if those \
+         are equal, a batch is no longer one record and the divergence this test is about is gone"
+    );
+    println!();
+    println!(
+        "THE DIVERGENCE, MEASURED: the batched arm made {declined_objects} objects dirty in only \
+         {declined_records} undumped WAL records -- a ratio of {:.0}x. The gate compares the \
+         RECORD count against {}; the cost is per OBJECT. `undumped_wal_objects` is computed and \
+         REPORTED beside it and deliberately not compared.",
+        declined_objects as f64 / declined_records.max(1) as f64,
+        shipped.min_undumped_wal_records
+    );
+    match released_arm {
+        Some((first, total, rounds)) => println!(
+            "And once the threshold IS crossed, one round drained {first} of {total} dirty \
+             objects and the set cleared in {rounds} rounds. So the dump lever is real and armed \
+             -- but under batched ingest it is reached at roughly the record threshold TIMES the \
+             batch size in objects, not at the threshold in objects."
+        ),
+        None => println!(
+            "NEITHER arm crossed the threshold, so this run shows only the declining side. The \
+             released side is unmeasured here and must not be quoted."
+        ),
+    }
+    println!(
+        "VERDICT for the record's dirty bit, CORRECTING THE CENSUS. The trigger is ARMED, \
+         unlike `enable_evict` -- but it is NOT the duplicate the census took it for, on three \
+         measured grounds. (1) The census figure of 151.9 B/object came from the UNCAPPED \
+         eviction path, which ships off. (2) On the default path, unbatched, one released round \
+         drained 14.7% and then STALLED: taking the dump advances the dumped-sequence watermark, \
+         so the record count falls back below the threshold and no further dump is selected -- \
+         one dump per threshold crossing, capped at {} buckets. (3) Batched, it drains NOTHING, \
+         because the gate counts records and a batch is one. So the dump collects at most ~17 B \
+         of the 84-112 B/object the dirty index costs, and typically none of it. The dirty half \
+         is a LIVE candidate, not a refused one.",
+        shipped.max_dump_buckets_per_round
+    );
+}
+
+/// THE KEY-ORDERED EXPIRY WALK HAS NO PRODUCTION CALLERS, AND A GUARD SAYS SO RATHER THAN A DOC.
+///
+/// `engine::expiry_window` walks `expires_at_ms` in KEY order. It is `pub(crate)`, which means
+/// anything in this crate can reach it, and the census for the consolidated record turns on it
+/// being dead: the verdict "`expires_at_ms` can be folded into a per-object record, no ordering is
+/// lost" is only true while nothing live reads that map in order. A doc comment saying so goes
+/// stale the moment someone wires it up; this fails instead.
+///
+/// WHY IT LIVES IN THIS MODULE rather than beside the expiry tests: it is a precondition of the
+/// RECORD's merge verdict, and the module that states the verdict should be the module that holds
+/// the evidence for it. If the expiry work later grows a home of its own this belongs there.
+///
+/// THE RULE IS THE ONE THE COUNTING-ALLOCATOR GATE USES, deliberately -- walk back from the call
+/// to the nearest `#[test]`, and a call that reaches the top of its file without finding one is a
+/// production caller. Brace counting was tried in that gate and rejected there: a `{` inside a
+/// string literal drifts the depth, and this crate writes plenty of them.
+///
+/// POSITIVE CONTROL. A guard that scans nothing passes, which is the failure mode that would make
+/// this test read as "no production callers" when it had in fact read no files. So the known
+/// test-only call sites are COUNTED and the count is asserted to be at least what is there today.
+#[test]
+fn the_key_ordered_expiry_window_has_no_production_callers() {
+    use std::path::{Path, PathBuf};
+
+    const NEEDLE: &str = "expiry_window(";
+    /// The call sites that exist today, all in `engine::tests::part4`. The assertion is `>=` and
+    /// not `==` on purpose: adding another TEST caller is fine and must not fail this guard, while
+    /// the count dropping to zero means the scan stopped finding anything.
+    const KNOWN_TEST_CALL_SITES: usize = 5;
+
+    let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+    let mut pending: Vec<PathBuf> = vec![root];
+    let mut files_read = 0usize;
+    let mut test_callers = 0usize;
+    let mut violations: Vec<String> = Vec::new();
+
+    while let Some(path) = pending.pop() {
+        let Ok(entries) = std::fs::read_dir(&path) else {
+            continue;
+        };
+        for entry in entries.flatten() {
+            let entry_path = entry.path();
+            if entry_path.is_dir() {
+                pending.push(entry_path);
+                continue;
+            }
+            if entry_path.extension().and_then(|e| e.to_str()) != Some("rs") {
+                continue;
+            }
+            let Ok(text) = std::fs::read_to_string(&entry_path) else {
+                continue;
+            };
+            files_read += 1;
+            let lines: Vec<&str> = text.lines().collect();
+            for (index, line) in lines.iter().enumerate() {
+                if !line.contains(NEEDLE) {
+                    continue;
+                }
+                let trimmed = line.trim();
+                // The definition itself, and prose about it, are not calls.
+                if trimmed.starts_with("//") || trimmed.starts_with("///") {
+                    continue;
+                }
+                if trimmed.contains("fn expiry_window") {
+                    continue;
+                }
+                let mut anchor = index as isize;
+                while anchor >= 0 && lines[anchor as usize].trim() != "#[test]" {
+                    anchor -= 1;
+                }
+                if anchor < 0 {
+                    violations.push(format!(
+                        "{}:{}: calls the key-ordered expiry walk outside any test",
+                        entry_path.display(),
+                        index + 1
+                    ));
+                } else {
+                    test_callers += 1;
+                }
+            }
+        }
+    }
+
+    println!(
+        "scanned {files_read} source files: {test_callers} test call sites, {} production call \
+         sites",
+        violations.len()
+    );
+    assert!(files_read > 0, "the scan read no files at all -- it is measuring nothing");
+    assert!(
+        test_callers >= KNOWN_TEST_CALL_SITES,
+        "the scan found {test_callers} test call sites where at least {KNOWN_TEST_CALL_SITES} are \
+         known to exist -- it has stopped finding them, so its silence about PRODUCTION callers \
+         means nothing either"
+    );
+    assert!(
+        violations.is_empty(),
+        "the key-ordered expiry walk has gained a production caller:\n  {}\n\nWalking deadlines in \
+         KEY order makes time-to-expire a function of the keyspace rather than of how many keys \
+         are due -- measured at ten expired keys behind ten thousand live ones surviving more than \
+         sixty rounds. The live sweep reads `due_window` over the deadline-ordered index, where \
+         the due keys are a prefix. If a key-ordered walk is genuinely wanted here, that is a \
+         decision with its own evidence, and the census verdict that `expires_at_ms` can fold \
+         into a per-object record has to be re-taken: it holds only while nothing live reads that \
+         map in order.",
+        violations.join("\n  ")
+    );
+}
