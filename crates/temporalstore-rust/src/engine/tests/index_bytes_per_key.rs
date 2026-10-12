@@ -841,6 +841,81 @@ fn what_a_live_key_costs_in_the_index_at_two_corpus_sizes() {
             shard.bucket_index.bucket_map.len()
         );
 
+        // --- WHAT AN INTEGER-ADDRESSED OBJECT LOOKUP WOULD MOVE, PRICED THROUGH THIS CORPUS.
+        //
+        // The three candidate entry widths are pinned beside `ObjectBlockLookup`. What a width pin
+        // cannot say is what a byte of FIELD costs once it sits inside a B-tree node, and that is
+        // the whole difference between the pinned eight bytes and the figure below. A leaf holds
+        // eleven entries beside its parent pointer, so one entry's full-leaf cost is arithmetic;
+        // the measured cost divided by it is this corpus' slack, and a field byte removed comes
+        // back at that factor and no better.
+        //
+        // IT ALSO NAMES THE OUTER LEVEL'S DENOMINATOR, because "two nested trees" invites the
+        // reading that both levels are per-object. `model_count` is one entry per stored kind for
+        // the whole shard; the object count is the other figure; the two are printed together so
+        // the ratio is not left to be inferred.
+        let lookup_objects = shard.bucket_index.object_block_lookup.len();
+        let lookup_models = shard.bucket_index.object_block_lookup.model_count();
+        assert!(
+            lookup_objects > 0,
+            "denominator: the object lookup holds no object at {label}, so its per-object figure \
+             is a zero that means nothing"
+        );
+        assert!(
+            lookup_models > 0 && lookup_models < lookup_objects,
+            "denominator: the lookup reports {lookup_models} model levels over {lookup_objects} \
+             objects at {label} -- the outer level is one entry per stored kind, so these two \
+             being equal would mean the per-object tree is the OUTER one and every figure below \
+             is divided by the wrong count"
+        );
+        const BTREE_LEAF_CAPACITY: f64 = 11.0;
+        const BTREE_LEAF_HEADER: f64 = 16.0;
+        let full_leaf = |key: f64, value: f64| {
+            (BTREE_LEAF_HEADER + BTREE_LEAF_CAPACITY * (key + value)) / BTREE_LEAF_CAPACITY
+        };
+        let lookup_today_full = full_leaf(16.0, 24.0);
+        let lookup_id_full = full_leaf(8.0, 24.0);
+        let lookup_id_keyed_full = full_leaf(8.0, 40.0);
+        let lookup_per_object = lookup_bytes as f64 / lookup_objects as f64;
+        let lookup_slack = lookup_per_object / lookup_today_full;
+        let arc_per_key = arc_bytes as f64 / live_keys as f64;
+        println!(
+            "  object lookup, {lookup_objects} objects under {lookup_models} model levels: \
+             {lookup_per_object:.1} B/OBJECT measured against {lookup_today_full:.1} B/object at a \
+             full leaf -- slack {lookup_slack:.2}x, so {:.1} B/object of it is empty node slot",
+            lookup_per_object - lookup_today_full
+        );
+        println!(
+            "    integer-addressed, object key DROPPED: {:.1} B/object at this slack -- {:.1} \
+             B/object back, plus the {arc_per_key:.1} B/KEY of key payload the index would stop \
+             holding. This is the arm the encoder forbids: it writes no object key.",
+            lookup_id_full * lookup_slack,
+            lookup_per_object - lookup_id_full * lookup_slack,
+        );
+        println!(
+            "    integer-addressed, object key KEPT:    {:.1} B/object at this slack -- {:.1} \
+             B/object WORSE than today, and this is the only arm every reader of the inversion \
+             can be served from",
+            lookup_id_keyed_full * lookup_slack,
+            lookup_id_keyed_full * lookup_slack - lookup_per_object,
+        );
+
+        // --- THE SHARED-ALLOCATION QUESTION, ASSERTED RATHER THAN PRINTED.
+        //
+        // The two key-payload lines above are the bucket index's and the dirty index's, each
+        // counted ONCE. Whether they ADD turns on whether they are the same allocations: if they
+        // were, dropping the key from one holder would free none of those bytes, because the other
+        // would still own them. `DirtyObjectIndex::insert` takes a `&str` and builds its own
+        // `Arc::from`, so they are distinct -- and that is asserted here rather than read off the
+        // source, because the size of every saving claimed for dropping a key depends on it.
+        assert_eq!(
+            0, dirty_arc_shared,
+            "{dirty_arc_shared} of the dirty index's {dirty_arc_count} key allocations are the \
+             SAME allocation the bucket index holds at {label}; the two key-payload lines above \
+             are then not additive, and a saving claimed for dropping a key from either holder is \
+             that much smaller"
+        );
+
         // THE ONE FIGURE HERE THAT IS ASSERTED RATHER THAN REPORTED.
         //
         // Everything else in this probe is a measurement, deliberately: a per-key cost pinned to a
@@ -1952,5 +2027,163 @@ fn what_the_bucket_map_footprint_is_made_of_on_both_routing_ranges() {
         "{shipped_label} produced {shipped_ratio:.4} buckets per page against {legacy_ratio:.4} on \
          the legacy range. The two must be different regimes or every row above is one population \
          measured twice"
+    );
+}
+
+/// WHAT AN INTEGER-ADDRESSED OBJECT LOOKUP WOULD SERVE, AND WHAT IT TAKES TO CATCH IT.
+///
+/// `ObjectBlockLookup` is addressed by the object key, and the width step that would make it
+/// integer-addressed is pinned beside the type: it pays in exactly one arm, the arm that stops
+/// holding the key. So the question that DECIDES the route is not a width at all. It is whether an
+/// address derived from the key can be trusted to name one object.
+///
+/// THE DERIVATION AVAILABLE IS `hashing::stable_object_hash` -- FNV-1a-64, the one that is
+/// deterministic across runs and so the only candidate for an address anything durable leans on.
+/// Three things about it, in the order that decides the outcome:
+///
+///   1. THE MERGE, which is a property of the step and not of the bytes chosen. The step is
+///      `h <- (h ^ b) * P` with `P` odd, so two running states take the same value on the next
+///      byte if and only if they differ in their low eight bits ALONE. The refusal half of that
+///      assertion is here too: states differing one bit higher have NO mergeable byte pair, out of
+///      all 65,536. So a chosen-key collision needs a 56-bit agreement rather than a 64-bit one --
+///      about 2^28 candidate prefixes, not 2^32, which is a search and not a bound.
+///   2. WHAT A COLLISION SERVES. Searched rather than written in, at a width where the search is
+///      instant: a pair hard-coded here would go stale the moment the derivation moved, and a
+///      stale pair reads exactly like a passing test. An index keyed by the derived address hands
+///      the FIRST object's refs to a reader asking for the SECOND, with no error on any path.
+///   3. WHAT CATCHES IT. Only a comparison against the object key the entry was filed under, which
+///      is the allocation the route exists to remove. So integer addressing WITH verification pays
+///      nothing -- it is eight bytes an entry wider than the key-addressed shape it replaces -- and
+///      integer addressing without it can serve another object's pages.
+#[test]
+fn an_integer_addressed_lookup_serves_another_objects_refs() {
+    use crate::engine::hashing::{stable_object_hash, stable_object_hash_update};
+
+    // --- 1. THE MERGE, with the instrument's refusal beside it. ---
+    let base = stable_object_hash("tenant/1/object/00000001");
+    for delta in [0x01u64, 0x1f, 0xff] {
+        let mut left = base;
+        let mut right = base ^ delta;
+        let byte = b'A';
+        stable_object_hash_update(&mut left, &[byte]);
+        stable_object_hash_update(&mut right, &[byte ^ delta as u8]);
+        assert_eq!(
+            left, right,
+            "two states differing by {delta:#04x} in their low byte must merge on one byte each: \
+             the step XORs the byte in before multiplying, so b and b ^ delta cancel the difference"
+        );
+    }
+    // THE REFUSAL. One bit above the byte the step XORs, and nothing merges -- which is what makes
+    // the three cases above a property of the step rather than of the deltas picked.
+    let unmergeable = base ^ 0x100;
+    let mut merging_pairs = 0usize;
+    for left_byte in 0u16..256 {
+        for right_byte in 0u16..256 {
+            let mut left = base;
+            let mut right = unmergeable;
+            stable_object_hash_update(&mut left, &[left_byte as u8]);
+            stable_object_hash_update(&mut right, &[right_byte as u8]);
+            if left == right {
+                merging_pairs += 1;
+            }
+        }
+    }
+    assert_eq!(
+        0, merging_pairs,
+        "{merging_pairs} of 65,536 byte pairs merged two states differing at bit 8; the merge \
+         condition is then wider than the low byte alone, and the 2^28 figure in this doc is wrong"
+    );
+
+    // --- 2. WHAT A COLLISION SERVES. ---
+    //
+    // The search runs at a TRUNCATED address width so that it terminates in milliseconds inside
+    // the ordinary suite. The truncation is the only thing scaled: the derivation, the key
+    // spelling and the container are the ones an integer-addressed lookup would use. At 24 bits
+    // the first collision arrives inside twenty thousand keys; at 64 it is the same construction at
+    // a scale no test can run, which is why the bound above is stated rather than searched for.
+    const ADDRESS_BITS: u32 = 24;
+    const MASK: u64 = (1u64 << ADDRESS_BITS) - 1;
+    const SEARCH_CEILING: usize = 40_000;
+    let mut by_address: BTreeMap<u64, String> = BTreeMap::new();
+    let mut collision: Option<(String, String, u64)> = None;
+    let mut scanned = 0usize;
+    for i in 0..SEARCH_CEILING {
+        let key = format!("tenant/1/object/{i:08}");
+        scanned += 1;
+        let address = stable_object_hash(&key) & MASK;
+        if let Some(first) = by_address.get(&address) {
+            collision = Some((first.clone(), key, address));
+            break;
+        }
+        by_address.insert(address, key);
+    }
+    let (first_key, second_key, address) = collision.expect(
+        "no two of the keys scanned shared a truncated address, so this test asserted nothing \
+         about what a derived address can serve",
+    );
+    println!(
+        "a {ADDRESS_BITS}-bit derived address collides after {scanned} keys of \
+         {SEARCH_CEILING}: {first_key:?} and {second_key:?} both address {address:#x}"
+    );
+    assert_ne!(
+        first_key, second_key,
+        "the search returned one key twice, which is a bug in the search and not a collision"
+    );
+    // AND THE INSTRUMENT CAN REFUSE. At FULL width these two keys do NOT collide, so the pair is
+    // an artefact of the truncation and not of the two keys being equal in some other way.
+    assert_ne!(
+        stable_object_hash(&first_key),
+        stable_object_hash(&second_key),
+        "the two keys collide at full width too, so the truncation is not what produced this \
+         collision and the scaling argument does not hold"
+    );
+
+    // The lookup, addressed the way an integer-addressed one would be, holding ONE object's refs.
+    let mut id_addressed: BTreeMap<u64, BlockRefs> = BTreeMap::new();
+    let filed = BlockRefs::One(BlockLookupRef {
+        routing_bucket: 7,
+        block_ref_key: 99,
+    });
+    id_addressed.insert(stable_object_hash(&first_key) & MASK, filed.clone());
+
+    // AND THE SECOND OBJECT, WHICH HAS FILED NOTHING, IS SERVED THE FIRST ONE'S REFS.
+    let served = id_addressed.get(&(stable_object_hash(&second_key) & MASK));
+    assert_eq!(
+        Some(&filed),
+        served,
+        "an index addressed by a derived id answered nothing for a key colliding with a filed one, \
+         so the hazard this test exists to name is not reachable through it"
+    );
+
+    // --- 3. WHAT CATCHES IT, AND WHAT THAT COSTS. ---
+    //
+    // The only check that tells the two apart is a comparison against the object key the entry was
+    // filed under -- so the entry has to HOLD that key, which is the allocation the route removes.
+    let mut verified: BTreeMap<u64, (Arc<str>, BlockRefs)> = BTreeMap::new();
+    verified.insert(
+        stable_object_hash(&first_key) & MASK,
+        (Arc::from(first_key.as_str()), filed.clone()),
+    );
+    let hit = verified.get(&(stable_object_hash(&second_key) & MASK));
+    let resolved = match hit {
+        Some((stored, refs)) if &**stored == second_key.as_str() => Some(refs),
+        _ => None,
+    };
+    assert!(
+        resolved.is_none(),
+        "verify-on-hit did not reject a colliding key, so the only check available does not work \
+         either"
+    );
+    assert!(
+        hit.is_some(),
+        "the verified map did not even see the colliding address, so the rejection above was \
+         satisfied by a miss rather than by the verification"
+    );
+    // AND THE WIDTH THAT MAKES VERIFICATION A REGRESSION RATHER THAN A TRADE.
+    assert!(
+        std::mem::size_of::<(u64, (Arc<str>, BlockRefs))>()
+            > std::mem::size_of::<(Arc<str>, BlockRefs)>(),
+        "the verified id-addressed entry is no wider than the key-addressed entry it would \
+         replace, so ground 1 of the refusal beside ObjectBlockLookup has to be restated"
     );
 }

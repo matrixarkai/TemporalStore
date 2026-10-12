@@ -3382,6 +3382,53 @@ pub(super) struct ObjectBlockLookup {
     by_model: BTreeMap<Arc<str>, BTreeMap<Arc<str>, BlockRefs>>,
 }
 
+/// WHY THIS INDEX IS ADDRESSED BY THE OBJECT KEY AND NOT BY AN INTEGER.
+///
+/// One `u64` derived from the object's identity, in place of the `Arc<str>` above, is the obvious
+/// next width step here. It is REFUSED, on three independent grounds, and the widths below are the
+/// first of them -- pinned, so the arithmetic cannot go stale the way a number quoted in prose
+/// does.
+///
+///   1. THE SAVING IS THE KEY AND NOTHING ELSE. An entry is 40 bytes of field today. Addressed by
+///      a `u64` with the key DROPPED it is 32 -- eight bytes back. Addressed by a `u64` with the
+///      key RETAINED it is 48, which is eight bytes WORSE than the shape it would replace. So the
+///      route pays in exactly one arm, the arm that stops holding the object key, and every
+///      variant that keeps the key is a regression before a single tree node is counted.
+///   2. THE KEY IS NOT A WORKING SET. IT IS THE SOURCE OF A WRITTEN FIELD. `impl Serialize for
+///      CoreIndex` builds [`PageKeysByPosition::from_lookup`] IN EVERY BUILD and composes each
+///      page's written key from it -- its own note says a release build without the inversion
+///      "would write no key at all" -- because the page entry carries no identity of its own.
+///      Readers beside the encoder reach the same inversion through `page_identities`,
+///      `identity_of`, `live_identity` and `page_identities_in`, and they were counted by the
+///      COMPILER rather than by a grep over a method name: taking the object key off that inversion is twenty-four compiler diagnostics across ten files, TWENTY of them in production code and four in tests. The governing
+///      rule is spelled out at `index_log.rs::strip_block_ref_key_repeat`: for a field omitted
+///      because it is derivable, find WHO READS THE RECONSTRUCTION first. Here this allocation IS
+///      the reconstruction, so dropping it writes an index whose pages name no object.
+///   3. THE DERIVATION AVAILABLE IS MERGEABLE BY ONE BYTE. `hashing::stable_object_hash` is
+///      FNV-1a-64, `h <- (h ^ b) * P` with `P` odd, so two running states take the same value on
+///      the next byte if and only if they differ in their low eight bits ALONE. A chosen-key
+///      collision therefore needs a 56-bit agreement rather than a 64-bit one: about 2^28
+///      candidates, not 2^32. A collision returns ANOTHER OBJECT'S refs with no error anywhere,
+///      and the only step that catches one is a comparison against the stored key -- which is
+///      ground 1 again. Object keys arrive from the caller, so there is no funnel to hold a
+///      uniqueness property the way `block_index_handle`'s single emitter holds its own.
+///      `an_integer_addressed_lookup_serves_another_objects_refs` drives both halves.
+const _: () = assert!(std::mem::size_of::<(Arc<str>, BlockRefs)>() == 40);
+/// Pinned on its own, because a width pin admits every alignment that divides it.
+const _: () = assert!(std::mem::align_of::<(Arc<str>, BlockRefs)>() == 8);
+/// The integer-addressed arm that pays, and the only one: the object key is GONE from it, which is
+/// what ground 2 forbids.
+const _: () = assert!(std::mem::size_of::<(u64, BlockRefs)>() == 32);
+/// The integer-addressed arm that keeps the key, and so keeps what the encoder reads. Wider than
+/// the shape it would replace, which is the whole of ground 1.
+const _: () = assert!(std::mem::size_of::<(u64, (Arc<str>, BlockRefs))>() == 48);
+/// AND THE TWO LEVELS ARE NOT THE COST EITHER. Folding the model spelling into one composite key
+/// -- the shape a single-level map would need -- costs the same eight bytes an integer address
+/// would have saved. The outer level is one entry per stored kind for the whole shard, which
+/// [`ObjectBlockLookup::model_count`] reports and the footprint probe prints beside the object
+/// count, so that level is a constant head and not a per-object tree.
+const _: () = assert!(std::mem::size_of::<((u8, Arc<str>), BlockRefs)>() == 48);
+
 /// Whether this component argument names THE ONLY SLOT THERE IS.
 ///
 /// # THIS IS THE ONE PIECE OF THE DELETED LEVELS THAT HAD TO STAY
@@ -3483,6 +3530,14 @@ impl ObjectBlockLookup {
     /// The number of objects, which is what the flat map's length meant.
     pub(super) fn len(&self) -> usize {
         self.by_model.values().map(BTreeMap::len).sum()
+    }
+
+    /// How many MODEL levels the outer map holds -- NOT the object count, and reported precisely
+    /// so that the two are never read as one figure. One entry per stored kind for the whole
+    /// shard, which is what makes the outer level a constant head.
+    #[cfg(test)]
+    pub(super) fn model_count(&self) -> usize {
+        self.by_model.len()
     }
 
     pub(super) fn is_empty(&self) -> bool {
@@ -3823,6 +3878,37 @@ pub(super) struct DirtyObjectIndex {
     by_key: BTreeMap<Arc<str>, u32>,
     by_bucket: BTreeMap<u32, DirtyKeySet>,
 }
+
+/// WHY THIS IS TWO TREES AND NOT A BOUNDED RING OF INTEGER IDS.
+///
+/// A fixed-capacity, pre-allocated ring of `u64` ids beside the dirty bits this engine already
+/// carries -- `BucketFlags` is one byte and `BlockIndex` holds `dirty` and `deleted` -- would hold
+/// a dirty object in eight bytes where the pair of trees above holds one in 20 plus 28 bytes of
+/// field. It is refused on two grounds, and the first is not about width at all.
+///
+///   1. EVERY READER OF `by_key` READS IT BY KEY, AND ONE READS THE KEY TEXT.
+///      `storage_bucket_internals`'s ownership reconstruct asks `contains(entry.object_key)` once
+///      per live entry; `engine::object_manager_stats` ITERATES these keys and hands each to
+///      `bucket_index_target_buckets_for_object_key`, which needs the text to route. A ring of
+///      derived ids answers neither. The text is not recoverable from an id -- the page entry
+///      holds no identity, and this index is not the object lookup -- and `remove` by a derived id
+///      would clear the dirty mark of any other key sharing that id, which is a dirty object that
+///      is never dumped. That is the one failure this index exists to prevent, so the ring trades
+///      a footprint for a data loss. The readers were enumerated by the COMPILER, by deleting the
+///      two by-key doors rather than by grepping for them: deleting `contains` and `iter` is twelve diagnostics, four of them in production, and THREE of those four consume the key as text -- `compaction.rs` probes seven key-addressed maps with it, `storage_reporting.rs` routes it and hands it out of the engine as a `String` in a report, and `engine::object_manager_stats` routes it into the object lookup. A grep over the field found only the last of the three.
+///   2. A BOUND NEEDS AN OVERFLOW BEHAVIOUR, AND THE ONLY SAFE ONE UNDOES THE DRAIN. The dirty set
+///      IS the write backlog between dumps, and nothing bounds that: the footprint probe seeds
+///      tens of thousands of dirty objects with no dump taken at all. Dropping an id on overflow
+///      loses a mark. Forcing a dump from the write path takes the dump's lock under the shard
+///      write lock. What is left is to record "overflowed" and treat the whole shard as dirty,
+///      which turns every dump under sustained write into a whole-shard dump and gives back
+///      exactly what [`DirtyObjectIndex::drain_buckets`] was built to win. A ring that may grow
+///      without bound is this `BTreeMap` with a worse `contains`.
+///
+/// The key TEXT is held once for both trees -- `by_bucket` holds the same `Arc<str>` as `by_key`,
+/// which the paragraph above this struct states -- and the footprint probe reports how many of
+/// those allocations the bucket index turns out to be sharing, because a saving claimed for
+/// dropping a key from one holder is zero if another holder owns the bytes.
 
 /// The dirty object keys of ONE bucket.
 ///
