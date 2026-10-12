@@ -67,6 +67,18 @@
 //! same twenty-four bytes at natural alignment, with one byte of TAIL slack and no packing, and
 //! the width and the alignment are pinned SEPARATELY below.
 
+// DEAD CODE IS THE POINT, FOR EXACTLY ONE COMMIT. Nothing in production holds an `ObjectRecord`
+// yet: this type is built and tested standalone, ahead of the graft, so that the layout and the
+// conversion can be proved before anything is rewired. Every item here is exercised by
+// `engine::tests::one_record_per_object`, which is `cfg(test)`, so a non-test build sees eleven
+// items with no caller and says so eleven times.
+//
+// The alternative to this attribute is eleven unexplained warnings on a branch, which is worse:
+// a reader cannot tell them from the real thing. THE GRAFT COMMIT REMOVES THIS LINE -- once the
+// record is the value of a live map, every item below has a production caller and a genuine dead
+// item here should be reported again.
+#![allow(dead_code)]
+
 use serde::{Deserialize, Serialize};
 
 use crate::block_store::{
