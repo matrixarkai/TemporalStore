@@ -2187,3 +2187,416 @@ fn an_integer_addressed_lookup_serves_another_objects_refs() {
          replace, so ground 1 of the refusal beside ObjectBlockLookup has to be restated"
     );
 }
+
+// =================================================================================================
+// HOW MANY STRUCTURES HOLD AN ENTRY FOR ONE OBJECT, AND WHAT EACH OF THEM COSTS
+// =================================================================================================
+//
+// THE QUESTION THE SIBLING PROBES DO NOT ANSWER. Every probe above divides a structure's heap by
+// the shard's live-key count, which prices the index as a whole. It cannot say how many SEPARATE
+// structures hold a row for one object, and that count -- not the width of any one row -- is what
+// multiplies. A census by division also hides the kinds that are absent from a fixture: a map that
+// holds nothing for a `string` reads as a small per-key number rather than as a zero.
+//
+// SO THIS MEASURES A MARGINAL COHORT. A population is seeded, every structure is weighed, a cohort
+// of ONE KIND is added, and every structure is weighed again. A structure whose heap does not move
+// holds no entry for that kind; one whose heap moves holds an entry costing the delta over the
+// cohort. That is the count the census needs, and it is read off the allocator rather than off the
+// type declarations.
+//
+// TWO FIGURES, BECAUSE A `HashMap` DELTA IS NOT A PER-ENTRY COST. A hash table clones to its bucket
+// COUNT, which steps at a power of two: a cohort that straddles a rehash is charged the whole new
+// table and the next cohort is charged nothing. So every structure is reported twice --
+//
+//   * MARGINAL, the cohort delta over the cohort size, which answers "does this structure hold an
+//     entry for this kind at all" exactly, and answers "what does the entry cost" only on average
+//     across a rehash;
+//   * STEADY-STATE, the structure's whole heap over ITS OWN denominator -- `strings` over the
+//     string count, `bucket_map` over the PAGE count, `bucket_recency` over the BUCKET count --
+//     which is the resident figure including table slack, and is the one to quote.
+//
+// Mixing those two denominators is the error this campaign has already paid for once, so each row
+// prints the denominator it used. A per-page or per-bucket row is meaningless without the bucket
+// count, which is printed in the arm header and asserted to be a 0..1023 population.
+#[cfg(feature = "alloc-probe")]
+fn census_bytes(shard: &crate::engine::state::ShardState) -> Vec<(&'static str, u64)> {
+    let bucket_map = deep_heap_bytes(&shard.bucket_index.bucket_map);
+    let lookup = deep_heap_bytes(&shard.bucket_index.object_block_lookup);
+    let core_rest = deep_heap_bytes(&shard.bucket_index)
+        .saturating_sub(bucket_map)
+        .saturating_sub(lookup);
+    let (arc_bytes, _) = arc_payload_bytes(&shard.bucket_index);
+    let (dirty_arc_bytes, _, _) = dirty_arc_payload_bytes(shard);
+    vec![
+        ("strings", deep_heap_bytes(&shard.strings)),
+        ("features", deep_heap_bytes(&shard.features)),
+        ("hashes", deep_heap_bytes(&shard.hashes)),
+        ("bucket_index.bucket_map", bucket_map),
+        ("bucket_index.object_block_lookup", lookup),
+        ("bucket_index, the rest of CoreIndex", core_rest),
+        ("dirty_objects", deep_heap_bytes(&shard.dirty_objects)),
+        ("bucket_recency", deep_heap_bytes(&shard.bucket_recency)),
+        ("expires_at_ms", deep_heap_bytes(&shard.expires_at_ms)),
+        ("expiry_by_deadline", deep_heap_bytes(&shard.expiry_by_deadline)),
+        ("wal_resident_blocks", deep_heap_bytes(&shard.wal_resident_blocks)),
+        ("bucket-index Arc<str> payloads", arc_bytes),
+        ("dirty-index Arc<str> payloads", dirty_arc_bytes),
+        ("WHOLE ShardState clone", deep_heap_bytes(shard)),
+    ]
+}
+
+/// The census rows, weighed through the shard lock and handed back as owned numbers.
+#[cfg(feature = "alloc-probe")]
+fn snapshot_census(engine: &TemporalEngine) -> Vec<(&'static str, u64)> {
+    let shards = engine.shards.read().expect("engine lock poisoned");
+    let shard = shards.get(&1).expect("shard is loaded");
+    census_bytes(shard)
+}
+
+/// Per-structure delta over a cohort of one kind, and the COUNT of structures that moved.
+///
+/// The count is the deliverable. `WHOLE ShardState clone` is a superset of every row above it and
+/// is excluded from the count on purpose -- including it would report one structure too many for
+/// every kind.
+#[cfg(feature = "alloc-probe")]
+fn report_cohort(
+    case: &str,
+    cohort: usize,
+    before: &[(&'static str, u64)],
+    after: &[(&'static str, u64)],
+) -> usize {
+    assert_eq!(before.len(), after.len(), "census rows must line up to be differenced");
+    assert!(cohort > 0, "denominator: a cohort of zero divides into anything");
+    println!("  --- {case}: cohort of {cohort} ---");
+    let mut holders = 0usize;
+    for (i, (name, b)) in before.iter().enumerate() {
+        let (name_after, a) = after[i];
+        assert_eq!(*name, name_after, "census rows drifted between the two snapshots");
+        let delta = a as i64 - *b as i64;
+        let whole = *name == "WHOLE ShardState clone";
+        let note = if whole {
+            "superset of the rows above, not counted"
+        } else if delta == 0 {
+            "HOLDS NO ENTRY for this kind"
+        } else {
+            ""
+        };
+        if delta != 0 && !whole {
+            holders += 1;
+        }
+        println!(
+            "      {name:<38} {delta:>12} B  {:>9.1} B/object  {note}",
+            delta as f64 / cohort as f64
+        );
+    }
+    println!("      => STRUCTURES HOLDING AN ENTRY for one {case}: {holders}");
+    holders
+}
+
+#[cfg(feature = "alloc-probe")]
+fn seed_strings_from(
+    engine: &TemporalEngine,
+    prefix: &str,
+    start: usize,
+    count: usize,
+    ttl_ms: Option<u64>,
+) {
+    let end = start + count;
+    for chunk_start in (start..end).step_by(1_000) {
+        let commands = (chunk_start..(chunk_start + 1_000).min(end))
+            .map(|i| match ttl_ms {
+                None => Command::StringSet {
+                    key: format!("{prefix}{i}"),
+                    value: vec![b'v'; 32],
+                },
+                Some(ttl) => Command::StringSetEx {
+                    key: format!("{prefix}{i}"),
+                    value: vec![b'v'; 32],
+                    ttl_ms: ttl,
+                },
+            })
+            .collect::<Vec<_>>();
+        if commands.is_empty() {
+            continue;
+        }
+        let response = engine.batch_execute(crate::types::BatchExecuteRequest {
+            shard_id: 1,
+            commands,
+        });
+        assert!(response.status.ok, "string seed must ack: {:?}", response.status);
+    }
+}
+
+#[cfg(feature = "alloc-probe")]
+fn seed_hashes_from(engine: &TemporalEngine, prefix: &str, count: usize, fields: usize) {
+    for i in 0..count {
+        let commands = (0..fields)
+            .map(|f| Command::HashSet {
+                key: format!("{prefix}{i}"),
+                field: format!("f{f}"),
+                value: vec![b'h'; 32],
+            })
+            .collect::<Vec<_>>();
+        let response = engine.batch_execute(crate::types::BatchExecuteRequest {
+            shard_id: 1,
+            commands,
+        });
+        assert!(response.status.ok, "hash seed must ack: {:?}", response.status);
+    }
+}
+
+#[cfg(feature = "alloc-probe")]
+fn seed_features_from(engine: &TemporalEngine, prefix: &str, keys: usize, points: usize) {
+    for k in 0..keys {
+        for chunk_start in (0..points).step_by(500) {
+            let batch = (chunk_start..(chunk_start + 500).min(points))
+                .map(|t| crate::types::FeaturePoint {
+                    timestamp_ms: 1_700_000_000_000 + t as u64,
+                    value: vec![b'f'; 32],
+                })
+                .collect::<Vec<_>>();
+            if batch.is_empty() {
+                continue;
+            }
+            let response = engine.execute(ExecuteRequest {
+                shard_id: 1,
+                command: Command::FeatureAppend {
+                    key: format!("{prefix}{k}"),
+                    points: batch,
+                },
+            });
+            assert!(response.status.ok, "feature seed must ack: {:?}", response.status);
+        }
+    }
+}
+
+/// HOW MANY STRUCTURES HOLD AN ENTRY FOR ONE OBJECT, PER KIND, ON THE SHIPPED ROUTING RANGE.
+///
+/// Five cases, each measured as a marginal cohort against the same base population: a plain string
+/// with no deadline, a string with one, a container, a timestamped series, and -- for the clean
+/// case -- the same population after the production dump-and-release sequence, where a NEGATIVE
+/// delta is memory the dump handed back.
+///
+/// WHY THE CLEAN CASE IS A DUMP RATHER THAN A SIXTH COHORT. Nothing writes a clean object: an
+/// object is clean because a dump has been taken since it was written. So "clean" is not a kind to
+/// seed, it is a state to reach, and the honest measurement of what being dirty costs is what a
+/// dump gives back.
+///
+/// THE ARMS ARE 4x APART AT THE DENOMINATOR THEY ARE QUOTED AT, AND BOTH COMPLETE. The sibling
+/// probes seed 8,000 then 80,000 records, and the 80,000 arm has never finished on this box -- it
+/// was stopped mid-seed at thirteen minutes of CPU. A figure from an arm that does not complete is
+/// not a figure.
+///
+/// AND 4x IN THE SEED IS NOT 4x IN THE TABLE. An earlier spelling scaled the base string count 4x
+/// and left the container, series and cohort populations fixed; the live-key counts the
+/// steady-state table divides by then came out 2.33x apart, and `hashes` fell from 48.9 to 20.9
+/// B/key purely because the mix had changed underneath it. Every population here scales by ONE
+/// factor, so the mix is identical between the arms and the ratio is 4.0 at the denominator the
+/// figures are actually quoted against.
+///
+/// rust-internal: measures this crate's own resident structures, no product behaviour
+#[test]
+#[cfg(feature = "alloc-probe")]
+#[ignore = "seeds two corpora under the counting allocator and weighs every structure; run by name"]
+fn how_many_structures_hold_an_entry_for_one_object() {
+    /// The shipped default since #1973, and the range `docs/runtime_tuning.md` tells an operator to
+    /// set. On the LEGACY whole-u32 range every key gets a bucket of its own, so every per-bucket
+    /// cost divides by one key and `bucket_recency` reads as a per-key structure. It is not one.
+    const SHIPPED_END: u32 = 1023;
+
+    // ONE SCALE FACTOR PER ARM, and EVERY population below derives from it, so the two arms
+    // hold the same MIX and differ only in size. The previous spelling scaled the base strings 4x
+    // and left the container and series populations fixed, which made the live-key ratio 2.33x at
+    // the steady-state table rather than 4x -- and moved `hashes` from 48.9 to 20.9 B/key by
+    // dilution alone. A ratio taken across two mixes is not a scaling result.
+    for (arm, scale) in [("1x", 1usize), ("4x", 4usize)] {
+        let base_strings = 2_000 * scale;
+        let base_series = 2 * scale;
+        let dir = tempfile::tempdir().expect("tempdir");
+        let engine = probe_engine_on(dir.path(), SHIPPED_END);
+        probe_seed(&engine, base_strings, base_series, 1_000);
+
+        // --- DENOMINATORS FIRST, ASSERTED, because every figure below divides by one. ---
+        let (base_keys, buckets, pages) = {
+            let shards = engine.shards.read().expect("engine lock poisoned");
+            let shard = shards.get(&1).expect("shard is loaded");
+            let keys = shard.strings.len() + shard.features.len();
+            let buckets = shard.bucket_index.bucket_map.values().count();
+            let pages: usize =
+                shard.bucket_index.bucket_map.values().map(|b| b.block_index.len()).sum();
+            assert_eq!(
+                base_strings,
+                shard.strings.len(),
+                "denominator: the string map does not hold the base population"
+            );
+            assert_eq!(
+                base_series,
+                shard.features.len(),
+                "denominator: the feature map does not hold the base population"
+            );
+            assert!(pages > 0, "denominator: the bucket index must hold pages");
+            assert!(
+                buckets > 0 && buckets <= (SHIPPED_END as usize + 1),
+                "denominator: {buckets} buckets is not a 0..{SHIPPED_END} population -- the fixture \
+                 did not load on the shipped range and every per-bucket row below is the other \
+                 regime's"
+            );
+            assert!(
+                buckets < keys,
+                "denominator: {buckets} buckets for {keys} keys is one bucket per key, which is the \
+                 LEGACY range -- a per-bucket structure would read as a per-key one"
+            );
+            (keys, buckets, pages)
+        };
+        println!(
+            "=== {arm}-record base on 0..{SHIPPED_END}: {base_keys} live keys, {buckets} BUCKETS, \
+             {pages} pages (scale {scale}x; every population scales together so the two arms hold \
+             the same mix) ==="
+        );
+
+        // --- CASE 1: a plain string object, no deadline, dirty because nothing has dumped yet. ---
+        let string_cohort: usize = 500 * scale;
+        let before = snapshot_census(&engine);
+        seed_strings_from(&engine, "p", base_strings + 1_000_000, string_cohort, None);
+        let after = snapshot_census(&engine);
+        report_cohort("plain string, NO deadline, DIRTY", string_cohort, &before, &after);
+
+        // --- CASE 2: the same object WITH a deadline. ---
+        let ttl_cohort: usize = 500 * scale;
+        let ttl_before = {
+            let shards = engine.shards.read().expect("engine lock poisoned");
+            shards.get(&1).expect("shard").expires_at_ms.len()
+        };
+        let before = snapshot_census(&engine);
+        seed_strings_from(&engine, "t", base_strings + 2_000_000, ttl_cohort, Some(86_400_000));
+        let after = snapshot_census(&engine);
+        let ttl_after = {
+            let shards = engine.shards.read().expect("engine lock poisoned");
+            shards.get(&1).expect("shard").expires_at_ms.len()
+        };
+        // NON-VACUITY: a deadline cohort that files no deadline would make the two expiry rows read
+        // as free, which is the whole question this case exists to answer.
+        assert_eq!(
+            ttl_before + ttl_cohort,
+            ttl_after,
+            "the deadline cohort filed {} deadlines, not {ttl_cohort} -- the expiry rows below are \
+             measuring nothing",
+            ttl_after - ttl_before
+        );
+        report_cohort("string WITH a deadline, DIRTY", ttl_cohort, &before, &after);
+
+        // --- CASE 3: a container object. N IS STATED: eight elements each. ---
+        let hash_cohort: usize = 250 * scale;
+        const HASH_FIELDS: usize = 8;
+        let before = snapshot_census(&engine);
+        seed_hashes_from(&engine, "h", hash_cohort, HASH_FIELDS);
+        let after = snapshot_census(&engine);
+        report_cohort("container object, 8 elements each, DIRTY", hash_cohort, &before, &after);
+
+        // --- CASE 4: a timestamped object. N IS STATED: one thousand points each. ---
+        let series_cohort: usize = 2 * scale;
+        const SERIES_POINTS: usize = 1_000;
+        let before = snapshot_census(&engine);
+        seed_features_from(&engine, "g", series_cohort, SERIES_POINTS);
+        let after = snapshot_census(&engine);
+        report_cohort(
+            "timestamped object, 1,000 points each, DIRTY",
+            series_cohort,
+            &before,
+            &after,
+        );
+
+        // --- THE STEADY-STATE TABLE: every structure over ITS OWN denominator. ---
+        {
+            let shards = engine.shards.read().expect("engine lock poisoned");
+            let shard = shards.get(&1).expect("shard is loaded");
+            let rows = census_bytes(shard);
+            let strings_n = shard.strings.len();
+            let features_n = shard.features.len();
+            let hashes_n = shard.hashes.len();
+            let lookup_n = shard.bucket_index.object_block_lookup.len();
+            let dirty_n = shard.dirty_objects.len();
+            let recency_n = shard.bucket_recency.len();
+            let expiry_n = shard.expires_at_ms.len();
+            let deadline_n = shard.expiry_by_deadline.len();
+            let wal_n = shard.wal_resident_blocks.len();
+            let buckets_now = shard.bucket_index.bucket_map.values().count();
+            let pages_now: usize =
+                shard.bucket_index.bucket_map.values().map(|b| b.block_index.len()).sum();
+            let live_keys = strings_n + features_n + hashes_n;
+            println!(
+                "  --- STEADY STATE, each structure over ITS OWN denominator ({buckets_now} \
+                 buckets, {pages_now} pages, {strings_n} strings, {features_n} series, {hashes_n} \
+                 containers, {dirty_n} dirty) ---"
+            );
+            for (name, bytes) in &rows {
+                let (denom, denom_name): (usize, &str) = match *name {
+                    "strings" => (strings_n, "string object"),
+                    "features" => (features_n, "series object"),
+                    "hashes" => (hashes_n, "container object"),
+                    "bucket_index.bucket_map" => (pages_now, "PAGE"),
+                    "bucket_index.object_block_lookup" => (lookup_n, "lookup row"),
+                    "bucket_index, the rest of CoreIndex" => (buckets_now, "BUCKET"),
+                    "dirty_objects" => (dirty_n, "dirty object"),
+                    "bucket_recency" => (recency_n, "BUCKET"),
+                    "expires_at_ms" => (expiry_n, "deadline"),
+                    "expiry_by_deadline" => (deadline_n, "deadline"),
+                    "wal_resident_blocks" => (wal_n, "log-resident block"),
+                    _ => (live_keys, "live key"),
+                };
+                println!(
+                    "      {name:<38} {bytes:>12} B  {:>9.1} B per {denom_name:<18} (n = {denom})",
+                    if denom == 0 { 0.0 } else { *bytes as f64 / denom as f64 }
+                );
+            }
+        }
+
+        // --- CASE 5: CLEAN. The production dump-and-release sequence; negative is handed back. ---
+        let probe_keys: Vec<String> = (0..16).map(|i| format!("s{i}")).collect();
+        let readable = |engine: &TemporalEngine| {
+            probe_keys
+                .iter()
+                .filter(|key| {
+                    matches!(
+                        engine
+                            .execute(ExecuteRequest {
+                                shard_id: 1,
+                                command: Command::StringGet { key: (*key).clone() },
+                            })
+                            .response,
+                        crate::types::CommandResponse::Bytes { value: Some(_) }
+                    )
+                })
+                .count()
+        };
+        let read_before = readable(&engine);
+        assert_eq!(
+            probe_keys.len(),
+            read_before,
+            "the fixture cannot read its own keys BEFORE the dump, so a read afterwards proves nothing"
+        );
+        let dirty_count = {
+            let shards = engine.shards.read().expect("engine lock poisoned");
+            shards.get(&1).expect("shard").dirty_objects.len()
+        };
+        assert!(
+            dirty_count > 0,
+            "non-vacuity: nothing is dirty before the dump, so the clean case would recover nothing \
+             and read as a structure that costs nothing"
+        );
+        let before = snapshot_census(&engine);
+        let _report = engine.apply_storage_eviction(1, 0, 0, true, false);
+        let after = snapshot_census(&engine);
+        println!(
+            "  --- CLEAN: dump+release over {dirty_count} dirty objects (negative = handed back) ---"
+        );
+        report_cohort("object made CLEAN by a dump", dirty_count, &before, &after);
+        let read_after = readable(&engine);
+        assert_eq!(
+            probe_keys.len(),
+            read_after,
+            "the dump made keys unreadable -- a recovery figure taken beside broken reads is not a \
+             saving"
+        );
+    }
+}

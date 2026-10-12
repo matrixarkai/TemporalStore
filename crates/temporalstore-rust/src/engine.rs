@@ -94,6 +94,7 @@ mod block_in_wal;
 mod state;
 mod hash_field_map;
 mod recorded_map;
+mod object_record;
 // `pub(crate)`: a replication payload names the range it carries, and those payloads live
 // outside this module.
 pub(crate) mod routing_range_stamp;
