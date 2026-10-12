@@ -221,6 +221,45 @@ pub(super) struct RecordedObjectRemoval<K: RecordedKind> {
 /// computed the component to derive the block ordinal and the page frame from it, and deriving it
 /// again here would be a second rendering of one identity -- the shape that let a claim about a
 /// hash function be relayed as a claim about a hash path.
+///
+/// # WHO READS `component`, ASKED AND ANSWERED, BECAUSE IT HAS BEEN PROPOSED FOR REMOVAL
+///
+/// `index_log.rs` states the rule: for a field that looks like a second copy of something, find WHO
+/// READS THE RECONSTRUCTION before deciding it is dead weight. This parameter was read as "the
+/// resident map's own key spelling, so removing it removes the authority". IT IS NOT THAT, and the
+/// correction matters in both directions -- the reading is wrong AND the conclusion stands, for two
+/// other reasons.
+///
+/// IT IS NOT THE RESIDENT MAP'S KEY. That is `element`, the parameter beside it, and the two are
+/// different VALUES and not two names for one: for `SetKind` the caller passes
+/// `Some(hex::encode(member))` as the component and the raw `member` bytes as the element. The map
+/// is keyed by the bytes; the component is the text the page index renders. Taking the component
+/// away would not touch the map's key at all.
+///
+/// WHAT IT IS, IS THE INPUT TO TWO READERS, both inside `upsert_bucket_index_block_inner`, which
+/// splits it into `ElementComponent` and `FiledComponent` and uses only the first of those for
+/// every kind that reaches here:
+///
+///   1. THE RECORDED OUTCOME'S ELEMENT NAME -- `WalOutcomeItem::component`. This is the only
+///      durable spelling of a hash field, a set member, a zset member or a list position that
+///      anything READS on the replay path, and
+///      `engine::tests::durable_outranks_derived::a_recorded_outcome_without_its_element_name_replays_no_hash_field_at_all`
+///      drives it both ways: with the name, 3 of 3 fields come back through a real `load_shard`;
+///      without it the load is REFUSED with `wal_replay_outcome_refused`, "component missing".
+///   2. THE TOMBSTONE SWEEP. `element.as_deref()` keys `tombstone_element_page`, which is how a
+///      re-add clears the tombstone ITS OWN element left. That one is narrow on purpose: the
+///      predicate it replaced widened to every tombstone of the object the moment the filed name
+///      went to `None`, which is the resurrection
+///      `engine::tests::write_after_fold::a_re_add_after_a_removal_does_not_bring_the_removed_member_back`
+///      holds.
+///
+/// AND NO CALLER EVER PASSES `None`. Every one of the arms that reaches here -- hash, set, zset and
+/// list, in `execute_on_shard`, `stream_batch_methods` and the two replay paths in `lifecycle` --
+/// passes `Some(..)`, so the `Option` is a shape the four container kinds share with the filer and
+/// not a case this function has. There is nothing here to omit.
+///
+/// SO IT STAYS, AND THE REASON IS DATA LOSS RATHER THAN COMPATIBILITY. Being pre-release buys a
+/// stored FORMAT change; it does not buy state that cannot be reconstructed.
 pub(super) fn install_element<K: RecordedKind>(
     shard: &mut ShardState,
     shard_id: ShardId,
