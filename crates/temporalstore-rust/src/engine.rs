@@ -4945,10 +4945,14 @@ fn ttl_ms(shard: &mut ShardState, key: &str) -> i64 {
 ///
 /// # TEST-ONLY. NO PRODUCTION PATH CALLS THIS, AND KEY-ORDERED EXPIRY IS REFUSED ON MEASUREMENT
 ///
-/// This has **zero production callers**. Every call site is a test
-/// (`engine::tests::part4`, four of them), and
-/// `the_key_ordered_expiry_window_has_no_production_callers` holds that -- so if something wires
-/// this into a live path, a guard fails rather than a reviewer noticing.
+/// This has **zero production callers**. Every call site is a test: measured by a scan over all
+/// 391 source files, **seven call sites across four tests** in `engine::tests::part4`, and no
+/// production caller anywhere. `the_key_ordered_expiry_window_has_no_production_callers` holds
+/// that -- with a positive control on the call-site count, so it cannot pass by scanning nothing
+/// -- and if something wires this into a live path a guard fails rather than a reviewer noticing.
+///
+/// The two counts are different questions and both are stated on purpose: four TESTS exercise it,
+/// and they do so from seven CALL SITES.
 ///
 /// IT IS KEPT AS A COMPARISON POINT, NOT AS A SUPPORTED SHAPE. A reader who finds a `pub(crate)`
 /// ordered walk over `expires_at_ms` has every reason to assume key-ordered expiry is available.
