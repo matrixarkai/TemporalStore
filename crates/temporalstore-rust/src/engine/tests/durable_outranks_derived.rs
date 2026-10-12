@@ -2915,3 +2915,265 @@ fn a_page_and_an_outcome_that_disagree_about_the_element_refuse_the_load() {
         "the load failed, but not as a refused replay outcome: {renamed_status}"
     );
 }
+
+/// WHAT THE ELEMENT NAME ON A TIMESTAMPED RECORD IS WORTH, AND WHY TAKING IT OFF WAS REFUSED.
+///
+/// # WHY THIS ARM EXISTS
+///
+/// `WalOutcomeItem::component` was refused for the timestamped kinds on the ground that their pages
+/// "carry no element-key frame at all" -- `ElementKeySpelling::for_kind` answers `None` for every
+/// one of them -- so the refusal named a PAGE-FORMAT change as the thing that would buy the
+/// removal. Before building one, three things have to be measured, and two of them can refuse it:
+///
+///   1. WHETHER THE PAGE ALREADY NAMES ITS ELEMENTS. `encode_feature_block` writes an eight-byte
+///      `timestamp_ms` in front of every point, and its own doc says why: "it is what picks one
+///      point out of a page holding several." If that is the element key, no format change is
+///      needed for the kinds whose component is the timestamp alone, and the frame this arm was
+///      asked to price does not have to exist.
+///   2. WHAT THE COMPONENT ACTUALLY COSTS ON DISK, which is NOT its string length. `wal_proto`'s
+///      `numeric_component` stores it as NUMBERS for all eight timestamped kinds -- a `timestamp_ms`
+///      field, plus an `entry_id` for `context_event` -- so pricing the text would be pricing a
+///      form that is never written. This encodes real records through the real framer with and
+///      without the field.
+///   3. WHAT IT WOULD COST A REPLAY TO ASK THE PAGE. A timestamped page is staged with
+///      `component: None`, and a multi-point append chunks into SEVERAL pages under one object id
+///      -- so the carried page cannot be matched to an outcome and the resolver falls back to
+///      reading the address. That is one block read per replayed record, which is recovery time,
+///      and recovery time is a product property.
+///
+/// Both counts are printed with their denominators and the per-record figures are asserted to be
+/// what they are measured at, so a later change that moves them reddens here.
+///
+/// rust-internal: measurement only, no product behaviour
+#[test]
+fn what_the_element_name_on_a_timestamped_record_is_worth() {
+    use crate::engine::container_pages::ElementKeySpelling;
+
+    const FEATURE_KEY: &str = "tsf-series";
+    const POINTS: usize = 64;
+    // Fat values, so the chunker splits the append across several pages -- which is the case that
+    // decides the read cost.
+    const VALUE_BYTES: usize = 512;
+
+    let source = tempfile::tempdir().unwrap();
+    let engine = engine_on(source.path());
+    load_on(&engine, OPERATOR_END);
+
+    // (0) THE PREMISE THE REFUSAL RESTED ON, RE-READ RATHER THAN QUOTED: no timestamped kind has a
+    // container-page spelling. That is what made the page look unable to answer.
+    for kind in [
+        "feature",
+        "context_index",
+        "context_audit",
+        "context_child",
+        "context_summary",
+        "context_compression",
+        "context_event",
+    ] {
+        assert!(
+            ElementKeySpelling::for_kind(kind).is_none(),
+            "{kind} has a container-page spelling now, so this arm is pricing a premise that has \
+             already moved"
+        );
+    }
+
+    write(
+        &engine,
+        Command::FeatureAppend {
+            key: FEATURE_KEY.to_string(),
+            points: (0..POINTS)
+                .map(|index| crate::types::FeaturePoint {
+                    timestamp_ms: 1_787_270_070_000 + index as u64 * 1_000,
+                    value: vec![b'v'; VALUE_BYTES],
+                })
+                .collect(),
+        },
+    );
+
+    let lines = engine
+        .write_ahead_log_store()
+        .scan(1, 0, u64::MAX, u64::MAX)
+        .expect("the log scans");
+    let records: Vec<crate::wal::WriteAheadLogRecord> = lines
+        .iter()
+        .map(|(sequence, line)| {
+            crate::wal::decode_wal_line(line)
+                .unwrap_or_else(|error| panic!("record {sequence} does not decode: {error}"))
+        })
+        .collect();
+
+    // (1) DOES THE PAGE ALREADY NAME ITS POINTS? Decoded through the real feature-block decoder,
+    // not by searching bytes, because present is not recoverable.
+    let mut pages = 0usize;
+    let mut decoded_pages = 0usize;
+    let mut points_per_page: Vec<usize> = Vec::new();
+    let mut recovered: std::collections::BTreeSet<u64> = std::collections::BTreeSet::new();
+    let mut pages_by_object: std::collections::BTreeMap<u64, usize> =
+        std::collections::BTreeMap::new();
+    for record in &records {
+        for page in &record.staged_blocks {
+            pages += 1;
+            *pages_by_object.entry(page.object_id).or_default() += 1;
+            if let Some(points) = crate::engine::packed_pages::decode_feature_block(&page.bytes) {
+                decoded_pages += 1;
+                points_per_page.push(points.len());
+                for point in &points {
+                    recovered.insert(point.timestamp_ms);
+                }
+            }
+        }
+    }
+    let outcomes: Vec<&crate::wal::WalOutcomeItem> = records
+        .iter()
+        .flat_map(|record| record.outcomes.iter())
+        .filter(|item| item.kind == "feature")
+        .collect();
+    let expected: std::collections::BTreeSet<u64> = (0..POINTS)
+        .map(|index| 1_787_270_070_000 + index as u64 * 1_000)
+        .collect();
+    println!(
+        "[tsf] feature append of {POINTS} points: {} records, {} outcomes, {pages} staged pages \
+         ({decoded_pages} decode as feature blocks)",
+        records.len(),
+        outcomes.len()
+    );
+    println!(
+        "[tsf] points per page: min={:?} max={:?}; {} of {POINTS} timestamps recovered FROM THE \
+         PAGES",
+        points_per_page.iter().min(),
+        points_per_page.iter().max(),
+        recovered.len()
+    );
+    assert_eq!(
+        expected, recovered,
+        "the page does not name every point that was written, so the element name is NOT \
+         recoverable from it and the refusal stands on its original ground"
+    );
+    assert_eq!(
+        pages, decoded_pages,
+        "{} of {pages} staged pages are not feature blocks, so the decode above does not cover \
+         the whole write",
+        pages - decoded_pages
+    );
+
+    // (3) THE READ COST. A carried page can only be matched to an outcome when exactly one of the
+    // record's pages belongs to that outcome's object -- so count the outcomes whose object has
+    // several pages. Each of those is a block read a replay would have to perform.
+    let ambiguous = outcomes
+        .iter()
+        .filter(|item| pages_by_object.get(&item.object_id).copied().unwrap_or(0) > 1)
+        .count();
+    println!(
+        "[tsf] of {} feature outcomes, {ambiguous} belong to an object whose record carries \
+         SEVERAL pages -- so {ambiguous} block reads per replay of this write, against a measured \
+         baseline of 0",
+        outcomes.len()
+    );
+
+    // (2) WHAT IT COSTS ON DISK, through the real framer, per kind.
+    let price = |record: &crate::wal::WriteAheadLogRecord| -> (usize, usize) {
+        let with = crate::wal::encode_wal_line_for_test(record)
+            .expect("the record frames")
+            .len();
+        let mut stripped = record.clone();
+        for item in stripped.outcomes.iter_mut() {
+            item.component = None;
+        }
+        let without = crate::wal::encode_wal_line_for_test(&stripped)
+            .expect("the stripped record frames")
+            .len();
+        (with, without)
+    };
+    let feature_record = records
+        .iter()
+        .find(|record| record.outcomes.iter().any(|item| item.kind == "feature"))
+        .expect("a feature record");
+    let (f_with, f_without) = price(feature_record);
+    let feature_outcomes_here = feature_record
+        .outcomes
+        .iter()
+        .filter(|item| item.kind == "feature")
+        .count();
+    println!(
+        "[tsf] a feature record: {f_with} B -> {f_without} B, saving {} B over {} outcome(s) in it \
+         = {:.2} B per outcome",
+        f_with - f_without,
+        feature_outcomes_here,
+        (f_with - f_without) as f64 / feature_outcomes_here.max(1) as f64
+    );
+
+    // AND THE KIND WITH AN IDENTITY, which is the one the page cannot answer for: its component
+    // packs the timeline key AND the event id, and the page carries only the timeline key.
+    let events = tempfile::tempdir().unwrap();
+    let event_engine = engine_on(events.path());
+    load_on(&event_engine, OPERATOR_END);
+    let event_records = {
+        write(
+            &event_engine,
+            Command::ContextWriteEvent {
+                tenant_hash: 7,
+                node_hash: 11,
+                event: Box::new(crate::types::ContextEvent {
+                    event_id_hash: 0xDEAD_BEEF_0000_0001,
+                    event_time_ms: 1_787_270_070_000,
+                    ingestion_time_ms: 1_787_270_070_000,
+                    kind: 9,
+                    event_type: 2,
+                    actor_hash: 0,
+                    status: 0,
+                    valid_until_ms: 0,
+                    confidence: 0.9,
+                    importance: 0.7,
+                    text: "an event payload".to_string(),
+                    source_ref: String::new(),
+                    related_node_hashes: Vec::new(),
+                    compact_attrs: Vec::new(),
+                    vector: Vec::new(),
+                }),
+                first_write_only: false,
+                cold_storage: false,
+            },
+        );
+        event_engine
+            .write_ahead_log_store()
+            .scan(1, 0, u64::MAX, u64::MAX)
+            .expect("the log scans")
+            .iter()
+            .filter_map(|(_, line)| crate::wal::decode_wal_line(line).ok())
+            .collect::<Vec<_>>()
+    };
+    let event_record = event_records
+        .iter()
+        .find(|record| record.outcomes.iter().any(|item| item.kind == "context_event"));
+    match event_record {
+        Some(record) => {
+            let (e_with, e_without) = price(record);
+            let component = record
+                .outcomes
+                .iter()
+                .find(|item| item.kind == "context_event")
+                .and_then(|item| item.component.clone())
+                .unwrap_or_default();
+            let event_pages: usize = record.staged_blocks.len();
+            println!(
+                "[tsf] a context_event record: {e_with} B -> {e_without} B, saving {} B; its \
+                 component is {} chars ({component}); it carries {event_pages} page(s)",
+                e_with - e_without,
+                component.len()
+            );
+            println!(
+                "[tsf] and the id is NOT in the frame: a feature block writes timestamp + length + \
+                 value per point, so adding the event id to it costs 8 B per point against the {} B \
+                 the component costs per record",
+                e_with - e_without
+            );
+        }
+        None => println!("[tsf] no context_event record was produced by this fixture"),
+    }
+
+    assert!(
+        f_with > f_without,
+        "stripping the component did not make a feature record smaller, so there is nothing to \
+         save and the whole trade is off"
+    );
+}

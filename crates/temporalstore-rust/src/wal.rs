@@ -474,14 +474,48 @@ pub struct WalOutcomeItem {
     /// absence-is-a-meaning case in (2) across with it. Until then this field is load-bearing for
     /// everything except the four kinds that no longer read it.
     ///
-    /// WHAT IT COSTS TO KEEP, MEASURED, so the trade is a number rather than a shrug: on the kinds
-    /// that still read it, the component is the stored key as decimal text. On the four that no
-    /// longer do, it is now dead weight on the wire --
+    /// WHAT IT COSTS TO KEEP, MEASURED, so the trade is a number rather than a shrug. On the four
+    /// kinds that no longer read it, it is dead weight on the wire --
     /// `durable_outranks_derived::what_resolving_the_element_from_the_page_costs_a_replay` prices it
     /// at 24 B of a 114 B hash record and 85 B of a 182 B set record carrying a 20-byte member,
     /// counting both this field and the carried page's own copy. That is what a later narrowing
     /// would collect, and narrowing is what is available: the field cannot go, and for four kinds
     /// it no longer has to be written.
+    ///
+    /// # AND THE ROUTE THAT WOULD HAVE BOUGHT THE REMOVAL IS PRICED AND REFUSED
+    ///
+    /// Blocker (1) above names the thing that would unblock it: give the timestamped kinds an
+    /// element-key page frame, so the page answers for them as it does for the four container
+    /// kinds. That was costed before it was built, by
+    /// `durable_outranks_derived::what_the_element_name_on_a_timestamped_record_is_worth`, and the
+    /// measurement refuses it. THREE NUMBERS, each with the denominator it is over:
+    ///
+    ///   * THE PAGE ALREADY NAMES ITS POINTS, so most of the frame does not need building.
+    ///     `packed_pages::encode_feature_block` writes an eight-byte `timestamp_ms` in front of
+    ///     every point, and its own doc says why -- "it is what picks one point out of a page
+    ///     holding several". Driven through the real decoder on a 64-point append: ONE page, 64 of
+    ///     64 timestamps recovered, 0 outcomes whose object carried several pages. For every kind
+    ///     whose component IS the stored key, there is nothing to add.
+    ///   * ONLY ONE KIND CARRIES A SECOND TERM. `packed_pages::timestamped_component` packs an
+    ///     identity beside the stored key for `context_event` alone -- `{stored:016x}{id:016x}` --
+    ///     and the page holds the timeline key but not the event id. So the frame work reduces to
+    ///     ONE kind, at about 8 B per page to put the id in the frame.
+    ///   * AND THE SAVING IS AN ORDER OF MAGNITUDE SMALLER THAN THE COMPONENT LOOKS, which is what
+    ///     settles it. `wal_proto::numeric_component` stores this field as NUMBERS for all eight
+    ///     timestamped kinds -- a `timestamp_ms`, plus an `entry_id` for `context_event` -- so the
+    ///     32-character hex component of a `context_event` is never written as 32 characters.
+    ///     Measured through the real framer: a feature record is 523 B and 418 B without the field,
+    ///     which is 105 B over the 64 outcomes IN THAT RECORD = **1.64 B per outcome**; a
+    ///     context_event record is 169 B and 146 B = 23 B.
+    ///
+    /// SO THE TRADE IS ~8 B PER PAGE AGAINST 1.64 B PER OUTCOME, and for the common case that is a
+    /// NET LOSS -- the store would get bigger to remove a field. Refused on the measurement.
+    ///
+    /// THE GENERAL LESSON, WHICH IS WORTH MORE THAN THIS DECISION: A HEX-SPELLED COMPONENT IS NOT
+    /// STORED AS HEX. Pricing a removal from a field's SPELLING rather than from its ENCODER
+    /// overstated it by about twenty times here. It is the same error as pricing the index-log row's
+    /// element name from its string width when slot 5 had already become a constant nil -- read the
+    /// encoder, not the type.
     #[serde(
         rename = "c",
         alias = "component",
