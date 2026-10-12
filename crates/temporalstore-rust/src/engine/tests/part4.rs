@@ -9838,7 +9838,7 @@ fn a_shard_rebuilt_from_outcomes_equals_one_rebuilt_from_commands() {
     let mut refused = Vec::new();
     for (sequence, items) in &outcomes {
         for item in items {
-            if !installed.apply_outcome_item(1, item) {
+            if !installed.apply_outcome_item(1, item, &[]) {
                 refused.push(format!("seq={sequence} kind={}", item.kind));
             }
         }
@@ -10637,13 +10637,33 @@ fn what_each_command_recorded_describes_everything_it_changed() {
         if !response.status.ok {
             continue;
         }
-        let outcomes = ran
+        // THE PAGES ARE KEPT ALONGSIDE THE OUTCOMES, which they were not before.
+        //
+        // A record records two things: what the write DID (its outcomes) and the PAGES it produced.
+        // This harness took the first and dropped the second, which was invisible while every
+        // outcome carried its own copy of the element name. It is not invisible now:
+        // `apply_outcome_item`'s container arms read the element off the page, so an install handed
+        // outcomes with no pages is handed strictly less than the replay loop has -- and it refused
+        // every hash outcome, which is this harness reporting its own missing half as the product
+        // recording nothing.
+        //
+        // Production is the comparison that settles which side to fix: the WAL replay loop passes
+        // `&record.staged_blocks`, and `block_in_wal::stage` is unconditional, so a record always
+        // has them. The harness now passes them too.
+        let replayed = ran
             .write_ahead_log_store()
             .scan(1, 0, u64::MAX, u64::MAX)
             .unwrap()
             .iter()
             .filter_map(|(_, line)| crate::wal::decode_wal_line(line).ok())
-            .flat_map(|record| record.outcomes)
+            .collect::<Vec<_>>();
+        let outcomes = replayed
+            .iter()
+            .flat_map(|record| record.outcomes.iter().cloned())
+            .collect::<Vec<_>>();
+        let carried = replayed
+            .iter()
+            .flat_map(|record| record.staged_blocks.iter().cloned())
             .collect::<Vec<_>>();
 
         let installed = TemporalEngine::with_local_dirs(
@@ -10661,7 +10681,7 @@ fn what_each_command_recorded_describes_everything_it_changed() {
             assert!(response.status.ok, "{label}: prelude failed: {response:?}");
         }
         for item in &outcomes {
-            if !installed.apply_outcome_item(1, item) {
+            if !installed.apply_outcome_item(1, item, &carried) {
                 incomplete.push(format!("{label}: apply refused a {} outcome", item.kind));
             }
         }

@@ -1942,46 +1942,412 @@ fn a_container_carry_does_not_clear_the_key_state_it_does_not_name() {
     );
 }
 
-/// WHO READS THE RECONSTRUCTION, ASKED OF THE WAL RECORD'S ELEMENT NAME.
+/// WHAT A STAGED HASH PAGE SAYS ABOUT ITS OWN ELEMENT, AND WHAT REPLAY COSTS TO ASK IT.
 ///
-/// # WHY THIS ARM EXISTS
+/// A MEASUREMENT ARM. Three things have to be true before the recorded outcome's element name can
+/// be resolved from the page instead of carried, and each of them is a question this prints an
+/// answer to rather than assuming:
 ///
-/// `index_log.rs` states the rule, in the order the questions have to be asked: for a stored field
-/// omitted because it is derivable, find WHO READS THE RECONSTRUCTION first; if nothing does, the
-/// field is dead weight and may go. The index-log row's element name was settled that way and came
-/// off. `wal::WalOutcomeItem::component` was then put to the same question, and this arm is the
-/// measurement -- because the candidate answer is the claim THIS MODULE'S OWN DOC makes: that "the
-/// four resident maps are durable and are the sole authority for which elements exist", with the
-/// page payload naming every element on it.
+///   1. IS THE NAME PARSEABLE, or merely PRESENT? An earlier probe searched the payload bytes for
+///      the field name as a SUBSTRING and found it in 3 of 3 pages. That is not the same claim: a
+///      substring says the information is there, not that there is a defined way to recover it.
+///      This decodes the page through `container_pages::decode_container_page` and renders the
+///      component back through `component_from_element_key`, which is the only recovery that
+///      counts.
+///   2. HOW MANY ELEMENTS DOES ONE STAGED PAGE HOLD? If one, the page names the outcome's element
+///      unambiguously. If many, the payload says which elements the PAGE holds and not which one
+///      the OUTCOME is about, and the two are different questions.
+///   3. AND DOES REPLAY ALREADY HAVE THE BYTES? If the page travels inside the record, resolving
+///      from the payload is a parse. If it does not, it is a BLOCK READ PER RECORD -- and recovery
+///      time is a product property, so that cost decides whether any of this is worth doing.
+#[test]
+fn what_a_staged_hash_page_says_about_its_own_element_and_what_asking_costs() {
+    use crate::engine::container_pages::{
+        component_from_element_key, decode_container_page, ContainerPageDecode, ElementKeySpelling,
+    };
+
+    const KEY: &str = "pay-hash";
+    const FIELDS: usize = 64;
+
+    let source = tempfile::tempdir().unwrap();
+    let engine = engine_on(source.path());
+    load_on(&engine, OPERATOR_END);
+    for index in 0..FIELDS {
+        write(
+            &engine,
+            Command::HashSet {
+                key: KEY.to_string(),
+                field: format!("field-{index:04}"),
+                value: format!("value-{index}").into_bytes(),
+            },
+        );
+    }
+
+    let lines = engine
+        .write_ahead_log_store()
+        .scan(1, 0, u64::MAX, u64::MAX)
+        .expect("the log scans");
+    let records: Vec<crate::wal::WriteAheadLogRecord> = lines
+        .iter()
+        .map(|(sequence, line)| {
+            crate::wal::decode_wal_line(line)
+                .unwrap_or_else(|error| panic!("record {sequence} does not decode: {error}"))
+        })
+        .collect();
+
+    // (3a) DOES THE PAGE TRAVEL IN THE RECORD? Counted against its denominator.
+    let outcomes: usize = records.iter().map(|record| record.outcomes.len()).sum();
+    let staged: usize = records.iter().map(|record| record.staged_blocks.len()).sum();
+    println!(
+        "[pay] {} records, {outcomes} outcomes, {staged} staged pages",
+        records.len()
+    );
+
+    // (1) AND (2): decode every staged page and ask it for its elements.
+    let mut framed = 0usize;
+    let mut not_framed = 0usize;
+    let mut corrupt = 0usize;
+    let mut items_per_page: Vec<usize> = Vec::new();
+    let mut recovered: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
+    let mut spellings: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
+    for record in &records {
+        for page in &record.staged_blocks {
+            match decode_container_page(&page.bytes) {
+                ContainerPageDecode::Framed { spelling, items, .. } => {
+                    framed += 1;
+                    spellings.insert(format!("{spelling:?}"));
+                    items_per_page.push(items.len());
+                    for item in &items {
+                        if let Some(component) = component_from_element_key(spelling, &item.key) {
+                            recovered.insert(component);
+                        }
+                    }
+                    assert_eq!(
+                        ElementKeySpelling::Utf8, spelling,
+                        "a hash page spells its key as {spelling:?}, not as the field name"
+                    );
+                }
+                ContainerPageDecode::NotFramed => not_framed += 1,
+                ContainerPageDecode::Corrupt(why) => {
+                    corrupt += 1;
+                    println!("[pay] a staged page is CORRUPT: {why}");
+                }
+            }
+        }
+    }
+    let expected: std::collections::BTreeSet<String> =
+        (0..FIELDS).map(|index| format!("field-{index:04}")).collect();
+    println!(
+        "[pay] staged pages: {framed} framed, {not_framed} not framed, {corrupt} corrupt; \
+         spellings={spellings:?}"
+    );
+    println!(
+        "[pay] items per staged page: min={:?} max={:?}; {} distinct components recovered of {} \
+         fields written",
+        items_per_page.iter().min(),
+        items_per_page.iter().max(),
+        recovered.len(),
+        expected.len()
+    );
+    assert_eq!(
+        expected, recovered,
+        "the field names recovered from the staged pages are not the ones written"
+    );
+
+    // (3b) WHAT A COLD REPLAY READS TODAY. The baseline for the whole trade: if this is already
+    // nonzero per record, resolving from the payload is free; if it is zero, resolving from the
+    // payload is a new read per record unless the carried page covers it.
+    //
+    // THE COUNTER IS PROVED TO MOVE FIRST, because a zero from an instrument that cannot rise is
+    // not a measurement -- this tree has a recorded finding that every in-engine counter reported a
+    // restore as flat.
+    let replayed = engine_on(source.path());
+    let control_before = replayed.block_store().stats().reads;
+    let started = std::time::Instant::now();
+    load_on(&replayed, OPERATOR_END);
+    let elapsed = started.elapsed();
+    let after_load = replayed.block_store().stats().reads;
+    let served = read(
+        &replayed,
+        Command::HashGetAll {
+            key: KEY.to_string(),
+        },
+    );
+    let after_read = replayed.block_store().stats().reads;
+    let fields_served = match &served {
+        crate::types::CommandResponse::HashEntries { entries } => entries.len(),
+        other => panic!("HashGetAll answered {other:?}"),
+    };
+    println!(
+        "[pay] cold replay of {} records: {} block reads, {:?} wall clock; a HashGetAll then took \
+         {} more reads and served {fields_served} field(s)",
+        records.len(),
+        after_load - control_before,
+        elapsed,
+        after_read - after_load
+    );
+    assert_eq!(
+        expected.len(),
+        fields_served,
+        "the cold replay did not serve the fields that were written, so its read count is a count \
+         of the wrong thing"
+    );
+    assert!(
+        after_read > after_load,
+        "THE READ COUNTER DOES NOT MOVE even for a read that must touch pages, so the load figure \
+         above is an instrument reading zero rather than a measurement of zero"
+    );
+    println!(
+        "[pay] BASELINE: {} block reads per replayed record",
+        (after_load - control_before) as f64 / records.len().max(1) as f64
+    );
+}
+
+/// WHAT RESOLVING THE ELEMENT FROM THE PAGE COSTS A REPLAY, AND WHAT IT SAVES A RECORD.
 ///
-/// # THE ANSWER IS THAT REPLAY READS IT, AND NOTHING ELSE SPELLS IT
+/// # WHY THIS ARM DECIDES THE CHANGE RATHER THAN DESCRIBING IT
 ///
-/// Both halves of the candidate fail, and they fail for different reasons, so both are driven:
+/// Reading the field name off the page means replay has to GET the page. If replay does not already
+/// have it, that is one block read per replayed record -- and recovery time is a product property,
+/// so the trade would be bytes on disk against seconds of recovery. This arm is the number that
+/// trade is made on, and it is the read COUNT rather than the wall clock that carries it: a count
+/// is exact, and a wall clock on this box moves with whatever else is running on it.
 ///
-///   * THE DURABLE MAP CANNOT SUPPLY IT IN THE WINDOW THAT MATTERS. The four maps are durable by
-///     being written into the INDEX SNAPSHOT. Replay runs over exactly the records that the
-///     snapshot does not cover -- the last checkpoint to the log tail -- so for those records the
-///     map is EMPTY by construction, which is the vacuity check below. A field the map already
-///     holds needs no replaying; a field only the tail records carry is the whole case.
-///   * AND THE RECORD CARRIES NO SECOND SPELLING. `TS_WAL_DATA_ONLY` and
-///     `TS_WAL_OUTCOME_ITEMS` are BOTH default ON, and the first one's own doc says what that
-///     means: "records no longer carry both", so the operation -- `Command::HashSet`, which names
-///     the field -- is no longer written at all. Counted here rather than quoted.
+/// # THE THREE NUMBERS
 ///
-/// # WHAT IS ASSERTED, AND WHY EACH SIDE IS NEEDED
+///   1. THE PRODUCTION PATH COSTS NOTHING, asserted and not merely printed. `block_in_wal::stage`
+///      is UNCONDITIONAL -- its own doc records that the flag which gated it is gone -- so every
+///      page a write produces travels inside its record and replay has already deserialized it.
+///      The baseline measured on the base before this change was 0 block reads for a cold replay;
+///      the assertion here is that it is STILL 0, which is the whole of the cost argument.
+///   2. THE FALLBACK IS PRICED ANYWAY, because it is reachable: a record carrying several pages of
+///      ONE key cannot say which page an outcome is about (`StagedBlock` is keyed by object id,
+///      which is per key and not per element), so those resolve by ADDRESS and pay a read each.
+///      Driven through `install_shared_outcomes_with_blocks` with no carried pages, which is
+///      exactly that arm.
+///   3. AND WHAT IS SAVED, PER RECORD, WITH BOTH ARMS NAMED. A hash field's component is the
+///      field name as text; a set member's is HEX, two characters a byte. So the two kinds save
+///      different amounts and quoting one as the figure would be a mean for a distribution.
+///      Measured by encoding the real record through the real framer twice, once with the name and
+///      once without.
 ///
-/// The control installs the recorded outcomes UNTOUCHED into a fresh shard and gets every field
-/// back. The treatment installs the same outcomes with the element name CLEARED and gets none. A
-/// one-sided version of this says nothing: an install that failed for any other reason -- a shard
-/// that was not loaded, an address that does not resolve -- would produce the treatment's result
-/// with no help from the field, and the control is what rules that out.
+/// rust-internal: measurement, no product behaviour
+#[test]
+fn what_resolving_the_element_from_the_page_costs_a_replay() {
+    const KEY: &str = "cost-hash";
+    const FIELDS: usize = 256;
+
+    let source = tempfile::tempdir().unwrap();
+    let engine = engine_on(source.path());
+    load_on(&engine, OPERATOR_END);
+    for index in 0..FIELDS {
+        write(
+            &engine,
+            Command::HashSet {
+                key: KEY.to_string(),
+                field: format!("field-{index:04}"),
+                value: format!("value-{index}").into_bytes(),
+            },
+        );
+    }
+    // A SET MEMBER TOO, so the saving can be priced on the kind whose component is hex rather than
+    // quoted from the kind whose component is the caller's own text.
+    let member = vec![0xA7u8; 20];
+    write(
+        &engine,
+        Command::SetAdd {
+            key: "cost-set".to_string(),
+            member: member.clone(),
+        },
+    );
+
+    let lines = engine
+        .write_ahead_log_store()
+        .scan(1, 0, u64::MAX, u64::MAX)
+        .expect("the log scans");
+    let records: Vec<crate::wal::WriteAheadLogRecord> = lines
+        .iter()
+        .map(|(sequence, line)| {
+            crate::wal::decode_wal_line(line)
+                .unwrap_or_else(|error| panic!("record {sequence} does not decode: {error}"))
+        })
+        .collect();
+    assert!(
+        records.len() > FIELDS,
+        "the log holds {} records for {} writes",
+        records.len(),
+        FIELDS + 1
+    );
+
+    // --- (1) THE PRODUCTION PATH: a real cold load, with the records carrying their pages. ---
+    let replayed = engine_on(source.path());
+    let before = replayed.block_store().stats().reads;
+    let started = std::time::Instant::now();
+    load_on(&replayed, OPERATOR_END);
+    let elapsed = started.elapsed();
+    let replay_reads = replayed.block_store().stats().reads - before;
+    let served = match read(
+        &replayed,
+        Command::HashGetAll {
+            key: KEY.to_string(),
+        },
+    ) {
+        crate::types::CommandResponse::HashEntries { entries } => entries.len(),
+        other => panic!("HashGetAll answered {other:?}"),
+    };
+    let after_read = replayed.block_store().stats().reads;
+    println!(
+        "[cost] PRODUCTION cold replay of {} records: {replay_reads} block reads, {elapsed:?}; it \
+         serves {served} of {FIELDS} fields",
+        records.len()
+    );
+    assert_eq!(
+        FIELDS, served,
+        "the cold replay served {served} of {FIELDS} fields, so its read count is a count of the \
+         wrong thing"
+    );
+    // THE INSTRUMENT IS PROVED TO MOVE, because a zero from a counter that cannot rise is not a
+    // measurement of zero. This tree has a recorded finding that every in-engine counter reported a
+    // restore as flat.
+    assert!(
+        after_read > replay_reads + before,
+        "the read counter did not move even for a HashGetAll that must touch pages, so the replay \
+         figure above is an instrument reading zero rather than a measurement"
+    );
+    assert_eq!(
+        0, replay_reads,
+        "A COLD REPLAY NOW PERFORMS {replay_reads} BLOCK READS WHERE THE BASE PERFORMED 0. That is \
+         the cost this change was not allowed to pay: resolving the element from the page is only \
+         free while the page travels inside its record, and if this is non-zero the carried-page \
+         arm has stopped firing and every replayed record is paying an I/O"
+    );
+
+    // --- (2) THE FALLBACK, PRICED. Same outcomes, no carried pages, so every one resolves by
+    //         reading the address. This is what a multi-page record costs. ---
+    let outcomes: Vec<crate::wal::WalOutcomeItem> = records
+        .iter()
+        .flat_map(|record| record.outcomes.iter().cloned())
+        .filter(|item| item.kind == "hash" && !item.deleted)
+        .collect();
+    assert_eq!(
+        FIELDS,
+        outcomes.len(),
+        "the fixture produced {} live hash outcomes for {FIELDS} writes",
+        outcomes.len()
+    );
+    let by_address = engine_on(source.path());
+    load_on(&by_address, OPERATOR_END);
+    let before_fallback = by_address.block_store().stats().reads;
+    let started = std::time::Instant::now();
+    let installed = by_address.install_shared_outcomes_with_blocks(1, &outcomes, &[]);
+    let fallback_elapsed = started.elapsed();
+    let fallback_reads = by_address.block_store().stats().reads - before_fallback;
+    println!(
+        "[cost] FALLBACK (no carried page): installed={installed}, {fallback_reads} block reads \
+         for {} outcomes, {fallback_elapsed:?}",
+        outcomes.len()
+    );
+    assert!(
+        installed,
+        "resolving by address refused, so the price above is the price of a failure"
+    );
+    assert!(
+        fallback_reads >= outcomes.len() as u64,
+        "the fallback performed {fallback_reads} reads for {} outcomes; fewer than one each means \
+         it is not reading the page it claims to be reading",
+        outcomes.len()
+    );
+    println!(
+        "[cost] so the element name costs 0 reads where the page is carried and 1 read where it is \
+         not; the production replay path carries it unconditionally"
+    );
+
+    // --- (3) WHAT IS SAVED PER RECORD, BOTH KINDS NAMED. ---
+    let price = |record: &crate::wal::WriteAheadLogRecord| -> (usize, usize) {
+        let with = crate::wal::encode_wal_line_for_test(record)
+            .expect("the record frames")
+            .len();
+        let mut stripped = record.clone();
+        for item in stripped.outcomes.iter_mut() {
+            item.component = None;
+        }
+        for page in stripped.staged_blocks.iter_mut() {
+            page.component = None;
+        }
+        let without = crate::wal::encode_wal_line_for_test(&stripped)
+            .expect("the stripped record frames")
+            .len();
+        (with, without)
+    };
+    let hash_record = records
+        .iter()
+        .find(|record| record.outcomes.iter().any(|item| item.kind == "hash"))
+        .expect("a hash record");
+    let set_record = records
+        .iter()
+        .find(|record| record.outcomes.iter().any(|item| item.kind == "set"))
+        .expect("a set record");
+    let (hash_with, hash_without) = price(hash_record);
+    let (set_with, set_without) = price(set_record);
+    println!(
+        "[cost] per record on disk: hash {hash_with} B -> {hash_without} B (saves {}), set with a \
+         20-byte member {set_with} B -> {set_without} B (saves {})",
+        hash_with - hash_without,
+        set_with - set_without
+    );
+    println!(
+        "[cost] and in memory, per outcome and per carried page: Option<String> is {} B and \
+         Option<Arc<str>> is {} B of struct, plus the heap the name itself takes -- 10 B for \
+         `field-0000` and 40 B for a 20-byte member rendered as hex",
+        std::mem::size_of::<Option<String>>(),
+        std::mem::size_of::<Option<std::sync::Arc<str>>>()
+    );
+    assert!(
+        hash_with > hash_without && set_with > set_without,
+        "stripping the element name did not make either record smaller, so there is nothing to \
+         save and the whole trade is off"
+    );
+    assert!(
+        set_with - set_without > hash_with - hash_without,
+        "a hex-rendered 20-byte member saved no more than a ten-character field name, so the two \
+         arms are not the two arms this is pricing"
+    );
+}
+
+/// THE RECORDED OUTCOME NO LONGER HAS TO CARRY THE ELEMENT NAME, BECAUSE THE PAGE DOES.
 ///
-/// SO THIS IS A REPORT OF A REFUSAL, NOT A STEP TOWARDS A REMOVAL. Removing this field is data
-/// loss rather than a format change, and being pre-release does not make unreconstructible state
-/// acceptable -- a store would load with every hash field silently gone. The arm is kept so the
-/// next lane that reaches for the field meets the measurement instead of the reasoning.
+/// # WHAT THIS ARM SAYS, AND WHAT IT SAID BEFORE
 ///
-/// rust-internal: drives the recorded-outcome install path, no product behaviour changes
+/// It was introduced asserting the OPPOSITE, and that assertion was right about the code it was
+/// written against: `apply_outcome_item`'s hash arm asked the OUTCOME for the field name, so
+/// clearing it refused the load -- `wal_replay_outcome_refused`, "component missing". The same arm
+/// recorded the fact that made this change possible: every carried page payload DOES name its
+/// elements, so the field was dead weight behind a replay path that did not ask the page.
+///
+/// THE REPLAY PATH NOW ASKS THE PAGE, so the arm keeps its fixture and inverts its claim.
+///
+/// # IT IS DRIVEN THROUGH THE REAL REPLAY LOOP, AND THAT IS NOT INCIDENTAL
+///
+/// The first version of this arm drove `install_shared_outcomes_with_blocks`, and it FAILED -- for
+/// a reason that turned out to be a defect in that path rather than in this change, which
+/// `the_shared_install_pairs_a_carried_page_to_an_outcome_by_an_id_that_cannot_discriminate`
+/// below records in full. The short form: that path pairs a carried page to an outcome by
+/// `object_id`, which is per (kind, key) and NOT per element, so for a record carrying several
+/// pages of one key it attaches the FIRST page's bytes to every outcome. While the outcome carried
+/// the field name that produced the right names over the wrong bytes; reading the name off the page
+/// turns the same defect into the wrong names. So the arm moved to `load_shard`, which is the path
+/// a restart takes and which does not localise anything.
+///
+/// # THE CONTROLS, AND WHAT EACH ONE RULES OUT
+///
+///   * ZERO RECORDS CARRY AN OPERATION, asserted. A load that restored the fields by RE-EXECUTING
+///     `Command::HashSet` would satisfy the subject while proving nothing about the page, and this
+///     tree has a recorded finding of exactly that shape.
+///   * THE UNTOUCHED LOAD IS THE POSITIVE CONTROL. A load that refused everything would satisfy
+///     the broken-frame arm below and say nothing.
+///   * AND THE FRAME IS BROKEN IN A THIRD ARM, which is what makes the page the SOURCE rather than
+///     a coincidence. If clearing the name leaves the fields coming back AND destroying the page's
+///     frame also leaves them coming back, something else is supplying them.
 #[test]
 fn a_recorded_outcome_without_its_element_name_replays_no_hash_field_at_all() {
     const KEY: &str = "wo-hash";
@@ -2003,26 +2369,6 @@ fn a_recorded_outcome_without_its_element_name_replays_no_hash_field_at_all() {
         );
     }
 
-    // THE DENOMINATOR, read before anything is taken apart: the write path really did put all
-    // three fields in the durable map.
-    {
-        let shards = engine.shards.read().expect("engine lock poisoned");
-        let shard = shards.get(&1).expect("shard is loaded");
-        let held: std::collections::BTreeSet<String> = shard
-            .hashes
-            .get(KEY)
-            .map(|held| held.keys().cloned().collect())
-            .unwrap_or_default();
-        assert_eq!(
-            expected, held,
-            "the fixture did not write the three fields it is about, so nothing below is a \
-             measurement"
-        );
-    }
-
-    // ---------------------------------------------------------------------------------------
-    // WHAT THE RECORDS ACTUALLY CARRY.
-    // ---------------------------------------------------------------------------------------
     let lines = engine
         .write_ahead_log_store()
         .scan(1, 0, u64::MAX, u64::MAX)
@@ -2034,16 +2380,9 @@ fn a_recorded_outcome_without_its_element_name_replays_no_hash_field_at_all() {
                 .unwrap_or_else(|error| panic!("record {sequence} does not decode: {error}"))
         })
         .collect();
-    assert!(
-        records.len() >= fields.len(),
-        "the log holds {} records for {} writes, so the scan is not seeing them",
-        records.len(),
-        fields.len()
-    );
 
-    // (1) THE OPERATION IS NOT A SECOND SPELLING OF THE FIELD NAME, because it is not written.
-    // `Command::HashSet` names the field, so a record carrying one would be a second durable
-    // copy and the whole question would be different. Counted, not quoted.
+    // THE CONTROL AGAINST RE-EXECUTION: there is no operation in these records to re-run, so a
+    // field that comes back came back from what the write RECORDED.
     let carrying_a_command = records.iter().filter(|record| record.command.is_some()).count();
     println!(
         "[outcome-name] {} records, {carrying_a_command} carrying an operation",
@@ -2051,179 +2390,24 @@ fn a_recorded_outcome_without_its_element_name_replays_no_hash_field_at_all() {
     );
     assert_eq!(
         0, carrying_a_command,
-        "{carrying_a_command} of {} records carry their operation. Both TS_WAL_DATA_ONLY and \
-         TS_WAL_OUTCOME_ITEMS default ON, which is what takes the command out -- if a command is \
-         back, the field name has a second durable home and this measurement is about a \
-         configuration nobody runs",
+        "{carrying_a_command} of {} records carry their operation, so a field that comes back \
+         below may have been re-derived by re-running the command rather than read off the page",
         records.len()
     );
 
-    // (2) AND EVERY RECORDED OUTCOME NAMES ITS FIELD. Asserted as the SET, not as a count: three
-    // outcomes all naming `alpha` would satisfy a count and would already be the data loss this
-    // arm is about.
-    let outcomes: Vec<crate::wal::WalOutcomeItem> = records
-        .iter()
-        .flat_map(|record| record.outcomes.iter().cloned())
-        .collect();
-    let blocks: Vec<crate::wal::StagedBlock> = records
-        .iter()
-        .flat_map(|record| record.staged_blocks.iter().cloned())
-        .collect();
-    let recorded_names: std::collections::BTreeSet<String> = outcomes
-        .iter()
-        .filter(|item| item.kind == "hash")
-        .filter_map(|item| item.component.clone())
-        .collect();
-    println!(
-        "[outcome-name] {} outcomes ({} hash), {} staged pages, names={recorded_names:?}",
-        outcomes.len(),
-        outcomes.iter().filter(|item| item.kind == "hash").count(),
-        blocks.len()
-    );
-    assert_eq!(
-        expected, recorded_names,
-        "the recorded outcomes name {recorded_names:?} and the write touched {expected:?}"
-    );
-
-    // (3) THE CANDIDATE REPLACEMENT, MEASURED: does the page payload name the element? A page the
-    // record carries is the only other thing in the record that could, and the count is printed
-    // with its denominator so a zero cannot be read as "nothing was looked at".
-    let payloads_naming_a_field = blocks
-        .iter()
-        .filter(|page| {
-            fields.iter().any(|(field, _)| {
-                page.bytes
-                    .windows(field.len())
-                    .any(|window| window == field.as_bytes())
-            })
-        })
-        .count();
-    println!(
-        "[outcome-name] of {} staged page payload(s), {payloads_naming_a_field} spell a field name",
-        blocks.len()
-    );
-    // AND THIS IS THE HALF OF THE CANDIDATE REPLACEMENT THAT IS TRUE, pinned so a later reading of
-    // this arm does not take the verdict below for "the name is nowhere else in the record". It IS
-    // there, in every carried payload. What the treatment arm then shows is that NOTHING READS IT:
-    // `apply_outcome_item`'s hash arm asks the OUTCOME for the field and refuses when it is absent,
-    // so taking the field off is not a deletion of a derivable value -- it is a rewrite of the
-    // replay path, and until that rewrite exists the field is the only spelling anything READS.
-    //
-    // Asserted against the denominator rather than as a bare count: a zero here with zero blocks
-    // would read exactly like a payload that names nothing.
-    assert!(
-        blocks.len() >= fields.len(),
-        "the records carry {} page payload(s) for {} writes, so the search below has nothing to \
-         find and its result means nothing",
-        blocks.len(),
-        fields.len()
-    );
-    assert_eq!(
-        blocks.len(),
-        payloads_naming_a_field,
-        "{payloads_naming_a_field} of {} carried payloads spell a field name. The verdict of this \
-         arm does NOT rest on this number -- a payload that stopped naming its elements would make \
-         the field even more load-bearing, not less -- but the claim \"the page payload names every \
-         element on it\" is checked here rather than assumed either way",
-        blocks.len()
-    );
-
-    // ---------------------------------------------------------------------------------------
-    // THE CONTROL: the recorded outcomes, untouched, into a shard that holds nothing.
-    // ---------------------------------------------------------------------------------------
-    let install = |strip: bool| -> (bool, std::collections::BTreeSet<String>) {
+    // THE REAL REPLAY LOOP. The records are re-appended through the append path into the SAME store
+    // -- same block store, so the addresses the outcomes name resolve exactly as they do after a
+    // restart -- and then a fresh engine over those directories is loaded.
+    let replay = |strip: bool, break_the_frame: bool| -> (bool, String, std::collections::BTreeSet<String>) {
         let into = tempfile::tempdir().unwrap();
-        let fresh = engine_on(into.path());
-        load_on(&fresh, OPERATOR_END);
-        // VACUITY, AND IT IS THE POINT RATHER THAN HYGIENE: this stands for the state replay
-        // starts from. The durable maps are written into the index snapshot, and a snapshot older
-        // than these records does not hold their fields -- so the map the candidate replacement
-        // would read is EMPTY here, exactly as it is in the window replay covers.
-        {
-            let shards = fresh.shards.read().expect("engine lock poisoned");
-            let shard = shards.get(&1).expect("shard is loaded");
-            assert!(
-                shard.hashes.get(KEY).is_none(),
-                "the fresh shard already holds this key, so the install below is not what puts \
-                 the fields there"
-            );
-        }
-        let (outcomes, blocks) = if strip {
-            (
-                outcomes
-                    .iter()
-                    .cloned()
-                    .map(|mut item| {
-                        item.component = None;
-                        item
-                    })
-                    .collect::<Vec<_>>(),
-                blocks
-                    .iter()
-                    .cloned()
-                    .map(|mut page| {
-                        page.component = None;
-                        page
-                    })
-                    .collect::<Vec<_>>(),
-            )
-        } else {
-            (outcomes.clone(), blocks.clone())
-        };
-        let installed = fresh.install_shared_outcomes_with_blocks(1, &outcomes, &blocks);
-        let shards = fresh.shards.read().expect("engine lock poisoned");
-        let shard = shards.get(&1).expect("shard is loaded");
-        let held = shard
-            .hashes
-            .get(KEY)
-            .map(|held| held.keys().cloned().collect())
-            .unwrap_or_default();
-        (installed, held)
-    };
-
-    let (control_ok, control_fields) = install(false);
-    println!("[outcome-name] CONTROL   installed={control_ok} fields={control_fields:?}");
-    assert!(
-        control_ok,
-        "installing the recorded outcomes UNTOUCHED was refused, so the treatment below would \
-         fail for a reason that has nothing to do with the element name"
-    );
-    assert_eq!(
-        expected, control_fields,
-        "the untouched outcomes restored {control_fields:?} and the write touched {expected:?}"
-    );
-
-    // ---------------------------------------------------------------------------------------
-    // THE TREATMENT: the same outcomes, with the element name taken out.
-    // ---------------------------------------------------------------------------------------
-    let (stripped_ok, stripped_fields) = install(true);
-    println!("[outcome-name] TREATMENT installed={stripped_ok} fields={stripped_fields:?}");
-    assert!(
-        !stripped_ok,
-        "the install ACCEPTED outcomes that name no element. Then it put something in the map \
-         without being told which field it was, and whatever it put there is wrong"
-    );
-    assert!(
-        stripped_fields.is_empty(),
-        "an outcome naming no element still restored {stripped_fields:?}. If that is real, the \
-         field name IS recoverable from somewhere else and this arm's conclusion has to be \
-         re-read; if it is not, the install is inventing a field name"
-    );
-
-    // ---------------------------------------------------------------------------------------
-    // AND THE SAME QUESTION PUT TO THE REAL REPLAY LOOP, because the install above is the SHARED
-    // path and `load_shard` is the one a restart takes. The records are re-appended into a fresh
-    // log with `append_replayed_record` -- so the log is a real log, framed and sequenced by the
-    // append path -- and then the shard is LOADED.
-    //
-    // WHAT THIS ADDS over the install arm: the replay loop's own answer to a refused outcome, which
-    // is not "install nothing" but `Err(wal_replay_outcome_refused)` -- it REFUSES THE LOAD rather
-    // than serving a shard missing the element, and its message already names `component missing`.
-    // So the consequence of taking this field off is a store that will not open, not one that opens
-    // short; both are blockers, and which one it is belongs in the record.
-    // ---------------------------------------------------------------------------------------
-    let replay = |strip: bool| -> (bool, String, std::collections::BTreeSet<String>) {
-        let into = tempfile::tempdir().unwrap();
+        // The pages are copied so the addresses resolve; the log is rebuilt from the records.
+        let copy = std::process::Command::new("cp")
+            .arg("-a")
+            .arg(source.path().join("pages"))
+            .arg(into.path().join("pages"))
+            .status()
+            .expect("the page directory copies");
+        assert!(copy.success(), "copying the pages failed, so the fixture has no store");
         let fresh = engine_on(into.path());
         let log = fresh.write_ahead_log_store();
         for record in &records {
@@ -2234,6 +2418,13 @@ fn a_recorded_outcome_without_its_element_name_replays_no_hash_field_at_all() {
                 }
                 for page in record.staged_blocks.iter_mut() {
                     page.component = None;
+                }
+            }
+            if break_the_frame {
+                for page in record.staged_blocks.iter_mut() {
+                    if !page.bytes.is_empty() {
+                        page.bytes[0] ^= 0xFF;
+                    }
                 }
             }
             log.append_replayed_record(record).expect("the replayed record appends");
@@ -2258,60 +2449,175 @@ fn a_recorded_outcome_without_its_element_name_replays_no_hash_field_at_all() {
         } else {
             std::collections::BTreeSet::new()
         };
-        (
-            response.status.ok,
-            format!("{:?}", response.status),
-            held,
-        )
+        (response.status.ok, format!("{:?}", response.status), held)
     };
 
-    let (loaded_ok, loaded_status, loaded_fields) = replay(false);
-    println!("[outcome-name] REPLAY CONTROL   ok={loaded_ok} fields={loaded_fields:?}");
+    // THE POSITIVE CONTROL: untouched records load and serve every field.
+    let (control_ok, control_status, control_fields) = replay(false, false);
+    println!("[outcome-name] CONTROL   ok={control_ok} fields={control_fields:?}");
     assert!(
-        loaded_ok,
-        "a log of UNTOUCHED records did not load: {loaded_status}. Then the refusal below would be \
-         about the fixture and not about the element name"
+        control_ok,
+        "a log of UNTOUCHED records did not load: {control_status}. Then nothing below is about \
+         the element name"
     );
     assert_eq!(
-        expected, loaded_fields,
-        "replaying the untouched log restored {loaded_fields:?} and the write touched {expected:?}"
+        expected, control_fields,
+        "the untouched replay restored {control_fields:?} and the write touched {expected:?}"
     );
 
-    let (stripped_load_ok, stripped_status, stripped_load_fields) = replay(true);
+    // THE SUBJECT: the element name cleared from every outcome AND every carried page.
+    let (stripped_ok, stripped_status, stripped_fields) = replay(true, false);
+    println!("[outcome-name] NO NAME   ok={stripped_ok} fields={stripped_fields:?}");
+    assert!(
+        stripped_ok,
+        "a replay whose outcomes name no element was REFUSED: {stripped_status}. The page each \
+         outcome points at names its own field, so a refusal means the replay path has gone back \
+         to asking the outcome -- which is the dead weight this change removed"
+    );
+    assert_eq!(
+        expected, stripped_fields,
+        "a replay with no element name anywhere restored {stripped_fields:?} and the write \
+         touched {expected:?}. Anything short means the page is not being read for every element"
+    );
+
+    // AND THE PAGE IS THE SOURCE: break every carried frame and the fields must STOP coming back.
+    let (broken_ok, broken_status, broken_fields) = replay(true, true);
     println!(
-        "[outcome-name] REPLAY TREATMENT ok={stripped_load_ok} fields={stripped_load_fields:?} \
-         status={stripped_status}"
+        "[outcome-name] NO FRAME  ok={broken_ok} fields={broken_fields:?} status={broken_status}"
     );
     assert!(
-        !stripped_load_ok,
-        "A SHARD WHOSE RECORDED OUTCOMES NAME NO ELEMENT LOADED ANYWAY, holding \
-         {stripped_load_fields:?}. Either the field name came back from somewhere this arm has not \
-         found -- in which case the verdict has to be re-read -- or the load served a shard with \
-         its hash fields silently gone, which is worse than refusing"
+        !broken_ok,
+        "a replay with no element name AND no readable frame still loaded, holding \
+         {broken_fields:?}. Then the field names are coming from somewhere other than the page, \
+         and the arm above is passing for the wrong reason"
     );
     assert!(
-        stripped_status.contains("wal_replay_outcome_refused"),
-        "the load failed, but not as a refused replay outcome: {stripped_status}. A refusal for an \
-         unintended reason is not a passing control"
-    );
-    assert!(
-        stripped_status.contains("component missing"),
-        "the refusal does not say the element name was what was missing: {stripped_status}. That \
-         string is what makes the failure diagnosable, and it is the one thing this arm exists to \
-         keep"
+        broken_status.contains("wal_replay_outcome_refused"),
+        "the load failed, but not as a refused replay outcome: {broken_status}"
     );
 
     println!(
-        "[outcome-name] VERDICT: the recorded outcome's element name is the ONLY durable spelling \
-         of a hash field that anything READS. With it, {} of {} fields come back through the \
-         shared install and {} through a real load; without it, {} and the load is REFUSED. The \
-         record carries no operation to re-derive it from, and the durable map is empty for exactly \
-         the records replay covers. It is a page payload that spells the name as well -- but no \
-         replay site reads the payload, so removing the field is a rewrite of the replay path and \
-         not the deletion of a derivable value",
+        "[outcome-name] VERDICT: the page is the authority. Untouched {} of {}; with the element \
+         name CLEARED everywhere {} of {}; with the page's frame destroyed the load is REFUSED",
         control_fields.len(),
         expected.len(),
-        loaded_fields.len(),
-        stripped_load_fields.len()
+        stripped_fields.len(),
+        expected.len()
+    );
+}
+
+/// A DEFECT THIS CHANGE EXPOSED AND DID NOT CAUSE: THE SHARED INSTALL PAIRS A PAGE TO AN OUTCOME BY
+/// AN ID THAT CANNOT DISCRIMINATE.
+///
+/// # WHAT IT IS
+///
+/// `install_shared_outcomes_with_blocks` localises an entry whose addresses belong to another
+/// store: for each outcome whose address does not resolve locally it finds a carried page and
+/// appends it here. The find is
+///
+/// ```text
+///     carried.iter().find(|page| page.object_id == item.object_id)
+/// ```
+///
+/// and an object id is derived from (kind, key) -- it is NOT per element. `StagedBlock::component`'s
+/// own doc says what that costs, in a measurement predating this arm: "two pages of one key sharing
+/// an id serve 1 of 2 correctly, and the page that loses is handed the FIRST page's BYTES rather
+/// than answering missing." The pairing has never used the outcome's element name, so this is not
+/// something the element name was protecting.
+///
+/// # WHY IT IS RECORDED HERE RATHER THAN FIXED HERE
+///
+/// Because the fix is a change to a different path with a different shape, and this arm is what
+/// makes it findable. While the outcome carried the field name, the defect produced the RIGHT NAMES
+/// over the WRONG BYTES -- three fields installed, each pointing at the first field's page -- which
+/// is why no existing arm caught it. Reading the name off the page makes the same defect produce
+/// the wrong NAMES, which is louder but no more wrong. Both are corruption and the pairing is the
+/// cause.
+///
+/// THE FIX IS NOT "PAIR BY THE COMPONENT", which is the obvious move and is the wrong one: it
+/// re-introduces the per-page element name as an addressing key on the very path this campaign is
+/// taking it off. The shape that works is to iterate the CARRIED PAGES rather than the outcomes --
+/// each page names its own elements and, once localised, has its own address -- so no per-page key
+/// is needed on either side. That is a separate change and it is not attempted here.
+///
+/// # WHAT THIS ARM ASSERTS
+///
+/// The defect, exactly: a record carrying two pages of ONE key localises both outcomes onto one
+/// page. Asserted as the OBSERVED count rather than as the desired one, with the desired one named
+/// in the message -- a test that asserted the fix would be red on a tree that does not have it, and
+/// a test that asserted nothing would let the defect change shape unnoticed.
+///
+/// rust-internal: records a known defect in the shared-install path, no product behaviour
+#[test]
+fn the_shared_install_pairs_a_carried_page_to_an_outcome_by_an_id_that_cannot_discriminate() {
+    const KEY: &str = "pair-hash";
+    let fields = ["one", "two"];
+
+    let source = tempfile::tempdir().unwrap();
+    let engine = engine_on(source.path());
+    load_on(&engine, OPERATOR_END);
+    for field in fields {
+        write(
+            &engine,
+            Command::HashSet {
+                key: KEY.to_string(),
+                field: field.to_string(),
+                value: format!("v-{field}").into_bytes(),
+            },
+        );
+    }
+    let lines = engine
+        .write_ahead_log_store()
+        .scan(1, 0, u64::MAX, u64::MAX)
+        .expect("the log scans");
+    let records: Vec<crate::wal::WriteAheadLogRecord> = lines
+        .iter()
+        .filter_map(|(_, line)| crate::wal::decode_wal_line(line).ok())
+        .collect();
+    let outcomes: Vec<crate::wal::WalOutcomeItem> = records
+        .iter()
+        .flat_map(|record| record.outcomes.iter().cloned())
+        .filter(|item| item.kind == "hash")
+        .collect();
+    let blocks: Vec<crate::wal::StagedBlock> = records
+        .iter()
+        .flat_map(|record| record.staged_blocks.iter().cloned())
+        .collect();
+
+    // THE PRECONDITION THAT MAKES THIS THE DEFECT'S OWN SHAPE: two pages, two outcomes, ONE object
+    // id between them. Without this the arm is about some other arrangement.
+    assert_eq!(2, outcomes.len(), "the fixture produced {} outcomes", outcomes.len());
+    assert_eq!(2, blocks.len(), "the fixture produced {} pages", blocks.len());
+    let ids: std::collections::BTreeSet<u64> = blocks.iter().map(|page| page.object_id).collect();
+    assert_eq!(
+        1,
+        ids.len(),
+        "the two pages carry {} distinct object ids, so the id DOES discriminate them here and \
+         this arm is not about the defect it names",
+        ids.len()
+    );
+
+    // A FRESH STORE, so every address is foreign and the localisation arm is the one that runs.
+    let into = tempfile::tempdir().unwrap();
+    let fresh = engine_on(into.path());
+    load_on(&fresh, OPERATOR_END);
+    let installed = fresh.install_shared_outcomes_with_blocks(1, &outcomes, &blocks);
+    let held: std::collections::BTreeSet<String> = {
+        let shards = fresh.shards.read().expect("engine lock poisoned");
+        shards
+            .get(&1)
+            .and_then(|shard| shard.hashes.get(KEY))
+            .map(|held| held.keys().cloned().collect())
+            .unwrap_or_default()
+    };
+    println!("[pairing] installed={installed} fields={held:?} for {fields:?}");
+    assert_eq!(
+        1,
+        held.len(),
+        "the shared install restored {} field(s) of 2. THIS ARM RECORDS A DEFECT: it expects ONE, \
+         because both outcomes localise onto the FIRST carried page of their object id. If this is \
+         now 2, the pairing has been fixed -- which is the intended outcome -- and this arm should \
+         be restated to assert the fix rather than relaxed to accept either",
+        held.len()
     );
 }
