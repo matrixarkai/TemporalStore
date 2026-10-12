@@ -736,6 +736,21 @@ pub struct IndexItem {
 ///   * THE CROSS-CHECK HAS SOMEWHERE TO STAND. The three derived slots are read here and compared
 ///     against the address in [`IndexItem::from`], rather than being dropped.
 #[derive(Debug, Clone, Deserialize)]
+// THE NAMED ARM REFUSES AN UNKNOWN KEY, AND IT HAS TO, because of what came off this struct.
+//
+// A derived `Deserialize` IGNORES a key it has no field for. The element-name slot is gone from
+// this struct and from the row, so without this a stored row written as a MAP by a binary that
+// still had the field would decode with its `"c"` silently thrown away -- a store that loads and
+// then cannot be dumped, with no error anywhere, which is the one outcome this file refuses
+// everywhere else. The POSITIONAL arm is refused by arity in [`IndexItemRow`]; this is the same
+// refusal for the shape an arity cannot see.
+//
+// IT IS SAFE TO BE STRICT HERE AND IT WOULD NOT BE ON THE RECORD. This row's named arm is
+// READ-ONLY LEGACY -- `IndexItem::serialize` is hand-written and only ever emits a sequence, so no
+// writer in this crate produces a map -- and the row's slots have never GROWN. [`IndexDeltaRecord`]
+// is the opposite case: its slots have grown at its tail, an older record really is short there,
+// and it must stay tolerant. So the strictness goes on the row and nowhere else.
+#[serde(deny_unknown_fields)]
 struct IndexItemWire {
     #[serde(
         rename = "k",
@@ -762,8 +777,6 @@ struct IndexItemWire {
         deserialize_with = "model_id_either_shape"
     )]
     model_id: String,
-    #[serde(rename = "c", alias = "component", default)]
-    component: Option<std::sync::Arc<str>>,
     #[serde(rename = "oi", alias = "object_id", default)]
     object_id: u64,
     #[serde(rename = "pi", alias = "page_id", default)]
@@ -778,32 +791,15 @@ struct IndexItemWire {
     deleted: bool,
 }
 
-/// How many stored rows carried an element name this binary has no field for.
-///
-/// A DETECTOR, NOT A REFUSAL, and the same shape as `DERIVED_SLOT_DISAGREEMENTS` below. Slot 5 of
-/// the positional row still exists and `IndexItemWire` still reads it, but `IndexItem` has no
-/// field to put it in, so the value is DROPPED. A silently dropped stored value is the shape this
-/// file refuses elsewhere, so it is counted where it would otherwise be invisible and a test can
-/// assert on the count.
-///
-/// Dropping it is safe, and that is established rather than assumed: nothing read
-/// `IndexItem::component` outside this file's own handle derivation and its serializer -- the
-/// compiler says so, over 39 diagnostics in 10 files of which the only readers were
-/// `strip_block_ref_key_repeat`, `restore_block_ref_key_repeat` and the positional encoder. The
-/// element identity a fold needs arrives through the record's `key_states` blobs instead, in
-/// `engine::CARRIED_CONTAINER_FIELDS`, for all four container kinds.
-static STORED_ELEMENT_NAMES_DROPPED: std::sync::atomic::AtomicUsize =
-    std::sync::atomic::AtomicUsize::new(0);
-
-/// How many stored rows have carried an element name this binary dropped, since the last reset.
-pub fn stored_element_names_dropped() -> usize {
-    STORED_ELEMENT_NAMES_DROPPED.load(std::sync::atomic::Ordering::Relaxed)
-}
-
-/// Reset the dropped-name count, so a test measures its own rows and not another test's.
-pub fn reset_stored_element_names_dropped() {
-    STORED_ELEMENT_NAMES_DROPPED.store(0, std::sync::atomic::Ordering::Relaxed);
-}
+// THE DROPPED-NAME COUNTER IS GONE BECAUSE A DROP IS NO LONGER POSSIBLE, and that is the whole
+// difference this step makes. `STORED_ELEMENT_NAMES_DROPPED` counted stored rows whose slot 5 held
+// an element name this binary had no field for: the slot was still read, the value had nowhere to
+// go, and counting it was the only way the drop was visible at all. The slot is now GONE from the
+// row -- eleven slots, not twelve -- and both decode arms REFUSE a row that carries one: the
+// positional arm by arity in [`IndexItemRow`], the named arm by `deny_unknown_fields` on
+// [`IndexItemWire`]. A refusal needs no detector, so the counter, its reader and its reset come
+// off with the thing they were watching. `DERIVED_SLOT_DISAGREEMENTS` below STAYS: its subject is
+// a row that still decodes.
 
 /// How many stored rows disagreed with their own address about a derived slot.
 ///
@@ -830,7 +826,18 @@ pub fn reset_derived_slot_disagreements() {
 /// ONE PLACE, because [`IndexItem`]'s serializer writes this many and [`IndexItemRow`] refuses a
 /// row that does not carry this many. Two spellings of one arity is how a reader comes to refuse
 /// what the writer beside it just wrote.
-const INDEX_ITEM_SLOTS: usize = 12;
+///
+/// ELEVEN, NOT TWELVE, SINCE THE ELEMENT-NAME SLOT CAME OFF. Slot 5 held the element name and
+/// then, for one step, a CONSTANT NIL -- kept so that every stored row would still decode while
+/// nothing read the value. A slot written on every row forever to say nothing is the dead weight a
+/// pre-release format is allowed to shed, so the slot is gone and the arity moved with it.
+///
+/// WHAT THAT COSTS IS STATED WHERE IT IS PAID: a stored TWELVE-slot row is now REFUSED, by this
+/// constant, in a message naming both arities. `engine::SHARD_INDEX_FORMAT_VERSION` moved to 13 in
+/// the same step so a store written by a twelve-slot binary is rebuilt rather than read -- but the
+/// stamp is NOT what refuses the row, because it guards the NAMED served index and this log has no
+/// version of its own. The arity check below is.
+const INDEX_ITEM_SLOTS: usize = 11;
 
 /// THE ARITY GATE ON THE POSITIONAL ROW: a row SHORT AT ITS TAIL is refused here.
 ///
@@ -1006,13 +1013,6 @@ impl From<IndexItemWire> for IndexItem {
                 DERIVED_SLOT_DISAGREEMENTS
                     .fetch_add(disagreed, std::sync::atomic::Ordering::Relaxed);
             }
-        }
-        // THE ELEMENT NAME IS DROPPED HERE, AND THE DROP IS COUNTED. The slot is still read --
-        // `IndexItemWire` declares it, so an older row's name still decodes -- and there is no
-        // field left to carry it into memory. Counting it is what keeps a dropped stored value
-        // from being invisible; see `STORED_ELEMENT_NAMES_DROPPED`.
-        if wire.component.is_some() {
-            STORED_ELEMENT_NAMES_DROPPED.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         }
         Self {
             kind: wire.kind,
@@ -1538,16 +1538,35 @@ impl serde::Serialize for IndexItem {
         row.serialize_element(&Handle(&self.block_ref_key))?;
         row.serialize_element(&self.object_key)?;
         row.serialize_element(&Model(&self.model_id))?;
-        // SLOT 5 STAYS, AND NOW CARRIES A CONSTANT NIL. The row is positional with no struct
-        // version of its own, and the served index's stamp cannot help because it guards the NAMED
-        // index -- so REMOVING the slot would stop every stored row decoding. Measured both ways:
-        // a stored twelve-slot row read by an eleven-field struct is refused ("wrong msgpack
-        // marker FixStr(2)" when the slot holds a name, "invalid type: unit value, expected u64"
-        // when it holds nil), and an eleven-slot row read by the twelve-field struct is refused
-        // too. Keeping the slot and writing nil is a change of VALUE, not of shape: every stored
-        // row still decodes, and a row this binary writes is 1 byte shorter than one naming an
-        // element (75 B against 78 B on the measured fixture, 76 B when the name was already nil).
-        row.serialize_element(&None::<&str>)?;
+        // SLOT 5 IS GONE, AND THAT IS A STORED-FORMAT CHANGE RATHER THAN A CHANGE OF VALUE.
+        //
+        // It held the element name, and then a constant nil for one step -- the slot kept so every
+        // stored row would still decode while nothing read what it carried. The note that stood
+        // here recorded the measurement that made keeping it the only option at the time, and that
+        // measurement still holds as a statement about compatibility: a stored twelve-slot row read
+        // by an eleven-field struct is refused ("wrong msgpack marker FixStr(2)" when the slot
+        // holds a name, "invalid type: unit value, expected u64" when it holds nil), and an
+        // eleven-slot row read by a twelve-field struct is refused too. BOTH DIRECTIONS BREAK,
+        // which is exactly why this is spent as a format change and not smuggled in as a
+        // compatible one.
+        //
+        // WHAT PAYS FOR IT: nothing is deployed, so there are no rows written by an older binary
+        // that have to keep loading, and a slot written on every row to say nothing is dead weight.
+        // What is NOT being done is the dangerous half -- no field something READS to reconstruct
+        // state comes off here. `IndexItem` had already stopped carrying this one, the fold has no
+        // field to set, and the rule above `strip_block_ref_key_repeat` settled who reads the
+        // reconstruction: nothing does.
+        //
+        // AND THE REFUSAL IS THE DELIVERABLE, NOT THE SAVING. A stored twelve-slot row is refused
+        // BY NAME in both decode arms -- by arity in `IndexItemRow`, in a message naming twelve and
+        // eleven, and by `deny_unknown_fields` for the named shape -- so it cannot be half-applied.
+        //
+        // THE SAVING IS ONE BYTE A ROW, MEASURED: the hoisted common row went 30 B to 29 B in
+        // `tests::the_hoisted_row_is_twenty_nine_bytes_and_the_kind_spelling_is_not_a_confound`,
+        // which is the baseline every row figure in this file is quoted against. One byte is what a
+        // msgpack nil costs, and the slot carried nothing else -- so the figure is also the whole
+        // of it, on every row of every kind. Not quoted from arithmetic: that arm reddened at 30
+        // against a measured 29, which is how the number was taken.
         row.serialize_element(&self.object_id)?;
         // THE THREE DERIVED SLOTS, computed here because here is where they are written.
         //
@@ -7489,50 +7508,59 @@ mod tests {
     /// `IndexItem` has no slot for an element name, so the helper could not build the row it
     /// captured. These bytes are now the only record of the shape in the tree. A golden holding
     /// YESTERDAY'S INPUT keeps its bytes; what moves is the assertions about what this binary
-    /// derives FROM them -- and arm 4 below is the one that moved.
+    /// derives FROM them.
+    ///
+    /// # ITS PURPOSE HAS INVERTED, AND THAT IS WHY IT IS KEPT RATHER THAN RETIRED
+    ///
+    /// These twelve slots are now the RETIRED shape. `INDEX_ITEM_SLOTS` is eleven, so this row is
+    /// REFUSED -- and that makes it the only fixture in the tree that can drive the refusal against
+    /// bytes a build actually stored, rather than against a row this binary wrote and then chopped.
+    /// A golden whose only purpose was old-format TOLERANCE would come off under a pre-release
+    /// format change; this one's purpose is now the opposite of tolerance, so its bytes stay and the
+    /// assertions over them invert. That inversion is the change, and it is written at each arm.
+    ///
+    /// AND IT IS STILL THE SOURCE OF THE CURRENT SHAPE'S FIXTURE. `the_golden_without_its_element_name`
+    /// below excises slot 5 from these bytes, which is EXACTLY the edit this step makes to the
+    /// format -- and it is checked against what this binary writes rather than trusted, so ten of
+    /// the eleven slots of the current-shape fixture still come off a build that stored them.
     const A_STORED_ROW_THAT_NAMES_ITS_ELEMENT: &str =
         "9c00cd215ba0ac756e67617465642f6861736801a26630000795cf0000002a00100000cd100007c00700c2c2";
 
-    /// THE STORED ROW NAMES ITS ELEMENT IN SLOT 5, AND IN SLOT 5 ALONE.
+    /// A STORED TWELVE-SLOT ROW IS REFUSED, BY NAME, AND THE ELEVEN-SLOT SHAPE LOADS.
     ///
-    /// # WHY THIS GUARD EXISTS AT ALL
+    /// # WHAT THIS ARM USED TO SAY, AND WHY ITS SUBJECT INVERTED
     ///
-    /// Nothing in this crate held the bytes of a positional row from a previous build. The three
-    /// older compatibility arms -- `an_index_item_written_with_the_old_field_names_still_loads`,
-    /// `the_old_page_id_key_still_loads_into_the_renamed_block_id_field` and
-    /// `a_delta_record_written_with_the_old_field_names_still_loads` -- all build their fixtures
-    /// with `serde_json::json!`, which is the NAMED map shape. A named row has no `"c"` key to
-    /// lose, so none of them can witness what happens to the POSITIONAL slot. And
-    /// `the_twelve_stored_slots_are_unchanged_and_the_three_derived_ones_carry_their_derivation`
-    /// encodes with THIS binary and then checks positions -- its own documentation says a round
-    /// trip cannot detect a change in what gets encoded.
+    /// It was `a_stored_row_naming_its_element_decodes_and_its_name_is_still_readable`, and it
+    /// asserted the opposite of what is asserted below: that the twelve-slot golden DECODES, that
+    /// the wire row recovers `"f0"` out of slot 5, and that the handle the reader rebuilds from it
+    /// is the page-named spelling. Every one of those was true while the row carried a slot nothing
+    /// read. The slot is gone, the row is eleven slots, and a stored twelve-slot row is now refused
+    /// -- so the arm keeps its fixture and inverts its claim. Kept as one test rather than split
+    /// into "the old one is deleted" and "a new one is added", because the thing worth reading here
+    /// is which way round the statement goes.
     ///
-    /// # THE FOUR THINGS IT PINS, AND WHICH ONE IS ALLOWED TO MOVE
+    /// # WHAT IT PINS
     ///
-    /// Asserted on the STORED BYTES rather than on a decoded struct, because what a later binary
-    /// can read off a row is exactly what a change here takes away.
-    ///
-    ///   1. TWELVE SLOTS. The row is an array of twelve. Stable: taking the element name off the
-    ///      struct while leaving the serializer writing a constant nil keeps the count.
-    ///   2. SLOT 5 IS THE NAME. The stored value at position 5 is the string `"f0"`. That is a
-    ///      fact about these bytes, so it is stable forever.
-    ///   3. SLOT 2 IS EMPTY, which is what makes slot 5 load-bearing. `strip_block_ref_key_repeat`
-    ///      cleared the composite handle because the writer had built it by the same derivation, so
-    ///      the element name is NOT also spelled into the stored handle. Slot 5 is its only home on
-    ///      a stored row.
-    ///   4. WHAT THIS BINARY DERIVES FROM IT, AND THIS ARM HAS MOVED. It asserted that
-    ///      `restore_block_ref_key_repeat` rebuilt the spelling that NAMES the element, which was
-    ///      true while `IndexItem` had a field to read the name out of. The field is gone, the
-    ///      rebuild passes `None`, and the handle it produces is the PAGE-named spelling -- the
-    ///      same one `state::block_index_written_key` already produced. Two derivations of one
-    ///      page's handle that disagreed before this change and agree after it.
-    ///
-    ///      RESTATED, NOT RE-GOLDENED: the arm still compares two spellings computed from the
-    ///      authority, and still requires them to differ, so it can still fail. What changed is
-    ///      WHICH of the two the rebuild is required to equal. Re-goldening would have meant
-    ///      pasting the new string in and losing the statement.
+    ///   1. THE BYTES, UNCHANGED. Twelve slots, slot 5 is `"f0"`, slot 2 is empty. Facts about a
+    ///      stored row, stable forever -- and 3 is what makes 2 load-bearing: the composite handle
+    ///      was stripped, so slot 5 was the element name's ONLY home on a stored row.
+    ///   2. THE REFUSAL, IN BOTH DECODE ARMS AND BY NAME. `IndexItem` and `IndexItemWire` both
+    ///      refuse, the message names BOTH arities, and it is the ARITY that is complained about
+    ///      rather than a type -- a refusal for the wrong reason is not a passing control, and
+    ///      "wrong msgpack marker" would be the decoder tripping over the shift rather than the gate
+    ///      talking.
+    ///   3. NOT HALF-APPLIED. Asserted as `is_err()` on the whole decode, which is the only way a
+    ///      twelve-slot row cannot become an item with a slot invented or dropped.
+    ///   4. THE CONTROL, WHICH IS WHAT STOPS THIS PASSING FOR THE WRONG REASON. The same stored row
+    ///      with slot 5 EXCISED decodes, and decodes as the row it is -- object key, model, address
+    ///      and tombstone flag all intact. A decoder that refused everything would satisfy 2 and 3
+    ///      and fail here.
+    ///   5. AND THE EXCISED FIXTURE IS WHAT THIS BINARY WRITES, byte for byte. That is the
+    ///      load-bearing check on the fixture itself: it says the eleven-slot row below is the
+    ///      production shape and not an arrangement of this test's own, so ten of its eleven slots
+    ///      are still bytes a build stored.
     #[test]
-    fn a_stored_row_naming_its_element_decodes_and_its_name_is_still_readable() {
+    fn a_stored_twelve_slot_row_is_refused_by_arity_and_the_eleven_slot_shape_loads() {
         let bytes =
             hex::decode(A_STORED_ROW_THAT_NAMES_ITS_ELEMENT).expect("the golden is valid hex");
         // A TRUNCATED PASTE IS THE ONE WAY A BYTE LITERAL GOES WRONG IN SILENCE.
@@ -7543,8 +7571,9 @@ mod tests {
             bytes.len()
         );
 
-        // (1) and (2): READ OFF THE BYTES, as a generic value, so the assertions name POSITIONS
-        // and no struct re-imposes the mapping under test.
+        // (1) READ OFF THE BYTES, as a generic value, so the assertions name POSITIONS and no
+        // struct re-imposes the mapping under test. These three are facts about a stored row and
+        // do not move with this change.
         let row: serde_json::Value =
             rmp_serde::from_slice(&bytes).expect("the golden decodes as a generic value");
         let slots = match &row {
@@ -7558,7 +7587,6 @@ mod tests {
             "slot 5 of the stored row is {:?}, not the element name this fixture exists to hold",
             slots[5]
         );
-        // (3) The handle slot is empty, so slot 5 is the only place the name is written.
         assert_eq!(
             Some(""),
             slots[2].as_str(),
@@ -7568,65 +7596,88 @@ mod tests {
         );
         println!("[golden] 12 slots, slot5={:?}, slot2={:?}", slots[5], slots[2]);
 
-        // (4) What the reader recovers, and what it derives from it.
-        let wire: IndexItemWire =
-            rmp_serde::from_slice(&bytes).expect("the golden decodes as a wire row");
-        assert_eq!(
-            Some("f0"),
-            wire.component.as_deref(),
-            "the wire row recovered {:?} from slot 5",
-            wire.component
+        // (2) AND (3) THE REFUSAL, ON THE PATH A LOAD TAKES. `IndexItem` rides
+        // `serde(from = "IndexItemRow")`, so the arity gate is on this decode and nowhere else.
+        let refused = rmp_serde::from_slice::<IndexItem>(&bytes);
+        match &refused {
+            Err(error) => println!("[refused] IndexItem: {error}"),
+            Ok(item) => println!("[refused] IndexItem: ACCEPTED, deleted={}", item.deleted),
+        }
+        let message = refused
+            .expect_err(
+                "a stored TWELVE-slot row decoded into an IndexItem. The row is eleven slots now, \
+                 so accepting a twelve-slot one means a slot was dropped or invented in silence -- \
+                 a store that loads and then cannot be dumped, with no error anywhere",
+            )
+            .to_string();
+        assert!(
+            message.contains("positional slots"),
+            "the row was refused, but not on its ARITY: {message}. A refusal for an unintended \
+             reason is not a passing control -- a shifted slot also fails as a type mismatch, and \
+             THAT failure would survive the arity gate being deleted"
+        );
+        assert!(
+            message.contains("12") && message.contains("11"),
+            "the refusal does not name BOTH arities: {message}. Naming only one leaves whoever \
+             reads a load failure to guess which shape the store is in"
         );
 
-        let mut item: IndexItem =
-            rmp_serde::from_slice(&bytes).expect("the golden decodes as an item");
+        // AND THE OTHER ARM, WHICH REFUSES FOR A DIFFERENT REASON AND IS ASSERTED SEPARATELY.
+        // `IndexItemWire` is deserialized by the DERIVE, so it never reaches `IndexItemRow`'s gate:
+        // what refuses it is `rmp_serde` comparing the array header against the slots the visitor
+        // consumed and rejecting the LEFTOVER. Two mechanisms, so two assertions -- folding them
+        // into one loop over a shared message check is how a test comes to assert that both arms
+        // share a gate they do not.
+        let wire = rmp_serde::from_slice::<IndexItemWire>(&bytes);
+        match &wire {
+            Err(error) => println!("[refused] IndexItemWire: {error}"),
+            Ok(_) => println!("[refused] IndexItemWire: ACCEPTED"),
+        }
+        assert!(
+            wire.is_err(),
+            "the wire row accepted twelve slots into eleven fields. rmp_serde refuses a leftover \
+             element, so this means the struct still has a field for the slot"
+        );
+
+        // (4) THE CONTROL: the same stored row, with the slot this step removes EXCISED.
+        let current = the_golden_without_its_element_name();
+        assert_eq!(
+            41,
+            current.len(),
+            "excising a two-character fixstr drops 3 bytes of 44; this is {} B",
+            current.len()
+        );
+        let item: IndexItem = rmp_serde::from_slice(&current)
+            .expect("the eleven-slot shape of the same stored row must load");
+        assert_eq!(
+            "ungated/hash", &*item.object_key,
+            "the eleven-slot row decoded as some other row, so the slots did not simply close up"
+        );
+        assert_eq!("hash", item.model_id, "the model spelling moved with the excision");
+        assert_eq!(8539, item.routing_bucket, "the routing bucket moved with the excision");
+        let address = item.entry.as_ref().expect("the eleven-slot row carries its address");
+        assert_eq!(Some(7), address.block_id(), "the address lost its block id");
+        assert!(!item.deleted, "the captured row is a live row and must stay one");
         assert!(
             item.block_ref_key.is_empty(),
-            "the decoded item carries a handle already, so the rebuild below is not what fills it"
+            "slot 2 is the stripped handle and must still arrive empty"
         );
-        item.restore_object_id_repeat(1);
-        item.restore_address_repeats();
-        item.restore_block_ref_key_repeat();
 
-        // BOTH SPELLINGS FROM THE AUTHORITY, so this states a relation between two derivations
-        // rather than goldening a string.
-        let address = item.entry.as_ref().expect("the golden carries an address");
-        let spelling = |named: Option<&str>| {
-            block_ref_key_from_parts(
-                &item.model_id,
-                &item.object_key,
-                named,
-                address.block_slab_id(),
-                address.offset(),
-                address.length(),
-                address.block_id().unwrap_or_default(),
-                address.generation().unwrap_or_default(),
-            )
-        };
-        let names_the_element = spelling(Some("f0"));
-        let names_the_page = spelling(None);
-        assert_ne!(
-            names_the_element, names_the_page,
-            "the two spellings are the same string, so the assertion below decides nothing"
-        );
-        println!("[golden] rebuilt handle:    {:?}", item.block_ref_key);
-        println!("[golden] names the element: {names_the_element:?}");
-        println!("[golden] names the page:    {names_the_page:?}");
+        // (5) AND IT IS WHAT THE WRITER EMITS. This is what makes the fixture above production
+        // shape rather than this test's own arrangement.
+        let rewritten = rmp_serde::to_vec(&item).expect("re-encode the decoded row");
         assert_eq!(
-            names_the_page, item.block_ref_key,
-            "this binary rebuilt {:?}, which is not the page-named spelling. Both derivations of a \
-             page's handle pass `None` now -- this one and `state::block_index_written_key` -- so a \
-             handle that names the element means an element name has come back to one of them",
-            item.block_ref_key
+            current,
+            rewritten,
+            "the eleven-slot fixture is not what this binary writes for the row it decodes to. \
+             Excising slot 5 from the stored bytes is supposed to BE the format change, so a \
+             difference here means the writer and this fixture disagree about the current shape"
         );
-        assert_ne!(
-            names_the_element, item.block_ref_key,
-            "the rebuild still names the element, so the two derivations have not converged"
-        );
+        println!("[current] 11 slots, {} B, byte-identical to what the writer emits", current.len());
     }
 
     #[test]
-    fn the_twelve_stored_slots_are_unchanged_and_the_three_derived_ones_carry_their_derivation() {
+    fn the_eleven_stored_slots_are_in_order_and_the_three_derived_ones_carry_their_derivation() {
         let address =
             crate::block_store::ElementEntry::from_parts(42, 1_048_576, 4096, Some(7), None);
         let item = IndexItem {
@@ -7650,15 +7701,16 @@ mod tests {
             other => panic!("the row is not an array, it is {other:?} -- the log is POSITIONAL"),
         };
         assert_eq!(
-            12,
+            11,
             slots.len(),
-            "the row has {} slots, not 12. The index log is positional and carries no version, \
+            "the row has {} slots, not 11. The index log is positional and carries no version, \
              and the format stamp cannot help because it guards the NAMED served index. A slot \
              leaving or arriving in the MIDDLE stops stored rows decoding -- by slot typing, not \
              by any length check -- and one leaving the TAIL used to be worse, because \
              `serde(default)` filled it in and the row then decoded wrongly in silence. \
-             `IndexItemRow` now refuses a row that does not carry INDEX_ITEM_SLOTS slots, so the \
-             tail is loud too; this count is still what the writer must keep emitting.",
+             `IndexItemRow` refuses a row that does not carry INDEX_ITEM_SLOTS slots, so the \
+             tail is loud too; this count is what the writer must keep emitting. ELEVEN since the \
+             element-name slot came off; a twelve here means it has come back.",
             slots.len(),
         );
 
@@ -7668,41 +7720,47 @@ mod tests {
             })
         };
 
-        // Slot 7 is the block id, and it is the ADDRESS'S block id.
+        // EVERY DERIVED SLOT MOVED DOWN ONE, WHICH IS WHAT TAKING A SLOT OUT OF THE MIDDLE
+        // MEANS. The positions below were 7, 9, 10 and 11 while the element-name slot sat at 5.
+        // Spelled out rather than left to the reader, because an off-by-one here would assert the
+        // neighbouring slot's derivation and still pass on a row where both happen to be zero.
+        //
+        // Slot 6 is the block id, and it is the ADDRESS'S block id.
         assert_eq!(
             address.block_id().unwrap_or_default(),
-            u(7),
-            "slot 7 must carry the address's block id",
+            u(6),
+            "slot 6 must carry the address's block id",
         );
-        // Slot 9 is the size, and it is the STRIP SENTINEL -- always zero, because the size is
+        // Slot 8 is the size, and it is the STRIP SENTINEL -- always zero, because the size is
         // derived from the address and so cannot differ from its length.
-        assert_eq!(0, u(9), "slot 9 must carry the strip sentinel");
-        // Slot 10 is the log-resident flag, derived from whether the address names a block.
+        assert_eq!(0, u(8), "slot 8 must carry the strip sentinel");
+        // Slot 9 is the log-resident flag, derived from whether the address names a block.
         assert_eq!(
             Some(address.block_id().is_none()),
-            slots[10].as_bool(),
-            "slot 10 must carry `block_id().is_none()`",
+            slots[9].as_bool(),
+            "slot 9 must carry `block_id().is_none()`",
         );
-        // And slot 11 is the tombstone, which is still a field.
-        assert_eq!(Some(false), slots[11].as_bool(), "slot 11 must carry `deleted`");
+        // And slot 10 is the tombstone, which is still a field.
+        assert_eq!(Some(false), slots[10].as_bool(), "slot 10 must carry `deleted`");
 
-        // SLOT 5 IS A CONSTANT NIL, AND THIS IS A TRIPWIRE RATHER THAN A PIN. The slot stays on
-        // the wire because removing it would stop every stored row decoding, and `IndexItem` has
-        // no field for it, so the encoder writes nil for every row of every kind. A value here
-        // means an element name has come back to the row; the fixture above used to put
-        // `"field-0"` in it, so this arm replaces a pin on a value with a statement that there is
-        // no value to pin.
-        assert!(
-            slots[5].is_null(),
-            "slot 5 carries {:?}, not the constant nil the encoder writes -- an element name has \
-             come back to the index-log row",
+        // SLOT 5 IS THE OBJECT ID NOW, AND THAT IS THE TRIPWIRE. It held the element name, then a
+        // constant nil, and now the slot is gone and its successor has moved into position 5. A
+        // STRING here means an element name has come back to the row; a NIL here means the
+        // constant-nil slot has come back. Asserting the type of the value that is supposed to be
+        // in the vacated position catches both, which a `slots[5].is_null()` pin could not -- that
+        // pin passed on exactly the shape this step removes.
+        assert_eq!(
+            Some(item.object_id),
+            slots[5].as_u64(),
+            "slot 5 carries {:?}, not the object id that moved into the vacated position. A \
+             string means the element name is back; a nil means the dead slot is back",
             slots[5]
         );
-        println!("[slots] 12 positional slots, with 7/9/10 carrying their derivation");
+        println!("[slots] 11 positional slots, with 6/8/9 carrying their derivation");
 
         // AND THE NAMED SHAPE IS NOT THIS ROW'S TO WRITE, which is worth saying because it
         // looks like an omission. `IndexItem`'s `Serialize` is hand-written and always calls
-        // `serialize_seq(Some(12))`, so it ignores `with_struct_map()` -- an item encoded
+        // `serialize_seq(Some(INDEX_ITEM_SLOTS))`, so it ignores `with_struct_map()` -- an item encoded
         // "as a map" still comes out a sequence. The row is therefore only ever WRITTEN
         // positionally, and the named shape exists only on the READ side, for rows an older
         // binary wrote through a derived `Serialize`.
@@ -7718,7 +7776,7 @@ mod tests {
         assert!(
             still_a_sequence.is_err(),
             "an item encoded through the map writer came out as a map. Its `Serialize` is \
-             hand-written positional, so this would mean the twelve slots are no longer written \
+             hand-written positional, so this would mean the eleven slots are no longer written \
              by position -- which is a stored-format change on a log that has no version to \
              guard it.",
         );
@@ -7824,53 +7882,50 @@ mod tests {
         );
     }
 
-    /// THE DROPPED ELEMENT NAME IS COUNTED, AND THE RESET IS WHAT MAKES THAT A MEASUREMENT.
+    /// A NAMED STORED ROW THAT NAMES ITS ELEMENT IS REFUSED, NOT SILENTLY IGNORED.
     ///
-    /// `IndexItemWire` still declares slot 5, so a row written before the field came off still
-    /// decodes and still hands its name to the conversion -- which has nowhere left to put it. The
-    /// drop is invisible except through `STORED_ELEMENT_NAMES_DROPPED`, and until this arm existed
-    /// nothing read that counter at all: `reset_stored_element_names_dropped` had NO CALLER, so no
-    /// arm could tell "counted correctly" from "never incremented". The instrumentation added to
-    /// prove the name is accounted for was itself unexercised. A repo-wide Python guard over the
-    /// Rust sources found that; the Rust suite could not, because an uncalled function is not a
-    /// failing test.
+    /// # WHAT THIS ARM USED TO BE, AND WHY THE SUBJECT INVERTED
     ///
-    /// THE RESET IS THE INSTRUMENT AND NOT A TIDY-UP. Without it this arm reads whatever the rest
-    /// of the binary happened to leave in a process-global counter, which is a reading and not a
-    /// measurement. With it, the count below is exactly the rows THIS arm converted.
+    /// `a_stored_element_name_is_counted_when_it_is_dropped_and_a_nil_slot_is_not`. The element
+    /// name was still READ off a stored row and then dropped, because `IndexItem` had no field for
+    /// it, and `STORED_ELEMENT_NAMES_DROPPED` existed so the drop was not invisible. Its three
+    /// conversions of a named row and two of a nil row counted to exactly 3, and that count was the
+    /// whole test.
     ///
-    /// THE CONTROLS ARE WHAT MAKE THE NUMBER MEAN "DROPPED NAMES", and there are two, because a
-    /// counter incremented once per DECODE would satisfy any assertion that only counts upward:
+    /// THE SLOT IS GONE NOW AND SO IS THE COUNTER. A detector for a silent drop is only worth
+    /// having while the drop is possible; what replaces it is a REFUSAL, and this arm drives the
+    /// half of that refusal an arity check cannot see.
     ///
-    ///   * A WIRE DECODE MUST NOT MOVE IT. `IndexItem` rides `serde(from = "IndexItemWire")`, so
-    ///     the count belongs to the CONVERSION; deserializing the same bytes into the wire type
-    ///     runs no conversion and must leave the counter where it was.
-    ///   * A ROW WHOSE SLOT 5 IS NIL MUST NOT MOVE IT. That is the shape the encoder writes today,
-    ///     so it is the row the counter meets most often and the one it must stay silent on.
+    /// # THE DEFECT IT CLOSES, WHICH IS A SERDE DEFAULT AND NOT A MISTAKE ANYONE MADE
     ///
-    /// The named row is converted THREE times and the nil row TWICE, so the expected count is 3.
-    /// No other rule reaches that figure: "one per conversion" gives 5, "one per decode of any
-    /// kind" gives 6, and "once per arm" gives 1.
+    /// A derived `Deserialize` IGNORES a key it has no field for. The positional arm is refused by
+    /// arity in [`IndexItemRow`] -- twelve slots against eleven, named in the message -- but a MAP
+    /// has no arity. Without `deny_unknown_fields` on [`IndexItemWire`], a stored row written as a
+    /// named map by a binary that still had the field would decode with its `"c"` thrown away and
+    /// nothing anywhere would say so: an index that loads and then cannot be dumped. So the
+    /// strictness is declared on the struct, and this is what proves it fires.
     ///
-    /// THE COUNTER IS PROCESS-GLOBAL, WHICH IS A STATED LIMIT RATHER THAN AN OVERSIGHT. An exact
-    /// assertion on a global can be perturbed by a concurrent arm, and this tree has already
-    /// measured that a mutex does not fix that. One other arm in this file converts a row carrying
-    /// a name -- `a_stored_row_naming_its_element_decodes_and_its_name_is_still_readable`, over the
-    /// 44-byte golden -- so the message below names it: a count ABOVE the expectation is that
-    /// collision and not a defect in the counter. Exactness is kept rather than traded for a
-    /// one-sided `>=`, because `>=` is satisfied by exactly the concurrent increment it would be
-    /// hiding, and the gating run is single-threaded.
+    /// # THE CONTROLS, WHICH ARE WHAT MAKE THE REFUSAL MEAN WHAT IT SAYS
+    ///
+    ///   * THE SAME MAP WITHOUT THE KEY MUST LOAD, and must load as the row it is. A struct that
+    ///     refused every map would satisfy the subject and fail here, and that is the failure mode
+    ///     a blanket `deny_unknown_fields` could actually have: the named arm is the one the
+    ///     compatibility arms in this file build their fixtures through.
+    ///   * THE REFUSAL MUST NAME THE KEY. "unknown field" alone would be satisfied by a typo in
+    ///     the fixture; the message has to say which key, or this arm cannot tell a closed door
+    ///     from a misspelled one.
+    ///   * AND THE TWO PLANTED ROWS MUST DIFFER, or the control is the subject.
     #[test]
-    fn a_stored_element_name_is_counted_when_it_is_dropped_and_a_nil_slot_is_not() {
+    fn a_named_stored_row_that_names_its_element_is_refused_rather_than_ignored() {
         // Planted as a MAP, because no writer left in this binary can build a row that names an
-        // element -- the field it would have come from is gone.
+        // element -- the field it would have come from is gone, and so is the slot.
         #[derive(serde::Serialize)]
         struct PlantedRow {
             #[serde(rename = "ok")]
             object_key: std::sync::Arc<str>,
             #[serde(rename = "mi")]
             model_id: String,
-            #[serde(rename = "c")]
+            #[serde(rename = "c", skip_serializing_if = "Option::is_none")]
             component: Option<std::sync::Arc<str>>,
         }
         let plant = |named: Option<&str>| {
@@ -7883,85 +7938,58 @@ mod tests {
                 INDEX_LOG_SHAPE_DELTA,
             )
         };
-        let named = plant(Some("f0"));
-        let nil = plant(None);
+        let names_the_element = plant(Some("f0"));
+        let names_nothing = plant(None);
         assert_ne!(
-            named, nil,
+            names_the_element, names_nothing,
             "the two planted rows are the same bytes, so the control is the subject"
         );
 
-        // VACUITY FIRST: a counter that did not start at zero makes every figure below a reading
-        // of some other arm's rows.
-        reset_stored_element_names_dropped();
+        // THE CONTROL FIRST, so a blanket refusal is ruled out before the refusal is read as a
+        // gate. Both halves: it decodes, AND it decodes as the row that was planted.
+        let tolerated: IndexItem = decode_index_payload(&names_nothing)
+            .expect("a named row carrying no element name must still load -- that tolerance is \
+                     what the aliases on IndexItemWire are for, and the compatibility arms in \
+                     this file build their fixtures through it");
         assert_eq!(
-            0,
-            stored_element_names_dropped(),
-            "the reset left {} in the counter",
-            stored_element_names_dropped()
+            "tenant/1/object/9", &*tolerated.object_key,
+            "the tolerated row decoded as something else, so this control says nothing"
         );
+        assert_eq!("feature", tolerated.model_id, "the tolerated row lost its model spelling");
+        println!("[named] a map with no element name still loads");
 
-        // CONTROL ONE: the wire decode recovers the name and must not count it. Both halves --
-        // "the name is absent from the item" is also true of a row that never carried one, so the
-        // name is shown to ARRIVE before it is shown to be dropped.
-        let wire: IndexItemWire =
-            decode_index_payload(&named).expect("the planted row decodes as a wire row");
-        assert_eq!(
-            Some("f0"),
-            wire.component.as_deref(),
-            "slot 5 did not reach the wire row, so the drop is not what loses the name"
-        );
-        assert_eq!(
-            0,
-            stored_element_names_dropped(),
-            "a WIRE decode moved the dropped-name count to {}. The count belongs to the \
-             `serde(from)` conversion, so a decode that runs no conversion must not move it",
-            stored_element_names_dropped()
-        );
-
-        // THE SUBJECT: three conversions of the named row. The other slots are asserted intact,
-        // because "it decoded" is satisfied by garbage.
-        for round in 1..=3 {
-            let item: IndexItem =
-                decode_index_payload(&named).expect("the planted row converts to an item");
-            assert_eq!(
-                "tenant/1/object/9",
-                &*item.object_key,
-                "round {round} lost the object key as well, so this is not a clean drop of one slot"
+        // THE SUBJECT, ON BOTH DECODE TYPES, because `IndexItem` rides `serde(from)` over the wire
+        // row and `deny_unknown_fields` sits on the wire row -- so the refusal has to be shown
+        // arriving at the type a load actually asks for, not only at the one that declares it.
+        for what in ["IndexItem", "IndexItemWire"] {
+            let message = match what {
+                "IndexItem" => decode_index_payload::<IndexItem>(&names_the_element)
+                    .err()
+                    .map(|error| error.to_string()),
+                _ => decode_index_payload::<IndexItemWire>(&names_the_element)
+                    .err()
+                    .map(|error| error.to_string()),
+            };
+            let Some(message) = message else {
+                panic!(
+                    "a named stored row carrying an element name decoded into {what} with the key \
+                     THROWN AWAY. A serde derive ignores an unknown key, so this is the silent \
+                     drop `deny_unknown_fields` exists to stop: the store loads and then cannot be \
+                     dumped, with no error anywhere"
+                );
+            };
+            println!("[named] {what} refused: {message}");
+            assert!(
+                message.contains("unknown field"),
+                "{what} refused the row, but not as an unknown field: {message}. A refusal for an \
+                 unintended reason is not a passing control"
             );
-            assert_eq!("feature", item.model_id, "round {round} lost the model spelling");
+            assert!(
+                message.contains("`c`"),
+                "the refusal does not name the key it refused: {message}. Without the key named, \
+                 a misspelled fixture is indistinguishable from the gate firing"
+            );
         }
-
-        // CONTROL TWO: two conversions of the nil row, which must add nothing.
-        let after_named = stored_element_names_dropped();
-        for round in 1..=2 {
-            let item: IndexItem =
-                decode_index_payload(&nil).expect("a row whose slot 5 is nil converts");
-            assert_eq!("feature", item.model_id, "the nil row did not convert in round {round}");
-        }
-        assert_eq!(
-            after_named,
-            stored_element_names_dropped(),
-            "converting a row whose slot 5 is NIL moved the count from {} to {} -- the counter is \
-             counting conversions, not dropped names",
-            after_named,
-            stored_element_names_dropped()
-        );
-
-        println!(
-            "[dropped-names] 1 wire decode + 3 named conversions + 2 nil conversions = {}",
-            stored_element_names_dropped()
-        );
-        assert_eq!(
-            3,
-            stored_element_names_dropped(),
-            "the dropped-name count is {} and not the 3 names this arm actually dropped. BELOW 3 \
-             means the conversion stopped counting a name it has no field for, which is the silent \
-             drop this counter exists to prevent. ABOVE 3, under a parallel run, is the \
-             process-global collision this arm's doc names: \
-             `a_stored_row_naming_its_element_decodes_and_its_name_is_still_readable` converts the \
-             44-byte golden, which also carries a name",
-            stored_element_names_dropped()
-        );
     }
 
     /// `budget_exhausted` is a claim about what is LEFT OVER, and the boundary is the claim.
@@ -8350,13 +8378,15 @@ flag exists to say",
             ("block handle", one(&Handle(&item.block_ref_key))),
             ("object_key", one(&item.object_key)),
             ("model", one(&Model(&item.model_id))),
-            // SLOT 5, PRICED AS THE SERIALIZER WRITES IT. It is no longer a field; the encoder
-            // puts a constant nil there, so this prices the nil rather than reading a value off
-            // the struct -- the same treatment the three derived slots below already get.
-            ("component", one(&None::<&str>)),
+            // THE ELEMENT-NAME SLOT IS NOT PRICED BECAUSE IT IS NOT WRITTEN. It stood here at
+            // position 5, priced as the constant nil the encoder put in it -- one byte on every
+            // row of every kind, which is exactly what this table is for showing. The slot is gone
+            // and the row is eleven slots, so the line comes out: a table that priced a slot the
+            // writer does not emit would not sum to the row, and the closing assertions below are
+            // what would catch that.
             ("object_id", one(&item.object_id)),
             // THE THREE DERIVED SLOTS, priced as the SERIALIZER writes them. They are no longer
-            // fields, but all twelve slots are still on the wire, so this stays a measurement of
+            // fields, but all eleven slots are still on the wire, so this stays a measurement of
             // the row rather than of the struct. `size` is the strip sentinel and so always zero.
             ("block_id", one(&slot_block_id(&item))),
             ("address", one(&slot_address(&item))),
@@ -8392,13 +8422,15 @@ flag exists to say",
             ("block handle", one(&Handle(&item.block_ref_key))),
             ("object_key", one(&item.object_key)),
             ("model", one(&Model(&item.model_id))),
-            // SLOT 5, PRICED AS THE SERIALIZER WRITES IT. It is no longer a field; the encoder
-            // puts a constant nil there, so this prices the nil rather than reading a value off
-            // the struct -- the same treatment the three derived slots below already get.
-            ("component", one(&None::<&str>)),
+            // THE ELEMENT-NAME SLOT IS NOT PRICED BECAUSE IT IS NOT WRITTEN. It stood here at
+            // position 5, priced as the constant nil the encoder put in it -- one byte on every
+            // row of every kind, which is exactly what this table is for showing. The slot is gone
+            // and the row is eleven slots, so the line comes out: a table that priced a slot the
+            // writer does not emit would not sum to the row, and the closing assertions below are
+            // what would catch that.
             ("object_id", one(&item.object_id)),
             // THE THREE DERIVED SLOTS, priced as the SERIALIZER writes them. They are no longer
-            // fields, but all twelve slots are still on the wire, so this stays a measurement of
+            // fields, but all eleven slots are still on the wire, so this stays a measurement of
             // the row rather than of the struct. `size` is the strip sentinel and so always zero.
             ("block_id", one(&slot_block_id(&item))),
             ("address", one(&slot_address(&item))),
@@ -8408,12 +8440,12 @@ flag exists to say",
         ];
         let stripped = rmp_serde::to_vec(&item).expect("encode the row").len();
 
-        // A twelve-element array is one header byte (`0x9c`, fixarray) and then the elements.
+        // An eleven-element array is one header byte (`0x9b`, fixarray) and then the elements.
         const ARRAY_HEADER: usize = 1;
         let sum_before: usize = before.iter().map(|slot| slot.1).sum();
         let sum_after: usize = after.iter().map(|slot| slot.1).sum();
 
-        println!("=== IndexItem, on the wire: 12 positional slots ===");
+        println!("=== IndexItem, on the wire: 11 positional slots ===");
         println!("  {:<16} {:>9} {:>9}", "slot", "written", "stripped");
         for (index, (name, bytes)) in before.iter().enumerate() {
             println!("  {name:<16} {bytes:>9} {:>9}", after[index].1);
@@ -8432,19 +8464,19 @@ flag exists to say",
         assert_eq!(
             ARRAY_HEADER + sum_before,
             unstripped,
-            "the twelve slot sizes sum to {} and the written row is {unstripped} B",
+            "the eleven slot sizes sum to {} and the written row is {unstripped} B",
             ARRAY_HEADER + sum_before,
         );
         assert_eq!(
             ARRAY_HEADER + sum_after,
             stripped,
-            "the twelve slot sizes sum to {} and the stripped row is {stripped} B",
+            "the eleven slot sizes sum to {} and the stripped row is {stripped} B",
             ARRAY_HEADER + sum_after,
         );
         assert_eq!(
-            12,
+            INDEX_ITEM_SLOTS,
             before.len(),
-            "the row writes twelve slots; this table prices {}",
+            "the row writes {INDEX_ITEM_SLOTS} slots; this table prices {}",
             before.len(),
         );
         assert!(
@@ -8573,9 +8605,15 @@ flag exists to say",
     /// WHAT EACH VERDICT COSTS, AND WHICH ARE SLOT-PRESERVING. The row is a positional array
     /// with no field name written anywhere, so a mechanism that changes the NUMBER of slots
     /// shortens the array and every already-written row stops decoding. That is a format break
-    /// and a stamp. A mechanism that keeps twelve slots and writes a cheaper value into one is
+    /// and a stamp. A mechanism that keeps the arity and writes a cheaper value into one slot is
     /// not: an old row carries the dear value and restores as a no-op. So the two classes are
     /// priced separately and the cheap-looking one is usually the one that breaks the format.
+    ///
+    /// AND ONE SLOT-REMOVING MECHANISM HAS NOW BEEN SPENT, which is why this doc no longer says
+    /// "twelve". The element-name slot came off -- twelve slots to eleven -- and it cost exactly
+    /// what this paragraph predicts: every already-written row stops decoding, a refusal naming
+    /// both arities, and `engine::SHARD_INDEX_FORMAT_VERSION` at 13. The verdicts below are
+    /// unchanged in kind; only the arity they are measured against moved.
     #[test]
     fn what_the_remaining_index_item_mechanisms_are_worth() {
         let shard: ShardId = 7;
@@ -8691,7 +8729,7 @@ flag exists to say",
 
         // (2) PACKING kind, in_log AND deleted INTO ONE SLOT. Priced by measuring the three
         // slots the row writes today against the one byte a bitfield would write. This is the
-        // candidate that looks cheap and is not: it takes the array from twelve slots to ten.
+        // candidate that looks cheap and is not: it takes the array from eleven slots to nine.
         //
         // THROUGH THE ADAPTER THE ROW ACTUALLY USES. `kind` is not written as a Rust enum --
         // it goes through `item_kind_as_number`, and encoding the enum directly writes its
@@ -8724,7 +8762,7 @@ flag exists to say",
         priced.push((
             "pack kind + in_log + deleted",
             three_slots - one_slot,
-            "SLOT-REMOVING: twelve slots become ten, every written row stops decoding",
+            "SLOT-REMOVING: eleven slots become nine, every written row stops decoding",
         ));
 
         // (3) HOISTING routing_bucket TO THE RECORD, the way the object key already is. The
@@ -8832,6 +8870,13 @@ flag exists to say",
     /// componentless row. The post-change measurement is that a 1-character name left the row at
     /// 30 B against a 30 B control -- a delta of ZERO, which is what reddened the first verdict.
     ///
+    /// AND THE 30 IS 29 NOW, WHICH IS A SECOND STEP AND NOT A RE-GOLDENING. The slot that held the
+    /// constant nil came off the row entirely -- `INDEX_ITEM_SLOTS` went twelve to eleven -- and a
+    /// msgpack nil is one byte, so the hoisted row is one byte shorter and nothing else about it
+    /// moved. The reason is written here because a baseline whose number changes without one is
+    /// exactly how a stale figure comes to be read as a measured one: the pin below is the thing
+    /// every row figure in this campaign is quoted against, so it has to say WHY it moved.
+    ///
     /// THE PRE-CHANGE FIGURES ARE NOT QUOTED, AND THAT IS DELIBERATE. The arm was not re-run on
     /// the base in this session, so the only numbers in hand are the BOUNDS its own assertions
     /// stated, not measurements. Writing 2, 17 and 66 here because the bounds imply them would be
@@ -8879,7 +8924,7 @@ flag exists to say",
     /// `model_id_as_number_when_it_is_known` and both are known; without this arm the element
     /// deltas below would silently carry the model slot's difference as well.
     #[test]
-    fn the_hoisted_row_is_thirty_bytes_and_the_kind_spelling_is_not_a_confound() {
+    fn the_hoisted_row_is_twenty_nine_bytes_and_the_kind_spelling_is_not_a_confound() {
         let shard: ShardId = 7;
         let object_key = "tenant/7/object/000000123".to_string();
 
@@ -8971,8 +9016,9 @@ flag exists to say",
         };
 
         // THE CONTROL: the componentless hoisted row every published figure in this campaign was
-        // measured against.
-        const CONTROL_ROW_BYTES: usize = 30;
+        // measured against. 29, NOT 30, SINCE THE ELEMENT-NAME SLOT CAME OFF -- one byte of
+        // msgpack nil, written on every row of every kind, and now not written at all.
+        const CONTROL_ROW_BYTES: usize = 29;
         let control = row_of("string");
         assert_eq!(
             CONTROL_ROW_BYTES, control,
@@ -9798,9 +9844,14 @@ flag exists to say",
     ///
     /// THAT CONST IS REUSED RATHER THAN RE-CAPTURED. It already holds 44 bytes of a positional row
     /// a previous build stored, with its capture helper beside it as provenance, and it is a
-    /// golden recording YESTERDAY'S INPUT -- the kind whose bytes must not move. Its subject is
-    /// slot 5; this one's is the arity. One fixture, two statements about it, and no second copy
-    /// of the literal to drift.
+    /// golden recording YESTERDAY'S INPUT -- the kind whose bytes must not move. One fixture, three
+    /// statements about it, and no second copy of the literal to drift.
+    ///
+    /// TWELVE, STILL, AND THAT IS NOT A STALE NUMBER. It describes the GOLDEN, which is a stored
+    /// row of the shape this step retired. The row the WRITER emits is eleven slots, and the
+    /// fixture for that shape is derived from this table by
+    /// [`the_golden_without_its_element_name`] -- so the one place twelve and eleven meet is the
+    /// excision, and it is checked against the writer rather than asserted.
     ///
     /// NOT TRUSTED, CHECKED. The test below rebuilds every prefix from these and asserts each one
     /// decodes as an array whose elements are the full row's own leading elements, so an offset
@@ -9808,43 +9859,110 @@ flag exists to say",
     /// short for the wrong reason.
     const SLOT_ENDS: [usize; 12] = [2, 5, 6, 19, 20, 23, 24, 25, 41, 42, 43, 44];
 
-    /// The leading `slots` elements of a captured twelve-slot row, as a well-formed msgpack array.
+    /// The leading `slots` elements of `row`, as a well-formed msgpack array.
     ///
     /// The fixarray header is REWRITTEN rather than left alone, which is what makes this a short
-    /// ROW and not a truncated FILE: a byte-truncated row keeps a header claiming twelve and
-    /// fails on a marker it cannot read, which was never the defect.
-    fn leading_slots_of(row: &[u8], slots: usize) -> Vec<u8> {
-        assert_eq!(0x9c, row[0], "the captured row does not start as a twelve-element fixarray");
+    /// ROW and not a truncated FILE: a byte-truncated row keeps its original header and fails on a
+    /// marker it cannot read, which was never the defect.
+    ///
+    /// `ends` is the offset table FOR THAT ROW, passed in rather than read off a constant, because
+    /// there are two shapes in play now -- the twelve-slot golden and the eleven-slot row the
+    /// writer emits -- and a helper that silently used the golden's table on the current row would
+    /// cut at the wrong bytes and still produce something that decodes.
+    fn leading_slots_of(row: &[u8], ends: &[usize], slots: usize) -> Vec<u8> {
+        assert_eq!(
+            0x90 | ends.len() as u8,
+            row[0],
+            "the row's header does not declare the {} slots its offset table describes",
+            ends.len()
+        );
         assert!((1..=15).contains(&slots), "a fixarray header can only say 0..=15");
-        let mut out = Vec::with_capacity(1 + SLOT_ENDS[slots - 1]);
+        assert!(slots <= ends.len(), "there is no slot {slots} to stop after");
+        let mut out = Vec::with_capacity(1 + ends[slots - 1]);
         out.push(0x90 | slots as u8);
-        out.extend_from_slice(&row[1..SLOT_ENDS[slots - 1]]);
+        out.extend_from_slice(&row[1..ends[slots - 1]]);
         out
     }
+
+    /// THE GOLDEN WITH ITS ELEMENT-NAME SLOT EXCISED: the shape this binary writes, from bytes a
+    /// build stored.
+    ///
+    /// # WHY DERIVE IT RATHER THAN CAPTURE A NEW ONE
+    ///
+    /// Because the excision IS the change. Slot 5 held the element name; taking it out of a stored
+    /// row produces exactly what the current writer emits for that row, so ten of the eleven slots
+    /// of this fixture are still bytes that came off a build rather than off this binary -- which
+    /// is the whole reason the golden exists. Capturing afresh from this binary would have replaced
+    /// a stored row with this binary's own output and lost that.
+    ///
+    /// AND IT IS CHECKED AGAINST THE WRITER, not assumed equal to it, by
+    /// `a_stored_twelve_slot_row_is_refused_by_arity_and_the_eleven_slot_shape_loads`: it decodes
+    /// this and re-encodes the item, and the bytes must match. A derived fixture that the writer
+    /// disagrees with is the shape that turns a format test into a test of its own arrangement.
+    fn the_golden_without_its_element_name() -> Vec<u8> {
+        let row = hex::decode(A_STORED_ROW_THAT_NAMES_ITS_ELEMENT).expect("the golden is valid hex");
+        assert_eq!(0x9c, row[0], "the golden does not start as a twelve-element fixarray");
+        assert_eq!(44, row.len(), "the golden is {} B, not 44 -- the literal has been edited", row.len());
+        let mut out = Vec::with_capacity(1 + ELEVEN_SLOT_ENDS[10]);
+        out.push(0x9b);
+        out.extend_from_slice(&row[1..SLOT_ENDS[4]]);
+        out.extend_from_slice(&row[SLOT_ENDS[5]..]);
+        out
+    }
+
+    /// `SLOT_ENDS`, for the row [`the_golden_without_its_element_name`] produces.
+    ///
+    /// DERIVED FROM THE GOLDEN'S TABLE RATHER THAN WRITTEN OUT, so there is no second literal to
+    /// drift against the first: every offset past the excised slot moves down by its width and
+    /// every offset before it does not move at all. The prefix loop in the arity test is what
+    /// proves these land on element boundaries -- the same check the golden's own table gets.
+    const ELEVEN_SLOT_ENDS: [usize; 11] = {
+        let gap = SLOT_ENDS[5] - SLOT_ENDS[4];
+        [
+            SLOT_ENDS[0],
+            SLOT_ENDS[1],
+            SLOT_ENDS[2],
+            SLOT_ENDS[3],
+            SLOT_ENDS[4],
+            SLOT_ENDS[6] - gap,
+            SLOT_ENDS[7] - gap,
+            SLOT_ENDS[8] - gap,
+            SLOT_ENDS[9] - gap,
+            SLOT_ENDS[10] - gap,
+            SLOT_ENDS[11] - gap,
+        ]
+    };
 
     /// A STORED ROW SHORT AT ITS TAIL IS REFUSED, SO A TOMBSTONE CANNOT COME BACK LIVE.
     ///
     /// # THE DEFECT
     ///
-    /// The index-log row is a POSITIONAL twelve-slot msgpack array and every slot of
+    /// The index-log row is a POSITIONAL msgpack array of `INDEX_ITEM_SLOTS` and every slot of
     /// `IndexItemWire` carries `#[serde(default)]`. serde's derived `visit_seq` fills a slot the
-    /// array never reached with `Default`, so an eleven-slot row decoded as a twelve-slot one
-    /// whose last slot said `false` -- and the last slot is `deleted`. A stored tombstone read
-    /// back as a LIVE row, which resurrects the object it had removed, with no error anywhere.
+    /// array never reached with `Default`, so a row one slot short decoded as a full one whose last
+    /// slot said `false` -- and the last slot is `deleted`. A stored tombstone read back as a LIVE
+    /// row, which resurrects the object it had removed, with no error anywhere.
     ///
     /// # WHY IT IS DRIVEN FROM CAPTURED BYTES
     ///
-    /// Because the shape under test is what a WRITER put on disk, and nothing in this crate can
-    /// be asked to write an eleven-slot row -- `IndexItem::serialize` writes
-    /// `INDEX_ITEM_SLOTS` unconditionally. Encoding a row with this binary and chopping it would
-    /// test this binary's output against itself; these bytes came off a build that stored them.
+    /// Because the shape under test is what a WRITER put on disk, and nothing in this crate can be
+    /// asked to write a short row -- `IndexItem::serialize` writes `INDEX_ITEM_SLOTS`
+    /// unconditionally. Encoding a row with this binary and chopping it would test this binary's
+    /// output against itself; these bytes came off a build that stored them.
+    ///
+    /// THE ARITY MOVED AND THE PROVENANCE DID NOT. The row is eleven slots now, and the fixture is
+    /// the captured twelve-slot golden with its element-name slot EXCISED -- the one edit this
+    /// format change makes -- so ten of its eleven slots are still stored bytes. The excision is
+    /// checked against what the writer emits in
+    /// `a_stored_twelve_slot_row_is_refused_by_arity_and_the_eleven_slot_shape_loads`, which is
+    /// what keeps "captured" from quietly becoming "arranged".
     ///
     /// # THE CLASS, NOT ONE FIELD
     ///
-    /// Four arities are driven. Eleven loses `deleted` (a tombstone goes live), ten also loses
-    /// `in_log`, nine also loses the size sentinel, and eight loses the whole ADDRESS -- an entry
-    /// that named a block reads back naming none. Every one of those defaults is a lie the row
-    /// never told.
+    /// Four arities are driven, each one slot shorter than the last. Ten loses `deleted` (a
+    /// tombstone goes live), nine also loses `in_log`, eight also loses the size sentinel, and
+    /// seven loses the whole ADDRESS -- an entry that named a block reads back naming none. Every
+    /// one of those defaults is a lie the row never told.
     ///
     /// # AND THE SIDE THAT WAS ALREADY REFUSED
     ///
@@ -9852,37 +9970,46 @@ flag exists to say",
     /// would look identical from the short side alone.
     #[test]
     fn a_stored_row_short_at_its_tail_is_refused_and_a_tombstone_stays_dead() {
-        let stored = hex::decode(A_STORED_ROW_THAT_NAMES_ITS_ELEMENT)
-            .expect("the golden is valid hex");
+        // THE CURRENT SHAPE, FROM STORED BYTES: the captured row with its element-name slot
+        // excised. The helper asserts the golden's own length and header, so an edited literal
+        // fails there.
+        let stored = the_golden_without_its_element_name();
         assert_eq!(
-            44,
+            41,
             stored.len(),
-            "the golden is {} B, not the 44 B that were captured -- the literal has been edited",
+            "the current-shape fixture is {} B; excising a two-character fixstr takes 44 to 41",
             stored.len(),
         );
 
         // POSITIVE CONTROL ON THE INSTRUMENT: the sound row still decodes, and it decodes as the
         // row it is. A refusal that also refused this would be a broken decoder, not a gate.
-        let sound: IndexItem =
-            rmp_serde::from_slice(&stored).expect("the captured twelve-slot row must still decode");
+        let sound: IndexItem = rmp_serde::from_slice(&stored)
+            .expect("the eleven-slot row must decode -- it is the shape the writer emits");
         assert_eq!(
             "ungated/hash",
             &*sound.object_key,
-            "the golden decoded as some other row",
+            "the fixture decoded as some other row",
         );
-        assert!(sound.entry.is_some(), "the golden carries an address");
+        assert!(sound.entry.is_some(), "the fixture carries an address");
         assert!(!sound.deleted, "the captured row is a live row");
 
         // THE OFFSET TABLE IS CHECKED, NOT TRUSTED. Every prefix must decode as an array whose
         // elements ARE the full row's leading elements, which is what makes "short at the tail"
-        // mean an element boundary rather than an arbitrary byte.
+        // mean an element boundary rather than an arbitrary byte. This also checks the DERIVED
+        // table: `ELEVEN_SLOT_ENDS` is `SLOT_ENDS` with the excised slot's width taken out of
+        // every offset past it, and an arithmetic slip there would land off a boundary here.
         let full = match rmp_serde::from_slice::<serde_json::Value>(&stored) {
             Ok(serde_json::Value::Array(slots)) => slots,
-            other => panic!("the golden is not an array: {other:?} -- the log is POSITIONAL"),
+            other => panic!("the fixture is not an array: {other:?} -- the log is POSITIONAL"),
         };
-        assert_eq!(12, full.len(), "the golden holds {} slots, not 12", full.len());
-        for slots in 1..=12usize {
-            let prefix = leading_slots_of(&stored, slots);
+        assert_eq!(
+            INDEX_ITEM_SLOTS,
+            full.len(),
+            "the fixture holds {} slots, not {INDEX_ITEM_SLOTS}",
+            full.len()
+        );
+        for slots in 1..=INDEX_ITEM_SLOTS {
+            let prefix = leading_slots_of(&stored, &ELEVEN_SLOT_ENDS, slots);
             let decoded = match rmp_serde::from_slice::<serde_json::Value>(&prefix) {
                 Ok(serde_json::Value::Array(values)) => values,
                 other => panic!("the {slots}-slot prefix is not a well-formed array: {other:?}"),
@@ -9890,7 +10017,7 @@ flag exists to say",
             assert_eq!(
                 full[..slots],
                 decoded[..],
-                "SLOT_ENDS[{}] does not land on an element boundary of the golden",
+                "ELEVEN_SLOT_ENDS[{}] does not land on an element boundary of the fixture",
                 slots - 1,
             );
         }
@@ -9899,36 +10026,44 @@ flag exists to say",
         // msgpack false to msgpack true -- a one-byte change at an element boundary the loop above
         // just proved, producing exactly the bytes the writer emits for a removal.
         let mut tombstone = stored.clone();
-        assert_eq!(0xc2, tombstone[43], "slot 11 of the golden is not msgpack false");
-        tombstone[43] = 0xc3;
+        let last = ELEVEN_SLOT_ENDS[ELEVEN_SLOT_ENDS.len() - 1] - 1;
+        assert_eq!(40, last, "the last slot of an eleven-slot fixture does not start at byte 40");
+        assert_eq!(0xc2, tombstone[last], "the last slot of the fixture is not msgpack false");
+        tombstone[last] = 0xc3;
         let dead: IndexItem = rmp_serde::from_slice(&tombstone)
-            .expect("the tombstone variant must be a decodable twelve-slot row");
+            .expect("the tombstone variant must be a decodable eleven-slot row");
         assert!(
             dead.deleted,
             "the flip did not land on `deleted`, so nothing below is about a tombstone",
         );
 
-        // THE DEFECT, ON THE TOMBSTONE. Eleven slots: the row never said anything about
+        // THE DEFECT, ON THE TOMBSTONE. One slot short: the row never said anything about
         // `deleted`, and before the arity was checked it read back as `false`.
-        let short = leading_slots_of(&tombstone, 11);
-        assert_eq!(43, short.len(), "dropping one slot of msgpack true drops exactly one byte");
+        let one_short = INDEX_ITEM_SLOTS - 1;
+        let short = leading_slots_of(&tombstone, &ELEVEN_SLOT_ENDS, one_short);
+        assert_eq!(40, short.len(), "dropping one slot of msgpack true drops exactly one byte");
         // It is WELL-FORMED msgpack -- so a refusal below is the arity gate talking, not a parser
         // running off the end of the buffer.
-        let eleven = match rmp_serde::from_slice::<serde_json::Value>(&short) {
+        let decoded = match rmp_serde::from_slice::<serde_json::Value>(&short) {
             Ok(serde_json::Value::Array(values)) => values,
-            other => panic!("the eleven-slot row is not well-formed msgpack: {other:?}"),
+            other => panic!("the {one_short}-slot row is not well-formed msgpack: {other:?}"),
         };
-        assert_eq!(11, eleven.len(), "the eleven-slot row holds {} slots", eleven.len());
+        assert_eq!(
+            one_short,
+            decoded.len(),
+            "the short row holds {} slots",
+            decoded.len()
+        );
 
         let refused = rmp_serde::from_slice::<IndexItem>(&short);
         match &refused {
-            Err(error) => println!("[short] 11 slots refused: {error}"),
-            Ok(item) => println!("[short] 11 slots ACCEPTED, deleted={}", item.deleted),
+            Err(error) => println!("[short] {one_short} slots refused: {error}"),
+            Ok(item) => println!("[short] {one_short} slots ACCEPTED, deleted={}", item.deleted),
         }
         assert!(
             refused.is_err(),
-            "an eleven-slot row decoded into an IndexItem whose `deleted` is {:?}; the row never \
-             said so, and a tombstone read as live resurrects the object it removed",
+            "a {one_short}-slot row decoded into an IndexItem whose `deleted` is {:?}; the row \
+             never said so, and a tombstone read as live resurrects the object it removed",
             refused.as_ref().map(|item| item.deleted).ok(),
         );
         let message = refused.unwrap_err().to_string();
@@ -9940,12 +10075,12 @@ flag exists to say",
         // THE CLASS. Each shorter arity drops one more trailing slot, and each of those defaults
         // is a value the row never carried.
         for (slots, what_would_be_lost) in [
-            (11usize, "deleted -- a tombstone reads live"),
-            (10, "in_log -- an entry reads as not log-resident"),
-            (9, "the size sentinel"),
-            (8, "the whole address -- an entry reads as naming no block"),
+            (10usize, "deleted -- a tombstone reads live"),
+            (9, "in_log -- an entry reads as not log-resident"),
+            (8, "the size sentinel"),
+            (7, "the whole address -- an entry reads as naming no block"),
         ] {
-            let candidate = leading_slots_of(&tombstone, slots);
+            let candidate = leading_slots_of(&tombstone, &ELEVEN_SLOT_ENDS, slots);
             assert!(
                 rmp_serde::from_slice::<serde_json::Value>(&candidate).is_ok(),
                 "the {slots}-slot row is not well-formed msgpack, so it tests the wrong thing",
@@ -9961,19 +10096,23 @@ flag exists to say",
             );
         }
 
-        // THE SIDE THAT WAS ALREADY REFUSED, so a change cannot trade one for the other.
+        // THE LONG SIDE, so a change cannot trade one for the other. TWELVE IS THE RETIRED
+        // SHAPE and gets its own arm -- `a_stored_twelve_slot_row_is_refused_by_arity_and_the
+        // _eleven_slot_shape_loads`, over the unexcised golden -- so what is driven here is one
+        // slot longer than that again, which nothing has ever written.
         let mut longer = vec![0x9du8];
         longer.extend_from_slice(&tombstone[1..]);
         longer.push(0xc0);
+        longer.push(0xc0);
         assert!(
             rmp_serde::from_slice::<IndexItem>(&longer).is_err(),
-            "a thirteen-slot row must still be refused -- rmp_serde refuses the leftover element",
+            "a thirteen-slot row must still be refused -- the arity gate reads the header first",
         );
-        // And a BYTE-truncated row, whose header still claims twelve, was never the defect: it
-        // fails as malformed msgpack. Asserted so the two failures are not confused for each
-        // other, here or in a later reading of this file.
+        // And a BYTE-truncated row, whose header still claims the full arity, was never the
+        // defect: it fails as malformed msgpack. Asserted so the two failures are not confused
+        // for each other, here or in a later reading of this file.
         assert!(
-            rmp_serde::from_slice::<IndexItem>(&tombstone[..43]).is_err(),
+            rmp_serde::from_slice::<IndexItem>(&tombstone[..tombstone.len() - 1]).is_err(),
             "a byte-truncated row must fail as malformed msgpack",
         );
 
@@ -9989,7 +10128,7 @@ flag exists to say",
         let tolerated: IndexItem = rmp_serde::from_slice(&packed)
             .expect("a named row with no `d` key must keep loading -- that tolerance is on purpose");
         assert!(!tolerated.deleted, "the named arm fills an absent `d` with its default, as before");
-        println!("[named] a map with four of twelve keys still loads");
+        println!("[named] a map with four of {INDEX_ITEM_SLOTS} keys still loads");
     }
 
     /// A RECORD CARRYING A SHORT ROW IS REFUSED AS AN `Encoding` ERROR, NOT AS `Corruption`.
@@ -10002,8 +10141,8 @@ flag exists to say",
     /// bytes arrived exactly as they were written. `Encoding` is defined as a malformed payload
     /// behind an envelope that already passed, which is what this is. It also cannot be torn
     /// bytes: a msgpack array states its arity before its elements, so byte loss leaves a header
-    /// claiming twelve, and `log_framing::next_frame` stops at a torn tail before the row decoder
-    /// is reached at all.
+    /// claiming the full arity, and `log_framing::next_frame` stops at a torn tail before the row
+    /// decoder is reached at all.
     ///
     /// # DRIVEN THROUGH `decode_index_payload`
     ///
@@ -10025,13 +10164,17 @@ flag exists to say",
             deleted: true,
         };
         let row = rmp_serde::to_vec(&item).expect("encode the row");
-        assert_eq!(0x9c, row[0], "the writer no longer emits a twelve-element fixarray");
+        assert_eq!(
+            0x90 | INDEX_ITEM_SLOTS as u8,
+            row[0],
+            "the writer no longer emits a {INDEX_ITEM_SLOTS}-element fixarray"
+        );
         assert_eq!(
             0xc3,
             row[row.len() - 1],
             "the last slot of a tombstone row is not msgpack true, so the drop below is not `deleted`",
         );
-        let mut short_row = vec![0x9bu8];
+        let mut short_row = vec![0x90 | (INDEX_ITEM_SLOTS - 1) as u8];
         short_row.extend_from_slice(&row[1..row.len() - 1]);
 
         let record = IndexDeltaRecord {

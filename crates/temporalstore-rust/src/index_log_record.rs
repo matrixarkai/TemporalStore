@@ -145,10 +145,17 @@
 //! > THAT IS A READER-FIRST MIGRATION LEVER REQUIRING NO STAMP. Teach the reader a new codec id,
 //! > release, then let the writer emit it -- the sequencing the numeric page handle already used,
 //! > whose own doc explains that the reverse order "would have been refused outright by msgpack
-//! > rather than degrading". For the record, read from the base: the stamp stands at 12, values 2,
-//! > 3, 5, 6, 7, 8, 9, 11, 12 and 13 appear across all history, 4 and 10 appear nowhere, 11
-//! > appears in history while no ref holds it at its tip (a revert), and 13 is live on four
-//! > branches -- so the next free value is 14, for whoever needs one for a different reason.
+//! > rather than degrading". For the record, read from the base: values 2, 3, 5, 6, 7, 8, 9, 11, 12
+//! > and 13 appear across all history, and 4 and 10 appear nowhere.
+//!
+//! > CORRECTED, AND THE CORRECTION IS THE USEFUL HALF. This paragraph said "13 is live on four
+//! > branches -- so the next free value is 14". It is not, and was read off HISTORY rather than off
+//! > the refs: re-measured by reading the constant out of every `matrixark` remote ref, NO TIP
+//! > HOLDS 13, and the highest any tip held was 12 -- on `main` and on the three branches that
+//! > note was counting. 13 is where the stamp now stands, spent on the index-log row losing its
+//! > element-name slot; 11 and 13 are both in history behind reverts, which is the same hazard the
+//! > constant's own doc records about 11. The lesson is the one stated above it: a number read out
+//! > of `git log` is a number that was true once, and the refs are the thing to read.
 
 use prost::Message;
 

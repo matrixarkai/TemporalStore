@@ -843,40 +843,65 @@ fn a_hash_page_naming_no_field_is_skipped_while_a_genuine_empty_field_name_is_ke
     // And the delta item, whose EVERY field carries `#[serde(default)]` by stated design, so the
     // emptiest legal record still decodes.
     //
-    // RESTATED ONTO WHAT CAN STILL BE ASKED, AND DELIBERATELY NOT ONTO THE COUNTER. This asserted
+    // RESTATED TWICE, AND THE SECOND RESTATEMENT INVERTS HALF OF IT. The first: this asserted
     // `bare_item.component.is_none()`, and `IndexItem` has no such field -- the claim became
-    // unwritable rather than false. The decoder still READS slot 5, and a name found there is
-    // dropped and COUNTED, by `index_log::stored_element_names_dropped`. This arm does not assert
-    // on that count: it is process-global, and a process-global counter cannot be attributed
-    // across concurrent `#[test]`s -- a mutex does not fix it, which this tree has measured once
-    // already.
+    // unwritable rather than false.
     //
-    // What IS race-free is that neither wire shape is refused, which is leg A's actual claim, and
-    // that a row carrying a name decodes to a WELL-FORMED item rather than to something plausible
-    // and wrong. Both are asserted, because "it decoded" alone would be satisfied by garbage.
+    // THE SECOND: it then asserted that a row CARRYING a name "must still decode", on the ground
+    // that the name was read, dropped and counted. That is no longer true and is no longer
+    // supposed to be. The element-name slot is off the row -- `index_log::INDEX_ITEM_SLOTS` is
+    // eleven -- and `IndexItemWire` carries `deny_unknown_fields`, so a named row spelling `"c"` is
+    // REFUSED rather than silently losing the key. That refusal is the point: a derived
+    // `Deserialize` ignores an unknown key, and an index that loads with a stored value thrown away
+    // is one that cannot be dumped afterwards, with no error anywhere. The dropped-name counter is
+    // gone with the drop it detected.
+    //
+    // SO LEG A'S CLAIM IS NARROWED TO WHAT IT ACTUALLY ESTABLISHES, and both halves are driven:
+    // an ABSENT component is a legal wire shape on both carriers (the page entry writes no key, the
+    // emptiest legal delta row decodes), and a row that names an element is refused BY ITS KEY. The
+    // "the other slots are not shifted" half survives on a row that spells them WITHOUT `"c"`,
+    // because "it decoded" alone would be satisfied by garbage.
     let bare_item: crate::index_log::IndexItem =
         serde_json::from_str("{}").expect("an all-default delta item decodes");
-    let named_item: crate::index_log::IndexItem = serde_json::from_str(
-        r#"{"c":"f0","rb":8539,"ok":"ef-nameless","mi":"hash","d":true}"#,
-    )
-    .expect("a delta row that carries an element name must still decode");
     assert!(
         !bare_item.deleted && bare_item.entry.is_none(),
         "the all-default item decoded to something other than all-defaults"
     );
+    let unnamed_item: crate::index_log::IndexItem =
+        serde_json::from_str(r#"{"rb":8539,"ok":"ef-nameless","mi":"hash","d":true}"#)
+            .expect("a delta row that names no element must decode");
     assert_eq!(
         (8539, "ef-nameless", true),
         (
-            named_item.routing_bucket,
-            named_item.object_key.as_ref(),
-            named_item.deleted
+            unnamed_item.routing_bucket,
+            unnamed_item.object_key.as_ref(),
+            unnamed_item.deleted
         ),
-        "a row carrying an element name decoded with its OTHER slots wrong, so the name is not \
-         merely being dropped -- it is shifting the row"
+        "a row that names no element decoded with its slots wrong, so the control below says \
+         nothing about the refusal"
+    );
+    // THE REFUSAL, ON THE SAME ROW PLUS THE ONE KEY. One key apart from the row just accepted, so
+    // what is being measured is the key and not the fixture.
+    let named = serde_json::from_str::<crate::index_log::IndexItem>(
+        r#"{"c":"f0","rb":8539,"ok":"ef-nameless","mi":"hash","d":true}"#,
+    );
+    let refusal = match &named {
+        Err(error) => error.to_string(),
+        Ok(item) => panic!(
+            "a delta row naming an element decoded with its `c` THROWN AWAY: {item:?}. A serde \
+             derive ignores an unknown key, which is the silent drop `deny_unknown_fields` exists \
+             to stop"
+        ),
+    };
+    assert!(
+        refusal.contains("unknown field") && refusal.contains("`c`"),
+        "the row was refused, but not as the unknown key `c`: {refusal}. A refusal for an \
+         unintended reason is not a passing control"
     );
     println!(
         "[leg A] an absent component is a legal wire shape on both carriers: page entry {} B with \
-         no component key, delta item decodes from an empty document",
+         no component key, delta item decodes from an empty document. A row that NAMES one is \
+         refused: {refusal}",
         encoded.len()
     );
 

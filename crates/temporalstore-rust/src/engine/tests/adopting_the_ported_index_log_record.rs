@@ -543,18 +543,32 @@ fn the_fold_takes_the_bucket_from_the_row_and_not_from_a_default() {
 ///
 /// The bracketing pair is what makes this an exact reading rather than a one-sided comparison: a
 /// `>=` would be satisfied by every bump, which is the side a change moves.
+///
+/// # IT WENT RED AT 12 -> 13, AND THE COSTING WAS RE-READ RATHER THAN RE-GOLDENED
+///
+/// What moved the stamp: `index_log::INDEX_ITEM_SLOTS` went twelve to eleven, the element-name slot
+/// coming off the positional row. WHAT THAT DOES TO THIS MODULE'S ESTIMATE: nothing to the
+/// comparison and one slot to its subject. The costing above is a measurement of this port's
+/// protobuf record against the LIVE positional row -- 550 bytes against 595 for eight page items --
+/// and the live row just lost a slot that encoded as one byte of msgpack nil. So the live side gets
+/// 8 bytes CHEAPER on that fixture and the port's disadvantage WIDENS; the estimate moves in the
+/// direction that makes the conclusion stronger, which is why it stands.
+///
+/// AND THE EIGHT HARVESTS THE MODULE LISTS ARE NOW NINE, for whoever re-reads the list: the
+/// element-name slot leaving is a ninth thing the live row does that a `prost` field cannot express
+/// slot-for-slot, and it is the only one of them that is a FORMAT BREAK rather than a sentinel.
 #[test]
 fn the_stamp_this_adoption_was_costed_against() {
     let current = crate::engine::SHARD_INDEX_FORMAT_VERSION;
     println!("SHARD_INDEX_FORMAT_VERSION at the base = {current}");
     assert_eq!(
-        current, 12,
-        "costed against 12; if this is red the stamp moved and the adoption's cost has to be \
+        current, 13,
+        "costed against 13; if this is red the stamp moved and the adoption's cost has to be \
          re-read rather than re-goldened"
     );
     assert!(
-        current != 11 && current != 13,
-        "bracketed, so 12 is exact and not an artefact of the comparison above"
+        current != 12 && current != 14,
+        "bracketed, so 13 is exact and not an artefact of the comparison above"
     );
 }
 
@@ -567,14 +581,18 @@ fn the_stamp_this_adoption_was_costed_against() {
 /// Driven rather than quoted: a live row is written, its msgpack array header is read, and the
 /// slot count is the only thing on the wire that says what shape it is.
 ///
-/// THE CONTROL IS THE HEADER BYTE ITSELF. A twelve-element msgpack array is `0x9c`; asserting the
+/// THE CONTROL IS THE HEADER BYTE ITSELF. An eleven-element msgpack array is `0x9b`; asserting the
 /// count without asserting that the row IS an array would pass against any encoding at all.
 ///
+/// ELEVEN, NOT TWELVE, SINCE THE ELEMENT-NAME SLOT CAME OFF THE ROW. `0x9c` is now the RETIRED
+/// shape, which is why it is the bracket below: a row this writer emits must not be the arity a
+/// stored row of the previous format carries.
+///
 /// AND THIS ARM DRIVES THE WRITER, NOT THE REFUSAL -- WHICH IS WORTH SAYING BECAUSE THE QUOTE
-/// ABOVE IS ABOUT THE READER. It proves the writer still emits twelve slots. It cannot see what a
-/// reader does with eleven, and until `index_log::IndexItemRow` existed the answer was that an
-/// eleven-slot row loaded with its missing tail slot defaulted -- a stored tombstone read back
-/// live. The refusal itself is driven by
+/// ABOVE IS ABOUT THE READER. It proves the writer emits the current arity. It cannot see what a
+/// reader does with a short row, and until `index_log::IndexItemRow` existed the answer was that
+/// one loaded with its missing tail slot defaulted -- a stored tombstone read back live. The
+/// refusal itself is driven by
 /// `index_log::tests::a_stored_row_short_at_its_tail_is_refused_and_a_tombstone_stays_dead`,
 /// off captured bytes, and by its record-level twin. A header byte read off this binary's own
 /// output is not evidence about the decoder.
@@ -593,11 +611,12 @@ fn an_index_log_row_states_its_shape_only_by_its_slot_count() {
     let bytes = rmp_serde::to_vec(&item).expect("a row encodes");
     println!("ROW = {} B, first byte 0x{:02x}", bytes.len(), bytes[0]);
     assert_eq!(
-        bytes[0], 0x9c,
+        bytes[0], 0x9b,
         "CONTROL: the row is a msgpack fixarray, and its header is what carries the slot count"
     );
     assert_ne!(
-        bytes[0], 0x9a,
-        "bracketed: a ten-slot row would be 0x9a, so twelve is exact"
+        bytes[0], 0x9c,
+        "bracketed: a twelve-slot row would be 0x9c, which is the RETIRED shape -- so eleven is \
+         exact and the writer has not gone back to emitting the element-name slot"
     );
 }

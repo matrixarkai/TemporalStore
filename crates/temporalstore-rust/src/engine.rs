@@ -2577,9 +2577,34 @@ pub(crate) fn eager_cache_warm_on_load() -> bool {
 /// ONE HAZARD WORTH RECORDING ABOUT THE NUMBERS THEMSELVES. On this branch the constant went 9 to
 /// 11, back to 9 when the collapse was refused for hash and zset again, then to 11, then to 12. So
 /// STAMP 11 NAMES TWO DIFFERENT ON-DISK SHAPES in this branch's history. Nothing reads an 11, because
-/// the floor is 12 and the comparison is `<` -- but anything that ever starts treating a stamp below
+/// the floor is 13 and the comparison is `<` -- but anything that ever starts treating a stamp below
 /// the floor as meaningful has to know that one of them is ambiguous.
-pub(super) const SHARD_INDEX_FORMAT_VERSION: u32 = 12;
+///
+/// # 13, AND WHAT IT IS AND IS NOT BUYING
+///
+/// THIRTEEN IS SPENT ON THE INDEX-LOG ROW LOSING A SLOT. `index_log::INDEX_ITEM_SLOTS` went twelve
+/// to eleven: slot 5 held the element name, then a constant nil for one step, and now nothing. A
+/// stored twelve-slot row is REFUSED by that file's arity gate, naming both arities, and a named row
+/// carrying the key is refused by `deny_unknown_fields` -- so a store written by a twelve-slot
+/// binary cannot be half-read.
+///
+/// AND THE NUMBER IS NOT WHAT REFUSES THE ROW. That has to be said here, because this is where
+/// someone will look for the mechanism and it is not here. This guard is one-sided -- `if
+/// shard.index_format_version < SHARD_INDEX_FORMAT_VERSION` -- and it guards the NAMED served
+/// index, not the positional log. What it buys is that a store written before the slot came off is
+/// DISCARDED and rebuilt rather than read, so the refusal in `index_log` is a tripwire on a path
+/// nothing should reach, rather than the thing a load depends on. `index_log_record`'s module doc
+/// makes the general version of this point -- that a row-shape change's real lever is the container
+/// codec byte and not this stamp -- and it is right; the number is spent anyway, because discarding
+/// the stale index is worth having and costs one WAL replay on a store nothing is serving.
+///
+/// THIRTEEN IS FREE, MEASURED RATHER THAN ASSUMED. `index_log_record`'s doc records that "13 is live
+/// on four branches -- so the next free value is 14". That reading has EXPIRED: over every
+/// `matrixark` remote ref, no tip holds 13, the maximum any tip holds is this constant's own 12, and
+/// the four branches at 12 are the ones that note was counting. Checked by reading the constant out
+/// of every remote ref, not by grepping history -- history still contains a 13 that a revert took
+/// back, exactly as it still contains the ambiguous 11.
+pub(super) const SHARD_INDEX_FORMAT_VERSION: u32 = 13;
 
 /// Serialize a shard index, stamping the current format version.
 ///
