@@ -1507,3 +1507,450 @@ fn what_a_dump_then_release_recovers_on_the_shipped_routing_range() {
          node routable and only empties its block list"
     );
 }
+
+// =================================================================================================
+// WHAT `bucket_map` IS MADE OF, TERM BY TERM, AND WHICH DENOMINATOR EACH TERM DIVIDES BY
+// =================================================================================================
+
+/// Both allocator columns for one deep copy, because this decomposition is the one place the two
+/// genuinely disagree.
+///
+/// `alloc_bytes` is what the structure ASKED the allocator for. `chunk_bytes` is what the allocator
+/// SET ASIDE -- header word and rounding included, read back from glibc rather than modelled. A
+/// term made of SMALL BOXES is under-charged in the request column by a third: a `Box<BlockIndex>`
+/// asks for 24 bytes and is served a 32-byte chunk. Since the single-block arm is exactly such a
+/// box, and since the whole question here is which term is big, reporting one column would flatter
+/// precisely the term under suspicion. Every row below is printed in both.
+#[cfg(feature = "alloc-probe")]
+fn deep_heap_columns<T: Clone>(value: &T) -> (u64, u64) {
+    let probe = Probe::start();
+    let copy = value.clone();
+    std::hint::black_box(&copy);
+    let counts = probe.stop();
+    drop(copy);
+    (counts.alloc_bytes, counts.chunk_bytes)
+}
+
+/// One named term of the `bucket_map` footprint, beside THE COUNT OF LIVE THINGS IT HOLDS.
+///
+/// `unit` is carried as text and printed, rather than left to the reader, because this campaign has
+/// published three non-comparable per-key numbers already. A term divided by the wrong denominator
+/// is not an approximation, it is a different measurement: the B-tree container divides by BUCKETS
+/// and the block list divides by PAGES, and on one of the two routing ranges measured below those
+/// are the same number -- which is exactly how a per-bucket cost gets quoted as a per-page cost.
+#[cfg(feature = "alloc-probe")]
+struct BucketMapTerm {
+    name: &'static str,
+    req: u64,
+    chunk: u64,
+    count: usize,
+    unit: &'static str,
+}
+
+/// `bucket_map`, decomposed. Totals, terms, and every denominator the terms divide by.
+#[cfg(feature = "alloc-probe")]
+struct BucketMapDecomposition {
+    buckets: usize,
+    pages: usize,
+    objects: usize,
+    slots: usize,
+    multi_object_buckets: usize,
+    tombstone_buckets: usize,
+    tombstone_rows: usize,
+    single_page_buckets: usize,
+    multi_page_buckets: usize,
+    pages_in_list_arm: usize,
+    /// Slots the page lists have RESERVED, which a clone cannot see.
+    ///
+    /// A `Vec` clones to its LENGTH, so every figure the clone probe reports omits spare capacity
+    /// outright. That omission is not neutral here: the production resident-byte model charges the
+    /// page list at `capacity * size_of::<(u64, BlockIndex)>()`, so the number an eviction gate
+    /// reads and the number this probe reports are measuring different quantities whenever the two
+    /// diverge. This is the term that says by how much.
+    list_capacity: usize,
+    total_req: u64,
+    total_chunk: u64,
+    terms: Vec<BucketMapTerm>,
+}
+
+/// THE DECOMPOSITION. Each heap-owning field of a `BucketNode` is cloned on its own, and the
+/// container is measured on the SAME TREE with every value emptied.
+///
+/// WHY THE CONTAINER IS MEASURED THAT WAY rather than subtracted. A B-tree cost is its node arrays,
+/// which are sized by the KEY and VALUE widths and by the tree shape -- not by anything the values
+/// point at. Cloning the real map and then overwriting every value with `BucketNode::default()`
+/// leaves the shape untouched (a value assignment moves no node) and leaves the values holding no
+/// heap at all, so a clone of that map charges the node arrays and nothing else. That makes the
+/// container an independently MEASURED term rather than a residual, which matters because a
+/// residual absorbs every error in every other term and then reads as a finding. The residual is
+/// still computed and printed, and it is the check on this: if the terms are right it is near zero,
+/// and if it is not, one of them is wrong.
+#[cfg(feature = "alloc-probe")]
+fn decompose_bucket_map(map: &crate::engine::state::BucketMap) -> BucketMapDecomposition {
+    let buckets = map.len();
+    let (total_req, total_chunk) = deep_heap_columns(map);
+
+    // --- The container, on the same tree with every value emptied. ---
+    let mut shape = map.clone();
+    for node in shape.values_mut() {
+        *node = crate::engine::state::BucketNode::default();
+    }
+    assert_eq!(
+        buckets,
+        shape.len(),
+        "the emptied tree must hold the same {buckets} entries as the real one, or it is not the \
+         same shape and the container term is measured on a different container"
+    );
+    let (container_req, container_chunk) = deep_heap_columns(&shape);
+    drop(shape);
+
+    // --- Every heap-owning field of the node, bucket by bucket, split by ARM. ---
+    let mut pages = 0usize;
+    let mut objects = 0usize;
+    let mut slots = 0usize;
+    let mut multi_object_buckets = 0usize;
+    let mut tombstone_buckets = 0usize;
+    let mut tombstone_rows = 0usize;
+    let mut single_page_buckets = 0usize;
+    let mut multi_page_buckets = 0usize;
+    let mut pages_in_list_arm = 0usize;
+    let mut list_capacity = 0usize;
+
+    let mut boxed_page_req = 0u64;
+    let mut boxed_page_chunk = 0u64;
+    let mut page_list_req = 0u64;
+    let mut page_list_chunk = 0u64;
+    let mut object_index_req = 0u64;
+    let mut object_index_chunk = 0u64;
+    let mut deleted_req = 0u64;
+    let mut deleted_chunk = 0u64;
+    let mut tombstone_req = 0u64;
+    let mut tombstone_chunk = 0u64;
+
+    for bucket in map.values() {
+        pages += bucket.block_index.len();
+        objects += bucket.object_index.object_count();
+        slots += bucket.object_index.slot_count();
+        if bucket.object_index.object_count() > 1 {
+            multi_object_buckets += 1;
+        }
+        let rows = bucket.tombstone_elements.len();
+        tombstone_rows += rows;
+        if rows > 0 {
+            tombstone_buckets += 1;
+        }
+
+        let (req, chunk) = deep_heap_columns(&bucket.block_index);
+        match &bucket.block_index {
+            BlockIndexMap::Empty => {}
+            BlockIndexMap::One(..) => {
+                single_page_buckets += 1;
+                boxed_page_req += req;
+                boxed_page_chunk += chunk;
+            }
+            BlockIndexMap::Many(list) => {
+                multi_page_buckets += 1;
+                pages_in_list_arm += list.len();
+                list_capacity += list.capacity();
+                page_list_req += req;
+                page_list_chunk += chunk;
+            }
+        }
+
+        let (req, chunk) = deep_heap_columns(&bucket.object_index);
+        object_index_req += req;
+        object_index_chunk += chunk;
+
+        let (req, chunk) = deep_heap_columns(&bucket.deleted_object_index);
+        deleted_req += req;
+        deleted_chunk += chunk;
+
+        let (req, chunk) = deep_heap_columns(&bucket.tombstone_elements);
+        tombstone_req += req;
+        tombstone_chunk += chunk;
+    }
+
+    let terms = vec![
+        BucketMapTerm {
+            name: "BTreeMap node arrays (BucketNode held INLINE)",
+            req: container_req,
+            chunk: container_chunk,
+            count: buckets,
+            unit: "buckets",
+        },
+        BucketMapTerm {
+            name: "block_index One: Box<BlockIndex>",
+            req: boxed_page_req,
+            chunk: boxed_page_chunk,
+            count: single_page_buckets,
+            unit: "single-page buckets",
+        },
+        BucketMapTerm {
+            name: "block_index Many: Vec<(u64, BlockIndex)>",
+            req: page_list_req,
+            chunk: page_list_chunk,
+            count: pages_in_list_arm,
+            unit: "pages in a list",
+        },
+        BucketMapTerm {
+            name: "object_index Many: Box<ObjectSlots>",
+            req: object_index_req,
+            chunk: object_index_chunk,
+            count: multi_object_buckets,
+            unit: "multi-object buckets",
+        },
+        BucketMapTerm {
+            name: "deleted_object_index: Option<Box<..>>",
+            req: deleted_req,
+            chunk: deleted_chunk,
+            count: buckets,
+            unit: "buckets",
+        },
+        BucketMapTerm {
+            name: "tombstone_elements: Option<Box<Vec<..>>>",
+            req: tombstone_req,
+            chunk: tombstone_chunk,
+            count: tombstone_rows,
+            unit: "tombstone rows",
+        },
+    ];
+
+    BucketMapDecomposition {
+        buckets,
+        pages,
+        objects,
+        slots,
+        multi_object_buckets,
+        tombstone_buckets,
+        tombstone_rows,
+        single_page_buckets,
+        multi_page_buckets,
+        pages_in_list_arm,
+        list_capacity,
+        total_req,
+        total_chunk,
+        terms,
+    }
+}
+
+/// WHAT THE `bucket_map` FOOTPRINT IS ACTUALLY MADE OF, ON BOTH ROUTING RANGES.
+///
+/// # THE QUESTION THIS ANSWERS, AND THE DENOMINATOR TRAP IT WALKS INTO
+///
+/// `what_a_live_key_costs_in_the_index_at_two_corpus_sizes` prices `bucket_map` at 185.6 B/key over
+/// 40,040 keys, and that fixture holds 40,080 pages -- so the same figure reads as 185 B per PAGE,
+/// and a page entry is 24 bytes wide. That looks like 160 bytes of overhead nothing can account for.
+///
+/// It is not, and the reason is the third denominator nobody divided by. That probe loads on the
+/// LEGACY whole-u32 routing range, where every key gets a bucket of its own by construction -- so
+/// keys, pages and BUCKETS are all the same number, and a per-BUCKET cost is indistinguishable from
+/// a per-page cost in every column. The container is a `BTreeMap<u32, BucketNode>` holding a
+/// 96-byte node INLINE in its arrays; divided by buckets that is a bucket cost, and divided by
+/// pages on that fixture it is the same arithmetic wearing a different name.
+///
+/// So this measures both ranges and prints every term against its OWN denominator, plus the same
+/// term normalised per page and per bucket so the two can be read side by side.
+///
+/// # THE REGIME CONTROL
+///
+/// The two ranges must actually BE two regimes, or the comparison says nothing. That is asserted,
+/// not assumed: the shipped range must hold materially fewer buckets than pages while the legacy
+/// range must hold about one bucket per page. A fixture where both came out alike would make every
+/// conclusion below an artefact of one population measured twice.
+///
+/// rust-internal: measures this crate own resident structures, no product behaviour
+#[test]
+#[cfg(feature = "alloc-probe")]
+#[ignore = "seeds four corpora under the counting allocator; run by name"]
+fn what_the_bucket_map_footprint_is_made_of_on_both_routing_ranges() {
+    /// The end bucket the shipped default routes on, and what an operator is told to set.
+    const SHIPPED_END: u32 = 1023;
+
+    let mut per_page_container: Vec<(&'static str, f64)> = Vec::new();
+    let mut bucket_to_page: Vec<(&'static str, f64)> = Vec::new();
+
+    for (label, shipped, strings_n, series_keys, series_points) in [
+        ("legacy whole-u32, 8,000 records", false, 4_000usize, 4usize, 1_000usize),
+        ("shipped 0..1023, 8,000 records", true, 4_000usize, 4usize, 1_000usize),
+        ("legacy whole-u32, 80,000 records", false, 40_000usize, 40usize, 1_000usize),
+        ("shipped 0..1023, 80,000 records", true, 40_000usize, 40usize, 1_000usize),
+    ] {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let engine = if shipped {
+            probe_engine_on(dir.path(), SHIPPED_END)
+        } else {
+            probe_engine(dir.path())
+        };
+        probe_seed(&engine, strings_n, series_keys, series_points);
+
+        let shards = engine.shards.read().expect("engine lock poisoned");
+        let shard = shards.get(&1).expect("shard is loaded");
+
+        let live_keys = shard.strings.len() + shard.features.len();
+        assert_eq!(
+            strings_n,
+            shard.strings.len(),
+            "denominator: the string map must hold every key seeded at {label}"
+        );
+
+        let d = decompose_bucket_map(&shard.bucket_index.bucket_map);
+
+        // --- DENOMINATORS FIRST, each asserted populated. A zero here reads as "free". ---
+        assert!(d.buckets > 0, "denominator: {label} produced no buckets");
+        assert!(d.pages > 0, "denominator: {label} produced no pages");
+        assert!(d.objects > 0, "denominator: {label} produced no objects");
+
+        // --- The container floor: the tree holds every key and value INLINE, so it cannot be
+        // --- cheaper than their widths. This is what fails if the emptied-tree trick stops
+        // --- measuring the container.
+        let inline_floor = d.buckets as u64
+            * (std::mem::size_of::<crate::engine::state::BucketNode>()
+                + std::mem::size_of::<u32>()) as u64;
+        let container = d.terms[0].req;
+        assert!(
+            container >= inline_floor,
+            "the B-tree container charged {container} B for {} buckets, below the {inline_floor} B \
+             its own key and value widths occupy inline -- the container term is not measuring the \
+             container",
+            d.buckets
+        );
+
+        println!("=== {label} ===");
+        println!(
+            "  DENOMINATORS: {live_keys} live keys, {} pages, {} buckets, {} objects, {} object \
+             slots, {} tombstone rows in {} buckets",
+            d.pages, d.buckets, d.objects, d.slots, d.tombstone_rows, d.tombstone_buckets
+        );
+        println!(
+            "  arms: {} single-page buckets, {} list buckets holding {} pages, {} multi-object \
+             buckets",
+            d.single_page_buckets, d.multi_page_buckets, d.pages_in_list_arm, d.multi_object_buckets
+        );
+        println!(
+            "  pages per bucket {:.2}, keys per bucket {:.2}",
+            d.pages as f64 / d.buckets as f64,
+            live_keys as f64 / d.buckets as f64
+        );
+        println!(
+            "  bucket_map TOTAL {} B requested, {} B in chunks   ({:.1} B/page, {:.1} B/bucket, \
+             {:.1} B/key -- three different denominators, all printed)",
+            d.total_req,
+            d.total_chunk,
+            d.total_req as f64 / d.pages as f64,
+            d.total_req as f64 / d.buckets as f64,
+            d.total_req as f64 / live_keys as f64
+        );
+        println!(
+            "  {:<46} {:>11} {:>11}  {:>9} {:<22} {:>9} {:>9} | {:>9} {:>9}",
+            "TERM",
+            "B req",
+            "B chunk",
+            "over",
+            "(its denominator)",
+            "B/unit",
+            "chunk",
+            "B/page",
+            "B/bucket"
+        );
+        let mut summed_req = 0u64;
+        let mut summed_chunk = 0u64;
+        for term in &d.terms {
+            summed_req += term.req;
+            summed_chunk += term.chunk;
+            let per_unit = if term.count == 0 {
+                f64::NAN
+            } else {
+                term.req as f64 / term.count as f64
+            };
+            let per_unit_chunk = if term.count == 0 {
+                f64::NAN
+            } else {
+                term.chunk as f64 / term.count as f64
+            };
+            println!(
+                "  {:<46} {:>11} {:>11}  {:>9} {:<22} {:>9.1} {:>9.1} | {:>9.1} {:>9.1}",
+                term.name,
+                term.req,
+                term.chunk,
+                term.count,
+                term.unit,
+                per_unit,
+                per_unit_chunk,
+                term.req as f64 / d.pages as f64,
+                term.req as f64 / d.buckets as f64
+            );
+        }
+        // --- WHAT THE CLONE CANNOT SEE, AND WHICH DIRECTION IT ERRS IN. ---
+        //
+        // Reported rather than folded into a term above, because it is a DIFFERENT measurement: the
+        // rows above are what the structure holds, and this is what it has reserved and not filled.
+        // The production model `bucket_index_resident_bytes` charges the page list at its CAPACITY,
+        // so the two numbers answer different questions and the band between them belongs in the
+        // open rather than inside either one.
+        let pair = std::mem::size_of::<(u64, BlockIndex)>();
+        let spare_slots = d.list_capacity.saturating_sub(d.pages_in_list_arm);
+        println!(
+            "  spare page-list capacity: {} slots for {} pages = {spare_slots} spare, {} B \
+             the clone cannot see ({:.1} B/page, {:.2}x on the list term)",
+            d.list_capacity,
+            d.pages_in_list_arm,
+            spare_slots * pair,
+            (spare_slots * pair) as f64 / d.pages as f64,
+            if d.pages_in_list_arm == 0 {
+                f64::NAN
+            } else {
+                d.list_capacity as f64 / d.pages_in_list_arm as f64
+            }
+        );
+
+        let residual_req = d.total_req as i64 - summed_req as i64;
+        let residual_chunk = d.total_chunk as i64 - summed_chunk as i64;
+        println!(
+            "  {:<46} {:>11} {:>11}   <- total minus the named terms",
+            "RESIDUAL (unnamed)", residual_req, residual_chunk
+        );
+
+        // --- DO THE TERMS SUM TO THE TOTAL? This is the check on the decomposition itself. ---
+        //
+        // A decomposition whose terms do not reconstruct the total is a list of numbers, not a
+        // breakdown, and the term that is wrong cannot be identified from the list. Floored at 1%
+        // rather than at zero only because the container is measured independently rather than
+        // subtracted; a real omission is a whole structure and would be far larger than this.
+        assert!(
+            residual_req.unsigned_abs() * 100 <= d.total_req,
+            "the named terms reconstruct {summed_req} of {} B at {label}, leaving {residual_req} B \
+             unaccounted -- that is a structure nothing above names, not rounding",
+            d.total_req
+        );
+
+        per_page_container.push((label, container as f64 / d.pages as f64));
+        bucket_to_page.push((label, d.buckets as f64 / d.pages as f64));
+        drop(shards);
+    }
+
+    // --- THE REGIME CONTROL. Both ranges must have been measured, and they must differ. ---
+    assert_eq!(4, bucket_to_page.len(), "all four fixtures must have been measured");
+    println!("=== buckets per page, by fixture (THE REGIME CONTROL) ===");
+    for (label, ratio) in &bucket_to_page {
+        println!("  {label:<34} {ratio:.4} buckets per page");
+    }
+    println!("=== the container term per PAGE, by fixture ===");
+    for (label, bpp) in &per_page_container {
+        println!("  {label:<34} {bpp:>8.1} B/page");
+    }
+    // Index 2 is the legacy 80,000-record fixture, index 3 the shipped one.
+    let (legacy_label, legacy_ratio) = bucket_to_page[2];
+    let (shipped_label, shipped_ratio) = bucket_to_page[3];
+    assert!(
+        legacy_ratio > 0.5,
+        "{legacy_label} produced {legacy_ratio:.4} buckets per page. The legacy range is supposed \
+         to give every key a bucket of its own, which is what makes a per-bucket cost read as a \
+         per-page one -- without that this fixture is not the regime the 185 B/page figure came from"
+    );
+    assert!(
+        shipped_ratio * 10.0 < legacy_ratio,
+        "{shipped_label} produced {shipped_ratio:.4} buckets per page against {legacy_ratio:.4} on \
+         the legacy range. The two must be different regimes or every row above is one population \
+         measured twice"
+    );
+}
