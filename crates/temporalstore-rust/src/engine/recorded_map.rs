@@ -222,44 +222,55 @@ pub(super) struct RecordedObjectRemoval<K: RecordedKind> {
 /// again here would be a second rendering of one identity -- the shape that let a claim about a
 /// hash function be relayed as a claim about a hash path.
 ///
-/// # WHO READS `component`, ASKED AND ANSWERED, BECAUSE IT HAS BEEN PROPOSED FOR REMOVAL
+/// # A CORRECTION TO THE VERSION OF THIS NOTE THAT LANDED FIRST
 ///
-/// `index_log.rs` states the rule: for a field that looks like a second copy of something, find WHO
-/// READS THE RECONSTRUCTION before deciding it is dead weight. This parameter was read as "the
-/// resident map's own key spelling, so removing it removes the authority". IT IS NOT THAT, and the
-/// correction matters in both directions -- the reading is wrong AND the conclusion stands, for two
-/// other reasons.
+/// The paragraph that stood here said reader (1) below is "the only durable spelling of a hash
+/// field, a set member, a zset member or a list position that anything READS on the replay
+/// path". That was true of the code it was written against and is FALSE now, which is why it is
+/// quoted rather than quietly overwritten: `apply_outcome_item`'s four container arms read the
+/// element off the PAGE, live and removed, so nothing on the replay path reads the outcome's
+/// copy for those kinds any more. What the earlier note got right is the conclusion -- the
+/// parameter stays -- and it got it right for a reason that has since changed, which is exactly
+/// the shape this tree records rather than deletes.
 ///
-/// IT IS NOT THE RESIDENT MAP'S KEY. That is `element`, the parameter beside it, and the two are
-/// different VALUES and not two names for one: for `SetKind` the caller passes
-/// `Some(hex::encode(member))` as the component and the raw `member` bytes as the element. The map
-/// is keyed by the bytes; the component is the text the page index renders. Taking the component
-/// away would not touch the map's key at all.
+/// # THIS PARAMETER WAS PUT UP FOR REMOVAL TOO, AND IT IS NOT A RECONSTRUCTION OF ANYTHING
 ///
-/// WHAT IT IS, IS THE INPUT TO TWO READERS, both inside `upsert_bucket_index_block_inner`, which
-/// splits it into `ElementComponent` and `FiledComponent` and uses only the first of those for
-/// every kind that reaches here:
+/// The reading it was proposed on was that it is "the resident map's own key spelling, so removing
+/// it removes the authority". IT IS NOT THAT, and the correction is worth having even though the
+/// conclusion survives: the map's key is `element`, the parameter beside it, and the two are
+/// different VALUES rather than two spellings of one. For `SetKind` the caller passes
+/// `Some(hex::encode(member))` here and the raw `member` bytes as `element`; the map is keyed by
+/// the bytes.
 ///
-///   1. THE RECORDED OUTCOME'S ELEMENT NAME -- `WalOutcomeItem::component`. This is the only
-///      durable spelling of a hash field, a set member, a zset member or a list position that
-///      anything READS on the replay path, and
-///      `engine::tests::durable_outranks_derived::a_recorded_outcome_without_its_element_name_replays_no_hash_field_at_all`
-///      drives it both ways: with the name, 3 of 3 fields come back through a real `load_shard`;
-///      without it the load is REFUSED with `wal_replay_outcome_refused`, "component missing".
-///   2. THE TOMBSTONE SWEEP. `element.as_deref()` keys `tombstone_element_page`, which is how a
-///      re-add clears the tombstone ITS OWN element left. That one is narrow on purpose: the
-///      predicate it replaced widened to every tombstone of the object the moment the filed name
-///      went to `None`, which is the resurrection
+/// WHAT IT FEEDS, AFTER THE REPLAY PATH STOPPED ASKING THE OUTCOME. Both readers are inside
+/// `upsert_bucket_index_block_inner`, which splits it into `ElementComponent` and
+/// `FiledComponent`:
+///
+///   1. `WalOutcomeItem::component`. The replay path no longer READS that field for a container
+///      kind -- it reads the page -- so this reader is now the record's own copy rather than
+///      something a recovery depends on. It is still written, because the field cannot be removed
+///      while six timestamped kinds read it and its absence is a meaning; the argument is set out
+///      in full at the field.
+///   2. THE TOMBSTONE SWEEP, which is the reader that makes this parameter stay. `element.as_deref()`
+///      keys `tombstone_element_page`, and that is how a re-add clears the tombstone ITS OWN element
+///      left. Narrow on purpose: the predicate it replaced widened to every tombstone of the object
+///      the moment the filed name went to `None`, which is the resurrection
 ///      `engine::tests::write_after_fold::a_re_add_after_a_removal_does_not_bring_the_removed_member_back`
 ///      holds.
 ///
-/// AND NO CALLER EVER PASSES `None`. Every one of the arms that reaches here -- hash, set, zset and
-/// list, in `execute_on_shard`, `stream_batch_methods` and the two replay paths in `lifecycle` --
-/// passes `Some(..)`, so the `Option` is a shape the four container kinds share with the filer and
-/// not a case this function has. There is nothing here to omit.
+/// # AND IT COULD BE RESOLVED FROM THE PAGE, WHICH IS EXACTLY WHY IT SHOULD NOT BE
 ///
-/// SO IT STAYS, AND THE REASON IS DATA LOSS RATHER THAN COMPATIBILITY. Being pre-release buys a
-/// stored FORMAT change; it does not buy state that cannot be reconstructed.
+/// The sweep runs on the WRITE path, where the element name is the caller's own input -- already
+/// computed, already in hand, one `&str` away. Decoding the page being written to recover a value
+/// the caller passed in would be the same rendering done twice, which is what the paragraph above
+/// this one exists to prevent. The rule that retires a derivable stored field does not reach a
+/// plain argument: nothing here is STORED and nothing is RECONSTRUCTED, so there is no omission to
+/// make a promise about.
+///
+/// AND NO CALLER PASSES `None`. Every arm that reaches here -- hash, set, zset and list, across
+/// `execute_on_shard`, `stream_batch_methods` and the two replay paths in `lifecycle` -- passes
+/// `Some(..)`, so the `Option` is a shape shared with the filer rather than a case this function
+/// has.
 pub(super) fn install_element<K: RecordedKind>(
     shard: &mut ShardState,
     shard_id: ShardId,

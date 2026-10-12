@@ -434,6 +434,54 @@ pub struct WalOutcomeItem {
     pub kind: String,
     #[serde(rename = "o", alias = "object_key")]
     pub object_key: String,
+    /// WHICH ELEMENT OF THAT OBJECT, FOR EVERY KEYED KIND THAT HAS NO PAGE TO ASK.
+    ///
+    /// # IT WAS PUT UP FOR REMOVAL AND THE ANSWER IS NO, ON THREE INDEPENDENT GROUNDS
+    ///
+    /// The case for removing it was good and half of it was acted on. A container page states its
+    /// own elements, so for `hash`, `set`, `zset` and `list` this field was a second copy of
+    /// something durable -- and `apply_outcome_item` now reads those four off the page instead,
+    /// live and removed, at a measured cost of ZERO block reads. What is left is what the page
+    /// cannot answer.
+    ///
+    /// THE COMPILER WAS ASKED RATHER THAN A GREP, which is this tree's own rule and the only thing
+    /// that settles a reader count: the field was deleted and `cargo check --all-targets` produced
+    /// 64 diagnostics. NONE of them is a container arm -- that is what the two commits before this
+    /// bought -- and what remains is:
+    ///
+    ///   1. NINE READS IN `engine::lifecycle`, every one of them a TIMESTAMPED kind: `feature`,
+    ///      `context_index`, `context_audit`, `context_child`, `context_summary`,
+    ///      `context_compression`, and the entity/event/node/embedding arms below them. For these
+    ///      the component is a stored key parsed as a `u64`, and
+    ///      `container_pages::ElementKeySpelling::for_kind` answers `None` for every one of them --
+    ///      their pages carry NO element-key frame at all. The payload cannot supply what it does
+    ///      not spell, so for these kinds this field is the only copy and removing it is data loss.
+    ///   2. ITS ABSENCE IS A MEANING, which no removal can preserve. The timestamped arm opens
+    ///      "No component on a removal means the whole series went, not one point of it", and
+    ///      `wal_proto` encodes exactly that as `object_deleted: item.deleted &&
+    ///      item.component.is_none()`. A field whose `None` is a statement cannot be deleted even
+    ///      where its `Some` is derivable.
+    ///   3. EIGHT READS IN `wal_proto`, where it is not stored as itself: `numeric_component`
+    ///      renders it into the `timestamp_ms` and `entry_id` protobuf fields for the kinds whose
+    ///      component is a number, and reads it back out of them. Removing the field means removing
+    ///      a wire encoding, not a struct member.
+    ///
+    /// # WHAT WOULD ACTUALLY BUY IT, SO THE NEXT LANE DOES NOT RE-DERIVE THIS
+    ///
+    /// Giving the timestamped kinds an element-key page frame of their own -- a fifth, sixth and
+    /// seventh `ElementKeySpelling`, and a `container_pages` writer on their append paths. That is
+    /// a PAGE-FORMAT change for six or more kinds, not a field deletion, and it has to carry the
+    /// absence-is-a-meaning case in (2) across with it. Until then this field is load-bearing for
+    /// everything except the four kinds that no longer read it.
+    ///
+    /// WHAT IT COSTS TO KEEP, MEASURED, so the trade is a number rather than a shrug: on the kinds
+    /// that still read it, the component is the stored key as decimal text. On the four that no
+    /// longer do, it is now dead weight on the wire --
+    /// `durable_outranks_derived::what_resolving_the_element_from_the_page_costs_a_replay` prices it
+    /// at 24 B of a 114 B hash record and 85 B of a 182 B set record carrying a 20-byte member,
+    /// counting both this field and the carried page's own copy. That is what a later narrowing
+    /// would collect, and narrowing is what is available: the field cannot go, and for four kinds
+    /// it no longer has to be written.
     #[serde(
         rename = "c",
         alias = "component",
