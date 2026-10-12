@@ -5489,9 +5489,9 @@ const _: () = {
 // in 24 with five of slack -- and the address word takes it to 16.
 //
 // IT STILL INVERTS THE RULE THIS STRUCTURE IS GOVERNED BY, and by more than was thought. The
-// block above asserts the live entry has FIVE bytes of slack at 40, not zero, so the next field
-// added here up to five bytes wide already costs nothing; at 24 the slack is five again, and at 16
-// it is one. Every field decision taken here while the entry was believed to be exactly full has
+// block above asserted FIVE bytes of slack at 40, not zero -- it pins the live entry at 24 now, and
+// the slack there is five again -- so the next field added here up to five bytes wide already costs
+// nothing; at 16 it would be one. Every field decision taken here while the entry was believed to be exactly full has
 // to be re-priced rather than inherited.
 const _: () = {
     // THIS PROBE HAS FOLDED INTO THE ONE ABOVE, AND THE IDENTITY LEAVING IS WHAT DID IT.

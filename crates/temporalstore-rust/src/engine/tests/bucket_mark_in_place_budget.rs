@@ -18,7 +18,7 @@
 //!
 //! ```text
 //!   what removing the field SAVES : size_of::<DeletedObjectIndex>()      = 8 B per bucket
-//!   what keeping ONE entry COSTS  : size_of::<(u64, BlockIndex)>()       = 72 B per entry
+//!   what keeping ONE entry COSTS  : size_of::<(u64, BlockIndex)>()       = 32 B per entry
 //! ```
 //!
 //! So a mark-in-place design breaks even only while a bucket holds fewer than `8/72 = 0.111`
@@ -111,20 +111,25 @@ fn the_break_even_compaction_cap_is_under_one_entry_per_bucket() {
     // The control. These are the widths this module's whole argument rests on.
     assert_eq!(node, 96, "the node moved; every figure in this module's header is stale");
     assert_eq!(saving, 8, "the tombstone field is no longer 8 bytes; re-price the saving");
-    // 40, NOT 56: the entry stopped naming its element, so it lost a fat optional pointer -- two
-    // whole words out of the eight-aligned group -- and the `(u64, BlockIndex)` stride printed
-    // above went 64 -> 48 with it. The module's argument is a RATIO, `saving` against `stride`, so
-    // it survives the move untouched, and that is worth saying rather than leaving the reader to
-    // check: 8 against 48 is the same refutation 8 against 64 and 8 against 72 both were. THREE
+    // 24, NOT 40: the entry stopped carrying the IDENTITY of the object its page belongs to, so it
+    // lost the `Arc<str>` -- two more words -- and the `(u64, BlockIndex)` stride printed above went
+    // 48 -> 32 with it. The module's argument is a RATIO, `saving` against `stride`, so it survives
+    // the move untouched, and that is worth saying rather than leaving the reader to check: 8
+    // against 32 is the same refutation 8 against 48, 8 against 64 and 8 against 72 all were. FOUR
     // widths now and one ratio, which is the standing argument for pricing a ratio.
+    //
+    // AND IT CAUGHT THE MOVE A SECOND TIME, EXACTLY AS THE PARAGRAPH BELOW SAID IT WOULD. The 56
+    // -> 40 step was found by the first full suite run after it; the 40 -> 24 step was found the
+    // same way and by nothing else, because the three `cargo check` arms and a targeted run by
+    // name all passed over it. A width this module prices is only ever checked by running it.
     //
     // THIS ASSERTION IS WHY THE WIDTH SWEEP WAS NOT ENOUGH. It names no literal beside
     // `size_of::<BlockAddress>()`, so a scan for a stale address width could not see it, and
     // `cargo check` cannot see an `assert_eq!` in a test body. It failed on the first run of the
     // suite, which is the only thing that could have found it.
-    assert_eq!(entry, 40, "the page entry moved; re-price the retained-entry cost");
+    assert_eq!(entry, 24, "the page entry moved; re-price the retained-entry cost");
     assert_eq!(
-        stride, 48,
+        stride, 32,
         "the retained-entry stride is {stride}; the cap arithmetic below prices one retained entry \
          at the stride and not at the entry, so a stride that moves without the entry means the \
          pair above has drifted"

@@ -1646,10 +1646,17 @@ fn what_the_narrower_entry_is_worth_on_the_heap_now_that_it_is_behind_a_pointer(
     // former width every byte below is a comparison with a shape this engine never had.
     let narrow = size_of::<BlockIndex>();
     let wide = size_of::<MirrorWideEntry>();
-    // 40 NOW: the entry gave up its element name, sixteen bytes, after the 72 -> 56 this module is
-    // about. The mirror of the FORMER entry below stays 72 -- it models the shape this change
-    // replaced and keeps its own name slot, which is why only this side moved.
-    assert_eq!(40, narrow, "the live page entry is {narrow} B, not 40");
+    // 24 NOW: after giving up its element name (72 -> 56 -> 40, which this module is about) the
+    // entry also gave up the OBJECT IDENTITY it carried -- another sixteen bytes of fat pointer --
+    // and is 19 bytes of field in 24. The mirror of the FORMER entry below stays 72: it models the
+    // shape this change replaced and keeps both slots, which is why only this side moved.
+    //
+    // THIS PIN WAS STALE AND NOTHING REPORTED IT, for the reason this module's own header gives
+    // thirty lines up: it is gated BOTH by `#[cfg(feature = "alloc-probe")]` and by `#[ignore]`, so
+    // a default run selects nothing and prints "0 passed; 0 failed". Reaching it takes
+    // `--features alloc-probe -- --ignored` and the name. Third assertion state: not true, not
+    // false, UNREACHABLE.
+    assert_eq!(24, narrow, "the live page entry is {narrow} B, not 24");
     assert_eq!(
         72, wide,
         "the mirror of the former entry is {wide} B, not 72; it is not the shape this change replaced"
@@ -1660,15 +1667,19 @@ fn what_the_narrower_entry_is_worth_on_the_heap_now_that_it_is_behind_a_pointer(
         "the mirror of the former address is {} B, not 32",
         size_of::<MirrorWideAddress>()
     );
-    // SIXTEEN, ACROSS TWO STEPS, and that is the whole reason the narrative above is marked stale.
+    // FORTY-EIGHT, ACROSS THREE STEPS, and that is the whole reason the narrative above is
+    // marked stale.
     // The mirror is the entry as it stood before the ADDRESS narrowed; one step took the routing
-    // bucket and the block id's upper half, and a second took the object id. Asserted exactly, so a
-    // third step fails here rather than widening quietly.
+    // bucket and the block id's upper half, a second took the object id, and a THIRD took the
+    // object IDENTITY -- the pointer naming which object the page belongs to, read from beside the
+    // page now. Asserted exactly, so a
+    // fourth step fails here rather than widening quietly -- which is what it just did for the
+    // third.
     assert_eq!(
-        16,
+        48,
         wide - narrow,
-        "the two shapes differ by {} B; the mirror is two steps back from the live entry and the \
-         narrative above is written against one step of eight",
+        "the two shapes differ by {} B; the mirror is three steps back from the live entry and the \
+         narrative above is written against a smaller step",
         wide - narrow
     );
     // AND THE TWO NO LONGER SHARE AN ALLOCATION CLASS, which is the half of the finding above that

@@ -597,11 +597,15 @@ fn the_node_cannot_see_how_wide_an_entry_is() {
     // The inputs differ. Asserted before anything downstream is compared.
     let entry_widths = [
         size_of::<Entry<1>>(),
+        size_of::<Entry<3>>(),
         size_of::<Entry<5>>(),
         size_of::<Entry<7>>(),
         size_of::<Entry<25>>(),
     ];
-    assert_eq!([8, 40, 56, 200], entry_widths, "the stand-in entries are not the widths claimed");
+    assert_eq!(
+        [8, 24, 40, 56, 200], entry_widths,
+        "the stand-in entries are not the widths claimed"
+    );
     for pair in entry_widths.windows(2) {
         assert!(
             pair[0] < pair[1],
@@ -612,12 +616,14 @@ fn the_node_cannot_see_how_wide_an_entry_is() {
 
     let index_widths = [
         size_of::<MirrorIndex<Entry<1>>>(),
+        size_of::<MirrorIndex<Entry<3>>>(),
         size_of::<MirrorIndex<Entry<5>>>(),
         size_of::<MirrorIndex<Entry<7>>>(),
         size_of::<MirrorIndex<Entry<25>>>(),
     ];
     let node_widths = [
         size_of::<MirrorNode<MirrorIndex<Entry<1>>>>(),
+        size_of::<MirrorNode<MirrorIndex<Entry<3>>>>(),
         size_of::<MirrorNode<MirrorIndex<Entry<5>>>>(),
         size_of::<MirrorNode<MirrorIndex<Entry<7>>>>(),
         size_of::<MirrorNode<MirrorIndex<Entry<25>>>>(),
@@ -625,21 +631,21 @@ fn the_node_cannot_see_how_wide_an_entry_is() {
 
     println!("\n=== the entry's width, and what it does to the index and the node ===");
     println!("  {:<14} {:>12} {:>12}", "entry", "block index", "node");
-    for i in 0..4 {
+    for i in 0..5 {
         println!("  {:<14} {:>12} {:>12}", entry_widths[i], index_widths[i], node_widths[i]);
     }
 
     assert_eq!(
-        [24, 24, 24, 24], index_widths,
+        [24, 24, 24, 24, 24], index_widths,
         "the block index's width moved with the entry's: {index_widths:?}. One of its arms is \
          holding an entry INLINE, and the invariance this module asserts is not a property of this \
          shape any more"
     );
     assert_eq!(
-        [96, 96, 96, 96], node_widths,
+        [96, 96, 96, 96, 96], node_widths,
         "the node's width moved with the entry's: {node_widths:?}"
     );
-    // And the live width is one of the four, so this is not a statement about stand-ins alone.
+    // And the live width is one of the five, so this is not a statement about stand-ins alone.
     assert!(
         entry_widths.contains(&size_of::<BlockIndex>()),
         "the live entry is {} B, which is not one of the widths sampled ({entry_widths:?}); add it \
@@ -647,7 +653,7 @@ fn the_node_cannot_see_how_wide_an_entry_is() {
         size_of::<BlockIndex>()
     );
     println!(
-        "  the live entry is {} B and the node is {} B; an entry narrowed to any of the four \
+        "  the live entry is {} B and the node is {} B; an entry narrowed to any of the five \
          widths above leaves the node at {}",
         size_of::<BlockIndex>(),
         size_of::<BucketNode>(),
