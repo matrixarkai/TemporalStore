@@ -2605,7 +2605,7 @@ pub(crate) fn eager_cache_warm_on_load() -> bool {
 /// the four branches at 12 are the ones that note was counting. Checked by reading the constant out
 /// of every remote ref, not by grepping history -- history still contains a 13 that a revert took
 /// back, exactly as it still contains the ambiguous 11.
-pub(super) const SHARD_INDEX_FORMAT_VERSION: u32 = 13;
+pub(super) const SHARD_INDEX_FORMAT_VERSION: u32 = 14;
 
 /// Serialize a shard index, stamping the current format version.
 ///
@@ -5900,7 +5900,7 @@ fn collect_live_block_slab_ids(shard: &ShardState) -> BTreeSet<u64> {
         shard
             .control_state_blocks
             .values()
-            .map(|address| address.block_slab_id()),
+            .map(|record| record.address().block_slab_id()),
     );
     #[cfg(test)]
     crate::snapshot_probe::note_live_slab_scan(visited);
@@ -6078,7 +6078,9 @@ fn persist_control_state_block(
         async_storage,
     ) {
         upsert_bucket_index_block(shard, shard_id, "control_state", key, None, address.clone(), true);
-        shard.control_state_blocks.insert(key.to_string().into_boxed_str(), address);
+        let mut record = crate::engine::object_record::ObjectRecord::default();
+        record.set_address(&address);
+        shard.control_state_blocks.insert(key.to_string().into_boxed_str(), record);
         true
     } else {
         false

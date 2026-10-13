@@ -1160,3 +1160,380 @@ fn the_key_ordered_expiry_window_has_no_production_callers() {
         violations.join("\n  ")
     );
 }
+
+/// COMPACTING A RECORD KEEPS EVERYTHING THAT IS NOT THE ADDRESS.
+///
+/// The compactor rewrites addresses in place through `&mut ElementEntry`. A map holding records has
+/// to serve that by materialising an address, letting it be rewritten, and writing it back -- and
+/// the obvious write-back builds a fresh record from the new address, which silently drops the
+/// deadline, the dirty bits and the model id.
+///
+/// THE DEFECT WOULD NOT FAIL TODAY, WHICH IS WHY THIS TEST EXISTS NOW. The deadline and dirty
+/// slots are present and unused on the maps that hold the record, so a fresh-record write-back
+/// passes everything and breaks later, in a different change, when something starts filling them.
+/// So the guard lands with the slots still empty, carrying values it does not yet need.
+///
+/// # IT ASSERTS TWO GROUPS SEPARATELY, AND IT HAS A NEGATIVE CONTROL
+///
+/// A test that compared whole records would fail for the wrong reason: two bits are SUPPOSED to
+/// change, because whether an ordinal is present and whether a generation is are part of what an
+/// address means. And a test that asserted "nothing changed" would be wrong about exactly those
+/// two. So the surviving state and the tracking state are checked apart.
+///
+/// And the negative control is the half that makes it worth having: `fresh_from_address` is the
+/// wrong write-back, written out here, and the test asserts it LOSES the state that `set_address`
+/// keeps. Without it this test would pass against an implementation that cannot detect the defect
+/// -- the same reason the foreign-name scan plants its own needles.
+#[test]
+fn compacting_a_record_keeps_everything_that_is_not_the_address() {
+    /// THE WRONG WRITE-BACK, kept as a control and never used in production.
+    fn fresh_from_address(address: &ElementEntry) -> ObjectRecord {
+        let mut record = ObjectRecord::default();
+        record.set_address(address);
+        record
+    }
+
+    // A record carrying state the address has nothing to do with.
+    let before_address = ElementEntry::from_parts(3, 4_096, 128, Some(0), Some(0));
+    let mut record = ObjectRecord::from_object_rows(
+        &before_address,
+        7,
+        Some(1_700_000_000_000),
+        true,
+    )
+    .expect("the inline arm must hold an ordinary live address");
+    record.set_flag(RecordFlags::INDEX_DIRTY, true);
+    record.set_flag(RecordFlags::IN_MEMORY, true);
+    record.set_flag(RecordFlags::PAGE_DIRTY, true);
+    record.set_flag(RecordFlags::PAGE_DELETED, true);
+
+    // NON-VACUITY FIRST: the state this test is about has to be set, or "it survived" is empty.
+    assert_eq!(Deadline::At(1_700_000_000_000), record.deadline(), "fixture: deadline not set");
+    assert!(record.dirty(), "fixture: dirty not set");
+    assert_eq!(7, record.model_id(), "fixture: model id not set");
+    assert!(record.flags().get(RecordFlags::INDEX_DIRTY), "fixture: index-dirty not set");
+
+    // --- THE COMPACTION, as the compactor does it: materialise, rewrite, write back. ---
+    let mut materialised = record.address();
+    assert_eq!(before_address, materialised, "the materialised address is not the one held");
+    // The compactor moves the block to a different slab and offset.
+    let relocated = ElementEntry::from_parts(9, 8_192, 128, Some(0), Some(0));
+    materialised = relocated.clone();
+    record.set_address(&materialised);
+
+    // --- GROUP ONE: what must SURVIVE, because it is not the address. ---
+    assert_eq!(
+        Deadline::At(1_700_000_000_000),
+        record.deadline(),
+        "the write-back dropped the DEADLINE -- a fresh record was built instead of the address \
+         being replaced in place"
+    );
+    assert!(record.dirty(), "the write-back dropped the DIRTY bit");
+    assert!(record.flags().get(RecordFlags::INDEX_DIRTY), "the write-back dropped INDEX_DIRTY");
+    assert!(record.flags().get(RecordFlags::IN_MEMORY), "the write-back dropped IN_MEMORY");
+    assert!(record.flags().get(RecordFlags::PAGE_DIRTY), "the write-back dropped PAGE_DIRTY");
+    assert!(record.flags().get(RecordFlags::PAGE_DELETED), "the write-back dropped PAGE_DELETED");
+    assert_eq!(7, record.model_id(), "the write-back dropped the MODEL ID");
+
+    // --- GROUP TWO: what must TRACK, because it IS the address. ---
+    assert_eq!(relocated, record.address(), "the address did not take");
+    assert!(
+        matches!(record.page_address(), PageAddress::One(_)),
+        "the write-back left the address arm as a handle"
+    );
+    assert_eq!(128, record.page_size(), "the page size did not track the new address");
+
+    // --- THE NEGATIVE CONTROL: the wrong write-back must LOSE what the right one keeps. ---
+    let wrong = fresh_from_address(&relocated);
+    assert_eq!(
+        relocated,
+        wrong.address(),
+        "control: the wrong write-back should still get the ADDRESS right -- that is why the \
+         defect is invisible"
+    );
+    assert_eq!(
+        Deadline::None,
+        wrong.deadline(),
+        "control: a freshly built record somehow kept a deadline, so this test cannot tell the \
+         two write-backs apart and proves nothing"
+    );
+    assert!(!wrong.dirty(), "control: a freshly built record somehow kept the dirty bit");
+    assert_eq!(0, wrong.model_id(), "control: a freshly built record somehow kept the model id");
+}
+
+/// EVERY RECORD IN A SINGLE-ADDRESS MAP IS IN THE INLINE ARM.
+///
+/// [`ObjectRecord::address`] panics on the handle arm rather than inventing an address, and the
+/// reason it is safe to call from a model map is that those maps hold exactly ONE address per
+/// object -- which is what their `ElementEntry` value meant before the record replaced it. That is
+/// an invariant, so it is asserted rather than assumed: every way the production code puts a
+/// record into such a map goes through `from_object_rows` or `set_address`, and both set the
+/// inline arm.
+#[test]
+fn every_way_of_building_a_single_address_record_lands_in_the_inline_arm() {
+    let mut checked = 0usize;
+    for ordinal in [None, Some(0u64)] {
+        let entry = ElementEntry::from_parts(5, 64, 128, ordinal, ordinal);
+
+        let built = ObjectRecord::from_object_rows(&entry, 1, None, false).expect("inline arm");
+        assert!(
+            matches!(built.page_address(), PageAddress::One(_)),
+            "from_object_rows left a handle for ordinal {ordinal:?}"
+        );
+        assert_eq!(entry, built.address(), "address() did not return what was filed");
+
+        let mut written = ObjectRecord::default();
+        written.set_address(&entry);
+        assert!(
+            matches!(written.page_address(), PageAddress::One(_)),
+            "set_address left a handle for ordinal {ordinal:?}"
+        );
+        assert_eq!(entry, written.address(), "address() did not return what set_address wrote");
+        checked += 1;
+    }
+    assert_eq!(2, checked, "the matrix did not run");
+
+    // AND THE HANDLE ARM REFUSES RATHER THAN INVENTING, through the non-panicking door.
+    let mut layout_armed = ObjectRecord::default();
+    layout_armed.set_page_address(PageAddress::Many(PageLayoutHandle::from_stored(5)));
+    let refusal = layout_armed
+        .try_address()
+        .expect_err("a handle arm returned a single address, which would be a wrong address");
+    assert!(
+        matches!(refusal, ObjectRecordRefusal::LayoutHandleWithNoLayout { .. }),
+        "the refusal is not the named one: {refusal}"
+    );
+}
+
+/// WHY `context_nodes` DOES NOT GET THE RECORD, THOUGH IT IS THE SAME SHAPE AS THE MAPS THAT DO.
+///
+/// `ShardState` carries three maps whose value is a bare address -- `strings`,
+/// `control_state_blocks` and `context_nodes` -- and its own note calls them a class. Two are the
+/// record's natural home. The third is not, and the reason is NOT granularity: it holds exactly
+/// one address per object key, like the others.
+///
+/// IT HAS NO PRODUCTION WRITER. Context nodes are filed into `hashes[key][CONTEXT_NODE_FIELD]`.
+/// The live read path consults that first and reaches `context_nodes` only through an
+/// `.or_else(..)` fallback, in both `engine::context` and `execute_on_shard`. The only `insert`
+/// into the map anywhere in the crate sits inside a `#[cfg(test)]` region. `block_store`'s note on
+/// the subject states the arrangement outright: a context node's address is
+/// `hashes[key][CONTEXT_NODE_FIELD]` **or, for blocks written before that move**,
+/// `context_nodes[key]`.
+///
+/// SO CONVERTING IT WOULD BE A STORED-FORMAT CHANGE AIMED AT ITS OWN REASON TO EXIST. The value
+/// type is what older builds wrote; changing it changes how those indexes decode, which is the one
+/// population the map is for, and buys nothing -- production never writes a new entry there, so
+/// the record would never hold a live value in it.
+///
+/// # THIS TEST IS DRIVEN, NOT A SOURCE SCAN, AND THAT IS DELIBERATE
+///
+/// The first draft of this guard scanned source for `context_nodes` + `.insert` on one line. That
+/// instrument has a blind spot which these very call sites occupy: the map is reached through
+/// multi-line method chains (`shard` / `.context_nodes` / `.insert(..)`), so a line-based scan
+/// cannot see them and would report "no production writer" by failing to look. A guard with a
+/// known blind spot is worse than no guard, because its silence reads as evidence.
+///
+/// So the claim is driven instead: write a context node through the real command and assert where
+/// it lands. If someone gives this map a production writer, this reddens -- and the refusal above
+/// should then be RE-TAKEN with its own evidence rather than this assertion deleted.
+///
+/// rust-internal: measures this crate's own resident structures, no product behaviour
+#[test]
+fn a_context_node_write_lands_in_the_hash_field_not_in_context_nodes() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let engine = TemporalEngine::with_local_dirs(
+        64 * 1024 * 1024,
+        dir.path().join("cache"),
+        dir.path().join("pages"),
+        dir.path().join("indexes"),
+    );
+    engine.load_shard(1);
+
+    let response = engine.execute(ExecuteRequest {
+        shard_id: 1,
+        command: Command::ContextUpsertNode {
+            tenant_hash: 7,
+            // EVERY FIELD SPELLED, because `ContextNode` has no `Default`. Copied from the
+            // fixture in `context_node_survives_reload`, which is the shape the live command
+            // path already accepts -- a hand-trimmed node would risk the write being refused for
+            // a reason unrelated to what this test is about.
+            node: Box::new(crate::types::ContextNode {
+                node_hash: 1,
+                parent_hash: 0,
+                kind: 1,
+                canonical_name: "node_00000001".to_string(),
+                l0: "a node".to_string(),
+                status: 0,
+                last_event_time_ms: 0,
+                l1_ref: String::new(),
+                raw_metadata_ref: String::new(),
+                vector: Vec::new(),
+                embedding_model_hash: 0,
+                embedding_updated_at_ms: 0,
+                summary_vector: Vec::new(),
+                summary_vector_valid_from_ms: 0,
+                summary_vector_model_hash: 0,
+            }),
+        },
+    });
+    assert!(
+        response.status.ok,
+        "the fixture could not write a context node, so it observed nothing: {:?}",
+        response.status
+    );
+
+    let shards = engine.shards.read().expect("engine lock poisoned");
+    let shard = shards.get(&1).expect("shard is loaded");
+    let in_hashes = shard.hashes.len();
+    let in_context_nodes = shard.context_nodes.len();
+    println!(
+        "after one context-node write through the real command: `hashes` holds {in_hashes} \
+         object(s), `context_nodes` holds {in_context_nodes}"
+    );
+
+    // NON-VACUITY: the write has to have landed SOMEWHERE, or "it did not land here" is empty.
+    assert!(
+        in_hashes > 0,
+        "the write filed nothing into `hashes`, so the live path is not what this refusal assumes \
+         -- re-take the refusal rather than trusting this test"
+    );
+    assert_eq!(
+        0, in_context_nodes,
+        "a context-node write filed into `context_nodes`, which the refusal says production never \
+         does. Either the write path moved back to this map, or the refusal is wrong. RE-TAKE it."
+    );
+}
+
+/// HOW MANY STRUCTURES HOLD AN ENTRY FOR ONE LIVE CONTROL-STATE OBJECT, NOW THAT ONE OF THEM IS
+/// THE RECORD.
+///
+/// The census that started this work measured a live `string` object at FOUR key-addressed
+/// structures plus two shared-string allocations, with the key's characters stored FIVE times. This
+/// is the same count for the kind the record now holds, measured the same way -- a marginal cohort
+/// against a seeded base, so a structure that holds nothing for this kind reads as a zero rather
+/// than as a small per-key number.
+///
+/// # WHAT THIS CHANGE DOES AND DOES NOT MOVE, STATED BEFORE THE NUMBERS
+///
+/// It does NOT reduce the count. The record replaced a bare address as the VALUE of a map that was
+/// already there, so the same structures hold the same entries; what changed is that the row now
+/// has a deadline slot and state bits standing empty. The count falls when those slots are filled
+/// and the maps they duplicate are removed -- the deadline merge and the dirty-bit merge, each its
+/// own change with its own evidence.
+///
+/// Saying so here matters because the goal this serves is phrased as a footprint, and a reader
+/// could otherwise take "the record is live" for "the footprint fell". It has not fallen yet. What
+/// has happened is that the thing which can make it fall is in production and holding real values.
+///
+/// rust-internal: measures this crate's own resident structures, no product behaviour
+#[test]
+#[cfg(feature = "alloc-probe")]
+fn how_many_structures_hold_an_entry_for_one_control_state_object() {
+    const SHIPPED_END: u32 = 1023;
+    const BASE: usize = 400;
+    const COHORT: usize = 200;
+
+    let dir = tempfile::tempdir().expect("tempdir");
+    let engine = probe_engine_on_for_record(dir.path(), SHIPPED_END);
+
+    let seed = |engine: &TemporalEngine, from: usize, count: usize| {
+        for i in from..(from + count) {
+            let response = engine.execute(ExecuteRequest {
+                shard_id: 1,
+                command: Command::ControlStateIncrement {
+                    key: format!("cs-{i}"),
+                    timestamp_ms: 1_700_000_000_000,
+                    amount: 1,
+                },
+            });
+            assert!(response.status.ok, "control-state seed must ack: {:?}", response.status);
+        }
+    };
+    seed(&engine, 0, BASE);
+
+    let weigh = |engine: &TemporalEngine| -> Vec<(&'static str, u64)> {
+        let shards = engine.shards.read().expect("engine lock poisoned");
+        let shard = shards.get(&1).expect("shard is loaded");
+        vec![
+            ("control_state (the i64 series)", deep_heap_bytes(&shard.control_state)),
+            ("control_state_blocks (THE RECORD)", deep_heap_bytes(&shard.control_state_blocks)),
+            ("bucket_index.bucket_map", deep_heap_bytes(&shard.bucket_index.bucket_map)),
+            (
+                "bucket_index.object_block_lookup",
+                deep_heap_bytes(&shard.bucket_index.object_block_lookup),
+            ),
+            ("dirty_objects", deep_heap_bytes(&shard.dirty_objects)),
+            ("expires_at_ms", deep_heap_bytes(&shard.expires_at_ms)),
+            ("expiry_by_deadline", deep_heap_bytes(&shard.expiry_by_deadline)),
+            ("strings", deep_heap_bytes(&shard.strings)),
+            ("hashes", deep_heap_bytes(&shard.hashes)),
+            ("features", deep_heap_bytes(&shard.features)),
+        ]
+    };
+
+    let before = weigh(&engine);
+    seed(&engine, 1_000_000, COHORT);
+    let after = weigh(&engine);
+
+    let (buckets, pages, objects) = {
+        let shards = engine.shards.read().expect("engine lock poisoned");
+        let shard = shards.get(&1).expect("shard is loaded");
+        (
+            shard.bucket_index.bucket_map.values().count(),
+            shard
+                .bucket_index
+                .bucket_map
+                .values()
+                .map(|bucket| bucket.block_index.len())
+                .sum::<usize>(),
+            shard.control_state_blocks.len(),
+        )
+    };
+    assert_eq!(
+        BASE + COHORT,
+        objects,
+        "denominator: the record map does not hold the population this divides by"
+    );
+    assert!(
+        buckets > 0 && buckets <= (SHIPPED_END as usize + 1),
+        "denominator: {buckets} buckets is not a 0..{SHIPPED_END} population"
+    );
+    println!(
+        "=== one live control-state object, marginal over a cohort of {COHORT} against a base of \
+         {BASE} ==="
+    );
+    println!(
+        "    denominators: {objects} control-state objects, {buckets} buckets, {pages} pages \
+         ({:.2} pages per bucket)",
+        pages as f64 / buckets as f64
+    );
+
+    let mut holders = 0usize;
+    for (index, (name, was)) in before.iter().enumerate() {
+        let (name_after, now) = after[index];
+        assert_eq!(*name, name_after, "the rows drifted between the two weighings");
+        let delta = now as i64 - *was as i64;
+        if delta != 0 {
+            holders += 1;
+        }
+        println!(
+            "    {name:<36} {delta:>10} B  {:>8.1} B/object  {}",
+            delta as f64 / COHORT as f64,
+            if delta == 0 { "HOLDS NO ENTRY for this kind" } else { "" }
+        );
+    }
+    println!("    => STRUCTURES HOLDING AN ENTRY for one live control-state object: {holders}");
+    println!(
+        "    (the `string` baseline this is measured against was FOUR key-addressed structures \
+         plus two shared-string allocations, with the key's characters stored FIVE times)"
+    );
+
+    // A zero cohort delta means NO NEW ALLOCATION, not NO ENTRY -- a tree with spare node slack
+    // reads as free. So what is asserted is only that the kind is held at all, and by more than
+    // one structure, which is the claim the goal is about.
+    assert!(
+        holders >= 2,
+        "a live control-state object moved only {holders} structure(s), which contradicts the \
+         census this is measured against -- check the fixture before believing the figure"
+    );
+}

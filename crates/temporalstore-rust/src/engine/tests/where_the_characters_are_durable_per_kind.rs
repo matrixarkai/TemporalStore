@@ -181,9 +181,15 @@ fn shard_with_one_object_of_every_kind(suffix: &str) -> ShardState {
     shard
         .features
         .insert(key_for("feature", suffix), series.clone());
-    shard
-        .control_state_blocks
-        .insert(key_for("control_state", suffix).as_str().into(), address());
+    shard.control_state_blocks.insert(
+        key_for("control_state", suffix).as_str().into(),
+        {
+            // Through `set_address`, like production -- see the note on that method.
+            let mut record = crate::engine::object_record::ObjectRecord::default();
+            record.set_address(&address());
+            record
+        },
+    );
     shard
         .context_nodes
         .insert(key_for("context_node", suffix).as_str().into(), address());

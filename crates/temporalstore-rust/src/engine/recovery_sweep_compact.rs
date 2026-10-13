@@ -1655,17 +1655,40 @@ fn expiry_scan_budget(limit: usize) -> usize {
                 routing_bucket,
             )?;
         }
+        // A TWO-PASS, BECAUSE THE SHARED SIGNATURE IS DELIBERATELY LEFT ALONE.
+        //
+        // `compact_block_addresses` rewrites addresses through `&mut ElementEntry`, and this map's
+        // value is a record now, which holds its address decomposed. Teaching that function to
+        // speak records is the obvious fix and is REFUSED: it has four call sites and one of them
+        // is the `string` arm, which another lane is mid-flight in. A changed signature there
+        // turns its rebase from mechanical into painful, and buys nothing this call site needs.
+        //
+        // So addresses are staged out, rewritten by the unchanged function, and written back
+        // through `set_address`, which touches the address word, the page size and the two bits
+        // that are part of what an address MEANS -- and cannot reach the deadline, the state bits
+        // or the model id. Building a fresh record from the rewritten address would drop those,
+        // and would not fail today because they are unused; the guard against that is
+        // `compacting_a_record_keeps_everything_that_is_not_the_address`.
+        let mut staged: Vec<(u32, String, ElementEntry)> = shard
+            .control_state_blocks
+            .iter()
+            .map(|(key, record)| (bucket_of(key), key.to_string(), record.address()))
+            .collect();
         compact_block_addresses(
             &self.block_store,
             &self.cache,
             shard_id,
             "control_state",
-            shard
-                .control_state_blocks
-                .iter_mut()
-                .map(|(key, address)| (bucket_of(key), std::borrow::Cow::Borrowed(&**key), address)),
+            staged.iter_mut().map(|(routing_bucket, key, address)| {
+                (*routing_bucket, std::borrow::Cow::Borrowed(key.as_str()), address)
+            }),
             &mut rewrite_stats,
         )?;
+        for (_, key, address) in &staged {
+            if let Some(record) = shard.control_state_blocks.get_mut(key.as_str()) {
+                record.set_address(address);
+            }
+        }
         compact_block_addresses(
             &self.block_store,
             &self.cache,

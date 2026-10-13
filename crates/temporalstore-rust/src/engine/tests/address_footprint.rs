@@ -245,14 +245,31 @@ fn census(engine: &TemporalEngine, shard_id: ShardId) -> AddressCensus {
     let shard = shards.get(&shard_id).expect("shard is loaded");
     let mut c = AddressCensus::default();
 
-    // HashMap<String, BlockAddress> -- one address per key.
-    for (name, map) in [
-        ("strings", &shard.strings),
-        ("control_state_pages", &shard.control_state_blocks),
-        ("context_nodes", &shard.context_nodes),
+    // ONE ADDRESS PER KEY, THREE MAPS -- BUT NO LONGER ONE ARRAY OF ONE TYPE.
+    //
+    // These three used to be an array literal, which requires a single element type. The
+    // `ShardState` note on this class says they have to "agree on their key type" because of THIS
+    // array -- and that was an undercount: an array literal binds the VALUE type too. One of the
+    // three holds an `ObjectRecord` now, so the array stopped type-checking, which is how the
+    // coupling surfaced.
+    //
+    // Materialising the addresses per map keeps the walk and the per-map attribution identical
+    // while letting the values differ. The record map pays one `address()` per entry, in a test
+    // probe, which is the right place for that cost.
+    for (name, addresses) in [
+        ("strings", shard.strings.values().cloned().collect::<Vec<_>>()),
+        (
+            "control_state_pages",
+            shard
+                .control_state_blocks
+                .values()
+                .map(|record| record.address())
+                .collect::<Vec<_>>(),
+        ),
+        ("context_nodes", shard.context_nodes.values().cloned().collect::<Vec<_>>()),
     ] {
         let before = c.total;
-        for address in map.values() {
+        for address in &addresses {
             c.observe(address);
         }
         c.note(name, c.total - before);
@@ -1090,10 +1107,20 @@ fn duplication_census(engine: &TemporalEngine, shard_id: ShardId) -> Duplication
     let shard = shards.get(&shard_id).expect("shard is loaded");
     let mut d = DuplicationCensus::default();
 
-    for map in [&shard.strings, &shard.control_state_blocks, &shard.context_nodes] {
-        for address in map.values() {
-            d.observe_model(address);
-        }
+    // Same three maps, same reason they are no longer one array: one of them holds a record.
+    // Chained rather than arrayed, so the walk is still a single pass over all three.
+    let control_state_addresses: Vec<ElementEntry> = shard
+        .control_state_blocks
+        .values()
+        .map(|record| record.address())
+        .collect();
+    for address in shard
+        .strings
+        .values()
+        .chain(shard.context_nodes.values())
+        .chain(control_state_addresses.iter())
+    {
+        d.observe_model(address);
     }
     for fields in shard.hashes.values() {
         for address in fields.values() {

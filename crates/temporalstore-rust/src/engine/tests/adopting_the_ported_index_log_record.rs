@@ -562,14 +562,31 @@ fn the_stamp_this_adoption_was_costed_against() {
     let current = crate::engine::SHARD_INDEX_FORMAT_VERSION;
     println!("SHARD_INDEX_FORMAT_VERSION at the base = {current}");
     assert_eq!(
-        current, 13,
-        "costed against 13; if this is red the stamp moved and the adoption's cost has to be \
+        current, 14,
+        "costed against 14; if this is red the stamp moved and the adoption's cost has to be \
          re-read rather than re-goldened"
     );
+    // RE-READ AT 13 -> 14, WHICH IS WHAT THE MESSAGE ABOVE DEMANDED, AND THE COSTING STANDS.
+    //
+    // 14 was spent on a change to the SERVED index: `control_state_blocks`' value became a
+    // consolidated record. The stamp guards the named served index, and this module costs the
+    // POSITIONAL index-log row, which carries no struct version at all -- the module doc above
+    // says so, and that is why the slot count is the whole of that row's protection. So the
+    // 550-against-595 comparison for eight page items is untouched by this bump: nothing in
+    // `index_log::INDEX_ITEM_SLOTS` or the positional row moved, and the port's disadvantage is
+    // exactly where it was.
+    //
+    // The pin is kept rather than deleted, for the reason it was added: so a later reader cannot
+    // cost the adoption against a tree that has bumped the stamp for an unrelated reason.
     assert!(
-        current != 12 && current != 14,
-        "bracketed, so 13 is exact and not an artefact of the comparison above"
+        current != 13 && current != 15,
+        "bracketed, so 14 is exact and not an artefact of the comparison above"
     );
+    // AND THE BRACKET IS DOMINATED BY THE EQUALITY ABOVE IT, noted rather than removed. An
+    // `== 14` already excludes 13 and 15; a neighbour inequality beside it can only ever fail
+    // where the equality has already failed. This campaign shipped that same redundancy into
+    // three merged changes before measuring it, so it is worth naming where it appears rather
+    // than quietly reproducing it.
 }
 
 /// THE INDEX LOG HAS NO VERSION OF ITS OWN, SO THE ROW'S SHAPE IS GUARDED BY ITS LENGTH.

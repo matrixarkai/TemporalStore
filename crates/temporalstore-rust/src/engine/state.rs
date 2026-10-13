@@ -62,6 +62,15 @@ const _: () = assert!(std::mem::size_of::<WalResidentBlock>() == 16);
 /// iterates the three together in one array, so they have to agree on their key type; that
 /// array is the reason the class is these three and not just the one that was measured.
 ///
+/// THE CLASS IS A KEY-TYPE CLASS AND NOT A VALUE-TYPE ONE, which matters now that the values have
+/// started to diverge: `control_state_blocks` holds an `ObjectRecord` rather than a bare address.
+/// The three still agree on `ModelKey`, which is what the shared array needs. And they are not
+/// three equal candidates for that record -- `context_nodes` has NO production writer (its only
+/// `insert` is `#[cfg(test)]`) and is reached in production only through an `.or_else()` after
+/// `hashes` is consulted first, so it is a decode path for blocks written before that move. See
+/// `block_store`'s note on `CONTEXT_NODE_FIELD`. Converting it would change the stored shape of
+/// exactly the population it exists to read back, for no live value.
+///
 /// EVERY READ SHAPE IS UNCHANGED, which is why this is a key-type change and not a surface change.
 /// `Box<str>: Borrow<str>`, so `get`, `get_mut`, `contains_key` and `remove` still take `&str` and
 /// every call site that passes one compiles untouched. `keys()` yields `&Box<str>`, which derefs to
@@ -239,8 +248,25 @@ pub(super) struct ShardState {
     #[serde(default, skip_serializing_if = "HashMap::is_empty")]
     pub(super) sequences: HashMap<String, BTreeMap<u64, ElementEntry>>,
     pub(super) control_state: HashMap<String, BTreeMap<u64, i64>>,
+    /// Counter-series blocks, one per control-state object key.
+    ///
+    /// THE VALUE IS A RECORD RATHER THAN A BARE ADDRESS, and this is the first map to hold one.
+    /// A live object was costing several key-addressed structures, each paying its own node AND
+    /// its own copy of the key's characters; the record is the single row those collapse into. It
+    /// carries the address this map always held, plus a deadline slot, state bits and a model id
+    /// that are PRESENT AND UNUSED here -- so the width goes live with no behaviour change, and
+    /// the deadline merge that fills them is a separate change with its own evidence.
+    ///
+    /// READ IT THROUGH `address()`, WRITE IT THROUGH `set_address()`. The second matters: writing
+    /// back by building a fresh record drops the unused slots silently, and would not fail while
+    /// they are unused. See `ObjectRecord::set_address`.
+    ///
+    /// A STORED-FORMAT CHANGE, which is why the format stamp moves with it. An index written
+    /// before this carries a bare address here and is refused by the stamp check rather than
+    /// decoded into the wrong shape; the refusal falls back to replay, and the reconcile rebuilds
+    /// this map from the bucket index.
     #[serde(default)]
-    pub(super) control_state_blocks: HashMap<ModelKey, ElementEntry>,
+    pub(super) control_state_blocks: HashMap<ModelKey, super::object_record::ObjectRecord>,
     #[serde(default)]
     pub(super) control_state_changes: HashMap<String, BTreeMap<u64, BTreeSet<Vec<u8>>>>,
     // Bounded distinct: per (key, bucket) HyperLogLog sketch. A bucket lives in EITHER

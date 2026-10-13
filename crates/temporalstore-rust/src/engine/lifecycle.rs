@@ -1365,7 +1365,8 @@ impl TemporalEngine {
         }
         let mut counter_blocks: Vec<_> = shard.control_state_blocks.iter().collect();
         counter_blocks.sort_by(|left, right| left.0.cmp(right.0));
-        for (key, address) in counter_blocks {
+        for (key, record) in counter_blocks {
+            let address = record.address();
             out.push_str(&format!(
                 "control_state_page {key} slab={} off={} len={}
 ",
@@ -2238,9 +2239,11 @@ impl TemporalEngine {
                     address.clone(),
                     true,
                 );
+                let mut record = crate::engine::object_record::ObjectRecord::default();
+                record.set_address(&address);
                 shard
                     .control_state_blocks
-                    .insert(item.object_key.as_str().into(), address);
+                    .insert(item.object_key.as_str().into(), record);
                 true
             }
             "context_entity" => {

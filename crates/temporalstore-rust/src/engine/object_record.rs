@@ -67,18 +67,6 @@
 //! same twenty-four bytes at natural alignment, with one byte of TAIL slack and no packing, and
 //! the width and the alignment are pinned SEPARATELY below.
 
-// DEAD CODE IS THE POINT, FOR EXACTLY ONE COMMIT. Nothing in production holds an `ObjectRecord`
-// yet: this type is built and tested standalone, ahead of the graft, so that the layout and the
-// conversion can be proved before anything is rewired. Every item here is exercised by
-// `engine::tests::one_record_per_object`, which is `cfg(test)`, so a non-test build sees eleven
-// items with no caller and says so eleven times.
-//
-// The alternative to this attribute is eleven unexplained warnings on a branch, which is worse:
-// a reader cannot tell them from the real thing. THE GRAFT COMMIT REMOVES THIS LINE -- once the
-// record is the value of a live map, every item below has a production caller and a genuine dead
-// item here should be reported again.
-#![allow(dead_code)]
-
 use serde::{Deserialize, Serialize};
 
 use crate::block_store::{
@@ -413,6 +401,100 @@ impl ObjectRecord {
 
     pub(super) const fn dirty(&self) -> bool {
         self.flags.get(RecordFlags::DIRTY)
+    }
+
+    // --- THE SHIMS THE MODEL MAPS HOLD THIS THROUGH. ---
+
+    /// The address this record holds, as the holder every container stores.
+    ///
+    /// This exists so a map whose value became a record does not move its call sites: a reader
+    /// that had `map.get(key)` and wanted an address still gets one, in one call.
+    ///
+    /// # IT PANICS ON THE HANDLE ARM, AND THAT IS DELIBERATE
+    ///
+    /// A record whose address word is a handle names a multi-page layout, and there is no single
+    /// address to hand back -- the layout holds them. Returning a DEFAULT address instead would
+    /// resolve the key to slab 0, offset 0, which is a perfectly legal address for a different
+    /// block, and a read that followed it would return the wrong bytes with no error anywhere.
+    /// That is the same argument [`ElementEntry::set_block_id`] makes for panicking rather than
+    /// narrowing, and the same one [`crate::block_store::make_block_address_word`] makes for
+    /// checking rather than saturating.
+    ///
+    /// It is unreachable for the maps that hold this today. `strings` and `control_state_blocks`
+    /// store exactly ONE address per object -- that is what their `ElementEntry` value meant --
+    /// so every record in them is in the inline arm by construction, and
+    /// `every_record_in_a_single_address_map_is_in_the_inline_arm` holds that rather than trusting
+    /// it. A caller that genuinely might hold a layout should match on
+    /// [`ObjectRecord::page_address`] instead, which cannot panic.
+    pub(super) fn address(&self) -> ElementEntry {
+        match self.try_address() {
+            Ok(address) => address,
+            Err(refusal) => panic!(
+                "a single-address map held a record with no single address: {refusal}. Match on \
+                 `page_address()` instead if this caller can hold a multi-page layout."
+            ),
+        }
+    }
+
+    /// The same, as a `Result`, for a caller that cannot assume the inline arm.
+    pub(super) fn try_address(&self) -> Result<ElementEntry, ObjectRecordRefusal> {
+        let word = match self.page_address() {
+            PageAddress::One(word) => word,
+            PageAddress::Many(handle) => {
+                return Err(ObjectRecordRefusal::LayoutHandleWithNoLayout { handle })
+            }
+        };
+        ElementEntry::try_from_wire_parts(
+            u64::from(extract_block_slab_id(word)),
+            u64::from(extract_block_offset(word)),
+            u64::from(self.page_size),
+            (!self.flags.get(RecordFlags::PAGE_IN_LOG)).then_some(0u64),
+            self.flags.get(RecordFlags::PAGE_GENERATION),
+        )
+        .map_err(|_| ObjectRecordRefusal::AddressWordOutOfRange { word })
+    }
+
+    /// Replace ONLY the address, leaving every other field of the record where it was.
+    ///
+    /// # WHY THIS IS A NARROW DOOR RATHER THAN A WHOLE-RECORD ASSIGNMENT
+    ///
+    /// The compactor rewrites addresses in place: it takes `&mut ElementEntry` and moves blocks
+    /// between slabs. A map holding records has to serve that by materialising an address, letting
+    /// it be rewritten, and writing it back -- and the obvious way to write it back is to build a
+    /// fresh record from the new address. THAT SILENTLY DROPS EVERYTHING ELSE: the deadline, the
+    /// dirty bits, the model id.
+    ///
+    /// And it would not fail today. The deadline and dirty slots are present and unused on the
+    /// maps that hold this, so a fresh-record write-back passes every test there is, and breaks
+    /// later, in a different change, when something starts filling them -- with nothing pointing
+    /// back here.
+    ///
+    /// So the write-back door is this one, and it is narrow BY CONSTRUCTION rather than by a
+    /// caller remembering: it writes the address word, the page size, and the two bits that are
+    /// part of what an address MEANS (whether an ordinal is present, and whether a generation is).
+    /// It cannot reach the deadline word, the deadline tags, `DIRTY`, `INDEX_DIRTY`, `LOADING`,
+    /// `IN_MEMORY`, `PAGE_DIRTY`, `PAGE_DELETED`, or the model id. A careless caller gets the
+    /// right answer.
+    ///
+    /// `compacting_a_record_keeps_everything_that_is_not_the_address` is the guard, and it asserts
+    /// the surviving state and the tracking state SEPARATELY -- because a test that compared whole
+    /// records would fail for the wrong reason, and a test that asserted "nothing changed" would
+    /// be wrong about the two bits that are supposed to change.
+    pub(super) fn set_address(&mut self, address: &ElementEntry) {
+        self.set_page_address(PageAddress::One(address.address_word()));
+        // NOT SATURATED. `ElementEntry::length` is a `u32` field and its accessor widens, so a
+        // value that does not fit here cannot exist -- and if one ever does, the honest answer is
+        // to say so rather than to record a shorter page than the one that was written. A
+        // saturated length reads as broken; a truncated one reads as a valid shorter block.
+        self.page_size = u32::try_from(address.length()).unwrap_or_else(|_| {
+            panic!(
+                "an address length of {} does not fit the record's page size, which cannot happen \
+                 while `ElementEntry` holds its length in a u32",
+                address.length()
+            )
+        });
+        self.flags.set(RecordFlags::PAGE_IN_LOG, address.block_id().is_none());
+        self.flags.set(RecordFlags::PAGE_GENERATION, address.generation().is_some());
     }
 
     // --- THE CONVERSION. This is what proves the merge is real. ---

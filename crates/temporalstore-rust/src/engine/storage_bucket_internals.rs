@@ -3546,9 +3546,10 @@ fn visit_model_live_blocks(
             }
         }
         visit_timestamped_series(&shard.features, ModelKind::Feature, &accept, &mut emit);
-        for (key, address) in &shard.control_state_blocks {
-            if accept(key, address) {
-                emit(ModelKind::ControlState, key, None, address);
+        for (key, record) in &shard.control_state_blocks {
+            let address = record.address();
+            if accept(key, &address) {
+                emit(ModelKind::ControlState, key, None, &address);
             }
         }
         for (key, address) in &shard.context_nodes {
@@ -7000,7 +7001,19 @@ pub(super) fn reconcile_secondary_views_from_bucket_index(
         let mut merged = control_state;
         merged.extend(persisted);
         shard.control_state = merged;
-        shard.control_state_blocks = control_state_blocks;
+        // CONVERTED AT THE BOUNDARY, so the walk that built this map keeps producing bare
+        // addresses and no reconcile site moves. Each address becomes a record whose other slots
+        // are default -- which is correct here: a reconcile re-derives addresses from the bucket
+        // index and has no deadline or dirty state to carry, and the dirty flags are cleared on
+        // load anyway.
+        shard.control_state_blocks = control_state_blocks
+            .into_iter()
+            .map(|(key, address)| {
+                let mut record = super::object_record::ObjectRecord::default();
+                record.set_address(&address);
+                (key, record)
+            })
+            .collect();
         // The rollup ladder is a derived view of control_state; drop it so it rebuilds
         // lazily from the series reconcile just materialized.
         super::control_rollup::clear_all(shard);
@@ -8579,7 +8592,13 @@ mod model_kind_registry_guards {
         shard
             .features
             .insert("f".to_string(), BTreeMap::from([(1u64, at.clone())]));
-        shard.control_state_blocks.insert("c".into(), at.clone());
+        shard.control_state_blocks.insert("c".into(), {
+            // Through `set_address`, like production. Building a record by hand here would make
+            // the fixture the one place the narrow door is bypassed.
+            let mut record = super::object_record::ObjectRecord::default();
+            record.set_address(&at);
+            record
+        });
         shard.context_nodes.insert("ctx:node:t:n".into(), at.clone());
         shard
             .context_events
