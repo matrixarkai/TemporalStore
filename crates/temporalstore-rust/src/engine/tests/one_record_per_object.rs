@@ -53,17 +53,16 @@ fn deep_heap_bytes<T: Clone>(value: &T) -> u64 {
 }
 
 /// Every named bit, so a test can walk them rather than restating the list.
-const NAMED_BITS: [(&str, u16); 12] = [
+const NAMED_BITS: [(&str, u16); 11] = [
     ("ADDRESS_IS_POINTER", RecordFlags::ADDRESS_IS_POINTER),
     ("DEADLINE_IS_POINTER", RecordFlags::DEADLINE_IS_POINTER),
     ("DIRTY", RecordFlags::DIRTY),
-    ("META_DIRTY", RecordFlags::META_DIRTY),
+    ("INDEX_DIRTY", RecordFlags::INDEX_DIRTY),
     ("LOADING", RecordFlags::LOADING),
     ("IN_MEMORY", RecordFlags::IN_MEMORY),
     ("PAGE_DIRTY", RecordFlags::PAGE_DIRTY),
     ("PAGE_DELETED", RecordFlags::PAGE_DELETED),
     ("PAGE_IN_LOG", RecordFlags::PAGE_IN_LOG),
-    ("TRIVIAL_PAGE", RecordFlags::TRIVIAL_PAGE),
     ("DEADLINE_PRESENT", RecordFlags::DEADLINE_PRESENT),
     ("PAGE_GENERATION", RecordFlags::PAGE_GENERATION),
 ];
@@ -113,9 +112,9 @@ fn every_flag_bit_is_distinct_and_the_reserved_set_is_disjoint() {
         );
         seen |= bit;
     }
-    assert_eq!(12, seen.count_ones(), "twelve named bits");
+    assert_eq!(11, seen.count_ones(), "eleven named bits");
     assert_eq!(RecordFlags::KNOWN, seen, "the KNOWN mask and the named list disagree");
-    assert_eq!(4, RecordFlags::RESERVED.count_ones(), "four reserved bits");
+    assert_eq!(5, RecordFlags::RESERVED.count_ones(), "five reserved bits");
     assert_eq!(0, RecordFlags::KNOWN & RecordFlags::RESERVED, "the two sets overlap");
     assert_eq!(16, (RecordFlags::KNOWN | RecordFlags::RESERVED).count_ones(), "sixteen in all");
 }

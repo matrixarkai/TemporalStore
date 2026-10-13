@@ -89,7 +89,7 @@ use crate::block_store::{
 // THE FLAGS
 // =================================================================================================
 
-/// Twelve named bits in sixteen, four reserved.
+/// Eleven named bits in sixteen, five reserved.
 ///
 /// # THE BIT LIST, AND THE TWO THAT ARE NOT IN THE SHAPE THIS FOLLOWS
 ///
@@ -123,8 +123,15 @@ impl RecordFlags {
     pub(super) const DEADLINE_IS_POINTER: u16 = 1 << 1;
     /// The object has unflushed writes.
     pub(super) const DIRTY: u16 = 1 << 2;
-    /// The object's metadata has unflushed writes, independently of its data.
-    pub(super) const META_DIRTY: u16 = 1 << 3;
+    /// The object's INDEX-LOG state has unflushed writes, independently of its data.
+    ///
+    /// NAMED FOR THE SPLIT THIS ENGINE ALREADY MAKES, which is between the write-ahead log and
+    /// the index log: a bucket carries `first_dirty_wal_sequence` and
+    /// `first_dirty_index_log_sequence` as two separate watermarks, and a round can clear one
+    /// while the other still pins its log. `DIRTY` above is the data side of that split and this
+    /// is the index side, so the pair reads as the engine's own two watermarks rather than as a
+    /// generic notion of metadata.
+    pub(super) const INDEX_DIRTY: u16 = 1 << 3;
     /// A load for this object is in flight.
     pub(super) const LOADING: u16 = 1 << 4;
     /// The object's bytes are resident.
@@ -135,15 +142,30 @@ impl RecordFlags {
     pub(super) const PAGE_DELETED: u16 = 1 << 7;
     /// The page's only durable copy is an operation-log record.
     pub(super) const PAGE_IN_LOG: u16 = 1 << 8;
-    /// The page carries no payload: set means the page is deleted.
-    pub(super) const TRIVIAL_PAGE: u16 = 1 << 9;
+    //
+    // BIT 9 IS A HOLE, AND IT IS THE RECORD OF A BIT REMOVED AS REDUNDANT.
+    //
+    // It held a second flag whose documented meaning was "the page is deleted" -- which is
+    // exactly what `PAGE_DELETED` at bit 7 already says. Two bits for one fact is worse than
+    // either of them alone, because nothing stops them disagreeing and then no reader knows
+    // which to believe. So the fact keeps one bit and the other is gone.
+    //
+    // THE HOLE IS KEPT RATHER THAN RENUMBERED, following the same reasoning `ElementEntry`'s
+    // presence byte gives for its own holes: nothing depends on the numbering being dense, and a
+    // hole is cheaper to read than a renumbering. Here it also costs nothing, because bit 9 falls
+    // into `RESERVED` below -- so a writer that sets the retired bit is refused by name as a
+    // newer writer, which is the correct answer for a bit this reader no longer understands.
+    //
     /// A deadline is present at all. See the type doc for why ten bits cannot say this.
     pub(super) const DEADLINE_PRESENT: u16 = 1 << 10;
     /// The page carries a generation, independently of whether it carries an identity.
     pub(super) const PAGE_GENERATION: u16 = 1 << 11;
 
-    /// Bits 12..=15. Set in a decoded record, these mean a writer newer than this reader.
-    pub(super) const RESERVED: u16 = 0xF000;
+    /// Bit 9 and bits 12..=15. Set in a decoded record, these mean a writer newer than this
+    /// reader -- bit 9 because it was retired as redundant, the rest because they were never
+    /// spent. A decoder REFUSES any of them rather than reading a record with their meaning
+    /// dropped.
+    pub(super) const RESERVED: u16 = 0xF200;
 
     /// Every bit this reader understands.
     pub(super) const KNOWN: u16 = !Self::RESERVED;
@@ -174,9 +196,9 @@ impl RecordFlags {
     }
 }
 
-/// Ten named state bits, twelve with the two the conversion needs, four reserved, sixteen in all.
-const _: () = assert!(RecordFlags::KNOWN.count_ones() == 12);
-const _: () = assert!(RecordFlags::RESERVED.count_ones() == 4);
+/// Ten named state bits, less one dropped as redundant, plus the two the conversion needs: eleven of sixteen.
+const _: () = assert!(RecordFlags::KNOWN.count_ones() == 11);
+const _: () = assert!(RecordFlags::RESERVED.count_ones() == 5);
 const _: () = assert!(RecordFlags::KNOWN & RecordFlags::RESERVED == 0);
 
 // =================================================================================================
@@ -242,21 +264,18 @@ pub(super) enum PageAddress {
 ///
 /// # THE LAYOUT, AND WHY THE FIELDS ARE IN THIS ORDER
 ///
-/// ```text
-///   offset  0   deadline   u64          8     value or handle, per its tag bit
-///   offset  8   address    u64          8     page address or handle, per its tag bit
-///   offset 16   page_size  u32          4
-///   offset 20   flags      RecordFlags  2     twelve named bits, four reserved
-///   offset 22   model_id   u8           1
-///   offset 23   (tail slack)            1
-///               ------------------------------
-///               24 bytes, align 8, 23 of field, NO packing attribute
-/// ```
+/// Five fields, widest first: the two tagged words, then the size, then the bits, then the model.
 ///
-/// Widest first is what removes the interior padding: the two words are eight-aligned at offsets 0
-/// and 8, the `u32` is four-aligned at 16, the `u16` is two-aligned at 20, and the `u8` needs no
-/// alignment at all. The single byte of slack is at the TAIL, where it costs nothing and where a
-/// field up to one byte wide is still free.
+/// WIDEST FIRST IS WHAT REMOVES THE INTERIOR PADDING. The two `u64`s are eight-aligned at offsets
+/// 0 and 8, the `u32` is four-aligned at 16, the `u16` is two-aligned at 20, and the `u8` needs no
+/// alignment at all. That leaves ONE byte standing empty at offset 23 -- at the TAIL, where it
+/// costs nothing and where a field up to a byte wide would still be free. Any other order of the
+/// same five fields pays for padding between them instead.
+///
+/// `size_of` is 24 and `align_of` is 8, both pinned below as separate equalities and both
+/// measured rather than argued -- see `the_record_is_twenty_four_bytes_at_natural_alignment`,
+/// which prints them. Twenty-three bytes of field in twenty-four, with no packing attribute: see
+/// the module header for why reproducing one was refused on measurement.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(try_from = "ObjectRecordWire", into = "ObjectRecordWire")]
 pub(super) struct ObjectRecord {
