@@ -1833,7 +1833,7 @@ fn decompose_bucket_map(map: &crate::engine::state::BucketMap) -> BucketMapDecom
 /// range must hold about one bucket per page. A fixture where both came out alike would make every
 /// conclusion below an artefact of one population measured twice.
 ///
-/// rust-internal: measures this crate own resident structures, no product behaviour
+/// rust-internal: measures this crate's own resident structures, no product behaviour
 #[test]
 #[cfg(feature = "alloc-probe")]
 #[ignore = "seeds four corpora under the counting allocator; run by name"]
@@ -2599,4 +2599,213 @@ fn how_many_structures_hold_an_entry_for_one_object() {
              saving"
         );
     }
+}
+
+// =================================================================================================
+// THE FOOTPRINT BRACKET
+// =================================================================================================
+
+/// THE RATCHET: WHAT THE SHARD INDEX IS ALLOWED TO COST, BRACKETED ABOVE AND BELOW.
+///
+/// # WHY A BRACKET AND NOT A CEILING
+///
+/// A ceiling alone rots in one direction. It catches a regression and says nothing when the figure
+/// IMPROVES, so a win goes unrecorded and the ceiling keeps quoting a cost nobody pays any more --
+/// and the next reader takes the stale ceiling for the current footprint. The floor is what makes
+/// this a ratchet rather than a cap: cross it and the test FAILS, demanding both bounds be moved
+/// down and the new figure published. An improvement that does not tighten this test is an
+/// improvement nobody can cite.
+///
+/// The floor earns its keep a second way. Every term here is measured by CLONING the structure and
+/// counting what the clone allocates, so a structure that becomes empty, or a field that stops
+/// being reached, measures as CHEAP rather than as broken. A figure that falls through the floor is
+/// as likely to be a measurement that stopped measuring as a genuine saving, and the two are
+/// indistinguishable from the number alone. The floor forces that question to be asked out loud.
+///
+/// # THE DENOMINATORS, AND WHY BOTH RATIOS ARE PUBLISHED
+///
+/// The same heap divides two ways and the two are NOT interchangeable:
+///
+///   * **per live key** -- one object, one index record. This is the denominator for anything
+///     charged once per object, a per-record width above all.
+///   * **per live address** -- one stored page. This is the denominator for anything charged once
+///     per page.
+///
+/// On this fixture they differ by exactly 2x, because half the addresses are series points hanging
+/// off forty keys. Quoting a per-record cost against the per-address figure halves it, and that is
+/// a mistake this lane has already made and published. So both are asserted, each against its own
+/// named denominator, and neither is derived from the other.
+///
+/// # WHAT IS PINNED, AND WHY EVERY ONE OF THEM HAS TO BE
+///
+/// A footprint figure is meaningless without the population it was taken over, so the fixture is
+/// pinned and ASSERTED, not merely passed:
+///
+///   * **the routing range** -- 0..1023, the shipped default since #1973. On the legacy whole-u32
+///     range every key gets a bucket of its own, every per-bucket cost divides by one key, and the
+///     same measurement reads 48% higher. That is not a different fixture, it is a different
+///     REGIME, and a bracket taken on one says nothing about the other.
+///   * **the bucket count** -- 1,024, asserted exactly. It is the denominator of every per-bucket
+///     term and it is what separates the two regimes.
+///   * **the corpus** -- 40,000 single-page objects and 40 series of 1,000 points. Asserted at both
+///     ends, because the per-key figure FALLS as the corpus grows (0.798x across a 10x corpus, so
+///     per-bucket costs amortise), which makes the corpus size part of the number itself.
+///
+/// # WHAT THIS FIXTURE IS NOT
+///
+/// Its mix is CONSTRUCTED. Forty of 40,040 keys carry a series because this test passes forty, and
+/// that quotient is this test's own arguments read back, not an observed property of any corpus.
+/// Nothing here may be quoted as a population. The bracket is a regression gate on a fixed fixture
+/// and is honest only as that.
+///
+/// rust-internal: measures this crate's own resident structures, no product behaviour
+#[test]
+#[cfg(feature = "alloc-probe")]
+#[ignore = "seeds 80,000 records under the counting allocator; run by name"]
+fn the_index_footprint_stays_inside_its_measured_bracket() {
+    /// The shipped routing default since #1973, and what an operator is told to set.
+    const SHIPPED_END: u32 = 1023;
+    /// Every bucket in 0..=1023 is occupied at this corpus size, and that is asserted rather than
+    /// assumed: it is the denominator of every per-bucket term below.
+    const PINNED_BUCKETS: usize = 1024;
+    /// The corpus the bracket was taken over. Changing any of these three changes the number.
+    const PINNED_STRINGS: usize = 40_000;
+    const PINNED_SERIES: usize = 40;
+    const PINNED_POINTS: usize = 1_000;
+
+    // THE BRACKET, measured on 0..1023 at this corpus: 14,253,412 B over 40,040 live keys and
+    // 80,000 live addresses, which is 356.0 B/key and 178.2 B/address.
+    //
+    // Headroom is deliberately thin. The point is to catch a change that moves the figure, not to
+    // leave room for one, and a bound nothing can breach gates nothing.
+    const CEILING_B_PER_KEY: f64 = 360.0;
+    const FLOOR_B_PER_KEY: f64 = 338.0;
+    const CEILING_B_PER_ADDRESS: f64 = 180.0;
+    const FLOOR_B_PER_ADDRESS: f64 = 169.0;
+
+    let dir = tempfile::tempdir().expect("tempdir");
+    let engine = probe_engine_on(dir.path(), SHIPPED_END);
+    probe_seed(&engine, PINNED_STRINGS, PINNED_SERIES, PINNED_POINTS);
+
+    let shards = engine.shards.read().expect("engine lock poisoned");
+    let shard = shards.get(&1).expect("shard is loaded");
+
+    // --- THE POPULATION, PINNED. Each of these is a denominator or a regime control, and every
+    // --- one of them is asserted before a single ratio is written.
+    let string_keys = shard.strings.len();
+    let series_map_keys = shard.features.len();
+    let feature_points: usize = shard.features.values().map(|s| s.len()).sum();
+    let bucket_count = shard.bucket_index.bucket_map.values().count();
+    let bucket_pages: usize = shard
+        .bucket_index
+        .bucket_map
+        .values()
+        .map(|b| b.block_index.len())
+        .sum();
+
+    assert_eq!(
+        PINNED_STRINGS, string_keys,
+        "the fixture seeded {PINNED_STRINGS} single-page objects and the string map holds \
+         {string_keys} -- the corpus is part of the bracket, so a figure taken over a different \
+         one is not comparable to it"
+    );
+    assert_eq!(
+        PINNED_SERIES, series_map_keys,
+        "the fixture seeded {PINNED_SERIES} series and the feature map holds {series_map_keys}"
+    );
+    assert_eq!(
+        PINNED_SERIES * PINNED_POINTS,
+        feature_points,
+        "the fixture seeded {} series points and the feature maps hold {feature_points}",
+        PINNED_SERIES * PINNED_POINTS
+    );
+    assert_eq!(
+        PINNED_BUCKETS, bucket_count,
+        "the bracket was taken over {PINNED_BUCKETS} buckets and this fixture produced \
+         {bucket_count} -- every per-bucket term divides by this, so the bracket does not apply"
+    );
+    // THE REGIME CONTROL. On the legacy range buckets and keys are the same number and the whole
+    // figure reads 48% higher. A fixture that drifted onto that range would sail past the ceiling
+    // for a reason that has nothing to do with any structure's cost.
+    assert!(
+        bucket_count < string_keys + series_map_keys,
+        "{bucket_count} buckets for {} keys is one bucket per key, which is the LEGACY range -- \
+         this bracket is only valid on the shipped 0..{SHIPPED_END}",
+        string_keys + series_map_keys
+    );
+    assert!(bucket_pages > 0, "denominator: the bucket index holds no pages");
+
+    // --- THE NUMERATOR: the whole live heap the shard index holds. The clone counts shared
+    // --- payloads ONCE, so the two `Arc` terms are added back explicitly rather than being
+    // --- double-counted or dropped.
+    let whole_bytes = deep_heap_bytes(shard);
+    let (arc_bytes, _arc_count) = arc_payload_bytes(&shard.bucket_index);
+    let (dirty_arc_bytes, _dirty_arc_count, _shared) = dirty_arc_payload_bytes(shard);
+    let total_index_heap_bytes = whole_bytes + arc_bytes + dirty_arc_bytes;
+    assert!(
+        total_index_heap_bytes > 0,
+        "numerator: the index measured as costing nothing, which is a broken measurement and not a \
+         free index"
+    );
+
+    // --- THE TWO RATIOS. Numerator and denominator are named ON THE LINE that divides them,
+    // --- because every wrong figure this campaign has published was a denominator question.
+    //
+    // numerator: total live index heap, bytes. denominator: LIVE KEYS -- one per object, which is
+    // 40,000 single-page objects plus 40 series maps. This is the denominator for a per-record cost.
+    let live_keys = string_keys + series_map_keys;
+    let bytes_per_live_key = total_index_heap_bytes as f64 / live_keys as f64;
+    //
+    // numerator: the SAME total live index heap, bytes. denominator: LIVE ADDRESSES -- one per
+    // stored page, which is 40,000 object pages plus 40,000 series points. This is the denominator
+    // for a per-page cost, and it is 2x the key count on this fixture, so the two ratios are not
+    // interchangeable and neither is derived from the other.
+    let live_addresses = string_keys + feature_points;
+    let bytes_per_live_address = total_index_heap_bytes as f64 / live_addresses as f64;
+
+    println!(
+        "=== footprint bracket on 0..{SHIPPED_END}: {total_index_heap_bytes} B over {live_keys} \
+         live keys and {live_addresses} live addresses, {bucket_count} buckets, {bucket_pages} \
+         pages ==="
+    );
+    println!("  {bytes_per_live_key:.1} B/key   (bracket {FLOOR_B_PER_KEY}..={CEILING_B_PER_KEY})");
+    println!(
+        "  {bytes_per_live_address:.1} B/address   (bracket {FLOOR_B_PER_ADDRESS}..=\
+         {CEILING_B_PER_ADDRESS})"
+    );
+
+    // --- THE CEILING: a regression. Named with the denominator, so the figure in the message can
+    // --- be compared to the right thing.
+    assert!(
+        bytes_per_live_key <= CEILING_B_PER_KEY,
+        "the shard index now costs {bytes_per_live_key:.1} B per live key \
+         ({total_index_heap_bytes} B over {live_keys} keys), above the {CEILING_B_PER_KEY} B/key \
+         ceiling. Either the change pays for itself somewhere this does not measure -- say where \
+         -- or the footprint regressed"
+    );
+    assert!(
+        bytes_per_live_address <= CEILING_B_PER_ADDRESS,
+        "the shard index now costs {bytes_per_live_address:.1} B per live address \
+         ({total_index_heap_bytes} B over {live_addresses} addresses), above the \
+         {CEILING_B_PER_ADDRESS} B/address ceiling"
+    );
+
+    // --- THE FLOOR: either a win that has to be recorded, or a measurement that stopped
+    // --- measuring. The message has to say both, because the number cannot tell them apart.
+    assert!(
+        bytes_per_live_key >= FLOOR_B_PER_KEY,
+        "the shard index now costs {bytes_per_live_key:.1} B per live key \
+         ({total_index_heap_bytes} B over {live_keys} keys), BELOW the {FLOOR_B_PER_KEY} B/key \
+         floor. Two things look like this and they are not the same: a real saving, which should \
+         move both bounds down and publish the new figure; or a structure that went empty or \
+         stopped being reached, which measures as cheap because this counts what a CLONE \
+         allocates. Establish which before lowering anything"
+    );
+    assert!(
+        bytes_per_live_address >= FLOOR_B_PER_ADDRESS,
+        "the shard index now costs {bytes_per_live_address:.1} B per live address \
+         ({total_index_heap_bytes} B over {live_addresses} addresses), BELOW the \
+         {FLOOR_B_PER_ADDRESS} B/address floor -- a saving to be recorded, or a term that stopped \
+         being measured"
+    );
 }
