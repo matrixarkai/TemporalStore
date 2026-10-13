@@ -477,7 +477,7 @@ fn folding_a_delta_cannot_leave_a_stale_deadline_mirror() {
     );
     // And the moved deadline is reachable at its NEW position, not only absent from its old one.
     assert!(
-        shard.expiry_by_deadline.contains_key(&(9_000, "moved".to_string())),
+        shard.expiry_by_deadline.contains_key(&(9_000, std::sync::Arc::from("moved"))),
         "the moved deadline is not in the ordered view at 9000, so the sweep would never see it"
     );
 }
@@ -1241,7 +1241,7 @@ fn a_delta_fold_recovery_applies_the_tombstones_a_stale_base_still_denies() {
     for index in 0..DUE_KEYS {
         let key = due_key(index);
         assert!(
-            base_state.expires_at_ms.contains_key(&key),
+            base_state.expires_at_ms.contains_key(key.as_str()),
             "the base index taken before the round does not name {key}. The base is supposed to \
              be the STALE source that still believes this key is alive -- with it already absent, \
              a fold that applies nothing would look exactly like one that works"
@@ -1343,7 +1343,7 @@ fn a_delta_fold_recovery_applies_the_tombstones_a_stale_base_still_denies() {
     for index in 0..DUE_KEYS {
         let key = due_key(index);
         assert!(
-            control.expires_at_ms.contains_key(&key),
+            control.expires_at_ms.contains_key(key.as_str()),
             "CONTROL: a load that does not fold the delta came back WITHOUT {key}'s deadline. \
              Something other than the fold is already removing it, so the treatment below proves \
              nothing -- it would pass with the fold deleted"
@@ -1390,7 +1390,7 @@ fn a_delta_fold_recovery_applies_the_tombstones_a_stale_base_still_denies() {
     for index in 0..DUE_KEYS {
         let key = due_key(index);
         assert!(
-            !folded.expires_at_ms.contains_key(&key),
+            !folded.expires_at_ms.contains_key(key.as_str()),
             "the fold left {key} holding the deadline the round cleared. The delta's blob for it \
              is bare -- no `expires_at_ms` field -- which `apply_key_state_field` is supposed to \
              read as a removal, and the stale base is the only other source in this load. An \
@@ -1420,7 +1420,7 @@ fn a_delta_fold_recovery_applies_the_tombstones_a_stale_base_still_denies() {
     for index in [0usize, LIVE_KEYS / 2, LIVE_KEYS - 1] {
         let key = format!("live-{index:08}");
         assert!(
-            folded.expires_at_ms.contains_key(&key),
+            folded.expires_at_ms.contains_key(key.as_str()),
             "the fold removed {key}, which the round did not touch. The covered-key wipe reaches \
              every key the blobs name, so a delta naming more than it removed deletes live data \
              on recovery"
@@ -1948,7 +1948,7 @@ fn a_deadline_set_with_options_is_visible_to_the_sweep() {
         shard
             .expiry_by_deadline
             .keys()
-            .any(|(_, mirrored)| mirrored == key)
+            .any(|(_, mirrored)| &**mirrored == key)
     }
     fn record_is_gone(engine: &TemporalEngine, shard_id: ShardId, key: &str) -> bool {
         let shards = engine.shards.read().expect("engine lock poisoned");
@@ -3154,7 +3154,7 @@ fn a_delta_record_carries_a_deadline_a_write_armed_and_one_it_moved() {
     for index in [0usize, LIVE_KEYS / 2, LIVE_KEYS - 1] {
         let key = format!("live-{index:08}");
         assert!(
-            folded.expires_at_ms.contains_key(&key),
+            folded.expires_at_ms.contains_key(key.as_str()),
             "the fold dropped {key}, which none of the three writes touched"
         );
     }

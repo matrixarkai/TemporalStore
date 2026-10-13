@@ -1869,7 +1869,7 @@ fn a_container_carry_does_not_clear_the_key_state_it_does_not_name() {
     // State this key holds that a container carry says nothing about.
     shard
         .expires_at_ms
-        .insert("carry-ttl".to_string(), 1_800_000_000_000u64);
+        .insert(std::sync::Arc::from("carry-ttl"), 1_800_000_000_000u64);
     shard
         .features
         .entry("carry-ttl".to_string())

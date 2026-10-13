@@ -5037,7 +5037,7 @@ fn how_many_times_one_object_key_is_stored() {
         .iter()
         .map(|(_model, object, _refs)| object.len())
         .sum();
-    let expiry_key_bytes: usize = shard.expires_at_ms.keys().map(String::len).sum();
+    let expiry_key_bytes: usize = shard.expires_at_ms.keys().map(|key| key.len()).sum();
     let total = key_bytes + block_key_bytes + lookup_key_bytes + expiry_key_bytes;
 
     println!(
@@ -10030,9 +10030,9 @@ fn the_default_expiry_bound_truncates_a_round_and_the_next_one_resumes() {
 
     let request = StorageManagerCycleRequest::default();
     let limit = request.max_expire_hot_buckets_per_round;
-    let mut deadlines: BTreeMap<String, u64> = BTreeMap::new();
+    let mut deadlines: BTreeMap<std::sync::Arc<str>, u64> = BTreeMap::new();
     for index in 0..(limit as u64 * 3) {
-        deadlines.insert(format!("key-{index:05}"), index);
+        deadlines.insert(format!("key-{index:05}").into(), index);
     }
 
     let (first, cursor) = crate::engine::expiry_window(
@@ -10072,9 +10072,9 @@ fn the_default_expiry_bound_truncates_a_round_and_the_next_one_resumes() {
 fn paging_the_expiry_window_reaches_every_deadline_once() {
     use std::collections::BTreeMap;
 
-    let mut deadlines: BTreeMap<String, u64> = BTreeMap::new();
+    let mut deadlines: BTreeMap<std::sync::Arc<str>, u64> = BTreeMap::new();
     for index in 0..250u64 {
-        deadlines.insert(format!("key-{index:04}"), index);
+        deadlines.insert(format!("key-{index:04}").into(), index);
     }
 
     for window in [1usize, 7, 64, 250, 400] {
@@ -10123,9 +10123,9 @@ fn paging_the_expiry_window_reaches_every_deadline_once() {
 fn a_run_of_rejected_keys_does_not_stall_the_sweep() {
     use std::collections::BTreeMap;
 
-    let mut deadlines: BTreeMap<String, u64> = BTreeMap::new();
+    let mut deadlines: BTreeMap<std::sync::Arc<str>, u64> = BTreeMap::new();
     for index in 0..1_000u64 {
-        deadlines.insert(format!("key-{index:04}"), index);
+        deadlines.insert(format!("key-{index:04}").into(), index);
     }
     // Only the last handful are wanted; everything before them is examined and rejected.
     let wanted = |key: &str| key >= "key-0990";
@@ -10156,9 +10156,9 @@ fn a_run_of_rejected_keys_does_not_stall_the_sweep() {
 fn an_unlimited_expiry_window_returns_every_match() {
     use std::collections::BTreeMap;
 
-    let mut deadlines: BTreeMap<String, u64> = BTreeMap::new();
+    let mut deadlines: BTreeMap<std::sync::Arc<str>, u64> = BTreeMap::new();
     for index in 0..40u64 {
-        deadlines.insert(format!("key-{index:04}"), index);
+        deadlines.insert(format!("key-{index:04}").into(), index);
     }
     let (selected, next) = crate::engine::expiry_window(&deadlines, None, 0, 0, |_| true);
     assert_eq!(selected.len(), 40);

@@ -135,7 +135,25 @@ pub(super) struct ShardState {
     /// MUTATE THIS THROUGH `set_expiry` / `clear_expiry`, never directly: `expiry_by_deadline`
     /// below mirrors it and the two must agree. `the_two_expiry_indexes_agree` fails if they
     /// drift.
-    pub(super) expires_at_ms: BTreeMap<String, u64>,
+    ///
+    /// THE KEY IS AN `Arc<str>` SO THAT THIS MAP AND ITS MIRROR HOLD ONE COPY OF THE CHARACTERS
+    /// BETWEEN THEM, not one each. A deadline used to cost two independent `String`s of the same
+    /// text -- this map's key and the mirror's tuple element -- which is two of the five copies a
+    /// live object was measured to keep. `set_expiry` allocates once and hands both maps a
+    /// refcounted handle to it.
+    ///
+    /// THE STORED BYTES DO NOT MOVE. `serde`'s `rc` feature is enabled, so an `Arc<str>` key
+    /// serializes as the same string a `String` key did, and the index image is byte-identical --
+    /// asserted by `the_expiry_key_change_writes_the_same_index_bytes` rather than argued from the
+    /// feature flag. So this owes no format stamp.
+    ///
+    /// AND SHARING DOES NOT SURVIVE A DECODE, which is the part worth knowing. `serde` gives each
+    /// occurrence its own allocation on the way back in; what restores the sharing is
+    /// `ensure_expiry_order`, whose `key.clone()` on an `Arc` IS the sharing operation rather than
+    /// a copy. That is measured on both paths -- fresh, and after a dump and restore -- by
+    /// `the_expiry_pair_shares_one_allocation_on_both_paths`, because an argument that a rebuild
+    /// shares is not a measurement that it does.
+    pub(super) expires_at_ms: BTreeMap<Arc<str>, u64>,
     /// The same deadlines, DEADLINE-ordered, so the keys that are due are a PREFIX.
     ///
     /// Walking `expires_at_ms` in key order to find due keys made time-to-expire a function of
@@ -155,7 +173,10 @@ pub(super) struct ShardState {
     /// WAL replay, and -- at length -- why a bounded round-robin expiry cursor should not replace
     /// an ordered index here.
     #[serde(skip)]
-    pub(super) expiry_by_deadline: BTreeMap<(u64, String), ()>,
+    /// THE TUPLE'S SECOND ELEMENT IS A SHARED HANDLE, NOT A SECOND COPY. See
+    /// `expires_at_ms` above: the ordering here is the whole point of this map and is untouched,
+    /// but the characters it orders are the ones that map already holds.
+    pub(super) expiry_by_deadline: BTreeMap<(u64, Arc<str>), ()>,
     pub(super) strings: HashMap<ModelKey, ElementEntry>,
     // DURABLE, AND THIS LINE SAID IT WAS NOT. It read "Rebuildable from the durable bucket/block
     // index on load; do not duplicate in checkpoints", which was true while this field was

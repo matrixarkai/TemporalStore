@@ -765,7 +765,7 @@ pub(crate) fn execute_on_shard(
                         // and the replay would install the new value over a cleared deadline --
                         // turning the one option whose whole purpose is to keep the countdown
                         // into the one that loses it, but only after a restart.
-                        let kept = shard.expires_at_ms.get(&key).copied();
+                        let kept = shard.expires_at_ms.get(key.as_str()).copied();
                         stage_meta_outcome(
                             shard_id,
                             "object",

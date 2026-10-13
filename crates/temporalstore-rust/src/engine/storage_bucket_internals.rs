@@ -5842,7 +5842,7 @@ fn refresh_one_bucket_runtime_flags(
     // no behavioural reason, and because the next reader should see that this function was handed
     // the set and chose not to consult it rather than never having had access to it.
     _dirty_objects: &DirtyObjectIndex,
-    expires_at_ms: &BTreeMap<String, u64>,
+    expires_at_ms: &BTreeMap<Arc<str>, u64>,
     // THE IDENTITIES, AND SEPARATELY THE DECISION TO REBUILD. ONE PARAMETER WAS CARRYING BOTH
     // AND THAT WAS WRONG IN A WAY A TEST CAUGHT.
     //

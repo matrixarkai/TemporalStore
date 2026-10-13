@@ -904,7 +904,7 @@ impl TemporalEngine {
             .into_iter()
             .map(|key| {
                 let size = key_membership_size(shard, &key);
-                let deadline = shard.expires_at_ms.get(&key).copied();
+                let deadline = shard.expires_at_ms.get(key.as_str()).copied();
                 (key, size, deadline)
             })
             .collect();
@@ -1494,7 +1494,7 @@ impl TemporalEngine {
                 Command::StringGet { key } => {
                     if shard
                         .expires_at_ms
-                        .get(key)
+                        .get(key.as_str())
                         .map(|expires_at| *expires_at <= resolve_now_ms())
                         .unwrap_or(false)
                     {
@@ -1514,7 +1514,7 @@ impl TemporalEngine {
                 Command::HashGetAll { key } => {
                     if shard
                         .expires_at_ms
-                        .get(key)
+                        .get(key.as_str())
                         .map(|expires_at| *expires_at <= resolve_now_ms())
                         .unwrap_or(false)
                     {
@@ -3568,7 +3568,7 @@ fn delta_key_state_change(
         .iter()
         .any(|(key, size_before, deadline_before)| {
             key_membership_size(shard, key) < *size_before
-                || shard.expires_at_ms.get(key).copied() != *deadline_before
+                || shard.expires_at_ms.get(key.as_str()).copied() != *deadline_before
         })
 }
 
@@ -3766,7 +3766,7 @@ fn capture_key_states(shard: &ShardState, keys: &[String]) -> Vec<serde_json::Va
                 }
             };
             put("features", shard.features.get(key).and_then(|v| serde_json::to_value(v).ok()));
-            put("expires_at_ms", shard.expires_at_ms.get(key).and_then(|v| serde_json::to_value(v).ok()));
+            put("expires_at_ms", shard.expires_at_ms.get(key.as_str()).and_then(|v| serde_json::to_value(v).ok()));
             put("control_state_changes", shard.control_state_changes.get(key).and_then(|v| serde_json::to_value(v).ok()));
             put("control_state_change_sketch", shard.control_state_change_sketch.get(key).and_then(|v| serde_json::to_value(v).ok()));
             put("control_state_selection", shard.control_state_selection.get(key).and_then(|v| serde_json::to_value(v).ok()));
@@ -4118,6 +4118,24 @@ impl<V> KeyedState<V> for std::collections::HashMap<String, V> {
 impl<V> KeyedState<V> for std::collections::BTreeMap<String, V> {
     fn insert_entry(&mut self, key: &str, value: V) {
         self.insert(key.to_string(), value);
+    }
+    fn remove_entry(&mut self, key: &str) {
+        self.remove(key);
+    }
+}
+
+/// The deadline map, whose key is a SHARED handle so that it and its ordered mirror hold one copy
+/// of the characters between them.
+///
+/// This impl is three lines because the trait above was built for exactly this change: its own
+/// doc says the key type "belongs to the implementor and not to this signature", which is what
+/// keeps a key-type change from reaching a helper with no interest in the key type. Note that an
+/// insert HERE allocates -- this door is reached only by the index-log delta fold, which has a
+/// `&str` and no handle to share, and which invalidates the mirror wholesale rather than keeping
+/// it in step. `set_expiry` is the path that shares.
+impl<V> KeyedState<V> for std::collections::BTreeMap<std::sync::Arc<str>, V> {
+    fn insert_entry(&mut self, key: &str, value: V) {
+        self.insert(std::sync::Arc::from(key), value);
     }
     fn remove_entry(&mut self, key: &str) {
         self.remove(key);
@@ -4926,7 +4944,7 @@ fn ttl_ms(shard: &mut ShardState, key: &str) -> i64 {
     }
     associated_record_keys(key)
         .into_iter()
-        .filter_map(|record_key| shard.expires_at_ms.get(&record_key).copied())
+        .filter_map(|record_key| shard.expires_at_ms.get(record_key.as_str()).copied())
         .map(|expires_at| expires_at.saturating_sub(resolve_now_ms()) as i64)
         .min()
         .unwrap_or(-1)
@@ -4973,7 +4991,7 @@ fn ttl_ms(shard: &mut ShardState, key: &str) -> i64 {
 /// `a_run_of_rejected_keys_does_not_stall_the_sweep`, whose hazard [`due_window`] shares. The
 /// other two are about this cursor API, which [`due_window`] does not have, and go with it.
 pub(crate) fn expiry_window<F>(
-    deadlines: &std::collections::BTreeMap<String, u64>,
+    deadlines: &std::collections::BTreeMap<std::sync::Arc<str>, u64>,
     cursor: Option<&str>,
     limit: usize,
     scan_budget: usize,
@@ -4984,8 +5002,10 @@ where
 {
     use std::ops::Bound::{Excluded, Unbounded};
 
+    // The probe handle allocates, and only here: this function has no live caller, and a
+    // cursor arrives as a `&str` with no handle to borrow from.
     let lower = match cursor {
-        Some(cursor) => Excluded(cursor.to_string()),
+        Some(cursor) => Excluded(std::sync::Arc::<str>::from(cursor)),
         None => Unbounded,
     };
     let mut selected = Vec::new();
@@ -5002,9 +5022,12 @@ where
             break;
         }
         walked = walked.saturating_add(1);
-        last_seen = Some(key.clone());
-        if keep(key.as_str()) {
-            selected.push((key.clone(), *expires_at));
+        // `to_string` rather than `clone`: the cursor and the selection are owned `String`s that
+        // leave this function, so they are TRANSIENT copies on a bounded walk and not resident
+        // ones. The count this change is about is resident copies.
+        last_seen = Some(key.to_string());
+        if keep(&**key) {
+            selected.push((key.to_string(), *expires_at));
         }
     }
     // Resume past everything examined, not past everything taken: the keys `keep` rejected were
@@ -5039,18 +5062,32 @@ pub(in crate::engine) fn expiry_index_disagreements(shard: &ShardState) -> usize
 /// Record a deadline for `key`, keeping both expiry indexes in step.
 pub(in crate::engine) fn set_expiry(shard: &mut ShardState, key: String, expires_at: u64) {
     ensure_expiry_order(shard);
-    if let Some(previous) = shard.expires_at_ms.insert(key.clone(), expires_at) {
-        shard.expiry_by_deadline.remove(&(previous, key.clone()));
+    // ONE ALLOCATION OF THE CHARACTERS, HELD BY BOTH MAPS. `Arc::from(String)` takes the buffer
+    // the caller already owns rather than copying it, and every `Arc::clone` below is a refcount
+    // bump. This used to be three `String`s of the same text per write: one into this map, one
+    // into the mirror, and one more to probe the mirror on an overwrite.
+    let shared: std::sync::Arc<str> = std::sync::Arc::from(key);
+    if let Some(previous) = shard
+        .expires_at_ms
+        .insert(std::sync::Arc::clone(&shared), expires_at)
+    {
+        shard
+            .expiry_by_deadline
+            .remove(&(previous, std::sync::Arc::clone(&shared)));
     }
-    shard.expiry_by_deadline.insert((expires_at, key), ());
+    shard.expiry_by_deadline.insert((expires_at, shared), ());
 }
 
 /// Drop any deadline for `key`. Returns whether there was one.
 pub(in crate::engine) fn clear_expiry(shard: &mut ShardState, key: &str) -> bool {
     ensure_expiry_order(shard);
-    match shard.expires_at_ms.remove(key) {
-        Some(previous) => {
-            shard.expiry_by_deadline.remove(&(previous, key.to_string()));
+    // `remove_entry` HANDS BACK THE HANDLE BOTH MAPS HOLD, so the tuple that probes the mirror
+    // is a move of that handle rather than a fresh allocation of the same text. The
+    // `key.to_string()` this replaces was a third copy on every removal, built only to be
+    // dropped.
+    match shard.expires_at_ms.remove_entry(key) {
+        Some((shared, previous)) => {
+            shard.expiry_by_deadline.remove(&(previous, shared));
             true
         }
         None => false,
@@ -5064,6 +5101,13 @@ pub(in crate::engine) fn clear_expiry(shard: &mut ShardState, key: &str) -> bool
 /// per load rather than a migration.
 pub(in crate::engine) fn ensure_expiry_order(shard: &mut ShardState) {
     if shard.expiry_by_deadline.is_empty() && !shard.expires_at_ms.is_empty() {
+        // THIS `clone` IS THE SHARING, AND THAT IS WHY THE REBUILD NEEDS NO CARE. On an `Arc` it
+        // is a refcount bump, so a mirror rebuilt here points at the characters the key-ordered
+        // map already holds. It matters because `serde` does NOT restore sharing: each occurrence
+        // decodes its own allocation, and this map is `serde(skip)`, so what the sharing looks
+        // like after a restore is whatever this loop does rather than whatever the write path
+        // did. Spelled `key.to_string()` -- the natural thing to leave in place -- a restored
+        // shard would silently hold two copies again while a freshly written one held one.
         for (key, expires_at) in shard.expires_at_ms.iter() {
             shard
                 .expiry_by_deadline
@@ -5100,8 +5144,12 @@ where
             break;
         }
         walked = walked.saturating_add(1);
-        if keep(key.as_str()) {
-            selected.push((key.clone(), *expires_at));
+        // TRANSIENT, NOT RESIDENT. The returned `String`s leave this function and are dropped by
+        // the sweep that consumes them; the signature is left alone so no caller moves. This is
+        // one allocation per DUE key on a bounded round -- the same cost as the `String` clone it
+        // replaces -- and it is not one of the copies the footprint counts.
+        if keep(&**key) {
+            selected.push((key.to_string(), *expires_at));
         }
     }
     selected

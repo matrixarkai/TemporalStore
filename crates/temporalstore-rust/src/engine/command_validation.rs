@@ -519,7 +519,7 @@ pub(super) fn validate_command_preconditions(
         Command::CommonExpire { key, .. } => {
             if shard
                 .expires_at_ms
-                .get(key)
+                .get(key.as_str())
                 .map(|expires_at| *expires_at <= resolve_now_ms())
                 .unwrap_or(false)
                 || !record_exists(shard, key)
@@ -932,7 +932,7 @@ pub(super) fn validate_command_preconditions(
     {
         if shard
             .expires_at_ms
-            .get(key)
+            .get(key.as_str())
             .map(|expires_at| *expires_at <= resolve_now_ms())
             .unwrap_or(false)
         {
