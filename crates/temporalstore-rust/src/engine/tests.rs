@@ -429,3 +429,4 @@ mod the_expiry_pair_shares_one_allocation;
 mod one_key_two_kinds;
 mod context_node_map_arrival;
 mod the_third_door_stays_shut;
+mod context_node_arrival_with_no_base_index;
