@@ -1160,6 +1160,21 @@ impl TemporalEngine {
                     manifest_fingerprints[manifest_index] = Some(
                         crate::engine::decode_index_bytes(&manifest.index_bytes)
                             .ok()
+                            // A STALE-STAMPED MANIFEST FINGERPRINTS NOTHING, exactly as an
+                            // undecodable one already did. Not counted: this is a plan, and it
+                            // installs nothing.
+                            //
+                            // THE SAFE DIRECTION IS "NO MATCH", which is why this is a filter and
+                            // not a refusal. A manifest that matches a bucket's current generation
+                            // is a manifest the plan believes has that bucket's records durably
+                            // dumped, and the log beneath them becomes reclaimable. Fingerprints
+                            // derived from an image whose fields may mean something else could
+                            // match a bucket no dump actually covers, and the reclaim that follows
+                            // is not recoverable. Declining to match costs a dump that is kept
+                            // longer than it had to be.
+                            .filter(|manifest_state| {
+                                !crate::engine::persistence::index_stamp_is_stale(manifest_state)
+                            })
                             .map(|manifest_state| {
                                 // The shard this plan is FOR. A decoded manifest state carries no
                                 // stamp of its own -- only `install_shard_state` sets one -- so

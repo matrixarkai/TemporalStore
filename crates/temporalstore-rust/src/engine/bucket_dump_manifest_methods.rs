@@ -667,6 +667,32 @@ impl TemporalEngine {
         }
         let mut restored = crate::engine::decode_index_bytes(&manifest.index_bytes)
             .map_err(|err| Status::error("slot_dump_invalid_index", err.to_string()))?;
+        // THE STAMP, ON THIS DOOR TOO. Every install calls this function first
+        // (`install_bucket_dump_manifest` line 1 of its body), so refusing here is what gates the
+        // install -- and refusing BEFORE `rebuild_unserialized_model_maps_from_bucket_index`
+        // below, because that call starts reinterpreting the image.
+        //
+        // WHY A REFUSAL AND NOT A MIGRATION. The base-index door answers `Ok(None)` and the
+        // caller replays the write-ahead log instead: slower, and correct. This door takes the
+        // same trade. A migration here would be a SECOND place that has to know what every stamp
+        // bump means, and the two would drift -- which is the defect the single predicate in
+        // `persistence.rs` exists to stop, not one to reproduce.
+        //
+        // THIS REFUSES RESTORES THAT PREVIOUSLY SUCCEEDED, deliberately. What they did instead
+        // was trust an image whose fields may have changed meaning; the measured instance is a
+        // pre-fold index's `sequences` map, whose rows an install destroyed silently with every
+        // load counter at zero. A loud, counted refusal that falls back to replay is the better
+        // failure.
+        if crate::engine::persistence::refuse_stale_index_stamp(&restored) {
+            return Err(Status::error(
+                "slot_dump_stale_index_stamp",
+                format!(
+                    "slot dump manifest index is stamped {} and this binary is {}; the dump                      cannot be trusted and the shard must recover from its log instead",
+                    restored.index_format_version,
+                    crate::engine::SHARD_INDEX_FORMAT_VERSION
+                ),
+            ));
+        }
         // `hashes` IS carried by a freshly deserialized index now, so this call no longer supplies
         // a map that was absent -- it MERGES the bucket-index derivation into the decoded one. That
         // is still needed, and for the original reason read the other way round: an index can hold a
@@ -944,6 +970,14 @@ impl TemporalEngine {
                                 unreadable_block_bytes.saturating_add(entry.address.length());
                         }
                     }
+                }
+                // REPORTED, NOT COUNTED. `validate_bucket_dump_manifest` is what refuses this
+                // manifest and what moves the refusal counter; this is the read-only report, and
+                // a report that installs nothing must not look like an install that was refused.
+                // Without the blocker the report would say `install_safe` of a manifest the
+                // install then rejects, which is the shape of a preflight nobody can act on.
+                if crate::engine::persistence::index_stamp_is_stale(&restored) {
+                    blockers.push("stale_index_stamp".to_string());
                 }
                 restored_index = Some(restored);
             } else {

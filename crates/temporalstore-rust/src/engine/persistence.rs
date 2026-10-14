@@ -43,6 +43,43 @@ static INDEX_LOADS_ABSENT: std::sync::atomic::AtomicU64 = std::sync::atomic::Ato
 static INDEX_LOADS_UNDECODABLE: std::sync::atomic::AtomicU64 =
     std::sync::atomic::AtomicU64::new(0);
 
+/// IS THIS IMAGE'S STAMP TOO OLD TO TRUST? THE COMPARISON, WRITTEN ONCE.
+///
+/// `index_format_version` exists because a stale index decodes CLEANLY -- the types are
+/// unchanged -- while a field's MEANING has moved under it, so trusting it serves wrong data with
+/// no error anywhere. The constant is therefore a claim about every door that turns stored bytes
+/// into a `ShardState` somebody acts on, and it used to be enforced at exactly one of them.
+///
+/// MEASURED, which is why this exists: `decode_index_bytes` has six production callers and only
+/// `load_index_inner` read the stamp. A stamp-13 image installed through
+/// `install_bucket_dump_manifest` reached a live shard with all four counters below at ZERO -- it
+/// did not skip the refusal, it never entered the code the refusal lived in. See
+/// `engine::tests::the_stamp_refuses_a_legacy_sequence_map`.
+///
+/// Spelled as a predicate rather than copied inline at each door so the ORDER of the comparison
+/// cannot drift between them: `<` and not `!=`, because a FUTURE stamp is a different question
+/// (`decode_index_bytes`'s binary arm refuses that one on equality) and because the direction
+/// that fails silently is a stamp that is too LOW.
+pub(super) fn index_stamp_is_stale(shard: &ShardState) -> bool {
+    shard.index_format_version < super::SHARD_INDEX_FORMAT_VERSION
+}
+
+/// The same question at a door that INSTALLS state, which also counts the refusal.
+///
+/// Counted so a refusal is distinguishable from an absence: every door here answers its caller
+/// with the same "no usable index" it would give for a missing file, so without the counter
+/// nothing downstream can tell "refused because stale" from "there was nothing there". The
+/// report and plan paths deliberately use the bare predicate above instead -- they install
+/// nothing, and counting them would make the tally mean something other than "an image was
+/// refused on the way in".
+pub(super) fn refuse_stale_index_stamp(shard: &ShardState) -> bool {
+    if index_stamp_is_stale(shard) {
+        note_index_load(IndexLoadPath::RefusedStaleStamp);
+        return true;
+    }
+    false
+}
+
 fn note_index_load(path: IndexLoadPath) {
     let counter = match path {
         IndexLoadPath::Accepted => &INDEX_LOADS_ACCEPTED,
@@ -304,8 +341,7 @@ impl TemporalEngine {
                     // COUNTED, because all three outcomes below return the same `Ok(None)` and a
                     // caller cannot tell a refusal from an absence. See
                     // `index_load_path_counts` just above.
-                    if shard.index_format_version < super::SHARD_INDEX_FORMAT_VERSION {
-                        note_index_load(IndexLoadPath::RefusedStaleStamp);
+                    if refuse_stale_index_stamp(&shard) {
                         return Ok(None);
                     }
                     note_index_load(IndexLoadPath::Accepted);
