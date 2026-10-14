@@ -669,7 +669,7 @@ fn what_a_live_key_costs_in_the_index_at_two_corpus_sizes() {
     ] {
         let dir = tempfile::tempdir().expect("tempdir");
         let engine = probe_engine(dir.path());
-        probe_seed(&engine, strings_n, series_keys, series_points);
+        probe_seed(&engine, strings_n, series_keys, series_points, 0);
 
         let shards = engine.shards.read().expect("engine lock poisoned");
         let shard = shards.get(&1).expect("shard is loaded");
@@ -1059,13 +1059,46 @@ fn probe_engine(dir: &std::path::Path) -> Arc<TemporalEngine> {
     engine
 }
 
+/// A TTL far enough out that nothing in the corpus expires while a probe is measuring it.
+///
+/// A deadline that elapsed mid-run would delete the very entries the fixture exists to hold, and
+/// the probe would report a smaller corpus than it seeded without saying so.
 #[cfg(feature = "alloc-probe")]
-fn probe_seed(engine: &TemporalEngine, strings_n: usize, series_keys: usize, series_points: usize) {
+const PROBE_TTL_MS: u64 = 7 * 24 * 60 * 60 * 1_000;
+
+/// Seed the corpus. `strings_with_deadlines` of the strings are written with a TTL.
+///
+/// WHY THE DEADLINE SHARE IS A PARAMETER AND NOT A CONSTANT. Five callers in this file price
+/// unrelated things and their figures are only comparable to their own history, so they pass 0 and
+/// their corpus is unchanged to the byte. One caller -- the footprint bracket -- passes a share,
+/// because a corpus with no deadlines cannot see the trade the consolidation is making. Stating it
+/// per call site means a reader of any one probe knows which corpus it measured.
+///
+/// EVERY OTHER KEY, not a contiguous prefix, so the deadline-carrying population is spread across
+/// the routing range rather than concentrated in whichever buckets the first n keys hash to.
+#[cfg(feature = "alloc-probe")]
+fn probe_seed(
+    engine: &TemporalEngine,
+    strings_n: usize,
+    series_keys: usize,
+    series_points: usize,
+    strings_with_deadlines: usize,
+) {
     for chunk_start in (0..strings_n).step_by(1_000) {
         let commands = (chunk_start..(chunk_start + 1_000).min(strings_n))
-            .map(|i| Command::StringSet {
-                key: format!("s{i}"),
-                value: vec![b'v'; 32],
+            .map(|i| {
+                if i % 2 == 0 && i / 2 < strings_with_deadlines {
+                    Command::StringSetEx {
+                        key: format!("s{i}"),
+                        value: vec![b'v'; 32],
+                        ttl_ms: PROBE_TTL_MS,
+                    }
+                } else {
+                    Command::StringSet {
+                        key: format!("s{i}"),
+                        value: vec![b'v'; 32],
+                    }
+                }
             })
             .collect::<Vec<_>>();
         if commands.is_empty() {
@@ -1179,7 +1212,7 @@ fn what_a_live_key_costs_on_the_shipped_routing_range() {
     ] {
         let dir = tempfile::tempdir().expect("tempdir");
         let engine = probe_engine_on(dir.path(), SHIPPED_END);
-        probe_seed(&engine, strings_n, series_keys, series_points);
+        probe_seed(&engine, strings_n, series_keys, series_points, 0);
 
         let (total, per_key, per_address, live_keys, buckets) = {
             let shards = engine.shards.read().expect("engine lock poisoned");
@@ -1423,7 +1456,7 @@ fn what_a_dump_then_release_recovers_on_the_shipped_routing_range() {
 
     let dir = tempfile::tempdir().expect("tempdir");
     let engine = probe_engine_on(dir.path(), SHIPPED_END);
-    probe_seed(&engine, 40_000, 40, 1_000);
+    probe_seed(&engine, 40_000, 40, 1_000, 0);
 
     let probe_keys: Vec<String> = (0..16).map(|i| format!("s{i}")).collect();
     let readable = |engine: &TemporalEngine| -> usize {
@@ -1854,7 +1887,7 @@ fn what_the_bucket_map_footprint_is_made_of_on_both_routing_ranges() {
         } else {
             probe_engine(dir.path())
         };
-        probe_seed(&engine, strings_n, series_keys, series_points);
+        probe_seed(&engine, strings_n, series_keys, series_points, 0);
 
         let shards = engine.shards.read().expect("engine lock poisoned");
         let shard = shards.get(&1).expect("shard is loaded");
@@ -2412,7 +2445,7 @@ fn how_many_structures_hold_an_entry_for_one_object() {
         let base_series = 2 * scale;
         let dir = tempfile::tempdir().expect("tempdir");
         let engine = probe_engine_on(dir.path(), SHIPPED_END);
-        probe_seed(&engine, base_strings, base_series, 1_000);
+        probe_seed(&engine, base_strings, base_series, 1_000, 0);
 
         // --- DENOMINATORS FIRST, ASSERTED, because every figure below divides by one. ---
         let (base_keys, buckets, pages) = {
@@ -2666,17 +2699,89 @@ fn the_index_footprint_stays_inside_its_measured_bracket() {
     /// Every bucket in 0..=1023 is occupied at this corpus size, and that is asserted rather than
     /// assumed: it is the denominator of every per-bucket term below.
     const PINNED_BUCKETS: usize = 1024;
-    /// The corpus the bracket was taken over. Changing any of these three changes the number.
+    /// The corpus the bracket was taken over. Changing any of these four changes the number.
     const PINNED_STRINGS: usize = 40_000;
     const PINNED_SERIES: usize = 40;
     const PINNED_POINTS: usize = 1_000;
+    /// HOW MANY STRINGS CARRY A DEADLINE, and the reason this corpus has any at all.
+    ///
+    /// WHAT THE FIXTURE COULD NOT SEE BEFORE. The seed issued `StringSet` and `FeatureAppend`
+    /// only, and `StringSet` carries no TTL -- so `expires_at_ms` and `expiry_by_deadline` were
+    /// EMPTY here. That matters because the consolidation's trade is exactly those two maps: a
+    /// slot is sixteen bytes wider than the bare address it replaces, and those bytes are the
+    /// deadline, flags and model id that a later change fills so a key's deadline entry can stop
+    /// existing. On a corpus with no deadlines the COST of that widening was fully visible and the
+    /// OFFSETTING WIN was structurally unmeasurable -- a bound that can see one half of a trade
+    /// reports a regression for a change that is net neutral or better.
+    ///
+    /// That is the same vacuity as a duplication figure measured on an empty map, arriving from
+    /// the other side. `strings` being seeded is what made its cost real; `expires_at_ms` being
+    /// empty is what hid the win against it.
+    ///
+    /// HALF, NOT ALL. Both populations stay present, so a change that helps only the
+    /// deadline-carrying keys shows a partial win rather than all-or-nothing -- which is more
+    /// informative and does not imply every stored object has a TTL.
+    const PINNED_DEADLINES: usize = PINNED_STRINGS / 2;
 
-    // THE BRACKET, measured on 0..1023 at this corpus: 14,253,412 B over 40,040 live keys and
-    // 80,000 live addresses, which is 356.0 B/key and 178.2 B/address.
+    // THE BRACKET, measured on 0..1023 at this corpus: 16,141,700 B over 40,040 live keys and
+    // 80,000 live addresses, which is 403.1 B/key and 201.8 B/address.
     //
-    // Headroom is deliberately thin. The point is to catch a change that moves the figure, not to
-    // leave room for one, and a bound nothing can breach gates nothing.
+    // THESE ARE NOT COMPARABLE TO THE FIGURES THAT STOOD HERE BEFORE. The previous bracket read
+    // 14,253,412 B -> 356.0 B/key and 178.2 B/address, and it was taken on a corpus with NO
+    // DEADLINES. The corpus changed, so the measurement changed; the old pair and this pair are
+    // measurements of different things and neither is a drift from the other.
     //
+    // WHAT THE DELTA IS, STATED NO MORE STRONGLY THAN IT CAN BE. It is the delta OF THE CORPUS
+    // CHANGE -- 1,888,288 B for 20,000 deadlines -- of which the two deadline maps' node space is
+    // 1,883,344 B measured separately: 45.2 B per deadline in `expires_at_ms` and 48.9 B per
+    // deadline in the ordered `expiry_by_deadline`. It is NOT "the cost of a deadline"; an earlier
+    // version of this comment said that and it does not follow.
+    //
+    // AN OPEN QUESTION, LEFT OPEN HERE RATHER THAN LEFT OUT. Those two figures cannot BOTH be the
+    // cost of the deadlines. A deadline's key characters live in one `Arc<str>` shared by both maps
+    // (`set_expiry`: "ONE ALLOCATION OF THE CHARACTERS, HELD BY BOTH MAPS"), so ~480,000 B of
+    // character buffers for 20,000 keys must appear in a WHOLE-SHARD delta -- and they appear in
+    // neither node figure, which leaves the two within 0.26% of each other. So something in this
+    // corpus change went DOWN by roughly the size of the characters, and it is not yet identified.
+    // An unexplained term that size is exactly what makes a confident attribution unsafe, which is
+    // why the sentence above claims only the corpus change.
+    //
+    // WHY THE NODE FIGURES EXCLUDE THE CHARACTERS, BY TWO ROUTES. The first reasons about what the
+    // code does: `deep_heap_bytes` is `value.clone()` under the counting allocator, and
+    // `Arc::clone` is a refcount bump rather than an allocation, so cloning either map allocates
+    // node space and no characters. The second shows the alternative CANNOT BE TRUE, and is the
+    // stronger of the two: std's `BTreeMap` holds at most 11 entries per node, and an
+    // `Arc<str>`(16 B) key with a `u64`(8 B) value gives a 264 B full-node payload against this
+    // crate's measured 280-byte root node -- so 45.2 B/entry implies about 56% node occupancy,
+    // which is plausible, while 45.2 minus 24 B of characters would leave 21.2 B/entry and imply
+    // 120% occupancy, which is impossible. One route argues from semantics; the other rules the
+    // alternative out.
+    //
+    // THE MARGINS ARE CARRIED ACROSS UNCHANGED, which is what makes this a fixture change and not
+    // a bound relaxation. Each bound keeps the exact distance it had from the figure it bracketed:
+    //
+    //     key     ceiling  +4.0   ->  403.1 + 4.0  = 407.1      (was 356.0 + 4.0  = 360.0)
+    //     key     floor   -18.0   ->  403.1 - 18.0 = 385.1      (was 356.0 - 18.0 = 338.0)
+    //     address ceiling  +1.8   ->  201.8 + 1.8  = 203.6      (was 178.2 + 1.8  = 180.0)
+    //     address floor    -9.2   ->  201.8 - 9.2  = 192.6      (was 178.2 - 9.2  = 169.0)
+    //
+    // So the gate is exactly as tight as it was: it still refuses a change that moves the figure
+    // by more than the same number of bytes it refused before. Headroom is deliberately thin --
+    // the point is to catch a change that moves the figure, not to leave room for one, and a bound
+    // nothing can breach gates nothing.
+    //
+    // THE WORKED EXAMPLE BELOW WAS MEASURED ON THE PRE-DEADLINE CORPUS, which is not the corpus
+    // this file now seeds. Its figures -- 14,253,412 B, 382.2 B/key, and a breach of 22.2 B/key
+    // against a 360.0 ceiling -- are measurements of the OLD fixture against the OLD bound, kept
+    // because the rule they demonstrate does not depend on which corpus produced it. Read them as
+    // the example's own numbers and not as this file's baseline: the baseline is the pair at the
+    // top of this block. The same statement applies here as to the bounds themselves -- the two
+    // corpora measure different things and neither is a drift from the other.
+    //
+    // AND THE CONVERSION'S COST IS NOT RE-DERIVED HERE. 26.2 B/key is what widening `strings` cost
+    // on the old corpus; what it costs on this one is a measurement the conversion's own change
+    // has to make. Asserting a new figure for it here would be the mirror of the error this block
+    // exists to warn about.
     // ============================================================================================
     // BEFORE YOU ESTIMATE A VALUE-TYPE CHANGE AGAINST THIS BOUND: MULTIPLY BY THE TABLE'S
     // CAPACITY, NOT BY ITS LENGTH.
@@ -2708,17 +2813,32 @@ fn the_index_footprint_stays_inside_its_measured_bracket() {
     // copies it saves scale with occupancy. That is why widening a value in place is a regression
     // while widening it as part of a merge need not be, and a net prediction that mixes the two
     // scales is wrong in a direction that flatters the change.
-    const CEILING_B_PER_KEY: f64 = 360.0;
-    const FLOOR_B_PER_KEY: f64 = 338.0;
-    const CEILING_B_PER_ADDRESS: f64 = 180.0;
-    const FLOOR_B_PER_ADDRESS: f64 = 169.0;
+    const CEILING_B_PER_KEY: f64 = 407.1;
+    const FLOOR_B_PER_KEY: f64 = 385.1;
+    const CEILING_B_PER_ADDRESS: f64 = 203.6;
+    const FLOOR_B_PER_ADDRESS: f64 = 192.6;
 
     let dir = tempfile::tempdir().expect("tempdir");
     let engine = probe_engine_on(dir.path(), SHIPPED_END);
-    probe_seed(&engine, PINNED_STRINGS, PINNED_SERIES, PINNED_POINTS);
+    probe_seed(
+        &engine,
+        PINNED_STRINGS,
+        PINNED_SERIES,
+        PINNED_POINTS,
+        PINNED_DEADLINES,
+    );
 
     let shards = engine.shards.read().expect("engine lock poisoned");
     let shard = shards.get(&1).expect("shard is loaded");
+    // NON-VACUITY: the corpus really carries the deadlines it was asked for. Without this, a seed
+    // that silently stopped setting them would quietly restore the old one-sided fixture and every
+    // bound below would be re-derived on a corpus nobody checked.
+    assert_eq!(
+        PINNED_DEADLINES,
+        shard.expires_at_ms.len(),
+        "the fixture seeded {PINNED_DEADLINES} deadlines and the shard holds {}; the bracket's          whole reason for carrying them is that this map is not empty",
+        shard.expires_at_ms.len()
+    );
 
     // --- THE POPULATION, PINNED. Each of these is a denominator or a regime control, and every
     // --- one of them is asserted before a single ratio is written.
