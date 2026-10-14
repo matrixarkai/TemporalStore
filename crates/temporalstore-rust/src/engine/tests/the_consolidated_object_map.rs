@@ -518,3 +518,111 @@ fn compatibility_copy_heap_bytes(shard: &ShardState) -> u64 {
     drop(copy);
     counts.alloc_bytes
 }
+
+// =================================================================================================
+// THE SLOT AS A SERIES
+// =================================================================================================
+
+/// THE OWNED ARRAY STAYS SORTED, AND WHAT THAT PROTECTS.
+///
+/// The array is written through `set`, which binary-searches for the insertion position, and read
+/// through `get`, which binary-searches for the value. The two agree only while the array is
+/// SORTED -- so an insert that appended blindly would make `get` miss points that are present,
+/// which a caller reads as a deletion rather than as a bug.
+///
+/// So this writes points OUT OF ORDER on purpose, and then asserts three separate things: that
+/// `points()` comes back ascending, that `get` finds every one of them, and that the array really
+/// is stored sorted rather than merely iterated sorted.
+///
+/// AND THE EMPTY STATE HAS ONE SPELLING. An emptied array gives up its allocation, so
+/// `many.is_none()` is the only way to say "no points". A slot holding `Some(empty)` would answer
+/// `len() == 0` while still carrying a heap allocation -- a cost and a second representation of one
+/// state, which is the kind of pair that later disagrees.
+#[test]
+fn the_slots_owned_array_stays_sorted_through_out_of_order_writes() {
+    use crate::engine::timestamped_series::{TimestampedSeries, TimestampedSeriesWrite};
+
+    let mut slot = ObjectSlot::default();
+    assert_eq!(TimestampedSeries::len(&slot), 0, "a fresh slot holds no points");
+    assert!(slot.many.is_none(), "a fresh slot holds no allocation either");
+
+    // Deliberately out of order, with a duplicate instant last to exercise the replace arm.
+    let written: [(u64, u64); 6] = [(50, 1), (10, 2), (90, 3), (30, 4), (70, 5), (30, 6)];
+    for (at, slab) in written {
+        slot.set(at, crate::block_store::ElementEntry::from_parts(slab, 0, 32, Some(0), Some(11)));
+    }
+
+    // FIVE distinct instants, because the sixth write replaced instant 30 rather than adding it.
+    assert_eq!(
+        TimestampedSeries::len(&slot),
+        5,
+        "a second write at one instant must replace, not append -- the array would hold two \
+         points at the same instant and the binary search could find either"
+    );
+
+    let instants = slot.points().map(|(at, _)| at).collect::<Vec<_>>();
+    assert_eq!(
+        instants,
+        vec![10, 30, 50, 70, 90],
+        "points() must come back ascending; it is the order `get` binary-searches and the order a \
+         stored image is collected in"
+    );
+
+    // EVERY point findable, which is what an unsorted array would silently break.
+    for at in [10u64, 30, 50, 70, 90] {
+        assert!(
+            TimestampedSeries::get(&slot, at).is_some(),
+            "get missed instant {at}, which is present -- a caller reads that as a deletion"
+        );
+    }
+    assert!(
+        TimestampedSeries::get(&slot, 60).is_none(),
+        "get found an instant that was never written"
+    );
+
+    // The replacement took, so the duplicate wrote the LAST value and not the first.
+    assert_eq!(
+        TimestampedSeries::get(&slot, 30).map(|address| address.block_slab_id()),
+        Some(6),
+        "the replacing write at instant 30 did not overwrite the earlier one"
+    );
+
+    // STORED sorted, not merely iterated sorted -- read the array directly rather than through
+    // the accessor that could be sorting on the way out.
+    let stored = slot.many.as_deref().expect("points are held").clone();
+    let mut expected = stored.clone();
+    expected.sort_by_key(|(at, _)| *at);
+    assert_eq!(
+        stored, expected,
+        "the array is not stored in ascending order, so `get`'s binary search is searching an \
+         unsorted slice and will miss points that are present"
+    );
+
+    // --- REMOVAL, including the last point giving up the allocation ---
+    slot.clear(50);
+    assert_eq!(TimestampedSeries::len(&slot), 4, "clear did not remove the point");
+    assert!(TimestampedSeries::get(&slot, 50).is_none(), "the cleared point is still findable");
+    assert_eq!(
+        slot.points().map(|(at, _)| at).collect::<Vec<_>>(),
+        vec![10, 30, 70, 90],
+        "a removal left the array unsorted or shifted a neighbour"
+    );
+
+    slot.clear(999);
+    assert_eq!(
+        TimestampedSeries::len(&slot),
+        4,
+        "clearing an instant that is absent changed the array"
+    );
+
+    for at in [10u64, 30, 70, 90] {
+        slot.clear(at);
+    }
+    assert_eq!(TimestampedSeries::len(&slot), 0, "the array still holds points");
+    assert!(
+        slot.many.is_none(),
+        "an emptied array kept its allocation, so `len() == 0` now has two spellings -- \
+         `None` and `Some(empty)` -- and a later reader can distinguish states that mean the same \
+         thing"
+    );
+}

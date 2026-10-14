@@ -73,6 +73,30 @@ pub(super) trait TimestampedSeries {
     /// timestamped series.
     fn points(&self) -> impl Iterator<Item = (u64, &ElementEntry)>;
 
+    /// The points in a window of instants, ascending.
+    ///
+    /// # THE TEST FOR WHETHER A METHOD BELONGS ON THIS TRAIT
+    ///
+    /// Not "do callers want it" -- they wanted this, and that is not the argument. The test is:
+    /// **can a plausible alternative representation implement it without becoming the thing the
+    /// trait exists to escape?** A range over a sorted array is two binary searches and a slice,
+    /// which is cheaper than a tree's version rather than a concession to it. So it passes, and
+    /// the trait stays honest.
+    ///
+    /// WHAT WOULD FAIL THE SAME TEST, so the line is visible rather than implied: a `range_mut`
+    /// handing out a cursor that assumes stable node addresses, or anything implying O(log n)
+    /// INSERTION in the middle. A sorted array cannot provide either without becoming a tree.
+    ///
+    /// AND WHY A SIXTH METHOD IS EXPECTED RATHER THAN A SURPRISE. This trait was sized to what the
+    /// four shared HELPERS touch, which was a principled sample and still the wrong population:
+    /// the helpers never read a window, and the first tenant to migrate immediately did. A seam is
+    /// only as general as the dimension it varied -- and that applies to WHICH CALLERS WERE
+    /// SAMPLED, not only to which type parameter was abstracted.
+    fn range(
+        &self,
+        bounds: impl std::ops::RangeBounds<u64>,
+    ) -> impl Iterator<Item = (u64, &ElementEntry)>;
+
     /// Every point, ascending, for overwriting addresses in place. The instant is handed over by
     /// value because no caller mutates it -- an instant is this map's key, and a representation
     /// that let a walker change it could silently reorder itself.
@@ -99,6 +123,13 @@ impl TimestampedSeries for BTreeMap<u64, ElementEntry> {
 
     fn points(&self) -> impl Iterator<Item = (u64, &ElementEntry)> {
         self.iter().map(|(at, address)| (*at, address))
+    }
+
+    fn range(
+        &self,
+        bounds: impl std::ops::RangeBounds<u64>,
+    ) -> impl Iterator<Item = (u64, &ElementEntry)> {
+        BTreeMap::range(self, bounds).map(|(at, address)| (*at, address))
     }
 
     fn points_mut(&mut self) -> impl Iterator<Item = (u64, &mut ElementEntry)> {
@@ -141,13 +172,25 @@ impl TimestampedSeriesWrite for BTreeMap<u64, ElementEntry> {
 ///
 /// AN EMPTIED SERIES TAKES ITS KEY WITH IT, which is the behaviour the apply path had at its call
 /// site and is kept here so that no arm can forget it.
-pub(super) fn set_point_and_collect_live<S: TimestampedSeriesWrite>(
-    map: &mut std::collections::HashMap<String, S>,
+/// GENERIC OVER THE KEY TYPE TOO, and that was an omission rather than a flourish. The seam that made
+/// the series abstract left `String` hard-coded here, while the consolidated map these tenants
+/// migrate INTO is keyed by `ModelKey = Box<str>` -- sixteen bytes against twenty-four, chosen
+/// deliberately. A seam is only as general as the dimension it varied, and pointing it at the real
+/// destination is what found this.
+///
+/// `Borrow<str>` to look a key up and remove it from a `&str`; `From<&str>` to create one. Both
+/// `String` and `Box<str>` satisfy the pair.
+pub(super) fn set_point_and_collect_live<K, S>(
+    map: &mut std::collections::HashMap<K, S>,
     object_key: &str,
     at: u64,
     address: Option<ElementEntry>,
-) -> Vec<ElementEntry> {
-    let series = map.entry(object_key.to_string()).or_default();
+) -> Vec<ElementEntry>
+where
+    K: std::hash::Hash + Eq + std::borrow::Borrow<str> + for<'a> From<&'a str>,
+    S: TimestampedSeriesWrite,
+{
+    let series = map.entry(K::from(object_key)).or_default();
     match address {
         Some(address) => series.set(at, address),
         None => series.clear(at),

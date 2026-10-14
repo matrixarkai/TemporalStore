@@ -964,7 +964,9 @@ pub(super) fn unique_timestamped_kv_block_addresses(
     addresses
 }
 
-pub(super) fn unique_feature_block_addresses(series: &BTreeMap<u64, ElementEntry>) -> Vec<ElementEntry> {
+pub(super) fn unique_feature_block_addresses(
+    series: &impl super::timestamped_series::TimestampedSeries,
+) -> Vec<ElementEntry> {
     unique_timestamped_kv_block_addresses(series)
 }
 

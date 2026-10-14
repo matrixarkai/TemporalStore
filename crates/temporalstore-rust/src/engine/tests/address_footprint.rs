@@ -1790,6 +1790,29 @@ fn the_bucket_index_holds_one_page_out_of_line_and_the_series_maps_hold_none() {
         fn points_mut(&mut self) -> impl Iterator<Item = (u64, &mut ElementEntry)> {
             self.0.iter_mut().map(|(instant, address)| (*instant, address))
         }
+        /// TWO BINARY SEARCHES AND A SLICE, which is the point of the method being on the trait:
+        /// an alternative representation answers a window more cheaply than a tree does, so
+        /// requiring it costs no generality. This test-local type is the second representation
+        /// that proves it.
+        fn range(
+            &self,
+            bounds: impl std::ops::RangeBounds<u64>,
+        ) -> impl Iterator<Item = (u64, &ElementEntry)> {
+            use std::ops::Bound;
+            let start = match bounds.start_bound() {
+                Bound::Unbounded => 0,
+                Bound::Included(&at) => self.0.partition_point(|(i, _)| *i < at),
+                Bound::Excluded(&at) => self.0.partition_point(|(i, _)| *i <= at),
+            };
+            let end = match bounds.end_bound() {
+                Bound::Unbounded => self.0.len(),
+                Bound::Included(&at) => self.0.partition_point(|(i, _)| *i <= at),
+                Bound::Excluded(&at) => self.0.partition_point(|(i, _)| *i < at),
+            };
+            self.0[start..end.max(start)]
+                .iter()
+                .map(|(instant, address)| (*instant, address))
+        }
     }
 
     // The address collector is one of the four helpers, and it is generic now. Both

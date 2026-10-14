@@ -162,12 +162,13 @@ pub(super) fn drop_timestamped_points(
     kind: &str,
     key: &str,
     routing_bucket: u32,
-    series: &mut BTreeMap<u64, ElementEntry>,
+    series: &mut impl super::timestamped_series::TimestampedSeriesWrite,
     timestamps: &[u64],
 ) -> bool {
     let mut dropped = false;
     for timestamp_ms in timestamps {
-        if series.remove(timestamp_ms).is_some() {
+        if series.get(*timestamp_ms).is_some() {
+            series.clear(*timestamp_ms);
             stage_timestamped_removal(shard_id, kind, key, routing_bucket, *timestamp_ms);
             dropped = true;
         }
@@ -185,15 +186,17 @@ pub(super) fn trim_timestamped_series(
     kind: &str,
     key: &str,
     routing_bucket: u32,
-    series: &mut BTreeMap<u64, ElementEntry>,
+    series: &mut impl super::timestamped_series::TimestampedSeriesWrite,
     max_size: usize,
 ) -> bool {
     let mut trimmed = false;
     while series.len() > max_size {
-        let Some(oldest) = series.keys().next().copied() else {
+        // THE OLDEST POINT IS THE FIRST, because `points` promises ascending order. A
+        // representation that could not promise it is not a timestamped series.
+        let Some(oldest) = series.points().next().map(|(instant, _)| instant) else {
             break;
         };
-        series.remove(&oldest);
+        series.clear(oldest);
         stage_timestamped_removal(shard_id, kind, key, routing_bucket, oldest);
         trimmed = true;
     }

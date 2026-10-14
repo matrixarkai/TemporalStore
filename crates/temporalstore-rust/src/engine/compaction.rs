@@ -561,15 +561,18 @@ pub(super) fn compaction_model_layout_reports(
     reports
 }
 
-pub(super) fn compaction_timestamped_layout(
+pub(super) fn compaction_timestamped_layout<K, S>(
     kind: &str,
-    timelines: &HashMap<String, BTreeMap<u64, ElementEntry>>,
+    timelines: &HashMap<K, S>,
     slab_page_counts: &BTreeMap<u64, u64>,
-) -> ShardCompactionModelLayoutReport {
+) -> ShardCompactionModelLayoutReport
+where
+    S: super::timestamped_series::TimestampedSeries,
+{
     let mut ref_counts = HashMap::<ElementEntry, usize>::new();
     for address in timelines
         .values()
-        .flat_map(|series| series.values().cloned())
+        .flat_map(|series| series.addresses().cloned())
     {
         *ref_counts.entry(address).or_default() += 1;
     }
@@ -1145,7 +1148,7 @@ pub(super) fn compact_feature_block_addresses(
     // the whole call rather than one per address -- which is why it is a parameter here and a term
     // of the iterator item in `compact_block_addresses`.
     object_key: &str,
-    series: &mut BTreeMap<u64, ElementEntry>,
+    series: &mut impl super::timestamped_series::TimestampedSeries,
     rewrite_stats: &mut CompactionRewriteStats,
     routing_bucket: u32,
 ) -> Result<(), Status> {
@@ -1192,7 +1195,7 @@ pub(super) fn compact_feature_block_addresses(
         rewritten.insert(old_address, new_address);
         rewrite_stats.record(model_id, cold_block);
     }
-    for address in series.values_mut() {
+    for (_, address) in series.points_mut() {
         if let Some(new_address) = rewritten.get(address) {
             *address = new_address.clone();
         }

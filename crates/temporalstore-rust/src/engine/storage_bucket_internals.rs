@@ -3661,13 +3661,17 @@ fn visit_model_live_blocks(
 /// is reached only once the series is known to hold at least one accepted address. Asking that
 /// first costs a field read per point and no allocation, and the answer it gates on is exactly the
 /// answer the caller would otherwise reach after allocating.
-fn visit_timestamped_series<S: super::timestamped_series::TimestampedSeries>(
-    map: &HashMap<String, S>,
+fn visit_timestamped_series<K, S>(
+    map: &HashMap<K, S>,
     kind: ModelKind,
     accept: &impl Fn(&str, &ElementEntry) -> bool,
     emit: &mut impl FnMut(ModelKind, &str, Option<&str>, &ElementEntry),
-) {
+) where
+    K: std::borrow::Borrow<str>,
+    S: super::timestamped_series::TimestampedSeries,
+{
     for (key, series) in map {
+        let key: &str = key.borrow();
         if !series.addresses().any(|address| accept(key, address)) {
             continue;
         }
@@ -6489,12 +6493,13 @@ pub(super) fn rebuild_bucket_first_index(
 /// `pub(super)` only so `reconcile_allocation` can price THE SHIPPED FUNCTION rather than a
 /// transcription of it. The arm that no longer exists in the tree has to be transcribed there;
 /// this one does not, and a fixture that copied it could drift from it silently.
-pub(super) fn reconcile_timestamped_series_membership_in_place<
+pub(super) fn reconcile_timestamped_series_membership_in_place<K, S>(
+    target: &mut HashMap<K, S>,
+    block_derived: HashMap<K, S>,
+) where
+    K: std::hash::Hash + Eq,
     S: super::timestamped_series::TimestampedSeries,
->(
-    target: &mut HashMap<String, S>,
-    block_derived: HashMap<String, S>,
-) {
+{
     for (key, block_series) in block_derived {
         match target.get_mut(&key) {
             // PRESENT IN BOTH: the persisted series keeps exactly its own timestamps -- no
@@ -7162,15 +7167,19 @@ fn read_page_for_view_rebuild(block_store: &BlockStore, address: &ElementEntry) 
 }
 
 #[allow(clippy::too_many_arguments)]
-pub(super) fn insert_timestamped_secondary_view(
+pub(super) fn insert_timestamped_secondary_view<K, S>(
     block_store: &BlockStore,
     warm_shard: Option<ShardId>,
     warm_batch: &mut Vec<(CacheKey, Vec<u8>)>,
-    target: &mut HashMap<String, BTreeMap<u64, ElementEntry>>,
+    target: &mut HashMap<K, S>,
     object_key: String,
     address: ElementEntry,
     routing_bucket: Option<u32>,
-) {
+)
+where
+    K: std::hash::Hash + Eq + std::borrow::Borrow<str> + for<'a> From<&'a str>,
+    S: super::timestamped_series::TimestampedSeriesWrite,
+{
     // THROUGH THE SEAM, AND A FAILURE IS COUNTED RATHER THAN DEFAULTED TO AN EMPTY SERIES.
     //
     // This was `block_store.read(&address).ok()` feeding an `.unwrap_or_default()` thirty lines
@@ -7229,7 +7238,7 @@ pub(super) fn insert_timestamped_secondary_view(
         // a live key.
         return;
     }
-    let series = target.entry(object_key).or_default();
+    let series = target.entry(K::from(object_key.as_str())).or_default();
     for timestamp_ms in timestamps {
         // A timestamp can physically live in MORE THAN ONE block: overwriting a timestamped point
         // with a new value writes a NEW block (higher, monotonic page_id/generation) while the OLD
@@ -7238,15 +7247,14 @@ pub(super) fn insert_timestamped_secondary_view(
         // NOT write order -- so an unconditional insert let a STALE older block clobber the newer
         // one for a shared timestamp, and the value silently reverted to the old block's bytes on
         // reload. Keep the NEWEST block (highest address generation) per timestamp.
-        match series.entry(timestamp_ms) {
-            std::collections::btree_map::Entry::Vacant(slot) => {
-                slot.insert(address.clone());
-            }
-            std::collections::btree_map::Entry::Occupied(mut slot) => {
-                if address.generation().unwrap_or(0) >= slot.get().generation().unwrap_or(0) {
-                    slot.insert(address.clone());
-                }
-            }
+        // GET THEN SET, because `entry` is a `BTreeMap`-ism and this no longer names one. The
+        // newest-block-wins rule is unchanged: absent, or at least as new, wins.
+        let newest = match series.get(timestamp_ms) {
+            None => true,
+            Some(held) => address.generation().unwrap_or(0) >= held.generation().unwrap_or(0),
+        };
+        if newest {
+            series.set(timestamp_ms, address.clone());
         }
     }
 }
@@ -7264,16 +7272,20 @@ pub(super) fn insert_timestamped_secondary_view(
 /// slab/offset order, not write order.
 #[allow(clippy::too_many_arguments)]
 #[allow(clippy::too_many_arguments)]
-pub(super) fn insert_context_event_views(
+pub(super) fn insert_context_event_views<K, S>(
     block_store: &BlockStore,
     warm_shard: Option<ShardId>,
     warm_batch: &mut Vec<(CacheKey, Vec<u8>)>,
-    events: &mut HashMap<String, BTreeMap<u64, ElementEntry>>,
+    events: &mut HashMap<K, S>,
     timeline: &mut HashMap<String, BTreeMap<u64, u64>>,
     object_key: String,
     address: ElementEntry,
     routing_bucket: Option<u32>,
-) {
+)
+where
+    K: std::hash::Hash + Eq + std::borrow::Borrow<str> + for<'a> From<&'a str>,
+    S: super::timestamped_series::TimestampedSeriesWrite,
+{
     // Through the same seam, counted the same way, and for the sharper reason: `context_events`
     // and `context_event_timeline` are rebuilt here and the primary map is `skip_serializing`, so
     // there is no durable copy behind this derived one.
@@ -7302,22 +7314,21 @@ pub(super) fn insert_context_event_views(
     if points.is_empty() {
         return;
     }
-    let series = events.entry(object_key.clone()).or_default();
+    let series = events.entry(K::from(object_key.as_str())).or_default();
     let index = timeline.entry(object_key).or_default();
     for point in points {
         let Some(event) = super::context::context_from_bytes::<ContextEvent>(&point.value) else {
             continue;
         };
         index.insert(point.timestamp_ms, event.event_id_hash);
-        match series.entry(event.event_id_hash) {
-            std::collections::btree_map::Entry::Vacant(slot) => {
-                slot.insert(address.clone());
-            }
-            std::collections::btree_map::Entry::Occupied(mut slot) => {
-                if address.generation().unwrap_or(0) >= slot.get().generation().unwrap_or(0) {
-                    slot.insert(address.clone());
-                }
-            }
+        // GET THEN SET, for the same reason as the timestamped view above: `entry` names a
+        // `BTreeMap` and this no longer does. Newest-block-wins is unchanged.
+        let newest = match series.get(event.event_id_hash) {
+            None => true,
+            Some(held) => address.generation().unwrap_or(0) >= held.generation().unwrap_or(0),
+        };
+        if newest {
+            series.set(event.event_id_hash, address.clone());
         }
     }
 }

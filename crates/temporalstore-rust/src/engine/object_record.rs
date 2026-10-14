@@ -1014,3 +1014,154 @@ impl ObjectSlot {
         self.record.set_address(address);
     }
 }
+
+// =================================================================================================
+// THE SLOT AS A TIMESTAMPED SERIES
+// =================================================================================================
+
+/// THE OWNED ARRAY, READ AND WRITTEN AS A TIMESTAMPED SERIES.
+///
+/// This is what the owned array was built for: a per-element kind's points live in `many`, one
+/// contiguous allocation per object, instead of a `BTreeMap` of its own per object key.
+///
+/// # WHY THE ARRAY AND NOT A B-TREE, MEASURED RATHER THAN ARGUED
+///
+/// Marginal cost of one key with N points, against the `BTreeMap`-inside-a-`HashMap` shape this
+/// replaces -- measured on the counting allocator, and independently in a standalone harness that
+/// agreed to three significant figures:
+///
+/// | N     | per-kind map        | owned array     | ratio |
+/// |-------|---------------------|-----------------|-------|
+/// | 1     | 312 B / 4 allocs    | 48 B / 2        | 6.50x |
+/// | 100   | 5,080 B / 20        | 2,424 B / 2     | 2.10x |
+/// | 1,000 | 49,120 B / 170      | 24,056 B / 2    | 2.04x |
+/// | 3,200 | 156,192 B / 535     | 76,824 B / 2    | 2.03x |
+///
+/// The single-point row decomposes to one allocation: a `BTreeMap` holding ONE element allocates a
+/// 280-byte root node, paid per key per kind before a single element byte is stored.
+///
+/// And the array is FIXED WIDTH AND KEPT SORTED, which is not a detail. #2122 measured that a
+/// variable-length, linear-scan payload is 3.0-17.8x worse on misses, so the compactness that makes
+/// such a buffer small is also what stops it being binary-searchable. `(u64, ElementEntry)` is
+/// twenty-four fixed bytes, so [`TimestampedSeries::get`] binary-searches in O(log N) and
+/// [`TimestampedSeriesWrite::set`] appends in amortised O(1) at the tail, which is where an
+/// append-mostly series writes.
+///
+/// # THE POINTS LIVE ONLY IN `many`, AND THAT IS DELIBERATE FOR THE FIRST TENANT
+///
+/// The record's inline address arm is NOT consulted here. A series could in principle keep its
+/// single point inline and spend no allocation at all, and that would beat the 48 B row above --
+/// but it would make every read merge two sources, and a reader that disagreed with a writer about
+/// which source held a point is precisely the divergence class this campaign keeps finding. One
+/// source of truth for the first tenant; the inline arm is a measured follow-up, not a
+/// precondition, because every figure in the table above is already an owned-array figure.
+impl super::timestamped_series::TimestampedSeries for ObjectSlot {
+    fn len(&self) -> usize {
+        self.many.as_ref().map_or(0, |points| points.len())
+    }
+
+    fn get(&self, at: u64) -> Option<&ElementEntry> {
+        let points = self.many.as_ref()?;
+        points
+            .binary_search_by_key(&at, |(instant, _)| *instant)
+            .ok()
+            .map(|found| &points[found].1)
+    }
+
+    fn addresses(&self) -> impl Iterator<Item = &ElementEntry> {
+        self.many
+            .as_deref()
+            .map(|points| points.as_slice())
+            .unwrap_or(&[])
+            .iter()
+            .map(|(_, address)| address)
+    }
+
+    fn points(&self) -> impl Iterator<Item = (u64, &ElementEntry)> {
+        self.many
+            .as_deref()
+            .map(|points| points.as_slice())
+            .unwrap_or(&[])
+            .iter()
+            .map(|(instant, address)| (*instant, address))
+    }
+
+    fn points_mut(&mut self) -> impl Iterator<Item = (u64, &mut ElementEntry)> {
+        self.many
+            .as_deref_mut()
+            .map(|points| points.as_mut_slice())
+            .unwrap_or(&mut [])
+            .iter_mut()
+            .map(|(instant, address)| (*instant, address))
+    }
+
+    /// TWO BINARY SEARCHES AND A SLICE, which is why a window belongs on the trait at all: a
+    /// sorted array answers it more cheaply than a tree does, so requiring it costs the trait
+    /// nothing in generality. See the method's own note for the test this passes.
+    ///
+    /// `partition_point` answers the first index whose point FAILS the predicate, which is the
+    /// insertion position -- so each bound becomes one search and the window is the slice between
+    /// them. The `max(start)` keeps an inverted or empty window as an empty slice rather than a
+    /// panic on a reversed range.
+    fn range(
+        &self,
+        bounds: impl std::ops::RangeBounds<u64>,
+    ) -> impl Iterator<Item = (u64, &ElementEntry)> {
+        use std::ops::Bound;
+        let points = self
+            .many
+            .as_deref()
+            .map(|points| points.as_slice())
+            .unwrap_or(&[]);
+        let start = match bounds.start_bound() {
+            Bound::Unbounded => 0,
+            Bound::Included(&at) => points.partition_point(|(instant, _)| *instant < at),
+            Bound::Excluded(&at) => points.partition_point(|(instant, _)| *instant <= at),
+        };
+        let end = match bounds.end_bound() {
+            Bound::Unbounded => points.len(),
+            Bound::Included(&at) => points.partition_point(|(instant, _)| *instant <= at),
+            Bound::Excluded(&at) => points.partition_point(|(instant, _)| *instant < at),
+        };
+        points[start..end.max(start)]
+            .iter()
+            .map(|(instant, address)| (*instant, address))
+    }
+}
+
+impl super::timestamped_series::TimestampedSeriesWrite for ObjectSlot {
+    /// Record an address at one instant, KEEPING THE ARRAY SORTED.
+    ///
+    /// The sort order is what [`TimestampedSeries::points`] promises and what
+    /// [`TimestampedSeries::get`] binary-searches, so an unsorted insert would silently break both
+    /// -- `get` would miss points that are present, which reads as a deletion.
+    ///
+    /// `binary_search_by_key` answers the insertion position on a miss, so the common case -- an
+    /// append at or near the tail of an append-mostly series -- is a `Vec::insert` at the end,
+    /// which is amortised O(1) and copies nothing.
+    fn set(&mut self, at: u64, address: ElementEntry) {
+        let points = self.many.get_or_insert_with(|| Box::new(Vec::new()));
+        match points.binary_search_by_key(&at, |(instant, _)| *instant) {
+            Ok(found) => points[found].1 = address,
+            Err(position) => points.insert(position, (at, address)),
+        }
+    }
+
+    /// Forget the point at one instant, if any.
+    ///
+    /// AN EMPTIED ARRAY GIVES UP ITS ALLOCATION rather than keeping a zero-length buffer, so that
+    /// `many.is_none()` means "no points" with no second way to spell it. A slot holding
+    /// `Some(empty)` would answer `len() == 0` and still carry a heap allocation, which is both a
+    /// cost and a second representation of one state.
+    fn clear(&mut self, at: u64) {
+        let Some(points) = self.many.as_deref_mut() else {
+            return;
+        };
+        if let Ok(found) = points.binary_search_by_key(&at, |(instant, _)| *instant) {
+            points.remove(found);
+        }
+        if points.is_empty() {
+            self.many = None;
+        }
+    }
+}
