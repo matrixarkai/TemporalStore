@@ -29,14 +29,23 @@
 //!     the CURRENT stamp. ACCEPTED, and the entry arrives. This is the positive control: without
 //!     it the arm above passes just as well when the plant never worked, or when the reconcile
 //!     drops the entry for a reason that has nothing to do with the stamp.
-//!   * [`the_dump_manifest_door_takes_a_stale_stamped_index_image_with_no_refusal`] -- the dump
-//!     manifest restore door. The index image it carries is handed to `decode_index_bytes`
-//!     DIRECTLY, with no `index_format_version` comparison anywhere on that path, so a stale
-//!     image installs and the entry arrives.
+//!   * [`the_dump_manifest_door_refuses_a_stale_stamped_index_image`] -- the dump manifest
+//!     restore door. This arm recorded a HOLE: the index image was handed to
+//!     `decode_index_bytes` directly with no `index_format_version` comparison anywhere on that
+//!     path, so a stale image installed and the entry arrived. #2150 closed it, and the arm is
+//!     now a regression guard on the refusal -- asserted by status code, because four other
+//!     integrity bindings on this path refuse with codes of their own.
 //!
-//! The third arm is what decides the consolidation question, and it decides it the other way from
-//! the stamp reasoning: the map is NOT removable on the ground that the stamp forecloses its
-//! population, because one of the doors is not stamped at all.
+//! The third arm is what decided the consolidation question when this landed, and it decided it
+//! the other way from the stamp reasoning: the map was NOT removable on the ground that the stamp
+//! forecloses its population, because one of the doors was not stamped at all.
+//!
+//! #2150 then stamped that door, and #2151/#2152 measured the remaining one -- a load with no
+//! base index, which reads no stamp because it reads nothing. That one is held shut by the
+//! recovery arm (`load_shard` reaches `load_index_base_only` with `fold_deltas: false`) rather
+//! than by anything about this map, which makes the closure structural but conditional on
+//! `TS_WAL_LEGACY_RECOVERY` staying unset. The verdict of NOT REMOVABLE therefore stands on that
+//! condition rather than on this door.
 
 #![allow(clippy::all)]
 use super::*;
@@ -167,19 +176,34 @@ fn a_current_stamped_base_index_does_deliver_a_context_node_entry() {
     );
 }
 
-/// THE DUMP-MANIFEST DOOR IS NOT STAMPED AT ALL, AND THAT IS WHAT DECIDES THE QUESTION.
+/// THE DUMP-MANIFEST DOOR IS STAMPED, AS OF #2150 -- AND THIS ARM NOW GUARDS THAT.
 ///
-/// `install_bucket_dump_manifest` hands `manifest.index_bytes` to `decode_index_bytes` and uses
-/// what comes back. `decode_index_bytes` compares a version only on the binary container arm, and
-/// a plain-JSON image -- which is what every store written with the container switched off
-/// carries -- has no such comparison. Nothing on this path reads `index_format_version`.
+/// # WHAT THIS ARM USED TO SAY, AND WHY IT CHANGED
 ///
-/// So the stale image installs, and the `context_nodes` entry inside it becomes live state. The
-/// manifest's own integrity checks are recomputed here rather than bypassed: this is a legitimate
-/// manifest carrying a stale index image, which is exactly what a manifest written before the
-/// stamp existed is.
+/// It was written to RECORD A HOLE. `install_bucket_dump_manifest` hands `manifest.index_bytes`
+/// to `decode_index_bytes` and uses what comes back; `decode_index_bytes` compares a version only
+/// on the binary-container arm, and a plain-JSON image -- what every store written with the
+/// container switched off carries -- has no such comparison. So a pre-stamp image installed and
+/// its `context_nodes` entries became live state, and this arm asserted exactly that, because an
+/// unguarded door is a finding worth pinning.
+///
+/// #2150 closed it: every door that trusts a stored index now reads its stamp. So the assertion
+/// inverts, and what was a record of a hole becomes a REGRESSION GUARD on the fix. The fixture is
+/// unchanged -- same plant, same staled image, same recomputed integrity bindings -- and only the
+/// verdict moves.
+///
+/// THIS WAS CAUGHT BY RUNNING THE MODULE BY NAME AFTER #2150 LANDED, NOT BY CI. On this repo
+/// `ratchet` is the Python suite and `rust-ci`'s suite step carries `continue-on-error: true`
+/// behind a timeout it reaches, so a merged test that a later change invalidates goes red in the
+/// tree and green on the PR. Two changes agreeing about a door, landed hours apart, is exactly
+/// the shape that needs a local run by name.
+///
+/// The manifest's own integrity bindings are recomputed here rather than bypassed: this is a
+/// legitimate manifest carrying a stale index image, which is exactly what a manifest written
+/// before the stamp existed is. That matters more now than it did, because the refusal is
+/// asserted BY CODE -- see the note at the assertion.
 #[test]
-fn the_dump_manifest_door_takes_a_stale_stamped_index_image_with_no_refusal() {
+fn the_dump_manifest_door_refuses_a_stale_stamped_index_image() {
     let dir = tempfile::tempdir().expect("tempdir");
     let engine = engine_at(dir.path());
     write_and_flush(&engine);
@@ -236,15 +260,40 @@ fn the_dump_manifest_door_takes_a_stale_stamped_index_image_with_no_refusal() {
     );
 
     let installed = engine.install_bucket_dump_manifest(&manifest);
-    assert!(
-        installed.is_ok(),
-        "the manifest carrying a stale-stamped index image was refused: {:?} -- if the refusal \
-         names the format stamp, this door IS stamped and the finding this test records is wrong",
-        installed.err()
+    let refusal = installed.err().unwrap_or_else(|| {
+        panic!(
+            "the dump-manifest door accepted an index image stamped {} against a current {}. \
+             That is the hole #2150 closed re-opening: this door hands `manifest.index_bytes` to \
+             `decode_index_bytes` and a plain-JSON image carries no codec-level version, so \
+             without an explicit comparison here a pre-stamp image installs and its \
+             `context_nodes` entries become live state. Do not relax this assertion.",
+            crate::engine::SHARD_INDEX_FORMAT_VERSION - 1,
+            crate::engine::SHARD_INDEX_FORMAT_VERSION
+        )
+    });
+    // THE REFUSAL MUST BE THE STAMP'S, BY CODE AND NOT BY THE FACT OF FAILING.
+    //
+    // This arm reaches the install through four integrity bindings it recomputes on the way --
+    // `index_sha256`, `dump_generation_id`, the manifest `checksum`, and the slab-id check -- and
+    // every one of them refuses with its own code. An assertion that the install merely FAILED
+    // would be satisfied by any of those, so a change that broke the fixture would read as the
+    // stamp check working. `slot_dump_generation_mismatch` is not hypothetical: it is what caught
+    // the first run of this arm before the generation id was recomputed.
+    assert_eq!(
+        "slot_dump_stale_index_stamp", refusal.code,
+        "the install was refused, but not by the format stamp: {refusal:?}. One of the manifest's \
+         integrity bindings is failing instead, so this arm is no longer driving the door it \
+         names"
     );
     assert!(
-        planted_arrived(&engine),
-        "the dump-manifest door delivered no `context_nodes` entry from an image that carries \
-         one; if that is because the stamp was checked, this door is stamped after all"
+        refusal.message.contains("13") && refusal.message.contains("14"),
+        "the stamp refusal names neither the stored stamp nor the current one: {refusal:?}. Both \
+         belong in it -- an operator reading this has to know which index they are holding"
+    );
+    assert!(
+        !planted_arrived(&engine),
+        "the install was refused and yet the entry arrived, so the refusal happened AFTER the \
+         decoded image had already been installed over the live shard -- a refusal that does not \
+         refuse"
     );
 }
