@@ -261,13 +261,6 @@ pub(super) struct ShardState {
     #[serde(default)]
     pub(super) lists: super::recorded_map::RecordedMap<super::recorded_map::ListKind>,
     pub(super) features: HashMap<String, BTreeMap<u64, ElementEntry>>,
-    // Sequence data is now stored in `features` (thin-layer fold: Sequence is Feature
-    // with a typed row codec over identical timestamped-KV storage). This field is
-    // retained only to fold a pre-fold on-disk index that still carries a `sequences`
-    // map into `features` at load time (see load_index); new code never writes it, so
-    // it serializes away once empty.
-    #[serde(default, skip_serializing_if = "HashMap::is_empty")]
-    pub(super) sequences: HashMap<String, BTreeMap<u64, ElementEntry>>,
     pub(super) control_state: HashMap<String, BTreeMap<u64, i64>>,
     /// Counter-series blocks, one per control-state object key.
     ///
@@ -6981,7 +6974,6 @@ pub(super) fn repack_decoded_btrees(state: &mut ShardState) {
         zsets,
         lists,
         features,
-        sequences,
         control_state,
         control_state_changes,
         control_state_change_sketch,
@@ -7041,7 +7033,6 @@ pub(super) fn repack_decoded_btrees(state: &mut ShardState) {
     zsets.repack_decoded();
     lists.repack_decoded();
     repack_nested(features);
-    repack_nested(sequences);
     repack_nested(control_state);
     repack_nested(context_events);
     repack_nested(context_event_timeline);
