@@ -496,6 +496,23 @@ impl ObjectRecord {
         });
         self.flags.set(RecordFlags::PAGE_IN_LOG, address.block_id().is_none());
         self.flags.set(RecordFlags::PAGE_GENERATION, address.generation().is_some());
+        // COUNTED, BECAUSE THE VALUE IS DROPPED HERE AND NOTHING ELSE SAYS SO.
+        //
+        // The inline arm keeps the ordinal's PRESENCE, set just above, and has no room for its
+        // value -- correct for a single-page object, which has page zero by construction. A
+        // NONZERO ordinal is therefore silently lost at this line, while the conversion path
+        // refuses the same condition by name as `NonZeroPageOrdinalDoesNotFitInline`. Two halves
+        // of one contract disagreeing, and no test fed either path a nonzero ordinal, so nothing
+        // could tell.
+        //
+        // Not made fatal and not made to skip: the destination for a multi-page object does not
+        // exist yet, so a fatal refusal would make a recovery path unopenable and a skip would
+        // drop the page's address -- the same loss by another mechanism. See
+        // `dropped_nonzero_page_ordinals` for the whole argument, and `try_set_address` for the
+        // refusing door the callers move to once such an object has somewhere to go.
+        if address.block_id().is_some_and(|block_id| block_id != 0) {
+            DROPPED_NONZERO_PAGE_ORDINALS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        }
     }
 
     // --- THE CONVERSION. This is what proves the merge is real. ---
@@ -1278,5 +1295,81 @@ impl super::timestamped_series::TimestampedSeriesWrite for ObjectSlot {
         if points.is_empty() {
             self.many = None;
         }
+    }
+}
+
+// =================================================================================================
+// THE WRITE-BACK DOOR AND THE ORDINAL IT USED TO DROP IN SILENCE
+// =================================================================================================
+
+/// HOW MANY TIMES THE WRITE-BACK DOOR WAS HANDED A PAGE ORDINAL IT CANNOT HOLD.
+///
+/// `ObjectRecord::set_address` writes the inline arm, which keeps a page ordinal's PRESENCE and
+/// not its value -- correct, and measured: a single-page object has page zero by construction, and
+/// 400 of 400 live addresses on a real store carried ordinal 0. A nonzero ordinal belongs in the
+/// layout arm.
+///
+/// The conversion path refuses such an entry by name, as
+/// [`ObjectRecordRefusal::NonZeroPageOrdinalDoesNotFitInline`]. The write-back door did not: it
+/// wrote the presence bit and dropped the value, silently.
+///
+/// # WHY THIS IS A COUNTER AND NOT YET A REFUSAL
+///
+/// Making `set_address` refuse would be the obvious fix and is the wrong one TODAY, because the
+/// correct destination for a multi-page object does not exist yet -- it arrives with the owned
+/// element array. That leaves a refusing caller two options and both are worse than the bug:
+///
+///   * FATAL turns a recovery path into a store that cannot be opened, which this tree has twice
+///     established as the worst outcome available on a load path.
+///   * SKIP drops the page's address, which is silent data loss -- the same class as the
+///     behaviour being fixed, reached by a different mechanism.
+///
+/// So what ships is OBSERVABILITY: today's behaviour, counted, with the count exposed and asserted
+/// zero. It should never fire, because every map holding a record today is single-page. If it ever
+/// does, we learn before it costs anything, and the counter's call site is where the routing to the
+/// owned array will go.
+///
+/// A NAMED `TODO` WITH NO INSTRUMENT IS WHAT LET THIS SURVIVE. The asymmetry between the two paths
+/// was documented in prose and contradicted by the code, and no test fed either path a nonzero
+/// ordinal, so nothing could tell. A counter asserted zero is the instrument that prose was not.
+///
+/// [`ObjectRecord::try_set_address`] is the refusing door, reachable and tested now, for the
+/// callers that will be able to handle it once there is somewhere for such an object to go.
+static DROPPED_NONZERO_PAGE_ORDINALS: std::sync::atomic::AtomicU64 =
+    std::sync::atomic::AtomicU64::new(0);
+
+/// How many nonzero page ordinals the write-back door has dropped.
+pub(crate) fn dropped_nonzero_page_ordinals() -> u64 {
+    DROPPED_NONZERO_PAGE_ORDINALS.load(std::sync::atomic::Ordering::Relaxed)
+}
+
+/// Forget the count, so a test measures its own writes rather than the suite before it.
+pub(crate) fn reset_dropped_nonzero_page_ordinals() {
+    DROPPED_NONZERO_PAGE_ORDINALS.store(0, std::sync::atomic::Ordering::Relaxed);
+}
+
+impl ObjectRecord {
+    /// Point the record at a page, REFUSING an address the inline arm cannot hold faithfully.
+    ///
+    /// This is [`ObjectRecord::set_address`] with the refusal the conversion path already makes,
+    /// by the same named variant, so the two halves of one contract agree. It exists now, ahead of
+    /// any caller that can act on it, because a refusal that is unreachable is untestable -- and
+    /// the defect this closes survived precisely because nothing ever drove the condition.
+    ///
+    /// Callers migrate to this once a multi-page object has a destination. Until then
+    /// `set_address` keeps today's behaviour and counts.
+    pub(super) fn try_set_address(
+        &mut self,
+        address: &ElementEntry,
+    ) -> Result<(), ObjectRecordRefusal> {
+        if let Some(block_id) = address.block_id() {
+            if block_id != 0 {
+                return Err(ObjectRecordRefusal::NonZeroPageOrdinalDoesNotFitInline {
+                    block_id: u64::from(block_id),
+                });
+            }
+        }
+        self.set_address(address);
+        Ok(())
     }
 }
