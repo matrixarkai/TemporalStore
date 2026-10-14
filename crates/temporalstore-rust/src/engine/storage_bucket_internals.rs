@@ -2718,7 +2718,7 @@ pub(super) fn shard_has_model_entries(shard: &ShardState) -> bool {
         || !shard.lists.is_empty()
         || !shard.zsets.is_empty()
         || !shard.features.is_empty()
-        || !shard.control_state_blocks.is_empty()
+        || !shard.control_state_blocks().is_empty()
         || !shard.context_nodes.is_empty()
         || !shard.context_events.is_empty()
         || !shard.context_indexes.is_empty()
@@ -3284,7 +3284,21 @@ impl<'de> serde::Deserialize<'de> for StoredModelKind {
         let spelling = <std::borrow::Cow<'de, str> as serde::Deserialize>::deserialize(deserializer)?;
         match StoredModelKind::from_stored_name(&spelling) {
             Some(kind) => Ok(kind),
-            None => panic!(
+            // AN `Err` AND NOT A PANIC, which the doc comment above already claimed and
+            // the code did not do. The distinction is the whole difference between a store
+            // that falls back to replaying its operation log and a store that cannot be
+            // opened at all. Every caller of this decode is a load path, and `load_index`
+            // turns an `Err` into exactly that fallback. It is the trade
+            // `ObjectRecord::try_from` states in as many words -- REFUSES, AS AN `Err` AND
+            // NEVER AS A PANIC, because a panic there makes a store UNOPENABLE. The message
+            // below is unchanged, instruction included.
+            //
+            // REACHABLE FROM A STORED INDEX, AND MORE SO NOW. The doc above says a spelling
+            // arrives either from a live walk arm or from a stored index, so this was
+            // already reachable from bytes this engine did not write. Making this enum the
+            // durable outer key of the consolidated object map widens that, which is why it
+            // is corrected here rather than left for the path that trips it.
+            None => Err(serde::de::Error::custom(format!(
                 "no stored model kind for model id {spelling:?}. A page entry's model spelling \
                  comes either from a live-page walk arm or from a stored index this engine \
                  opened, so a name that cannot be placed is the engine and the store disagreeing \
@@ -3292,7 +3306,7 @@ impl<'de> serde::Deserialize<'de> for StoredModelKind {
                  file the page under the wrong object. Declare it in `model_kind_registry`: \
                  under `live` if an arm of `visit_model_live_blocks` emits it, under `retired` -- \
                  with the reason an older index can carry it -- if not."
-            ),
+            ))),
         }
     }
 }
@@ -3545,7 +3559,7 @@ fn visit_model_live_blocks(
             }
         }
         visit_timestamped_series(&shard.features, ModelKind::Feature, &accept, &mut emit);
-        for (key, record) in &shard.control_state_blocks {
+        for (key, record) in shard.control_state_blocks() {
             let address = record.address();
             if accept(key, &address) {
                 emit(ModelKind::ControlState, key, None, &address);
@@ -7007,14 +7021,16 @@ pub(super) fn reconcile_secondary_views_from_bucket_index(
         // are default -- which is correct here: a reconcile re-derives addresses from the bucket
         // index and has no deadline or dirty state to carry, and the dirty flags are cleared on
         // load anyway.
-        shard.control_state_blocks = control_state_blocks
-            .into_iter()
-            .map(|(key, address)| {
-                let mut record = super::object_record::ObjectRecord::default();
-                record.set_address(&address);
-                (key, record.into())
-            })
-            .collect();
+        shard.set_all_control_state_blocks(
+            control_state_blocks
+                .into_iter()
+                .map(|(key, address)| {
+                    let mut record = super::object_record::ObjectRecord::default();
+                    record.set_address(&address);
+                    (key, record.into())
+                })
+                .collect(),
+        );
         // The rollup ladder is a derived view of control_state; drop it so it rebuilds
         // lazily from the series reconcile just materialized.
         super::control_rollup::clear_all(shard);
@@ -8593,7 +8609,7 @@ mod model_kind_registry_guards {
         shard
             .features
             .insert("f".to_string(), BTreeMap::from([(1u64, at.clone())]));
-        shard.control_state_blocks.insert("c".into(), {
+        shard.insert_control_state_block("c".into(), {
             // Through `set_address`, like production. Building a record by hand here would make
             // the fixture the one place the narrow door is bypassed.
             let mut record = super::object_record::ObjectRecord::default();

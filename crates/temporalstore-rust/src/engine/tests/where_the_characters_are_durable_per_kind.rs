@@ -181,7 +181,7 @@ fn shard_with_one_object_of_every_kind(suffix: &str) -> ShardState {
     shard
         .features
         .insert(key_for("feature", suffix), series.clone());
-    shard.control_state_blocks.insert(
+    shard.insert_control_state_block(
         key_for("control_state", suffix).as_str().into(),
         {
             // Through `set_address`, like production -- see the note on that method.
@@ -294,7 +294,7 @@ fn kind_map_holds(shard: &ShardState, kind: &str, suffix: &str) -> bool {
         "zset" => shard.zsets.contains_key(&key),
         "list" => shard.lists.contains_key(&key),
         "feature" => shard.features.contains_key(&key),
-        "control_state" => shard.control_state_blocks.contains_key(key.as_str()),
+        "control_state" => shard.control_state_blocks().contains_key(key.as_str()),
         "context_node" => shard.context_nodes.contains_key(key.as_str()),
         "context_audit" => shard.context_audits.contains_key(&key),
         "context_child" => shard.context_children.contains_key(&key),
@@ -537,7 +537,7 @@ fn maps_naming(shard: &ShardState, key: &str) -> Vec<&'static str> {
     if shard.features.contains_key(key) {
         found.push("features");
     }
-    if shard.control_state_blocks.contains_key(key) {
+    if shard.control_state_blocks().contains_key(key) {
         found.push("control_state_blocks");
     }
     if shard.context_nodes.contains_key(key) {

@@ -1456,7 +1456,7 @@ fn how_many_structures_hold_an_entry_for_one_control_state_object() {
         let shard = shards.get(&1).expect("shard is loaded");
         vec![
             ("control_state (the i64 series)", deep_heap_bytes(&shard.control_state)),
-            ("control_state_blocks (THE RECORD)", deep_heap_bytes(&shard.control_state_blocks)),
+            ("control_state_blocks (THE RECORD)", deep_heap_bytes(shard.control_state_blocks())),
             ("bucket_index.bucket_map", deep_heap_bytes(&shard.bucket_index.bucket_map)),
             (
                 "bucket_index.object_block_lookup",
@@ -1486,7 +1486,7 @@ fn how_many_structures_hold_an_entry_for_one_control_state_object() {
                 .values()
                 .map(|bucket| bucket.block_index.len())
                 .sum::<usize>(),
-            shard.control_state_blocks.len(),
+            shard.control_state_blocks().len(),
         )
     };
     assert_eq!(

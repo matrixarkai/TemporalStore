@@ -2195,7 +2195,7 @@ fn a_with_options_deadline_survives_recovery() {
     fn outcome_was_installed(engine: &TemporalEngine, shard_id: ShardId, key: &str) -> bool {
         let shards = engine.shards.read().expect("engine lock poisoned");
         let shard = shards.get(&shard_id).expect("shard is loaded");
-        shard.control_state_blocks.contains_key(key)
+        shard.control_state_blocks().contains_key(key)
     }
 
     // Long enough that nothing under test expires during the round trip.

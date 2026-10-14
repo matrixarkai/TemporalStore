@@ -261,7 +261,7 @@ fn census(engine: &TemporalEngine, shard_id: ShardId) -> AddressCensus {
         (
             "control_state_pages",
             shard
-                .control_state_blocks
+                .control_state_blocks()
                 .values()
                 .map(|record| record.address())
                 .collect::<Vec<_>>(),
@@ -1111,7 +1111,7 @@ fn duplication_census(engine: &TemporalEngine, shard_id: ShardId) -> Duplication
     // Same three maps, same reason they are no longer one array: one of them holds a record.
     // Chained rather than arrayed, so the walk is still a single pass over all three.
     let control_state_addresses: Vec<ElementEntry> = shard
-        .control_state_blocks
+        .control_state_blocks()
         .values()
         .map(|record| record.address())
         .collect();

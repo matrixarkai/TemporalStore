@@ -144,7 +144,7 @@ pub(super) fn model_compaction_policy_reports(
             "zset"
         } else if shard.features.contains_key(key) {
             "feature"
-        } else if shard.control_state_blocks.contains_key(key) {
+        } else if shard.control_state_blocks().contains_key(key) {
             "control_state"
         } else if shard.context_nodes.contains_key(key) {
             "context_node"

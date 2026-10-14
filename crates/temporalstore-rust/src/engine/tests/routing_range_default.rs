@@ -1951,7 +1951,7 @@ fn what_the_narrower_address_is_worth_a_record_at_both_ranges_and_in_both_column
             + shard.hashes.values().map(|fields| fields.len()).sum::<usize>()
             + shard.features.values().map(|series| series.len()).sum::<usize>()
             + shard.context_nodes.len()
-            + shard.control_state_blocks.len();
+            + shard.control_state_blocks().len();
         let in_bucket_index = shard
             .bucket_index
             .bucket_map

@@ -3146,6 +3146,14 @@ pub(super) fn decode_index_bytes(bytes: &[u8]) -> Result<ShardState, String> {
     // each arm would be a thing to remember. Written here it is a thing nobody can forget.
     let mut state = decode_index_bytes_inner(bytes)?;
     state::repack_decoded_btrees(&mut state);
+    // THE LEGACY CONTROL-STATE FOLD, HERE FOR THE SAME REASON THE REPACK IS HERE.
+    //
+    // Written in this wrapper it covers every codec arm and -- which is the half that matters --
+    // every CALLER -- all six of which read `index_format_version` now, so a PRE-stamp image is
+    // refused on every path. What the fold is for is an image at the CURRENT stamp: every one of
+    // them still carries the top-level key, none is stale, and `objects` defaults to empty. A fold
+    // written into one arm, or reached from one caller, would miss the rest.
+    state.fold_legacy_control_state_blocks();
     Ok(state)
 }
 
@@ -5252,7 +5260,7 @@ fn delete_record_exact(shard: &mut ShardState, key: &str) -> bool {
         removed = true;
         control_rollup::forget(shard, key);
     }
-    removed |= shard.control_state_blocks.remove(key).is_some();
+    removed |= shard.remove_control_state_block(key).is_some();
     removed |= shard.control_state_changes.remove(key).is_some();
     removed |= shard.control_state_change_sketch.remove(key).is_some();
     removed |= shard.control_state_selection.remove(key).is_some();
@@ -5947,7 +5955,7 @@ fn collect_live_block_slab_ids(shard: &ShardState) -> BTreeSet<u64> {
         &mut ids,
         &mut visited,
         shard
-            .control_state_blocks
+            .control_state_blocks()
             .values()
             .map(|record| record.address().block_slab_id()),
     );
@@ -6099,7 +6107,7 @@ fn persist_control_state_block(
     async_storage: bool,
 ) -> bool {
     let Some(series) = shard.control_state.get(key) else {
-        shard.control_state_blocks.remove(key);
+        shard.remove_control_state_block(key);
         return false;
     };
     // Coalesced-persistence mode: the counter series is durable via the index snapshot
@@ -6129,9 +6137,7 @@ fn persist_control_state_block(
         upsert_bucket_index_block(shard, shard_id, "control_state", key, None, address.clone(), true);
         let mut record = crate::engine::object_record::ObjectRecord::default();
         record.set_address(&address);
-        shard
-            .control_state_blocks
-            .insert(key.to_string().into_boxed_str(), record.into());
+        shard.insert_control_state_block(key.to_string().into_boxed_str(), record.into());
         true
     } else {
         false
@@ -6195,7 +6201,7 @@ fn record_exists_exact(shard: &ShardState, key: &str) -> bool {
         || shard.seen.contains_key(key)
         || shard.features.contains_key(key)
         || shard.control_state.contains_key(key)
-        || shard.control_state_blocks.contains_key(key)
+        || shard.control_state_blocks().contains_key(key)
         || shard.control_state_changes.contains_key(key)
         || shard.control_state_selection.contains_key(key)
         || shard.context_nodes.contains_key(key)

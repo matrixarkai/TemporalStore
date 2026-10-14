@@ -1422,7 +1422,7 @@ impl TemporalEngine {
                 ));
             }
         }
-        let mut counter_blocks: Vec<_> = shard.control_state_blocks.iter().collect();
+        let mut counter_blocks: Vec<_> = shard.control_state_blocks().iter().collect();
         counter_blocks.sort_by(|left, right| left.0.cmp(right.0));
         for (key, record) in counter_blocks {
             let address = record.address();
@@ -2287,9 +2287,10 @@ impl TemporalEngine {
                 );
                 let mut record = crate::engine::object_record::ObjectRecord::default();
                 record.set_address(&address);
-                shard
-                    .control_state_blocks
-                    .insert(item.object_key.as_str().into(), record.into());
+                shard.insert_control_state_block(
+                    item.object_key.as_str().into(),
+                    record.into(),
+                );
                 true
             }
             "context_entity" => {

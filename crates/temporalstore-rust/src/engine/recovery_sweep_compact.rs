@@ -1670,7 +1670,7 @@ fn expiry_scan_budget(limit: usize) -> usize {
         // and would not fail today because they are unused; the guard against that is
         // `compacting_a_record_keeps_everything_that_is_not_the_address`.
         let mut staged: Vec<(u32, String, ElementEntry)> = shard
-            .control_state_blocks
+            .control_state_blocks()
             .iter()
             .map(|(key, record)| (bucket_of(key), key.to_string(), record.address()))
             .collect();
@@ -1685,9 +1685,9 @@ fn expiry_scan_budget(limit: usize) -> usize {
             &mut rewrite_stats,
         )?;
         for (_, key, address) in &staged {
-            if let Some(record) = shard.control_state_blocks.get_mut(key.as_str()) {
+            shard.with_control_state_block_mut(key.as_str(), |record| {
                 record.set_address(address);
-            }
+            });
         }
         compact_block_addresses(
             &self.block_store,
