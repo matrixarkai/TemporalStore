@@ -1052,6 +1052,21 @@ impl ObjectSlot {
         self.many.as_ref().map_or(0, |elements| elements.len())
     }
 
+    /// THE OWNED ARRAY, READ-ONLY. The counterpart to [`ObjectSlot::set_owned_elements`] on the
+    /// read side, and deliberately NOT a re-exposure of the field: `many` stays private, the
+    /// write surface stays the one door that demands a tenancy witness, and a caller that holds
+    /// `&[..]` cannot put an array here or reorder the one that is present.
+    ///
+    /// `None` and `Some(&[])` are DIFFERENT ANSWERS and that is why this returns the `Option`
+    /// rather than a slice that flattens the absent arm to empty. An emptied array gives up its
+    /// allocation, so "no points" has exactly one spelling -- `None` -- and a reader that could
+    /// not tell the two apart is the second representation of one state this shape exists to
+    /// avoid. [`ObjectSlot::owned_element_count`] answers the length question; this one answers
+    /// the presence question and hands back the stored order.
+    pub(super) fn owned_elements(&self) -> Option<&[(u64, ElementEntry)]> {
+        self.many.as_deref().map(|elements| elements.as_slice())
+    }
+
     /// THE ONLY DOOR INTO THE OWNED ELEMENT ARRAY, AND IT ASKS WHICH TENANCY IS BEING CLAIMED.
     ///
     /// `many` is private to this module, so this is the whole write surface for the array rather

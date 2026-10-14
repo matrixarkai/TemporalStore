@@ -544,7 +544,7 @@ fn the_slots_owned_array_stays_sorted_through_out_of_order_writes() {
 
     let mut slot = ObjectSlot::default();
     assert_eq!(TimestampedSeries::len(&slot), 0, "a fresh slot holds no points");
-    assert!(slot.many.is_none(), "a fresh slot holds no allocation either");
+    assert!(slot.owned_elements().is_none(), "a fresh slot holds no allocation either");
 
     // Deliberately out of order, with a duplicate instant last to exercise the replace arm.
     let written: [(u64, u64); 6] = [(50, 1), (10, 2), (90, 3), (30, 4), (70, 5), (30, 6)];
@@ -589,7 +589,7 @@ fn the_slots_owned_array_stays_sorted_through_out_of_order_writes() {
 
     // STORED sorted, not merely iterated sorted -- read the array directly rather than through
     // the accessor that could be sorting on the way out.
-    let stored = slot.many.as_deref().expect("points are held").clone();
+    let stored = slot.owned_elements().expect("points are held").to_vec();
     let mut expected = stored.clone();
     expected.sort_by_key(|(at, _)| *at);
     assert_eq!(
@@ -620,7 +620,7 @@ fn the_slots_owned_array_stays_sorted_through_out_of_order_writes() {
     }
     assert_eq!(TimestampedSeries::len(&slot), 0, "the array still holds points");
     assert!(
-        slot.many.is_none(),
+        slot.owned_elements().is_none(),
         "an emptied array kept its allocation, so `len() == 0` now has two spellings -- \
          `None` and `Some(empty)` -- and a later reader can distinguish states that mean the same \
          thing"
