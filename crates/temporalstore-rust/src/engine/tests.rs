@@ -425,3 +425,4 @@ mod marking_an_object_dirty_reaches_its_pages;
 mod one_record_per_object;
 mod the_expiry_pair_shares_one_allocation;
 mod one_key_two_kinds;
+mod context_node_map_arrival;
