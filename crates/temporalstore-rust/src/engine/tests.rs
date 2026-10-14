@@ -437,3 +437,4 @@ mod no_signature_names_the_series;
 mod a_field_that_stops_being_written;
 mod one_map_for_both_distinct_shapes;
 mod the_write_back_door_and_the_page_ordinal;
+mod what_a_series_representation_costs_per_key;
