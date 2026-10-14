@@ -69,6 +69,7 @@
 
 use serde::{Deserialize, Serialize};
 
+use super::storage_bucket_internals::StoredModelKind;
 use crate::block_store::{
     extract_block_offset, extract_block_slab_id, make_block_address_word, ElementEntry,
 };
@@ -926,8 +927,14 @@ pub(super) struct ObjectSlot {
     /// field makes this type's stored image BYTE-IDENTICAL to the bare record's. That is what lets
     /// this land without moving the format stamp. The wire representation arrives with the first
     /// tenant that actually populates it, in the change that moves the stamp for other reasons.
+    ///
+    /// PRIVATE TO THIS MODULE, AND THAT IS THE ENFORCEMENT RATHER THAN A STYLE CHOICE. The
+    /// only path that puts elements here is [`ObjectSlot::set_owned_elements`], and it
+    /// demands a tenancy witness whose durable arm cannot be spelled -- see
+    /// [`OwnedElementTenancy`]. A `pub(super)` field would let any engine module assign the
+    /// array directly, and the witness would then be advice rather than a check.
     #[serde(skip)]
-    pub(super) many: Option<Box<Vec<(u64, ElementEntry)>>>,
+    many: Option<Box<Vec<(u64, ElementEntry)>>>,
 }
 
 /// THE WIDTH, PINNED AS ITS OWN EQUALITY, for the same reason the record's is: an inequality
@@ -955,6 +962,73 @@ const _: () = assert!(
 /// silently widened it is a build failure and not a measurement surprise.
 const _: () = assert!(std::mem::size_of::<Option<Box<Vec<(u64, ElementEntry)>>>>() == 8);
 
+/// WHICH TENANT MAY PUT ELEMENTS IN THE OWNED ARRAY -- AND THE ARM THAT CANNOT BE SPELLED.
+///
+/// A tenant of the consolidated map registers a kind and then writes slots for it. Two tenancies
+/// are possible, and they differ only in what a dump is expected to carry:
+///
+///   * `RebuiltAtLoad` -- the elements are re-derived from the bucket index on load, so an empty
+///     stored image costs a rebuild and nothing else. Two of the eight candidate maps are this
+///     shape: they are `skip_serializing` already, so nothing was going to be written for them.
+///   * `DurableOnTheWire` -- the elements ARE the stored copy. The other six are this shape,
+///     declared `#[serde(default)]` with no `skip_serializing`, and for them an empty stored
+///     image is not a rebuild. It is the rows, gone.
+///
+/// The owned array has no stored form -- see `many` above, and the test named in the deletion
+/// list below, which measures that rather than restating it. So the second tenancy is not merely
+/// discouraged here, it is UNSPELLABLE: its witness field has type [`OwnedElementWireForm`],
+/// which has no values, so there is nothing a call site can put in the hole and the registration
+/// does not compile. Issue #2165.
+///
+/// # WHY A WITNESS, AND NOT A FLAG, A COMMENT OR A LIST OF KINDS
+///
+/// The hazard this exists for is that the lossy change LOOKS like the safe one. Both are "point a
+/// context map at `objects` and write slots for it"; what separates them is one serde attribute
+/// on a field the migration may well delete, and it is visible in neither `objects`' declaration
+/// nor the candidate map's own attribute. A `durable: bool` parameter is satisfied by writing
+/// `false`. A doc note is satisfied by not reading it. A hand-kept list of durable kinds goes
+/// stale beside the call sites it describes, and then the guard passes because its list changed
+/// rather than its subject. A type with no inhabitants is checked by the compiler, at the one
+/// site where the decision is actually taken.
+///
+/// What it does not check is a tenant that claims `RebuiltAtLoad` while meaning the other thing.
+/// That is why the arm carries its kind: the claim and the tenant it is made for sit together in
+/// the diff, which is the half a reviewer can see and a compiler cannot.
+pub(super) enum OwnedElementTenancy {
+    /// The elements are re-derived at load, and the stored image is not expected to carry them.
+    RebuiltAtLoad(StoredModelKind),
+    /// The elements are the stored copy. UNCONSTRUCTIBLE while the array has no stored form.
+    DurableOnTheWire {
+        /// The tenant making the claim.
+        kind: StoredModelKind,
+        /// The hole with nothing to put in it.
+        wire_form: OwnedElementWireForm,
+    },
+}
+
+/// THE ABSENCE OF A STORED FORM, AS A TYPE WITH NO VALUES.
+///
+/// An uninhabited enum. The moment the owned array gains a stored form, this type gains an
+/// inhabitant to describe it -- and that is the loud failure rather than a silent pass: the door
+/// below discharges the durable arm with `match wire_form {}`, an empty match that compiles ONLY
+/// over an uninhabited type. A variant added here makes that match non-exhaustive, so the build
+/// fails with `E0004` NAMING the variant, at the door, instead of this guard quietly becoming
+/// vacuous and being kept for the wrong reason.
+///
+/// A width assertion would not do this job. `size_of` is zero for an uninhabited enum AND zero
+/// for a unit struct, so it would pass either way and prove nothing. Exhaustiveness is the
+/// property, so exhaustiveness is what is asserted.
+///
+/// WHEN THAT HAPPENS, DELETE ALL OF THIS IN THE CHANGE THAT LANDS THE STORED FORM:
+///   1. this type, and the `wire_form` field of `OwnedElementTenancy::DurableOnTheWire`;
+///   2. the `match wire_form {}` arm in [`ObjectSlot::set_owned_elements`];
+///   3. the pointer at `ShardState::objects`' declaration in `state.rs`;
+///   4. `the_owned_element_array_reaches_no_stored_image`, which measures the premise and fails
+///      when it goes.
+/// Keeping the witness afterwards would refuse a registration that had become correct, and a
+/// guard that fires on correct code gets deleted rather than obeyed.
+pub(super) enum OwnedElementWireForm {}
+
 impl ObjectSlot {
     /// A slot holding one record and no element array.
     pub(super) fn from_record(record: ObjectRecord) -> Self {
@@ -976,6 +1050,32 @@ impl ObjectSlot {
     /// arms carries them there and has no array at all. This counts the array.
     pub(super) fn owned_element_count(&self) -> usize {
         self.many.as_ref().map_or(0, |elements| elements.len())
+    }
+
+    /// THE ONLY DOOR INTO THE OWNED ELEMENT ARRAY, AND IT ASKS WHICH TENANCY IS BEING CLAIMED.
+    ///
+    /// `many` is private to this module, so this is the whole write surface for the array rather
+    /// than the recommended one. A caller names its tenant and says whether the elements are
+    /// re-derived at load or are themselves the stored copy; the second is unspellable while the
+    /// array has no stored form. See [`OwnedElementTenancy`] and [`OwnedElementWireForm`].
+    ///
+    /// Sorted on the way in, which is what keeps the array's own access argument true: the type
+    /// doc claims a sorted contiguous array that binary-searches in O(log N), and a door that
+    /// accepted an arbitrary order would be the one place that claim stopped holding.
+    pub(super) fn set_owned_elements(
+        &mut self,
+        tenancy: OwnedElementTenancy,
+        mut elements: Vec<(u64, ElementEntry)>,
+    ) {
+        match tenancy {
+            OwnedElementTenancy::RebuiltAtLoad(_) => {}
+            // UNREACHABLE BECAUSE IT IS UNSPELLABLE, and this empty match is the proof rather
+            // than a consequence of it: it compiles only while `OwnedElementWireForm` has no
+            // values, so the day one arrives this line is what refuses to build.
+            OwnedElementTenancy::DurableOnTheWire { wire_form, .. } => match wire_form {},
+        }
+        elements.sort_unstable_by_key(|(when, _)| *when);
+        self.many = Some(Box::new(elements));
     }
 }
 

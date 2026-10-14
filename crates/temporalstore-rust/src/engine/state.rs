@@ -296,6 +296,12 @@ pub(super) struct ShardState {
     /// iteration order and silently invalidates every manifest written before the change. See the
     /// test that pins it, which is the first thing in the tree asserting that digest is
     /// order-sensitive at all.
+    ///
+    /// ONE RECORD PER KEY, AND THE COMPILER IS WHAT HOLDS THAT -- see #2165. A per-element
+    /// tenant needs `ObjectSlot`'s owned element array, which has no stored form, so the
+    /// only door that fills it demands a tenancy witness whose durable arm is an uninhabited
+    /// type and cannot be spelled: see [`super::object_record::OwnedElementTenancy`], which
+    /// carries the reasoning and the condition for deleting it.
     #[serde(default)]
     pub(super) objects: std::collections::BTreeMap<
         super::storage_bucket_internals::StoredModelKind,

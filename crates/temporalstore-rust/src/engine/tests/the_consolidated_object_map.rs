@@ -17,7 +17,7 @@
 //!
 //! rust-internal: measures and guards this crate's own resident structures, no product behaviour
 
-use crate::engine::object_record::{ObjectRecord, ObjectSlot};
+use crate::engine::object_record::{ObjectRecord, ObjectSlot, OwnedElementTenancy};
 use crate::engine::state::ShardState;
 use crate::engine::storage_bucket_internals::StoredModelKind;
 
@@ -624,5 +624,105 @@ fn the_slots_owned_array_stays_sorted_through_out_of_order_writes() {
         "an emptied array kept its allocation, so `len() == 0` now has two spellings -- \
          `None` and `Some(empty)` -- and a later reader can distinguish states that mean the same \
          thing"
+    );
+}
+
+// =================================================================================================
+// THE PREMISE THE TENANCY WITNESS RESTS ON
+// =================================================================================================
+
+/// THE OWNED ELEMENT ARRAY REACHES NO STORED IMAGE -- MEASURED, AND THIS IS WHERE THAT STOPS.
+///
+/// # WHAT THIS IS FOR
+///
+/// `ObjectSlot::many` is `#[serde(skip)]` under a `#[serde(transparent)]` struct, so a slot's
+/// stored image is exactly the bare record's and the owned array serializes to nothing. The
+/// tenancy witness on `set_owned_elements` refuses a durable per-element tenant on that basis
+/// alone. A premise asserted only in prose goes stale silently; this one is driven.
+///
+/// # THE TWO LAYERS, AND WHY BOTH
+///
+/// The byte-identity half pins what `#[serde(transparent)]` is claiming -- that wrapping the
+/// record cost the record nothing on the wire. The round-trip half goes through
+/// `encode_index_bytes` and `decode_index_bytes`, which is the layer that DECIDES: that is the
+/// codec a dump manifest's index actually carries, so an attribute change a slot-level
+/// `serde_json` call happened not to reach would still be caught here.
+///
+/// # THE POSITIVE CONTROL IS THE FIRST ASSERTION, NOT A COURTESY
+///
+/// A fixture whose array never got populated round-trips to zero elements and passes everything
+/// below while proving nothing -- the same vacuity as a test filter that selects nothing and
+/// prints `ok`. So the count is asserted non-zero BEFORE the round-trip, and the rows go in out
+/// of order so the door's sort is exercised rather than assumed.
+///
+/// # WHEN THIS FAILS, ITS MESSAGE IS THE INSTRUCTION
+///
+/// A surviving array means the stored form has landed, and the witness is now refusing a
+/// registration that has become correct.
+///
+/// rust-internal: guards this crate's own stored shape, no product behaviour
+#[test]
+fn the_owned_element_array_reaches_no_stored_image() {
+    fn element(offset: u64) -> crate::block_store::ElementEntry {
+        crate::block_store::ElementEntry::from_parts(3, offset, 16, Some(0), Some(11))
+    }
+
+    // THE SAFE TENANCY, which is the one that compiles: `context_index` is `skip_serializing`
+    // already, so an empty stored image costs it a rebuild and nothing else.
+    let mut slot = slot_at(1, 0, 32);
+    slot.set_owned_elements(
+        OwnedElementTenancy::RebuiltAtLoad(StoredModelKind::ContextIndex),
+        vec![(30, element(192)), (10, element(64)), (20, element(128))],
+    );
+
+    // --- POSITIVE CONTROL. Both halves below are vacuous over an empty array.
+    assert_eq!(
+        slot.owned_element_count(),
+        3,
+        "the door did not populate the owned element array, so every assertion below would pass \
+         over an empty array and measure nothing"
+    );
+
+    // --- (a) THE SLOT'S STORED IMAGE IS THE BARE RECORD'S, BYTE FOR BYTE.
+    let with_elements = serde_json::to_vec(&slot).expect("a slot serializes");
+    let bare = serde_json::to_vec(&slot_at(1, 0, 32)).expect("a bare slot serializes");
+    assert_eq!(
+        with_elements, bare,
+        "a slot carrying three owned elements no longer serializes identically to the same slot \
+         carrying none, so the owned array has reached the wire and the tenancy witness in \
+         `object_record.rs` is now refusing a registration that has become correct. Read \
+         `OwnedElementWireForm`'s doc: it lists what to delete."
+    );
+
+    // --- (b) THROUGH THE CODEC A DUMP MANIFEST ACTUALLY CARRIES.
+    let mut shard = ShardState::default();
+    shard.insert_control_state_block("k1".into(), slot.clone());
+    let bytes = crate::engine::encode_index_bytes(&shard);
+    let restored =
+        crate::engine::decode_index_bytes(&bytes).expect("the index this test just wrote decodes");
+    let restored_slot = restored
+        .control_state_blocks()
+        .get("k1")
+        .expect("the key round-tripped away, so this measures the codec and not the array");
+
+    // THE RECORD DID SURVIVE. Without this, a codec that dropped the whole slot would satisfy
+    // the element assertion below and read as the premise holding.
+    assert_eq!(
+        restored_slot.record(),
+        slot.record(),
+        "the fixed-width record did not survive the round-trip, so the element count below is \
+         measuring a broken codec rather than the owned array's absence from the wire"
+    );
+
+    assert_eq!(
+        restored_slot.owned_element_count(),
+        0,
+        "THE OWNED ELEMENT ARRAY NOW SURVIVES A ROUND-TRIP THROUGH THE INDEX CODEC, so the \
+         premise the tenancy witness rests on is gone and the witness must go with it -- in this \
+         change, not later. A durable per-element tenant is now safe to register, while \
+         `OwnedElementTenancy::DurableOnTheWire` still cannot be spelled, which refuses correct \
+         code. Delete, all in one change: `OwnedElementWireForm`; the `wire_form` field of \
+         `DurableOnTheWire`; the empty match arm in `ObjectSlot::set_owned_elements`; the pointer \
+         at `ShardState::objects`' declaration in `state.rs`; and this test. See #2165."
     );
 }
