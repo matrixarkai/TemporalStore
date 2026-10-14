@@ -2676,6 +2676,38 @@ fn the_index_footprint_stays_inside_its_measured_bracket() {
     //
     // Headroom is deliberately thin. The point is to catch a change that moves the figure, not to
     // leave room for one, and a bound nothing can breach gates nothing.
+    //
+    // ============================================================================================
+    // BEFORE YOU ESTIMATE A VALUE-TYPE CHANGE AGAINST THIS BOUND: MULTIPLY BY THE TABLE'S
+    // CAPACITY, NOT BY ITS LENGTH.
+    // ============================================================================================
+    //
+    // A `HashMap` whose VALUE type grows by n bytes does not cost `len * n`. It costs
+    // `capacity * n`, because hashbrown allocates one slot per capacity unit whether or not a key
+    // occupies it. Capacity is a power of two at or above `len / 0.875`, so the multiplier between
+    // the two estimates is 1.0 just after a doubling and approaches 2.0 just before the next one.
+    // The SAME change therefore costs nearly twice as much in one store as in another with nothing
+    // in the code differing.
+    //
+    // MEASURED HERE, on this fixture, by converting `strings` from a 16-byte `ElementEntry` value
+    // to a 32-byte `ObjectSlot`:
+    //
+    //     predicted with len:       40,000 x 16 B  =   640,000 B  =  16.0 B/key
+    //     measured:              15,301,988 B - 14,253,412 B
+    //                                           = 1,048,576 B  =  26.2 B/key   (382.2 B/key)
+    //     explained by capacity:   40,040 / 0.875 = 45,760 -> 65,536 slots
+    //                              65,536 x 16 B  = 1,048,576 B   -- the measured delta, to the byte
+    //
+    // So the length-based estimate was low by 1.64x and the change breached this ceiling by 22.2
+    // B/key when it was predicted to fit. The identity above is a very strong EXPLANATION of the
+    // measured delta and is not a second independent measurement of it.
+    //
+    // AND IT CUTS BOTH WAYS, WHICH IS THE PART AN ESTIMATE USUALLY MISSES. Removing a whole map
+    // recovers `capacity * entry_size`, also at capacity scale -- so a consolidation that widens a
+    // value and deletes a table is paying and recovering at the SAME multiplier. Only the key
+    // copies it saves scale with occupancy. That is why widening a value in place is a regression
+    // while widening it as part of a merge need not be, and a net prediction that mixes the two
+    // scales is wrong in a direction that flatters the change.
     const CEILING_B_PER_KEY: f64 = 360.0;
     const FLOOR_B_PER_KEY: f64 = 338.0;
     const CEILING_B_PER_ADDRESS: f64 = 180.0;
