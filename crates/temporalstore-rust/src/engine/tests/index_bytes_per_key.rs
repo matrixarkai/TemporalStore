@@ -675,7 +675,7 @@ fn what_a_live_key_costs_in_the_index_at_two_corpus_sizes() {
         let shard = shards.get(&1).expect("shard is loaded");
 
         // --- Denominators FIRST, every one asserted non-empty. ---
-        let string_keys = shard.strings.len();
+        let string_keys = shard.strings().len();
         let series_map_keys = shard.features.len();
         let live_keys = string_keys + series_map_keys;
         let feature_points: usize = shard.features.values().map(|s| s.len()).sum();
@@ -706,7 +706,7 @@ fn what_a_live_key_costs_in_the_index_at_two_corpus_sizes() {
         );
 
         // --- Footprint, structure by structure. ---
-        let strings_bytes = deep_heap_bytes(&shard.strings);
+        let strings_bytes = deep_heap_bytes(shard.strings());
         let features_bytes = deep_heap_bytes(&shard.features);
         let bucket_map_bytes = deep_heap_bytes(&shard.bucket_index.bucket_map);
         let lookup_bytes = deep_heap_bytes(&shard.bucket_index.object_block_lookup);
@@ -1186,7 +1186,7 @@ fn what_a_live_key_costs_on_the_shipped_routing_range() {
             let shard = shards.get(&1).expect("shard is loaded");
 
             // --- Denominators FIRST, asserted, because a zero divides into anything. ---
-            let string_keys = shard.strings.len();
+            let string_keys = shard.strings().len();
             let series_map_keys = shard.features.len();
             let live_keys = string_keys + series_map_keys;
             let feature_points: usize = shard.features.values().map(|s| s.len()).sum();
@@ -1218,7 +1218,7 @@ fn what_a_live_key_costs_on_the_shipped_routing_range() {
             );
 
             // --- The same rows, computed by the same helpers, so the two ranges compare. ---
-            let strings_bytes = deep_heap_bytes(&shard.strings);
+            let strings_bytes = deep_heap_bytes(shard.strings());
             let features_bytes = deep_heap_bytes(&shard.features);
             let bucket_map_bytes = deep_heap_bytes(&shard.bucket_index.bucket_map);
             let lookup_bytes = deep_heap_bytes(&shard.bucket_index.object_block_lookup);
@@ -1452,7 +1452,7 @@ fn what_a_dump_then_release_recovers_on_the_shipped_routing_range() {
             deep_heap_bytes(&shard.bucket_index.object_block_lookup),
             deep_heap_bytes(&shard.dirty_objects),
             deep_heap_bytes(shard),
-            shard.strings.len() + shard.features.len(),
+            shard.strings().len() + shard.features.len(),
             shard.bucket_index.bucket_map.values().count(),
             shard
                 .bucket_index
@@ -1859,10 +1859,10 @@ fn what_the_bucket_map_footprint_is_made_of_on_both_routing_ranges() {
         let shards = engine.shards.read().expect("engine lock poisoned");
         let shard = shards.get(&1).expect("shard is loaded");
 
-        let live_keys = shard.strings.len() + shard.features.len();
+        let live_keys = shard.strings().len() + shard.features.len();
         assert_eq!(
             strings_n,
-            shard.strings.len(),
+            shard.strings().len(),
             "denominator: the string map must hold every key seeded at {label}"
         );
 
@@ -2226,7 +2226,7 @@ fn census_bytes(shard: &crate::engine::state::ShardState) -> Vec<(&'static str, 
     let (arc_bytes, _) = arc_payload_bytes(&shard.bucket_index);
     let (dirty_arc_bytes, _, _) = dirty_arc_payload_bytes(shard);
     vec![
-        ("strings", deep_heap_bytes(&shard.strings)),
+        ("strings", deep_heap_bytes(shard.strings())),
         ("features", deep_heap_bytes(&shard.features)),
         ("hashes", deep_heap_bytes(&shard.hashes)),
         ("bucket_index.bucket_map", bucket_map),
@@ -2418,13 +2418,13 @@ fn how_many_structures_hold_an_entry_for_one_object() {
         let (base_keys, buckets, pages) = {
             let shards = engine.shards.read().expect("engine lock poisoned");
             let shard = shards.get(&1).expect("shard is loaded");
-            let keys = shard.strings.len() + shard.features.len();
+            let keys = shard.strings().len() + shard.features.len();
             let buckets = shard.bucket_index.bucket_map.values().count();
             let pages: usize =
                 shard.bucket_index.bucket_map.values().map(|b| b.block_index.len()).sum();
             assert_eq!(
                 base_strings,
-                shard.strings.len(),
+                shard.strings().len(),
                 "denominator: the string map does not hold the base population"
             );
             assert_eq!(
@@ -2509,7 +2509,7 @@ fn how_many_structures_hold_an_entry_for_one_object() {
             let shards = engine.shards.read().expect("engine lock poisoned");
             let shard = shards.get(&1).expect("shard is loaded");
             let rows = census_bytes(shard);
-            let strings_n = shard.strings.len();
+            let strings_n = shard.strings().len();
             let features_n = shard.features.len();
             let hashes_n = shard.hashes.len();
             let lookup_n = shard.bucket_index.object_block_lookup.len();
@@ -2690,7 +2690,7 @@ fn the_index_footprint_stays_inside_its_measured_bracket() {
 
     // --- THE POPULATION, PINNED. Each of these is a denominator or a regime control, and every
     // --- one of them is asserted before a single ratio is written.
-    let string_keys = shard.strings.len();
+    let string_keys = shard.strings().len();
     let series_map_keys = shard.features.len();
     let feature_points: usize = shard.features.values().map(|s| s.len()).sum();
     let bucket_count = shard.bucket_index.bucket_map.values().count();

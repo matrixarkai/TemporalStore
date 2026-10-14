@@ -460,8 +460,8 @@ pub(super) fn compaction_model_layout_reports(
     let mut reports = Vec::new();
     reports.push(compaction_layout_from_addresses(
         "string",
-        shard.strings.len(),
-        shard.strings.values().cloned(),
+        shard.strings().len(),
+        shard.strings().values().map(|slot| slot.record().address()),
         &slab_page_counts,
         None,
     ));

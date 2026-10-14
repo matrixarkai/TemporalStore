@@ -148,10 +148,8 @@ fn build_fixture(dir: &std::path::Path, flush_base: bool) {
         let mut shards = engine.shards.write().expect("engine lock poisoned");
         let shard = shards.get_mut(&SHARD).expect("the shard is loaded");
         let live = shard
-            .strings
-            .get(KEY)
-            .expect("the written string is resident")
-            .clone();
+            .string_address(KEY)
+            .expect("the written string is resident");
         shard.context_nodes.insert(KEY.into(), live);
     }
 

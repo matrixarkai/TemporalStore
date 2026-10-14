@@ -691,7 +691,7 @@ fn how_often_a_real_store_needs_the_layout_arm() {
 
     let shards = engine.shards.read().expect("engine lock poisoned");
     let shard = shards.get(&1).expect("shard is loaded");
-    assert_eq!(KEYS, shard.strings.len(), "denominator: the fixture did not seed what it reports");
+    assert_eq!(KEYS, shard.strings().len(), "denominator: the fixture did not seed what it reports");
 
     // CLASSIFIED BY WHAT THE INLINE ARM ACTUALLY ACCEPTS, which is "ordinal absent OR ordinal
     // zero" -- not by "ordinal absent", which is what an earlier draft of this counter asked and
@@ -703,7 +703,7 @@ fn how_often_a_real_store_needs_the_layout_arm() {
     let mut needs_layout = 0usize;
     let mut with_generation = 0usize;
     let mut largest_ordinal = 0u64;
-    for address in shard.strings.values() {
+    for address in shard.strings().values().map(|slot| slot.record().address()) {
         match address.block_id() {
             None => inline_ordinal_absent += 1,
             Some(0) => inline_ordinal_zero += 1,
@@ -736,10 +736,10 @@ fn how_often_a_real_store_needs_the_layout_arm() {
     // drifts from the converter again fails here rather than printing a wrong percentage.
     let mut converted_inline = 0usize;
     let mut converted_layout = 0usize;
-    for address in shard.strings.values() {
+    for address in shard.strings().values().map(|slot| slot.record().address()) {
         match address.block_id() {
             None | Some(0) => {
-                let record = ObjectRecord::from_object_rows(address, 1, None, true)
+                let record = ObjectRecord::from_object_rows(&address, 1, None, true)
                     .unwrap_or_else(|error| {
                         panic!("the census put this address inline and the converter refused: {error}")
                     });
@@ -750,12 +750,12 @@ fn how_often_a_real_store_needs_the_layout_arm() {
                 let (back, ..) = record.into_object_rows(None).unwrap_or_else(|error| {
                     panic!("a live address converted inline and would not come back: {error}")
                 });
-                assert_eq!(*address, back, "a live address did not survive the inline arm");
+                assert_eq!(address, back, "a live address did not survive the inline arm");
                 converted_inline += 1;
             }
             Some(_) => {
                 let (record, layout) = ObjectRecord::from_object_rows_with_layout(
-                    address,
+                    &address,
                     1,
                     None,
                     true,
@@ -765,7 +765,7 @@ fn how_often_a_real_store_needs_the_layout_arm() {
                 let (back, ..) = record.into_object_rows(Some(&layout)).unwrap_or_else(|error| {
                     panic!("a live address converted into a layout and would not come back: {error}")
                 });
-                assert_eq!(*address, back, "a live address did not survive the layout arm");
+                assert_eq!(address, back, "a live address did not survive the layout arm");
                 converted_layout += 1;
             }
         }
@@ -1465,7 +1465,7 @@ fn how_many_structures_hold_an_entry_for_one_control_state_object() {
             ("dirty_objects", deep_heap_bytes(&shard.dirty_objects)),
             ("expires_at_ms", deep_heap_bytes(&shard.expires_at_ms)),
             ("expiry_by_deadline", deep_heap_bytes(&shard.expiry_by_deadline)),
-            ("strings", deep_heap_bytes(&shard.strings)),
+            ("strings", deep_heap_bytes(shard.strings())),
             ("hashes", deep_heap_bytes(&shard.hashes)),
             ("features", deep_heap_bytes(&shard.features)),
         ]

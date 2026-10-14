@@ -144,10 +144,8 @@ fn build_fixture(dir: &std::path::Path, flush_base: bool) {
         let mut shards = engine.shards.write().expect("engine lock poisoned");
         let shard = shards.get_mut(&7).expect("shard 7 is loaded");
         let live = shard
-            .strings
-            .get(KEY)
-            .expect("the written string is resident")
-            .clone();
+            .string_address(KEY)
+            .expect("the written string is resident");
         shard.context_nodes.insert(KEY.into(), live);
     }
 
@@ -266,7 +264,7 @@ fn no_context_node_entry_arrives_through_a_load_with_no_base_index() {
         shards.get(&7).map_or((false, false, None), |shard| {
             (
                 shard.expires_at_ms.contains_key(KEY),
-                shard.strings.contains_key(KEY),
+                shard.strings().contains_key(KEY),
                 shard.applied_wal_sequence,
             )
         })
@@ -322,7 +320,7 @@ fn with_no_index_log_either_the_deadline_shows_which_source_delivered_it() {
         shards.get(&7).map_or((false, false, false, None), |shard| {
             (
                 shard.expires_at_ms.contains_key(KEY),
-                shard.strings.contains_key(KEY),
+                shard.strings().contains_key(KEY),
                 shard.context_nodes.contains_key(KEY),
                 shard.applied_wal_sequence,
             )

@@ -1504,7 +1504,7 @@ impl TemporalEngine {
                     let (start_routing_bucket, end_routing_bucket) = shard.routing_range();
                     FastPathRead::String {
                         key: key.as_str(),
-                        address: shard.strings.get(key.as_str()).cloned(),
+                        address: shard.string_address(key.as_str()),
                         routing_bucket: block_routing_bucket(
                             key,
                             start_routing_bucket,
@@ -1867,7 +1867,7 @@ impl TemporalEngine {
     pub fn string_block_cache_key_for_test(&self, shard_id: ShardId, key: &str) -> Option<CacheKey> {
         let shards = self.shards.read().expect("engine lock poisoned");
         let shard = shards.get(&shard_id)?;
-        let address = shard.strings.get(key)?;
+        let address = shard.string_address(key)?;
         let (start_routing_bucket, end_routing_bucket) = shard.routing_range();
         Some(CacheKey::page_with_slot(
             shard_id,
@@ -1882,7 +1882,7 @@ impl TemporalEngine {
         let mut shards = self.shards.write().expect("engine lock poisoned");
         shards
             .get_mut(&shard_id)
-            .and_then(|shard| shard.strings.remove(key))
+            .and_then(|shard| shard.remove_string_block(key))
             .is_some()
     }
 
@@ -3283,7 +3283,7 @@ fn collect_upsert_index_items(
                 .get(object_key)
                 .and_then(|fields| fields.get(field))
                 .cloned(),
-            ("string", None) => shard.strings.get(object_key.as_str()).cloned(),
+            ("string", None) => shard.string_address(object_key.as_str()),
             // `zset_component` is `hex::encode(member)` -- the score no longer rides this string
             // -- so the member the map is keyed by is recoverable from the whole of it.
             ("zset", Some(component)) => hex::decode(component)
@@ -5249,7 +5249,7 @@ fn delete_record_exact(shard: &mut ShardState, key: &str) -> bool {
     removed |= recorded_map::drop_object::<recorded_map::ListKind>(shard, key, deletion.clone());
     removed |= recorded_map::drop_object::<recorded_map::ZSetKind>(shard, key, deletion);
     removed |= clear_expiry(shard, key);
-    removed |= shard.strings.remove(key).is_some();
+    removed |= shard.remove_string_block(key).is_some();
     removed |= shard.buckets.remove(key).is_some();
     removed |= shard.seen.remove(key).is_some();
     if shard.features.remove(key).is_some() {
@@ -5851,7 +5851,10 @@ fn collect_live_block_slab_ids(shard: &ShardState) -> BTreeSet<u64> {
     absorb_live_block_slab_ids(
         &mut ids,
         &mut visited,
-        shard.strings.values().map(|address| address.block_slab_id()),
+        shard
+            .strings()
+            .values()
+            .map(|slot| slot.record().address().block_slab_id()),
     );
     for fields in shard.hashes.values() {
         absorb_live_block_slab_ids(
@@ -6192,7 +6195,7 @@ fn record_exists_exact(shard: &ShardState, key: &str) -> bool {
             .unwrap_or(false)
     });
     bucket_index_exists
-        || shard.strings.contains_key(key)
+        || shard.strings().contains_key(key)
         || shard.hashes.contains_key(key)
         || shard.sets.contains_key(key)
         || shard.lists.contains_key(key)
@@ -7048,7 +7051,7 @@ fn object_manager_stats(
                     .collect::<Vec<_>>();
                 (0, live_blocks.len(), 0)
             };
-        let secondary_object_count = shard.strings.len()
+        let secondary_object_count = shard.strings().len()
             + shard.hashes.len()
             + shard.sets.len()
             + shard.lists.len()
@@ -7066,7 +7069,7 @@ fn object_manager_stats(
             + shard.context_compressions.len();
         let object_count = bucket_object_count.max(secondary_object_count);
         let dirty_object_count = bucket_dirty_object_count.max(shard.dirty_objects.len());
-        let secondary_block_ref_count = shard.strings.len()
+        let secondary_block_ref_count = shard.strings().len()
             + shard.hashes.values().map(|fields| fields.len()).sum::<usize>()
             + shard.sets.values().map(BTreeMap::len).sum::<usize>()
             + shard.lists.values().map(BTreeMap::len).sum::<usize>()
@@ -7163,7 +7166,7 @@ fn object_manager_stats(
         };
     }
 
-    let object_count = shard.strings.len()
+    let object_count = shard.strings().len()
         + shard.hashes.len()
         + shard.sets.len()
         + shard.lists.len()
@@ -7178,7 +7181,7 @@ fn object_manager_stats(
         + shard.context_children.len()
         + shard.context_summaries.len()
         + shard.context_compressions.len();
-    let block_ref_count = shard.strings.len()
+    let block_ref_count = shard.strings().len()
         + shard.hashes.values().map(|fields| fields.len()).sum::<usize>()
         + shard.sets.values().map(BTreeMap::len).sum::<usize>()
         + shard.lists.values().map(BTreeMap::len).sum::<usize>()

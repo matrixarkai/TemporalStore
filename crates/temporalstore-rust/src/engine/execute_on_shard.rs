@@ -627,7 +627,7 @@ pub(crate) fn execute_on_shard(
                     address.clone(),
                     true,
                 );
-                shard.strings.insert(key.as_str().into(), address);
+                shard.insert_string_address(key.as_str().into(), address);
                 mutated = true;
             }
             invalidate_cache_key(cache, CacheKey::string(shard_id, &key), async_storage);
@@ -658,7 +658,7 @@ pub(crate) fn execute_on_shard(
                     address.clone(),
                     true,
                 );
-                shard.strings.insert(key.as_str().into(), address);
+                shard.insert_string_address(key.as_str().into(), address);
                 let expires_at = resolve_now_ms().saturating_add(ttl_ms);
                 crate::engine::set_expiry(shard, key.clone(), expires_at);
                 // This write sets a value AND a deadline. Recording only the block passes a probe
@@ -689,13 +689,13 @@ pub(crate) fn execute_on_shard(
             keep_ttl,
         } => {
             remove_if_expired(shard, &key);
-            let old_value = shard.strings.get(key.as_str()).and_then(|address| {
+            let old_value = shard.string_address(key.as_str()).and_then(|address| {
                 read_block_bytes(
                     cache,
                     block_store,
                     shard_id,
-                    address,
-                    // `shard.strings`: a whole-object block, so the element is `None` and the
+                    &address,
+                    // the string map: a whole-object block, so the element is `None` and the
                     // object is the key itself.
                     PageIdentity::of(shard_id, "string", &key, None),
                     Some(block_routing_bucket(
@@ -735,7 +735,7 @@ pub(crate) fn execute_on_shard(
                         address.clone(),
                         true,
                     );
-                    shard.strings.insert(key.as_str().into(), address);
+                    shard.insert_string_address(key.as_str().into(), address);
                     if let Some(ttl_ms) = ttl_ms {
                         let expires_at = resolve_now_ms().saturating_add(ttl_ms);
                         crate::engine::set_expiry(shard, key.clone(), expires_at);
@@ -833,7 +833,7 @@ pub(crate) fn execute_on_shard(
                 true,
             );
             mutated |= mark_bucket_index_object_deleted(shard, &key);
-            mutated |= shard.strings.remove(key.as_str()).is_some();
+            mutated |= shard.remove_string_block(key.as_str()).is_some();
             let _ = cache.invalidate(&CacheKey::string(shard_id, &key));
             CommandResponse::Empty
         }

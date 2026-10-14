@@ -2100,7 +2100,7 @@ fn rebuild_bucket_block_ownership_preserves_dirty_watermarks() {
     // survives the rebuild -- against the filing the rebuild actually performs.
     let mut shard = ShardState::default();
     let derived_bucket = crate::engine::hashing::bucket_for_object("k", 0, u32::MAX);
-    shard.strings.insert(
+    shard.insert_string_address(
         "k".into(),
         ElementEntry::from_parts(1, 0, 4, Some(1), Some(30)),
     );
@@ -2263,7 +2263,7 @@ fn bucket_index_is_authoritative_when_secondary_views_are_missing() {
         let mut shards = engine.shards.write().expect("engine lock poisoned");
         let shard = shards.get_mut(&1).expect("shard loaded");
         assert!(!shard.bucket_index.bucket_map.is_empty());
-        shard.strings.clear();
+        shard.strings_mut().clear();
         shard.hashes.clear_for_test();
         shard.sets.clear_for_test();
     }
@@ -2321,8 +2321,7 @@ fn storage_recovery_uses_bucket_index_not_stale_secondary_model_maps() {
         let shard = shards.get_mut(&1).expect("shard loaded");
         assert!(!shard.bucket_index.bucket_map.is_empty());
         let stale = shard
-            .strings
-            .get_mut("slot-authority")
+            .string_address("slot-authority")
             .expect("secondary string view");
         // The object id used to be planted here too. An address holds none, so what makes this
         // address STALE is the slab coordinates below -- which is the whole of what a reader reads
@@ -2333,13 +2332,18 @@ fn storage_recovery_uses_bucket_index_not_stale_secondary_model_maps() {
         // The slab id is half of one packed word now, so it is planted by rebuilding the address
         // through the checked constructor rather than by assigning a field. Every other part is
         // carried across unchanged, which is what makes this a STALE address and not a new one.
-        *stale = ElementEntry::from_parts(
+        // WRITTEN BACK THROUGH THE MUTATOR rather than assigned through a `&mut`. A slot holds
+        // its address packed in the record, so there is no `&mut ElementEntry` to assign to; the
+        // planted address is built from the one read above and reinstalled under the same key,
+        // which is the same stale state this always planted.
+        let planted = ElementEntry::from_parts(
             stale.block_slab_id().wrapping_add(999),
             stale.offset(),
             stale.length(),
             stale.block_id(),
             None,
         );
+        shard.insert_string_address("slot-authority".into(), planted);
     }
 
     let recovery = engine.storage_recovery_report(1);
@@ -2380,7 +2384,7 @@ fn legacy_model_maps_are_promoted_to_bucket_index_authority() {
     {
         let mut shards = engine.shards.write().expect("engine lock poisoned");
         let shard = shards.get_mut(&1).expect("shard loaded");
-        assert!(!shard.strings.is_empty());
+        assert!(!shard.strings().is_empty());
         shard.bucket_index.bucket_map.clear();
     }
 
@@ -2432,7 +2436,7 @@ fn cold_read_uses_bucket_block_address_after_cache_and_model_maps_are_cleared() 
         let mut shards = engine.shards.write().expect("engine lock poisoned");
         let shard = shards.get_mut(&1).expect("shard loaded");
         assert!(!shard.bucket_index.bucket_map.is_empty());
-        shard.strings.clear();
+        shard.strings_mut().clear();
     }
     let _ = engine
         .cache()
@@ -2486,7 +2490,7 @@ fn recovery_reconciles_model_views_from_bucket_index_authority() {
     let mut damaged =
         crate::engine::decode_index_bytes(&std::fs::read(&index_path).expect("index file"))
             .expect("served index decodes");
-    damaged.strings.clear();
+    damaged.strings_mut().clear();
     std::fs::write(&index_path, crate::engine::encode_index_bytes(&damaged)).unwrap();
 
     let recovered = TemporalEngine::with_local_dirs(1024, &cache_dir, &block_dir, &index_dir);
@@ -2494,7 +2498,7 @@ fn recovery_reconciles_model_views_from_bucket_index_authority() {
     {
         let shards = recovered.shards.read().expect("engine lock poisoned");
         let shard = shards.get(&1).expect("recovered shard");
-        assert!(shard.strings.contains_key("recover-slot-view"));
+        assert!(shard.strings().contains_key("recover-slot-view"));
     }
     let get = recovered.execute(ExecuteRequest {
         shard_id: 1,

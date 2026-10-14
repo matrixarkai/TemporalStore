@@ -159,8 +159,7 @@ fn shard_with_one_object_of_every_kind(suffix: &str) -> ShardState {
     let mut shard = ShardState::default();
 
     shard
-        .strings
-        .insert(key_for("string", suffix).as_str().into(), address());
+        .insert_string_address(key_for("string", suffix).as_str().into(), address());
     shard
         .hashes
         .insert_element_for_test(&key_for("hash", suffix), "field-a".to_string(), address());
@@ -258,7 +257,7 @@ fn round_trip(shard: &ShardState) -> ShardState {
 fn the_lookup_is_empty_after_a_round_trip_so_it_cannot_be_the_source() {
     let shard = shard_with_one_object_of_every_kind(WRITTEN_SUFFIX);
     assert!(
-        !shard.strings.is_empty(),
+        !shard.strings().is_empty(),
         "fixture must be populated or the round trip is of nothing"
     );
 
@@ -270,7 +269,7 @@ fn the_lookup_is_empty_after_a_round_trip_so_it_cannot_be_the_source() {
          durability result in this module may be the lookup answering about itself"
     );
     assert!(
-        !reloaded.strings.is_empty(),
+        !reloaded.strings().is_empty(),
         "positive control: the round trip must carry SOMETHING, or the empty lookup above is \
          simply an empty shard"
     );
@@ -288,7 +287,7 @@ fn the_lookup_is_empty_after_a_round_trip_so_it_cannot_be_the_source() {
 fn kind_map_holds(shard: &ShardState, kind: &str, suffix: &str) -> bool {
     let key = key_for(kind, suffix);
     match kind {
-        "string" => shard.strings.contains_key(key.as_str()),
+        "string" => shard.strings().contains_key(key.as_str()),
         "hash" => shard.hashes.contains_key(&key),
         "set" => shard.sets.contains_key(&key),
         "zset" => shard.zsets.contains_key(&key),
@@ -519,7 +518,7 @@ fn a_context_index_object_key_is_in_no_durable_structure_after_a_reload() {
 /// in none" a measurement rather than a tautology produced by leaving them out.
 fn maps_naming(shard: &ShardState, key: &str) -> Vec<&'static str> {
     let mut found = Vec::new();
-    if shard.strings.contains_key(key) {
+    if shard.strings().contains_key(key) {
         found.push("strings");
     }
     if shard.hashes.contains_key(key) {

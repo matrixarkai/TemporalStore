@@ -177,7 +177,20 @@ pub(super) struct ShardState {
     /// `expires_at_ms` above: the ordering here is the whole point of this map and is untouched,
     /// but the characters it orders are the ones that map already holds.
     pub(super) expiry_by_deadline: BTreeMap<(u64, Arc<str>), ()>,
-    pub(super) strings: HashMap<ModelKey, ElementEntry>,
+    /// THE STRING BLOCKS, HELD AS SLOTS AND READ THROUGH A METHOD.
+    ///
+    /// PRIVATE, AND THAT IS THE ENFORCEMENT RATHER THAN A STYLE CHOICE. While the compatibility
+    /// key below exists there are two live copies of this data, and two copies that can disagree
+    /// is a worse failure than paying for both. A reader cannot create that divergence, so reads
+    /// are public through `strings()`; a WRITER can, so there is no field to assign to. The
+    /// mutators below are the only write path, and that is true because the type system says so
+    /// and not because a comment asks.
+    ///
+    /// ON THE WIRE UNDER ITS OLD KEY AND IN ITS OLD SHAPE, through `string_blocks_as_addresses`,
+    /// which is what keeps the stored image identical and the format stamp where it is. See that
+    /// module for the mechanism and for why a projection replaced a mirrored second field.
+    #[serde(rename = "strings", with = "string_blocks_as_addresses")]
+    strings_slots: HashMap<ModelKey, super::object_record::ObjectSlot>,
     // DURABLE, AND THIS LINE SAID IT WAS NOT. It read "Rebuildable from the durable bucket/block
     // index on load; do not duplicate in checkpoints", which was true while this field was
     // `skip_serializing` and the element name on a page-index entry was the durable spelling of a
@@ -7043,7 +7056,7 @@ pub(super) fn repack_decoded_btrees(state: &mut ShardState) {
         //
         // Not a B-tree at all: a hashed table has no insertion-order shape, and `HashFieldMap`
         // keeps a sorted vector whose length IS its capacity below its growth threshold.
-        strings: _,
+        strings_slots: _,
         hashes: _,
         buckets: _,
         control_state_blocks_compat: _,
@@ -7361,5 +7374,315 @@ impl ShardState {
         &self,
     ) -> HashMap<ModelKey, super::object_record::ObjectSlot> {
         self.control_state_blocks_compat.clone()
+    }
+}
+
+// =================================================================================================
+// THE STRING BLOCKS: THE READ METHOD, THE MUTATORS, AND THE STORED KEY THEY PROJECT ONTO
+// =================================================================================================
+
+/// WHY A STRING SLOT COULD NOT BE PROJECTED ONTO ITS STORED KEY. Each case NAMED, so a refusal
+/// says which one fired rather than that something went wrong.
+///
+/// THE REFUSAL IS WHAT MAKES THE PROJECTION SAFE, AND A ROUND-TRIP TEST WOULD NOT HAVE. The stored
+/// `strings` key has one field per entry -- an address -- and a slot can hold more than that. While
+/// no writer puts anything else in a string slot the projection is lossless, and a round-trip arm
+/// proves exactly that case. What such an arm CANNOT catch is the day a tenant starts populating
+/// the slot's element array, because the arm would have to think to populate it too. So the lossy
+/// case is made unrepresentable instead: the serializer refuses rather than writing a store that is
+/// quietly missing elements.
+///
+/// # THE RULE IS THE PROPERTY, AND THE PREDICATE BELOW IS ONLY THIS TENANT'S
+///
+/// THE PROJECTION MUST REFUSE ANY SLOT THE LEGACY WIRE FORM CANNOT EXPRESS FAITHFULLY. That is the
+/// rule. For `strings` the predicate happens to be "the element array is populated", because the
+/// `BlockAddressWire` shape this key has always carried has one address per entry and no slot for
+/// elements at all.
+///
+/// DO NOT COPY THE PREDICATE INTO ANOTHER TENANT'S PROJECTION. For a PER-ELEMENT map the same
+/// predicate is exactly inverted: its elements LIVE in the array, so a populated array is the
+/// normal state of every multi-element object, and a projection refusing on it would refuse every
+/// ordinary object -- on the WRITE path. Most of the maps that can enter the consolidated map are
+/// of that kind, so a predicate stated as a general rule would be wrong for most of them. Such a
+/// tenant's predicate is something else: a record carrying a handle arm its stored shape cannot
+/// hold, or an inline address no timestamp accounts for. Derive it from the stored shape, as this
+/// one is derived.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) enum StringProjectionRefusal {
+    /// The slot owns an element array and the stored key has no field to carry it.
+    ///
+    /// THIS IS THE REMOVAL CONDITION FOR THE PROJECTION, STATED AS CODE. When a tenant populates
+    /// this for the string kind, the projection has to be replaced by a stored form that carries
+    /// elements -- and that is the change which moves the format stamp. Until then this cannot
+    /// fire, and if it does the write fails loudly with the key that caused it.
+    SlotOwnsElements { key: String, elements: usize },
+    /// The record would not yield an address, for one of the record's own named reasons.
+    Address(super::object_record::ObjectRecordRefusal),
+}
+
+impl std::fmt::Display for StringProjectionRefusal {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::SlotOwnsElements { key, elements } => write!(
+                formatter,
+                "the string slot for {key:?} owns {elements} element(s) and the stored `strings` \
+                 key carries one address per entry with no field for them -- the projection onto \
+                 that key is no longer lossless, so it must be replaced by a stored form that \
+                 carries elements, in the change that moves the format stamp"
+            ),
+            Self::Address(refusal) => write!(
+                formatter,
+                "the string slot's record would not yield an address: {refusal}"
+            ),
+        }
+    }
+}
+
+/// THE STORED `strings` KEY, PROJECTED FROM THE SLOT MAP RATHER THAN MIRRORED BESIDE IT.
+///
+/// # WHY A PROJECTION AND NOT A SECOND FIELD
+///
+/// The shape this replaces was a compatibility field: a second live map in the old value type,
+/// written beside the real one so the stored image kept its key. That is what the first tenant of
+/// the slot did, and it is unshippable here -- MEASURED, before the code existed. The footprint
+/// bracket stands at 356.0 B/key against a 360 ceiling, so there are 4.0 B/key to spend; `strings`
+/// is 59.7 B/key and is SEEDED in that fixture, and the one mirror that has been measured cost
+/// 119.4 B per seeded key. A second copy of this map does not fit in the headroom by more than an
+/// order of magnitude. The first tenant escapes that arithmetic only by being EMPTY in the
+/// bracket's fixture, which is a property of the fixture and not of the design.
+///
+/// So the stored key is derived at the boundary instead. One live map, no duplication, and the
+/// whole class of bug a mirror brings -- two copies that can disagree, a forgotten removal leaving
+/// a ghost, a counter to notice it, a predicate to assert it -- does not exist to be instrumented.
+///
+/// # WHAT KEEPS THE FORMAT STAMP WHERE IT IS
+///
+/// Converting a map's value type in place MOVES THE STORED FORMAT: an `ElementEntry` serializes as
+/// a `BlockAddressWire` and an `ObjectRecord` as an `ObjectRecordWire`, which are different
+/// documents. Main says so for the first tenant in as many words -- "A STORED-FORMAT CHANGE, which
+/// is why the format stamp moves with it".
+///
+/// This does not move it, and the mechanism is the point rather than the conclusion: the `strings`
+/// key is STILL WRITTEN, by this module, in its OLD wire shape, with its OLD strictness -- a
+/// required key whose values are `BlockAddressWire`, exactly what every stamp-14 image already
+/// contains. A reader of this image cannot tell it from one written before this change.
+/// WHAT THE CHANGE THAT DROPS THESE LEGACY KEYS HAS TO DO, PER TENANT -- AND WHAT IT DOES NOT BUY.
+///
+/// Written here so the next person assembling that change does not re-derive the serde constraint
+/// below, and does not inherit the arithmetic error this note corrects.
+///
+/// # THE SERDE CONSTRAINT: ONE FIELD SERIALIZES TO ONE KEY
+///
+/// `serialize_with` receives `&self.field`, not `&self`. So a legacy top-level key can only be
+/// emitted from a field that HOLDS the data, and there are exactly two ways to hold it:
+///
+///   * a MIRROR -- a second map in the legacy value type, written beside the real one. Costs a
+///     whole table, at CAPACITY scale. This is what the first tenant shipped.
+///   * a PROJECTION -- the data in its own field, with the legacy key derived at the boundary.
+///     Costs nothing extra, but the data is then NOT in `objects`.
+///
+/// There is no third way. `objects` is one field and serializes to one key, so data living in
+/// `objects` plus a legacy key means a mirror, necessarily. No legacy key means the stamp bump.
+///
+/// PREFER THE PROJECTION FOR ANY TENANT NOT YET WRITTEN. Same no-stamp property at one table
+/// instead of two; the first tenant used a mirror only because this shape had not been written
+/// yet. Nothing should copy the mirror now.
+///
+/// # PER TENANT, IN THE BUMPING CHANGE
+///
+///   1. delete the legacy field -- the mirror, or the projected field -- which is what takes the
+///      key out of the stored image and is why the bump is required;
+///   2. delete the fold: `fold_legacy_*` for a mirror; for a projection the `deserialize_with`
+///      half goes with the field;
+///   3. the mutators keep their names and write only `objects`;
+///   4. delete the agreement machinery -- the `*_copies_agree` predicate, the disagreement
+///      counter and its accessors, the test-only injector, and the tripwire test;
+///   5. bump `SHARD_INDEX_FORMAT_VERSION` ONCE for every tenant in the change.
+///
+/// # THE ARITHMETIC, CORRECTED -- CONSOLIDATION DOES NOT MERGE TABLES
+///
+/// `objects` is `BTreeMap<StoredModelKind, HashMap<ModelKey, ObjectSlot>>` -- ONE INNER TABLE PER
+/// KIND. Moving a tenant into it RELOCATES its table at the same capacity and the same entry
+/// size. It recovers nothing. An earlier estimate of this work said the move recovers a whole
+/// table at capacity scale; that was wrong, and this is the correction.
+///
+/// What the bumping change actually recovers, per tenant:
+///
+///   * a MIRROR tenant: the mirror's table, at capacity scale, plus one key copy per live entry
+///     at occupancy scale. A real win.
+///   * a PROJECTION tenant: NOTHING. There is only one table and it relocates.
+///
+/// # SO WHERE DOES A WIDENED SLOT EVER PAY FOR ITSELF
+///
+/// Not here. `ObjectRecord` carries `deadline`, `flags` and `model_id` that NO production path
+/// reads -- `deadline()` has no caller outside this module's tests -- and that unread width is the
+/// 16 bytes a slot costs over a bare `ElementEntry`, charged at CAPACITY scale. It is paid in
+/// advance so that a later change can delete a SEPARATE map's entry for the same key: the deadline
+/// merge absorbing `expires_at_ms`. That change is where the recovery lives, and it is the one to
+/// measure a converted tenant against.
+///
+/// AND THE FOOTPRINT BRACKET CANNOT SEE THAT RECOVERY. Its fixture seeds `StringSet` and
+/// `FeatureAppend` only, and `StringSet` carries no deadline -- so `expires_at_ms` is EMPTY there.
+/// The bracket measures a converted tenant's COST exactly and its BENEFIT not at all. That is the
+/// same vacuity as a duplication figure taken on an empty map, arriving from the other side, and
+/// it is why converting a tenant ahead of the deadline merge reads as a pure regression on that
+/// fixture however the keys are sequenced.
+pub(super) mod string_blocks_as_addresses {
+    use super::*;
+
+    /// Project each slot onto the address the stored key carries.
+    pub(super) fn serialize<S>(
+        slots: &HashMap<ModelKey, super::super::object_record::ObjectSlot>,
+        serializer: S,
+    ) -> Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        use serde::ser::{Error, SerializeMap};
+        let mut map = serializer.serialize_map(Some(slots.len()))?;
+        for (key, slot) in slots {
+            // REFUSED, NOT TRUNCATED. See `StringProjectionRefusal::SlotOwnsElements`.
+            let elements = slot.owned_element_count();
+            if elements != 0 {
+                return Err(S::Error::custom(StringProjectionRefusal::SlotOwnsElements {
+                    key: key.to_string(),
+                    elements,
+                }));
+            }
+            // `try_address` AND NOT `address`, so a record that cannot name an address refuses with
+            // its own reason instead of panicking on a path that runs on every index write.
+            let address = slot
+                .try_address()
+                .map_err(|refusal| S::Error::custom(StringProjectionRefusal::Address(refusal)))?;
+            map.serialize_entry(key, &address)?;
+        }
+        map.end()
+    }
+
+    /// Read the stored addresses back as slots. THIS IS THE FOLD.
+    ///
+    /// There is no separate fold step and no call to add to a load path, which is the other thing
+    /// the projection buys: a `deserialize_with` runs inside whatever decoded the image, so it
+    /// covers every codec arm of `decode_index_bytes` and all six of its callers -- the
+    /// dump-manifest restore family and the recovery load as well as the base index -- by
+    /// construction rather than by remembering to wire it up in each.
+    pub(super) fn deserialize<'de, D>(
+        deserializer: D,
+    ) -> Result<HashMap<ModelKey, super::super::object_record::ObjectSlot>, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        use serde::Deserialize;
+        let addresses = HashMap::<ModelKey, ElementEntry>::deserialize(deserializer)?;
+        Ok(addresses
+            .into_iter()
+            .map(|(key, address)| (key, slot_holding(&address)))
+            .collect())
+    }
+}
+
+/// A slot holding one address and nothing else.
+///
+/// CONVERTED IN ONE PLACE. The walks that feed the string map produce bare addresses, and they keep
+/// doing so; the address-to-slot conversion lives here rather than at each of them. Every other
+/// record slot is left default, which is correct for a string block: it has no deadline, no element
+/// array, and the dirty flags are cleared on load anyway.
+pub(super) fn slot_holding(address: &ElementEntry) -> super::object_record::ObjectSlot {
+    let mut record = super::object_record::ObjectRecord::default();
+    record.set_address(address);
+    super::object_record::ObjectSlot::from_record(record)
+}
+
+impl ShardState {
+    /// THE STRING BLOCKS, AS SLOTS. The read half.
+    ///
+    /// A METHOD AND NOT A FIELD, and that is how the ~150 call sites this change touches were
+    /// ENUMERATED rather than grepped for: splitting the field turned every access into a compile
+    /// error the compiler reports one at a time, and a name grep on this crate has already missed a
+    /// four-line delegating helper once, taking a census from 29 sites to 108.
+    pub(super) fn strings(&self) -> &HashMap<ModelKey, super::object_record::ObjectSlot> {
+        &self.strings_slots
+    }
+
+    /// The string blocks, mutably, for the one caller that needs the WHOLE map mutable.
+    ///
+    /// `recovery_sweep_compact`'s rewrite hands a `&mut` for every key into a shared helper, which
+    /// no per-key mutator can serve. Under a mirrored design that site needed a bespoke
+    /// mirror-on-exit bulk mutator; here it has an honest answer, because there is only one copy to
+    /// hand out. A site that forces a different shape from every other site is saying something
+    /// about the design rather than about itself.
+    pub(super) fn strings_mut(
+        &mut self,
+    ) -> &mut HashMap<ModelKey, super::object_record::ObjectSlot> {
+        &mut self.strings_slots
+    }
+
+    /// The address one string key holds, by value.
+    ///
+    /// The shape most read sites actually wanted: of the enumerated reads, the great majority were
+    /// `get(key)` followed immediately by `.cloned()` or by a comparison against an address.
+    pub(super) fn string_address(&self, key: &str) -> Option<ElementEntry> {
+        self.strings_slots
+            .get(key)
+            .map(|slot| slot.record().address())
+    }
+
+    /// Install one string block from its address, answering the address it replaced.
+    pub(super) fn insert_string_address(
+        &mut self,
+        key: ModelKey,
+        address: ElementEntry,
+    ) -> Option<ElementEntry> {
+        self.strings_slots
+            .insert(key, slot_holding(&address))
+            .map(|slot| slot.record().address())
+    }
+
+    /// Remove one string block, answering the address it held.
+    pub(super) fn remove_string_block(&mut self, key: &str) -> Option<ElementEntry> {
+        self.strings_slots
+            .remove(key)
+            .map(|slot| slot.record().address())
+    }
+
+    /// Lend EVERY string address out mutably, then put the results back.
+    ///
+    /// # WHY THIS EXISTS AT ALL, AND WHAT IT COSTS
+    ///
+    /// The compaction rewrite hands a `&mut ElementEntry` for every key into a helper shared with
+    /// the other model kinds, and relocates each address in place. A slot cannot lend that out: an
+    /// `ElementEntry` is not a field of `ObjectRecord`, it is CONSTRUCTED from the record's packed
+    /// address word, so there is no `&mut ElementEntry` inside a slot to borrow. The old map, whose
+    /// values were addresses, could lend one directly.
+    ///
+    /// So the addresses are materialised, lent, and written back. That is one temporary map per
+    /// compaction rewrite -- NOT per key and not on any read path -- and it is stated here rather
+    /// than at the call site so the cost has one home. The alternative was to teach the shared
+    /// helper about slots, which would have moved four other model arms for one arm's benefit.
+    ///
+    /// THIS SITE IS WHY THE PROJECTION IS THE RIGHT SHAPE. Under a mirrored pair it needed a
+    /// bespoke bulk mutator that re-mirrored on exit, with a window in the middle where the two
+    /// copies disagreed and any reader would have seen the stale one. Here there is one copy, so
+    /// the window cannot exist.
+    pub(super) fn with_all_string_addresses_mut<R>(
+        &mut self,
+        edit: impl FnOnce(&mut HashMap<ModelKey, ElementEntry>) -> R,
+    ) -> R {
+        let mut addresses: HashMap<ModelKey, ElementEntry> = self
+            .strings_slots
+            .iter()
+            .map(|(key, slot)| (key.clone(), slot.record().address()))
+            .collect();
+        let result = edit(&mut addresses);
+        self.set_all_string_addresses(addresses);
+        result
+    }
+
+    /// Replace the whole map from a map of addresses, which is what a reconcile rebuild produces.
+    pub(super) fn set_all_string_addresses(&mut self, addresses: HashMap<ModelKey, ElementEntry>) {
+        self.strings_slots = addresses
+            .into_iter()
+            .map(|(key, address)| (key, slot_holding(&address)))
+            .collect();
     }
 }

@@ -826,8 +826,9 @@ fn the_resident_map_readers_asked_in_the_over_complete_state() {
                     named_but_not_live.push(format!("{model}/{key}"));
                 }
             };
-            for (key, address) in &shard.strings {
-                check("string", key, address);
+            for (key, slot) in shard.strings() {
+        let address = slot.record().address();
+                check("string", key, &address);
             }
             for (key, fields) in &shard.hashes {
                 for address in fields.values() {

@@ -1459,7 +1459,7 @@ fn context_temporal_compression_and_raw_backfill_use_cold_storage_without_cache_
 #[test]
 fn live_block_slab_ids_scan_all_index_backed_data_models() {
     let mut shard = ShardState::default();
-    shard.strings.insert(
+    shard.insert_string_address(
         "string".into(),
         ElementEntry::from_parts(7, 0, 1, None, None),
     );
@@ -1571,7 +1571,7 @@ fn block_compaction_rewrites_live_addresses_and_allows_old_slab_gc() {
     {
         let shards = engine.shards.read().expect("engine lock poisoned");
         let shard = shards.get(&1).expect("loaded shard");
-        let string_address = shard.strings.get("k").expect("string address");
+        let string_address = shard.string_address("k").expect("string address");
         let hash_address = shard
             .hashes
             .get("h")
@@ -2440,7 +2440,7 @@ fn cold_index_block_address_reads_from_disk_cache_or_block_store_and_refills_mem
     let block_key = {
         let shards = engine.shards.read().expect("engine lock poisoned");
         let shard = shards.get(&1).expect("loaded shard");
-        let address = shard.strings.get("cold-key").expect("indexed page address");
+        let address = shard.string_address("cold-key").expect("indexed page address");
         assert_ne!(address.block_slab_id(), HOT_BLOCK_SLAB_ID);
         // THE SAME DERIVATION THE READ PATH USES: the page cache key's slot is the KEY's bucket
         // over the range the shard is stamped with, not a field on the address.
@@ -2662,7 +2662,7 @@ fn durable_writes_stamp_stable_object_ids_on_block_addresses() {
 
     let shards = engine.shards.read().expect("engine lock poisoned");
     let shard = shards.get(&1).expect("loaded shard");
-    let string_address = shard.strings.get("k").expect("string address");
+    let string_address = shard.string_address("k").expect("string address");
     let hash_address = shard
         .hashes
         .get("h")
@@ -3534,7 +3534,7 @@ fn served_index_container_round_trips_and_still_reads_plain_json() {
     use crate::engine::{decode_index_bytes, encode_index_bytes, encode_index_bytes_as_plain_json};
 
     let mut shard = ShardState::default();
-    shard.strings.insert(
+    shard.insert_string_address(
         "container-probe".into(),
         ElementEntry::from_parts(7, 11, 13, None, None),
     );
@@ -3544,19 +3544,19 @@ fn served_index_container_round_trips_and_still_reads_plain_json() {
     let plain = encode_index_bytes_as_plain_json(&shard);
     assert_eq!(plain.first(), Some(&b'{'), "container off must write JSON");
     let decoded = decode_index_bytes(&plain).expect("json index decodes");
-    assert!(decoded.strings.contains_key("container-probe"));
+    assert!(decoded.strings().contains_key("container-probe"));
 
     // And what production writes: a magic-prefixed payload that decodes back to the same state.
     let wrapped = encode_index_bytes(&shard);
     assert!(wrapped.starts_with(b"TSIDX\x01"), "container on must write the container");
     assert_ne!(wrapped.first(), Some(&b'{'));
     let decoded = decode_index_bytes(&wrapped).expect("container index decodes");
-    assert!(decoded.strings.contains_key("container-probe"));
+    assert!(decoded.strings().contains_key("container-probe"));
 
     // ...and reading is unconditional: a container decodes with the flag off, which is what
     // makes the write flag safe to turn on and off independently of any reader.
     let decoded_again = decode_index_bytes(&wrapped).expect("container decodes with flag off");
-    assert!(decoded_again.strings.contains_key("container-probe"));
+    assert!(decoded_again.strings().contains_key("container-probe"));
 
     // An unknown payload codec must be refused, never guessed at: a mis-parsed index serves
     // wrong data with no error anywhere, which is the failure mode this container exists to stop.
@@ -3573,7 +3573,7 @@ fn binary_index_payload_round_trips_and_refuses_a_shape_it_cannot_read() {
     let mut shard = ShardState::default();
     shard.index_format_version = crate::engine::SHARD_INDEX_FORMAT_VERSION;
     for i in 0..64u64 {
-        shard.strings.insert(
+        shard.insert_string_address(
             format!("object-{i}").into_boxed_str(),
             ElementEntry::from_parts(i, i * 7, i + 1, Some(i), Some(i * 3)),
         );
@@ -3595,9 +3595,14 @@ fn binary_index_payload_round_trips_and_refuses_a_shape_it_cannot_read() {
     // Exact round-trip: the durable image has to come back as the same state, not merely a
     // plausible one -- so compare the maps, not just that it decoded.
     let decoded = decode_index_bytes(&binary).expect("binary index decodes");
-    assert_eq!(decoded.strings.len(), shard.strings.len());
-    for (key, address) in &shard.strings {
-        assert_eq!(decoded.strings.get(key), Some(address), "address changed for {key}");
+    assert_eq!(decoded.strings().len(), shard.strings().len());
+    for (key, slot) in shard.strings() {
+        let address = slot.record().address();
+        assert_eq!(
+            decoded.string_address(key),
+            Some(address),
+            "address changed for {key}"
+        );
     }
     // `hashes` RIDES THE PAYLOAD NOW, and this assertion is back to the exact round-trip it
     // originally made. The history is the point: it asserted equality, was weakened to assert the
@@ -3652,8 +3657,8 @@ fn binary_index_payload_round_trips_and_refuses_a_shape_it_cannot_read() {
     let plain = encode_index_bytes_as_plain_json(&shard);
     assert_eq!(plain.first(), Some(&b'{'), "container off still writes JSON");
     assert_eq!(
-        decode_index_bytes(&plain).expect("json decodes").strings.len(),
-        shard.strings.len()
+        decode_index_bytes(&plain).expect("json decodes").strings().len(),
+        shard.strings().len()
     );
 
     std::env::set_var("TS_INDEX_CODEC", "zstd-json");
@@ -3661,8 +3666,8 @@ fn binary_index_payload_round_trips_and_refuses_a_shape_it_cannot_read() {
     std::env::remove_var("TS_INDEX_CODEC");
     assert_eq!(compressed_json[6], 1, "zstd-json keeps codec id 1");
     assert_eq!(
-        decode_index_bytes(&compressed_json).expect("zstd-json decodes").strings.len(),
-        shard.strings.len()
+        decode_index_bytes(&compressed_json).expect("zstd-json decodes").strings().len(),
+        shard.strings().len()
     );
 
     // The binary payload is the smaller one -- that is the whole point of adding it.
@@ -4810,7 +4815,7 @@ fn where_a_record_is_kept() {
     let shard = shards.get(&1).expect("loaded shard");
 
     let rows: Vec<(&str, usize)> = vec![
-        ("strings", shard.strings.len()),
+        ("strings", shard.strings().len()),
         ("hashes", shard.hashes.len()),
         ("sets", shard.sets.len()),
         ("expires_at_ms", shard.expires_at_ms.len()),
@@ -4836,7 +4841,7 @@ fn where_a_record_is_kept() {
     println!("  of that does NOT appear above lives outside ShardState -- the bucket index and");
     println!("  the page-address maps beneath it are the next place to look.");
 
-    assert_eq!(shard.strings.len(), RECORDS, "every write should be in strings");
+    assert_eq!(shard.strings().len(), RECORDS, "every write should be in strings");
 }
 
 /// How many map entries' worth of memory does one record actually occupy?
@@ -4881,7 +4886,12 @@ fn how_many_map_entries_is_one_record() {
     let address = {
         let shards = engine.shards.read().expect("engine lock poisoned");
         let shard = shards.get(&1).expect("loaded shard");
-        shard.strings.values().next().cloned().expect("a written page")
+        shard
+            .strings()
+            .values()
+            .next()
+            .map(|slot| slot.record().address())
+            .expect("a written page")
     };
 
     // The floor: the same key and the same address, in a map of their own.
@@ -5499,8 +5509,9 @@ fn where_a_block_read_miss_allocates() {
         let shard = shards.get(&1).expect("loaded shard");
         let (start, end) = shard.routing_range();
         shard
-            .strings
+            .strings()
             .iter()
+            .map(|(key, slot)| (key, slot.record().address()))
             // THE KEY IS CARRIED, not dropped. The bucket beside it is derived from it, and the
             // read now needs the same string to name the object -- so the fixture keeps what it was
             // already reading. Owned, because the shard guard is released before the reads.
@@ -5612,8 +5623,9 @@ fn what_a_block_read_costs_hit_against_miss() {
         let shard = shards.get(&1).expect("loaded shard");
         let (start, end) = shard.routing_range();
         shard
-            .strings
+            .strings()
             .iter()
+            .map(|(key, slot)| (key, slot.record().address()))
             .next()
             .map(|(key, address)| {
                 (
@@ -5662,8 +5674,9 @@ fn what_a_block_read_costs_hit_against_miss() {
         let shard = shards.get(&1).expect("loaded shard");
         let (start, end) = shard.routing_range();
         shard
-            .strings
+            .strings()
             .iter()
+            .map(|(key, slot)| (key, slot.record().address()))
             // THE KEY IS CARRIED, not dropped. The bucket beside it is derived from it, and the
             // read now needs the same string to name the object -- so the fixture keeps what it was
             // already reading. Owned, because the shard guard is released before the reads.
@@ -7218,7 +7231,12 @@ fn what_resizing_a_shard_map_costs() {
     let address = {
         let shards = engine.shards.read().expect("engine lock poisoned");
         let shard = shards.get(&1).expect("loaded shard");
-        shard.strings.values().next().cloned().expect("a written page")
+        shard
+            .strings()
+            .values()
+            .next()
+            .map(|slot| slot.record().address())
+            .expect("a written page")
     };
 
     // Just past a 7/8 boundary, so the incremental build pays for a resize the pre-sized one skips.
@@ -7387,7 +7405,7 @@ fn what_grows_outside_the_shard_index() {
         let slabs = engine.block_store.slab_ids().map(|v| v.len()).unwrap_or(0);
         let strings = {
             let shards = engine.shards.read().expect("engine lock poisoned");
-            shards.get(&1).expect("loaded shard").strings.len()
+            shards.get(&1).expect("loaded shard").strings().len()
         };
         (descriptors, slabs, strings)
     };
@@ -7546,7 +7564,7 @@ fn where_a_record_is_kept_everywhere() {
     let block_index: usize = buckets.values().map(|b| b.block_index.len()).sum();
 
     let rows: Vec<(&str, usize)> = vec![
-        ("strings", shard.strings.len()),
+        ("strings", shard.strings().len()),
         ("hashes", shard.hashes.len()),
         ("sets", shard.sets.len()),
         ("zsets", shard.zsets.len()),
@@ -7646,7 +7664,7 @@ fn where_a_record_is_kept_everywhere() {
     println!("  ({TOP_LEVEL_CONTAINERS} of the {NAMED_FIELDS} ShardState fields this probe names are containers and all");
     println!("   are listed, plus {BUCKET_INDEX_ROWS} rows expanded out of bucket_index; the other {NON_CONTAINER_FIELDS} are scalars.)");
 
-    assert_eq!(shard.strings.len(), RECORDS, "every write should be in strings");
+    assert_eq!(shard.strings().len(), RECORDS, "every write should be in strings");
 }
 
 /// What a bounded routing-slot range would save a one-box node.
@@ -9519,7 +9537,7 @@ fn what_each_home_costs() {
     freed_rows.push(("bucket_map .object_index", per));
     let per = freed_by(&mut || shard.bucket_index.bucket_map.clear());
     freed_rows.push(("bucket_map (the rest)", per));
-    let per = freed_by(&mut || shard.strings.clear());
+    let per = freed_by(&mut || shard.strings_mut().clear());
     freed_rows.push(("strings", per));
 
     println!();

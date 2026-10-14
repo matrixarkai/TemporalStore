@@ -1540,17 +1540,21 @@ fn expiry_scan_budget(limit: usize) -> usize {
         let bucket_of = |key: &str| {
             block_routing_bucket(key, start_routing_bucket, end_routing_bucket)
         };
-        compact_block_addresses(
-            &self.block_store,
-            &self.cache,
-            shard_id,
-            "string",
-            shard
-                .strings
-                .iter_mut()
-                .map(|(key, address)| (bucket_of(key), std::borrow::Cow::Borrowed(&**key), address)),
-            &mut rewrite_stats,
-        )?;
+        // LENT THROUGH THE MAP'S OWN MUTATOR, because a slot has no `&mut ElementEntry` to give:
+        // the address is constructed from the record's packed word rather than stored as a field.
+        // See `ShardState::with_all_string_addresses_mut` for what that costs and why it is here.
+        shard.with_all_string_addresses_mut(|strings| {
+            compact_block_addresses(
+                &self.block_store,
+                &self.cache,
+                shard_id,
+                "string",
+                strings.iter_mut().map(|(key, address)| {
+                    (bucket_of(key), std::borrow::Cow::Borrowed(&**key), address)
+                }),
+                &mut rewrite_stats,
+            )
+        })?;
         // THE FOUR CONTAINER ARMS BATCH, and each hands over the element's KEY BYTES rather than
         // its component: `container_pages::component_from_element_key` renders the component from
         // them, so the four inline renderings the write sites spell out are not copied here. That is

@@ -157,7 +157,7 @@ fn a_hash_write_lands_on_a_key_that_already_holds_a_string() {
     // two objects and not one map answering twice.
     let shards = engine.shards.read().expect("engine lock poisoned");
     let shard = shards.get(&1).expect("shard 1 is loaded");
-    assert!(shard.strings.contains_key("foo"));
+    assert!(shard.strings().contains_key("foo"));
     assert!(shard.hashes.contains_key("foo"));
 }
 
@@ -214,7 +214,7 @@ fn the_membership_sum_does_not_count_either_kind() {
 
     let shards = engine.shards.read().expect("engine lock poisoned");
     let shard = shards.get(&1).expect("shard 1 is loaded");
-    assert!(shard.strings.contains_key("baz"));
+    assert!(shard.strings().contains_key("baz"));
     assert!(shard.hashes.contains_key("baz"));
     assert_eq!(
         super::super::key_membership_size(shard, "baz"),

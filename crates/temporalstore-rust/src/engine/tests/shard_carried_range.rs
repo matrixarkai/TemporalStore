@@ -174,16 +174,16 @@ fn as_an_older_build_wrote_it(address: &ElementEntry) -> ElementEntry {
 fn round_trip_every_page_through_the_wire(
     shard: &mut crate::engine::state::ShardState,
 ) -> usize {
-    let keys: Vec<String> = shard.strings.keys().map(|key| key.to_string()).collect();
+    let keys: Vec<String> = shard.strings().keys().map(|key| key.to_string()).collect();
     for key in &keys {
-        let before = shard.strings.get(key.as_str()).expect("key present").clone();
+        let before = shard.string_address(key.as_str()).expect("key present");
         let older = as_an_older_build_wrote_it(&before);
         assert_eq!(
             older, before,
             "page {key} changed when its `rs` key was removed from the wire; the key is inert and \
              this round trip has to be the identity"
         );
-        shard.strings.insert(key.as_str().into(), older);
+        shard.insert_string_address(key.as_str().into(), older);
     }
     keys.len()
 }
@@ -330,14 +330,14 @@ fn the_two_sites_that_file_a_page_now_file_it_under_the_shards_own_range() {
             "the shard under test is not carrying 0..{NARROW_END}, so what follows would measure \
              the fallback rather than the fix"
         );
-        let before = shard.strings.get(key.as_str()).expect("key present").clone();
+        let before = shard.string_address(key.as_str()).expect("key present");
         let address = as_an_older_build_wrote_it(&before);
         assert_eq!(
             address, before,
             "the wire round trip changed the address. `rs` is inert -- the address holds no routing \
              bucket -- so this has to be the identity."
         );
-        shard.strings.insert(key.as_str().into(), address.clone());
+        shard.insert_string_address(key.as_str().into(), address.clone());
 
         if sync_path {
             crate::engine::storage_bucket_internals::sync_bucket_index_object_blocks(
@@ -429,7 +429,7 @@ fn the_two_writers_file_by_the_stamp_and_the_two_stamps_disagree() {
             "the shard is not carrying 0..{stamp}, so the arm below files by something else"
         );
         for key in &keys {
-            let address = shard.strings.get(key.as_str()).expect("key present").clone();
+            let address = shard.string_address(key.as_str()).expect("key present");
             crate::engine::storage_bucket_internals::upsert_bucket_index_block(
                 shard, 1, "string", key, None, address, true,
             );
@@ -514,7 +514,7 @@ fn narrowing_the_writers_removes_no_page_that_was_already_filed() {
     );
 
     let key = keys[0].clone();
-    let address = shard.strings.get(key.as_str()).expect("key present").clone();
+    let address = shard.string_address(key.as_str()).expect("key present");
     crate::engine::storage_bucket_internals::upsert_bucket_index_block(
         shard, 1, "string", &key, None, address, true,
     );
@@ -880,7 +880,7 @@ fn every_shard_the_engine_installs_carries_its_routing_range() {
         "fn not_an_install(&self) {",
         "    let mut shards = self.shards.write().expect(\"engine lock poisoned\");",
         "    let shard = shards.get_mut(&shard_id).expect(\"shard\");",
-        "    shard.strings.insert(key.clone(), durable.clone());",
+        "    shard.insert_string_address(key.clone(), durable.clone());",
         "    shard.wal_resident_blocks.insert(object_id, placement);",
         "}",
     ];
@@ -987,7 +987,7 @@ fn every_shard_the_engine_installs_carries_its_routing_range() {
 /// The enclosing function name of every line that inserts into the engine's shard map.
 ///
 /// Two shapes, because both appear in this crate: a method chain starting at `self.shards`, and a
-/// local binding taken from it. An insert into a field OF a shard (`shard.strings.insert(..)`) is
+/// local binding taken from it. An insert into a field OF a shard (`shard.insert_string_address(..)`) is
 /// neither, and the control above holds that.
 fn shard_map_insert_sites(lines: &[&str]) -> Vec<String> {
     let enclosing = |index: usize| -> String {
