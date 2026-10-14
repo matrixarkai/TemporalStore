@@ -301,47 +301,23 @@ pub(super) struct ShardState {
         super::storage_bucket_internals::StoredModelKind,
         HashMap<ModelKey, super::object_record::ObjectSlot>,
     >,
-    /// THE COMPATIBILITY KEY, WRITTEN AND NEVER READ, WITH ITS OWN REMOVAL CONDITION.
+    /// Per `(key, bucket)` distinct-count state, in whichever representation the bucket holds.
     ///
-    /// The control-state blocks also live in `objects` above, which is authoritative. This copy
-    /// exists only so that the stored image keeps the top-level key it has always had.
+    /// ONE MAP, WHERE THERE WERE TWO. `control_state_change_sketch` stood beside this holding the
+    /// sketched buckets, keyed identically, and `record_change` kept the two mutually exclusive by
+    /// removing from one as it inserted into the other. They were one logical map with the
+    /// exclusivity maintained by a remove/insert pair; [`super::hll::DistinctBucket`] makes it
+    /// unrepresentable instead, and that type's doc records what the merge does and does not buy.
     ///
-    /// WHY IT CANNOT JUST BE DELETED YET, AND THE REASON IS THE STAMP RATHER THAN THE DOORS.
-    ///
-    /// All six callers of `decode_index_bytes` read `index_format_version` now, through
-    /// `persistence::refuse_stale_index_stamp`. So every PRE-stamp image is refused on every
-    /// path, and the doors are not the problem.
-    ///
-    /// The problem is images at the CURRENT stamp. This field is serialized with
-    /// `#[serde(default)]` and NO `skip_serializing_if`, so the key is written unconditionally --
-    /// even when the map is empty -- and EVERY image at this stamp carries it. Such an image is
-    /// not stale, so nothing refuses it; `objects` defaults to empty; and with no
-    /// `deny_unknown_fields` a removed field is silently ignored. A reader of the consolidated map
-    /// alone would find nothing, and the rows would be gone with every door shut.
-    ///
-    /// REMOVE THIS -- the field, the decode fold, and the duplication -- in a change that moves
-    /// `SHARD_INDEX_FORMAT_VERSION`, which is what makes those images refuse as stale and fall
-    /// back to replay. `the_compatibility_key_still_has_a_reason_to_exist` asserts the stamp and
-    /// fails when it moves; its message is the removal list.
-    ///
-    /// STATED HERE IN THE SAME TERMS AS THE TEST ON PURPOSE. An earlier draft of this doc gave the
-    /// door-based reason, which #2150 made false while the test gave the stamp-based one -- two
-    /// statements of one condition with one stale, and a reader hits the field first.
-    ///
-    /// PRIVATE, AND THAT IS THE ENFORCEMENT. Two live copies that can disagree is worse than
-    /// paying for both, so there is no field here for a writer to assign to: reads go through
-    /// `control_state_blocks()` and writes through the mutator pair, which is the only path that
-    /// touches this.
-    #[serde(rename = "control_state_blocks", default)]
-    control_state_blocks_compat: HashMap<ModelKey, super::object_record::ObjectSlot>,
+    /// THE STORED SHAPE MOVED, WHICH IS WHY THE FORMAT STAMP MOVED WITH IT. An index written
+    /// before this carries `control_state_changes` whose bucket values are bare member ARRAYS and
+    /// a separate `control_state_change_sketch` object. Decoded against this shape the member
+    /// array does not match either variant, and the sketch map is a field no reader claims -- so
+    /// the stamp refuses the index rather than letting a decode decide, and the load falls back to
+    /// WAL replay.
     #[serde(default)]
-    pub(super) control_state_changes: HashMap<String, BTreeMap<u64, BTreeSet<Vec<u8>>>>,
-    // Bounded distinct: per (key, bucket) HyperLogLog sketch. A bucket lives in EITHER
-    // control_state_changes (exact set, small) OR here (fixed-size HLL, converted once the
-    // exact set exceeds the threshold), so high-cardinality distinct counts stay memory-bounded.
-    // Serde-default + durable (rides the index snapshot + WAL, like control_state_changes).
-    #[serde(default)]
-    pub(super) control_state_change_sketch: HashMap<String, BTreeMap<u64, Hll>>,
+    pub(super) control_state_changes:
+        HashMap<String, BTreeMap<u64, super::hll::DistinctBucket>>,
     #[serde(default, alias = "control_state_fol")]
     pub(super) control_state_selection: HashMap<String, ControlStateSelectionValue>,
     // UUID idempotency ledger for control-state writes: uuid -> expiry_ms. Mirrors
@@ -7029,7 +7005,6 @@ pub(super) fn repack_decoded_btrees(state: &mut ShardState) {
         features,
         control_state,
         control_state_changes,
-        control_state_change_sketch,
         context_events,
         context_event_timeline,
         context_indexes,
@@ -7046,7 +7021,6 @@ pub(super) fn repack_decoded_btrees(state: &mut ShardState) {
         strings: _,
         hashes: _,
         buckets: _,
-        control_state_blocks_compat: _,
         objects: _,
         control_state_selection: _,
         control_state_uuid: _,
@@ -7096,12 +7070,15 @@ pub(super) fn repack_decoded_btrees(state: &mut ShardState) {
     repack_nested(context_children);
     repack_nested(context_summaries);
     repack_nested(context_compressions);
-    repack_nested(control_state_change_sketch);
-    // Two levels: the series, and the member set each of its entries carries.
+    // Two levels: the series, and the member set each EXACT entry carries. A sketched bucket is
+    // a fixed-size register array with nothing to repack, which is why this matches rather than
+    // calling `repack_btree_set` on every bucket.
     for series in control_state_changes.values_mut() {
         repack_btree_map(series);
-        for members in series.values_mut() {
-            repack_btree_set(members);
+        for bucket in series.values_mut() {
+            if let super::hll::DistinctBucket::Exact(members) = bucket {
+                repack_btree_set(members);
+            }
         }
     }
     for window in seen.values_mut() {
@@ -7136,75 +7113,57 @@ impl ShardState {
 
     /// The control-state blocks, read from the consolidated map.
     ///
-    /// A METHOD AND NOT A FIELD, AND THAT IS THE ENFORCEMENT RATHER THAN A STYLE CHOICE. While the
-    /// compatibility key below exists there are two live copies of this data, and two copies that
-    /// can disagree is a worse failure than paying for both -- it is the same shape as a tag that
-    /// can contradict a niche, or a flag that can contradict a derived map. A reader cannot create
-    /// that divergence, so reads are public; a WRITER can, so there is no field to assign to. The
-    /// mutator pair below is the only write path, and that is true because the type system says so
-    /// and not because a comment asks.
+    /// A METHOD AND NOT A FIELD, AND IT STAYS ONE NOW THAT THE SECOND COPY IS GONE.
+    ///
+    /// Its original reason was that a compatibility key held a second live copy and two copies
+    /// that can disagree is worse than paying for both. That copy left with the format stamp that
+    /// removed it, so that reason has expired -- and the method is kept for a different one that
+    /// did not: the consolidated map is keyed by KIND first, so a writer assigning to a field
+    /// would have to pick the inner table itself, and picking the wrong kind writes a control
+    /// state block under someone else's kind where nothing would notice. The named door picks the
+    /// kind once.
     pub(super) fn control_state_blocks(
         &self,
     ) -> &HashMap<ModelKey, super::object_record::ObjectSlot> {
         self.objects_of_kind(super::storage_bucket_internals::StoredModelKind::ControlState)
     }
 
-    /// Install one control-state block. Writes BOTH copies, which is the whole reason it exists.
+    /// Install one control-state block, under the control-state kind.
     pub(super) fn insert_control_state_block(
         &mut self,
         key: ModelKey,
         slot: super::object_record::ObjectSlot,
     ) -> Option<super::object_record::ObjectSlot> {
-        self.control_state_blocks_compat.insert(key.clone(), slot.clone());
         self.objects
             .entry(super::storage_bucket_internals::StoredModelKind::ControlState)
             .or_default()
             .insert(key, slot)
     }
 
-    /// Remove one control-state block from BOTH copies.
+    /// Remove one control-state block.
     ///
-    /// REMOVAL IS THE HALF THAT GETS FORGOTTEN. A mirrored pair of maps diverges on the remove
-    /// side far more often than the insert side -- the insert gets mirrored because that is the
-    /// code being written, and the remove is somewhere else -- and the result is a ghost entry in
-    /// the copy nobody updated, which reads as live data. That is why this is a named method
-    /// beside its insert rather than two `remove` calls at a call site, and why the test over this
-    /// pair drives removals rather than only insertions: an insert-only equality test passes over
-    /// exactly this bug.
+    /// A NAMED METHOD BESIDE ITS INSERT, STILL, FOR A NARROWER REASON THAN IT HAD. It existed
+    /// because a mirrored pair diverges on the remove side more often than the insert side, and
+    /// the mirror is gone. What is left is that the removal has to reach INTO the kind's inner
+    /// table, and a call site doing that by hand is a call site that can name the wrong kind.
     pub(super) fn remove_control_state_block(
         &mut self,
         key: &str,
     ) -> Option<super::object_record::ObjectSlot> {
-        self.control_state_blocks_compat.remove(key);
         self.objects
             .get_mut(&super::storage_bucket_internals::StoredModelKind::ControlState)
             .and_then(|objects| objects.remove(key))
     }
-
-    /// Whether the two copies of the control-state blocks agree, key for key and slot for slot.
-    ///
-    /// Exposed so the test over the mutator pair can assert it after EVERY step of a sequence
-    /// rather than once at the end: a pair that diverges and then converges again would pass an
-    /// end-state check, and the divergence is reachable by a reader in between.
-    pub(super) fn control_state_copies_agree(&self) -> bool {
-        let authoritative = self.control_state_blocks();
-        self.control_state_blocks_compat.len() == authoritative.len()
-            && self
-                .control_state_blocks_compat
-                .iter()
-                .all(|(key, slot)| authoritative.get(key) == Some(slot))
-    }
 }
 
 impl ShardState {
-    /// Apply a change to one control-state slot, in BOTH copies.
+    /// Apply a change to one control-state slot.
     ///
-    /// A CLOSURE AND NOT A `get_mut`, because a pair that hands out a mutable borrow is not a
-    /// pair. A caller holding `&mut` to one copy mutates it and the mirror never learns, which is
-    /// the same divergence the insert and remove halves exist to prevent -- and it is the shape
-    /// that hides best, because the call site reads like an ordinary field access. Taking the
-    /// change as a closure means the mirroring happens after it, here, where it cannot be
-    /// forgotten at a call site.
+    /// A CLOSURE AND NOT A `get_mut`, WHICH NOW COSTS NOTHING AND IS KEPT ANYWAY. Its reason was
+    /// that a caller holding `&mut` to one copy mutates it while the mirror never learns; with the
+    /// mirror gone there is nothing to fall out of step. What the closure still buys is that the
+    /// two lookups this needs -- the kind, then the key -- happen in one place, so a caller cannot
+    /// hold a borrow into the wrong kind's table.
     pub(super) fn with_control_state_block_mut<R>(
         &mut self,
         key: &str,
@@ -7214,152 +7173,24 @@ impl ShardState {
             .objects
             .get_mut(&super::storage_bucket_internals::StoredModelKind::ControlState)?
             .get_mut(key)?;
-        let result = change(slot);
-        let mirrored = slot.clone();
-        self.control_state_blocks_compat.insert(key.into(), mirrored);
-        Some(result)
+        Some(change(slot))
     }
 
-    /// Replace EVERY control-state block, in both copies.
+    /// Replace EVERY control-state block.
     ///
     /// The reconcile path rebuilds this map wholesale from the bucket index rather than editing
-    /// it, so it needs a whole-map write -- and a whole-map write through a field assignment is
-    /// the one that would leave the mirror holding every key the rebuild dropped. Those are the
-    /// ghost entries the pair exists to prevent, arriving all at once.
+    /// it, so it needs a whole-map write. It used to be the write that would leave a mirror
+    /// holding every key the rebuild dropped -- ghost entries arriving all at once -- and with the
+    /// mirror gone it is simply the whole-map door, which replaces the kind's inner table rather
+    /// than merging into it.
     pub(super) fn set_all_control_state_blocks(
         &mut self,
         blocks: HashMap<ModelKey, super::object_record::ObjectSlot>,
     ) {
-        self.control_state_blocks_compat = blocks.clone();
         self.objects
             .insert(super::storage_bucket_internals::StoredModelKind::ControlState, blocks);
     }
 
-    /// Fold a legacy top-level control-state map into the consolidated map at decode.
-    ///
-    /// THIS IS WHAT MAKES THE MIGRATION SAFE WHILE THE OLD KEY IS STILL IN THE STORED IMAGE.
-    ///
-    /// All six callers of `decode_index_bytes` read `index_format_version` now, so a PRE-stamp
-    /// image is refused on every path. What this fold is for is an image at the CURRENT stamp:
-    /// every one of them carries the top-level key, none of them is stale, and `objects` defaults
-    /// to empty. Without this fold a reader of the consolidated map alone would find it empty and
-    /// the rows would be gone -- destroyed exactly as a deletion would destroy them.
-    ///
-    /// IT IS THE SAME SHAPE AS THE RETIRED SEQUENCE FOLD, AND THAT IS THE POINT RATHER THAN AN
-    /// IRONY. That fold existed because this hazard is real, and it was queued for deletion on
-    /// the belief that the stamp refused every index that could still carry its data. That belief
-    /// was false for the same five callers. So this fold is not a precaution copied from a
-    /// pattern; it is the pattern, kept for the reason the pattern was always there.
-    ///
-    /// UNCONDITIONAL, and reached from the one place that cannot be bypassed: `decode_index_bytes`
-    /// wraps every codec arm, and its own note says a step written there "is a thing nobody can
-    /// forget" where one written per arm "would be a thing to remember".
-    pub(super) fn fold_legacy_control_state_blocks(&mut self) {
-        if self.control_state_blocks_compat.is_empty() {
-            return;
-        }
-        let legacy = std::mem::take(&mut self.control_state_blocks_compat);
-        let consolidated = self
-            .objects
-            .entry(super::storage_bucket_internals::StoredModelKind::ControlState)
-            .or_default();
-        let mut disagreements = 0u64;
-        for (key, slot) in legacy {
-            match consolidated.get(&key) {
-                // BOTH PRESENT AND EQUAL is the expected steady state while the dual write
-                // exists, and is NOT a finding. Counting it would make the counter mean "an old
-                // image was read" rather than "something diverged", which is noise.
-                Some(existing) if *existing == slot => {}
-                // BOTH PRESENT AND DIFFERENT is the finding, and it is COUNTED RATHER THAN
-                // RESOLVED BY COMPARISON. The consolidated entry is kept either way, so recovery
-                // behaviour does not depend on which copy happens to differ -- a resolution that
-                // branched on the comparison would behave one way in the case its author had in
-                // mind and another way the first time the premise failed.
-                //
-                // AND IT DOES NOT REFUSE THE LOAD. An unopenable store is the worst outcome on
-                // this path, and a mirror disagreeing with the copy readers are served from is
-                // not grounds for refusing a store that either copy could serve.
-                Some(_) => disagreements += 1,
-                None => {
-                    consolidated.insert(key, slot);
-                }
-            }
-        }
-        if disagreements > 0 {
-            LEGACY_CONTROL_STATE_DISAGREEMENTS
-                .fetch_add(disagreements, std::sync::atomic::Ordering::Relaxed);
-        }
-        // And the compatibility copy is restored from the merged result, so the two agree after a
-        // decode exactly as they do after a mutation.
-        self.control_state_blocks_compat = consolidated.clone();
-    }
 }
 
-/// HOW MANY TIMES THE TWO COPIES OF THE CONTROL-STATE BLOCKS ARRIVED DISAGREEING.
-///
-/// Counted at the decode fold, where a stored image carries both the legacy top-level key and the
-/// consolidated map and the two do not match for some object. Both present and EQUAL is the
-/// expected steady state while the compatibility write exists and is not counted here.
-///
-/// EXPOSED RATHER THAN LOGGED, for the same reason `index_load_path_counts` is: the fold cannot
-/// refuse, so a caller cannot tell from its return value that anything was wrong, and a log line
-/// is not something a test can assert on. A counter nothing asserts on is a counter nobody reads,
-/// so the fold test over a well-formed image asserts this is zero.
-static LEGACY_CONTROL_STATE_DISAGREEMENTS: std::sync::atomic::AtomicU64 =
-    std::sync::atomic::AtomicU64::new(0);
 
-/// Read the disagreement count.
-pub(crate) fn legacy_control_state_disagreements() -> u64 {
-    LEGACY_CONTROL_STATE_DISAGREEMENTS.load(std::sync::atomic::Ordering::Relaxed)
-}
-
-/// Forget the count, so a test measures its own folds rather than the suite before it.
-pub(crate) fn reset_legacy_control_state_disagreements() {
-    LEGACY_CONTROL_STATE_DISAGREEMENTS.store(0, std::sync::atomic::Ordering::Relaxed);
-}
-
-/// THE TEST-ONLY DOOR INTO THE COMPATIBILITY COPY.
-///
-/// The compatibility field is private precisely so no writer outside the mutator pair can reach
-/// it, and that is the enforcement the pair depends on. But a detector that cannot be shown to
-/// FAIL is not a detector: `control_state_copies_agree` returning `true` proves nothing unless
-/// something can make it return `false`. So the divergence injector lives here, behind
-/// `#[cfg(test)]`, where it cannot reach production and where the negative control can use it.
-///
-/// This is the same reason the planted-needle control exists beside the vocabulary guard: the
-/// guard that has never been seen to fire is indistinguishable from a guard that cannot.
-#[cfg(test)]
-impl ShardState {
-    /// Drop one key from the compatibility copy only, leaving the consolidated map intact. The
-    /// exact divergence the pair exists to prevent, so the check can be shown to catch it.
-    pub(super) fn force_control_state_copies_apart_for_test(&mut self, key: &str) {
-        self.control_state_blocks_compat.remove(key);
-    }
-
-    /// Plant an entry in the compatibility copy ALONE, which is what a stored image written
-    /// before the consolidated map existed carries.
-    pub(super) fn plant_legacy_control_state_for_test(
-        &mut self,
-        key: ModelKey,
-        slot: super::object_record::ObjectSlot,
-    ) {
-        self.control_state_blocks_compat.insert(key, slot);
-    }
-
-    /// How many entries the compatibility copy holds, so a test can tell "both copies" from
-    /// "one copy twice".
-    pub(super) fn legacy_control_state_len_for_test(&self) -> usize {
-        self.control_state_blocks_compat.len()
-    }
-}
-
-#[cfg(test)]
-impl ShardState {
-    /// A copy of the compatibility map alone, so a footprint test can price that map rather than
-    /// the whole shard.
-    pub(super) fn clone_legacy_control_state_for_test(
-        &self,
-    ) -> HashMap<ModelKey, super::object_record::ObjectSlot> {
-        self.control_state_blocks_compat.clone()
-    }
-}

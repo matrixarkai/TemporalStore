@@ -562,10 +562,18 @@ fn the_stamp_this_adoption_was_costed_against() {
     let current = crate::engine::SHARD_INDEX_FORMAT_VERSION;
     println!("SHARD_INDEX_FORMAT_VERSION at the base = {current}");
     assert_eq!(
-        current, 14,
-        "costed against 14; if this is red the stamp moved and the adoption's cost has to be \
+        current, 15,
+        "costed against 15; if this is red the stamp moved and the adoption's cost has to be \
          re-read rather than re-goldened"
     );
+    // RE-READ AT 14 -> 15, AS THE MESSAGE ABOVE DEMANDS, AND THE COSTING STILL STANDS.
+    //
+    // 15 was spent on merging `control_state_change_sketch` into `control_state_changes`, whose
+    // bucket value became `hll::DistinctBucket`. That is a change to the SERVED index -- a key
+    // leaving the stored image and a value shape changing -- and this module costs the POSITIONAL
+    // index-log row, which carries no struct version at all. So the comparison below is untouched
+    // for exactly the reason the 13 -> 14 note gives, restated once rather than re-goldened.
+    //
     // RE-READ AT 13 -> 14, WHICH IS WHAT THE MESSAGE ABOVE DEMANDED, AND THE COSTING STANDS.
     //
     // 14 was spent on a change to the SERVED index: `control_state_blocks`' value became a
@@ -579,8 +587,8 @@ fn the_stamp_this_adoption_was_costed_against() {
     // The pin is kept rather than deleted, for the reason it was added: so a later reader cannot
     // cost the adoption against a tree that has bumped the stamp for an unrelated reason.
     assert!(
-        current != 13 && current != 15,
-        "bracketed, so 14 is exact and not an artefact of the comparison above"
+        current != 14 && current != 16,
+        "bracketed, so 15 is exact and not an artefact of the comparison above"
     );
     // AND THE BRACKET IS DOMINATED BY THE EQUALITY ABOVE IT, noted rather than removed. An
     // `== 14` already excludes 13 and 15; a neighbour inequality beside it can only ever fail

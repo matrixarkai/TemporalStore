@@ -2606,7 +2606,28 @@ pub(crate) fn eager_cache_warm_on_load() -> bool {
 /// the four branches at 12 are the ones that note was counting. Checked by reading the constant out
 /// of every remote ref, not by grepping history -- history still contains a 13 that a revert took
 /// back, exactly as it still contains the ambiguous 11.
-pub(super) const SHARD_INDEX_FORMAT_VERSION: u32 = 14;
+/// FIFTEEN IS SPENT ON MERGING THE TWO CHANGE MAPS, AND IT COVERS BOTH OF THEM.
+///
+/// `control_state_change_sketch` LEAVES the stored image entirely, and `control_state_changes`
+/// keeps its name while its bucket VALUE changes from a bare member array to a
+/// [`hll::DistinctBucket`] -- so this one number pays for a departing key and a changed value
+/// shape, which is the honest description of "more than one tenant" here.
+///
+/// WHY THE STAMP AND NOT A TOLERANT DECODE. `decode_index_bytes` checks the version BEFORE
+/// decoding, deliberately, because the payload is addressed by field order and decoding it
+/// against a different struct shape "does not error, it produces a plausible and wrong
+/// `ShardState`". A pre-bump bucket value is a member ARRAY, which matches neither variant of the
+/// new enum; the sketch map is a field no reader claims. Neither is a state a decode should be
+/// asked to adjudicate.
+///
+/// THE REPLAY CONSEQUENCE, PLAINLY. Every index written before this is refused on load, counted
+/// as `IndexLoadPath::RefusedStaleStamp`, and the shard rebuilds from its WAL. Slower and
+/// correct, and the same trade every bump in this tree has made.
+///
+/// FIFTEEN IS FREE, MEASURED THE WAY FOURTEEN'S NOTE PRESCRIBES -- by reading this constant out
+/// of every `matrixark` remote ref rather than by grepping history. The maximum any tip holds is
+/// 14 (on seventeen refs); no tip holds 15.
+pub(super) const SHARD_INDEX_FORMAT_VERSION: u32 = 15;
 
 /// Serialize a shard index, stamping the current format version.
 ///
@@ -3153,7 +3174,6 @@ pub(super) fn decode_index_bytes(bytes: &[u8]) -> Result<ShardState, String> {
     // refused on every path. What the fold is for is an image at the CURRENT stamp: every one of
     // them still carries the top-level key, none is stale, and `objects` defaults to empty. A fold
     // written into one arm, or reached from one caller, would miss the rest.
-    state.fold_legacy_control_state_blocks();
     Ok(state)
 }
 
@@ -3511,14 +3531,14 @@ fn collect_command_index_items_for(
 /// `Some(null)` take the same `remove_entry` arm -- so the null was never read, and it cost its
 /// own field name on every record for the life of the log.
 ///
-/// That was most of the record. A write touching one ordinary key is in none of these thirteen
+/// That was most of the record. A write touching one ordinary key is in none of these twelve
 /// maps, so every one was written as a null: measured on a 100,000-record store, the always-null
 /// fields were 308 bytes of a 656-byte index-log record.
 ///
 /// Opaque JSON so the index-log layer stays decoupled from the concrete `ShardState` field types.
 /// How many entries the per-key maps hold for `key`, added up.
 ///
-/// Counting, not capturing: thirteen `len()` calls and no allocation, against serializing every
+/// Counting, not capturing: twelve `len()` calls and no allocation, against serializing every
 /// entry those maps hold for the key. Used to decide whether the capture below is needed at all.
 fn key_membership_size(shard: &ShardState, key: &str) -> usize {
     shard.features.get(key).map_or(0, |v| v.len())
@@ -3585,7 +3605,7 @@ fn delta_key_state_change(
 /// by -- member bytes, list sequence, hash field -- and not by the component its block was filed
 /// under.
 ///
-/// PER ELEMENT, AND THAT IS THE WHOLE POINT. `apply_key_states` folds thirteen maps and restores
+/// PER ELEMENT, AND THAT IS THE WHOLE POINT. `apply_key_states` folds twelve maps and restores
 /// every one of them per KEY, which is right for a map holding one value (or one series) per key.
 /// The four container maps cannot be folded that way: their state is a COLLECTION of elements, so
 /// a per-key rule would have to carry the whole collection and then assign it over the top. That
@@ -3777,7 +3797,6 @@ fn capture_key_states(shard: &ShardState, keys: &[String]) -> Vec<serde_json::Va
             put("features", shard.features.get(key).and_then(|v| serde_json::to_value(v).ok()));
             put("expires_at_ms", shard.expires_at_ms.get(key.as_str()).and_then(|v| serde_json::to_value(v).ok()));
             put("control_state_changes", shard.control_state_changes.get(key).and_then(|v| serde_json::to_value(v).ok()));
-            put("control_state_change_sketch", shard.control_state_change_sketch.get(key).and_then(|v| serde_json::to_value(v).ok()));
             put("control_state_selection", shard.control_state_selection.get(key).and_then(|v| serde_json::to_value(v).ok()));
             put(
             "context_nodes",
@@ -3817,7 +3836,7 @@ fn apply_key_states(shard: &mut ShardState, key_states: &[serde_json::Value]) {
         // on the next fold, and nothing would report it.
         //
         // The two kinds of blob come from two functions and are never merged into one, so carrying
-        // a container field identifies one exactly. `capture_key_states` writes only the thirteen
+        // a container field identifies one exactly. `capture_key_states` writes only the twelve
         // names below and `capture_container_element_states` only the four in
         // `CARRIED_CONTAINER_FIELDS`, which is what makes this partition total rather than a guess.
         if CARRIED_CONTAINER_FIELDS
@@ -3834,11 +3853,6 @@ fn apply_key_states(shard: &mut ShardState, key_states: &[serde_json::Value]) {
             &mut shard.control_state_changes,
             key,
             blob.get("control_state_changes"),
-        );
-        apply_key_state_field(
-            &mut shard.control_state_change_sketch,
-            key,
-            blob.get("control_state_change_sketch"),
         );
         apply_key_state_field(
             &mut shard.control_state_selection,
@@ -5262,7 +5276,6 @@ fn delete_record_exact(shard: &mut ShardState, key: &str) -> bool {
     }
     removed |= shard.remove_control_state_block(key).is_some();
     removed |= shard.control_state_changes.remove(key).is_some();
-    removed |= shard.control_state_change_sketch.remove(key).is_some();
     removed |= shard.control_state_selection.remove(key).is_some();
     removed |= shard.context_nodes.remove(key).is_some();
     removed |= shard.context_events.remove(key).is_some();
@@ -7381,8 +7394,8 @@ mod key_state_shape_tests {
 
     #[test]
     fn a_key_in_no_map_captures_only_its_key() {
-        // The common case: an ordinary write touches a key that is in none of the thirteen
-        // maps. Previously that produced thirteen nulls; now it produces nothing but the key.
+        // The common case: an ordinary write touches a key that is in none of the twelve
+        // maps. Previously that produced twelve nulls; now it produces nothing but the key.
         let shard = ShardState::default();
         let blobs = capture_key_states(&shard, &["m:0".to_string()]);
         assert_eq!(blobs.len(), 1);

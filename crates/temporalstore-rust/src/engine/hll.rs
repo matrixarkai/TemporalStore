@@ -12,9 +12,67 @@
 //! valid across builds. P=12 (4096 registers, ~1.6% standard error), matching the CPC lgK.
 //! Everything here is only reachable behind a config gate; the exact path is unchanged by default.
 
+use std::collections::BTreeSet;
+
 use serde::{Deserialize, Serialize};
 
 use super::state::ShardState;
+
+/// ONE DISTINCT-COUNT BUCKET, IN WHICHEVER REPRESENTATION IT CURRENTLY HOLDS.
+///
+/// # WHY THIS IS ONE TYPE AND NOT TWO MAPS
+///
+/// This was `control_state_changes: HashMap<String, BTreeMap<u64, BTreeSet<Vec<u8>>>>` beside
+/// `control_state_change_sketch: HashMap<String, BTreeMap<u64, Hll>>` -- two maps keyed
+/// identically, holding the two representations of the same thing. [`record_change`] kept them
+/// MUTUALLY EXCLUSIVE per `(key, bucket)` by removing the bucket from the first as it inserted
+/// into the second, so they were already one logical map; the exclusivity was maintained by a
+/// remove/insert pair rather than by the type, and a bucket in both was representable.
+///
+/// It is not representable now. That is the whole of what this change buys, and it is worth being
+/// precise about what it does NOT buy.
+///
+/// # IT IS NOT A BUG FIX, AND NOBODY SHOULD LATER DECIDE THAT IT WAS
+///
+/// A bucket sitting in BOTH maps would still have produced the right answer. [`count_changes`]
+/// folds the exact values into an HLL and merges the sketches into the same HLL, and both an
+/// `Hll` and a `BTreeSet` absorb a duplicate -- so the overlap state was wasteful and
+/// unrepresentable-in-principle, not wrong. The merge removes a map and makes an invariant
+/// unbreakable. It repairs nothing, and a future reader should not invent a defect to explain it.
+///
+/// # IT ALSO COSTS FEWER LOOKUPS, WHICH IS A CONSEQUENCE AND NOT THE REASON
+///
+/// The old `record_change` hashed the key up to three times on the conversion path -- a `get_mut`
+/// on the sketch map, an `entry` on the exact map, a `get_mut` back on the exact map, an `entry`
+/// on the sketch map. One `entry` reaches the bucket now and the conversion is a variant swap in
+/// place.
+#[derive(Clone, Serialize, Deserialize, PartialEq, Eq, Debug)]
+pub(crate) enum DistinctBucket {
+    /// Every distinct value, while the bucket is small enough to keep them.
+    Exact(BTreeSet<Vec<u8>>),
+    /// A fixed-size sketch, once the exact set passed [`DISTINCT_SKETCH_THRESHOLD`] with the
+    /// `control_distinct_sketch` gate on. The exact values are gone: this is the conversion, not
+    /// a cache beside them.
+    Sketch(Hll),
+}
+
+impl Default for DistinctBucket {
+    fn default() -> Self {
+        DistinctBucket::Exact(BTreeSet::new())
+    }
+}
+
+impl DistinctBucket {
+    /// How many distinct values this bucket stands for: exact when it is exact, estimated when it
+    /// is sketched. For reporting, never for a decision -- a caller that needs the values
+    /// themselves has to match on the variant, which is the point of the variant.
+    pub(crate) fn distinct_hint(&self) -> u64 {
+        match self {
+            DistinctBucket::Exact(set) => set.len() as u64,
+            DistinctBucket::Sketch(sketch) => sketch.estimate(),
+        }
+    }
+}
 
 /// A bucket's exact distinct set is converted to a fixed-size HLL once it exceeds this many
 /// distinct values, mirroring the control_state DC→LDC upgrade threshold.
@@ -106,40 +164,28 @@ impl Hll {
 /// a set that grows past `DISTINCT_SKETCH_THRESHOLD` is folded into a new HLL and the exact set
 /// is dropped, bounding memory while keeping small buckets exact. Read via `count_changes`.
 pub(crate) fn record_change(shard: &mut ShardState, key: &str, bucket_ms: u64, value: Vec<u8>) {
-    if let Some(sketch) = shard
-        .control_state_change_sketch
-        .get_mut(key)
-        .and_then(|buckets| buckets.get_mut(&bucket_ms))
-    {
-        sketch.add(&value);
-        return;
-    }
     let enabled = shard.control_distinct_sketch;
-    let need_convert = {
-        let set = shard
-            .control_state_changes
-            .entry(key.to_string())
-            .or_default()
-            .entry(bucket_ms)
-            .or_default();
-        set.insert(value);
-        enabled && set.len() > DISTINCT_SKETCH_THRESHOLD
-    };
-    if need_convert {
-        if let Some(set) = shard
-            .control_state_changes
-            .get_mut(key)
-            .and_then(|buckets| buckets.remove(&bucket_ms))
-        {
-            let mut sketch = Hll::new();
-            for v in &set {
-                sketch.add(v);
+    let bucket = shard
+        .control_state_changes
+        .entry(key.to_string())
+        .or_default()
+        .entry(bucket_ms)
+        .or_default();
+    match bucket {
+        // Already sketched: the value joins the sketch and the exact members are long gone.
+        DistinctBucket::Sketch(sketch) => sketch.add(&value),
+        DistinctBucket::Exact(set) => {
+            set.insert(value);
+            if enabled && set.len() > DISTINCT_SKETCH_THRESHOLD {
+                // THE CONVERSION IS A VARIANT SWAP IN PLACE. It used to be a `remove` from one map
+                // and an `insert` into another, which is what made a bucket in both representable
+                // at all. There is no window here and no second map to be inconsistent with.
+                let mut sketch = Hll::new();
+                for v in set.iter() {
+                    sketch.add(v);
+                }
+                *bucket = DistinctBucket::Sketch(sketch);
             }
-            shard
-                .control_state_change_sketch
-                .entry(key.to_string())
-                .or_default()
-                .insert(bucket_ms, sketch);
         }
     }
 }
@@ -149,31 +195,33 @@ pub(crate) fn record_change(shard: &mut ShardState, key: &str, bucket_ms: u64, v
 /// combined into one HLL and estimated.
 pub(crate) fn count_changes(shard: &ShardState, key: &str, start_ms: u64, end_ms: u64) -> i64 {
     let bounds = crate::engine::timestamp_range_bounds(start_ms, end_ms);
-    let any_sketch = shard
-        .control_state_change_sketch
-        .get(key)
-        .map(|buckets| buckets.range(bounds).next().is_some())
-        .unwrap_or(false);
+    let Some(series) = shard.control_state_changes.get(key) else {
+        return 0;
+    };
+    // EXACT WHENEVER THE WHOLE WINDOW IS EXACT, which is the behaviour this had when the two
+    // representations lived in two maps: one sketched bucket anywhere in the range makes the whole
+    // answer an estimate, because an HLL cannot be unmerged back into members.
+    let any_sketch = series
+        .range(bounds)
+        .any(|(_, bucket)| matches!(bucket, DistinctBucket::Sketch(_)));
     if !any_sketch {
-        let mut unique = std::collections::BTreeSet::new();
-        if let Some(series) = shard.control_state_changes.get(key) {
-            for (_, values) in series.range(bounds) {
+        let mut unique = BTreeSet::new();
+        for (_, bucket) in series.range(bounds) {
+            if let DistinctBucket::Exact(values) = bucket {
                 unique.extend(values.iter().cloned());
             }
         }
         return unique.len() as i64;
     }
     let mut merged = Hll::new();
-    if let Some(series) = shard.control_state_changes.get(key) {
-        for (_, values) in series.range(bounds) {
-            for v in values {
-                merged.add(v);
+    for (_, bucket) in series.range(bounds) {
+        match bucket {
+            DistinctBucket::Exact(values) => {
+                for v in values {
+                    merged.add(v);
+                }
             }
-        }
-    }
-    if let Some(sketches) = shard.control_state_change_sketch.get(key) {
-        for (_, sketch) in sketches.range(bounds) {
-            merged.merge(sketch);
+            DistinctBucket::Sketch(sketch) => merged.merge(sketch),
         }
     }
     merged.estimate() as i64

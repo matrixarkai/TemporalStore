@@ -1452,11 +1452,18 @@ impl TemporalEngine {
         let mut changes: Vec<_> = shard.control_state_changes.iter().collect();
         changes.sort_by(|left, right| left.0.cmp(right.0));
         for (key, buckets) in changes {
-            for (bucket_ms, members) in buckets {
+            for (bucket_ms, bucket) in buckets {
+                // THE REPRESENTATION IS NAMED, because `members=` on a sketched bucket would read
+                // as an exact count and it is an estimate. A dump that silently rounds is worse
+                // than one that says which kind of number it is holding.
+                let kind = match bucket {
+                    crate::engine::hll::DistinctBucket::Exact(_) => "members",
+                    crate::engine::hll::DistinctBucket::Sketch(_) => "sketched",
+                };
                 out.push_str(&format!(
-                    "control_change {key} at={bucket_ms} members={}
+                    "control_change {key} at={bucket_ms} {kind}={}
 ",
-                    members.len()
+                    bucket.distinct_hint()
                 ));
             }
         }

@@ -38,7 +38,7 @@
 //! layer that decides rather than argued:
 //!
 //!   * `capture_key_states` -- the writer -- emits exactly thirteen field names
-//!     (`features`, `expires_at_ms`, `control_state_changes`, `control_state_change_sketch`,
+//!     (`features`, `expires_at_ms`, `control_state_changes`,
 //!     `control_state_selection`, `context_nodes`, `context_events`, `context_indexes`,
 //!     `context_audits`, `context_children`, `context_summaries`, `context_compressions`,
 //!     `context_entities`) and `sequences` is not one of them, so no index log in existence

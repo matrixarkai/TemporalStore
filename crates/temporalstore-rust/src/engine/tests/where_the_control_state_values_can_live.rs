@@ -3,8 +3,9 @@
 
 //! CAN THE THREE CONTROL-STATE VALUE MAPS ENTER THE CONSOLIDATED MAP, AND WHAT IS THE FLOOR?
 //!
-//! `control_state_changes`, `control_state_change_sketch` and `control_state_selection` are three
-//! of the thirteen maps `apply_key_state_field` folds. The consolidated map stores an `ObjectSlot`
+//! `control_state_changes` and `control_state_selection` are two of the twelve maps
+//! `apply_key_state_field` folds (three of thirteen when this was written, before the two change
+//! maps became one). The consolidated map stores an `ObjectSlot`
 //! -- a record plus an element array, both of which describe WHERE PAGES LIVE. These three hold
 //! domain values. This file pins what is true of them, so the floor on the goal is recorded with
 //! its evidence rather than asserted in a report.
@@ -21,41 +22,45 @@
 //!
 //! 2. ALL THREE HAVE KEY-CREATING PRODUCTION WRITERS, unlike `sequences` (none, deleted) and
 //!    `context_nodes` (none key-creating). `control_state_changes` is written unconditionally by
-//!    `hll::record_change`; `control_state_change_sketch` is written by the same function only
-//!    when the `control_distinct_sketch` gate is on, which
+//!    `hll::record_change`; a bucket is converted to its SKETCH representation by the same
+//!    function only when the `control_distinct_sketch` gate is on, which
 //!    [`the_sketch_map_has_no_writer_until_its_flag_is_on`] drives in both positions;
 //!    `control_state_selection` is written from the command path.
 //!
 //! 3. THE TWO CHANGE MAPS ARE ONE LOGICAL MAP. `record_change` keeps them mutually exclusive per
 //!    `(key, bucket)` -- on conversion it REMOVES the bucket from the exact map and inserts it
-//!    into the sketch map -- which [`no_bucket_lives_in_both_change_maps`] drives across the
-//!    conversion. That is the one consolidation available here that needs no change to
-//!    `ObjectSlot`.
+//!    into the sketch map -- which [`a_bucket_holds_exactly_one_representation`] drives across
+//!    the conversion. That was the one consolidation available here that needed no change to
+//!    `ObjectSlot`, and it has been taken.
 //!
 //! 4. NONE OF THEM HAS AN OUTER KIND KEY.
 //!    [`none_of_these_maps_has_a_stored_model_kind`] asks `StoredModelKind::from_stored_name`
 //!    rather than reading a list. `control_state` has a variant because its data is PAGES; these
 //!    three have none because they have no pages at all.
 //!
-//! # WHY THE FLOOR IS NINE OF THIRTEEN, AND WHY THE REASON IS FOUR MAPS AND NOT THREE
+//! # THE FLOOR, AND THE ONE STEP OF IT THAT HAS SINCE BEEN TAKEN
 //!
-//! Of the thirteen maps `apply_key_state_field` folds, NINE have `ElementEntry` values -- a page
-//! address, which is what a slot exists to hold: `features`, `context_nodes`, `context_events`,
-//! `context_indexes`, `context_audits`, `context_entities`, `context_children`,
-//! `context_summaries`, `context_compressions`.
+//! This module was written when `apply_key_state_field` folded THIRTEEN maps. NINE of them have
+//! `ElementEntry` values -- a page address, which is what a slot exists to hold: `features`,
+//! `context_nodes`, `context_events`, `context_indexes`, `context_audits`, `context_entities`,
+//! `context_children`, `context_summaries`, `context_compressions`. FOUR did not, and the fourth
+//! was the one no list of the problem had mentioned -- `expires_at_ms`, whose value is a deadline.
+//! So 13 - 4 = 9, and 13 - 3 = 10 would have been wrong: the floor's NUMBER was right and its
+//! stated reason was one map short.
 //!
-//! FOUR do not, and the fourth is the one no list of this problem has mentioned:
+//! IT IS NOW NINE OF TWELVE, because the recommendation this module made has been taken.
+//! `control_state_change_sketch` and `control_state_changes` were one logical map -- keyed
+//! identically, kept mutually exclusive per `(key, bucket)` by `record_change` -- and they are now
+//! one map whose bucket value is `hll::DistinctBucket`. The three that remain outside the slot are:
 //!
 //! | map | value | a page address? |
 //! |---|---|---|
-//! | `control_state_changes` | `BTreeMap<u64, BTreeSet<Vec<u8>>>` | no -- member bytes |
-//! | `control_state_change_sketch` | `BTreeMap<u64, Hll>` | no -- a sketch |
+//! | `control_state_changes` | `BTreeMap<u64, DistinctBucket>` | no -- members or a sketch |
 //! | `control_state_selection` | `ControlStateSelectionValue` | no -- time, bytes, kind |
-//! | **`expires_at_ms`** | `u64` | **no -- a deadline** |
+//! | `expires_at_ms` | `u64` | no -- a deadline |
 //!
-//! So 13 - 4 = 9 is right and 13 - 3 = 10 would be wrong. The floor's NUMBER was correct and its
-//! stated reason was one map short, which is worth recording in both directions: the arithmetic
-//! only looked consistent because the missing map was never counted on either side.
+//! So the count of maps moved and the count outside the slot moved with it, which is the whole of
+//! what that consolidation bought. The nine did not change.
 
 #![allow(clippy::all)]
 use super::*;
@@ -75,21 +80,27 @@ fn engine_at(dir: &std::path::Path) -> TemporalEngine {
     )
 }
 
-/// What the shard holds for `KEY` in each of the three maps.
+/// What the shard holds for `KEY`: exact buckets, sketched buckets, and whether a selection is
+/// present.
+///
+/// THE FIRST TWO USED TO BE TWO MAPS AND ARE NOW TWO VARIANTS. The shape of this helper is
+/// unchanged on purpose -- every assertion below is written against the same triple -- but where
+/// it once read a length from each of two maps it now partitions one map by variant. A bucket can
+/// only be counted once either way, which is the point.
 fn held(engine: &TemporalEngine) -> (usize, usize, bool) {
+    use crate::engine::hll::DistinctBucket;
     let shards = engine.shards.read().expect("engine lock poisoned");
     let shard = shards.get(&1).expect("shard 1 is loaded");
-    (
-        shard
-            .control_state_changes
-            .get(KEY)
-            .map_or(0, |buckets| buckets.len()),
-        shard
-            .control_state_change_sketch
-            .get(KEY)
-            .map_or(0, |buckets| buckets.len()),
-        shard.control_state_selection.contains_key(KEY),
-    )
+    let (exact, sketched) = shard
+        .control_state_changes
+        .get(KEY)
+        .map_or((0, 0), |buckets| {
+            buckets.values().fold((0, 0), |(exact, sketched), bucket| match bucket {
+                DistinctBucket::Exact(_) => (exact + 1, sketched),
+                DistinctBucket::Sketch(_) => (exact, sketched + 1),
+            })
+        });
+    (exact, sketched, shard.control_state_selection.contains_key(KEY))
 }
 
 /// Turn the distinct-sketch gate on through the real config path, and confirm the shard field the
@@ -258,54 +269,70 @@ fn the_sketch_map_has_no_writer_until_its_flag_is_on() {
     );
 }
 
-/// 3. THE TWO CHANGE MAPS ARE MUTUALLY EXCLUSIVE PER `(key, bucket)`.
+/// 3. A BUCKET HOLDS EXACTLY ONE REPRESENTATION, AND NOW CANNOT HOLD TWO.
 ///
-/// This is the property that makes merging them into one map with an enum value a consolidation
-/// rather than a reshuffle, and it is maintained by `record_change` -- a `remove` from one map and
-/// an `insert` into the other -- rather than by any type.
+/// # WHAT THIS ARM ASSERTED, AND WHY IT CHANGED
 ///
-/// IT IS NOT CURRENTLY A CORRECTNESS RISK, and that is worth writing down so the merge is not
-/// justified as fixing a bug it does not fix. `count_changes` folds the exact values into an HLL
+/// It asserted that the two change maps were mutually exclusive per `(key, bucket)` -- the
+/// property that made merging them a consolidation rather than a reshuffle. The exclusivity was
+/// maintained by `record_change` doing a `remove` from one map and an `insert` into the other,
+/// which meant a bucket in both was REPRESENTABLE and the assertion had something it could catch.
+///
+/// The merge happened, and `hll::DistinctBucket` makes the overlap state unrepresentable: one
+/// bucket, one variant. So this arm can no longer fail the way it was written to fail, and
+/// pretending otherwise would leave a guard over a state the type system has already excluded --
+/// which is the kind of assertion that looks like coverage and is not.
+///
+/// WHAT IT ASSERTS INSTEAD is that the conversion REPLACES rather than ADDS: after a bucket is
+/// sketched, the key holds that one bucket and it is the sketch. That is still a real claim about
+/// `record_change` -- a conversion that inserted a new bucket id, or left the exact one behind
+/// under a different key, would fail it.
+///
+/// AND IT WAS NEVER A CORRECTNESS RISK, which stays written down so the merge is not later
+/// justified as fixing a bug it did not fix. `count_changes` folds the exact values into an HLL
 /// and merges the sketches into the same HLL, and both an `Hll` and a `BTreeSet` absorb a
-/// duplicate, so a bucket present in BOTH maps would still produce the right distinct count. The
-/// merge buys the invariant being unbreakable, not a defect repaired.
+/// duplicate, so a bucket present in both maps would still have produced the right distinct
+/// count. The merge bought the invariant being unbreakable, not a defect repaired.
 #[test]
-fn no_bucket_lives_in_both_change_maps() {
+fn a_bucket_holds_exactly_one_representation() {
     let dir = tempfile::tempdir().expect("tempdir");
     let engine = engine_at(dir.path());
     engine.load_shard(1);
     enable_distinct_sketch(&engine);
     fill_past_the_threshold(&engine);
 
+    use crate::engine::hll::DistinctBucket;
     let shards = engine.shards.read().expect("engine lock poisoned");
     let shard = shards.get(&1).expect("shard 1 is loaded");
-    let exact_buckets: Vec<u64> = shard
+    let buckets = shard
         .control_state_changes
         .get(KEY)
-        .map(|buckets| buckets.keys().copied().collect())
-        .unwrap_or_default();
-    let sketch_buckets: Vec<u64> = shard
-        .control_state_change_sketch
-        .get(KEY)
-        .map(|buckets| buckets.keys().copied().collect())
-        .unwrap_or_default();
-    println!("  exact buckets {exact_buckets:?}, sketched buckets {sketch_buckets:?}");
-    assert!(
-        !sketch_buckets.is_empty(),
-        "denominator: no bucket was converted, so there is no exclusivity to check"
-    );
-    let both: Vec<u64> = sketch_buckets
+        .expect("the key holds a change series");
+    let shapes: Vec<(u64, &str)> = buckets
         .iter()
-        .copied()
-        .filter(|bucket| exact_buckets.contains(bucket))
+        .map(|(at, bucket)| {
+            (
+                *at,
+                match bucket {
+                    DistinctBucket::Exact(_) => "exact",
+                    DistinctBucket::Sketch(_) => "sketch",
+                },
+            )
+        })
         .collect();
-    assert!(
-        both.is_empty(),
-        "bucket(s) {both:?} are in BOTH change maps. `record_change` is supposed to remove a \
-         bucket from the exact map as it inserts the sketch, so the two are one logical map with \
-         two representations. If that has stopped holding, merging them into a single map with an \
-         enum value is no longer a like-for-like consolidation and the conversion path needs \
-         re-reading first."
+    println!("  buckets held: {shapes:?}");
+    assert_eq!(
+        1,
+        shapes.len(),
+        "the conversion left {} buckets under one key where the fixture wrote to one. A \
+         conversion that ADDS a bucket rather than replacing one in place would look like this, \
+         and it would double the memory the sketch exists to bound.",
+        shapes.len()
+    );
+    assert_eq!(
+        "sketch", shapes[0].1,
+        "the bucket past the threshold with the gate on is still exact, so the conversion did \
+         not happen and this arm is measuring nothing"
     );
 }
 

@@ -7560,7 +7560,6 @@ fn where_a_record_is_kept_everywhere() {
         ("control_state", shard.control_state.len()),
         ("control_state_pages", shard.control_state_blocks().len()),
         ("control_state_changes", shard.control_state_changes.len()),
-        ("control_state_change_sketch", shard.control_state_change_sketch.len()),
         ("control_state_selection", shard.control_state_selection.len()),
         ("control_state_uuid", shard.control_state_uuid.len()),
         ("control_state_rollups", shard.control_state_rollups.len()),
