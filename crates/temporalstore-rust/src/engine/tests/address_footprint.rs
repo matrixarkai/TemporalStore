@@ -1727,8 +1727,19 @@ fn the_bucket_index_holds_one_page_out_of_line_and_the_series_maps_hold_none() {
          list header, {pair} B pair, {page} B page)"
     );
 
-    // (2) All six timestamped series maps are one container. This binding is the guard: it is a
-    // compile-time proof, and the count below is its denominator.
+    // (2) INVERTED. This block used to prove that the six timestamped series maps share one
+    // container type AND conclude that the shape "has to be adopted for all of them or none". The
+    // first half is still true and is still proved below. The CONCLUSION is no longer true, and it
+    // is the conclusion that mattered: the four helpers over these maps -- the live-block walk,
+    // the reconcile, the address collector and the apply path's kind dispatch -- named
+    // `BTreeMap<u64, ElementEntry>` concretely, and THAT is what coupled the six, not the maps
+    // themselves. They require the OPERATIONS now, through `engine::timestamped_series`.
+    //
+    // So this guards the lifting rather than the constraint: it proves a DIFFERENT representation
+    // satisfies the trait and that a real helper accepts it, which is what makes the six
+    // narrowable one at a time. Inverted and not deleted, because deleting a guard whose premise
+    // changed is how the guard is lost -- and it is most tempting exactly when the change is going
+    // well. The count below is still the denominator.
     fn one_container(_: &std::collections::HashMap<String, BTreeMap<u64, ElementEntry>>) {}
     let dir = tempfile::tempdir().expect("tempdir");
     let engine = new_engine(dir.path());
@@ -1753,9 +1764,58 @@ fn the_bucket_index_holds_one_page_out_of_line_and_the_series_maps_hold_none() {
         six.len(),
         "denominator: the six kinds timestamped_series_mut dispatches over are {six:?}"
     );
+    // --- THE LIFTING, PROVED BY USE AND NOT BY A SATISFIABLE BOUND ---
+    //
+    // A second representation, existing only in this test: points in a sorted vector rather than a
+    // B-tree. It is here to be PASSED TO THE REAL HELPER, because a bound that merely compiles
+    // would prove only that the trait is implementable, not that the helpers take it.
+    #[derive(Default)]
+    struct SortedPoints(Vec<(u64, ElementEntry)>);
+    impl crate::engine::timestamped_series::TimestampedSeries for SortedPoints {
+        fn len(&self) -> usize {
+            self.0.len()
+        }
+        fn get(&self, at: u64) -> Option<&ElementEntry> {
+            self.0
+                .binary_search_by_key(&at, |(instant, _)| *instant)
+                .ok()
+                .map(|found| &self.0[found].1)
+        }
+        fn addresses(&self) -> impl Iterator<Item = &ElementEntry> {
+            self.0.iter().map(|(_, address)| address)
+        }
+        fn points(&self) -> impl Iterator<Item = (u64, &ElementEntry)> {
+            self.0.iter().map(|(instant, address)| (*instant, address))
+        }
+        fn points_mut(&mut self) -> impl Iterator<Item = (u64, &mut ElementEntry)> {
+            self.0.iter_mut().map(|(instant, address)| (*instant, address))
+        }
+    }
+
+    // The address collector is one of the four helpers, and it is generic now. Both
+    // representations go through the SAME function, which is the property the six needed.
+    let one_point = ElementEntry::from_parts(1, 64, 32, Some(0), Some(11));
+    let as_btree: BTreeMap<u64, ElementEntry> = BTreeMap::from([(7u64, one_point.clone())]);
+    let as_vector = SortedPoints(vec![(7u64, one_point.clone())]);
+    let from_btree =
+        crate::engine::storage_reporting::unique_timestamped_kv_block_addresses(&as_btree);
+    let from_vector =
+        crate::engine::storage_reporting::unique_timestamped_kv_block_addresses(&as_vector);
+    assert_eq!(
+        1,
+        from_vector.len(),
+        "the alternative representation answered no addresses, so this proves nothing: a helper \
+         returning empty for it would pass an equality against an equally empty B-tree"
+    );
+    assert_eq!(
+        from_btree, from_vector,
+        "the same point in two representations produced different addresses through the same \
+         helper, so the seam does not abstract the series: {from_btree:?} against {from_vector:?}"
+    );
+
     println!(
-        "  {} timestamped series maps share one container type, so the split shape has to be \
-         adopted for all of them or none",
+        "  {} timestamped series maps still share one container type, and the helpers over them \
+         no longer require it: a sorted-vector series goes through the same address collector",
         six.len()
     );
 }

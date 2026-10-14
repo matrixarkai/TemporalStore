@@ -943,9 +943,14 @@ pub(super) fn collect_live_block_addresses(shard: &ShardState) -> Vec<ElementEnt
         .collect()
 }
 
-pub(super) fn unique_timestamped_kv_block_addresses(series: &BTreeMap<u64, ElementEntry>) -> Vec<ElementEntry> {
+/// GENERIC OVER THE SERIES AND NOT OVER ITS CONTAINER. The body asks for addresses and nothing
+/// else, so that is all the bound asks for -- see `engine::timestamped_series` for why the trait
+/// is kept to what the callers touch.
+pub(super) fn unique_timestamped_kv_block_addresses(
+    series: &impl super::timestamped_series::TimestampedSeries,
+) -> Vec<ElementEntry> {
     let mut addresses = series
-        .values()
+        .addresses()
         .cloned()
         .collect::<HashSet<_>>()
         .into_iter()

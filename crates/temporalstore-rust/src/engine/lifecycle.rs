@@ -9,22 +9,57 @@ impl Default for TemporalEngine {
     }
 }
 
-/// The series a timestamped kind lives in.
+/// THE TWO THINGS THE APPLY PATH DOES TO A TIMESTAMPED SERIES, each dispatched by kind.
 ///
-/// Kept as one place so the apply path and anything else that has to go from a recorded kind to
-/// the map it belongs in cannot disagree about the answer.
-fn timestamped_series_mut<'a>(
-    shard: &'a mut super::state::ShardState,
+/// These replace a single function that handed out `&mut HashMap<String, BTreeMap<u64, _>>` for
+/// six kinds. That shape was one place, which is what its note said it was for -- but it was one
+/// place that named a CONTAINER, so the six could not be narrowed one at a time: the tree recorded
+/// exactly that in `the_bucket_index_holds_one_page_out_of_line_and_the_series_maps_hold_none`,
+/// where it was a compile-time proof rather than a remark.
+///
+/// Dispatching the OPERATION instead keeps the single place and removes the coupling. Each arm
+/// names its own map, so a kind whose series changes representation changes its own arm and no
+/// other, and no caller can be handed a series whose shape it does not know -- there is no series
+/// handed out at all.
+fn remove_timestamped_series(
+    shard: &mut super::state::ShardState,
     kind: &str,
-) -> Option<&'a mut std::collections::HashMap<String, std::collections::BTreeMap<u64, crate::block_store::ElementEntry>>>
-{
+    object_key: &str,
+) -> bool {
+    match kind {
+        "feature" => shard.features.remove(object_key).is_some(),
+        "context_index" => shard.context_indexes.remove(object_key).is_some(),
+        "context_audit" => shard.context_audits.remove(object_key).is_some(),
+        "context_child" => shard.context_children.remove(object_key).is_some(),
+        "context_summary" => shard.context_summaries.remove(object_key).is_some(),
+        "context_compression" => shard.context_compressions.remove(object_key).is_some(),
+        // NOT A TIMESTAMPED KIND. Distinguished from "the key was not there" by the caller, which
+        // treats an unknown kind as a refusal to apply and an absent key as nothing to do.
+        _ => return false,
+    };
+    true
+}
+
+/// Set or clear one point of one object's series, answering with the addresses that SURVIVE.
+///
+/// `None` means the kind is not a timestamped series kind. An empty `Vec` means it is, and the
+/// object has no points left -- which the shared operation has already taken the key out of the
+/// map for.
+fn apply_timestamped_point(
+    shard: &mut super::state::ShardState,
+    kind: &str,
+    object_key: &str,
+    at: u64,
+    address: Option<crate::block_store::ElementEntry>,
+) -> Option<Vec<crate::block_store::ElementEntry>> {
+    use super::timestamped_series::set_point_and_collect_live as apply;
     Some(match kind {
-        "feature" => &mut shard.features,
-        "context_index" => &mut shard.context_indexes,
-        "context_audit" => &mut shard.context_audits,
-        "context_child" => &mut shard.context_children,
-        "context_summary" => &mut shard.context_summaries,
-        "context_compression" => &mut shard.context_compressions,
+        "feature" => apply(&mut shard.features, object_key, at, address),
+        "context_index" => apply(&mut shard.context_indexes, object_key, at, address),
+        "context_audit" => apply(&mut shard.context_audits, object_key, at, address),
+        "context_child" => apply(&mut shard.context_children, object_key, at, address),
+        "context_summary" => apply(&mut shard.context_summaries, object_key, at, address),
+        "context_compression" => apply(&mut shard.context_compressions, object_key, at, address),
         _ => return None,
     })
 }
@@ -2130,12 +2165,9 @@ impl TemporalEngine {
             | "context_compression" => {
                 // No component on a removal means the whole series went, not one point of it.
                 if item.deleted && item.component.is_none() {
-                    {
-                        let Some(series) = timestamped_series_mut(shard, &item.kind) else {
-                            return false;
-                        };
-                        series.remove(&item.object_key);
-                    }
+                    // The kind is one of the six matched above, so a `false` here can only mean
+                    // the key held no series -- which a removal has nothing to do about.
+                    remove_timestamped_series(shard, &item.kind, &item.object_key);
                     super::mark_bucket_index_object_deleted(shard, &item.object_key);
                     return true;
                 }
@@ -2153,24 +2185,14 @@ impl TemporalEngine {
                 // and was not: the write path registers a timestamped block with no component,
                 // one entry per address, so imitating it with a component produced a bucket
                 // index that disagreed about every block while the typed maps matched exactly.
-                let live_addresses = {
-                    let Some(series) = timestamped_series_mut(shard, &item.kind) else {
-                        return false;
-                    };
-                    let entries = series.entry(item.object_key.clone()).or_default();
-                    match item.resolved_address() {
-                        Some(address) if !item.deleted => {
-                            entries.insert(stored_key, address);
-                        }
-                        _ => {
-                            entries.remove(&stored_key);
-                        }
-                    }
-                    let live = entries.values().cloned().collect::<Vec<_>>();
-                    if entries.is_empty() {
-                        series.remove(&item.object_key);
-                    }
-                    live
+                let point = match item.resolved_address() {
+                    Some(address) if !item.deleted => Some(address),
+                    _ => None,
+                };
+                let Some(live_addresses) =
+                    apply_timestamped_point(shard, &item.kind, &item.object_key, stored_key, point)
+                else {
+                    return false;
                 };
                 super::sync_bucket_index_object_blocks(
                     shard,

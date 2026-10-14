@@ -3647,14 +3647,14 @@ fn visit_model_live_blocks(
 /// is reached only once the series is known to hold at least one accepted address. Asking that
 /// first costs a field read per point and no allocation, and the answer it gates on is exactly the
 /// answer the caller would otherwise reach after allocating.
-fn visit_timestamped_series(
-    map: &HashMap<String, BTreeMap<u64, ElementEntry>>,
+fn visit_timestamped_series<S: super::timestamped_series::TimestampedSeries>(
+    map: &HashMap<String, S>,
     kind: ModelKind,
     accept: &impl Fn(&str, &ElementEntry) -> bool,
     emit: &mut impl FnMut(ModelKind, &str, Option<&str>, &ElementEntry),
 ) {
     for (key, series) in map {
-        if !series.values().any(|address| accept(key, address)) {
+        if !series.addresses().any(|address| accept(key, address)) {
             continue;
         }
         for address in unique_timestamped_kv_block_addresses(series) {
@@ -6475,9 +6475,11 @@ pub(super) fn rebuild_bucket_first_index(
 /// `pub(super)` only so `reconcile_allocation` can price THE SHIPPED FUNCTION rather than a
 /// transcription of it. The arm that no longer exists in the tree has to be transcribed there;
 /// this one does not, and a fixture that copied it could drift from it silently.
-pub(super) fn reconcile_timestamped_series_membership_in_place(
-    target: &mut HashMap<String, BTreeMap<u64, ElementEntry>>,
-    block_derived: HashMap<String, BTreeMap<u64, ElementEntry>>,
+pub(super) fn reconcile_timestamped_series_membership_in_place<
+    S: super::timestamped_series::TimestampedSeries,
+>(
+    target: &mut HashMap<String, S>,
+    block_derived: HashMap<String, S>,
 ) {
     for (key, block_series) in block_derived {
         match target.get_mut(&key) {
@@ -6485,7 +6487,7 @@ pub(super) fn reconcile_timestamped_series_membership_in_place(
             // resurrection of evicted points, no loss on a failed block read -- and each address is
             // refreshed from the derived view where that view has one. An overwrite, not a build.
             Some(series) => {
-                for (timestamp_ms, address) in series.iter_mut() {
+                for (timestamp_ms, address) in series.points_mut() {
                     if let Some(fresh) = block_series.get(timestamp_ms) {
                         *address = fresh.clone();
                     }
