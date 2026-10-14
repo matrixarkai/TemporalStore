@@ -287,7 +287,7 @@ pub(super) struct ShardState {
     /// decoded into the wrong shape; the refusal falls back to replay, and the reconcile rebuilds
     /// this map from the bucket index.
     #[serde(default)]
-    pub(super) control_state_blocks: HashMap<ModelKey, super::object_record::ObjectRecord>,
+    pub(super) control_state_blocks: HashMap<ModelKey, super::object_record::ObjectSlot>,
     #[serde(default)]
     pub(super) control_state_changes: HashMap<String, BTreeMap<u64, BTreeSet<Vec<u8>>>>,
     // Bounded distinct: per (key, bucket) HyperLogLog sketch. A bucket lives in EITHER

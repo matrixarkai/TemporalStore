@@ -2243,7 +2243,7 @@ impl TemporalEngine {
                 record.set_address(&address);
                 shard
                     .control_state_blocks
-                    .insert(item.object_key.as_str().into(), record);
+                    .insert(item.object_key.as_str().into(), record.into());
                 true
             }
             "context_entity" => {

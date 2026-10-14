@@ -7011,7 +7011,7 @@ pub(super) fn reconcile_secondary_views_from_bucket_index(
             .map(|(key, address)| {
                 let mut record = super::object_record::ObjectRecord::default();
                 record.set_address(&address);
-                (key, record)
+                (key, record.into())
             })
             .collect();
         // The rollup ladder is a derived view of control_state; drop it so it rebuilds
@@ -8597,7 +8597,7 @@ mod model_kind_registry_guards {
             // the fixture the one place the narrow door is bypassed.
             let mut record = super::object_record::ObjectRecord::default();
             record.set_address(&at);
-            record
+            record.into()
         });
         shard.context_nodes.insert("ctx:node:t:n".into(), at.clone());
         shard

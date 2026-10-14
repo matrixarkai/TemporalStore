@@ -6128,7 +6128,9 @@ fn persist_control_state_block(
         upsert_bucket_index_block(shard, shard_id, "control_state", key, None, address.clone(), true);
         let mut record = crate::engine::object_record::ObjectRecord::default();
         record.set_address(&address);
-        shard.control_state_blocks.insert(key.to_string().into_boxed_str(), record);
+        shard
+            .control_state_blocks
+            .insert(key.to_string().into_boxed_str(), record.into());
         true
     } else {
         false

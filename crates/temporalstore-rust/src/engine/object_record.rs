@@ -860,3 +860,157 @@ impl std::error::Error for ObjectRecordRefusal {}
 pub(super) fn address_word_from_parts(block_slab_id: u32, offset: u32) -> u64 {
     make_block_address_word(block_slab_id, offset)
 }
+
+// =================================================================================================
+// THE SLOT: ONE RECORD AND, WHEN THERE IS MORE THAN ONE ELEMENT, ONE OWNED ARRAY
+// =================================================================================================
+
+/// What a consolidated per-kind map stores for one object: the fixed-width record, plus an owned
+/// element array for the objects that have more than one element.
+///
+/// # WHY THE PAYLOAD SITS BESIDE THE RECORD AND NOT INSIDE IT
+///
+/// Both shapes are thirty-two bytes. Only one of them keeps [`ObjectRecord`] `Copy`.
+///
+/// Putting `Option<Box<Vec<_>>>` *inside* the record would strip `Copy` from it, which turns every
+/// implicit copy at every use site into a move or a clone. Those sites are invisible to a grep --
+/// an implicit copy has no syntax -- so the only enumeration of them is a compiler error list, and
+/// the width proofs the record carries (`size_of == 24`, `align_of == 8`, the field sum, and the
+/// test that prints them) would all have to be restated at the same time. That is a blast-radius
+/// cost, not a byte cost, and it buys nothing: the slot below is the same thirty-two bytes with the
+/// record's width, its alignment, its `Copy` and all four of its proofs left exactly as they were.
+///
+/// # WHY THERE IS NO LAYOUT TAG BIT FOR "HAS A PAYLOAD"
+///
+/// `Option<Box<T>>` is self-describing. The null pointer is not a legal `Box`, so the language
+/// carries the discrimination in the representation itself and `size_of::<Option<Box<T>>>()` is
+/// eight, the same as the bare pointer. A flag bit saying "the payload is present" would therefore
+/// be a SECOND source of truth for a fact the first one already answers exactly -- and this type's
+/// own decoder refuses precisely that class of disagreement in four named variants, among them
+/// [`ObjectRecordRefusal::DeadlineTaggedButAbsentOnTheWire`]. Adding a bit whose only job is to
+/// agree with the niche would be manufacturing the defect those variants exist to catch.
+///
+/// This is not a reduction of the shape it follows. A C-style union is NOT self-describing, so a
+/// design built on one must spend a byte on an explicit layout tag: the tag is the only thing that
+/// can say which arm is live. The niche gives the same discrimination for ZERO bytes. The mechanism
+/// is the same one; it is simply cheaper here, because the language pays for it.
+///
+/// Reserved flag bits are therefore spent only on a distinction the niche CANNOT express -- which
+/// inline layout the address word is carrying -- and not on whether a payload exists at all.
+///
+/// # THE PAYLOAD IS ONE ALLOCATION CHAIN, NOT A SIDE TABLE
+///
+/// A sorted contiguous array is the right shape for this access pattern rather than a compromise
+/// for it: these series are append-mostly timestamped key-value, where an array appends in
+/// amortised O(1) and binary-searches in O(log N). Measured against the per-kind
+/// `BTreeMap`-in-a-`HashMap` shape it replaces, at a thousand elements it is **49,120 B against
+/// 24,056 B -- 2.042x -- in 170 allocations against 2**; the B-tree shape allocates a 280-byte
+/// root node for a single element before any element byte is stored, and that node is paid per key
+/// per kind. Owned per slot, there is no outer map to pay for and no second key copy.
+///
+/// `Box<Vec<_>>` rather than `Box<[_]>` on purpose: a boxed slice is a FAT pointer, sixteen bytes,
+/// which would push this type to forty. The boxed `Vec` is a thin pointer at eight, and costs one
+/// further indirection plus the `Vec` header -- measured at a flat sixteen heap bytes and one
+/// allocation more than a single-buffer layout at every length tested, which is not a price worth
+/// `unsafe` to avoid.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(transparent)]
+pub(super) struct ObjectSlot {
+    /// The fixed-width record, unchanged and still `Copy`.
+    pub(super) record: ObjectRecord,
+    /// The owned element array, for an object whose elements do not fit the record's inline arms.
+    ///
+    /// SKIPPED ON THE WIRE, AND THAT IS CORRECT RATHER THAN DEFERRED. No map stores elements here
+    /// yet -- the first tenant holds exactly one record per key and no elements at all -- so there
+    /// is nothing a stored form could carry, and `#[serde(transparent)]` over the one remaining
+    /// field makes this type's stored image BYTE-IDENTICAL to the bare record's. That is what lets
+    /// this land without moving the format stamp. The wire representation arrives with the first
+    /// tenant that actually populates it, in the change that moves the stamp for other reasons.
+    #[serde(skip)]
+    pub(super) many: Option<Box<Vec<(u64, ElementEntry)>>>,
+}
+
+/// THE WIDTH, PINNED AS ITS OWN EQUALITY, for the same reason the record's is: an inequality
+/// against a neighbour passes at every width.
+const _: () = assert!(std::mem::size_of::<ObjectSlot>() == 32);
+const _: () = assert!(std::mem::align_of::<ObjectSlot>() == 8);
+
+/// THE RECORD IS UNCHANGED BY ITS OWN NEIGHBOUR. Restated here rather than left to the record's
+/// own asserts, because the whole argument for this shape is that wrapping the record did not cost
+/// the record anything -- so the claim is asserted at the site that makes it.
+const _: () = assert!(std::mem::size_of::<ObjectRecord>() == 24);
+const _: () = assert!(std::mem::align_of::<ObjectRecord>() == 8);
+
+/// THE SLOT IS THE RECORD PLUS ONE POINTER AND NOTHING ELSE -- no padding, no tag word. If a
+/// future field lands between them this steps and says so, rather than hiding inside a width that
+/// happened to stay put.
+const _: () = assert!(
+    std::mem::size_of::<ObjectSlot>()
+        == std::mem::size_of::<ObjectRecord>()
+            + std::mem::size_of::<Option<Box<Vec<(u64, ElementEntry)>>>>()
+);
+
+/// AND THE OWNING POINTER IS THIN. `Box<[T]>` is a fat pointer at sixteen bytes and would make the
+/// slot forty; this asserts the eight the shape depends on, so a change of payload type that
+/// silently widened it is a build failure and not a measurement surprise.
+const _: () = assert!(std::mem::size_of::<Option<Box<Vec<(u64, ElementEntry)>>>>() == 8);
+
+impl ObjectSlot {
+    /// A slot holding one record and no element array.
+    pub(super) fn from_record(record: ObjectRecord) -> Self {
+        Self { record, many: None }
+    }
+
+    /// The record, by value. It is `Copy`, which is the point of keeping the payload outside it.
+    pub(super) fn record(&self) -> ObjectRecord {
+        self.record
+    }
+
+    /// The record, mutably, for the callers that set flags or an address in place.
+    pub(super) fn record_mut(&mut self) -> &mut ObjectRecord {
+        &mut self.record
+    }
+
+    /// How many elements the owned array holds. Zero when there is no array, which is NOT the same
+    /// statement as "the object has no elements": an object whose elements fit the record's inline
+    /// arms carries them there and has no array at all. This counts the array.
+    pub(super) fn owned_element_count(&self) -> usize {
+        self.many.as_ref().map_or(0, |elements| elements.len())
+    }
+}
+
+impl From<ObjectRecord> for ObjectSlot {
+    fn from(record: ObjectRecord) -> Self {
+        Self::from_record(record)
+    }
+}
+
+/// THE THREE THE MAPS ACTUALLY CALL, DELEGATED RATHER THAN REACHED THROUGH.
+///
+/// Every one of these forwards to the record and adds nothing. They exist so that wrapping the
+/// record did not become a rewrite of its readers: a site that said `slot.address()` before the
+/// payload field existed says exactly that afterwards. The alternative -- making each of the five
+/// call sites spell `.record().address()` -- would have put the wrapper in the middle of code that
+/// has no interest in it, and would grow with every tenant rather than staying at five.
+///
+/// They are also the seam the consolidated map wants: a reader asks the SLOT where the object
+/// lives, and whether that answer comes from an inline arm of the record or from the owned array
+/// is the slot's business and not the caller's.
+impl ObjectSlot {
+    /// Where the object's single page lives. Panics on the handle arm, exactly as the record does
+    /// and for the record's own stated reason -- see [`ObjectRecord::address`].
+    pub(super) fn address(&self) -> ElementEntry {
+        self.record.address()
+    }
+
+    /// The same question as an `Err` rather than a panic, for the load path.
+    pub(super) fn try_address(&self) -> Result<ElementEntry, ObjectRecordRefusal> {
+        self.record.try_address()
+    }
+
+    /// Point the slot at a page. Touches only what the record's own setter touches; the owned
+    /// element array is untouched, which is the whole reason it is a separate field.
+    pub(super) fn set_address(&mut self, address: &ElementEntry) {
+        self.record.set_address(address);
+    }
+}

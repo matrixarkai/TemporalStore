@@ -187,7 +187,7 @@ fn shard_with_one_object_of_every_kind(suffix: &str) -> ShardState {
             // Through `set_address`, like production -- see the note on that method.
             let mut record = crate::engine::object_record::ObjectRecord::default();
             record.set_address(&address());
-            record
+            record.into()
         },
     );
     shard
