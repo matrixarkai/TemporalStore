@@ -721,7 +721,6 @@ fn what_a_live_key_costs_in_the_index_at_two_corpus_sizes() {
             + deep_heap_bytes(&shard.sets)
             + deep_heap_bytes(&shard.zsets)
             + deep_heap_bytes(&shard.lists)
-            + deep_heap_bytes(&shard.sequences)
             + deep_heap_bytes(&shard.seen)
             + deep_heap_bytes(&shard.buckets);
         let context_bytes = deep_heap_bytes(&shard.context_nodes)
@@ -799,7 +798,6 @@ fn what_a_live_key_costs_in_the_index_at_two_corpus_sizes() {
         // --- Occupancy, which is what a container's cost per byte STORED turns on. ---
         println!("  occupancy across the per-kind maps:");
         series_occupancy(&shard.features).report("features");
-        series_occupancy(&shard.sequences).report("sequences");
         series_occupancy(&shard.context_events).report("context_events");
         series_occupancy(&shard.context_indexes).report("context_indexes");
         series_occupancy(&shard.context_audits).report("context_audits");

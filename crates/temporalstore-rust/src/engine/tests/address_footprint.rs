@@ -326,7 +326,6 @@ fn census(engine: &TemporalEngine, shard_id: ShardId) -> AddressCensus {
     // POINT, which is the population the whole question is about.
     for (name, map) in [
         ("features", &shard.features),
-        ("sequences", &shard.sequences),
         ("context_events", &shard.context_events),
         ("context_indexes", &shard.context_indexes),
         ("context_audits", &shard.context_audits),
@@ -663,7 +662,7 @@ fn the_addresses_are_a_measurable_slice_of_a_shard_that_nothing_counts() {
 
 /// The control for the census itself.
 ///
-/// The census claims to walk sixteen model maps plus the bucket index. If the fixture stops populating one of them -- or a
+/// The census claims to walk fifteen model maps plus the bucket index. If the fixture stops populating one of them -- or a
 /// rename moves a field out from under the walk -- the census would quietly report a smaller
 /// population, and a smaller population makes the packing case look weaker than it is. This
 /// asserts the fixture really reaches the two shapes the argument distinguishes: a one-address
@@ -677,9 +676,11 @@ fn the_census_reads_every_map_that_holds_an_address() {
     let c = census(&engine, 1);
 
     let named: Vec<&str> = c.per_map.iter().map(|(n, _)| *n).collect();
-    // Sixteen model maps PLUS the bucket index, which holds a second address per block.
+    // Fifteen model maps PLUS the bucket index, which holds a second address per block. It read
+    // sixteen-plus-one until the retired `sequences` map was deleted; a bare count like this is
+    // invisible to a grep for the field name, and this assertion is what caught that removal.
     assert_eq!(
-        17,
+        16,
         named.len(),
         "the census must walk every address-holding map; it walked {named:?}"
     );
@@ -1144,7 +1145,6 @@ fn duplication_census(engine: &TemporalEngine, shard_id: ShardId) -> Duplication
     }
     for map in [
         &shard.features,
-        &shard.sequences,
         &shard.context_events,
         &shard.context_indexes,
         &shard.context_audits,
@@ -1354,7 +1354,6 @@ fn series_lengths(engine: &TemporalEngine, shard_id: ShardId) -> SeriesLengthCen
     let mut c = SeriesLengthCensus::default();
     for map in [
         &shard.features,
-        &shard.sequences,
         &shard.context_events,
         &shard.context_indexes,
         &shard.context_audits,

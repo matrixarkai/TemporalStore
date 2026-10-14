@@ -7557,7 +7557,6 @@ fn where_a_record_is_kept_everywhere() {
         ("features", shard.features.len()),
         ("feature_values", shard.feature_values.len()),
         ("feature_rollups", shard.feature_rollups.len()),
-        ("sequences", shard.sequences.len()),
         ("control_state", shard.control_state.len()),
         ("control_state_pages", shard.control_state_blocks.len()),
         ("control_state_changes", shard.control_state_changes.len()),
@@ -7589,22 +7588,32 @@ fn where_a_record_is_kept_everywhere() {
         ("  .page_index", block_index),
     ];
 
-    // Extent, so this cannot silently under-report the way its predecessor did. ShardState has 42
-    // fields and they are accounted for exactly once each:
+    // Extent, so this cannot silently under-report the way its predecessor did. The fields this
+    // probe ACCOUNTS FOR, exactly once each:
     //
-    //   35  top-level containers, every one listed above
+    //   34  top-level containers, every one listed above
     //    6  scalars that cannot hold a per-record entry (index_format_version,
     //       control_coalesce_persist, control_distinct_sketch, applied_wal_sequence,
     //       promote_scan_done, evict_sampler)
     //    1  bucket_index, expanded into the 6 rows above: its own bucket_map, kind_pool and
     //       object_page_lookup, plus the three per-object maps summed across buckets
-    const TOP_LEVEL_CONTAINERS: usize = 35;
+    //
+    // 41 NAMED FIELDS, AND THAT IS NOT THE STRUCT'S FIELD COUNT. This block read "ShardState has
+    // 42 fields", and the assert under it compared 35 + 6 + 1 against the literal 42 -- an
+    // identity between three constants written in one place, true whatever the struct does.
+    // Measured: `ShardState` has 48 fields. `expiry_by_deadline` is a container this probe does
+    // not list, and five scalars (routing_range_start, routing_range_end, routing_range_known,
+    // shard_id, shard_id_known) are not among the six named above. So the claim is stated as what
+    // it is -- the extent of THIS LIST -- and the only live check is the row count below, which
+    // does fail when a listed field leaves the list.
+    const TOP_LEVEL_CONTAINERS: usize = 34;
     const NON_CONTAINER_FIELDS: usize = 6;
     const BUCKET_INDEX_ROWS: usize = 6;
+    const NAMED_FIELDS: usize = 41;
     assert_eq!(
         TOP_LEVEL_CONTAINERS + NON_CONTAINER_FIELDS + 1,
-        42,
-        "ShardState field count changed -- update this probe, it is under-reporting"
+        NAMED_FIELDS,
+        "the three constants above no longer sum to the number of fields this probe names"
     );
     assert_eq!(
         rows.len(),
@@ -7634,8 +7643,8 @@ fn where_a_record_is_kept_everywhere() {
     println!("  paying for {homes} homes is the shape of that {:.1}x -- and the fix is to keep it in", 963.0 / 184.0);
     println!("  fewer places rather than to shrink any one of them.");
     println!();
-    println!("  ({TOP_LEVEL_CONTAINERS} of 42 ShardState fields are containers and all are listed, plus");
-    println!("   {BUCKET_INDEX_ROWS} rows expanded out of bucket_index; the other {NON_CONTAINER_FIELDS} are scalars.)");
+    println!("  ({TOP_LEVEL_CONTAINERS} of the {NAMED_FIELDS} ShardState fields this probe names are containers and all");
+    println!("   are listed, plus {BUCKET_INDEX_ROWS} rows expanded out of bucket_index; the other {NON_CONTAINER_FIELDS} are scalars.)");
 
     assert_eq!(shard.strings.len(), RECORDS, "every write should be in strings");
 }

@@ -3013,14 +3013,13 @@ pub(super) fn sync_context_blocks_for_object(
 ///     cannot name at all, so the packed block-index byte could not tell a zset block from a block
 ///     whose kind the engine does not recognise. Three different answers behind one byte.
 ///   * `sequence` and `context_embedding` had entries and are NOT emitted -- and those two are
-///     not drift. Both are RETIRED spellings a stored index can still carry:
-///     `ShardState::sequences` exists only to fold a pre-fold index's sequence map into
-///     `features` at load, and `restore_model_maps_from_bucket_index` says in as many words that
-///     `context_embedding` entries from pre-retirement indexes fall through to its ignore arm. An
-///     index written before either retirement still loads, so a report over one still has to be
-///     able to name what it finds. They are declared as retired rather than deleted, each with
-///     its reason beside it, because an exemption list whose entries are not justified is a
-///     hiding place.
+///     not drift. Both are RETIRED spellings, and a byte code any binary has ever written keeps
+///     its meaning here whether or not a live structure still spells the kind: Sequence rows live
+///     in `features` under a typed row codec, and `restore_model_maps_from_bucket_index` says in
+///     as many words that `context_embedding` entries from pre-retirement indexes fall through to
+///     its ignore arm. A report has to be able to NAME what it finds rather than calling it
+///     unknown. They are declared as retired rather than deleted, each with its reason beside it,
+///     because an exemption list whose entries are not justified is a hiding place.
 ///
 /// HOW THE SET IS CLOSED AT COMPILE TIME, which is the part a table beside a walk cannot do.
 /// [`visit_model_live_blocks`] hands `emit` a `ModelKind`, not a `&str`. So an arm added to the
@@ -3210,9 +3209,9 @@ model_kind_registry! {
     }
     retired {
         // Sequence is Feature with a typed row codec over identical timestamped-KV storage; the
-        // fold moved its data into `features` and left `ShardState::sequences` behind only to
-        // fold a pre-fold on-disk index at load. No arm emits it; an index older than the fold
-        // still names it.
+        // fold moved its data into `features` and no live structure spells the kind any more. No
+        // arm emits it; a stored byte written before the fold still names it, which is why the
+        // code keeps its meaning here.
         Sequence = "sequence" @ 5,
         // The rows `context_embedding` addressed have no readers left, and
         // `restore_model_maps_from_bucket_index` drops the entries on purpose. An index written

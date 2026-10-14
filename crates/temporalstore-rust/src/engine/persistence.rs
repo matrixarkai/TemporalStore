@@ -357,15 +357,6 @@ impl TemporalEngine {
                 ShardState::default()
             }
         };
-        // Thin-layer Sequence fold: a pre-fold on-disk index stored Sequence rows in a
-        // separate `sequences` map. Sequence now lives in `features` (same timestamped-KV
-        // storage, typed row codec at the API layer), so fold any legacy series forward
-        // before reconcile rebuilds membership. New indexes never carry `sequences`.
-        if !shard.sequences.is_empty() {
-            for (key, series) in std::mem::take(&mut shard.sequences) {
-                shard.features.entry(key).or_default().extend(series);
-            }
-        }
         // Fold the index-log deltas beyond the base snapshot's anchor into the bucket index
         // (reconstructing the exact on-disk page layout at the ORIGINAL addresses) and apply
         // the captured per-key non-page state, BEFORE reconcile. This is what lets a crash
@@ -1033,7 +1024,14 @@ impl TemporalEngine {
             let zset_records = state.zsets.len();
             let _ = zset_records;
             let feature_records = state.features.len();
-            let sequence_records = state.sequences.len();
+            // ZERO BY CONSTRUCTION, AND THAT IS WHAT IT ALWAYS MEASURED. This read the length
+            // of `ShardState::sequences`, a map no production path ever wrote: Sequence rows
+            // live in `features` and are counted by `feature_records` above. The map is gone;
+            // the PUBLISHED field stays, because `control.rs` exposes it and
+            // `prometheus_metrics.rs` scrapes it as `temporalstore_shard_records{kind="sequence"}`
+            // -- deleting it would compile cleanly and silently drop a metric. A shard that
+            // served a non-zero here never existed.
+            let sequence_records = 0usize;
             let control_state_records =
                 state.control_state.len() + state.control_state_changes.len();
             let loaded = info.as_ref().map(|info| info.loaded).unwrap_or(true);

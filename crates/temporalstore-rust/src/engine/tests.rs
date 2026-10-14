@@ -360,6 +360,7 @@ mod container_tombstone_collection;
 mod container_tombstone_entry;
 mod tombstone_reload_path;
 mod the_dump_door_reads_the_index_stamp;
+mod no_door_delivers_a_sequence_map;
 mod hash_container_reload_authority;
 mod decoded_index_packing;
 mod two_level_resident_shape;
