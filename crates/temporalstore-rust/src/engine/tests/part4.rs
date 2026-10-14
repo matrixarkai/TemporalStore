@@ -17759,7 +17759,7 @@ fn what_a_message_write_costs_in_bytes_as_history_grows() {
         let held = if kind == "ContextWriteEvent" {
             let shards = engine.shards.read().expect("shards lock poisoned");
             let shard = shards.get(&1).expect("shard 1 loaded");
-            shard.context_events.values().map(|m| m.len()).sum::<usize>()
+            shard.context_events().values().map(|m| m.len()).sum::<usize>()
         } else {
             fill + REPS
         };

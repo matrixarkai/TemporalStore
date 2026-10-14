@@ -1467,10 +1467,10 @@ impl TemporalEngine {
                 ));
             }
         }
-        let mut event_keys: Vec<_> = shard.context_events.iter().collect();
+        let mut event_keys: Vec<_> = shard.context_events().iter().collect();
         event_keys.sort_by(|left, right| left.0.cmp(right.0));
         for (key, entries) in event_keys {
-            for (event_id_hash, address) in entries {
+            for (event_id_hash, address) in entries.iter() {
                 out.push_str(&format!(
                     "context_event {key} id={event_id_hash} slab={} off={} len={}
 ",
@@ -2234,17 +2234,19 @@ impl TemporalEngine {
                     return false;
                 }
                 let live_addresses = {
-                    let events = shard.context_events.entry(item.object_key.clone()).or_default();
-                    match item.resolved_address() {
-                        Some(address) if !item.deleted => {
-                            events.insert(event_id_hash, address);
-                        }
-                        _ => {
-                            events.remove(&event_id_hash);
-                        }
-                    }
-                    let live = events.values().cloned().collect::<Vec<_>>();
-                    let empty = events.is_empty();
+                    // ONE POINT, THROUGH THE SHARED GENERIC OPERATION. That helper takes the key
+                    // out of the map when the series empties, which is what the two statements at
+                    // the end of this block used to do by hand. It can be handed this map directly
+                    // because there is one live copy: no closure, no re-mirroring on exit.
+                    let live = super::timestamped_series::set_point_and_collect_live(
+                        shard.context_events_mut(),
+                        &item.object_key,
+                        event_id_hash,
+                        match item.resolved_address() {
+                            Some(address) if !item.deleted => Some(address),
+                            _ => None,
+                        },
+                    );
                     let timeline = shard
                         .context_event_timeline
                         .entry(item.object_key.clone())
@@ -2256,9 +2258,6 @@ impl TemporalEngine {
                     }
                     if timeline.is_empty() {
                         shard.context_event_timeline.remove(&item.object_key);
-                    }
-                    if empty {
-                        shard.context_events.remove(&item.object_key);
                     }
                     live
                 };

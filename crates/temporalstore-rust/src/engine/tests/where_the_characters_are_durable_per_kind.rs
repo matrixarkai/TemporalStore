@@ -217,9 +217,7 @@ fn shard_with_one_object_of_every_kind(suffix: &str) -> ShardState {
     // THE TWO THAT ARE NOT WRITTEN. Populated anyway, so the arms below measure a map that HAD the
     // key and lost it rather than a map that never held one -- which are different claims and only
     // one of them is about durability.
-    shard
-        .context_events
-        .insert(key_for("context_event", suffix), series.clone());
+    shard.set_context_event_series(&key_for("context_event", suffix), series.clone());
     shard
         .context_indexes
         .insert(key_for("context_index", suffix), series.clone());
@@ -300,7 +298,7 @@ fn kind_map_holds(shard: &ShardState, kind: &str, suffix: &str) -> bool {
         "context_child" => shard.context_children.contains_key(&key),
         "context_summary" => shard.context_summaries.contains_key(&key),
         "context_compression" => shard.context_compressions.contains_key(&key),
-        "context_event" => shard.context_events.contains_key(&key),
+        "context_event" => shard.context_events().contains_key(&key),
         "context_index" => shard.context_indexes.contains_key(&key),
         other => panic!(
             "no census arm for model kind {other:?}. Every kind `model_kind_registry` declares \
@@ -411,7 +409,7 @@ fn a_context_event_key_survives_in_the_time_index_only() {
     let written = shard_with_one_object_of_every_kind(WRITTEN_SUFFIX);
     let key = key_for("context_event", WRITTEN_SUFFIX);
     assert!(
-        written.context_events.contains_key(&key),
+        written.context_events().contains_key(&key),
         "fixture must write the event map, or its emptiness after the trip is not a loss"
     );
     assert!(
@@ -422,7 +420,7 @@ fn a_context_event_key_survives_in_the_time_index_only() {
     let reloaded = round_trip(&written);
 
     assert!(
-        !reloaded.context_events.contains_key(&key),
+        !reloaded.context_events().contains_key(&key),
         "context_events is skip_serializing: if it came back, this kind's verdict is not what \
          this module says it is"
     );
@@ -456,14 +454,14 @@ fn an_event_object_with_no_timeline_entry_is_a_key_the_time_index_cannot_name() 
     // The event stays; its timeline entry goes.
     written.context_event_timeline.remove(&key);
     assert!(
-        written.context_events.contains_key(&key),
+        written.context_events().contains_key(&key),
         "the event must still be there, or this arm is about an object that does not exist"
     );
 
     let reloaded = round_trip(&written);
 
     assert!(
-        !reloaded.context_events.contains_key(&key),
+        !reloaded.context_events().contains_key(&key),
         "the event map is still not durable"
     );
     assert!(
@@ -555,7 +553,7 @@ fn maps_naming(shard: &ShardState, key: &str) -> Vec<&'static str> {
     if shard.context_compressions.contains_key(key) {
         found.push("context_compressions");
     }
-    if shard.context_events.contains_key(key) {
+    if shard.context_events().contains_key(key) {
         found.push("context_events");
     }
     if shard.context_indexes.contains_key(key) {

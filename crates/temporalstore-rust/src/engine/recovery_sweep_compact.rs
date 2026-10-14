@@ -1700,7 +1700,11 @@ fn expiry_scan_budget(limit: usize) -> usize {
                 .map(|(key, address)| (bucket_of(key), std::borrow::Cow::Borrowed(&**key), address)),
             &mut rewrite_stats,
         )?;
-        for (key, series) in shard.context_events.iter_mut() {
+        // A PLAIN `iter_mut`, where a live mirror needed a whole-map closure that re-mirrored on
+        // exit. This rewrites an address in every series of every key, so under a mirror it is the
+        // widest divergence window there is: every address stale in the copy a reader might be
+        // served, for the whole duration of a compaction round.
+        for (key, series) in shard.context_events_mut().iter_mut() {
             let routing_bucket = bucket_of(key);
             compact_feature_block_addresses(
                 &self.block_store,

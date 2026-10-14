@@ -7564,7 +7564,7 @@ fn where_a_record_is_kept_everywhere() {
         ("control_state_uuid", shard.control_state_uuid.len()),
         ("control_state_rollups", shard.control_state_rollups.len()),
         ("context_nodes", shard.context_nodes.len()),
-        ("context_events", shard.context_events.len()),
+        ("context_events", shard.context_events().len()),
         ("context_event_timeline", shard.context_event_timeline.len()),
         ("context_indexes", shard.context_indexes.len()),
         ("context_audits", shard.context_audits.len()),

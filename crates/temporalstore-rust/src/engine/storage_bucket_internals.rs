@@ -2726,7 +2726,7 @@ pub(super) fn shard_has_model_entries(shard: &ShardState) -> bool {
         || !shard.features.is_empty()
         || !shard.control_state_blocks().is_empty()
         || !shard.context_nodes.is_empty()
-        || !shard.context_events.is_empty()
+        || !shard.context_events().is_empty()
         || !shard.context_indexes.is_empty()
         || !shard.context_audits.is_empty()
         || !shard.context_entities.is_empty()
@@ -2860,8 +2860,31 @@ pub(super) fn sync_context_blocks_for_object(
     if let Some(address) = shard.context_nodes.get(object_key) {
         groups.push(("context_node", object_key.to_string(), vec![address.clone()]));
     }
+    // THE EVENT SERIES IS NO LONGER THE SAME TYPE AS THE OTHER FIVE, so it cannot ride in the
+    // array below -- an array needs one element type, and this coupling is exactly the "all six or
+    // none" the series trait was introduced to break. Lifted out, with the SAME selection rule.
+    //
+    // THE RULE IS `max_by` OVER THE ADDRESS ORDERING AND NOT THE LAST INSTANT. Those are different
+    // answers: the loop below takes the greatest (slab, offset, length), which is what the
+    // deduplicated sorted list it replaced ended on, and the greatest INSTANT is a different
+    // address whenever a later point was written to an earlier slab. Written as `next_back()`
+    // first, which is the ordering this representation makes convenient rather than the one the
+    // caller needs.
+    if let Some(points) = shard.context_events().get(object_key) {
+        if let Some(newest) = points
+            .values()
+            .max_by(|left, right| {
+                left.block_slab_id()
+                    .cmp(&right.block_slab_id())
+                    .then(left.offset().cmp(&right.offset()))
+                    .then(left.length().cmp(&right.length()))
+            })
+            .cloned()
+        {
+            groups.push(("context_event", object_key.to_string(), vec![newest]));
+        }
+    }
     for (kind, series) in [
-        ("context_event", &shard.context_events),
         ("context_index", &shard.context_indexes),
         ("context_audit", &shard.context_audits),
         ("context_child", &shard.context_children),
@@ -3577,7 +3600,7 @@ fn visit_model_live_blocks(
             }
         }
         visit_timestamped_series(
-            &shard.context_events,
+            shard.context_events(),
             ModelKind::ContextEvent,
             &accept,
             &mut emit,
@@ -6685,7 +6708,8 @@ pub(super) fn reconcile_secondary_views_from_bucket_index(
     let mut features = HashMap::<String, BTreeMap<u64, ElementEntry>>::new();
     let mut control_state = HashMap::<String, BTreeMap<u64, i64>>::new();
     let mut control_state_blocks = HashMap::new();
-    let mut context_events = HashMap::<String, BTreeMap<u64, ElementEntry>>::new();
+    let mut context_events =
+        HashMap::<String, super::timestamped_series::OwnedTimestampedSeries>::new();
     let mut context_event_timeline = HashMap::<String, BTreeMap<u64, u64>>::new();
     let mut context_indexes = HashMap::<String, BTreeMap<u64, ElementEntry>>::new();
     let mut context_audits = HashMap::<String, BTreeMap<u64, ElementEntry>>::new();
@@ -7047,16 +7071,23 @@ pub(super) fn reconcile_secondary_views_from_bucket_index(
         super::control_rollup::clear_all(shard);
     }
     if saw_context_events {
+        // THE GENERIC RECONCILE, HANDED THE ARRAY MAP DIRECTLY. Under a live mirror this had to
+        // be wrapped in a bulk mutator that re-mirrors on exit, and between entry and exit the two
+        // copies disagree where a concurrent reader can see it. One live map, no window.
         reconcile_timestamped_series_membership_in_place(
-            &mut shard.context_events,
+            shard.context_events_mut(),
             context_events,
         );
         // The time index is derived state: rebuild it wholesale from what the blocks actually
         // carried rather than reconciling it, so it can never reference an event id that
         // membership reconciliation just dropped from the primary map.
-        shard.context_event_timeline = context_event_timeline;
-        shard.context_event_timeline.retain(|object_key, index| {
-            match shard.context_events.get(object_key) {
+        // TAKEN OUT AND PUT BACK, because the membership this filters on is now read through a
+        // method on the shard rather than a field of it, and a method borrows the whole shard. The
+        // field-splitting borrow this replaces was only ever available because both sides were
+        // fields; the move is what keeps the filter reading the authoritative map.
+        let mut timeline = context_event_timeline;
+        timeline.retain(|object_key, index| {
+            match shard.context_events().get(object_key) {
                 None => false,
                 Some(series) => {
                     index.retain(|_, event_id_hash| series.contains_key(event_id_hash));
@@ -7064,6 +7095,7 @@ pub(super) fn reconcile_secondary_views_from_bucket_index(
                 }
             }
         });
+        shard.context_event_timeline = timeline;
     }
     if saw_context_indexes {
         reconcile_timestamped_series_membership_in_place(
@@ -7282,6 +7314,15 @@ pub(super) fn insert_context_event_views<K, S>(
     block_store: &BlockStore,
     warm_shard: Option<ShardId>,
     warm_batch: &mut Vec<(CacheKey, Vec<u8>)>,
+    // GENERIC OVER THE SERIES AND THE KEY, which is a change of mind from this branch's first
+    // spelling and recorded as one rather than quietly reversed. That spelling named the array
+    // map concretely and rested on two claims: that one caller means there is no second
+    // representation for a bound to abstract over, and that the generation-aware upsert below
+    // needed the B-tree `Entry` API. The second is false -- the upsert is written against `get`
+    // and `set`, which the read and write traits both name -- and once it is written that way
+    // the first stops deciding anything: `OwnedTimestampedSeries` implements
+    // `TimestampedSeriesWrite`, so the bound costs this caller nothing and the next tenant
+    // arrives without editing this signature.
     events: &mut HashMap<K, S>,
     timeline: &mut HashMap<String, BTreeMap<u64, u64>>,
     object_key: String,
@@ -7328,7 +7369,8 @@ where
         };
         index.insert(point.timestamp_ms, event.event_id_hash);
         // GET THEN SET, for the same reason as the timestamped view above: `entry` names a
-        // `BTreeMap` and this no longer does. Newest-block-wins is unchanged.
+        // `BTreeMap` and this no longer does. Newest-block-wins is unchanged, and a tie still
+        // overwrites exactly as the occupied arm did.
         let newest = match series.get(event.event_id_hash) {
             None => true,
             Some(held) => address.generation().unwrap_or(0) >= held.generation().unwrap_or(0),
@@ -8634,9 +8676,7 @@ mod model_kind_registry_guards {
             record.into()
         });
         shard.context_nodes.insert("ctx:node:t:n".into(), at.clone());
-        shard
-            .context_events
-            .insert("ctx:event:t:n".to_string(), BTreeMap::from([(1u64, at.clone())]));
+        shard.set_context_event_series("ctx:event:t:n", BTreeMap::from([(1u64, at.clone())]));
         shard
             .context_indexes
             .insert("ctx:index:t:n".to_string(), BTreeMap::from([(1u64, at.clone())]));

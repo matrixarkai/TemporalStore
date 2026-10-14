@@ -519,7 +519,7 @@ pub(super) fn compaction_model_layout_reports(
     ));
     reports.push(compaction_timestamped_layout(
         "context_event",
-        &shard.context_events,
+        shard.context_events(),
         &slab_page_counts,
     ));
     reports.push(compaction_timestamped_layout(
@@ -561,6 +561,10 @@ pub(super) fn compaction_model_layout_reports(
     reports
 }
 
+/// GENERIC OVER THE SERIES AND THE KEY, for the reason the walk and the reconcile already are:
+/// this reads a series by its addresses alone, and naming one container here is what made a
+/// representation change all six maps or none. The key is abstract one step further out for the
+/// same reason: the consolidated map these tenants migrate into is not keyed by `String`.
 pub(super) fn compaction_timestamped_layout<K, S>(
     kind: &str,
     timelines: &HashMap<K, S>,
@@ -1148,11 +1152,13 @@ pub(super) fn compact_feature_block_addresses(
     // the whole call rather than one per address -- which is why it is a parameter here and a term
     // of the iterator item in `compact_block_addresses`.
     object_key: &str,
+    // GENERIC OVER THE SERIES, same argument as the layout report above: this rewrites addresses
+    // in place and reads them back, both of which the series trait names.
     series: &mut impl super::timestamped_series::TimestampedSeries,
     rewrite_stats: &mut CompactionRewriteStats,
     routing_bucket: u32,
 ) -> Result<(), Status> {
-    let unique_addresses = unique_feature_block_addresses(series);
+    let unique_addresses = super::storage_reporting::unique_timestamped_kv_block_addresses(series);
     let mut rewritten = HashMap::<ElementEntry, ElementEntry>::new();
     for old_address in unique_addresses {
         if !rewrite_stats.should_relocate(&old_address) {

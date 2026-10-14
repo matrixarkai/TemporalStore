@@ -307,7 +307,7 @@ pub(super) fn context_event_time_range<'a>(
     start_time_ms: u64,
     end_time_ms: u64,
 ) -> impl DoubleEndedIterator<Item = (u64, &'a ElementEntry)> + 'a {
-    let series = shard.context_events.get(object_key);
+    let series = shard.context_events().get(object_key);
     let start = context_timeline_start(start_time_ms);
     let end = context_timeline_end(end_time_ms);
     shard

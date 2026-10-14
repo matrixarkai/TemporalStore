@@ -72,6 +72,88 @@ const ALLOWED: &[(&str, &str, &str)] = &[
          production is a path rule, which is checkable, where excluding `#[cfg(test)]` regions \
          would need brace tracking, which is not.",
     ),
+    // ---------------------------------------------------------------------------------------------
+    // THE EVENT SERIES MOVING TO THE OWNED ARRAY. Eight entries arrive together because one map
+    // changing representation is exactly what this seam was built to allow, and the boundary where
+    // it meets its STORED shape is where the B-tree keeps being named. Every entry below is a
+    // conversion at that boundary or a door onto the compatibility field that holds the stored
+    // image -- none of them operates on a live series, which is the distinction every earlier
+    // entry shares. TWO OF THEM ARE DETECTOR ARTEFACTS AND SAY SO, so that the narrowing filed as
+    // #2172 can find and delete them instead of inheriting them as policy.
+    // ---------------------------------------------------------------------------------------------
+    (
+        "state.rs",
+        "set_context_event_series",
+        "A DOOR ONTO THE STORED SHAPE. It takes the `BTreeMap` because its callers have one -- the\
+         key-state fold deserializes the stored form, which is still a B-tree -- and converts into\
+         the array here so the conversion lives in one place rather than at each caller. Same\
+         category as `from_plain`: naming the wire form is not leaking the in-memory one.",
+    ),
+    (
+        "state.rs",
+        "plant_legacy_context_event_for_test",
+        "A TEST FIXTURE inside a production file, planting what a decoded image carrying the\
+         legacy key leaves in the compatibility field. It names the STORED shape because that is\
+         what it is imitating. Allowlisted rather than excluded for the reason the `plain` entry\
+         above states: this guard's production rule is a path rule, not a `#[cfg(test)]` rule.",
+    ),
+    (
+        "state.rs",
+        "clone_legacy_context_events_for_test",
+        "A TEST FIXTURE inside a production file, the read counterpart of the planter above. It\
+         returns a copy of the compatibility field alone so a footprint test can price that field\
+         rather than the whole shard, so its return type IS the stored shape.",
+    ),
+    (
+        "state.rs",
+        "<no enclosing fn>",
+        "A DETECTOR ARTEFACT, NOT A SIGNATURE -- and recorded as one rather than as an allowance.\
+         The line is the `context_events_compat` FIELD declaration, and a field reads\
+         `lowercase_name: Type` exactly as a parameter does, so the matcher's fallback branch\
+         cannot tell the two apart and `enclosing_function` has no function to find. The field\
+         must name the stored shape: it carries the serde key this map has always had and the\
+         decode fold drains it. NARROWING THE MATCHER TO EXCLUDE FIELD DECLARATIONS WOULD RETIRE\
+         THIS ENTRY, and that narrowing is filed as #2172 -- cited here so the retirement is\
+         findable rather than archaeological. Until then this entry is broader than an allowlist\
+         entry should be: it would also cover a future top-level naming in this file.",
+    ),
+    (
+        "timestamped_series.rs",
+        "to_btree",
+        "A REPORTING AND CAPTURE PROJECTION. It converts the live array INTO the B-tree view for\
+         the paths whose own output shape is a `BTreeMap` and which must not change because the\
+         representation behind them did. Same category as `timestamped_kv_series`: converting into\
+         a reporting form is the point of the function.",
+    ),
+    (
+        "timestamped_series.rs",
+        "from",
+        "THE DESERIALIZERS, naming the STORED form. Two `From` impls build the owned array from\
+         the B-tree a decode fold has in hand, by value and by shared borrow. One entry covers\
+         both because this guard keys on file and enclosing function and both are named `from`,\
+         which is a real limit of the key rather than an oversight: a third `From` impl in this\
+         file would land inside this entry unnoticed.",
+    ),
+    (
+        "engine.rs",
+        "apply_key_states",
+        "A DETECTOR ARTEFACT, NOT A SIGNATURE. The line is a TURBOFISH at a call site --\
+         `apply_key_state_field::<BTreeMap<u64, ElementEntry>, _>(..)` -- which the matcher's\
+         fallback branch reads as a parameter because `apply_key_state_field` is all lowercase\
+         and underscores and is followed by a colon. The type argument has to be named: this map\
+         implements `KeyedState` for two different value types and the call site is what picks\
+         which one. NARROWING THE MATCHER TO EXCLUDE `::<` LINES WOULD RETIRE THIS ENTRY, and\
+         that narrowing is filed as #2172.",
+    ),
+    (
+        "engine.rs",
+        "insert_entry",
+        "A DESERIALIZER, naming the STORED form, on the path the decode fold never sees.\
+         `capture_key_states` writes a `context_events` field into the index-log blobs, and with\
+         no base index those blobs fold straight through `apply_key_states` with nothing decoded\
+         -- so the stored B-tree shape arrives here and is converted on the way in. It does not\
+         overlap the blanket `KeyedState` impl: different type parameter, same `Self`.",
+    ),
 ];
 
 /// One place the concrete representation is named in a signature.

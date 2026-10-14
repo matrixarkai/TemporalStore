@@ -3651,11 +3651,24 @@ pub(crate) fn execute_on_shard(
             // key shape aligned with the context event timeline contract.
             let timeline_key = context_timeline_key(event.primary_time_ms(), event.event_id_hash);
             let event_id_hash = event.event_id_hash;
-            let series = shard.context_events.entry(object_key.clone()).or_default();
+            // THE MEMBERSHIP TEST FIRST, THROUGH THE READ ACCESSOR, and the write afterwards. The
+            // borrow this replaced held a `&mut` into the map across the whole block append, which
+            // the read accessor cannot hand out.
+            //
+            // AND NO EMPTY SERIES IS CREATED ANY MORE. `entry(..).or_default()` filed an empty
+            // series under the object key before the append was even attempted, so a failed append
+            // left a key behind that every length and emptiness reader counted. The shared point
+            // operation below keeps no empty series by construction: it takes the key out of the
+            // map when the series ends up empty.
+            let already_written = first_write_only
+                && shard
+                    .context_events()
+                    .get(&object_key)
+                    .is_some_and(|series| series.contains_key(&event_id_hash));
             // Idempotence now tests the EVENT ID, which is what first_write_only actually means:
             // the same event written twice. Testing the timeline key made two different events
             // that collided in the low FANOUT bits of one millisecond look like a rewrite.
-            if !(first_write_only && series.contains_key(&event_id_hash)) {
+            if !already_written {
                 let value = context_bytes(&*event);
                 let routing_bucket =
                     block_routing_bucket(&object_key, start_routing_bucket, end_routing_bucket);
@@ -3678,7 +3691,12 @@ pub(crate) fn execute_on_shard(
                 crate::engine::state::next_block_index_for_object(&shard.bucket_index, routing_bucket, "context_event", &object_key),
             ) {
                     for (stored_timeline_key, address) in addresses {
-                        series.insert(event_id_hash, address);
+                        super::timestamped_series::set_point_and_collect_live(
+                            shard.context_events_mut(),
+                            &object_key,
+                            event_id_hash,
+                            Some(address),
+                        );
                         shard
                             .context_event_timeline
                             .entry(object_key.clone())
@@ -3724,17 +3742,20 @@ pub(crate) fn execute_on_shard(
             // wire-compatible timestamp key discipline.
             let event_timeline_key = context_timeline_key(primary_time_ms, event.event_id_hash);
             let event_id_hash = event.event_id_hash;
-            let event_series = shard
-                .context_events
-                .entry(event_object_key.clone())
-                .or_default();
+            // Read first, write through the pair afterwards -- see the note on the
+            // `ContextWriteEvent` arm above for both halves of why.
+            let event_already_written = first_write_only
+                && shard
+                    .context_events()
+                    .get(&event_object_key)
+                    .is_some_and(|series| series.contains_key(&event_id_hash));
             // Same key discipline as ContextWriteEvent since the event rekey: the primary map
             // is keyed by EVENT ID (idempotence tests the id), the block stays timestamp-keyed,
             // and the time index maps the stored timeline key back to the id. This arm was
             // missed by the rekey -- it kept inserting timeline keys into the id-keyed map and
             // never fed the time index, so every extracted event was invisible to time-ranged
             // queries while its write reported success.
-            if !(first_write_only && event_series.contains_key(&event_id_hash)) {
+            if !event_already_written {
                 // `event` is boxed on this variant; the wire encoder takes the value.
                 let event_value = &*event;
                 let value = context_bytes(event_value);
@@ -3760,7 +3781,12 @@ pub(crate) fn execute_on_shard(
                 crate::engine::state::next_block_index_for_object(&shard.bucket_index, routing_bucket, "context_event", &event_object_key),
             ) {
                     for (stored_timeline_key, address) in addresses {
-                        event_series.insert(event_id_hash, address);
+                        super::timestamped_series::set_point_and_collect_live(
+                            shard.context_events_mut(),
+                            &event_object_key,
+                            event_id_hash,
+                            Some(address),
+                        );
                         shard
                             .context_event_timeline
                             .entry(event_object_key.clone())
@@ -3863,7 +3889,7 @@ pub(crate) fn execute_on_shard(
             mutated |= drop_if_expired(cache, shard_id, shard, &object_key);
             let scan_limit = context_limit(max_scan);
             let events = shard
-                .context_events
+                .context_events()
                 .get(&object_key)
                 .map(|_series| {
                     let mut page_cache = HashMap::new();
@@ -4831,7 +4857,7 @@ pub(crate) fn execute_on_shard(
             mutated |= drop_if_expired(cache, shard_id, shard, &source_event_key);
             let source_limit = context_limit(max_source_events);
             let mut selected = shard
-                .context_events
+                .context_events()
                 .get(&context_event_key(tenant_hash, node_hash))
                 .map(|_series| {
                     context_event_time_range(

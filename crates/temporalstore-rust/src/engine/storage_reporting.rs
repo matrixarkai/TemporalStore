@@ -964,12 +964,6 @@ pub(super) fn unique_timestamped_kv_block_addresses(
     addresses
 }
 
-pub(super) fn unique_feature_block_addresses(
-    series: &impl super::timestamped_series::TimestampedSeries,
-) -> Vec<ElementEntry> {
-    unique_timestamped_kv_block_addresses(series)
-}
-
 pub(super) fn timestamped_kv_series<'a>(
     shard: &'a ShardState,
 ) -> Vec<(&'static str, &'a str, std::borrow::Cow<'a, BTreeMap<u64, ElementEntry>>)> {
@@ -983,7 +977,7 @@ pub(super) fn timestamped_kv_series<'a>(
     // against the timestamps packed in pages, so it must see the TIMELINE view -- handing it
     // the id-keyed map made every context event look like a missing indexed timestamp.
     for (key, ids_by_time) in &shard.context_event_timeline {
-        let Some(by_id) = shard.context_events.get(key) else {
+        let Some(by_id) = shard.context_events().get(key) else {
             continue;
         };
         let timeline: BTreeMap<u64, ElementEntry> = ids_by_time

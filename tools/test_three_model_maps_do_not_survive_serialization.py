@@ -45,6 +45,30 @@ whether it SHOULD be closed. Each can change silently and each changes what reco
 `object_block_lookup` also carries the attribute but lives on `CoreIndex`, not `ShardState`, and
 is a derived lookup rebuilt from the bucket map on load. The scan is scoped to the `ShardState`
 body for that reason; a file-wide grep reports four and is wrong about this class.
+
+THE THIRD ENTRY IS NOW A PRIVATE FIELD, AND THE SCAN HAD TO LEARN TO SEE ONE. `context_events`
+became `context_events_compat` when the event series moved to an owned sorted array: the
+compatibility field holds what a stored image carries, and the live array field beside it is
+`#[serde(skip)]`. The map still does not survive serialization -- the hole is the same hole, the
+same size -- but the field is private, because that is what stops anything outside `state.rs`
+writing it, and this scan required `pub`. It therefore reported TWO maps where there are three,
+which is the direction that would pass a genuine fourth map added privately. The `pub` requirement
+was harmless for as long as `ShardState` had no private fields and #2155 added the first one, so
+this is a dated regression rather than a sloppy matcher -- tracked as #2167, which also records that
+the `serde(skip)` exclusion below is CORRECT and must not be "fixed".
+
+AND `serde(skip)` IS NOT THIS CLASS, which is the distinction worth keeping straight here because
+the two look alike and behave differently on the half nobody can observe from a stored image:
+
+  * `#[serde(skip)]` supplies `Default` on decode, so an image lacking the key loads fine.
+  * `#[serde(skip_serializing)]` WITHOUT `default` does not -- an image lacking the key fails to
+    decode outright, so the first image written without the key is unopenable thereafter.
+
+Both write byte-identical images. No check over a stored image can tell them apart; only the source
+can, which is what #2163 enforces. The live array field is `skip` and the compatibility field is
+`skip_serializing` WITH `default`, so both halves are the safe variant -- and the scan below counts
+only `skip_serializing`, because a `serde(skip)` field is derived in-memory state and a different,
+much larger class.
 """
 from __future__ import annotations
 
@@ -61,8 +85,25 @@ STATE = os.path.join(ENGINE, "state.rs")
 INTERNALS = os.path.join(ENGINE, "storage_bucket_internals.rs")
 
 # The three maps that do not survive serialization, and the one the rebuild re-derives.
-UNSERIALIZED = frozenset({"hashes", "context_events", "context_indexes"})
+#
+# STILL THREE. `context_events` was RENAMED to `context_events_compat` and made PRIVATE when the
+# event series moved to an owned sorted array: the compatibility field holds what the stored image
+# carries and the live field beside it is `#[serde(skip)]`. The event map therefore does not survive
+# serialization exactly as it did not before -- same hole, same size -- so this is a rename here and
+# not a fourth entry.
+UNSERIALIZED = frozenset({"hashes", "context_events_compat", "context_indexes"})
 REBUILT = frozenset({"hashes"})
+
+# How `visit_model_live_blocks` reaches each one, because a field is not always reached BY ITS NAME
+# any more. The event map is read through an accessor -- the field is private precisely so nothing
+# outside `state.rs` can write it -- so looking for `shard.context_events_compat` in the walk would
+# report "no longer walked" about a map that is walked on the next line. Keys are asserted equal to
+# UNSERIALIZED below so the two cannot drift apart.
+WALKED_AS = {
+    "hashes": "shard.hashes",
+    "context_indexes": "shard.context_indexes",
+    "context_events_compat": "shard.context_events()",
+}
 
 # ShardState carried 60+ fields when this was written. A body that yields fewer than this was not
 # parsed -- the scan would then report "no unserialized maps" and pass while seeing nothing.
@@ -71,7 +112,14 @@ MINIMUM_SHARD_STATE_FIELDS = 40
 # `skip_serializing` as a WHOLE attribute word: `skip_serializing_if = "..."` is a different
 # thing, it serializes the field whenever the predicate is false, and several fields use it.
 _SKIP_SERIALIZING = re.compile(r"\bskip_serializing\b(?!_if)")
-_FIELD = re.compile(r"^\s*pub(?:\(super\)|\(crate\))?\s+([a-z_][a-z0-9_]*)\s*:", re.M)
+# `pub` is OPTIONAL, and that is a fix rather than a loosening. `ShardState` had no private
+# fields when this was written, so requiring `pub` cost nothing; the compatibility fields the
+# consolidation introduces are private ON PURPOSE -- that is what stops anything outside `state.rs`
+# writing them -- and a private field carrying `skip_serializing` widens the recovery hole exactly
+# as a public one does. Requiring `pub` made this guard report TWO maps where there were three,
+# which is the direction that passes a real fourth map rather than failing on a rename.
+_FIELD = re.compile(
+    r"^\s*(?:pub(?:\([a-z]+\))?\s+)?([a-z_][a-z0-9_]*)\s*:", re.M)
 _ATTRIBUTE = re.compile(r"^\s*#\[")
 
 
@@ -177,6 +225,40 @@ class ThreeModelMapsDoNotSurviveSerialization(unittest.TestCase):
             "body, so an empty result below would mean nothing." % (
                 len(fields), MINIMUM_SHARD_STATE_FIELDS))
 
+    def test_the_field_scan_sees_a_private_field(self) -> None:
+        """The matcher that failed, with a positive and a negative control.
+
+        It required `pub` and therefore stopped seeing `context_events_compat` entirely, reporting
+        two unserialized maps where there are three. A scan that cannot see a private field would
+        pass a genuine fourth map added as one, which is the failure this whole file exists to
+        prevent -- so the fix gets controls rather than a comment.
+        """
+        self.assertEqual(
+            {"private_map": 2},
+            _unserialized_fields(
+                "    #[serde(default, skip_serializing)]\n    private_map: HashMap<A, B>,\n"),
+            "the scan must see a PRIVATE field carrying the attribute")
+        self.assertEqual(
+            {"public_map": 2},
+            _unserialized_fields(
+                "    #[serde(default, skip_serializing)]\n"
+                "    pub(super) public_map: HashMap<A, B>,\n"),
+            "and must still see a public one")
+        self.assertEqual(
+            {},
+            _unserialized_fields(
+                "    #[serde(skip_serializing_if = \"Option::is_none\")]\n"
+                "    pub(super) sometimes: Option<u8>,\n"),
+            "`skip_serializing_if` is a different thing and must not be counted")
+        self.assertEqual(
+            {},
+            _unserialized_fields(
+                "    #[serde(skip)]\n    pub(super) derived: HashMap<A, B>,\n"),
+            "`serde(skip)` is NOT this class: it supplies Default on decode, so an image lacking "
+            "the key loads. `skip_serializing` WITHOUT `default` does not -- an image lacking the "
+            "key fails to decode outright. Both write byte-identical images, so no check over a "
+            "stored image can tell them apart; only the source can, which is what #2163 enforces")
+
     def test_exactly_three_maps_do_not_survive_serialization(self) -> None:
         found = _unserialized_fields(self.body)
         self.assertEqual(
@@ -190,9 +272,14 @@ class ThreeModelMapsDoNotSurviveSerialization(unittest.TestCase):
 
     def test_every_unserialized_map_is_walked_as_a_model_map(self) -> None:
         walk = _fn_body(self.internals, "visit_model_live_blocks")
+        self.assertEqual(
+            UNSERIALIZED, frozenset(WALKED_AS),
+            "WALKED_AS and UNSERIALIZED have drifted apart: %r vs %r. A field missing from the "
+            "mapping would be skipped by the loop below and silently stop being checked."
+            % (sorted(WALKED_AS), sorted(UNSERIALIZED)))
         for field in sorted(UNSERIALIZED):
             self.assertIn(
-                "shard.%s" % field, walk,
+                WALKED_AS[field], walk,
                 "`%s` does not survive serialization but `visit_model_live_blocks` no longer "
                 "walks it, so the manifest cross-check that compares the bucket-index lifecycle "
                 "against the model-map one can no longer see it is empty -- the refusal that "
@@ -213,8 +300,8 @@ class ThreeModelMapsDoNotSurviveSerialization(unittest.TestCase):
         # CONTROLS on the matcher itself, because this one was blinded once: it must see both
         # re-derivation shapes and must not see a read.
         self.assertEqual(
-            {"context_events"},
-            _rederived_fields("shard.context_events = derive(bucket_index);"),
+            {"context_events_compat"},
+            _rederived_fields("shard.context_events_compat = derive(bucket_index);"),
             "the matcher no longer sees a wholesale assignment, which is how the two plain maps "
             "would be re-derived")
         self.assertEqual(

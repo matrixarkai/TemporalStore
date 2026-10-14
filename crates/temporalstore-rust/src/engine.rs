@@ -3185,6 +3185,11 @@ pub(super) fn decode_index_bytes(bytes: &[u8]) -> Result<ShardState, String> {
     // refused on every path. What the fold is for is an image at the CURRENT stamp: every one of
     // them still carries the top-level key, none is stale, and `objects` defaults to empty. A fold
     // written into one arm, or reached from one caller, would miss the rest.
+    // THE LEGACY FOLD, HERE FOR THE REASON THE REPACK ABOVE IS HERE. Written per codec arm it
+    // would be a thing to remember; written on the wrapper it covers every arm and every caller,
+    // which is what matters because an image carrying the legacy key is not necessarily STALE --
+    // the staleness test is `<`, so a current-stamp image is accepted at every door.
+    state.fold_legacy_context_events();
     Ok(state)
 }
 
@@ -3557,7 +3562,7 @@ fn key_membership_size(shard: &ShardState, key: &str) -> usize {
         + shard.control_state_changes.get(key).map_or(0, |v| v.len())
         + usize::from(shard.control_state_selection.contains_key(key))
         + shard.context_nodes.get(key).map_or(0, |_| 1)
-        + shard.context_events.get(key).map_or(0, |v| v.len())
+        + shard.context_events().get(key).map_or(0, |v| v.len())
         + shard.context_indexes.get(key).map_or(0, |v| v.len())
         + shard.context_audits.get(key).map_or(0, |v| v.len())
         + shard.context_children.get(key).map_or(0, |v| v.len())
@@ -3816,7 +3821,17 @@ fn capture_key_states(shard: &ShardState, keys: &[String]) -> Vec<serde_json::Va
                 .get(key.as_str())
                 .and_then(|v| serde_json::to_value(v).ok()),
         );
-            put("context_events", shard.context_events.get(key).and_then(|v| serde_json::to_value(v).ok()));
+            // CAPTURED AS THE B-TREE IT HAS ALWAYS BEEN CAPTURED AS. The representation behind the
+            // read changed; the shape this blob carries must not, because `apply_key_state_field`
+            // on the other side deserializes it, and a capture written by this binary is folded
+            // by an older one.
+            put(
+                "context_events",
+                shard
+                    .context_events()
+                    .get(key)
+                    .and_then(|series| serde_json::to_value(series.to_btree()).ok()),
+            );
             put("context_indexes", shard.context_indexes.get(key).and_then(|v| serde_json::to_value(v).ok()));
             put("context_audits", shard.context_audits.get(key).and_then(|v| serde_json::to_value(v).ok()));
             put("context_children", shard.context_children.get(key).and_then(|v| serde_json::to_value(v).ok()));
@@ -3871,7 +3886,16 @@ fn apply_key_states(shard: &mut ShardState, key_states: &[serde_json::Value]) {
             blob.get("control_state_selection"),
         );
         apply_key_state_field(&mut shard.context_nodes, key, blob.get("context_nodes"));
-        apply_key_state_field(&mut shard.context_events, key, blob.get("context_events"));
+        // THE STORED B-TREE SHAPE, CONVERTED INTO THE ARRAY. `capture_key_states` writes a
+        // `context_events` field into the index-log blobs; when no base index decodes,
+        // `persistence.rs` takes `ShardState::default()` and folds those blobs straight through
+        // here, with nothing decoded, so the decode fold never sees them. The type parameter is
+        // named because this map implements `KeyedState` for two different value types.
+        apply_key_state_field::<std::collections::BTreeMap<u64, ElementEntry>, _>(
+            shard.context_events_mut(),
+            key,
+            blob.get("context_events"),
+        );
         apply_key_state_field(&mut shard.context_indexes, key, blob.get("context_indexes"));
         apply_key_state_field(&mut shard.context_audits, key, blob.get("context_audits"));
         apply_key_state_field(&mut shard.context_children, key, blob.get("context_children"));
@@ -4182,6 +4206,36 @@ impl<V> KeyedState<V> for std::collections::HashMap<state::ModelKey, V> {
     fn insert_entry(&mut self, key: &str, value: V) {
         self.insert(key.into(), value);
     }
+    fn remove_entry(&mut self, key: &str) {
+        self.remove(key);
+    }
+}
+
+/// THE ARRAY MAP, WRITTEN FROM THE STORED B-TREE SHAPE THE CAPTURE BLOB CARRIES.
+///
+/// `apply_key_state_field` writes through [`KeyedState`], whose own doc says the key type -- and by
+/// the same argument the representation -- "belongs to the implementor and not to this signature".
+/// This is that implementor for a map of owned arrays: the blob still carries
+/// `BTreeMap<u64, ElementEntry>`, because the stored shape did not move, and the conversion to the
+/// array happens here rather than at the call site.
+///
+/// IT IS A CONVERSION AND NO LONGER A MIRROR. An earlier revision routed this through a mutator
+/// pair so the write reached two live copies; there is one live copy now, so this writes the map
+/// and nothing else. What survives from that reasoning is only the reason the conversion has to
+/// exist at all: `capture_key_states` writes a `context_events` field into the index-log blobs, and
+/// with no base index `persistence.rs` folds those blobs straight through `apply_key_states` with
+/// nothing decoded -- so the stored B-tree shape arrives on a path the decode fold never sees.
+///
+/// It does not overlap the blanket `impl<V> KeyedState<V> for HashMap<String, V>`: that one gives
+/// this map `KeyedState<OwnedTimestampedSeries>`, and this gives it `KeyedState<BTreeMap<..>>`.
+/// Different type parameter, same `Self`, so the call site names which one it means.
+impl KeyedState<std::collections::BTreeMap<u64, ElementEntry>>
+    for std::collections::HashMap<String, timestamped_series::OwnedTimestampedSeries>
+{
+    fn insert_entry(&mut self, key: &str, value: std::collections::BTreeMap<u64, ElementEntry>) {
+        self.insert(key.to_string(), value.into());
+    }
+
     fn remove_entry(&mut self, key: &str) {
         self.remove(key);
     }
@@ -4898,7 +4952,7 @@ fn maybe_auto_compress_context_node(
     if !policy.enabled {
         return false;
     }
-    let event_times: Vec<u64> = match shard.context_events.get(event_object_key) {
+    let event_times: Vec<u64> = match shard.context_events().get(event_object_key) {
         Some(series) => series
             .keys()
             .map(|timeline_key| timeline_key / CONTEXT_TIMELINE_FANOUT)
@@ -5301,7 +5355,7 @@ fn delete_record_exact(shard: &mut ShardState, key: &str) -> bool {
     removed |= shard.control_state_changes.remove(key).is_some();
     removed |= shard.control_state_selection.remove(key).is_some();
     removed |= shard.context_nodes.remove(key).is_some();
-    removed |= shard.context_events.remove(key).is_some();
+    removed |= shard.context_events_mut().remove(key).is_some();
     removed |= shard.context_indexes.remove(key).is_some();
     removed |= shard.context_audits.remove(key).is_some();
     removed |= shard.context_entities.remove(key).is_some();
@@ -5932,7 +5986,7 @@ fn collect_live_block_slab_ids(shard: &ShardState) -> BTreeSet<u64> {
             .values()
             .map(|address| address.block_slab_id()),
     );
-    for series in shard.context_events.values() {
+    for series in shard.context_events().values() {
         absorb_live_block_slab_ids(
             &mut ids,
             &mut visited,
@@ -6241,7 +6295,7 @@ fn record_exists_exact(shard: &ShardState, key: &str) -> bool {
         || shard.control_state_changes.contains_key(key)
         || shard.control_state_selection.contains_key(key)
         || shard.context_nodes.contains_key(key)
-        || shard.context_events.contains_key(key)
+        || shard.context_events().contains_key(key)
         || shard.context_indexes.contains_key(key)
         || shard.context_audits.contains_key(key)
         || shard.context_entities.contains_key(key)
@@ -7093,7 +7147,7 @@ fn object_manager_stats(
             + shard.control_state.len()
             + shard.control_state_changes.len()
             + shard.context_nodes.len()
-            + shard.context_events.len()
+            + shard.context_events().len()
             + shard.context_indexes.len()
             + shard.context_audits.len()
             + shard.context_entities.values().map(BTreeMap::len).sum::<usize>()
@@ -7110,9 +7164,9 @@ fn object_manager_stats(
             + shard.features.values().map(BTreeMap::len).sum::<usize>()
             + shard.context_nodes.len()
             + shard
-                .context_events
+                .context_events()
                 .values()
-                .map(BTreeMap::len)
+                .map(timestamped_series::OwnedTimestampedSeries::len)
                 .sum::<usize>()
             + shard
                 .context_indexes
@@ -7207,7 +7261,7 @@ fn object_manager_stats(
         + shard.features.len()
         + shard.control_state.len()
         + shard.context_nodes.len()
-        + shard.context_events.len()
+        + shard.context_events().len()
         + shard.context_indexes.len()
         + shard.context_audits.len()
         + shard.context_entities.values().map(BTreeMap::len).sum::<usize>()
@@ -7222,9 +7276,9 @@ fn object_manager_stats(
         + shard.features.values().map(BTreeMap::len).sum::<usize>()
         + shard.context_nodes.len()
         + shard
-            .context_events
+            .context_events()
             .values()
-            .map(BTreeMap::len)
+            .map(timestamped_series::OwnedTimestampedSeries::len)
             .sum::<usize>()
         + shard
             .context_indexes

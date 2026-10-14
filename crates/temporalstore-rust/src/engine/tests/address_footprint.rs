@@ -99,6 +99,10 @@ struct AddressCensus {
     /// Entries held in a `BTreeMap<_, BlockAddress>` rather than a `HashMap`, which is the
     /// population a node-overhead figure applies to.
     in_btree: usize,
+    /// Addresses held in an OWNED SORTED ARRAY rather than a B-tree. Separate from
+    /// `in_btree` because the two are different shapes with different costs, and folding one
+    /// into the other would make the printed line below say something it does not mean.
+    in_owned_array: usize,
     /// The largest value observed in each field, in walk order:
     /// block_slab_id, offset, length, page_id, object_id, generation.
     ///
@@ -175,7 +179,10 @@ impl AddressCensus {
                 println!("  {name}: {count}");
             }
         }
-        println!("  TOTAL live addresses: {} (of which {} sit in a BTreeMap)", self.total, self.in_btree);
+        println!(
+            "  TOTAL live addresses: {} (of which {} sit in a BTreeMap and {} in an owned sorted array)",
+            self.total, self.in_btree, self.in_owned_array
+        );
         println!(
             "  optional fields SET, of {} addresses: page_id {} ({:.1}%), object_id {} ({:.1}%), generation {} ({:.1}%)",
             self.total,
@@ -324,9 +331,23 @@ fn census(engine: &TemporalEngine, shard_id: ShardId) -> AddressCensus {
 
     // The time-keyed series maps: HashMap<String, BTreeMap<u64, BlockAddress>>. One address PER
     // POINT, which is the population the whole question is about.
+    // THE EVENTS MAP FIRST, ON ITS OWN. It holds an owned sorted array per key now, so it is
+    // not the same type as the seven below and cannot ride in one array with them -- and its
+    // addresses are counted into `in_owned_array` rather than `in_btree`, which is the honest
+    // bucket for them. It still calls `note`, because the census asserts it walks SIXTEEN maps and
+    // that count is invisible to a grep for a field name.
+    {
+        let before = c.total;
+        for series in shard.context_events().values() {
+            for address in series.values() {
+                c.observe(address);
+            }
+        }
+        c.in_owned_array += c.total - before;
+        c.note("context_events", c.total - before);
+    }
     for (name, map) in [
         ("features", &shard.features),
-        ("context_events", &shard.context_events),
         ("context_indexes", &shard.context_indexes),
         ("context_audits", &shard.context_audits),
         ("context_entities", &shard.context_entities),
@@ -1143,9 +1164,13 @@ fn duplication_census(engine: &TemporalEngine, shard_id: ShardId) -> Duplication
             d.observe_model(address);
         }
     }
+    for series in shard.context_events().values() {
+        for address in series.values() {
+            d.observe_model(address);
+        }
+    }
     for map in [
         &shard.features,
-        &shard.context_events,
         &shard.context_indexes,
         &shard.context_audits,
         &shard.context_entities,
@@ -1352,9 +1377,11 @@ fn series_lengths(engine: &TemporalEngine, shard_id: ShardId) -> SeriesLengthCen
     let shards = engine.shards.read().expect("engine lock poisoned");
     let shard = shards.get(&shard_id).expect("shard is loaded");
     let mut c = SeriesLengthCensus::default();
+    for series in shard.context_events().values() {
+        c.observe(series.len());
+    }
     for map in [
         &shard.features,
-        &shard.context_events,
         &shard.context_indexes,
         &shard.context_audits,
         &shard.context_entities,

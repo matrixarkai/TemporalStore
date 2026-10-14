@@ -497,7 +497,11 @@ impl Occupancy {
 }
 
 #[cfg(feature = "alloc-probe")]
-fn series_occupancy(map: &std::collections::HashMap<String, BTreeMap<u64, ElementEntry>>) -> Occupancy {
+/// GENERIC OVER THE SERIES, so a map that changed representation can still be priced beside the
+/// ones that have not. It reads a length and nothing else, which is what the series trait names.
+fn series_occupancy<S: crate::engine::timestamped_series::TimestampedSeries>(
+    map: &std::collections::HashMap<String, S>,
+) -> Occupancy {
     let mut occ = Occupancy::default();
     for series in map.values() {
         occ.observe(series.len());
@@ -723,8 +727,14 @@ fn what_a_live_key_costs_in_the_index_at_two_corpus_sizes() {
             + deep_heap_bytes(&shard.lists)
             + deep_heap_bytes(&shard.seen)
             + deep_heap_bytes(&shard.buckets);
+        // THE COMPATIBILITY FIELD IS PRICED TOO, AND IT IS EXPECTED TO BE ZERO. The fold drains
+        // it at decode and no mutator refills it, so after a load it holds nothing -- but it is
+        // added here rather than assumed away, because `whole_bytes` below clones the whole shard
+        // and would count it whether this line did or not, and a breakdown that silently omitted a
+        // field would disagree with that total the first time the drain stopped working.
         let context_bytes = deep_heap_bytes(&shard.context_nodes)
-            + deep_heap_bytes(&shard.context_events)
+            + deep_heap_bytes(shard.context_events())
+            + deep_heap_bytes(&shard.clone_legacy_context_events_for_test())
             + deep_heap_bytes(&shard.context_event_timeline)
             + deep_heap_bytes(&shard.context_indexes)
             + deep_heap_bytes(&shard.context_audits)
@@ -798,7 +808,7 @@ fn what_a_live_key_costs_in_the_index_at_two_corpus_sizes() {
         // --- Occupancy, which is what a container's cost per byte STORED turns on. ---
         println!("  occupancy across the per-kind maps:");
         series_occupancy(&shard.features).report("features");
-        series_occupancy(&shard.context_events).report("context_events");
+        series_occupancy(shard.context_events()).report("context_events");
         series_occupancy(&shard.context_indexes).report("context_indexes");
         series_occupancy(&shard.context_audits).report("context_audits");
         series_occupancy(&shard.context_entities).report("context_entities");
