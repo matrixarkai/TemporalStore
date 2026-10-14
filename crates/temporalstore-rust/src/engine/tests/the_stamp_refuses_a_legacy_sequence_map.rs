@@ -230,3 +230,329 @@ fn the_same_image_at_the_current_stamp_is_accepted_by_the_same_load_path() {
         state.features.len()
     );
 }
+
+// ===========================================================================================
+// ARMS 3 AND 4: THE SECOND DOOR.
+//
+// Arms 1 and 2 above cover ONE loader. `decode_index_bytes` has six production callers and
+// `persistence.rs:307` is the only site in the tree that compares `index_format_version`
+// against the constant. The other five are the dump-manifest restore family
+// (`bucket_dump_manifest_methods.rs:83/668/928/1437`, `lifecycle.rs:993`,
+// `storage_lifecycle_methods.rs:1161`) and none of them reads the stamp. The version check
+// INSIDE `decode_index_bytes` is on the msgpack-container arm only, so a plain-JSON image
+// never meets it.
+//
+// So "the stamp refuses every index that could carry the data" is a claim about a FUNCTION
+// reported as a claim about the SYSTEM. These two arms drive the other door.
+// ===========================================================================================
+
+/// One `sequences`-shaped series, as JSON, built through the real value type.
+///
+/// Lifted out of a throwaway `ShardState`'s `features` map: `features` and the retired
+/// `sequences` map had IDENTICAL types, so this is byte-for-byte what a pre-fold binary wrote
+/// under the other name. It cannot be built by setting the field -- this binary has not got one.
+fn one_legacy_series_as_json() -> serde_json::Value {
+    let mut probe = ShardState::default();
+    let mut series = BTreeMap::new();
+    series.insert(
+        ROW_TIMESTAMP_MS,
+        ElementEntry::from_parts(1, 4_096, 128, Some(3), Some(7)),
+    );
+    probe.features.insert(SERIES_KEY.to_string(), series);
+    serde_json::to_value(&probe)
+        .expect("a ShardState serializes")
+        .as_object_mut()
+        .expect("a serialized ShardState is a JSON object")
+        .remove("features")
+        .expect("`features` is on the wire -- it is where the series was just built")
+}
+
+/// A source shard with real pages, and a real dump manifest over it.
+struct DumpFixture {
+    dir: tempfile::TempDir,
+    manifest: crate::engine::reports::BucketDumpManifest,
+}
+
+fn a_real_dump_manifest() -> DumpFixture {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let engine = TemporalEngine::with_local_dirs(
+        1 << 20,
+        dir.path().join("cache"),
+        dir.path().join("pages"),
+        dir.path().join("indexes"),
+    );
+    engine.load_shard(SHARD);
+    for i in 0..6 {
+        let response = engine.execute(crate::types::ExecuteRequest {
+            shard_id: SHARD,
+            command: crate::types::Command::StringSet {
+                key: format!("seed-{i}"),
+                value: format!("seed-value-{i}").into_bytes(),
+            },
+        });
+        assert!(response.status.ok, "seeding write {i}: {response:?}");
+    }
+    let manifest = engine
+        .create_bucket_dump_manifest(SHARD, Vec::new())
+        .expect("a dump manifest over a seeded shard");
+    // DENOMINATOR: a manifest with no index image would make both arms below vacuous.
+    assert!(
+        !manifest.index_bytes.is_empty(),
+        "the manifest carries no index image, so there is nothing for the install to decode"
+    );
+    DumpFixture { dir, manifest }
+}
+
+/// Down-stamp a real manifest's index image and inject a non-empty `sequences` map into it.
+///
+/// Everything else about the manifest stays real -- its pages, its slab ids, its sequences --
+/// so the install's validation and preflight pass for the same reasons they do in production.
+/// Only the stamp and the one injected key differ, which is what makes this arm about the stamp.
+fn down_stamp_and_inject_a_sequence_map(
+    manifest: &mut crate::engine::reports::BucketDumpManifest,
+    stamp: u32,
+) {
+    let mut restored = crate::engine::decode_index_bytes(&manifest.index_bytes)
+        .expect("a manifest this binary wrote must decode");
+    restored.index_format_version = stamp;
+    let mut value = serde_json::to_value(&restored).expect("the manifest index serializes");
+    let object = value
+        .as_object_mut()
+        .expect("a serialized ShardState is a JSON object");
+    assert!(
+        object
+            .insert("sequences".to_string(), one_legacy_series_as_json())
+            .is_none(),
+        "this binary still serializes a `sequences` field, so the image is not the legacy-only \
+         shape this arm is about"
+    );
+    // Written as plain JSON deliberately: `encode_index_bytes` goes through the struct, which
+    // cannot carry a field the struct has not got, and the container arm is the ONLY arm whose
+    // decode checks a version at all.
+    manifest.index_bytes = serde_json::to_vec(&value).expect("the image serializes");
+    manifest.index_sha256 = sha256_hex_bytes(&manifest.index_bytes);
+    manifest.dump_generation_id = bucket_dump_generation_id(manifest);
+    manifest.checksum =
+        bucket_dump_manifest_checksum(manifest).expect("the manifest checksum recomputes");
+}
+
+/// A restore target over the SAME pages, with its own index dir and its shard NOT loaded.
+///
+/// Not loaded on purpose: that is the install-then-load order the comment inside
+/// `install_bucket_dump_manifest` calls "the production order, reached over
+/// `POST /server/storage/dumps/install`", and it takes the branch that persists the index
+/// without a WAL replay -- so what lands on disk is exactly what the install decided.
+fn a_restore_target(dir: &std::path::Path) -> TemporalEngine {
+    let index_dir = dir.join("restore-indexes");
+    std::fs::create_dir_all(&index_dir).expect("mkdir restore-indexes");
+    TemporalEngine::with_local_dirs(
+        1 << 20,
+        dir.join("restore-cache"),
+        dir.join("pages"),
+        index_dir,
+    )
+}
+
+/// The persisted base index as JSON TEXT, unwrapping the container if there is one.
+///
+/// WHY THIS EXISTS, AND IT IS A CORRECTION. A first version of arm 4 asked whether the persisted
+/// index FILE still spelled `"sequences"` and read `false`. That was a measurement error: a shard
+/// whose stamp is stale takes `serialize_index`'s `wrap_index_json` branch, so the bytes on disk
+/// are zstd inside a `TSIDX` container and no key appears as text in them at all. Arm 5 caught
+/// it -- the control's series had demonstrably survived and the same text search still said
+/// `false`.
+///
+/// `decode_index_bytes` is no use for this question either: it drops a field the struct has not
+/// got, which is the very thing being asked about. So the container is unwrapped by hand.
+fn persisted_index_json(target: &TemporalEngine) -> String {
+    let bytes =
+        std::fs::read(target.index_path(SHARD)).expect("the install persisted a base index");
+    if bytes.starts_with(crate::engine::INDEX_CONTAINER_MAGIC) {
+        let body = &bytes[crate::engine::INDEX_CONTAINER_MAGIC.len()..];
+        let (codec, payload) = body.split_first().expect("the container carries a codec byte");
+        assert_eq!(
+            crate::engine::INDEX_CODEC_ZSTD_JSON, *codec,
+            "the persisted index uses payload codec {codec}, which this probe cannot read as text"
+        );
+        let json = zstd::stream::decode_all(payload).expect("the payload decompresses");
+        String::from_utf8(json).expect("the payload is JSON text")
+    } else {
+        String::from_utf8(bytes).expect("a bare index is JSON text")
+    }
+}
+
+/// ARM 3: THE DUMP-MANIFEST DOOR DOES NOT MEET THE REFUSAL.
+///
+/// This is the arm that refutes "the stamp refuses every index that could carry the data". A
+/// stamp below the constant is installed through `install_bucket_dump_manifest` and the install
+/// SUCCEEDS -- no `RefusedStaleStamp`, no error, the image reaches a persisted index.
+#[test]
+fn a_stale_stamped_image_installs_through_the_dump_manifest_without_meeting_the_refusal() {
+    let stale = SHARD_INDEX_FORMAT_VERSION - 1;
+    let mut fixture = a_real_dump_manifest();
+    down_stamp_and_inject_a_sequence_map(&mut fixture.manifest, stale);
+    assert_the_image_spells_the_legacy_map(&fixture.manifest.index_bytes);
+
+    let target = a_restore_target(fixture.dir.path());
+    crate::engine::persistence::reset_index_load_path_counts();
+    let installed = target.install_bucket_dump_manifest(&fixture.manifest);
+    let (accepted, refused_stale, absent, undecodable) =
+        crate::engine::persistence::index_load_path_counts();
+    println!(
+        "\n=== a stamp-{stale} image through install_bucket_dump_manifest ===\n  \
+         install -> {:?}\n  index-load counters -> accepted {accepted}, refused-stale \
+         {refused_stale}, absent {absent}, undecodable {undecodable}",
+        installed.as_ref().map(|_| "Ok(())")
+    );
+    installed.expect(
+        "the install REFUSED a stale-stamped image -- if this is now a refusal, the dump door is \
+         gated after all and the arm below is moot; check WHICH code refused before believing it",
+    );
+    assert_eq!(
+        0, refused_stale,
+        "the install counted a stale-stamp refusal, so this path DOES meet the gate at \
+         persistence.rs:307 and the premise it was thought to break is intact"
+    );
+}
+
+/// ARM 4: AND THE SERIES MUST SURVIVE THAT INSTALL.
+///
+/// THIS IS THE DATA-LOSS QUESTION, AND IT IS THE ONE THAT DECIDES WHETHER THE FIELD MAY GO.
+///
+/// The install decodes the manifest's image, rebuilds over it, and re-serializes the result with
+/// `serialize_index` into the durable base index. With the field present, a non-empty
+/// `sequences` map survives that round trip (it is `skip_serializing_if` EMPTY, and this one is
+/// not empty) and `serialize_index` re-stamps the image to the current version on the way out --
+/// so the next `load_index_inner` ACCEPTS it and the drain folds the rows into `features`. That
+/// is a working recovery route for a pre-fold dump.
+///
+/// With the field deleted there is no such route: the decode drops the key, the re-serialize
+/// writes it away, and the rows are gone from the only copy. So this arm asserts the SAFETY
+/// PROPERTY rather than the current behaviour -- the series must still be reachable after the
+/// install -- and a failure here means the deletion loses data through this door.
+#[test]
+fn a_sequence_series_survives_the_dump_manifest_install_and_the_load_after_it() {
+    let stale = SHARD_INDEX_FORMAT_VERSION - 1;
+    let mut fixture = a_real_dump_manifest();
+    down_stamp_and_inject_a_sequence_map(&mut fixture.manifest, stale);
+    assert_the_image_spells_the_legacy_map(&fixture.manifest.index_bytes);
+    let image_in = fixture.manifest.index_bytes.clone();
+
+    let target = a_restore_target(fixture.dir.path());
+    target
+        .install_bucket_dump_manifest(&fixture.manifest)
+        .expect("the install must succeed -- arm 3 is what establishes that it does");
+
+    // --- WHAT THE INSTALL PUT ON DISK, read through the container, not as raw bytes. ---
+    let persisted_text = persisted_index_json(&target);
+    let went_in = String::from_utf8_lossy(&image_in).contains("\"sequences\"");
+    let came_out = persisted_text.contains("\"sequences\"");
+    println!(
+        "\n=== the series across install_bucket_dump_manifest ===\n  \
+         image IN  spells \"sequences\": {went_in}\n  \
+         index OUT spells \"sequences\": {came_out}  ({} chars of index JSON)",
+        persisted_text.len()
+    );
+
+    // --- AND WHAT A LOAD OF THAT INDEX RECOVERS. ---
+    target.load_shard(SHARD);
+    let folded = {
+        let shards = target.shards.read().expect("engine lock poisoned");
+        let shard = shards.get(&SHARD).expect("the shard is loaded");
+        shard.features.contains_key(SERIES_KEY)
+    };
+    println!("  the load after it put the series into `features`: {folded}");
+
+    // THE AUTHORITATIVE OBSERVATION IS `folded`, NOT `came_out`. Both are printed, and the
+    // on-disk one is secondary deliberately: whether the FILE still spells the key says where
+    // the rows went, while whether the shard holds them after a load says whether they are
+    // RECOVERABLE, which is the question that decides whether the field may be deleted.
+    assert!(
+        folded,
+        "THE SERIES DID NOT SURVIVE. A stamp-{stale} image carrying a non-empty `sequences` map \
+         went into `install_bucket_dump_manifest`; the persisted base index spells `sequences`: \
+         {came_out}; and the load after it recovered NOTHING into `features`. That path never \
+         meets the stamp refusal (arm 3 drives it: all four index-load counters stay at zero), \
+         and arm 5 shows the SAME install preserves the SAME series under `features`, so the \
+         difference is the field itself. Deleting `ShardState::sequences` loses a pre-fold dump \
+         manifest sequence rows silently, at the decode, with no error anywhere. DO NOT DELETE \
+         THE FIELD: the dump door needs a stamp check first"
+    );
+}
+
+/// ARM 5: THE ATTRIBUTION CONTROL FOR ARM 4.
+///
+/// Arm 4 shows a `sequences` series going into `install_bucket_dump_manifest` and not coming out.
+/// On its own that is ambiguous: it could mean the install discards object-keyed series maps in
+/// general -- in which case a pre-fold dump already lost these rows before this change and the
+/// field's removal costs nothing -- or it could mean the install preserves such a map and the loss
+/// is caused precisely by the field no longer existing to decode into.
+///
+/// So the SAME install is driven with the series injected under `features`, a map of the IDENTICAL
+/// type that the struct still has. If that survives and `sequences` does not, the difference is
+/// the field, and arm 4's loss is attributable to deleting it.
+#[test]
+fn the_same_install_preserves_the_same_series_under_a_map_the_struct_still_has() {
+    let stale = SHARD_INDEX_FORMAT_VERSION - 1;
+    let mut fixture = a_real_dump_manifest();
+
+    // Identical to `down_stamp_and_inject_a_sequence_map`, except the key written is `features`.
+    {
+        let manifest = &mut fixture.manifest;
+        let mut restored = crate::engine::decode_index_bytes(&manifest.index_bytes)
+            .expect("a manifest this binary wrote must decode");
+        restored.index_format_version = stale;
+        let mut value = serde_json::to_value(&restored).expect("the manifest index serializes");
+        let object = value
+            .as_object_mut()
+            .expect("a serialized ShardState is a JSON object");
+        // REPLACED, not inserted: `features` is already on the wire, and this arm is about the
+        // map's CONTENTS surviving rather than about adding an unknown key.
+        assert!(
+            object
+                .insert("features".to_string(), one_legacy_series_as_json())
+                .is_some(),
+            "`features` was not already on the wire, so this is not the control arm 4 needs"
+        );
+        manifest.index_bytes = serde_json::to_vec(&value).expect("the image serializes");
+        manifest.index_sha256 = sha256_hex_bytes(&manifest.index_bytes);
+        manifest.dump_generation_id = bucket_dump_generation_id(manifest);
+        manifest.checksum =
+            bucket_dump_manifest_checksum(manifest).expect("the manifest checksum recomputes");
+    }
+    let went_in = String::from_utf8_lossy(&fixture.manifest.index_bytes)
+        .contains(SERIES_KEY);
+    assert!(
+        went_in,
+        "the control's image does not spell the series key, so it is about nothing"
+    );
+
+    let target = a_restore_target(fixture.dir.path());
+    target
+        .install_bucket_dump_manifest(&fixture.manifest)
+        .expect("the install must succeed");
+
+    let persisted_text = persisted_index_json(&target);
+    let came_out = persisted_text.contains(SERIES_KEY);
+    target.load_shard(SHARD);
+    let present = {
+        let shards = target.shards.read().expect("engine lock poisoned");
+        let shard = shards.get(&SHARD).expect("the shard is loaded");
+        shard.features.contains_key(SERIES_KEY)
+    };
+    println!(
+        "\n=== the SAME series under `features`, through the SAME install ===\n  \
+         image IN  spells the series key: {went_in}\n  \
+         index OUT spells the series key: {came_out}  ({} chars of index JSON)\n  \
+         present in `features` after the load: {present}",
+        persisted_text.len()
+    );
+
+    assert!(
+        came_out && present,
+        "the install did not preserve the series under `features` either (on disk {came_out}, \
+         loaded {present}). Then arm 4's loss is NOT attributable to deleting the field -- this \
+         install path discards object-keyed series maps whatever they are called, and that is a \
+         separate and larger finding that has to be reported on its own terms"
+    );
+}
