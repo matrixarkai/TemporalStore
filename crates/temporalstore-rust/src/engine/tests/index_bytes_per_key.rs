@@ -2959,3 +2959,159 @@ fn the_index_footprint_stays_inside_its_measured_bracket() {
          being measured"
     );
 }
+
+// =================================================================================================
+// WHAT THE DEADLINE MERGE WOULD TRADE, PRICED BEFORE IT IS BUILT
+// =================================================================================================
+
+/// THE TWO HALVES OF A DEADLINE, WEIGHED SEPARATELY, BECAUSE ONLY ONE OF THEM CAN BE RECLAIMED.
+///
+/// # THE QUESTION THIS ANSWERS
+///
+/// An `ObjectSlot` is sixteen bytes wider than the bare `ElementEntry` it replaces, and those bytes
+/// are a `deadline`, `flags` and a `model_id` that no production path reads yet. The case for
+/// paying them is that a later change puts a key's deadline IN the slot, so the key's entry in the
+/// deadline maps can stop existing.
+///
+/// A deadline is held in TWO maps, not one:
+///
+///   * `expires_at_ms: BTreeMap<Arc<str>, u64>` -- key to deadline. This is the half a slot can
+///     absorb: one value per key is exactly the shape the record carries.
+///   * `expiry_by_deadline: BTreeMap<(u64, Arc<str>), ()>` -- the DEADLINE-ORDERED index. This half
+///     a slot cannot absorb, and the reason is control flow rather than width: the expiry round
+///     walks it in order and BREAKS as soon as it passes `now`, so it visits only the due keys. A
+///     `HashMap` of slots has no order, so the same question becomes a scan of every live key per
+///     round. `expiry_scale` already holds a guard for why a bounded round-robin cursor should not
+///     replace an ordered index here, so this is a settled question being priced, not reopened.
+///
+/// BOTH OF THESE ARE `BTreeMap`s, so NEITHER takes the capacity multiplier that governs the paid
+/// side. There is no power-of-two slot array and no load factor on the recovered side: it is
+/// node-allocated, and this crate has measured separately that a `BTreeMap` holding one element
+/// allocates a 280-byte root node. The recovered side is therefore ONE cost model, not two.
+///
+/// So the merge pays the slot's width on EVERY key and recovers only `expires_at_ms`, and only on
+/// keys that actually carry a deadline. That asymmetry is the whole trade, and it has a break-even
+/// deadline share rather than a yes or no answer.
+///
+/// # WHAT `deep_heap_bytes` COUNTS HERE, AND WHY IT IS THE RECOVERABLE TERM
+///
+/// That helper is `let copy = value.clone()` under the counting allocator, so it reports what
+/// CLONING allocates. `Arc::clone` is a refcount bump and not an allocation, so cloning either of
+/// these maps allocates B-tree node space and NOTHING for the key characters. The figures below
+/// are node space only.
+///
+/// THAT IS EXACTLY THE RECOVERABLE TERM, AND IT IS A PROPERTY OF THIS DATA RATHER THAN LUCK. The
+/// characters are allocated ONCE and held by BOTH maps: `set_expiry` does a single
+/// `Arc::from(key)` and clones the handle into each -- its own comment reads "ONE ALLOCATION OF THE
+/// CHARACTERS, HELD BY BOTH MAPS". So deleting `expires_at_ms` leaves the characters alive under
+/// the ordered map's refcount, and a figure that excluded them is the figure this trade needs.
+///
+/// DO NOT REUSE THE HELPER THIS WAY ON A MAP WITH OWNED KEYS. A `BTreeMap<String, _>` or a
+/// `HashMap<Box<str>, _>` allocates its key buffers on clone, and there the same call reports the
+/// characters too. Reused on a map with SHARED keys without knowing that, it silently omits the
+/// largest term and nothing warns you.
+///
+/// AND THESE FIGURES ARE NOT COMPARABLE TO A WHOLE-SHARD DELTA. The bracket's 94.4 B per deadline
+/// is a difference of total shard heap -- characters plus both maps' nodes. The numbers here are
+/// node space for one map. Printing the two beside each other would read as a comparison because
+/// it would be formatted as one, so this prints neither a total nor the bracket figure.
+///
+/// # WHY THE COST TERM IS A CAPACITY IDENTITY AND NOT A SECOND MEASUREMENT
+///
+/// The widening costs `capacity * 16 B`, not `len * 16 B`: hashbrown allocates a slot per capacity
+/// unit whether a key occupies it or not. At 40,000 string keys the table holds 65,536 slots, so
+/// the cost is 65,536 x 16 = 1,048,576 B. That figure is quoted here as the identity it is; the
+/// footprint bracket is what measures it, and the two agree to the byte.
+///
+/// rust-internal: measures this crate's own resident structures, no product behaviour
+#[test]
+#[cfg(feature = "alloc-probe")]
+#[ignore = "seeds the bracket corpus under the counting allocator; run by name"]
+fn what_the_deadline_merge_would_trade() {
+    const STRINGS: usize = 40_000;
+    const SERIES: usize = 40;
+    const POINTS: usize = 1_000;
+    const DEADLINES: usize = STRINGS / 2;
+    /// The string table's capacity at this key count: the next power of two at or above
+    /// `40_000 / 0.875`. The widening is charged here and not at the key count.
+    const STRING_TABLE_CAPACITY: usize = 65_536;
+    /// An `ObjectSlot` over the `ElementEntry` it replaces.
+    const SLOT_WIDENING_B: usize = 16;
+
+    let dir = tempfile::tempdir().expect("tempdir");
+    let engine = probe_engine_on(dir.path(), 1023);
+    probe_seed(&engine, STRINGS, SERIES, POINTS, DEADLINES);
+
+    let shards = engine.shards.read().expect("engine lock poisoned");
+    let shard = shards.get(&1).expect("shard is loaded");
+
+    // NON-VACUITY, BOTH WAYS. A corpus with no deadlines prices the recoverable half at zero and
+    // reads as "the merge recovers nothing"; a corpus where every key has one prices it at its
+    // maximum and reads as "the merge always wins". Neither is this fixture, and the assertions say
+    // which it is before any figure is taken.
+    assert_eq!(
+        DEADLINES,
+        shard.expires_at_ms.len(),
+        "the fixture seeded {DEADLINES} deadlines and the keyed map holds {}",
+        shard.expires_at_ms.len()
+    );
+    assert_eq!(
+        DEADLINES,
+        shard.expiry_by_deadline.len(),
+        "the two deadline maps disagree on their length, so one of them is not being maintained \
+         and neither figure below is about the state this prices"
+    );
+    assert!(
+        shard.strings.len() > DEADLINES,
+        "every key carries a deadline in this fixture, so the asymmetry this measures -- paying on \
+         all keys, recovering on some -- is not present and the break-even below is meaningless"
+    );
+
+    let keyed_b = deep_heap_bytes(&shard.expires_at_ms);
+    let ordered_b = deep_heap_bytes(&shard.expiry_by_deadline);
+    let keys = shard.strings.len();
+
+    let recoverable_per_deadline = keyed_b as f64 / DEADLINES as f64;
+    let cost_b = (STRING_TABLE_CAPACITY * SLOT_WIDENING_B) as f64;
+    let recovered_b = keyed_b as f64;
+    let net_b = recovered_b - cost_b;
+    let break_even_deadlines = cost_b / recoverable_per_deadline;
+
+    println!("\n=== what a deadline costs, and which half a slot can take ===");
+    println!("  corpus: {keys} string keys, {DEADLINES} of them with a deadline");
+    println!(
+        "  expires_at_ms      (RECOVERABLE) {keyed_b:>10} B   {:>7.1} B per deadline",
+        recoverable_per_deadline
+    );
+    println!(
+        "  expiry_by_deadline (MUST STAY)   {ordered_b:>10} B   {:>7.1} B per deadline",
+        ordered_b as f64 / DEADLINES as f64
+    );
+    println!("\n=== the trade, at this deadline share ===");
+    println!(
+        "  paid:      {cost_b:>10.0} B   = {STRING_TABLE_CAPACITY} slots x {SLOT_WIDENING_B} B, on EVERY key"
+    );
+    println!("  recovered: {recovered_b:>10.0} B   = the keyed half, on {DEADLINES} keys");
+    println!(
+        "  net:       {net_b:>+10.0} B   ({:+.1} B/key over {keys} keys)",
+        net_b / keys as f64
+    );
+    println!(
+        "\n  break-even: {break_even_deadlines:.0} deadlines, which is {:.1}% of {keys} keys",
+        100.0 * break_even_deadlines / keys as f64
+    );
+    println!(
+        "  so the merge pays for itself only where more than {:.1}% of objects carry a deadline.",
+        100.0 * break_even_deadlines / keys as f64
+    );
+
+    // THE ONE SHAPE CLAIM: the ordered half is not a rounding error. If it ever became negligible
+    // the trade would be worth revisiting, because then the unrecoverable term would not matter.
+    assert!(
+        ordered_b * 3 > keyed_b,
+        "the ordered index is {ordered_b} B against the recoverable {keyed_b} B -- under a third of \
+         it. The term this measurement treats as UNRECOVERABLE has stopped being material next to \
+         the one it blocks, so the merge's arithmetic should be re-derived rather than read off \
+         this probe"
+    );
+}
