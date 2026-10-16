@@ -7106,6 +7106,54 @@ fn repack_nested<K: Ord, V>(map: &mut HashMap<String, BTreeMap<K, V>>) {
 /// WHAT IT COSTS, measured under the counting allocator at three corpus sizes: see
 /// `what_a_cold_load_spends_decoding_an_index_at_three_corpus_sizes`. One O(n) pass inside a
 /// function already O(n), moving entries rather than copying them.
+/// Re-establish the key sharing that a decode undoes.
+///
+/// THE WRITE PATH SHARES AND `serde` DOES NOT. Every holder of an object key points at one
+/// allocation while the shard is live, because each write takes the handle the page index already
+/// holds. A decode builds each map independently, so `serde` hands every occurrence its own
+/// allocation and a restored shard pays the duplication again -- permanently, since nothing after
+/// the load would otherwise bring them back together. Measured at one allocation before a round
+/// trip and two after, with the dirty set absent by design.
+///
+/// THE PAGE INDEX IS THE CANONICAL HOLDER, because it is what the write path reads from. Keys it
+/// does not know keep whatever allocation they decoded with: that is the first-write case, where
+/// there is nothing to adopt.
+///
+/// POINTER IDENTITY IS THE WHOLE POINT. The contents were always equal, so a contents comparison
+/// cannot see this pass work or fail to.
+///
+/// ONLY AN ORDERED MAP CAN TAKE PART, AND A GUARD IS WHAT ESTABLISHED THAT. This pass runs inside a
+/// function whose stored form must not move -- `a_decode_puts_back_exactly_the_series_that_were
+/// _encoded` compares the bytes a repacked state encodes to against the bytes it came from, and
+/// reddens with "the stored form moved and this needs an index-format stamp". A `BTreeMap` rebuilt
+/// from its own entries serializes in the same key order, so swapping each key for a handle holding
+/// the SAME CHARACTERS is byte-neutral. A `HashMap` is not: its serialized order follows iteration
+/// order, so rebuilding `strings` here changed the encoded bytes and the guard caught it. A key in a
+/// hashed map cannot be replaced in place either, so there is no byte-neutral way to do it in this
+/// pass at all -- that map keeps its decoded allocation, and the restored duplication it pays is
+/// stated here rather than left to be rediscovered.
+fn adopt_canonical_key_allocations(
+    expires_at_ms: &mut BTreeMap<Arc<str>, u64>,
+    lookup: &ObjectBlockLookup,
+) -> usize {
+    let mut adopted = 0usize;
+
+    let decoded = std::mem::take(expires_at_ms);
+    for (key, value) in decoded {
+        match lookup.any_shared_object_key(&key) {
+            Some(canonical) => {
+                adopted += 1;
+                expires_at_ms.insert(canonical, value);
+            }
+            None => {
+                expires_at_ms.insert(key, value);
+            }
+        }
+    }
+
+    adopted
+}
+
 pub(super) fn repack_decoded_btrees(state: &mut ShardState) {
     let ShardState {
         // ----- Packed here. Deserialized, and filled one entry at a time. -----
@@ -7130,7 +7178,7 @@ pub(super) fn repack_decoded_btrees(state: &mut ShardState) {
         //
         // Not a B-tree at all: a hashed table has no insertion-order shape, and `HashFieldMap`
         // keeps a sorted vector whose length IS its capacity below its growth threshold.
-        strings: _,
+        strings,
         hashes: _,
         buckets: _,
         objects: _,
@@ -7173,8 +7221,13 @@ pub(super) fn repack_decoded_btrees(state: &mut ShardState) {
         index_format_version: _,
         // The bucket index's own containers are owned elsewhere and are deliberately left alone
         // here, so this pass cannot be blamed for a change in them.
-        bucket_index: _,
+        bucket_index,
     } = state;
+
+    // THE KEY ALLOCATIONS, BROUGHT BACK TOGETHER. The same reasoning as the packing above: the
+    // decode is both the cause and the only moment at which the whole structure is in hand.
+    let _adopted =
+        adopt_canonical_key_allocations(expires_at_ms, &bucket_index.object_block_lookup);
 
     repack_btree_map(wal_resident_blocks);
     repack_btree_map(expires_at_ms);
@@ -7549,5 +7602,119 @@ impl ShardState {
         &self,
     ) -> HashMap<String, BTreeMap<u64, ElementEntry>> {
         self.context_events_compat.clone()
+    }
+}
+
+#[cfg(test)]
+mod does_the_sharing_survive_a_decode {
+    use super::*;
+    use std::collections::BTreeSet;
+
+    /// HOW MANY DISTINCT ALLOCATIONS HOLD ONE OBJECT KEY'S CHARACTERS.
+    ///
+    /// Counted by ADDRESS, because every holder's contents are equal by construction and contents
+    /// therefore witness nothing. One shared handle gives 1; independent copies give one per holder.
+    fn distinct_key_allocations(shard: &ShardState, key: &str) -> usize {
+        let mut seen: BTreeSet<usize> = BTreeSet::new();
+        if let Some((k, _)) = shard.strings.get_key_value(key) {
+            seen.insert(k.as_ptr() as usize);
+        }
+        if let Some((k, _)) = shard.expires_at_ms.get_key_value(key) {
+            seen.insert(k.as_ptr() as usize);
+        }
+        if let Some(p) = shard.bucket_index.object_block_lookup.key_ptr("strings", key) {
+            seen.insert(p as usize);
+        }
+        if let Some(p) = shard.dirty_objects.key_ptr(key) {
+            seen.insert(p as usize);
+        }
+        seen.len()
+    }
+
+    /// MEASURED, NOT ASSERTED AS A TARGET: what a round trip through the stored image does to the
+    /// sharing the write path established.
+    #[test]
+    fn report_how_many_allocations_hold_one_key_before_and_after_a_round_trip() {
+        let key = "ctx:event:12297829382473034410:9876543210987654321";
+        let mut shard = ShardState::default();
+
+        // The write path's end state: ONE allocation, every holder a refcount bump.
+        let shared: Arc<str> = Arc::from(key);
+        shard.strings.insert(Arc::clone(&shared), ElementEntry::default());
+        shard.expires_at_ms.insert(Arc::clone(&shared), 1);
+        shard.dirty_objects.insert_shared(Arc::clone(&shared), 0);
+
+        let before = distinct_key_allocations(&shard, key);
+        println!("  distinct allocations BEFORE a round trip: {before}");
+
+        // Through the stored image and back.
+        let bytes = serde_json::to_vec(&shard).expect("encode the shard");
+        let decoded: ShardState = serde_json::from_slice(&bytes).expect("decode the shard");
+        let after = distinct_key_allocations(&decoded, key);
+        println!("  distinct allocations AFTER  a round trip: {after}");
+        println!("  (dirty_objects is serde(skip), so it is absent after a decode by design)");
+
+        assert_eq!(before, 1, "the write path must establish exactly one allocation");
+        println!("  VERDICT: sharing {} a decode", if after <= 1 { "SURVIVES" } else { "DOES NOT SURVIVE" });
+
+        // AND WITH THE PAGE INDEX POPULATED, THE ADOPTION PASS BRINGS THEM BACK TOGETHER.
+        //
+        // The arm above has no page index, so there is no canonical handle to adopt and the pass
+        // correctly leaves the decoded allocations alone -- which is the first-write case. This arm
+        // files a block so the lookup holds a handle, and then one allocation must serve every
+        // holder after a round trip.
+        let mut shard = ShardState::default();
+        let shared: Arc<str> = Arc::from(key);
+        let model: Arc<str> = Arc::from("strings");
+        shard.bucket_index.object_block_lookup.file(
+            &model,
+            &shared,
+            BlockLookupRef { routing_bucket: 0, block_ref_key: 1 },
+        );
+        shard.strings.insert(Arc::clone(&shared), ElementEntry::default());
+        shard.expires_at_ms.insert(Arc::clone(&shared), 1);
+        assert_eq!(distinct_key_allocations(&shard, key), 1, "the write path shares");
+
+        let bytes = serde_json::to_vec(&shard).expect("encode");
+        let mut decoded: ShardState = serde_json::from_slice(&bytes).expect("decode");
+
+        // WHAT THIS ARM DOES AND DOES NOT COVER. `object_block_lookup` is
+        // `serde(default, skip_serializing)`: it is never written, and a real load rebuilds it by
+        // filing each DECODED PAGE. This test hand-assembles a shard with no pages, so after the
+        // round trip the lookup is legitimately empty and there is nothing to adopt -- which is the
+        // first-write case, not a failure. Filing the page here stands in for that page-driven
+        // rebuild, so what follows tests THE PASS's contract: given a populated lookup and keys
+        // that decoded independently, exactly one allocation must remain. Whether the rebuild
+        // itself happens before the repack is a property of the decode order and is not asserted
+        // here.
+        decoded.bucket_index.object_block_lookup.file(
+            &model,
+            &Arc::from(key),
+            BlockLookupRef { routing_bucket: 0, block_ref_key: 1 },
+        );
+        let without_pass = distinct_key_allocations(&decoded, key);
+        repack_decoded_btrees(&mut decoded);
+        let with_pass = distinct_key_allocations(&decoded, key);
+        println!("  with a page index: {without_pass} distinct before the pass, {with_pass} after");
+
+        // THE DISCRIMINATING ARM. If the pass did nothing, these two would be equal -- so this is
+        // what stops the assertion below passing on a no-op.
+        assert!(
+            without_pass > 1,
+            "a decode must scatter the allocations, or this test proves nothing about the pass"
+        );
+        // THE CLAIM NARROWS WITH THE PASS. `strings` is a hashed map and cannot take part -- see
+        // the note on `adopt_canonical_key_allocations` -- so it keeps its decoded allocation and
+        // the ordered deadline map adopts the page index's. Two, therefore, not one: the pass
+        // removes one of the three a decode scattered, and asserting one here would assert a
+        // behaviour this pass deliberately does not have.
+        assert_eq!(
+            with_pass, 2,
+            "the ordered map must adopt the page index's handle, leaving the hashed map's own"
+        );
+        assert!(
+            with_pass < without_pass,
+            "the pass must remove at least one allocation, or it is doing nothing"
+        );
     }
 }
