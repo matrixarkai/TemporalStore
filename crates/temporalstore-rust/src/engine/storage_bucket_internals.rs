@@ -1325,7 +1325,13 @@ pub(super) fn mark_async_dirty_object(
     let routing_bucket = block_routing_bucket(object_key, start_routing_bucket, end_routing_bucket);
     // Recorded WITH the bucket that was just computed for it. Every consumer that asks which
     // bucket a dirty object belongs to used to recompute this hash for itself.
-    shard.dirty_objects.insert(object_key, routing_bucket);
+    // ONE COPY OF THE CHARACTERS -- see `DirtyObjectIndex::insert_shared`. The handle is read out
+    // before the mutable borrow so the two do not overlap.
+    let shared = shard.bucket_index.object_block_lookup.any_shared_object_key(object_key);
+    match shared {
+        Some(shared) => shard.dirty_objects.insert_shared(shared, routing_bucket),
+        None => shard.dirty_objects.insert(object_key, routing_bucket),
+    }
     // PUSHED, NOT PULLED -- see `push_object_dirty_onto_its_existing_pages`. This is the second of
     // exactly two sites that mark an object dirty, and the invariant the tests pin is that BOTH
     // push: a mark that does not reach its pages leaves the bucket reading clean.

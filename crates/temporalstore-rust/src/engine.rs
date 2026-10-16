@@ -983,14 +983,25 @@ impl TemporalEngine {
                     // Recorded with its routing bucket. The synchronous branch below does not go
                     // through `mark_async_dirty_object`, so this is the other of the two sites
                     // that mark an object dirty and the bucket has to be supplied here too.
-                    shard.dirty_objects.insert(
+                    let routing_bucket = block_routing_bucket(
                         &object_key,
-                        block_routing_bucket(
-                            &object_key,
-                            start_routing_bucket,
-                            end_routing_bucket,
-                        ),
+                        start_routing_bucket,
+                        end_routing_bucket,
                     );
+                    // ONE COPY OF THE CHARACTERS, SHARED WITH THE PAGE INDEX. The lookup already
+                    // holds an `Arc<str>` for any object that has blocks; the dirty index used to
+                    // allocate its own equal copy for every object it had not seen since the last
+                    // dump. Read the handle out first so the borrow ends before the mutable one.
+                    let shared = shard
+                        .bucket_index
+                        .object_block_lookup
+                        .any_shared_object_key(&object_key);
+                    match shared {
+                        Some(shared) => {
+                            shard.dirty_objects.insert_shared(shared, routing_bucket)
+                        }
+                        None => shard.dirty_objects.insert(&object_key, routing_bucket),
+                    }
                     // PUSHED, NOT PULLED. The bucket predicate no longer asks a page which object
                     // it belongs to, so the dirtiness has to reach the pages here, where the shard
                     // is in scope. Idempotent, so the async branch below marking again is free.

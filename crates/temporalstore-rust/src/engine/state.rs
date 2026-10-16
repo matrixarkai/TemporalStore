@@ -3584,6 +3584,19 @@ impl ObjectBlockLookup {
         Some(Arc::clone(stored))
     }
 
+    /// The allocation this map holds for `object_key` under ANY kind.
+    ///
+    /// `DirtyObjectIndex` is keyed by object alone, so it cannot name the kind to look under. The
+    /// outer level here is one entry per stored kind for the whole shard -- a constant head, not a
+    /// per-object tree -- so this scan is bounded by the KIND count and never by the object count.
+    pub(super) fn any_shared_object_key(&self, object_key: &str) -> Option<Arc<str>> {
+        self.by_model.values().find_map(|objects| {
+            objects
+                .get_key_value(object_key)
+                .map(|(stored, _)| Arc::clone(stored))
+        })
+    }
+
     /// The address of the inner key allocation, so a test can assert that a block and this map
     /// point at one copy of the object identity rather than two equal ones. Contents cannot tell
     /// those apart; pointers can.
@@ -4148,11 +4161,34 @@ impl DirtyObjectIndex {
         // through `mark_async_dirty_object`, so a charge on either wrapper would see one of the
         // two. The same reason the walk counters in `storage_bucket_internals` moved inward.
         crate::alloc_probe::in_class(crate::alloc_probe::AllocClass::DirtyObjects, || {
-            self.insert_inner(object_key, routing_bucket)
+            self.insert_inner(object_key, routing_bucket, None)
         })
     }
 
-    fn insert_inner(&mut self, object_key: &str, routing_bucket: u32) {
+    /// As `insert`, with the key's allocation supplied by the caller.
+    ///
+    /// `ObjectBlockLookup` already holds an `Arc<str>` for every object that has blocks, and this
+    /// index allocated a SECOND copy of the same characters for every object it had not seen since
+    /// the last dump. The dirty set is drained per bucket at dump and the lookup is not, so that
+    /// was one allocation of the key per object per dump cycle, freed only when the set drained
+    /// again. Handing the handle in makes it a refcount bump instead.
+    ///
+    /// POINTER IDENTITY IS THE ONLY THING THAT DISTINGUISHES THIS FROM THE OLD BEHAVIOUR. The
+    /// contents were always equal, which is why a contents comparison cannot witness it and
+    /// `key_ptr` exists.
+    pub(super) fn insert_shared(&mut self, shared: Arc<str>, routing_bucket: u32) {
+        crate::alloc_probe::in_class(crate::alloc_probe::AllocClass::DirtyObjects, || {
+            let borrowed = Arc::clone(&shared);
+            self.insert_inner(&borrowed, routing_bucket, Some(shared))
+        })
+    }
+
+    fn insert_inner(
+        &mut self,
+        object_key: &str,
+        routing_bucket: u32,
+        preallocated: Option<Arc<str>>,
+    ) {
         if let Some(existing) = self.by_key.get_mut(object_key) {
             if *existing == routing_bucket {
                 return;
@@ -4168,19 +4204,30 @@ impl DirtyObjectIndex {
                 }
                 None => None,
             };
-            let shared = moved.unwrap_or_else(|| Arc::from(object_key));
+            let shared = moved
+                .or(preallocated)
+                .unwrap_or_else(|| Arc::from(object_key));
             self.by_bucket
                 .entry(routing_bucket)
                 .or_default()
                 .insert(shared);
             return;
         }
-        let shared: Arc<str> = Arc::from(object_key);
+        let shared: Arc<str> = preallocated.unwrap_or_else(|| Arc::from(object_key));
         self.by_key.insert(Arc::clone(&shared), routing_bucket);
         self.by_bucket
             .entry(routing_bucket)
             .or_default()
             .insert(shared);
+    }
+
+    /// The address of this index's key allocation, so a test can assert it IS the page
+    /// index's rather than an equal copy. Contents cannot tell those apart; pointers can --
+    /// the same reason `ObjectBlockLookup::key_ptr` exists.
+    #[cfg(test)]
+    pub(super) fn key_ptr(&self, object_key: &str) -> Option<*const u8> {
+        let (stored, _) = self.by_key.get_key_value(object_key)?;
+        Some(stored.as_ptr())
     }
 
     /// Empty both indexes. Used by the resident-memory probe, which measures what a field
@@ -7199,4 +7246,53 @@ impl ShardState {
 
 }
 
+#[cfg(test)]
+mod the_dirty_index_shares_the_page_indexs_key {
+    use super::{DirtyObjectIndex, ObjectBlockLookup};
+    use std::sync::Arc;
 
+    /// ONE COPY OF THE CHARACTERS, ASSERTED BY POINTER.
+    ///
+    /// `insert_shared` must store the handle it was given, not a copy of its text. A contents
+    /// comparison cannot witness this -- the two were always equal -- so both arms compare
+    /// addresses, and the second arm exists to prove the first one CAN fail.
+    #[test]
+    fn a_handed_in_key_is_stored_and_an_unshared_one_is_not() {
+        let shared: Arc<str> = Arc::from("ctx:event:4071:915");
+
+        // SHARED ARM: the handle goes in, and the index holds that very allocation.
+        let mut handed = DirtyObjectIndex::default();
+        handed.insert_shared(Arc::clone(&shared), 7);
+        assert_eq!(
+            handed.key_ptr("ctx:event:4071:915"),
+            Some(shared.as_ptr()),
+            "insert_shared stored a copy of the text instead of the handle it was given"
+        );
+
+        // CONTROL ARM: the old path allocates its own, so the same assertion must FAIL here.
+        // Without this, a key_ptr that always answered `shared.as_ptr()` would pass above.
+        let mut owned = DirtyObjectIndex::default();
+        owned.insert("ctx:event:4071:915", 7);
+        assert_ne!(
+            owned.key_ptr("ctx:event:4071:915"),
+            Some(shared.as_ptr()),
+            "the unshared path returned the handed-in allocation, so this test cannot fail"
+        );
+
+        // Both arms hold a key whose TEXT is identical -- which is exactly why the assertions
+        // above compare addresses and not contents.
+        assert_eq!(handed.key_ptr("ctx:event:4071:915").is_some(), true);
+        assert_eq!(owned.key_ptr("ctx:event:4071:915").is_some(), true);
+    }
+
+    /// The kind-agnostic reader answers from any kind, and answers `None` before the object has
+    /// blocks -- which is the call that must still allocate.
+    #[test]
+    fn the_lookup_answers_for_any_kind_and_none_before_the_first_block() {
+        let lookup = ObjectBlockLookup::default();
+        assert!(
+            lookup.any_shared_object_key("never:filed").is_none(),
+            "an object with no blocks must answer None so the caller allocates"
+        );
+    }
+}
