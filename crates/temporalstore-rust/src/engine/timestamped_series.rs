@@ -258,6 +258,14 @@ pub(super) struct OwnedTimestampedSeries {
 const _: () = assert!(std::mem::size_of::<OwnedTimestampedSeries>() == 8);
 const _: () = assert!(std::mem::align_of::<OwnedTimestampedSeries>() == 8);
 
+/// Where exact growth stops and `Vec`'s doubling takes over, in points.
+///
+/// EIGHT, AND IT IS THE SAME EIGHT `HashFieldMap` USES. Both types are sorted owned arrays standing
+/// in for a per-key map, both pay a recopy to hold capacity equal to length, and the bound on that
+/// recopy is what the threshold buys: at most seven pairs, 168 bytes. Above it the saving is a
+/// shrinking fraction of a buffer that is already amortised, and the recopy is not.
+const EXACT_GROWTH_BELOW: usize = 8;
+
 /// THE WIDTH IS PINNED AGAINST THE SPELLING THE SLOT USES -- and this assert is stated for exactly
 /// what it checks, which is less than "the two cannot drift". It compares this type against the
 /// payload type written out in full; it does NOT read `ObjectSlot`, so a change on the slot's side
@@ -332,9 +340,30 @@ impl OwnedTimestampedSeries {
                 Some(std::mem::replace(&mut points[index].1, address))
             }
             Err(index) => {
-                self.points
-                    .get_or_insert_with(|| Box::new(Vec::new()))
-                    .insert(index, (at, address));
+                let points = self.points.get_or_insert_with(|| Box::new(Vec::new()));
+                // EXACT CAPACITY WHILE THE SERIES IS SHORT, AMORTISED ONCE IT IS NOT.
+                //
+                // `Vec`'s first allocation is capacity FOUR, so a one-point series holds 24 bytes
+                // of payload in a 96-byte buffer. That is 72 bytes of nothing per key, and the
+                // one-point key is the common case in a series map whose occupancy is bimodal --
+                // a handful of fixed indexes holding thousands, plus one per hash holding one.
+                //
+                // WHY NOT A BOXED SLICE, WHICH WOULD BE EXACT BY CONSTRUCTION. `Box<[T]>` is a fat
+                // pointer: it would take this type from eight bytes to sixteen, and -- the reason
+                // that is not merely a trade -- it carries no spare capacity, so EVERY append
+                // reallocates and copies the whole array. That is quadratic in total copying for a
+                // series appended to n times, and `context_events` occupancy is lifetime event
+                // count per node, with no bound. Exactness is worth having where the series is
+                // short and not worth buying with a realloc per append where it is long.
+                //
+                // So the threshold: below it, grow to exactly what is needed, which costs one
+                // recopy of at most EXACT_GROWTH_BELOW - 1 pairs; at or above it, `Vec`'s doubling
+                // takes over untouched. Same policy and same threshold as `HashFieldMap`, which
+                // arrived at it from the same measurement rather than by being copied.
+                if points.len() < EXACT_GROWTH_BELOW && points.len() == points.capacity() {
+                    points.reserve_exact(1);
+                }
+                points.insert(index, (at, address));
                 None
             }
         }
@@ -493,5 +522,139 @@ impl TimestampedSeriesWrite for OwnedTimestampedSeries {
 
     fn clear(&mut self, at: u64) {
         self.remove(&at);
+    }
+}
+
+#[cfg(test)]
+mod a_short_series_does_not_hold_a_buffer_it_is_not_using {
+    use super::{OwnedTimestampedSeries, EXACT_GROWTH_BELOW};
+    use crate::block_store::ElementEntry;
+
+    /// Capacity equals length below the threshold, and does NOT at it -- a BRACKETING PAIR.
+    ///
+    /// The first half alone would pass if exact growth were applied at every length, which is the
+    /// shape this deliberately does not have: it would buy a realloc per append for a series with
+    /// no bound on its occupancy. The second half is what makes the threshold a threshold, so a
+    /// change that quietly extended exactness upward reddens here instead of showing up as a
+    /// throughput regression nothing in this crate measures.
+    #[test]
+    fn the_threshold_is_exact_and_not_merely_an_upper_bound() {
+        let mut series = OwnedTimestampedSeries::default();
+
+        for point in 1..=EXACT_GROWTH_BELOW {
+            series.insert(point as u64, ElementEntry::default());
+            let held = series.points.as_ref().expect("a written series has a buffer");
+            assert_eq!(
+                held.len(),
+                point,
+                "insert {point} did not land"
+            );
+            assert_eq!(
+                held.capacity(),
+                held.len(),
+                "at {point} points, below the threshold of {EXACT_GROWTH_BELOW}, the buffer holds \
+                 spare capacity: len {} capacity {}",
+                held.len(),
+                held.capacity()
+            );
+        }
+
+        // One past the threshold: `Vec`'s doubling takes over and capacity must OVERSHOOT.
+        series.insert(EXACT_GROWTH_BELOW as u64 + 1, ElementEntry::default());
+        let held = series.points.as_ref().expect("a written series has a buffer");
+        assert_eq!(held.len(), EXACT_GROWTH_BELOW + 1);
+        assert!(
+            held.capacity() > held.len(),
+            "at {} points, AT OR ABOVE the threshold, growth should be amortised and capacity \
+             should overshoot -- it is {}, equal to the length, so exact growth did not stop \
+             where it was supposed to",
+            held.len(),
+            held.capacity()
+        );
+    }
+
+    /// What the spare capacity cost, in the allocator's own units.
+    ///
+    /// `chunk(req) = max(32, align16(req + 8))` for glibc, which is what production uses -- the
+    /// crate's only `#[global_allocator]` is behind `cfg(all(test, feature = "alloc-probe"))`, so
+    /// the chunk model is the production model and not a test artefact.
+    ///
+    /// A pair is 24 bytes: an eight-byte instant and a sixteen-byte entry, both pinned elsewhere
+    /// and re-derived here rather than assumed.
+    #[test]
+    fn a_one_point_series_no_longer_pays_for_four() {
+        fn chunk(request: usize) -> usize {
+            let rounded = (request + 8 + 15) / 16 * 16;
+            if rounded < 32 {
+                32
+            } else {
+                rounded
+            }
+        }
+
+        let pair = std::mem::size_of::<(u64, ElementEntry)>();
+        assert_eq!(pair, 24, "a point is an instant plus an entry");
+
+        let mut series = OwnedTimestampedSeries::default();
+        series.insert(1, ElementEntry::default());
+        let held = series.points.as_ref().expect("a written series has a buffer");
+
+        let now = chunk(pair * held.capacity());
+        let before = chunk(pair * 4); // `Vec`'s first allocation, which is what this replaced
+        assert_eq!(held.capacity(), 1, "a one-point series should hold one point's worth");
+        assert!(
+            now < before,
+            "the exact buffer ({now} B) should be smaller than the capacity-four one ({before} B)"
+        );
+        println!(
+            "  one-point series buffer: {before} B at capacity 4 -> {now} B exact, {} B saved",
+            before - now
+        );
+
+        // THE WHOLE CURVE, NOT ONE POINT, because the saving decays to nothing by the threshold
+        // and a single figure invites quoting the best cell as the result. `Vec`'s doubling from
+        // capacity four goes 4, 8, 16, so the old buffer is flat across each doubling band while
+        // the exact one steps every point -- which is why the saving is sawtoothed rather than
+        // monotone, and why n=1 is the best case and n=4 and n=8 the worst.
+        println!("  points   exact B   capacity-4 doubling B   saved");
+        let mut worst = usize::MAX;
+        for points in 1..=EXACT_GROWTH_BELOW {
+            let mut series = OwnedTimestampedSeries::default();
+            for point in 1..=points {
+                series.insert(point as u64, ElementEntry::default());
+            }
+            let held = series.points.as_ref().expect("a written series has a buffer");
+            assert_eq!(held.capacity(), points, "exact growth should hold capacity at length");
+            // What `Vec` alone would have held: 4, then doubling, which is the shape this replaced.
+            let mut doubling = 4;
+            while doubling < points {
+                doubling *= 2;
+            }
+            let exact_bytes = chunk(pair * points);
+            let doubling_bytes = chunk(pair * doubling);
+            let saved = doubling_bytes - exact_bytes;
+            worst = worst.min(saved);
+            println!(
+                "  {points:>6}   {exact_bytes:>7}   {doubling_bytes:>21}   {saved:>5}"
+            );
+        }
+        assert_eq!(
+            worst, 0,
+            "the saving should reach zero somewhere below the threshold -- where length meets a              doubling boundary the two shapes agree, and a non-zero worst case here would mean              this comparison is not modelling `Vec`'s growth"
+        );
+    }
+
+    /// An emptied series still drops its buffer. Exact growth touches the insert path only, and
+    /// this is the property on the remove path that it could have broken by accident.
+    #[test]
+    fn emptying_a_series_still_releases_the_buffer() {
+        let mut series = OwnedTimestampedSeries::default();
+        series.insert(7, ElementEntry::default());
+        assert!(series.points.is_some());
+        series.remove(&7);
+        assert!(
+            series.points.is_none(),
+            "an emptied series must drop its allocation rather than keep a zero-length buffer"
+        );
     }
 }
