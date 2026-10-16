@@ -308,6 +308,30 @@ pub(super) struct ShardState {
         super::storage_bucket_internals::StoredModelKind,
         HashMap<ModelKey, super::object_record::ObjectSlot>,
     >,
+
+    /// WHERE A MULTI-PAGE OBJECT'S PAGES LIVE, so they hang off the object's own record.
+    ///
+    /// A record keeps ONE address word that is either a page address or a handle
+    /// (`PageAddress::One` / `PageAddress::Many`). This is what the handle half points into. Until
+    /// it existed, a handle was only a number: every production mention of `PageAddress::Many`,
+    /// `Deadline::PerElement` and `RecordFlags::ADDRESS_IS_POINTER` sat inside `object_record.rs`
+    /// itself, so the arm was reachable from tests and from nothing else.
+    ///
+    /// SKIPPED IN BOTH DIRECTIONS, AND THAT IS PROVABLY LOSSLESS RIGHT NOW RATHER THAN A BARGAIN.
+    /// Nothing writes a layout yet -- `objects` is filled for exactly one kind, `ControlState`,
+    /// whose entries take the inline arm -- so this is empty in every image this binary writes.
+    /// `skip` rather than `skip_serializing`: no image in existence carries this field, so there
+    /// is no old row for a deserialize half to deliver, and skipping both ways leaves the stored
+    /// bytes byte-identical with no format stamp owed.
+    ///
+    /// THE CONDITION ON THE FIRST WRITER, which is the part that will not be obvious later: the
+    /// first path that files a layout here MUST bring a wire form with it, because at that moment
+    /// this field becomes the only copy of where those pages are and a reload would drop them.
+    /// That is the same trap `ObjectSlot`'s owned element array is held back by -- see #2165 -- and
+    /// the reason it is written here is that the emptiness argument above stops being true the
+    /// instant a writer lands, silently.
+    #[serde(skip)]
+    pub(super) object_page_layouts: super::object_record::PageLayoutStore,
     /// Per `(key, bucket)` distinct-count state, in whichever representation the bucket holds.
     ///
     /// ONE MAP, WHERE THERE WERE TWO. `control_state_change_sketch` stood beside this holding the
@@ -7180,6 +7204,7 @@ pub(super) fn repack_decoded_btrees(state: &mut ShardState) {
         hashes: _,
         buckets: _,
         objects: _,
+        object_page_layouts: _,
         // Not a B-tree at all: the owned sorted array map is `serde(skip)` and is filled by
         // `fold_legacy_context_events`. An array has no half-empty-leaf shape for this pass to
         // repair.
@@ -7712,6 +7737,81 @@ mod does_the_sharing_survive_a_decode {
         assert!(
             with_pass < without_pass,
             "the pass must remove at least one allocation, or it is doing nothing"
+        );
+    }
+}
+
+#[cfg(test)]
+mod a_records_pages_can_live_on_the_shard_beside_the_record {
+    use super::ShardState;
+    use crate::block_store::ElementEntry;
+    use crate::engine::object_record::{ObjectRecord, PageAddress, PageLayout};
+
+    /// The handle arm, driven through the shard rather than through the type's own tests.
+    ///
+    /// WHY THIS TEST AND NOT ONLY THE STORE'S OWN: a store nothing reaches is the same dead arm it
+    /// replaces. `PageAddress::Many` was constructible and tested for some time while every
+    /// production mention stayed inside `object_record.rs`, because a handle is only a number until
+    /// something maps it to a layout AND that something is somewhere a shard can get at. This
+    /// drives the whole path -- shard field, handle, layout, record, and back -- so the field is
+    /// reachable state and not a declaration.
+    #[test]
+    fn a_page_layout_filed_on_the_shard_gives_the_record_its_rows_back() {
+        let mut shard = ShardState::default();
+        assert!(
+            shard.object_page_layouts.is_empty(),
+            "a fresh shard should hold no layouts"
+        );
+
+        let address = ElementEntry::from_parts(7, 64, 128, Some(3), None);
+        let reserved = shard.object_page_layouts.insert(PageLayout::default());
+        let (record, layout) =
+            ObjectRecord::from_object_rows_with_layout(&address, 9, Some(1_700), true, reserved)
+                .expect("the layout arm refused an entry it is documented to hold");
+        assert!(
+            matches!(record.page_address(), PageAddress::Many(_)),
+            "the record should carry a handle rather than an inline address"
+        );
+
+        // File the real layout where the record's handle already points.
+        shard
+            .object_page_layouts
+            .remove(reserved)
+            .expect("the reserved slot should have held the placeholder");
+        let handle = shard.object_page_layouts.insert(layout);
+        assert_eq!(1, shard.object_page_layouts.len(), "one layout should be filed");
+
+        let held = shard
+            .object_page_layouts
+            .get(handle)
+            .expect("a layout filed on the shard should resolve");
+        let (back_address, back_model, back_deadline, back_dirty) = record
+            .into_object_rows(Some(held))
+            .expect("unfolding a record through its layout refused");
+        assert_eq!(address, back_address, "the address row changed");
+        assert_eq!(9, back_model, "the model id changed");
+        assert_eq!(Some(1_700), back_deadline, "the deadline row changed");
+        assert!(back_dirty, "the dirty bit changed");
+    }
+
+    /// The field is NOT serialized, and that is asserted rather than left to the attribute.
+    ///
+    /// The attribute says `skip`; this says what `skip` has to mean for the emptiness argument on
+    /// the field to hold -- a shard carrying a layout encodes to the same bytes as one without, so
+    /// no stored image can be carrying layouts and no format stamp is owed.
+    #[test]
+    fn a_filed_layout_changes_nothing_about_the_stored_bytes() {
+        let without = ShardState::default();
+        let mut with = ShardState::default();
+        with.object_page_layouts.insert(PageLayout::default());
+        assert_eq!(1, with.object_page_layouts.len(), "the layout did not land");
+
+        let a = serde_json::to_vec(&without).expect("encoding a shard failed");
+        let b = serde_json::to_vec(&with).expect("encoding a shard failed");
+        assert_eq!(
+            a, b,
+            "a filed layout changed the stored bytes, so this field is serialized after all and \
+             the no-stamp-owed argument on it is wrong"
         );
     }
 }

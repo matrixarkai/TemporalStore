@@ -7578,6 +7578,7 @@ fn where_a_record_is_kept_everywhere() {
         ("buckets_pending_flag_refresh", shard.buckets_pending_flag_refresh.len()),
         ("dirty_objects", shard.dirty_objects.len()),
         ("bucket_recency", shard.bucket_recency.len()),
+        ("object_page_layouts", shard.object_page_layouts.len()),
         ("bucket_index.bucket_map", buckets.len()),
         ("bucket_index.kind_pool", shard.bucket_index.kind_pool.len()),
         ("bucket_index.object_page_lookup", shard.bucket_index.object_block_lookup.len()),
@@ -7596,7 +7597,7 @@ fn where_a_record_is_kept_everywhere() {
     //    1  bucket_index, expanded into the 6 rows above: its own bucket_map, kind_pool and
     //       object_page_lookup, plus the three per-object maps summed across buckets
     //
-    // 39 NAMED FIELDS, AND THAT IS NOT THE STRUCT'S FIELD COUNT. This block read "ShardState has
+    // 40 NAMED FIELDS, AND THAT IS NOT THE STRUCT'S FIELD COUNT. This block read "ShardState has
     // 42 fields", and the assert under it compared 35 + 6 + 1 against the literal 42 -- an
     // identity between three constants written in one place, true whatever the struct does.
     // Measured: `ShardState` has 48 fields. `expiry_by_deadline` is a container this probe does
@@ -7625,10 +7626,10 @@ fn where_a_record_is_kept_everywhere() {
     // read 40 -- already failing, invisibly -- and taking the row for the merged embedding index
     // out of the list made it 38 against the same 40. Counted from the list as it now stands:
     // 32 top-level rows, 6 expanded out of bucket_index.
-    const TOP_LEVEL_CONTAINERS: usize = 32;
+    const TOP_LEVEL_CONTAINERS: usize = 33;
     const NON_CONTAINER_FIELDS: usize = 6;
     const BUCKET_INDEX_ROWS: usize = 6;
-    const NAMED_FIELDS: usize = 39;
+    const NAMED_FIELDS: usize = 40;
     assert_eq!(
         TOP_LEVEL_CONTAINERS + NON_CONTAINER_FIELDS + 1,
         NAMED_FIELDS,

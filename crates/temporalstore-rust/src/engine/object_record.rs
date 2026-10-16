@@ -711,6 +711,119 @@ pub(super) struct StoredPage {
 }
 
 // =================================================================================================
+// THE LAYOUTS A HANDLE NAMES
+// =================================================================================================
+
+/// Where the pages of a multi-page object actually live.
+///
+/// THIS IS THE PIECE WHOSE ABSENCE MADE THE HANDLE ARM DEAD CODE. `PageAddress::Many` and
+/// `from_object_rows_with_layout` have existed and been tested for some time, and
+/// `RecordFlags::ADDRESS_IS_POINTER` with them -- but every production mention of all three was
+/// inside this file, because a handle is only a number until something maps it to a layout. The
+/// record keeps ONE WORD that is either a page address or a handle; this is what the handle half
+/// points into, so an object's pages hang off the object's own record instead of being filed in a
+/// second index keyed by the object key again.
+///
+/// # HANDLE ZERO IS NEVER A LAYOUT, AND THAT IS LOAD-BEARING
+///
+/// `PageLayoutHandle` derives `Default`, so a zeroed or defaulted handle is `0`. If slot zero
+/// backed handle zero, a record that never had a layout would resolve to whatever landed in the
+/// first slot. So a slot at index `i` backs handle `i + 1` in the low half, and zero resolves to
+/// nothing by construction rather than by a check someone has to remember.
+///
+/// # A STALE HANDLE FAILS CLOSED RATHER THAN NAMING SOMEONE ELSE'S PAGES
+///
+/// Vacated slots are reused, which on its own is the ABA problem: free a layout, allocate another
+/// into the same slot, and the first handle now reads the second object's pages -- silently, and
+/// as a plausible answer. The high half of the handle therefore carries the slot's GENERATION,
+/// bumped on every removal, so a handle outliving its layout stops resolving instead of resolving
+/// to the wrong thing. A raw pointer cannot express this; a handle can, for the cost of bookkeeping
+/// in the half of the word that was going spare.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub(super) struct PageLayoutStore {
+    slots: Vec<LayoutSlot>,
+    vacant: Vec<u32>,
+    live: usize,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+struct LayoutSlot {
+    generation: u32,
+    layout: Option<PageLayout>,
+}
+
+impl PageLayoutStore {
+    /// Split a handle into the slot it names and the generation it was issued at.
+    ///
+    /// `None` for handle zero, which names no slot -- see the type's doc.
+    fn decode(handle: PageLayoutHandle) -> Option<(usize, u32)> {
+        let word = handle.get();
+        let low = (word & 0xFFFF_FFFF) as u32;
+        let index = low.checked_sub(1)?;
+        Some((index as usize, (word >> 32) as u32))
+    }
+
+    fn encode(index: usize, generation: u32) -> PageLayoutHandle {
+        let low = u64::from(index as u32 + 1);
+        PageLayoutHandle::from_stored((u64::from(generation) << 32) | low)
+    }
+
+    /// File a layout and return the handle a record should carry.
+    pub(super) fn insert(&mut self, layout: PageLayout) -> PageLayoutHandle {
+        self.live += 1;
+        match self.vacant.pop() {
+            Some(index) => {
+                let slot = &mut self.slots[index as usize];
+                slot.layout = Some(layout);
+                Self::encode(index as usize, slot.generation)
+            }
+            None => {
+                let index = self.slots.len();
+                self.slots.push(LayoutSlot { generation: 0, layout: Some(layout) });
+                Self::encode(index, 0)
+            }
+        }
+    }
+
+    /// The layout this handle names, or `None` if it names nothing any more.
+    pub(super) fn get(&self, handle: PageLayoutHandle) -> Option<&PageLayout> {
+        let (index, generation) = Self::decode(handle)?;
+        let slot = self.slots.get(index)?;
+        if slot.generation != generation {
+            return None;
+        }
+        slot.layout.as_ref()
+    }
+
+    /// Give up a layout. The slot is reused, and its generation moves so the old handle cannot.
+    pub(super) fn remove(&mut self, handle: PageLayoutHandle) -> Option<PageLayout> {
+        let (index, generation) = Self::decode(handle)?;
+        let slot = self.slots.get_mut(index)?;
+        if slot.generation != generation {
+            return None;
+        }
+        let layout = slot.layout.take()?;
+        // SATURATING, so a slot recycled 2^32 times stops reusing rather than wrapping its
+        // generation back onto a handle someone might still hold.
+        slot.generation = slot.generation.saturating_add(1);
+        if slot.generation != u32::MAX {
+            self.vacant.push(index as u32);
+        }
+        self.live -= 1;
+        Some(layout)
+    }
+
+    /// How many layouts are filed.
+    pub(super) fn len(&self) -> usize {
+        self.live
+    }
+
+    pub(super) fn is_empty(&self) -> bool {
+        self.live == 0
+    }
+}
+
+// =================================================================================================
 // THE WIRE FORM, AND A DECODER THAT REFUSES BY NAME
 // =================================================================================================
 
@@ -1371,5 +1484,118 @@ impl ObjectRecord {
         }
         self.set_address(address);
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod the_handle_arm_now_has_something_to_point_into {
+    use super::{
+        ElementEntry, ObjectRecord, PageAddress, PageLayout, PageLayoutHandle, PageLayoutStore,
+    };
+
+    fn an_entry() -> ElementEntry {
+        ElementEntry::from_parts(7, 64, 128, Some(3), None)
+    }
+
+    /// Handle zero names nothing, and no issued handle is ever zero.
+    ///
+    /// `PageLayoutHandle` derives `Default`, so this is the property that keeps a record which
+    /// never had a layout from reading whatever landed in the first slot.
+    #[test]
+    fn handle_zero_names_nothing_and_is_never_issued() {
+        let mut store = PageLayoutStore::default();
+        assert!(store.get(PageLayoutHandle::default()).is_none(), "the default handle resolved");
+        assert!(store.get(PageLayoutHandle::from_stored(0)).is_none(), "handle zero resolved");
+
+        for _ in 0..4 {
+            let handle = store.insert(PageLayout::default());
+            assert_ne!(0, handle.get(), "an issued handle must never be zero");
+        }
+        assert_eq!(4, store.len());
+        assert!(store.get(PageLayoutHandle::from_stored(0)).is_none(), "handle zero resolved");
+    }
+
+    /// A record whose address word is a HANDLE gives its rows back unchanged through the store.
+    ///
+    /// This is the arm that existed and could not be reached: the record carries the handle, the
+    /// store holds the layout, and nothing is lost in either direction.
+    #[test]
+    fn a_record_and_its_layout_round_trip_through_the_store() {
+        let mut store = PageLayoutStore::default();
+        let address = an_entry();
+
+        // The handle has to be known before the record is built, which is why the store issues it
+        // first and the layout is filed under the same handle afterwards.
+        let reserved = store.insert(PageLayout::default());
+        let (record, layout) =
+            ObjectRecord::from_object_rows_with_layout(&address, 9, Some(1_700), true, reserved)
+                .expect("the layout arm refused an entry it is documented to hold");
+        assert!(
+            matches!(record.page_address(), PageAddress::Many(_)),
+            "the record should carry a handle, not an inline address"
+        );
+
+        // File the real layout in the slot the handle already names.
+        let replaced = store.remove(reserved);
+        assert!(replaced.is_some(), "the reserved slot should have held the placeholder");
+        let handle = store.insert(layout);
+
+        let held = store.get(handle).expect("the filed layout should resolve");
+        let (back_address, back_model, back_deadline, back_dirty) = record
+            .into_object_rows(Some(held))
+            .expect("unfolding a record through its layout refused");
+        assert_eq!(address, back_address, "the address row changed");
+        assert_eq!(9, back_model, "the model id changed");
+        assert_eq!(Some(1_700), back_deadline, "the deadline row changed");
+        assert!(back_dirty, "the dirty bit changed");
+    }
+
+    /// A stale handle stops resolving rather than naming the next layout in its slot.
+    ///
+    /// AND THE REUSE IS ASSERTED, because without it this test passes for the wrong reason: if the
+    /// second layout landed in a FRESH slot the ABA case would never be exercised and the stale
+    /// handle would fail to resolve trivially. So the slot count is pinned at one.
+    #[test]
+    fn a_stale_handle_does_not_resolve_to_the_layout_that_replaced_it() {
+        let mut store = PageLayoutStore::default();
+
+        let first = store.insert(PageLayout::default());
+        assert!(store.get(first).is_some());
+        assert!(store.remove(first).is_some(), "the first layout should have been there");
+        assert!(store.get(first).is_none(), "a removed handle still resolved");
+
+        let second = store.insert(PageLayout::default());
+        assert_eq!(
+            1,
+            store.slots.len(),
+            "the vacated slot was NOT reused, so this test would not have exercised a stale handle"
+        );
+        assert_ne!(
+            first.get(),
+            second.get(),
+            "the slot was reused and the handle did not change, so a stale handle is \
+             indistinguishable from a live one"
+        );
+        assert!(
+            store.get(first).is_none(),
+            "the stale handle resolved to the layout that took its slot"
+        );
+        assert!(store.get(second).is_some(), "the live handle did not resolve");
+        assert_eq!(1, store.len(), "one layout should be filed");
+    }
+
+    /// Removing a handle twice is not a second removal, and neither is removing a fabricated one.
+    #[test]
+    fn a_handle_that_names_nothing_removes_nothing() {
+        let mut store = PageLayoutStore::default();
+        let handle = store.insert(PageLayout::default());
+        assert!(store.remove(handle).is_some());
+        assert!(store.remove(handle).is_none(), "the same handle removed twice");
+        assert!(
+            store.remove(PageLayoutHandle::from_stored(9_999)).is_none(),
+            "a fabricated handle removed something"
+        );
+        assert!(store.is_empty(), "the store should be empty");
+        assert_eq!(0, store.len());
     }
 }
