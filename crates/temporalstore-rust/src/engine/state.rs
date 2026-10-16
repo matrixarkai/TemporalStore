@@ -447,17 +447,15 @@ pub(super) struct ShardState {
     // the same node collapse into a single entry. This map is `#[serde(skip)]`: it is
     // ephemeral and may be lost on restart, which is acceptable because the async summary
     // worker re-marks nodes on the next event and stale summaries are self-healing.
+    // AND IT HOLDS THE EMBEDDING-DIRTY ENTRIES TOO, under `ctx:embdirty:{tenant}:{node}`.
+    // They were a second map of the same type over the same key shape, differing only in the
+    // prefix the key already carries -- one map per attribute where the attribute is a flavour of
+    // dirtiness. A scan that wants one flavour asks `is_embedding_dirty_key`, which is load-bearing
+    // rather than cosmetic: `tenant_hash` is left zero for summary entries and the embedding
+    // drain's filter admits everything when asked for all tenants, so without the predicate an
+    // all-tenant drain would hand summary entries out as embedding work.
     #[serde(skip)]
     pub(super) context_dirty_index: HashMap<String, ContextDirtyEntry>,
-    // Embedding-dirty tracking, independent of `context_dirty_index` (summary).
-    // Keyed by `ctx:embdirty:{tenant}:{node}`; coalescing hashmap so repeated
-    // marks for the same node collapse into one entry. Like the summary index it
-    // is in-memory only (`#[serde(skip)]`) and ephemeral: on restart the drainer
-    // re-derives pending work — a node whose embedding is still missing is simply
-    // re-marked by the next ingest, and the hybrid retrieve path keeps it
-    // rankable via lexical scoring in the meantime.
-    #[serde(skip)]
-    pub(super) context_embedding_dirty_index: HashMap<String, ContextDirtyEntry>,
     // Per-node temporal-compression high-water mark: the latest event time already
     // folded into a ContextCompressionEvent for this event object key. In-memory and
     // ephemeral (serde-skipped); on loss the auto-compression trigger re-compresses
@@ -7147,7 +7145,6 @@ pub(super) fn repack_decoded_btrees(state: &mut ShardState) {
         control_state_uuid: _,
         context_nodes: _,
         context_dirty_index: _,
-        context_embedding_dirty_index: _,
         context_compression_watermark: _,
         bucket_recency: _,
         // Not deserialized: `#[serde(skip)]`, so a decode leaves it default-empty and there is

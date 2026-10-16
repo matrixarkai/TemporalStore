@@ -2754,9 +2754,9 @@ fn execute_on_shard_guards_every_arm_that_can_hold_a_deadline() {
         ("ContextQuerySummaryDirty", "reads only `context_dirty_index`; see above"),
         (
             "ContextMarkEmbeddingDirty",
-            "reads only `context_embedding_dirty_index`, ephemeral in the same way",
+            "reads only `context_dirty_index` under the embedding prefix, ephemeral in the same way",
         ),
-        ("ContextQueryEmbeddingDirty", "reads only `context_embedding_dirty_index`; see above"),
+        ("ContextQueryEmbeddingDirty", "reads only `context_dirty_index` under the embedding prefix; see above"),
     ];
 
     // ---- the arms, and their DENOMINATOR ----------------------------------------------

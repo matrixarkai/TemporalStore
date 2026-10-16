@@ -7573,7 +7573,6 @@ fn where_a_record_is_kept_everywhere() {
         ("context_summaries", shard.context_summaries.len()),
         ("context_compressions", shard.context_compressions.len()),
         ("context_dirty_index", shard.context_dirty_index.len()),
-        ("context_embedding_dirty_index", shard.context_embedding_dirty_index.len()),
         ("context_compression_watermark", shard.context_compression_watermark.len()),
         ("wal_resident_pages", shard.wal_resident_blocks.len()),
         ("buckets_pending_flag_refresh", shard.buckets_pending_flag_refresh.len()),

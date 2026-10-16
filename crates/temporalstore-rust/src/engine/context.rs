@@ -94,7 +94,24 @@ pub(super) fn context_dirty_key(tenant_hash: u64, node_hash: u64) -> String {
 }
 
 pub(super) fn context_embedding_dirty_key(tenant_hash: u64, node_hash: u64) -> String {
-    context_key_2("ctx:embdirty:", tenant_hash, node_hash)
+    context_key_2(EMBEDDING_DIRTY_PREFIX, tenant_hash, node_hash)
+}
+
+/// The prefix the key above carries, named once so the predicate below cannot drift from it.
+pub(super) const EMBEDDING_DIRTY_PREFIX: &str = "ctx:embdirty:";
+
+/// Whether a dirty-index key is an EMBEDDING key rather than a summary one.
+///
+/// ONE MAP HOLDS BOTH FLAVOURS, so a scan has to say which it wants. The two key spaces are
+/// mutually non-prefixing -- `ctx:dirty:` and `ctx:embdirty:` differ at the fifth character -- so
+/// this is exact rather than a heuristic.
+///
+/// AND IT IS LOAD-BEARING, not cosmetic. `ContextDirtyEntry::tenant_hash` is left ZERO for
+/// summary-dirty entries, and the embedding drain's own filter admits everything when it is asked
+/// for all tenants (`tenant_hash == 0`). Without this predicate an all-tenant drain would collect
+/// summary entries and hand them out as embedding work.
+pub(super) fn is_embedding_dirty_key(object_key: &str) -> bool {
+    object_key.starts_with(EMBEDDING_DIRTY_PREFIX)
 }
 
 pub(super) fn context_entity_key(tenant_hash: u64, node_hash: u64, entity_hash: u64) -> String {
@@ -1314,5 +1331,49 @@ pub(super) fn build_context_compression_event(
             compressed_time_ms
         },
         summary,
+    }
+}
+
+#[cfg(test)]
+mod one_map_two_flavours_of_dirtiness {
+    use super::{
+        context_dirty_key, context_embedding_dirty_key, is_embedding_dirty_key,
+        EMBEDDING_DIRTY_PREFIX,
+    };
+
+    /// THE DISCRIMINATOR, IN BOTH DIRECTIONS.
+    ///
+    /// One map holds summary-dirty and embedding-dirty entries, so a scan that wants one flavour
+    /// must be able to reject the other. A predicate that answered `true` for everything would
+    /// satisfy the first assertion alone, so the second is what gives the first any content.
+    #[test]
+    fn an_embedding_key_is_recognised_and_a_summary_key_is_not() {
+        let embedding = context_embedding_dirty_key(11, 42);
+        let summary = context_dirty_key(11, 42);
+
+        assert!(
+            is_embedding_dirty_key(&embedding),
+            "an embedding key must be recognised: {embedding}"
+        );
+        assert!(
+            !is_embedding_dirty_key(&summary),
+            "a SUMMARY key must be rejected, or an all-tenant embedding drain collects it: {summary}"
+        );
+    }
+
+    /// THE TWO KEY SPACES ARE MUTUALLY NON-PREFIXING, which is what makes the predicate exact
+    /// rather than a heuristic. If one prefix ever became a prefix of the other, `starts_with`
+    /// would start answering for both and this reddens before that reaches a scan.
+    #[test]
+    fn neither_prefix_is_a_prefix_of_the_other() {
+        let embedding = context_embedding_dirty_key(1, 2);
+        let summary = context_dirty_key(1, 2);
+        assert!(embedding.starts_with(EMBEDDING_DIRTY_PREFIX));
+        assert!(!summary.starts_with(EMBEDDING_DIRTY_PREFIX));
+        assert!(
+            !EMBEDDING_DIRTY_PREFIX.starts_with("ctx:dirty:")
+                && !"ctx:dirty:".starts_with(EMBEDDING_DIRTY_PREFIX),
+            "the two prefixes must not nest, or one map cannot tell its flavours apart"
+        );
     }
 }

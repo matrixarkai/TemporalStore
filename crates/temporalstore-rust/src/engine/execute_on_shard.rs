@@ -4254,10 +4254,10 @@ pub(crate) fn execute_on_shard(
             // (never written to the block store) and re-derived after restart.
             let object_key = context_embedding_dirty_key(tenant_hash, node_hash);
             if clear {
-                shard.context_embedding_dirty_index.remove(&object_key);
+                shard.context_dirty_index.remove(&object_key);
             } else {
                 let entry = shard
-                    .context_embedding_dirty_index
+                    .context_dirty_index
                     .entry(object_key.clone())
                     .or_default();
                 if entry.mark_count == 0 {
@@ -4293,10 +4293,16 @@ pub(crate) fn execute_on_shard(
                 // Deterministic order (by object key) so a bounded drain pass is
                 // stable across calls.
                 let mut entries: Vec<_> = shard
-                    .context_embedding_dirty_index
+                    .context_dirty_index
                     .iter()
-                    .filter(|(_, entry)| {
-                        entry.mark_count > 0
+                    .filter(|(object_key, entry)| {
+                        // THE PREFIX FIRST. One map now holds both flavours of dirtiness, and
+                        // `tenant_hash` is left ZERO for summary entries -- so the tenant clause
+                        // below admits them on an all-tenant drain. Without this predicate such a
+                        // drain would hand summary entries out as embedding work. See
+                        // `is_embedding_dirty_key`.
+                        super::context::is_embedding_dirty_key(object_key)
+                            && entry.mark_count > 0
                             && entry.last_event_time_ms >= start_time_ms
                             && entry.first_event_time_ms <= end_time_ms
                             && (tenant_hash == 0 || entry.tenant_hash == tenant_hash)
@@ -4319,7 +4325,7 @@ pub(crate) fn execute_on_shard(
                 let object_key = context_embedding_dirty_key(tenant_hash, node_hash);
                 if let Some(entry) =
                     shard
-                        .context_embedding_dirty_index
+                        .context_dirty_index
                         .get(&object_key)
                         .filter(|entry| {
                             entry.mark_count > 0
