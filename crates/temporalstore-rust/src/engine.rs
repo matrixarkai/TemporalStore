@@ -5096,11 +5096,23 @@ pub(in crate::engine) fn expiry_index_disagreements(shard: &ShardState) -> usize
 /// Record a deadline for `key`, keeping both expiry indexes in step.
 pub(in crate::engine) fn set_expiry(shard: &mut ShardState, key: String, expires_at: u64) {
     ensure_expiry_order(shard);
-    // ONE ALLOCATION OF THE CHARACTERS, HELD BY BOTH MAPS. `Arc::from(String)` takes the buffer
-    // the caller already owns rather than copying it, and every `Arc::clone` below is a refcount
-    // bump. This used to be three `String`s of the same text per write: one into this map, one
-    // into the mirror, and one more to probe the mirror on an overwrite.
-    let shared: std::sync::Arc<str> = std::sync::Arc::from(key);
+    // ONE ALLOCATION OF THE CHARACTERS, HELD BY BOTH MAPS, AND SHARED WITH THE PAGE INDEX WHERE
+    // IT ALREADY HAS ONE. This used to be three `String`s of the same text per write -- one into
+    // this map, one into the mirror, and one more to probe the mirror on an overwrite -- and then
+    // one `Arc` allocation of characters `object_block_lookup` was frequently already holding.
+    //
+    // CORRECTION TO WHAT THIS COMMENT USED TO SAY: `Arc::from(String)` does NOT take the buffer
+    // the caller already owns. Measured at 4, 24 and 64 characters, it performs one allocation of
+    // `16 + len` and the data pointer moves every time. The COUNT claim -- three `String`s
+    // collapsing to one allocation -- held; the mechanism claim did not.
+    //
+    // Read the handle out before the mutable borrow, and fall back to allocating when the object
+    // has no blocks yet, which is the call that must allocate.
+    let existing = shard
+        .bucket_index
+        .object_block_lookup
+        .any_shared_object_key(&key);
+    let shared: std::sync::Arc<str> = existing.unwrap_or_else(|| std::sync::Arc::from(key));
     if let Some(previous) = shard
         .expires_at_ms
         .insert(std::sync::Arc::clone(&shared), expires_at)
