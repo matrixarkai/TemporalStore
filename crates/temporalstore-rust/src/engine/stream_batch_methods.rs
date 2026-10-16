@@ -1019,7 +1019,16 @@ impl TemporalEngine {
                             false,
                         );
                         published_object_keys.insert(key.clone());
-                        shard.strings.insert(key.into_boxed_str(), published);
+                        // ONE COPY OF THE CHARACTERS. `into_boxed_str` was a free move of the
+                        // caller's buffer, so converting it to a bare `Arc::from` would have
+                        // ADDED an allocation rather than removed one. Take the handle the page
+                        // index already holds, and allocate only when it has none.
+                        let shared = shard
+                            .bucket_index
+                            .object_block_lookup
+                            .any_shared_object_key(&key);
+                        let stored = shared.unwrap_or_else(|| std::sync::Arc::from(key));
+                        shard.strings.insert(stored, published);
                     }
                     PublishTarget::Hash { key, field } => {
                         let current = shard.hashes.get(&key).and_then(|fields| fields.get(&field));

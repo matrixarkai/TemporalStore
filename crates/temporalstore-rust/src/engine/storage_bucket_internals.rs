@@ -7801,7 +7801,7 @@ mod release_refusal_guards {
         shard.set_routing_range(0, u32::MAX);
         let routing_bucket = crate::engine::hashing::block_routing_bucket(key, 0, u32::MAX);
         let held = address(routing_bucket, 64);
-        shard.strings.insert(key.to_string().into_boxed_str(), held.clone());
+        shard.strings.insert(std::sync::Arc::from(key), held.clone());
         install_page(shard, routing_bucket, key, block(key, "string", None, held));
         routing_bucket
     }
@@ -8065,7 +8065,7 @@ mod release_refusal_guards {
     #[test]
     fn a_model_map_disagreement_is_refused_and_the_refusal_names_the_map_term() {
         let (mut shard, key) = releasable_shard(7, "disagreement-key");
-        shard.strings.insert(key.into_boxed_str(), address(7, 4_096));
+        shard.strings.insert(std::sync::Arc::from(key.as_str()), address(7, 4_096));
 
         let outcome = release_bucket_blocks(&mut shard, &[7]);
 
@@ -8103,7 +8103,7 @@ mod release_refusal_guards {
             .hashes
             .insert_element_for_test(&kind_key, "field".to_string(), held.clone());
         install_page(&mut shard, 4, &kind_key, block(&kind_key, "hash", Some("field"), held));
-        shard.strings.insert(disagreement_key.into_boxed_str(), address(5, 4_096));
+        shard.strings.insert(std::sync::Arc::from(disagreement_key.as_str()), address(5, 4_096));
 
         let candidates = [1u32, 2, 3, 4, 5];
         let outcome = release_bucket_blocks(&mut shard, &candidates);

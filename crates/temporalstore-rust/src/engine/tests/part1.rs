@@ -3574,7 +3574,7 @@ fn binary_index_payload_round_trips_and_refuses_a_shape_it_cannot_read() {
     shard.index_format_version = crate::engine::SHARD_INDEX_FORMAT_VERSION;
     for i in 0..64u64 {
         shard.strings.insert(
-            format!("object-{i}").into_boxed_str(),
+            std::sync::Arc::from(format!("object-{i}").as_str()),
             ElementEntry::from_parts(i, i * 7, i + 1, Some(i), Some(i * 3)),
         );
     }

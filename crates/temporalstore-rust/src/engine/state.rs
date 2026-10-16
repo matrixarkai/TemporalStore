@@ -79,7 +79,7 @@ const _: () = assert!(std::mem::size_of::<WalResidentBlock>() == 16);
 /// NO STORED BYTES MOVE. The shard index is `serde_json`, where a map key is a string either way;
 /// `the_string_map_key_is_the_same_json_either_way` round-trips a snapshot to prove it rather than
 /// asserting it, so this carries no index format stamp.
-pub(super) type ModelKey = Box<str>;
+pub(super) type ModelKey = Arc<str>;
 
 /// The eight bytes, as a guard rather than as a sentence in the comment above: a `String` put back
 /// here would be a silent per-live-key regression, and nothing else in the suite would notice.

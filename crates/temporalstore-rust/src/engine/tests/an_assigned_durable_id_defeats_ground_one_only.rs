@@ -413,12 +413,20 @@ fn an_assigned_durable_id_is_priced_and_the_numbers_are_reconstructed_from_the_t
 //     quadratic outcome, so this is not servable this way AT ALL rather than servable expensively.
 // =================================================================================================
 
-/// CLAIM 7, AS A TYPE. `ModelKey` IS `Box<str>` -- the characters, owned, one per object.
+/// CLAIM 7, AS A TYPE. `ModelKey` IS `Arc<str>` -- a SHARED HANDLE to the characters, not an
+/// owned copy per map.
 ///
-/// A type-identity pin rather than a width pin: it compiles only while the two are the same type,
-/// so a `ModelKey` that stopped being the characters would fail here instead of leaving the claim
-/// standing. A width pin alone would not do it, since several unrelated things measure sixteen.
-const _: fn(crate::engine::state::ModelKey) -> Box<str> = |key| key;
+/// THIS PIN FIRED, AND IT WAS RIGHT TO. It previously read `Box<str>` and said "the characters,
+/// owned, one per object", precisely so that a `ModelKey` which stopped being an owned copy would
+/// fail here rather than leave the claim standing in prose. It did fail, on the change that made
+/// the model map share the page index's allocation instead of keeping its own -- which is the
+/// duplication the paragraph above describes as "stored twice today".
+///
+/// So the claim is restated rather than the pin relaxed: a `ModelKey` is still exactly the
+/// characters and still one per object, but the allocation is now shared rather than owned. A
+/// width pin alone would not express either version, since several unrelated things measure
+/// sixteen -- and `Box<str>` and `Arc<str>` both do.
+const _: fn(crate::engine::state::ModelKey) -> std::sync::Arc<str> = |key| key;
 
 /// CLAIM 7, AS A TYPE. A model-map-sourced identity collector exists and takes NOTHING but a shard.
 ///

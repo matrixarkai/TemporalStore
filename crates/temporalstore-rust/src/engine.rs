@@ -6173,7 +6173,15 @@ fn persist_control_state_block(
         upsert_bucket_index_block(shard, shard_id, "control_state", key, None, address.clone(), true);
         let mut record = crate::engine::object_record::ObjectRecord::default();
         record.set_address(&address);
-        shard.insert_control_state_block(key.to_string().into_boxed_str(), record.into());
+        // ONE COPY OF THE CHARACTERS -- see the note at the `strings` write. `to_string()` plus
+        // `into_boxed_str()` built a fresh copy on every call; the page index is frequently
+        // already holding one.
+        let shared = shard
+            .bucket_index
+            .object_block_lookup
+            .any_shared_object_key(key);
+        let stored = shared.unwrap_or_else(|| std::sync::Arc::from(key));
+        shard.insert_control_state_block(stored, record.into());
         true
     } else {
         false

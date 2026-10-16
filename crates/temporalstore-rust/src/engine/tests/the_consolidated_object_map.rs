@@ -137,7 +137,7 @@ fn the_control_state_mutators_keep_the_consolidated_map_right_through_removals()
     // THE WHOLE-MAP REPLACEMENT, which is where a field assignment would have left the mirror
     // holding every key the replacement dropped.
     let mut replacement = std::collections::HashMap::new();
-    replacement.insert(Box::<str>::from("fresh"), a.clone());
+    replacement.insert(std::sync::Arc::<str>::from("fresh"), a.clone());
     shard.set_all_control_state_blocks(replacement);
     assert_eq!(
         shard.control_state_blocks().len(),
@@ -191,7 +191,7 @@ fn the_consolidated_outer_map_iterates_in_one_order_whatever_the_insertion_order
                 .objects
                 .entry(*kind)
                 .or_default()
-                .insert(format!("k{n}").into_boxed_str(), slot.clone());
+                .insert(std::sync::Arc::from(format!("k{n}").as_str()), slot.clone());
         }
         shard.objects.keys().copied().collect::<Vec<_>>()
     };
