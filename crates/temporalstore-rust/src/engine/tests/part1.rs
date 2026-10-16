@@ -7596,18 +7596,39 @@ fn where_a_record_is_kept_everywhere() {
     //    1  bucket_index, expanded into the 6 rows above: its own bucket_map, kind_pool and
     //       object_page_lookup, plus the three per-object maps summed across buckets
     //
-    // 41 NAMED FIELDS, AND THAT IS NOT THE STRUCT'S FIELD COUNT. This block read "ShardState has
+    // 39 NAMED FIELDS, AND THAT IS NOT THE STRUCT'S FIELD COUNT. This block read "ShardState has
     // 42 fields", and the assert under it compared 35 + 6 + 1 against the literal 42 -- an
     // identity between three constants written in one place, true whatever the struct does.
     // Measured: `ShardState` has 48 fields. `expiry_by_deadline` is a container this probe does
     // not list, and five scalars (routing_range_start, routing_range_end, routing_range_known,
     // shard_id, shard_id_known) are not among the six named above. So the claim is stated as what
-    // it is -- the extent of THIS LIST -- and the only live check is the row count below, which
-    // does fail when a listed field leaves the list.
-    const TOP_LEVEL_CONTAINERS: usize = 34;
+    // it is -- the extent of THIS LIST.
+    //
+    // WHAT THESE TWO ASSERTS CAN AND CANNOT SEE, because the sentence that stood here claimed
+    // more than either delivers. It said the count "stops matching the struct" when a field is
+    // added to `ShardState` and not listed. IT CANNOT. Both asserts compare constants and a row
+    // count written in THIS function; neither side is derived from `ShardState`, so a field added
+    // to the struct moves nothing here and both asserts keep passing.
+    //
+    // The first assert is a tautology over three literals, as the note above already says of its
+    // predecessor. The second is live, but reaches one direction only: it fails when a row LEAVES
+    // the list without the constant following. That is worth keeping -- it is what caught both
+    // numbers below being wrong -- but it is not coverage of the struct.
+    //
+    // WHAT DOES CATCH A FIELD ARRIVING: `state::repack_decoded_btrees` destructures `ShardState`
+    // with every field named and no `..`, so adding one is a COMPILE error there. That is the
+    // guard this claim belongs to, and the one to cite instead of this count.
+    //
+    // BOTH CONSTANTS BELOW WERE WRONG, AND `#[ignore]` IS WHY. No branch gate runs this test, so
+    // the assert sat UNREACHABLE rather than true or false. On the commit this correction was
+    // written against, the list held 39 rows while `TOP_LEVEL_CONTAINERS + BUCKET_INDEX_ROWS`
+    // read 40 -- already failing, invisibly -- and taking the row for the merged embedding index
+    // out of the list made it 38 against the same 40. Counted from the list as it now stands:
+    // 32 top-level rows, 6 expanded out of bucket_index.
+    const TOP_LEVEL_CONTAINERS: usize = 32;
     const NON_CONTAINER_FIELDS: usize = 6;
     const BUCKET_INDEX_ROWS: usize = 6;
-    const NAMED_FIELDS: usize = 41;
+    const NAMED_FIELDS: usize = 39;
     assert_eq!(
         TOP_LEVEL_CONTAINERS + NON_CONTAINER_FIELDS + 1,
         NAMED_FIELDS,
@@ -7617,6 +7638,20 @@ fn where_a_record_is_kept_everywhere() {
         rows.len(),
         TOP_LEVEL_CONTAINERS + BUCKET_INDEX_ROWS,
         "a listed field is missing from the rows above"
+    );
+
+    // A count alone cannot see a name listed TWICE: a copy-paste that duplicates one row and
+    // drops another keeps `rows.len()` correct while the probe reads one container twice and a
+    // second one never. The row count above cannot distinguish that from a correct list, so it
+    // is ruled out separately here rather than assumed.
+    let mut listed: Vec<&str> = rows.iter().map(|(name, _)| *name).collect();
+    let listed_len = listed.len();
+    listed.sort_unstable();
+    listed.dedup();
+    assert_eq!(
+        listed.len(),
+        listed_len,
+        "a container is listed twice in the rows above, so some other one is listed not at all"
     );
 
     println!();
