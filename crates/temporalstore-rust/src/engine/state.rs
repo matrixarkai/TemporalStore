@@ -4272,6 +4272,42 @@ impl DirtyObjectIndex {
         })
     }
 
+    /// Swap this index's OWN copy of a key for the handle the page index holds.
+    ///
+    /// WHY THIS EXISTS WHEN `insert_shared` ALREADY DOES THE RIGHT THING. It does, and it is wired:
+    /// both sites that mark an object dirty read `any_shared_object_key` first and hand the handle
+    /// in when there is one. An ORDERING defeats it. On an object's FIRST write the mark runs before
+    /// its page is filed, so the lookup has nothing to hand over, the `None` arm allocates a second
+    /// copy of the characters, and every later `insert` for that object takes `insert_inner`'s
+    /// early return and never reconsiders. The result is permanent: measured at 24.0 B/key across
+    /// 40,040 keys, with ZERO of the dirty index's allocations shared with the bucket index.
+    ///
+    /// So this is called once the page IS filed, when the handle finally exists -- the same
+    /// adopt-afterwards shape the ordered deadline map uses, for the same reason.
+    ///
+    /// POINTER IDENTITY IS THE WHOLE POINT, AND IT IS WHY A CONTENTS CHECK CANNOT WITNESS THIS.
+    /// The two keys were always equal as text; what changes is that one allocation is dropped. The
+    /// early return below is on `Arc::ptr_eq`, not on equality, because equality is already true.
+    ///
+    /// Re-keys BOTH inner maps. Leaving the old handle in `by_bucket` would keep the allocation
+    /// alive and this would free nothing while appearing to work.
+    pub(super) fn adopt_shared_key(&mut self, shared: &Arc<str>) -> bool {
+        let Some((held, routing_bucket)) = self.by_key.get_key_value(shared.as_ref()) else {
+            return false;
+        };
+        if Arc::ptr_eq(held, shared) {
+            return false;
+        }
+        let routing_bucket = *routing_bucket;
+        self.by_key.remove(shared.as_ref());
+        self.by_key.insert(Arc::clone(shared), routing_bucket);
+        if let Some(keys) = self.by_bucket.get_mut(&routing_bucket) {
+            keys.take(shared.as_ref());
+            keys.insert(Arc::clone(shared));
+        }
+        true
+    }
+
     fn insert_inner(
         &mut self,
         object_key: &str,
@@ -7819,6 +7855,103 @@ mod a_records_pages_can_live_on_the_shard_beside_the_record {
             a, b,
             "a filed layout changed the stored bytes, so this field is serialized after all and \
              the no-stamp-owed argument on it is wrong"
+        );
+    }
+}
+
+#[cfg(test)]
+mod the_dirty_index_adopts_the_page_indexs_handle_after_the_fact {
+    use super::{DirtyObjectIndex, ObjectBlockLookup};
+    use std::sync::Arc;
+
+    fn lookup_holding(key: &str) -> (ObjectBlockLookup, Arc<str>) {
+        let mut lookup = ObjectBlockLookup::default();
+        let kind: Arc<str> = Arc::from("control_state");
+        let shared: Arc<str> = Arc::from(key);
+        lookup.file(
+            &kind,
+            &shared,
+            super::BlockLookupRef { routing_bucket: 7, block_ref_key: 1 },
+        );
+        let handle = lookup
+            .any_shared_object_key(key)
+            .expect("the lookup should hold the key it was just given");
+        (lookup, handle)
+    }
+
+    /// Adoption replaces the index's own allocation with the page index's handle.
+    ///
+    /// AND THE CONTROL IS THE SAME INDEX BEFORE THE CALL, not a different one: the assertion below
+    /// must be FALSE first and TRUE after, or a `key_ptr` that always answered the handle would
+    /// satisfy it either way. Contents are equal throughout -- that is why this is a pointer test.
+    #[test]
+    fn the_index_holds_its_own_copy_until_it_adopts_and_the_handle_after() {
+        let key = "ctx:event:4071:915";
+        let (lookup, handle) = lookup_holding(key);
+
+        let mut dirty = DirtyObjectIndex::default();
+        dirty.insert(key, 7); // the first-write arm: allocates its own copy
+        assert_eq!(
+            Some(key),
+            dirty.key_ptr(key).map(|_| key),
+            "the index should hold the key at all"
+        );
+        assert_ne!(
+            dirty.key_ptr(key),
+            Some(handle.as_ptr()),
+            "CONTROL: before adopting, the index must hold a DIFFERENT allocation -- if this \
+             already matched, the assertion after the call would prove nothing"
+        );
+
+        assert!(dirty.adopt_shared_key(&handle), "adoption reported no change");
+        assert_eq!(
+            Some(handle.as_ptr()),
+            dirty.key_ptr(key),
+            "after adopting, the index must hold the page index's allocation"
+        );
+        drop(lookup);
+    }
+
+    /// Adopting twice is not a second adoption, and adopting a key it does not hold does nothing.
+    #[test]
+    fn adoption_is_idempotent_and_declines_a_key_it_does_not_hold() {
+        let key = "ctx:event:4071:915";
+        let (_lookup, handle) = lookup_holding(key);
+
+        let mut dirty = DirtyObjectIndex::default();
+        dirty.insert(key, 7);
+        assert!(dirty.adopt_shared_key(&handle));
+        assert!(
+            !dirty.adopt_shared_key(&handle),
+            "the second adoption should report no change -- it is already the same allocation"
+        );
+
+        let (_other_lookup, other) = lookup_holding("ctx:event:9999:111");
+        assert!(
+            !dirty.adopt_shared_key(&other),
+            "adopting a key this index does not hold should do nothing"
+        );
+    }
+
+    /// BOTH inner maps are re-keyed, which is what makes the old allocation actually drop.
+    ///
+    /// Re-keying only `by_key` would leave `by_bucket` holding the original handle, so the
+    /// refcount would never fall to zero and the change would free nothing while every pointer
+    /// assertion above still passed. Asserted through the bucket side's own view.
+    #[test]
+    fn the_bucket_side_is_re_keyed_too_or_nothing_is_freed() {
+        let key = "ctx:event:4071:915";
+        let (_lookup, handle) = lookup_holding(key);
+
+        let mut dirty = DirtyObjectIndex::default();
+        dirty.insert(key, 7);
+        let owned = Arc::strong_count(&handle);
+        assert!(dirty.adopt_shared_key(&handle));
+        assert_eq!(
+            owned + 2,
+            Arc::strong_count(&handle),
+            "both inner maps should now hold the handle, so the strong count should rise by two; \
+             a rise of one means only one map was re-keyed and the old allocation is still alive"
         );
     }
 }

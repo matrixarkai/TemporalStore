@@ -5035,6 +5035,11 @@ fn upsert_bucket_index_block_inner(
             &filed_object_key,
             &block_index,
         );
+    // THE HANDLE EXISTS NOW, WHICH IT DID NOT WHEN THIS OBJECT WAS MARKED DIRTY.
+    // `mark_async_dirty_object` asks the lookup for a shared key BEFORE the first page is filed,
+    // so the first write to an object always takes the allocating arm. Adopting here, once the
+    // lookup holds the handle, turns that second copy of the characters into a refcount bump.
+    shard.dirty_objects.adopt_shared_key(&filed_object_key);
     shard.buckets_pending_flag_refresh.extend(touched_buckets);
 }
 

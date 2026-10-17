@@ -603,7 +603,14 @@ fn dirty_arc_payload_bytes(shard: &crate::engine::state::ShardState) -> (u64, us
             continue;
         }
         if bucket_strings.contains(&ptr) {
+            // THE BUCKET INDEX ALREADY CHARGED THIS ALLOCATION. `total` sums this figure
+            // with the bucket index's, so the bytes belong to exactly one of them or one
+            // buffer is billed twice. Counted as shared and NOT billed. Before the dirty
+            // index adopted the page index's handles this branch never ran and the two
+            // rows WERE additive, which is what the flipped assertion below now pins.
             shared += 1;
+            seen.insert(ptr);
+            continue;
         }
         bytes += arc_str_bytes(&mut seen, key);
     }
@@ -917,11 +924,8 @@ fn what_a_live_key_costs_in_the_index_at_two_corpus_sizes() {
         // `Arc::from`, so they are distinct -- and that is asserted here rather than read off the
         // source, because the size of every saving claimed for dropping a key depends on it.
         assert_eq!(
-            0, dirty_arc_shared,
-            "{dirty_arc_shared} of the dirty index's {dirty_arc_count} key allocations are the \
-             SAME allocation the bucket index holds at {label}; the two key-payload lines above \
-             are then not additive, and a saving claimed for dropping a key from either holder is \
-             that much smaller"
+            dirty_arc_count, dirty_arc_shared,
+            "{dirty_arc_shared} of the dirty index's {dirty_arc_count} key allocations are the same allocation the bucket index holds at {label}, and EVERY ONE OF THEM SHOULD BE. This assertion read `0 == dirty_arc_shared` and pinned the opposite, because `mark_async_dirty_object` asks the lookup for a handle BEFORE the object's first page is filed, so the allocating arm always won and `insert_inner`'s early return never reconsidered. `DirtyObjectIndex::adopt_shared_key`, called once the page IS filed, closes that. A shortfall here means the adoption stopped running and a second copy of every key is back."
         );
 
         // THE ONE FIGURE HERE THAT IS ASSERTED RATHER THAN REPORTED.
