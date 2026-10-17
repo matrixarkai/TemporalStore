@@ -82,6 +82,16 @@ const _: () = assert!(std::mem::size_of::<WalResidentBlock>() == 16);
 /// asserting it, so this carries no index format stamp.
 pub(super) type ModelKey = Arc<str>;
 
+/// Why a context-event key adoption did or did not move the pair. Counted rather than reasoned
+/// about: a mechanism that is wired and still does nothing looks exactly like one that is not
+/// wired, and only the split between "no handle to take" and "took one" tells them apart.
+pub(super) static CONTEXT_EVENT_ADOPT_CALLS: std::sync::atomic::AtomicU64 =
+    std::sync::atomic::AtomicU64::new(0);
+pub(super) static CONTEXT_EVENT_ADOPT_NO_HANDLE: std::sync::atomic::AtomicU64 =
+    std::sync::atomic::AtomicU64::new(0);
+pub(super) static CONTEXT_EVENT_ADOPT_MOVED: std::sync::atomic::AtomicU64 =
+    std::sync::atomic::AtomicU64::new(0);
+
 /// The eight bytes, as a guard rather than as a sentence in the comment above: a `String` put back
 /// here would be a silent per-live-key regression, and nothing else in the suite would notice.
 const _: () = assert!(std::mem::size_of::<ModelKey>() == 16);
@@ -7548,6 +7558,54 @@ impl ShardState {
     ) {
         self.context_events_series
             .insert(ModelKey::from(object_key), OwnedTimestampedSeries::from(&series));
+    }
+
+    /// Point the event pair at the page index's OWN key allocation, once that page is filed.
+    ///
+    /// The write path cannot do this where it files: it takes its handle BEFORE the page reaches
+    /// the lookup, so `any_shared_object_key` has nothing to hand back and the allocating arm
+    /// always wins. That is the same ordering that kept the dirty index on its own copy until
+    /// adoption moved to after the page was filed, so this is the same shape -- ask once the
+    /// thing you borrow from exists -- and it is called at the END of the write arm for that
+    /// reason and not earlier.
+    ///
+    /// Both maps move together or neither does. They are keyed by one handle by construction, so
+    /// moving one and not the other would put back exactly the second allocation the pair exists
+    /// to avoid.
+    ///
+    /// Returns true when the pair moved onto the canonical allocation.
+    pub(super) fn adopt_context_event_key(&mut self, object_key: &str) -> bool {
+        CONTEXT_EVENT_ADOPT_CALLS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let Some(canonical) = self
+            .bucket_index
+            .object_block_lookup
+            .any_shared_object_key(object_key)
+        else {
+            CONTEXT_EVENT_ADOPT_NO_HANDLE.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            return false;
+        };
+        // Decide against the held keys first, so the shared borrows end before the moves below
+        // take mutable ones.
+        let series_moves = match self.context_events_series.get_key_value(object_key) {
+            Some((held, _)) => !Arc::ptr_eq(held, &canonical),
+            None => false,
+        };
+        let timeline_moves = match self.context_event_timeline.get_key_value(object_key) {
+            Some((held, _)) => !Arc::ptr_eq(held, &canonical),
+            None => false,
+        };
+        if !series_moves && !timeline_moves {
+            return false;
+        }
+        if let Some(series) = self.context_events_series.remove(object_key) {
+            self.context_events_series
+                .insert(Arc::clone(&canonical), series);
+        }
+        if let Some(index) = self.context_event_timeline.remove(object_key) {
+            self.context_event_timeline.insert(canonical, index);
+        }
+        CONTEXT_EVENT_ADOPT_MOVED.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        true
     }
 
     /// Drain the legacy top-level event map into the array map at decode.

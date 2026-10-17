@@ -3396,11 +3396,50 @@ fn how_many_times_a_context_keys_characters_exist() {
     println!("    same allocation as the series map {shared_with_series:>5}");
     println!("    same allocation as bucket index   {shared_with_bucket:>5}");
 
-    // The bucket index is NOT asserted on, and that is deliberate rather than an omission. Its own
-    // copy is filed by `object_block_lookup.file`, which runs AFTER this write, so there is no
-    // handle to borrow at the moment these two maps are filed -- the same ordering that made the
-    // dirty index allocate its own key until adoption was moved to after the page was filed. It is
-    // printed so the third copy stays visible, and a route to it is a separate change.
+    // IS THERE A THIRD COPY AT ALL? A zero on the line above is AMBIGUOUS, and the two readings
+    // need different work: the page index might hold an equal-but-distinct copy of this key, or it
+    // might not hold the key yet at all. An adoption route exists only in the first case. Asking
+    // the lookup directly is the only way to tell, so ask it.
+    let mut lookup_holds = 0usize;
+    let mut lookup_distinct = 0usize;
+    for key in shard.context_event_timeline.keys() {
+        if let Some(canonical) = shard
+            .bucket_index
+            .object_block_lookup
+            .any_shared_object_key(&**key)
+        {
+            lookup_holds += 1;
+            if canonical.as_ptr() as usize != key.as_ptr() as usize {
+                lookup_distinct += 1;
+            }
+        }
+    }
+    println!("    page index holds the key          {lookup_holds:>5}");
+    println!("    ... as a DISTINCT allocation      {lookup_distinct:>5}");
+    println!(
+        "    adoption: {} calls, {} found no handle, {} moved",
+        crate::engine::state::CONTEXT_EVENT_ADOPT_CALLS.load(std::sync::atomic::Ordering::Relaxed),
+        crate::engine::state::CONTEXT_EVENT_ADOPT_NO_HANDLE
+            .load(std::sync::atomic::Ordering::Relaxed),
+        crate::engine::state::CONTEXT_EVENT_ADOPT_MOVED.load(std::sync::atomic::Ordering::Relaxed),
+    );
+
+    // ASSERTED IN BOTH DIRECTIONS, because one direction alone is not informative. "The pair
+    // shares one allocation" was ALREADY true while a second, equal allocation sat in the page
+    // index -- so it passing says nothing about the page index. The second assertion is the one
+    // that catches a leftover copy: no key the lookup holds may be a DISTINCT allocation.
+    //
+    // The adoption counters are printed and deliberately NOT asserted: they are process-global,
+    // so another test running in the same binary can move them, and a count that another test can
+    // change cannot carry a verdict about this one.
+    assert_eq!(
+        timeline_total, shared_with_bucket,
+        "{shared_with_bucket} of the time index's {timeline_total} key allocations are the same          allocation the PAGE INDEX holds, and every one should be. The pair files its maps during          execution, when the lookup does not yet hold the key, so the adoption after the bucket          index is filed is what closes it. A shortfall means that adoption stopped running or          moved to a point before the handle exists -- which is how it failed the first time, on          400 of 400 writes."
+    );
+    assert_eq!(
+        0, lookup_distinct,
+        "{lookup_distinct} of the keys the page index holds are a DISTINCT allocation from the          one the event maps hold, and none should be. This is the assertion that a passing          pair-sharing check cannot make: the pair shared one allocation while a second equal copy          sat in the lookup, and only comparing against the lookup finds it."
+    );
     assert_eq!(
         timeline_total, shared_with_series,
         "{shared_with_series} of the time index's {timeline_total} key allocations are the same \

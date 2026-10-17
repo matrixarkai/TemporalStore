@@ -1079,6 +1079,16 @@ impl TemporalEngine {
                     refresh_pending_bucket_runtime_flags(shard);
                 }
             }
+            // ONE COPY OF A CONTEXT EVENT KEY, AND THIS IS THE FIRST POINT WHERE IT IS POSSIBLE.
+            // The event pair files its two maps during execution, while the page index does not
+            // yet hold the key -- counted, not assumed: an adoption attempted at the end of the
+            // write arm found no handle on 400 of 400 writes. Both branches above put the key in
+            // (maintenance through `sync_context_blocks_for_object`, otherwise the rebuild), so
+            // the handle exists here and nowhere earlier. Same shape as the dirty index above,
+            // and for the same reason: ask once the thing you borrow from exists.
+            for object_key in &delta_command_keys {
+                shard.adopt_context_event_key(object_key);
+            }
             // Every
             // write records a WAL entry before any block is written.
             // async_storage only changes whether the commit BLOCKS: sync -> fsync,
