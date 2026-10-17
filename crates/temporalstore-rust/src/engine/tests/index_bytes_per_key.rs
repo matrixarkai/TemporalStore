@@ -589,6 +589,42 @@ fn walk_bucket_index_strings(
 /// the second index is cheap -- but nothing hands it the `Arc<str>` the page index already holds
 /// for the same object. Whether that matters is a COUNT, not a reading: this returns the bytes, the
 /// number of distinct allocations, and how many of them the bucket index turned out to be sharing.
+/// The key characters `strings` owns that the bucket index does not already hold.
+///
+/// WHY THIS ROW HAD TO EXIST. The per-key figures come from `deep_heap_bytes`, which measures by
+/// CLONING and counting allocations -- and `Arc::clone` is a refcount bump, so a clone allocates
+/// the table and NOTHING THE KEYS POINT AT. `strings` is keyed by `ModelKey`, which is `Arc<str>`,
+/// so its key characters were never in its row and never in the total. They were not unattributed;
+/// they were absent.
+///
+/// Proved with a control rather than argued: cloning an `Arc<str>`-keyed map of 8,000 entries is
+/// ONE allocation, while a `String`-keyed map of the same size is 8,001. A bytes comparison cannot
+/// show this -- the table alone is larger than the characters -- which is how the omission survived.
+#[cfg(feature = "alloc-probe")]
+fn strings_arc_payload_bytes(shard: &crate::engine::state::ShardState) -> (u64, usize, usize) {
+    let mut bucket_strings: HashSet<usize> = HashSet::new();
+    walk_bucket_index_strings(&shard.bucket_index, &mut bucket_strings);
+
+    let mut seen: HashSet<usize> = HashSet::new();
+    let mut bytes = 0u64;
+    let mut shared = 0usize;
+    for key in shard.strings.keys() {
+        let ptr = key.as_ptr() as usize;
+        if seen.contains(&ptr) {
+            continue;
+        }
+        if bucket_strings.contains(&ptr) {
+            // The bucket index already charged this allocation; billing it again would make the
+            // rows add up to twice one buffer, which is the defect the dirty-index row had.
+            shared += 1;
+            seen.insert(ptr);
+            continue;
+        }
+        bytes += arc_str_bytes(&mut seen, key);
+    }
+    (bytes, seen.len(), shared)
+}
+
 #[cfg(feature = "alloc-probe")]
 fn dirty_arc_payload_bytes(shard: &crate::engine::state::ShardState) -> (u64, usize, usize) {
     let mut bucket_strings: HashSet<usize> = HashSet::new();
@@ -3127,5 +3163,96 @@ fn what_the_deadline_merge_would_trade() {
          it. The term this measurement treats as UNRECOVERABLE has stopped being material next to \
          the one it blocks, so the merge's arithmetic should be re-derived rather than read off \
          this probe"
+    );
+}
+
+/// Does any OTHER resident map hold its own copy of the key characters?
+///
+/// The dirty index stopped holding one (#2183) and the probe above reports its payload row at zero.
+/// But that probe walks the BUCKET INDEX's allocations and the dirty index's, and nothing else --
+/// so a third holder would be invisible to it, and its bytes would be missing from the total rather
+/// than merely unattributed. `strings` and `context_nodes` are both keyed by `ModelKey`, which is
+/// `Arc<str>`, so they are the obvious candidates.
+///
+/// THIS IS A COUNT, NOT A READING. It compares ALLOCATION IDENTITY -- the pointer -- against the
+/// set the bucket index holds, because the characters are equal either way and equality cannot
+/// witness sharing.
+///
+///   cargo test --features alloc-probe -p temporalstore-rust --lib which_resident_maps_hold_their_own_key_characters -- --ignored --nocapture --test-threads=1
+#[test]
+#[ignore = "seeds a corpus under the counting allocator; run by name"]
+#[cfg(feature = "alloc-probe")]
+fn which_resident_maps_hold_their_own_key_characters() {
+    const RECORDS: usize = 8_000;
+
+    let dir = tempfile::tempdir().unwrap();
+    let engine = probe_engine_on(dir.path(), crate::DEFAULT_END_ROUTING_BUCKET);
+    for index in 0..RECORDS {
+        let response = engine.execute(ExecuteRequest {
+            shard_id: 1,
+            command: Command::StringSet {
+                key: format!("own-{index:08}"),
+                value: vec![b'v'; 64],
+            },
+        });
+        assert!(response.status.ok, "write {index}: {:?}", response.status);
+    }
+
+    let shards = engine.shards.read().expect("engine lock poisoned");
+    let shard = shards.get(&1).expect("loaded shard");
+
+    // Every allocation the bucket index holds, by pointer.
+    let mut bucket: HashSet<usize> = HashSet::new();
+    walk_bucket_index_strings(&shard.bucket_index, &mut bucket);
+
+    // `strings` is keyed by ModelKey = Arc<str>. Are those the same allocations?
+    let mut strings_total = 0usize;
+    let mut strings_shared = 0usize;
+    let mut seen: HashSet<usize> = HashSet::new();
+    for key in shard.strings.keys() {
+        let ptr = key.as_ptr() as usize;
+        if !seen.insert(ptr) {
+            continue;
+        }
+        strings_total += 1;
+        if bucket.contains(&ptr) {
+            strings_shared += 1;
+        }
+    }
+
+    let dirty_shared = {
+        let mut shared = 0usize;
+        let mut seen: HashSet<usize> = HashSet::new();
+        for key in shard.dirty_objects.iter() {
+            let ptr = key.as_ptr() as usize;
+            if seen.insert(ptr) && bucket.contains(&ptr) {
+                shared += 1;
+            }
+        }
+        shared
+    };
+
+    println!();
+    println!("  {RECORDS} string writes on the shipped routing range");
+    println!("  bucket index holds            {} distinct key allocations", bucket.len());
+    println!("  strings                       {strings_total} distinct, {strings_shared} shared with the bucket index");
+    println!("  dirty index                   {dirty_shared} shared with the bucket index");
+    println!();
+    if strings_shared == strings_total && strings_total > 0 {
+        println!("  -> `strings` shares every key: there is ONE copy and the probe's total is right.");
+    } else {
+        let own = strings_total - strings_shared;
+        println!("  -> `strings` holds {own} allocations of its OWN, so the characters exist");
+        println!("     {} times and the per-key total above is MISSING those bytes.",
+                 1 + usize::from(own > 0));
+    }
+
+    // The dirty index's sharing is already guarded elsewhere; assert it here too so this test
+    // fails loudly if the adoption regresses, rather than quietly reporting a different subject.
+    assert!(dirty_shared > 0, "the dirty index shares nothing -- the key adoption has regressed");
+    assert_eq!(RECORDS, strings_total, "strings should hold one key per record");
+    assert_eq!(
+        strings_total, strings_shared,
+        "{strings_shared} of `strings`' {strings_total} key allocations are the same allocation          the bucket index holds, and EVERY ONE SHOULD BE. Five of its six insert sites used to          spell `key.as_str().into()`, allocating a second copy of characters the page index          already held; `ShardState::adopt_strings_key`, called once the page IS filed, closes          that. A shortfall here means the adoption stopped running and the duplicate is back --          and it will NOT show up in the per-key total, because a clone-based probe cannot see an          `Arc` payload."
     );
 }

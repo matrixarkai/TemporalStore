@@ -1995,7 +1995,12 @@ impl TemporalEngine {
                     address.clone(),
                     true,
                 );
-                shard.strings.insert(item.object_key.as_str().into(), address);
+                let stored_key = shard
+                    .bucket_index
+                    .object_block_lookup
+                    .any_shared_object_key(item.object_key.as_str())
+                    .unwrap_or_else(|| std::sync::Arc::from(item.object_key.as_str()));
+                shard.strings.insert(stored_key, address);
                 true
             }
             // The component is what the map is keyed by, encoded. Each of these mirrors the
@@ -2526,7 +2531,12 @@ impl TemporalEngine {
             {
                 let mut shards = self.shards.write().expect("engine lock poisoned");
                 if let Some(shard) = shards.get_mut(&shard_id) {
-                    shard.strings.insert(key.as_str().into(), durable.clone());
+                    let stored_key = shard
+                        .bucket_index
+                        .object_block_lookup
+                        .any_shared_object_key(key.as_str())
+                        .unwrap_or_else(|| std::sync::Arc::from(key.as_str()));
+                    shard.strings.insert(stored_key, durable.clone());
                     super::upsert_bucket_index_block(
                         shard,
                         shard_id,

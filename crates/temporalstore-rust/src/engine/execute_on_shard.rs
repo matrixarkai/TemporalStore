@@ -627,7 +627,16 @@ pub(crate) fn execute_on_shard(
                     address.clone(),
                     true,
                 );
-                shard.strings.insert(key.as_str().into(), address);
+                // ONE COPY OF THE CHARACTERS. The page was filed on the line above, so the
+                    // lookup holds a handle for this object now -- take it rather than allocating a
+                    // second copy of the same text. Allocate only when it has none, which is the
+                    // shape `stream_batch_methods` already uses for this very map.
+                    let stored_key = shard
+                        .bucket_index
+                        .object_block_lookup
+                        .any_shared_object_key(key.as_str())
+                        .unwrap_or_else(|| std::sync::Arc::from(key.as_str()));
+                    shard.strings.insert(stored_key, address);
                 mutated = true;
             }
             invalidate_cache_key(cache, CacheKey::string(shard_id, &key), async_storage);
@@ -658,7 +667,16 @@ pub(crate) fn execute_on_shard(
                     address.clone(),
                     true,
                 );
-                shard.strings.insert(key.as_str().into(), address);
+                // ONE COPY OF THE CHARACTERS. The page was filed on the line above, so the
+                    // lookup holds a handle for this object now -- take it rather than allocating a
+                    // second copy of the same text. Allocate only when it has none, which is the
+                    // shape `stream_batch_methods` already uses for this very map.
+                    let stored_key = shard
+                        .bucket_index
+                        .object_block_lookup
+                        .any_shared_object_key(key.as_str())
+                        .unwrap_or_else(|| std::sync::Arc::from(key.as_str()));
+                    shard.strings.insert(stored_key, address);
                 let expires_at = resolve_now_ms().saturating_add(ttl_ms);
                 crate::engine::set_expiry(shard, key.clone(), expires_at);
                 // This write sets a value AND a deadline. Recording only the block passes a probe
@@ -735,7 +753,16 @@ pub(crate) fn execute_on_shard(
                         address.clone(),
                         true,
                     );
-                    shard.strings.insert(key.as_str().into(), address);
+                    // ONE COPY OF THE CHARACTERS. The page was filed on the line above, so the
+                    // lookup holds a handle for this object now -- take it rather than allocating a
+                    // second copy of the same text. Allocate only when it has none, which is the
+                    // shape `stream_batch_methods` already uses for this very map.
+                    let stored_key = shard
+                        .bucket_index
+                        .object_block_lookup
+                        .any_shared_object_key(key.as_str())
+                        .unwrap_or_else(|| std::sync::Arc::from(key.as_str()));
+                    shard.strings.insert(stored_key, address);
                     if let Some(ttl_ms) = ttl_ms {
                         let expires_at = resolve_now_ms().saturating_add(ttl_ms);
                         crate::engine::set_expiry(shard, key.clone(), expires_at);
