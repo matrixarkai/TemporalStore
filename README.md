@@ -131,15 +131,17 @@ silently mis-reading a store. Pin a version for anything you care about keeping.
 
 ## Status & evidence
 
-Apache-2.0. Read the project's readiness claims from passing reports rather than from this README:
+Apache-2.0. Read the project's production-readiness claims from passing reports rather than from this README:
 
 - [Benchmarks: token & quality against full local replay](docs/benchmarks/README.md)
 - [Context management on TemporalStore](docs/context_management_on_temporalstore.md)
 - Deploy: [Windows Docker](docs/windows_docker_install.md) · [Linux](docs/linux_deploy.md) ·
   [macOS](docs/macos_deploy.md)
 
-Out of scope unless separately re-added: alternate wire-protocol compatibility, and live external
-object-store integration.
+The engine is Rust-native end to end: the temporal index, the serving paths and the page store
+are all Rust, with no foreign-language bridge anywhere in a request. Out of scope unless
+separately re-added: alternate wire-protocol compatibility (**no brpc/thrift** layer, clients
+speak RESP or HTTP), and live external object-store integration.
 
 ## Contributing
 
