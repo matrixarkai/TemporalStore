@@ -152,7 +152,7 @@ pub(super) fn model_compaction_policy_reports(
             .map(|(collection_key, entity_hash)| {
                 shard
                     .context_entities
-                    .get(&collection_key)
+                    .get(&collection_key[..])
                     .is_some_and(|series| series.contains_key(&entity_hash))
             })
             .unwrap_or(false)

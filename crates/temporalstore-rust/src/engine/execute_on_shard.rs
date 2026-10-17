@@ -3875,7 +3875,10 @@ pub(crate) fn execute_on_shard(
                         !cold_storage,
                 crate::engine::state::next_block_index_for_object(&shard.bucket_index, routing_bucket, "context_index", &object_key),
             ) {
-                        let series = shard.context_indexes.entry(object_key.clone()).or_default();
+                        let series = shard
+                            .context_indexes
+                            .entry(std::sync::Arc::from(object_key.as_str()))
+                            .or_default();
                         for (timestamp_ms, address) in addresses {
                             series.insert(timestamp_ms, address);
                             mutated = true;
@@ -4011,7 +4014,10 @@ pub(crate) fn execute_on_shard(
                 true,
                 crate::engine::state::next_block_index_for_object(&shard.bucket_index, routing_bucket, "context_index", &object_key),
             ) {
-                let series = shard.context_indexes.entry(object_key.clone()).or_default();
+                let series = shard
+                    .context_indexes
+                    .entry(std::sync::Arc::from(object_key.as_str()))
+                    .or_default();
                 for (timestamp_ms, address) in addresses {
                     series.insert(timestamp_ms, address);
                     mutated = true;
@@ -4034,7 +4040,7 @@ pub(crate) fn execute_on_shard(
             mutated |= drop_if_expired(cache, shard_id, shard, &object_key);
             let refs = shard
                 .context_indexes
-                .get(&object_key)
+                .get(&object_key[..])
                 .map(|series| {
                     series
                         .range(
@@ -4092,7 +4098,7 @@ pub(crate) fn execute_on_shard(
                     predicate.scope_hash,
                 );
                 let mut seen_for_predicate = HashMap::new();
-                if let Some(series) = shard.context_indexes.get(&object_key) {
+                if let Some(series) = shard.context_indexes.get(&object_key[..]) {
                     let mut page_cache = HashMap::new();
                     for (timeline_key, address) in series.range(
                         context_timeline_start(predicate.start_time_ms)
@@ -4172,7 +4178,10 @@ pub(crate) fn execute_on_shard(
                 true,
                 crate::engine::state::next_block_index_for_object(&shard.bucket_index, routing_bucket, "context_audit", &object_key),
             ) {
-                let series = shard.context_audits.entry(object_key.clone()).or_default();
+                let series = shard
+                    .context_audits
+                    .entry(std::sync::Arc::from(object_key.as_str()))
+                    .or_default();
                 for (timestamp_ms, address) in addresses {
                     series.insert(timestamp_ms, address);
                     mutated = true;
@@ -4192,7 +4201,7 @@ pub(crate) fn execute_on_shard(
             mutated |= drop_if_expired(cache, shard_id, shard, &object_key);
             let audits = shard
                 .context_audits
-                .get(&object_key)
+                .get(&object_key[..])
                 .map(|series| {
                     series
                         .range(
@@ -4439,7 +4448,7 @@ pub(crate) fn execute_on_shard(
                 );
                 shard
                     .context_entities
-                    .entry(collection_key)
+                    .entry(std::sync::Arc::from(&collection_key[..]))
                     .or_default()
                     .insert(entity.entity_hash, address);
                 mutated = true;
@@ -4465,7 +4474,7 @@ pub(crate) fn execute_on_shard(
             // BLOCK is still per entity, and that split is exactly what this line has to respect.
             let entity = shard
                 .context_entities
-                .get(&collection_key)
+                .get(&collection_key[..])
                 .and_then(|series| series.get(&entity_hash))
                 .and_then(|address| {
                     read_block_bytes(
@@ -4500,7 +4509,7 @@ pub(crate) fn execute_on_shard(
         } => {
             let object_key = context_entity_collection_key(tenant_hash, node_hash);
             mutated |= drop_if_expired(cache, shard_id, shard, &object_key);
-            let series = shard.context_entities.get(&object_key);
+            let series = shard.context_entities.get(&object_key[..]);
             // TAKES THE ENTITY HASH, because the block's routing bucket comes from the per-entity
             // key and this map is keyed by the node's collection key. The "every entity" arm below
             // therefore iterates `iter()` rather than `values()`: the hash it was discarding is
@@ -4585,7 +4594,7 @@ pub(crate) fn execute_on_shard(
             ) {
                     let series = shard
                         .context_children
-                        .entry(object_key.clone())
+                        .entry(std::sync::Arc::from(&object_key[..]))
                         .or_default();
                     for (timestamp_ms, address) in addresses {
                         series.insert(timestamp_ms, address);
@@ -4690,7 +4699,7 @@ pub(crate) fn execute_on_shard(
             ) {
                 let series = shard
                     .context_summaries
-                    .entry(object_key.clone())
+                    .entry(std::sync::Arc::from(&object_key[..]))
                     .or_default();
                 for (timestamp_ms, address) in addresses {
                     series.insert(timestamp_ms, address);
@@ -4841,7 +4850,7 @@ pub(crate) fn execute_on_shard(
             ) {
                 let series = shard
                     .context_compressions
-                    .entry(object_key.clone())
+                    .entry(std::sync::Arc::from(&object_key[..]))
                     .or_default();
                 for (timestamp_ms, address) in addresses {
                     series.insert(timestamp_ms, address);
@@ -4967,7 +4976,7 @@ pub(crate) fn execute_on_shard(
             ) {
                     let series = shard
                         .context_compressions
-                        .entry(object_key.clone())
+                        .entry(std::sync::Arc::from(&object_key[..]))
                         .or_default();
                     for (timestamp_ms, address) in addresses {
                         series.insert(timestamp_ms, address);
