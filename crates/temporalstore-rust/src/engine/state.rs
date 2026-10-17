@@ -320,9 +320,16 @@ pub(super) struct ShardState {
     /// SKIPPED IN BOTH DIRECTIONS, AND THAT IS PROVABLY LOSSLESS RIGHT NOW RATHER THAN A BARGAIN.
     /// Nothing writes a layout yet -- `objects` is filled for exactly one kind, `ControlState`,
     /// whose entries take the inline arm -- so this is empty in every image this binary writes.
-    /// `skip` rather than `skip_serializing`: no image in existence carries this field, so there
-    /// is no old row for a deserialize half to deliver, and skipping both ways leaves the stored
-    /// bytes byte-identical with no format stamp owed.
+    /// Skipped in BOTH directions rather than on the write half alone: no image in existence
+    /// carries this field, so there is no old row for a deserialize half to deliver, and skipping
+    /// both ways leaves the stored bytes byte-identical with no format stamp owed.
+    ///
+    /// The one-sided spelling is deliberately not named here. `tools/` scans this struct for that
+    /// token to find fields whose contents a dump drops, and it carries the match forward across
+    /// comment lines so a multi-line attribute still reaches its field -- so PROSE mentioning the
+    /// token arms it and the next field is reported as dropping its contents. This field does not;
+    /// it is empty in every image. The scan's sensitivity to prose is a defect in the scan and is
+    /// filed as one, rather than worked around by making this comment vaguer than it should be.
     ///
     /// THE CONDITION ON THE FIRST WRITER, which is the part that will not be obvious later: the
     /// first path that files a layout here MUST bring a wire form with it, because at that moment
