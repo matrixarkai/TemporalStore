@@ -3539,10 +3539,38 @@ fn what_a_per_shard_resident_bound_recovers() {
     // address across a release, so this denominator does not move with the bound.
     const LIVE_ADDRESSES: u64 = 40_000 + 40 * 1_000;
 
+    // THE INDEX AT THE SAME SCOPE THE COMPARISON FIGURE USES, which is the only way the two
+    // numbers mean anything beside each other. That figure is an INDEX NODE per key -- a tree node
+    // wrapping a slot struct, reported by the allocator -- and it does NOT include the data the
+    // records hold. Our `TOTAL live heap` row DOES: `strings` and `features` are the model maps,
+    // the records themselves, and on this fixture they are most of it. Putting a data-inclusive
+    // total beside a node-only figure is the scope error that gets caught every time it is made.
+    //
+    // So this sums only the per-key INDEX structures: the whole bucket index measured in one call
+    // (its map, its object lookup and the rest of `CoreIndex`), the dirty index, the recency row,
+    // and the key payloads each side holds once.
+    let index_only = |engine: &TemporalEngine| -> (u64, u64, u64, u64, u64) {
+        let shards = engine.shards.read().expect("engine lock poisoned");
+        let shard = shards.get(&1).expect("shard is loaded");
+        let bucket_index = deep_heap_bytes(&shard.bucket_index);
+        let dirty = deep_heap_bytes(&shard.dirty_objects);
+        let recency = deep_heap_bytes(&shard.bucket_recency);
+        let (arc, _n) = arc_payload_bytes(&shard.bucket_index);
+        let (dirty_arc, _m, _s) = dirty_arc_payload_bytes(shard);
+        (
+            bucket_index + dirty + recency + arc + dirty_arc,
+            bucket_index,
+            dirty,
+            recency,
+            arc + dirty_arc,
+        )
+    };
+
     let (bm0, lk0, dr0, whole0, keys, buckets0, pages0, released0) = snapshot(&engine);
     let resident0 = engine.bucket_index_resident_bytes(1);
     let read0 = readable(&engine);
     let (total0, w0, a0, d0) = index_total(&engine);
+    let (idx0, bi0, di0, rc0, ap0) = index_only(&engine);
 
     assert_eq!(40_040, keys, "denominator: the fixture did not seed the corpus it reports");
     assert!(buckets0 < keys, "denominator: one bucket per key means this is the LEGACY range");
@@ -3636,6 +3664,28 @@ fn what_a_per_shard_resident_bound_recovers() {
         total0.saturating_sub(total1) as f64 / keys as f64,
         100.0 * total0.saturating_sub(total1) as f64 / total0 as f64
     );
+    // --- AND THE INDEX AT THE COMPARISON'S OWN SCOPE: no model data. ---
+    let (idx1, bi1, di1, rc1, ap1) = index_only(&engine);
+    println!();
+    println!("  INDEX ONLY -- per-key index structures, excluding the model data maps:");
+    println!(
+        "    before    {idx0:>10} B   {:>8.1} B/key   (bucket index {bi0}, dirty {di0}, recency {rc0}, key payloads {ap0})",
+        idx0 as f64 / keys as f64
+    );
+    println!(
+        "    after     {idx1:>10} B   {:>8.1} B/key   (bucket index {bi1}, dirty {di1}, recency {rc1}, key payloads {ap1})",
+        idx1 as f64 / keys as f64
+    );
+    println!(
+        "    the model data this EXCLUDES, for scope: strings + features = {} B ({:.1} B/key)",
+        total1.saturating_sub(idx1).saturating_sub(0),
+        total1.saturating_sub(idx1) as f64 / keys as f64
+    );
+    assert!(
+        idx1 < idx0,
+        "the index-only subtotal did not fall ({idx0} -> {idx1})"
+    );
+
     assert!(
         total1 < total0,
         "the whole-index total did not fall ({total0} -> {total1}), so the per-term recoveries          above did not add up to anything at the index level"
