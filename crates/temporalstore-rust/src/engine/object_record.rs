@@ -739,14 +739,14 @@ pub(super) struct StoredPage {
 /// bumped on every removal, so a handle outliving its layout stops resolving instead of resolving
 /// to the wrong thing. A raw pointer cannot express this; a handle can, for the cost of bookkeeping
 /// in the half of the word that was going spare.
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub(super) struct PageLayoutStore {
     slots: Vec<LayoutSlot>,
     vacant: Vec<u32>,
     live: usize,
 }
 
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 struct LayoutSlot {
     generation: u32,
     layout: Option<PageLayout>,

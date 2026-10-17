@@ -337,7 +337,13 @@ pub(super) struct ShardState {
     /// That is the same trap `ObjectSlot`'s owned element array is held back by -- see #2165 -- and
     /// the reason it is written here is that the emptiness argument above stops being true the
     /// instant a writer lands, silently.
-    #[serde(skip)]
+    // Serialized, not skipped. Its own doc above says this field becomes the only
+    // copy of where a record's pages are and that a reload would drop them, and the
+    // scan meant to catch exactly that could not see it: the scan looks for the long
+    // form of the skip attribute, and the short form contains none of that text. The
+    // inner types already derive Serialize, so carrying it costs only a `default` so
+    // that dumps written before this still decode.
+    #[serde(default)]
     pub(super) object_page_layouts: super::object_record::PageLayoutStore,
     /// Per `(key, bucket)` distinct-count state, in whichever representation the bucket holds.
     ///
