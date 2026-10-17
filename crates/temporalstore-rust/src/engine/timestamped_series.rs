@@ -48,6 +48,7 @@
 //! the live-block walk cannot write through a series it was handed to read.
 
 use crate::block_store::ElementEntry;
+use std::borrow::Borrow as _;
 use std::collections::BTreeMap;
 
 /// One object's timestamped page addresses, whatever holds them.
@@ -174,32 +175,64 @@ impl TimestampedSeriesWrite for BTreeMap<u64, ElementEntry> {
 /// site and is kept here so that no arm can forget it.
 /// GENERIC OVER THE KEY TYPE TOO, and that was an omission rather than a flourish. The seam that made
 /// the series abstract left `String` hard-coded here, while the consolidated map these tenants
-/// migrate INTO is keyed by `ModelKey = Box<str>` -- sixteen bytes against twenty-four, chosen
-/// deliberately. A seam is only as general as the dimension it varied, and pointing it at the real
+/// migrate INTO is keyed by `ModelKey = Arc<str>` -- sixteen bytes against twenty-four, chosen
+/// deliberately, and shareable where a `Box<str>` is not: two maps can hold ONE `Arc`
+/// allocation, which is the whole reason this seam is worth pointing at the real destination. A seam is only as general as the dimension it varied, and pointing it at the real
 /// destination is what found this.
 ///
-/// `Borrow<str>` to look a key up and remove it from a `&str`; `From<&str>` to create one. Both
-/// `String` and `Box<str>` satisfy the pair.
+/// `Borrow<str>` to look a key up and remove it from a `&str`, and `Clone` for the removal path --
+/// a refcount bump for a shared handle, the copy it always was for an owned `String`. Creating a
+/// key from a `&str` is NOT among the bounds any more: that is what minted a second allocation on
+/// every call, and it now lives in `set_point_for_owned_key` for the kinds that need it.
 pub(super) fn set_point_and_collect_live<K, S>(
     map: &mut std::collections::HashMap<K, S>,
-    object_key: &str,
+    key: K,
     at: u64,
     address: Option<ElementEntry>,
 ) -> Vec<ElementEntry>
 where
-    K: std::hash::Hash + Eq + std::borrow::Borrow<str> + for<'a> From<&'a str>,
+    K: std::hash::Hash + Eq + std::borrow::Borrow<str> + Clone,
     S: TimestampedSeriesWrite,
 {
-    let series = map.entry(K::from(object_key)).or_default();
+    // THE KEY ARRIVES OWNED, AND THAT IS THE WHOLE CHANGE. This took a `&str` and minted its own
+    // key with `K::from(object_key)` on every call -- so a map whose key CAN be shared got a fresh
+    // allocation anyway, and converting the map's key type would have shared nothing. The caller
+    // knows whether it already holds a handle; this does not, and should not guess.
+    //
+    // The clone is for the removal below: `entry` consumes the key, and the empty-series path still
+    // needs the characters to remove by. For a shared handle that clone is a refcount bump; for an
+    // owned `String` it is the copy it always was.
+    let for_removal = key.clone();
+    let series = map.entry(key).or_default();
     match address {
         Some(address) => series.set(at, address),
         None => series.clear(at),
     }
     let live = series.addresses().cloned().collect::<Vec<_>>();
     if series.is_empty() {
-        map.remove(object_key);
+        map.remove(for_removal.borrow());
     }
     live
+}
+
+/// As above, for a map whose key this call has to allocate.
+///
+/// The kind dispatch in `lifecycle` walks maps keyed by `String`, which owns its characters and so
+/// cannot share one: there is nothing for a caller to hand in, and making each of its six arms
+/// spell the allocation would say the same thing six times. Kept as its own door so that a map which CAN
+/// share does not reach the allocating path by accident -- which is exactly how the generic helper
+/// came to defeat sharing in the first place.
+pub(super) fn set_point_for_owned_key<K, S>(
+    map: &mut std::collections::HashMap<K, S>,
+    object_key: &str,
+    at: u64,
+    address: Option<ElementEntry>,
+) -> Vec<ElementEntry>
+where
+    K: std::hash::Hash + Eq + std::borrow::Borrow<str> + Clone + for<'a> From<&'a str>,
+    S: TimestampedSeriesWrite,
+{
+    set_point_and_collect_live(map, K::from(object_key), at, address)
 }
 
 // =================================================================================================

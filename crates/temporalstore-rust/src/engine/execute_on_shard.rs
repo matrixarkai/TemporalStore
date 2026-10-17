@@ -3690,7 +3690,7 @@ pub(crate) fn execute_on_shard(
             let already_written = first_write_only
                 && shard
                     .context_events()
-                    .get(&object_key)
+                    .get(&*object_key)
                     .is_some_and(|series| series.contains_key(&event_id_hash));
             // Idempotence now tests the EVENT ID, which is what first_write_only actually means:
             // the same event written twice. Testing the timeline key made two different events
@@ -3718,15 +3718,24 @@ pub(crate) fn execute_on_shard(
                 crate::engine::state::next_block_index_for_object(&shard.bucket_index, routing_bucket, "context_event", &object_key),
             ) {
                     for (stored_timeline_key, address) in addresses {
+                        // ONE HANDLE, AND BOTH MAPS TAKE IT. The series map and the time index are filed
+                        // under the same object key, so they share one allocation instead of minting two.
+                        // Taken here rather than before the append on purpose: the handle this borrows has
+                        // to exist already, and the page index is what holds it.
+                        let stored_key = shard
+                            .bucket_index
+                            .object_block_lookup
+                            .any_shared_object_key(&*object_key)
+                            .unwrap_or_else(|| std::sync::Arc::from(&*object_key));
                         super::timestamped_series::set_point_and_collect_live(
                             shard.context_events_mut(),
-                            &object_key,
+                            std::sync::Arc::clone(&stored_key),
                             event_id_hash,
                             Some(address),
                         );
                         shard
                             .context_event_timeline
-                            .entry(object_key.clone())
+                            .entry(std::sync::Arc::clone(&stored_key))
                             .or_default()
                             .insert(stored_timeline_key, event_id_hash);
                         mutated = true;
@@ -3774,7 +3783,7 @@ pub(crate) fn execute_on_shard(
             let event_already_written = first_write_only
                 && shard
                     .context_events()
-                    .get(&event_object_key)
+                    .get(&*event_object_key)
                     .is_some_and(|series| series.contains_key(&event_id_hash));
             // Same key discipline as ContextWriteEvent since the event rekey: the primary map
             // is keyed by EVENT ID (idempotence tests the id), the block stays timestamp-keyed,
@@ -3808,15 +3817,24 @@ pub(crate) fn execute_on_shard(
                 crate::engine::state::next_block_index_for_object(&shard.bucket_index, routing_bucket, "context_event", &event_object_key),
             ) {
                     for (stored_timeline_key, address) in addresses {
+                        // ONE HANDLE, AND BOTH MAPS TAKE IT. The series map and the time index are filed
+                        // under the same object key, so they share one allocation instead of minting two.
+                        // Taken here rather than before the append on purpose: the handle this borrows has
+                        // to exist already, and the page index is what holds it.
+                        let stored_key = shard
+                            .bucket_index
+                            .object_block_lookup
+                            .any_shared_object_key(&*event_object_key)
+                            .unwrap_or_else(|| std::sync::Arc::from(&*event_object_key));
                         super::timestamped_series::set_point_and_collect_live(
                             shard.context_events_mut(),
-                            &event_object_key,
+                            std::sync::Arc::clone(&stored_key),
                             event_id_hash,
                             Some(address),
                         );
                         shard
                             .context_event_timeline
-                            .entry(event_object_key.clone())
+                            .entry(std::sync::Arc::clone(&stored_key))
                             .or_default()
                             .insert(stored_timeline_key, event_id_hash);
                         mutated = true;
@@ -3917,7 +3935,7 @@ pub(crate) fn execute_on_shard(
             let scan_limit = context_limit(max_scan);
             let events = shard
                 .context_events()
-                .get(&object_key)
+                .get(&*object_key)
                 .map(|_series| {
                     let mut page_cache = HashMap::new();
                     // Range the TIME INDEX, not the primary map: the primary is keyed by event
@@ -4891,7 +4909,7 @@ pub(crate) fn execute_on_shard(
             let source_limit = context_limit(max_source_events);
             let mut selected = shard
                 .context_events()
-                .get(&context_event_key(tenant_hash, node_hash))
+                .get(&*context_event_key(tenant_hash, node_hash))
                 .map(|_series| {
                     context_event_time_range(
                         shard,

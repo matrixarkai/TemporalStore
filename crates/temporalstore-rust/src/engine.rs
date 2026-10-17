@@ -3829,7 +3829,7 @@ fn capture_key_states(shard: &ShardState, keys: &[String]) -> Vec<serde_json::Va
                 "context_events",
                 shard
                     .context_events()
-                    .get(key)
+                    .get(&**key)
                     .and_then(|series| serde_json::to_value(series.to_btree()).ok()),
             );
             put("context_indexes", shard.context_indexes.get(key).and_then(|v| serde_json::to_value(v).ok()));
@@ -4226,14 +4226,14 @@ impl<V> KeyedState<V> for std::collections::HashMap<state::ModelKey, V> {
 /// with no base index `persistence.rs` folds those blobs straight through `apply_key_states` with
 /// nothing decoded -- so the stored B-tree shape arrives on a path the decode fold never sees.
 ///
-/// It does not overlap the blanket `impl<V> KeyedState<V> for HashMap<String, V>`: that one gives
+/// It does not overlap the blanket `impl<V> KeyedState<V> for HashMap<ModelKey, V>`: that one gives
 /// this map `KeyedState<OwnedTimestampedSeries>`, and this gives it `KeyedState<BTreeMap<..>>`.
 /// Different type parameter, same `Self`, so the call site names which one it means.
 impl KeyedState<std::collections::BTreeMap<u64, ElementEntry>>
-    for std::collections::HashMap<String, timestamped_series::OwnedTimestampedSeries>
+    for std::collections::HashMap<state::ModelKey, timestamped_series::OwnedTimestampedSeries>
 {
     fn insert_entry(&mut self, key: &str, value: std::collections::BTreeMap<u64, ElementEntry>) {
-        self.insert(key.to_string(), value.into());
+        self.insert(key.into(), value.into());
     }
 
     fn remove_entry(&mut self, key: &str) {

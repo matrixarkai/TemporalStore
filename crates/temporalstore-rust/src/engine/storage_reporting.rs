@@ -988,7 +988,7 @@ pub(super) fn timestamped_kv_series<'a>(
                     .map(|address| (*timeline_key, address.clone()))
             })
             .collect();
-        series.push(("context_event", key.as_str(), Cow::Owned(timeline)));
+        series.push(("context_event", &**key, Cow::Owned(timeline)));
     }
     for (key, timeline) in &shard.context_indexes {
         series.push(("context_index", key.as_str(), Cow::Borrowed(timeline)));

@@ -52,7 +52,7 @@ fn apply_timestamped_point(
     at: u64,
     address: Option<crate::block_store::ElementEntry>,
 ) -> Option<Vec<crate::block_store::ElementEntry>> {
-    use super::timestamped_series::set_point_and_collect_live as apply;
+    use super::timestamped_series::set_point_for_owned_key as apply;
     Some(match kind {
         "feature" => apply(&mut shard.features, object_key, at, address),
         "context_index" => apply(&mut shard.context_indexes, object_key, at, address),
@@ -2243,9 +2243,18 @@ impl TemporalEngine {
                     // out of the map when the series empties, which is what the two statements at
                     // the end of this block used to do by hand. It can be handed this map directly
                     // because there is one live copy: no closure, no re-mirroring on exit.
+                    // ONE HANDLE, AND BOTH MAPS TAKE IT. The series map and the time index are filed
+                    // under the same object key, so they share one allocation instead of minting two.
+                    // Taken here rather than before the append on purpose: the handle this borrows has
+                    // to exist already, and the page index is what holds it.
+                    let stored_key = shard
+                        .bucket_index
+                        .object_block_lookup
+                        .any_shared_object_key(&*item.object_key)
+                        .unwrap_or_else(|| std::sync::Arc::from(&*item.object_key));
                     let live = super::timestamped_series::set_point_and_collect_live(
                         shard.context_events_mut(),
-                        &item.object_key,
+                        std::sync::Arc::clone(&stored_key),
                         event_id_hash,
                         match item.resolved_address() {
                             Some(address) if !item.deleted => Some(address),
@@ -2254,7 +2263,7 @@ impl TemporalEngine {
                     );
                     let timeline = shard
                         .context_event_timeline
-                        .entry(item.object_key.clone())
+                        .entry(std::sync::Arc::clone(&stored_key))
                         .or_default();
                     if item.deleted {
                         timeline.remove(&timeline_key);
@@ -2262,7 +2271,7 @@ impl TemporalEngine {
                         timeline.insert(timeline_key, event_id_hash);
                     }
                     if timeline.is_empty() {
-                        shard.context_event_timeline.remove(&item.object_key);
+                        shard.context_event_timeline.remove(&*stored_key);
                     }
                     live
                 };

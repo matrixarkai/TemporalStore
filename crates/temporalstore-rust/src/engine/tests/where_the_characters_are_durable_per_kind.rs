@@ -226,7 +226,7 @@ fn shard_with_one_object_of_every_kind(suffix: &str) -> ShardState {
     timeline.insert(TIMELINE_KEY, EVENT_ID_HASH);
     shard
         .context_event_timeline
-        .insert(key_for("context_event", suffix), timeline);
+        .insert(key_for("context_event", suffix).into(), timeline);
 
     shard
 }
@@ -298,7 +298,7 @@ fn kind_map_holds(shard: &ShardState, kind: &str, suffix: &str) -> bool {
         "context_child" => shard.context_children.contains_key(&key),
         "context_summary" => shard.context_summaries.contains_key(&key),
         "context_compression" => shard.context_compressions.contains_key(&key),
-        "context_event" => shard.context_events().contains_key(&key),
+        "context_event" => shard.context_events().contains_key(key.as_str()),
         "context_index" => shard.context_indexes.contains_key(&key),
         other => panic!(
             "no census arm for model kind {other:?}. Every kind `model_kind_registry` declares \
@@ -409,30 +409,30 @@ fn a_context_event_key_survives_in_the_time_index_only() {
     let written = shard_with_one_object_of_every_kind(WRITTEN_SUFFIX);
     let key = key_for("context_event", WRITTEN_SUFFIX);
     assert!(
-        written.context_events().contains_key(&key),
+        written.context_events().contains_key(key.as_str()),
         "fixture must write the event map, or its emptiness after the trip is not a loss"
     );
     assert!(
-        written.context_event_timeline.contains_key(&key),
+        written.context_event_timeline.contains_key(key.as_str()),
         "fixture must write the timeline under the SAME key, which is the claim under test"
     );
 
     let reloaded = round_trip(&written);
 
     assert!(
-        !reloaded.context_events().contains_key(&key),
+        !reloaded.context_events().contains_key(key.as_str()),
         "context_events is skip_serializing: if it came back, this kind's verdict is not what \
          this module says it is"
     );
     assert!(
-        reloaded.context_event_timeline.contains_key(&key),
+        reloaded.context_event_timeline.contains_key(key.as_str()),
         "the time index is the durable home of a context_event object key's characters, and it \
          did not carry them"
     );
     assert!(
         !reloaded
             .context_event_timeline
-            .contains_key(&key_for("context_event", NEVER_WRITTEN_SUFFIX)),
+            .contains_key(key_for("context_event", NEVER_WRITTEN_SUFFIX).as_str()),
         "negative control: the time index named a key that was never written"
     );
 }
@@ -452,20 +452,20 @@ fn an_event_object_with_no_timeline_entry_is_a_key_the_time_index_cannot_name() 
     let mut written = shard_with_one_object_of_every_kind(WRITTEN_SUFFIX);
     let key = key_for("context_event", WRITTEN_SUFFIX);
     // The event stays; its timeline entry goes.
-    written.context_event_timeline.remove(&key);
+    written.context_event_timeline.remove(key.as_str());
     assert!(
-        written.context_events().contains_key(&key),
+        written.context_events().contains_key(key.as_str()),
         "the event must still be there, or this arm is about an object that does not exist"
     );
 
     let reloaded = round_trip(&written);
 
     assert!(
-        !reloaded.context_events().contains_key(&key),
+        !reloaded.context_events().contains_key(key.as_str()),
         "the event map is still not durable"
     );
     assert!(
-        !reloaded.context_event_timeline.contains_key(&key),
+        !reloaded.context_event_timeline.contains_key(key.as_str()),
         "this is the hole: an event object whose timeline entry is absent has NO durable home for \
          its characters, and the rescue in the arm above does not cover it"
     );

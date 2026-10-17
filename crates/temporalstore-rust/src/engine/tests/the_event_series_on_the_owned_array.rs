@@ -182,7 +182,7 @@ fn the_fold_drains_the_compatibility_field_and_no_write_refills_it() {
     // array map; this drives the three shapes of write and re-checks the field after each.
     super::super::timestamped_series::set_point_and_collect_live(
         shard.context_events_mut(),
-        "ctx:event:t:c",
+        std::sync::Arc::from("ctx:event:t:c"),
         5,
         Some(address(5)),
     );

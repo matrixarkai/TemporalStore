@@ -6714,8 +6714,8 @@ pub(super) fn reconcile_secondary_views_from_bucket_index(
     let mut control_state = HashMap::<String, BTreeMap<u64, i64>>::new();
     let mut control_state_blocks = HashMap::new();
     let mut context_events =
-        HashMap::<String, super::timestamped_series::OwnedTimestampedSeries>::new();
-    let mut context_event_timeline = HashMap::<String, BTreeMap<u64, u64>>::new();
+        HashMap::<std::sync::Arc<str>, super::timestamped_series::OwnedTimestampedSeries>::new();
+    let mut context_event_timeline = HashMap::<std::sync::Arc<str>, BTreeMap<u64, u64>>::new();
     let mut context_indexes = HashMap::<String, BTreeMap<u64, ElementEntry>>::new();
     let mut context_audits = HashMap::<String, BTreeMap<u64, ElementEntry>>::new();
     let mut context_entities = HashMap::<String, BTreeMap<u64, ElementEntry>>::new();
@@ -6833,7 +6833,7 @@ pub(super) fn reconcile_secondary_views_from_bucket_index(
                     &mut warm_batch,
                     &mut context_events,
                     &mut context_event_timeline,
-                    entry.object_key.to_string(),
+                    entry.object_key.clone(),
                     entry.address,
                     Some(block_routing_bucket(
                         &entry.object_key,
@@ -7329,13 +7329,12 @@ pub(super) fn insert_context_event_views<K, S>(
     // `TimestampedSeriesWrite`, so the bound costs this caller nothing and the next tenant
     // arrives without editing this signature.
     events: &mut HashMap<K, S>,
-    timeline: &mut HashMap<String, BTreeMap<u64, u64>>,
-    object_key: String,
+    timeline: &mut HashMap<K, BTreeMap<u64, u64>>,
+    object_key: K,
     address: ElementEntry,
     routing_bucket: Option<u32>,
-)
-where
-    K: std::hash::Hash + Eq + std::borrow::Borrow<str> + for<'a> From<&'a str>,
+) where
+    K: std::hash::Hash + Eq + std::borrow::Borrow<str> + Clone,
     S: super::timestamped_series::TimestampedSeriesWrite,
 {
     // Through the same seam, counted the same way, and for the sharper reason: `context_events`
@@ -7366,7 +7365,11 @@ where
     if points.is_empty() {
         return;
     }
-    let series = events.entry(K::from(object_key.as_str())).or_default();
+    // THE KEY ARRIVES ONCE AND IS USED TWICE. This minted a second key with
+    // `K::from` beside the owned one moved into the time index, so the
+    // characters of every rebuilt event key existed twice. The caller hands in
+    // the handle the page entry already holds; the clone is a refcount bump.
+    let series = events.entry(object_key.clone()).or_default();
     let index = timeline.entry(object_key).or_default();
     for point in points {
         let Some(event) = super::context::context_from_bytes::<ContextEvent>(&point.value) else {

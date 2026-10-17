@@ -499,8 +499,11 @@ impl Occupancy {
 #[cfg(feature = "alloc-probe")]
 /// GENERIC OVER THE SERIES, so a map that changed representation can still be priced beside the
 /// ones that have not. It reads a length and nothing else, which is what the series trait names.
-fn series_occupancy<S: crate::engine::timestamped_series::TimestampedSeries>(
-    map: &std::collections::HashMap<String, S>,
+// GENERIC OVER THE KEY, because the maps it reports on no longer agree on one key type: the
+// event series map is keyed by `ModelKey` and the rest by `String`. The body only walks
+// values, so the key needs no bound at all.
+fn series_occupancy<K, S: crate::engine::timestamped_series::TimestampedSeries>(
+    map: &std::collections::HashMap<K, S>,
 ) -> Occupancy {
     let mut occ = Occupancy::default();
     for series in map.values() {
@@ -3254,5 +3257,161 @@ fn which_resident_maps_hold_their_own_key_characters() {
     assert_eq!(
         strings_total, strings_shared,
         "{strings_shared} of `strings`' {strings_total} key allocations are the same allocation          the bucket index holds, and EVERY ONE SHOULD BE. Five of its six insert sites used to          spell `key.as_str().into()`, allocating a second copy of characters the page index          already held; `ShardState::adopt_strings_key`, called once the page IS filed, closes          that. A shortfall here means the adoption stopped running and the duplicate is back --          and it will NOT show up in the per-key total, because a clone-based probe cannot see an          `Arc` payload."
+    );
+}
+
+/// How many times a CONTEXT key's characters exist, across the maps a context write touches.
+///
+/// The one-copy work so far has been about the maps keyed by `ModelKey`/`Arc<str>`, which CAN
+/// share an allocation. The rest are keyed by `String`, which always owns its characters --
+/// so a key landing in several of them has one copy per map, by construction, and no amount of
+/// adoption can fix that without changing the key type.
+///
+/// This counts the copies rather than assuming them. For a string workload only one of those maps
+/// is populated, which is why the per-key figures elsewhere do not show this at all.
+///
+///   cargo test --features alloc-probe -p temporalstore-rust --lib how_many_times_a_context_keys_characters_exist -- --ignored --nocapture --test-threads=1
+#[test]
+#[ignore = "seeds context events; run by name"]
+#[cfg(feature = "alloc-probe")]
+fn how_many_times_a_context_keys_characters_exist() {
+    const EVENTS: u64 = 400;
+
+    let dir = tempfile::tempdir().unwrap();
+    let engine = probe_engine_on(dir.path(), crate::DEFAULT_END_ROUTING_BUCKET);
+    for index in 0..EVENTS {
+        let response = engine.execute(ExecuteRequest {
+            shard_id: 1,
+            command: Command::ContextWriteEvent {
+                tenant_hash: 7,
+                node_hash: 1_000 + index,
+                event: Box::new(crate::types::ContextEvent {
+                    event_id_hash: 0xDEAD_0000_0000_0000 | index,
+                    event_time_ms: 1_787_270_070_000 + index,
+                    ingestion_time_ms: 1_787_270_070_000 + index,
+                    kind: 9,
+                    event_type: 2,
+                    actor_hash: 0,
+                    status: 0,
+                    valid_until_ms: 0,
+                    confidence: 0.9,
+                    importance: 0.7,
+                    text: format!("event payload {index}"),
+                    source_ref: String::new(),
+                    related_node_hashes: Vec::new(),
+                    compact_attrs: Vec::new(),
+                    vector: Vec::new(),
+                }),
+                first_write_only: false,
+                cold_storage: false,
+            },
+        });
+        assert!(response.status.ok, "event {index}: {:?}", response.status);
+    }
+
+    let shards = engine.shards.read().expect("engine lock poisoned");
+    let shard = shards.get(&1).expect("loaded shard");
+
+    // Every String-keyed map a context write can touch, by name, with the key TEXTS it holds.
+    let holders: Vec<(&str, Vec<&str>)> = vec![
+        ("context_events (Arc-keyed)", shard.context_events().keys().map(|k| &**k).collect()),
+        ("context_event_timeline (Arc-keyed)", shard.context_event_timeline.keys().map(|k| &**k).collect()),
+        ("context_indexes", shard.context_indexes.keys().map(|k| k.as_str()).collect()),
+        ("context_audits", shard.context_audits.keys().map(|k| k.as_str()).collect()),
+        ("context_dirty_index", shard.context_dirty_index.keys().map(|k| k.as_str()).collect()),
+        ("context_entities", shard.context_entities.keys().map(|k| k.as_str()).collect()),
+        ("context_children", shard.context_children.keys().map(|k| k.as_str()).collect()),
+        ("context_summaries", shard.context_summaries.keys().map(|k| k.as_str()).collect()),
+        ("context_compressions", shard.context_compressions.keys().map(|k| k.as_str()).collect()),
+        ("context_compression_watermark", shard.context_compression_watermark.keys().map(|k| k.as_str()).collect()),
+        ("context_nodes (Arc-keyed)", shard.context_nodes.keys().map(|k| &**k).collect()),
+    ];
+
+    let mut copies: std::collections::HashMap<&str, usize> = std::collections::HashMap::new();
+    let mut characters = 0usize;
+    println!();
+    println!("  {EVENTS} context events written");
+    println!("  map                                keys   chars held");
+    for (name, keys) in &holders {
+        let chars: usize = keys.iter().map(|k| k.len()).sum();
+        if !keys.is_empty() {
+            characters += chars;
+        }
+        println!("  {name:34} {:>5}   {chars:>9}", keys.len());
+        for k in keys {
+            *copies.entry(k).or_insert(0) += 1;
+        }
+    }
+    let distinct = copies.len();
+    let total_entries: usize = holders.iter().map(|(_, k)| k.len()).sum();
+    let mut by_count: std::collections::BTreeMap<usize, usize> = std::collections::BTreeMap::new();
+    for n in copies.values() {
+        *by_count.entry(*n).or_insert(0) += 1;
+    }
+    println!();
+    println!("  distinct key texts: {distinct}; total map entries: {total_entries}");
+    for (n, how_many) in &by_count {
+        println!("    {how_many} key texts exist in {n} map(s)");
+    }
+    println!("  characters held across all of them: {characters} B");
+    if distinct > 0 {
+        println!(
+            "  so {:.2} copies per distinct key, {:.1} B/key of characters",
+            total_entries as f64 / distinct as f64,
+            characters as f64 / distinct as f64
+        );
+    }
+    println!();
+    println!("  The rows marked Arc-keyed CAN hold one allocation between them, which is what");
+    println!("  the count below measures. A String-keyed row cannot: each of its entries owns");
+    println!("  its own characters no matter what any other map holds.");
+
+    // AND NOW BY ALLOCATION, WHICH IS A DIFFERENT QUESTION. The count above is a count of map
+    // ENTRIES per distinct key TEXT, so it cannot tell two maps holding ONE allocation from two
+    // maps holding two equal copies -- and that difference is the entire point of keying these two
+    // by `ModelKey`. Contents cannot tell them apart; pointers can.
+    let mut bucket: HashSet<usize> = HashSet::new();
+    walk_bucket_index_strings(&shard.bucket_index, &mut bucket);
+    let event_series_allocations: HashSet<usize> = shard
+        .context_events()
+        .keys()
+        .map(|k| k.as_ptr() as usize)
+        .collect();
+    let mut timeline_total = 0usize;
+    let mut shared_with_series = 0usize;
+    let mut shared_with_bucket = 0usize;
+    for key in shard.context_event_timeline.keys() {
+        let ptr = key.as_ptr() as usize;
+        timeline_total += 1;
+        if event_series_allocations.contains(&ptr) {
+            shared_with_series += 1;
+        }
+        if bucket.contains(&ptr) {
+            shared_with_bucket += 1;
+        }
+    }
+    println!();
+    println!("  BY ALLOCATION, not by text:");
+    println!("    time index keys                   {timeline_total:>5}");
+    println!("    same allocation as the series map {shared_with_series:>5}");
+    println!("    same allocation as bucket index   {shared_with_bucket:>5}");
+
+    // The bucket index is NOT asserted on, and that is deliberate rather than an omission. Its own
+    // copy is filed by `object_block_lookup.file`, which runs AFTER this write, so there is no
+    // handle to borrow at the moment these two maps are filed -- the same ordering that made the
+    // dirty index allocate its own key until adoption was moved to after the page was filed. It is
+    // printed so the third copy stays visible, and a route to it is a separate change.
+    assert_eq!(
+        timeline_total, shared_with_series,
+        "{shared_with_series} of the time index's {timeline_total} key allocations are the same \
+         allocation the event series map holds, and EVERY ONE SHOULD BE: both maps are filed at one \
+         site from one handle. A shortfall means some caller went back to minting its own key, which \
+         puts a second copy of every event key's characters back -- and it will NOT show up in the \
+         per-key total, because a clone-based probe cannot see an `Arc` payload."
+    );
+
+    assert!(
+        distinct > 0,
+        "no context keys landed -- the write path did not populate these maps"
     );
 }

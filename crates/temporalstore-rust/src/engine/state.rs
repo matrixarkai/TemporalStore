@@ -415,7 +415,7 @@ pub(super) struct ShardState {
     /// the other to empty -- so there is exactly one live copy of this data at every moment after
     /// the decode returns.
     #[serde(skip)]
-    context_events_series: HashMap<String, OwnedTimestampedSeries>,
+    context_events_series: HashMap<ModelKey, OwnedTimestampedSeries>,
     /// THE COMPATIBILITY KEY, AND ITS OWN REMOVAL CONDITION.
     ///
     /// The event series also live in `context_events_series` above, which is authoritative. This
@@ -472,7 +472,7 @@ pub(super) struct ShardState {
     // costs no extra on-disk state; it is serialized with the index like the primary because
     // ShardState is snapshotted whole.
     #[serde(default)]
-    pub(super) context_event_timeline: HashMap<String, BTreeMap<u64, u64>>,
+    pub(super) context_event_timeline: HashMap<ModelKey, BTreeMap<u64, u64>>,
     #[serde(default, skip_serializing)]
     pub(super) context_indexes: HashMap<String, BTreeMap<u64, ElementEntry>>,
     #[serde(default)]
@@ -7153,7 +7153,7 @@ fn repack_btree_set<T: Ord>(set: &mut BTreeSet<T>) {
 }
 
 /// Every nested series of one model map.
-fn repack_nested<K: Ord, V>(map: &mut HashMap<String, BTreeMap<K, V>>) {
+fn repack_nested<MK, K: Ord, V>(map: &mut HashMap<MK, BTreeMap<K, V>>) {
     for series in map.values_mut() {
         repack_btree_map(series);
     }
@@ -7518,7 +7518,7 @@ impl ShardState {
     /// compile at all because nothing can be assigned through a method call. That is what caught a
     /// write going through the read accessor in this very change. A name grep does not find a
     /// four-line delegating helper; the compiler does.
-    pub(super) fn context_events(&self) -> &HashMap<String, OwnedTimestampedSeries> {
+    pub(super) fn context_events(&self) -> &HashMap<ModelKey, OwnedTimestampedSeries> {
         &self.context_events_series
     }
 
@@ -7532,7 +7532,7 @@ impl ShardState {
     /// helpers over `TimestampedSeriesWrite` can be handed this map directly.
     pub(super) fn context_events_mut(
         &mut self,
-    ) -> &mut HashMap<String, OwnedTimestampedSeries> {
+    ) -> &mut HashMap<ModelKey, OwnedTimestampedSeries> {
         &mut self.context_events_series
     }
 
@@ -7547,7 +7547,7 @@ impl ShardState {
         series: BTreeMap<u64, ElementEntry>,
     ) {
         self.context_events_series
-            .insert(object_key.to_string(), OwnedTimestampedSeries::from(&series));
+            .insert(ModelKey::from(object_key), OwnedTimestampedSeries::from(&series));
     }
 
     /// Drain the legacy top-level event map into the array map at decode.
@@ -7594,12 +7594,12 @@ impl ShardState {
         let legacy = std::mem::take(&mut self.context_events_compat);
         let mut kept_live = 0u64;
         for (key, points) in legacy {
-            if self.context_events_series.contains_key(&key) {
+            if self.context_events_series.contains_key(&*key) {
                 kept_live += 1;
                 continue;
             }
             self.context_events_series
-                .insert(key, OwnedTimestampedSeries::from(points));
+                .insert(ModelKey::from(&*key), OwnedTimestampedSeries::from(points));
         }
         if folding_over_live && kept_live > 0 {
             LEGACY_CONTEXT_EVENT_FOLD_OVER_LIVE_MAP
