@@ -1,6 +1,6 @@
 # TemporalStore
 
-**A distributed, time-aware, Rust-native serving engine.**
+**A distributed, time-aware serving engine, written in Rust.**
 One durable store for the read paths that sit in front of a model or a request: ranked context,
 long sequences, aggregated features, frequency caps, and control state.
 Apache-2.0 · self-hostable · no vector database · [temporalstore.ai](https://temporalstore.ai)
@@ -96,7 +96,7 @@ Storage backend (auto) ─ object store → shared filesystem → local + Raft
 Five Apache-2.0 repositories, all public and open to anyone in the world to use, fork and
 contribute to:
 [TemporalStore](https://github.com/matrixarkai/TemporalStore) (engine) ·
-[MatrixCache](https://github.com/matrixarkai/MatrixCache) ·
+[MatrixCache](https://github.com/matrixarkai/MatrixCache) (cache) ·
 [MatrixRaft](https://github.com/matrixarkai/MatrixRaft) (consensus) ·
 [MatrixObject](https://github.com/matrixarkai/MatrixObject) (object store) ·
 [matrixark](https://github.com/matrixarkai/matrixark) (Python tooling).
@@ -133,22 +133,24 @@ silently mis-reading a store. Pin a version for anything you care about keeping.
 
 ## Status & evidence
 
-Apache-2.0. The project's production-readiness claims should be read from passing readiness
-reports, not from this README:
+Apache-2.0. Read the project's production-readiness claims from passing reports rather than from this README:
 
 - [Benchmarks: token & quality against full local replay](docs/benchmarks/README.md)
 - [Context management on TemporalStore](docs/context_management_on_temporalstore.md)
 - Deploy: [Windows Docker](docs/windows_docker_install.md) · [Linux](docs/linux_deploy.md) ·
   [macOS](docs/macos_deploy.md)
 
-Out of scope unless separately re-added: alternate wire-protocol compatibility (no brpc/thrift
-wire-compatible clone) and live external object-store (S3) integration.
+The engine is Rust-native end to end: the temporal index, the serving paths and the page store
+are all Rust, with no foreign-language bridge anywhere in a request. Out of scope unless
+separately re-added: alternate wire-protocol compatibility (**no brpc/thrift** layer, clients
+speak RESP or HTTP), and live external object-store integration.
 
 ## Contributing
 
-See [CONTRIBUTING.md](docs/CONTRIBUTING.md) and [SECURITY.md](docs/SECURITY.md). Contributions target `main`, which is this repository's default branch and the branch every change merges to; the older `rust-main` name is retired and no branch by that name exists here, so a pull request opened against it has nowhere to land. New product-behavior tests
-should reference a shared corpus case with `shared-corpus: <case_id>`; Rust-only implementation
-tests should be marked `rust-internal: <reason>`.
+See [CONTRIBUTING.md](docs/CONTRIBUTING.md) and [SECURITY.md](docs/SECURITY.md). Contributions
+target `main`, this repository's default branch and the branch every change merges to. The
+older `rust-main` name is retired and no branch by that name exists here, so a pull request
+opened against it has nowhere to land.
 
 ## License
 
