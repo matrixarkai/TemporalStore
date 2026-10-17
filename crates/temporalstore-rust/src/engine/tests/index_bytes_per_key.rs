@@ -3454,3 +3454,170 @@ fn how_many_times_a_context_keys_characters_exist() {
         "no context keys landed -- the write path did not populate these maps"
     );
 }
+
+/// WHAT A PER-SHARD RESIDENT BOUND RECOVERS, AND THAT ITS SIGNAL IS THIS SHARD'S OWN BYTES.
+///
+/// `what_a_dump_then_release_recovers_on_the_shipped_routing_range` proves a dump-then-release
+/// recovers the bulk of the derived index. It drives that sequence by hand, with
+/// `memory_pressure_threshold = 0`, which is not a trigger an operator can deploy: the gate it
+/// passes through sums four PROCESS-WIDE cache terms with one per-shard index term, so a constant
+/// threshold fires on an idle shard whenever a busy one shares the process. That is measured in
+/// `the_evict_gates_cache_terms_are_process_wide_not_shard` and is why `enable_evict` defaults off.
+///
+/// `apply_index_resident_bound` narrows the signal to `bucket_index_resident_bytes`, which is
+/// per-shard and is the only term a release can reduce. This measures what that bound recovers AND
+/// pins that it read the narrow signal -- `pressure_before` must equal this shard's own index
+/// bytes, not a process-wide sum.
+///
+/// THE GUARD IS BIDIRECTIONAL, because "it fired" alone is satisfied by a gate that always fires:
+/// a bound of 0 must report disabled, a bound ABOVE this shard's bytes must refuse, and only a
+/// bound BELOW them may release anything.
+///
+/// rust-internal: measures this crate's own resident structures, no product behaviour
+///
+///   cargo test --features alloc-probe -p temporalstore-rust --lib what_a_per_shard_resident_bound_recovers -- --ignored --nocapture
+#[test]
+#[cfg(feature = "alloc-probe")]
+#[ignore = "seeds 40,000 records then dumps and releases under the counting allocator; run by name"]
+fn what_a_per_shard_resident_bound_recovers() {
+    const SHIPPED_END: u32 = 1023;
+
+    let dir = tempfile::tempdir().expect("tempdir");
+    let engine = probe_engine_on(dir.path(), SHIPPED_END);
+    probe_seed(&engine, 40_000, 40, 1_000, 0);
+
+    let probe_keys: Vec<String> = (0..16).map(|i| format!("s{i}")).collect();
+    let readable = |engine: &TemporalEngine| -> usize {
+        probe_keys
+            .iter()
+            .filter(|key| {
+                matches!(
+                    engine
+                        .execute(ExecuteRequest {
+                            shard_id: 1,
+                            command: Command::StringGet { key: (*key).clone() },
+                        })
+                        .response,
+                    crate::types::CommandResponse::Bytes { value: Some(_) }
+                )
+            })
+            .count()
+    };
+    let snapshot = |engine: &TemporalEngine| -> (u64, u64, u64, u64, usize, usize, usize, usize) {
+        let shards = engine.shards.read().expect("engine lock poisoned");
+        let shard = shards.get(&1).expect("shard is loaded");
+        (
+            deep_heap_bytes(&shard.bucket_index.bucket_map),
+            deep_heap_bytes(&shard.bucket_index.object_block_lookup),
+            deep_heap_bytes(&shard.dirty_objects),
+            deep_heap_bytes(shard),
+            shard.strings.len() + shard.features.len(),
+            shard.bucket_index.bucket_map.values().count(),
+            shard
+                .bucket_index
+                .bucket_map
+                .values()
+                .map(|b| b.block_index.len())
+                .sum(),
+            shard.bucket_index.released_buckets.len(),
+        )
+    };
+
+    let (bm0, lk0, dr0, whole0, keys, buckets0, pages0, released0) = snapshot(&engine);
+    let resident0 = engine.bucket_index_resident_bytes(1);
+    let read0 = readable(&engine);
+
+    assert_eq!(40_040, keys, "denominator: the fixture did not seed the corpus it reports");
+    assert!(buckets0 < keys, "denominator: one bucket per key means this is the LEGACY range");
+    assert_eq!(0, released0, "denominator: the fixture starts with nothing released");
+    assert_eq!(probe_keys.len(), read0, "the fixture cannot read its own keys BEFORE the sequence");
+    assert!(resident0 > 0, "denominator: a zero resident figure cannot be bounded");
+
+    println!("=== before: {keys} keys, {buckets0} buckets, {pages0} pages ===");
+    println!("  this shard's own index resident bytes: {resident0}");
+
+    // --- CONTROL 1: a bound of zero is disabled and walks nothing. ---
+    let disabled = engine.apply_index_resident_bound(1, 0, 0);
+    assert_eq!(
+        "index_resident_bound_disabled", disabled.skipped_reason,
+        "a bound of 0 must mean disabled, so this is free to call on a deployment that set none"
+    );
+    assert_eq!(0, disabled.bucket_index_buckets_released, "a disabled bound released something");
+
+    // --- CONTROL 2: a bound ABOVE this shard's own bytes must refuse. ---
+    //
+    // This is the assertion that separates a narrow gate from the wide one. The wide gate handed
+    // this same number would OPEN, because its pressure is dominated by cache terms a release
+    // cannot reduce; the narrow gate sees only the index and declines.
+    let above = resident0.saturating_mul(2);
+    let refused = engine.apply_index_resident_bound(1, above, 0);
+    assert_eq!(
+        "index_resident_below_bound", refused.skipped_reason,
+        "a bound of {above} B is above this shard's {resident0} B of index and must refuse"
+    );
+    assert_eq!(0, refused.bucket_index_buckets_released, "a refused bound released something");
+    assert_eq!(
+        resident0, refused.pressure_before,
+        "the gate reported {} B of pressure where this shard's index is {resident0} B -- it read a \
+         signal wider than the shard, which is the contamination this entry point exists to avoid",
+        refused.pressure_before
+    );
+
+    // --- AND THE BOUND THAT FIRES: below this shard's own bytes. ---
+    let bound = resident0 / 2;
+    let report = engine.apply_index_resident_bound(1, bound, 0);
+    assert!(
+        report.skipped_reason.is_empty(),
+        "a bound of {bound} B under {resident0} B of index should have opened, not skipped on {:?}",
+        report.skipped_reason
+    );
+    assert_eq!(
+        resident0, report.pressure_before,
+        "the firing gate read {} B where this shard's index is {resident0} B",
+        report.pressure_before
+    );
+
+    let (bm1, lk1, dr1, whole1, keys1, buckets1, pages1, released1) = snapshot(&engine);
+    let resident1 = engine.bucket_index_resident_bytes(1);
+    let read1 = readable(&engine);
+
+    println!("=== after the bound fired: {buckets1} buckets, {pages1} pages, {released1} released ===");
+    let row = |name: &str, before: u64, after: u64| {
+        println!(
+            "  {name:<28} {before:>10} -> {after:>10} B   recovered {:>10} B  {:>8.1} B/key  {:>6.1}%",
+            before.saturating_sub(after),
+            before.saturating_sub(after) as f64 / keys as f64,
+            if before == 0 { 0.0 } else { 100.0 * before.saturating_sub(after) as f64 / before as f64 }
+        );
+    };
+    row("bucket_map", bm0, bm1);
+    row("object_block_lookup", lk0, lk1);
+    row("dirty_objects", dr0, dr1);
+    row("whole ShardState", whole0, whole1);
+    println!("  modelled resident {resident0} -> {resident1} B, bound was {bound} B");
+    println!("  pages {pages0} -> {pages1}, buckets {buckets0} -> {buckets1}, keys {keys} -> {keys1}");
+    println!("  reads: {read0} of {} before, {read1} after", probe_keys.len());
+
+    // --- CORRECTNESS, NOT NEGOTIABLE. ---
+    assert_eq!(
+        probe_keys.len(),
+        read1,
+        "the bound made {} of {} keys unreadable, which makes every figure above worthless",
+        probe_keys.len() - read1,
+        probe_keys.len()
+    );
+    assert_eq!(keys, keys1, "the key count moved, which is data loss rather than reclaim");
+
+    // --- NON-VACUITY: every assertion above is satisfied by a bound that recovered nothing. ---
+    assert!(
+        released1 > 0,
+        "the bound opened and released nothing, so this measured the bare-release case"
+    );
+    assert!(
+        resident1 < resident0,
+        "the bound opened, released {released1} buckets, and this shard's own resident figure did \
+         not fall ({resident0} -> {resident1}) -- so the quantity the bound is written against is \
+         not the quantity the release reduces, which would make the bound unable to ever satisfy \
+         itself"
+    );
+}

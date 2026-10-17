@@ -1880,6 +1880,70 @@ impl TemporalEngine {
             .collect()
     }
 
+    /// Dump and release a shard's resident page lists when THAT SHARD'S OWN index exceeds a bound.
+    ///
+    /// # WHY THIS EXISTS BESIDE `apply_storage_eviction`
+    ///
+    /// That gate cannot express a per-shard bound, and the reason is measured rather than
+    /// suspected. Its signal is four PROCESS-WIDE cache terms -- memory, disk, writeback bytes and
+    /// writeback depth -- plus one per-shard index term. `the_evict_gates_cache_terms_are_process_wide_not_shard`
+    /// runs two shards and measures a TEN-KEY shard whose gate reads 2,685,344 B of which 99.95% is
+    /// an eight-thousand-key shard's cache, and the cache term runs about 4.5x the index term at
+    /// every size tried. So a constant threshold low enough to fire on a fat index also fires on an
+    /// idle shard sharing the process, and one high enough to be safe has its trigger set by other
+    /// shards. That is why `enable_evict` defaults off, and
+    /// `enable_evict_stays_off_because_its_gate_reads_other_shards_memory` says the remaining
+    /// decision is NARROWING THE SIGNAL rather than picking a number.
+    ///
+    /// This is that narrowing. It reads `bucket_index_resident_bytes` and nothing else: the term is
+    /// per-shard, and it is also the ONLY term a release can actually reduce, so a bound on it is a
+    /// bound on a quantity this call can do something about.
+    ///
+    /// # IT DOES NOT DECIDE TWICE
+    ///
+    /// Once the per-shard bound is exceeded the handoff passes `memory_pressure_threshold = 0`, so
+    /// the process-wide gate cannot refuse what this shard's own bytes already accepted. Passing the
+    /// bound through would reinstate exactly the contamination this exists to avoid.
+    ///
+    /// A limit of 0 means DISABLED and returns without walking anything, so this is free to call on
+    /// a deployment that has not set a bound.
+    pub fn apply_index_resident_bound(
+        &self,
+        shard_id: ShardId,
+        index_resident_limit_bytes: u64,
+        batch_limit: usize,
+    ) -> StorageEvictionReport {
+        if index_resident_limit_bytes == 0 {
+            return StorageEvictionReport {
+                shard_id,
+                mode: "index_resident_bound".to_string(),
+                memory_pressure_threshold: index_resident_limit_bytes,
+                batch_limit,
+                skipped_reason: "index_resident_bound_disabled".to_string(),
+                ..StorageEvictionReport::default()
+            };
+        }
+        let resident_before = self.bucket_index_resident_bytes(shard_id);
+        if resident_before < index_resident_limit_bytes {
+            return StorageEvictionReport {
+                shard_id,
+                mode: "index_resident_bound".to_string(),
+                pressure_before: resident_before,
+                pressure_after: resident_before,
+                memory_pressure_threshold: index_resident_limit_bytes,
+                batch_limit,
+                skipped_reason: "index_resident_below_bound".to_string(),
+                ..StorageEvictionReport::default()
+            };
+        }
+        let mut report = self.apply_storage_eviction(shard_id, 0, batch_limit, true, false);
+        report.mode = "index_resident_bound".to_string();
+        report.pressure_before = resident_before;
+        report.pressure_after = self.bucket_index_resident_bytes(shard_id);
+        report.memory_pressure_threshold = index_resident_limit_bytes;
+        report
+    }
+
     pub fn apply_storage_eviction(
         &self,
         shard_id: ShardId,
