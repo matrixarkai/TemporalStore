@@ -7843,13 +7843,24 @@ mod a_records_pages_can_live_on_the_shard_beside_the_record {
         assert!(back_dirty, "the dirty bit changed");
     }
 
-    /// The field is NOT serialized, and that is asserted rather than left to the attribute.
+    /// A filed layout IS carried in the stored bytes, and comes back.
     ///
-    /// The attribute says `skip`; this says what `skip` has to mean for the emptiness argument on
-    /// the field to hold -- a shard carrying a layout encodes to the same bytes as one without, so
-    /// no stored image can be carrying layouts and no format stamp is owed.
+    /// THIS ASSERTION WAS INVERTED, AND THE INVERSION IS THE WHOLE POINT. It read "changes
+    /// nothing", pinning the claim that the field was skipped in both directions and therefore owed
+    /// no format stamp. That claim was true when written and is not any more: the field was made
+    /// durable while it was still empty -- the cheapest possible moment, and the condition its own
+    /// doc comment said would stop holding "the instant a writer lands, silently".
+    ///
+    /// So the subject moved from "the image is unchanged" to "the image carries the layouts". Both
+    /// are real invariants and only one can hold at a time; the one that matters now is that a
+    /// reload does not drop where a multi-page record's pages live.
+    ///
+    /// AND IT IS READ BACK, which `assert_ne!` on the bytes alone would not show. Differing bytes
+    /// are satisfied by a field that encodes something lossy, or something that cannot be read
+    /// back -- exactly the failure the durability change exists to prevent -- so the decode half
+    /// is what makes this a durability test rather than a "the bytes moved" test.
     #[test]
-    fn a_filed_layout_changes_nothing_about_the_stored_bytes() {
+    fn a_filed_layout_is_carried_in_the_stored_bytes_and_comes_back() {
         let without = ShardState::default();
         let mut with = ShardState::default();
         with.object_page_layouts.insert(PageLayout::default());
@@ -7857,10 +7868,17 @@ mod a_records_pages_can_live_on_the_shard_beside_the_record {
 
         let a = serde_json::to_vec(&without).expect("encoding a shard failed");
         let b = serde_json::to_vec(&with).expect("encoding a shard failed");
-        assert_eq!(
+        assert_ne!(
             a, b,
-            "a filed layout changed the stored bytes, so this field is serialized after all and \
-             the no-stamp-owed argument on it is wrong"
+            "a filed layout did NOT change the stored bytes, so the field is skipped again and a              reload would drop where a multi-page record's pages are"
+        );
+
+        let back: ShardState =
+            serde_json::from_slice(&b).expect("decoding a shard image failed");
+        assert_eq!(
+            1,
+            back.object_page_layouts.len(),
+            "the layout did not survive the round trip, so the field is written but not readable              back -- which is the same loss as not writing it"
         );
     }
 }
