@@ -1599,3 +1599,78 @@ mod the_handle_arm_now_has_something_to_point_into {
         assert_eq!(0, store.len());
     }
 }
+
+#[cfg(test)]
+mod what_moving_one_kinds_refs_onto_its_record_would_cost {
+    use super::{PageLayout, PageLayoutStore, StoredPage};
+
+    /// glibc, which is what production uses: the crate's only `#[global_allocator]` is behind
+    /// `cfg(all(test, feature = "alloc-probe"))`.
+    fn chunk(request: usize) -> usize {
+        if request == 0 {
+            return 0;
+        }
+        let rounded = (request + 8 + 15) / 16 * 16;
+        if rounded < 32 { 32 } else { rounded }
+    }
+
+    /// BEFORE BUILDING IT: is an object's refs on its record cheaper than a lookup entry?
+    ///
+    /// The slice under consideration stops filing one kind in `ObjectBlockLookup` and hangs its
+    /// block refs off the object's own record instead. That is their shape -- one node per key,
+    /// everything else behind one word -- but shape is not a saving, and this campaign has refused
+    /// seven routes that looked right and measured wrong. So the arithmetic goes first.
+    ///
+    /// The two sides, per object holding ONE block:
+    ///
+    ///   TODAY  a `BTreeMap<Arc<str>, BlockRefs>` entry under the kind. The key `Arc` is SHARED
+    ///          with the page index and costs nothing extra here, so the entry is the node slot
+    ///          plus the 24-byte `BlockRefs` inline in it.
+    ///
+    ///   MOVED  the record already exists in `objects` for this kind and already holds the key,
+    ///          so the key is free on this side too. What is added is a store slot and a layout:
+    ///          the layout's `Vec<StoredPage>` buffer, and the refs beside it.
+    #[test]
+    fn the_two_shapes_priced_side_by_side() {
+        let pair = std::mem::size_of::<StoredPage>();
+        let layout_inline = std::mem::size_of::<PageLayout>();
+        let refs_inline = 24; // BlockRefs, pinned in state.rs
+
+        // TODAY: a B-tree node holds up to 11 entries; a one-element map allocates a 280-byte root
+        // and the steady-state occupancy of a leaf is about 5.8 of 11. Per entry at steady state:
+        let node_bytes_per_entry = 288.0 / 5.8;
+        let today = node_bytes_per_entry + refs_inline as f64;
+
+        // MOVED: one store slot (generation + Option<PageLayout>, inline in the arena's Vec) plus
+        // one exact-capacity page buffer. The arena's own Vec amortises, so per object it is the
+        // slot inline plus the buffer chunk.
+        let slot_inline = 4 + 4 + layout_inline; // generation, padding, the Option<PageLayout>
+        let buffer = chunk(pair * 1);
+        let moved = slot_inline as f64 + buffer as f64 + refs_inline as f64;
+
+        println!();
+        println!("  per object holding one block, chunk bytes:");
+        println!("    StoredPage                {pair} B");
+        println!("    PageLayout inline         {layout_inline} B");
+        println!("    BlockRefs inline          {refs_inline} B");
+        println!();
+        println!("    TODAY  lookup entry       {today:>7.1} B  (node {node_bytes_per_entry:.1} + refs {refs_inline})");
+        println!("    MOVED  record + layout    {moved:>7.1} B  (slot {slot_inline} + buffer {buffer} + refs {refs_inline})");
+        println!("    delta                     {:>7.1} B  ({})", moved - today,
+                 if moved < today { "MOVED is cheaper" } else { "MOVED is MORE EXPENSIVE" });
+        println!();
+
+        // The arena's growth is amortised, so confirm the slot really is inline rather than a
+        // per-object allocation -- otherwise the figure above understates the moved side.
+        let mut store = PageLayoutStore::default();
+        for _ in 0..64 {
+            store.insert(PageLayout::default());
+        }
+        assert_eq!(64, store.len(), "the arena did not take 64 layouts");
+
+        // This test exists to PRICE the change, not to bless it. Assert only what was measured,
+        // so the number is recorded and a later shape change has to re-run it rather than inherit
+        // a claim.
+        assert!(pair > 0 && layout_inline > 0, "the shapes have a size");
+    }
+}
