@@ -3523,9 +3523,26 @@ fn what_a_per_shard_resident_bound_recovers() {
         )
     };
 
+    // THE WHOLE-INDEX TOTAL, COMPUTED THE WAY THE COMPOSITION PROBE COMPUTES IT, so the figure
+    // after the bound is a MEASUREMENT of the same quantity rather than a subtraction of line
+    // items from a number taken in another run. Same three terms, same helpers: the whole
+    // `ShardState` plus each side's `Arc<str>` payloads counted once each.
+    let index_total = |engine: &TemporalEngine| -> (u64, u64, u64, u64) {
+        let shards = engine.shards.read().expect("engine lock poisoned");
+        let shard = shards.get(&1).expect("shard is loaded");
+        let whole = deep_heap_bytes(shard);
+        let (arc, _n) = arc_payload_bytes(&shard.bucket_index);
+        let (dirty_arc, _m, _s) = dirty_arc_payload_bytes(shard);
+        (whole + arc + dirty_arc, whole, arc, dirty_arc)
+    };
+    // Strings hold one address each and each series holds its points. The model maps keep every
+    // address across a release, so this denominator does not move with the bound.
+    const LIVE_ADDRESSES: u64 = 40_000 + 40 * 1_000;
+
     let (bm0, lk0, dr0, whole0, keys, buckets0, pages0, released0) = snapshot(&engine);
     let resident0 = engine.bucket_index_resident_bytes(1);
     let read0 = readable(&engine);
+    let (total0, w0, a0, d0) = index_total(&engine);
 
     assert_eq!(40_040, keys, "denominator: the fixture did not seed the corpus it reports");
     assert!(buckets0 < keys, "denominator: one bucket per key means this is the LEGACY range");
@@ -3597,6 +3614,32 @@ fn what_a_per_shard_resident_bound_recovers() {
     println!("  modelled resident {resident0} -> {resident1} B, bound was {bound} B");
     println!("  pages {pages0} -> {pages1}, buckets {buckets0} -> {buckets1}, keys {keys} -> {keys1}");
     println!("  reads: {read0} of {} before, {read1} after", probe_keys.len());
+
+    // --- THE RE-MEASURED WHOLE-INDEX TOTAL, which is the figure that answers "how big is the
+    // index now" rather than "how much did these three rows give back". ---
+    let (total1, w1, a1v, d1) = index_total(&engine);
+    println!();
+    println!("  WHOLE-INDEX TOTAL, re-measured rather than derived:");
+    println!(
+        "    before    {total0:>10} B   {:>8.1} B/key   {:>8.1} B/address   (whole {w0}, arc {a0}, dirty-arc {d0})",
+        total0 as f64 / keys as f64,
+        total0 as f64 / LIVE_ADDRESSES as f64
+    );
+    println!(
+        "    after     {total1:>10} B   {:>8.1} B/key   {:>8.1} B/address   (whole {w1}, arc {a1v}, dirty-arc {d1})",
+        total1 as f64 / keys as f64,
+        total1 as f64 / LIVE_ADDRESSES as f64
+    );
+    println!(
+        "    recovered {:>10} B   {:>8.1} B/key   {:>6.1}% of the whole index",
+        total0.saturating_sub(total1),
+        total0.saturating_sub(total1) as f64 / keys as f64,
+        100.0 * total0.saturating_sub(total1) as f64 / total0 as f64
+    );
+    assert!(
+        total1 < total0,
+        "the whole-index total did not fall ({total0} -> {total1}), so the per-term recoveries          above did not add up to anything at the index level"
+    );
 
     // --- CORRECTNESS, NOT NEGOTIABLE. ---
     assert_eq!(
