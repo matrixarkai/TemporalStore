@@ -195,16 +195,16 @@ fn shard_with_one_object_of_every_kind(suffix: &str) -> ShardState {
         .insert(key_for("context_node", suffix).as_str().into(), address());
     shard
         .context_audits
-        .insert(key_for("context_audit", suffix), series.clone());
+        .insert(key_for("context_audit", suffix).into(), series.clone());
     shard
         .context_children
-        .insert(key_for("context_child", suffix), series.clone());
+        .insert(key_for("context_child", suffix).into(), series.clone());
     shard
         .context_summaries
-        .insert(key_for("context_summary", suffix), series.clone());
+        .insert(key_for("context_summary", suffix).into(), series.clone());
     shard
         .context_compressions
-        .insert(key_for("context_compression", suffix), series.clone());
+        .insert(key_for("context_compression", suffix).into(), series.clone());
 
     // THE ENTITY ARM IS KEYED BY THE COLLECTION AND NOT BY THE COMPOSED KEY, which is the whole
     // reason it is a separate verdict below. The inner u64 is the ENTITY HASH, not a timestamp.
@@ -212,7 +212,7 @@ fn shard_with_one_object_of_every_kind(suffix: &str) -> ShardState {
     entities.insert(ENTITY_HASH, address());
     shard
         .context_entities
-        .insert(entity_collection_key(suffix), entities);
+        .insert(entity_collection_key(suffix).into(), entities);
 
     // THE TWO THAT ARE NOT WRITTEN. Populated anyway, so the arms below measure a map that HAD the
     // key and lost it rather than a map that never held one -- which are different claims and only
@@ -220,7 +220,7 @@ fn shard_with_one_object_of_every_kind(suffix: &str) -> ShardState {
     shard.set_context_event_series(&key_for("context_event", suffix), series.clone());
     shard
         .context_indexes
-        .insert(key_for("context_index", suffix), series.clone());
+        .insert(key_for("context_index", suffix).into(), series.clone());
     // The time index, keyed by the same object key the event map is keyed by.
     let mut timeline = BTreeMap::new();
     timeline.insert(TIMELINE_KEY, EVENT_ID_HASH);
@@ -294,12 +294,12 @@ fn kind_map_holds(shard: &ShardState, kind: &str, suffix: &str) -> bool {
         "feature" => shard.features.contains_key(&key),
         "control_state" => shard.control_state_blocks().contains_key(key.as_str()),
         "context_node" => shard.context_nodes.contains_key(key.as_str()),
-        "context_audit" => shard.context_audits.contains_key(&key),
-        "context_child" => shard.context_children.contains_key(&key),
-        "context_summary" => shard.context_summaries.contains_key(&key),
-        "context_compression" => shard.context_compressions.contains_key(&key),
+        "context_audit" => shard.context_audits.contains_key(&key[..]),
+        "context_child" => shard.context_children.contains_key(&key[..]),
+        "context_summary" => shard.context_summaries.contains_key(&key[..]),
+        "context_compression" => shard.context_compressions.contains_key(&key[..]),
         "context_event" => shard.context_events().contains_key(key.as_str()),
-        "context_index" => shard.context_indexes.contains_key(&key),
+        "context_index" => shard.context_indexes.contains_key(&key[..]),
         other => panic!(
             "no census arm for model kind {other:?}. Every kind `model_kind_registry` declares \
              live needs a verdict here, or this census silently stops covering one."
@@ -483,7 +483,7 @@ fn a_context_index_object_key_is_in_no_durable_structure_after_a_reload() {
     let written = shard_with_one_object_of_every_kind(WRITTEN_SUFFIX);
     let refused = key_for("context_index", WRITTEN_SUFFIX);
     assert!(
-        written.context_indexes.contains_key(&refused),
+        written.context_indexes.contains_key(&refused[..]),
         "fixture must write the context_index map first"
     );
     assert!(

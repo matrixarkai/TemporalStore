@@ -1490,26 +1490,17 @@ impl TemporalEngine {
                 ));
             }
         }
-        for (kind, series) in [
-            ("feature", &shard.features),
-            ("context_index", &shard.context_indexes),
-            ("context_audit", &shard.context_audits),
-            ("context_child", &shard.context_children),
-            ("context_summary", &shard.context_summaries),
-            ("context_compression", &shard.context_compressions),
-        ] {
-            let mut keys: Vec<_> = series.iter().collect();
-            keys.sort_by(|left, right| left.0.cmp(right.0));
-            for (key, entries) in keys {
-                for (stored_key, address) in entries {
-                    out.push_str(&format!(
-                        "{kind} {key} at={stored_key} slab={} off={} len={}
-",
-                        address.block_slab_id(), address.offset(), address.length()
-                    ));
-                }
-            }
-        }
+        // CALLED PER MAP RATHER THAN ITERATED OVER AN ARRAY, because the maps no longer agree on
+        // one key type: the context kinds are keyed by `ModelKey` so they can share one allocation
+        // with the page index, while `features` keeps its `String` key -- that map holds 40 keys at
+        // a 40,040-key corpus, so converting it would buy nothing and touch 87 call sites. An array
+        // literal forces one type on every element; a generic call does not.
+        append_series_shape(&mut out, "feature", &shard.features);
+        append_series_shape(&mut out, "context_index", &shard.context_indexes);
+        append_series_shape(&mut out, "context_audit", &shard.context_audits);
+        append_series_shape(&mut out, "context_child", &shard.context_children);
+        append_series_shape(&mut out, "context_summary", &shard.context_summaries);
+        append_series_shape(&mut out, "context_compression", &shard.context_compressions);
         let mut hashes: Vec<_> = shard.hashes.iter().collect();
         hashes.sort_by(|left, right| left.0.cmp(right.0));
         for (key, fields) in hashes {
@@ -2324,7 +2315,7 @@ impl TemporalEngine {
                 };
                 shard
                     .context_entities
-                    .entry(item.object_key.clone())
+                    .entry(std::sync::Arc::from(&item.object_key[..]))
                     .or_default()
                     .insert(entity_hash, address);
                 true
@@ -3618,5 +3609,30 @@ mod batch_truncation_tests {
         truncate_trailing_incomplete_batch(&mut pending);
         assert_eq!(pending.len(), 1);
         assert_eq!(pending[0].sequence, 1);
+    }
+}
+
+/// One per-kind series map, in the deterministic shape `index_shape_for_test` emits.
+///
+/// Generic over the KEY so that maps keyed by `ModelKey` and maps keyed by `String` can both be
+/// rendered by one body. They used to ride in an array literal, which forces a single element type
+/// and so would have required converting every map in the list the moment one of them changed.
+fn append_series_shape<K: Ord + std::fmt::Display>(
+    out: &mut String,
+    kind: &str,
+    series: &std::collections::HashMap<K, std::collections::BTreeMap<u64, crate::block_store::ElementEntry>>,
+) {
+    let mut keys: Vec<_> = series.iter().collect();
+    keys.sort_by(|left, right| left.0.cmp(right.0));
+    for (key, entries) in keys {
+        for (stored_key, address) in entries {
+            out.push_str(&format!(
+                "{kind} {key} at={stored_key} slab={} off={} len={}
+",
+                address.block_slab_id(),
+                address.offset(),
+                address.length()
+            ));
+        }
     }
 }

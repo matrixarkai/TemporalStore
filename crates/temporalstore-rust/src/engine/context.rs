@@ -1095,7 +1095,7 @@ pub(super) fn load_context_compression_events(
     {
         let object_key = context_compression_key(tenant_hash, node_hash);
         let routing_bucket = shard_page_routing_bucket(shard, &object_key);
-        if let Some(series) = shard.context_compressions.get(&object_key) {
+        if let Some(series) = shard.context_compressions.get(&object_key[..]) {
             events.extend(series.iter().filter_map(|(timeline_key, address)| {
                 read_context_value::<ContextCompressionEvent>(
                     cache,

@@ -2939,7 +2939,7 @@ pub(super) fn sync_context_blocks_for_object(
         // `{collection_key}:{entity_hash}`, which IS this key, so both paths file the same shape.
         if let Some(address) = shard
             .context_entities
-            .get(&collection_key)
+            .get(&collection_key[..])
             .and_then(|series| series.get(&entity_hash))
         {
             groups.push((
@@ -6716,12 +6716,18 @@ pub(super) fn reconcile_secondary_views_from_bucket_index(
     let mut context_events =
         HashMap::<std::sync::Arc<str>, super::timestamped_series::OwnedTimestampedSeries>::new();
     let mut context_event_timeline = HashMap::<std::sync::Arc<str>, BTreeMap<u64, u64>>::new();
-    let mut context_indexes = HashMap::<String, BTreeMap<u64, ElementEntry>>::new();
-    let mut context_audits = HashMap::<String, BTreeMap<u64, ElementEntry>>::new();
-    let mut context_entities = HashMap::<String, BTreeMap<u64, ElementEntry>>::new();
-    let mut context_children = HashMap::<String, BTreeMap<u64, ElementEntry>>::new();
-    let mut context_summaries = HashMap::<String, BTreeMap<u64, ElementEntry>>::new();
-    let mut context_compressions = HashMap::<String, BTreeMap<u64, ElementEntry>>::new();
+    let mut context_indexes =
+        HashMap::<std::sync::Arc<str>, BTreeMap<u64, ElementEntry>>::new();
+    let mut context_audits =
+        HashMap::<std::sync::Arc<str>, BTreeMap<u64, ElementEntry>>::new();
+    let mut context_entities =
+        HashMap::<std::sync::Arc<str>, BTreeMap<u64, ElementEntry>>::new();
+    let mut context_children =
+        HashMap::<std::sync::Arc<str>, BTreeMap<u64, ElementEntry>>::new();
+    let mut context_summaries =
+        HashMap::<std::sync::Arc<str>, BTreeMap<u64, ElementEntry>>::new();
+    let mut context_compressions =
+        HashMap::<std::sync::Arc<str>, BTreeMap<u64, ElementEntry>>::new();
 
     for entry in entries {
         match entry.kind.as_str() {
@@ -6880,7 +6886,7 @@ pub(super) fn reconcile_secondary_views_from_bucket_index(
                     split_context_entity_key(&entry.object_key)
                 {
                     context_entities
-                        .entry(collection_key)
+                        .entry(std::sync::Arc::from(&collection_key[..]))
                         .or_insert_with(BTreeMap::new)
                         .insert(entity_hash, entry.address);
                 }
@@ -8687,22 +8693,22 @@ mod model_kind_registry_guards {
         shard.set_context_event_series("ctx:event:t:n", BTreeMap::from([(1u64, at.clone())]));
         shard
             .context_indexes
-            .insert("ctx:index:t:n".to_string(), BTreeMap::from([(1u64, at.clone())]));
+            .insert("ctx:index:t:n".into(), BTreeMap::from([(1u64, at.clone())]));
         shard
             .context_audits
-            .insert("ctx:audit:t:n".to_string(), BTreeMap::from([(1u64, at.clone())]));
+            .insert("ctx:audit:t:n".into(), BTreeMap::from([(1u64, at.clone())]));
         shard
             .context_entities
-            .insert("ctx:entity:t:n".to_string(), BTreeMap::from([(1u64, at.clone())]));
+            .insert("ctx:entity:t:n".into(), BTreeMap::from([(1u64, at.clone())]));
         shard
             .context_children
-            .insert("ctx:child:t:n".to_string(), BTreeMap::from([(1u64, at.clone())]));
+            .insert("ctx:child:t:n".into(), BTreeMap::from([(1u64, at.clone())]));
         shard
             .context_summaries
-            .insert("ctx:summary:t:n".to_string(), BTreeMap::from([(1u64, at.clone())]));
+            .insert("ctx:summary:t:n".into(), BTreeMap::from([(1u64, at.clone())]));
         shard
             .context_compressions
-            .insert("ctx:compression:t:n".to_string(), BTreeMap::from([(1u64, at)]));
+            .insert("ctx:compression:t:n".into(), BTreeMap::from([(1u64, at)]));
         shard
     }
 

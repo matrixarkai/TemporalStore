@@ -991,19 +991,19 @@ pub(super) fn timestamped_kv_series<'a>(
         series.push(("context_event", &**key, Cow::Owned(timeline)));
     }
     for (key, timeline) in &shard.context_indexes {
-        series.push(("context_index", key.as_str(), Cow::Borrowed(timeline)));
+        series.push(("context_index", &key[..], Cow::Borrowed(timeline)));
     }
     for (key, timeline) in &shard.context_audits {
-        series.push(("context_audit", key.as_str(), Cow::Borrowed(timeline)));
+        series.push(("context_audit", &key[..], Cow::Borrowed(timeline)));
     }
     for (key, timeline) in &shard.context_children {
-        series.push(("context_child", key.as_str(), Cow::Borrowed(timeline)));
+        series.push(("context_child", &key[..], Cow::Borrowed(timeline)));
     }
     for (key, timeline) in &shard.context_summaries {
-        series.push(("context_summary", key.as_str(), Cow::Borrowed(timeline)));
+        series.push(("context_summary", &key[..], Cow::Borrowed(timeline)));
     }
     for (key, timeline) in &shard.context_compressions {
-        series.push(("context_compression", key.as_str(), Cow::Borrowed(timeline)));
+        series.push(("context_compression", &key[..], Cow::Borrowed(timeline)));
     }
     series
 }

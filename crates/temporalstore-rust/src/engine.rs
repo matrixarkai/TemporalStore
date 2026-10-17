@@ -1087,7 +1087,7 @@ impl TemporalEngine {
             // the handle exists here and nowhere earlier. Same shape as the dirty index above,
             // and for the same reason: ask once the thing you borrow from exists.
             for object_key in &delta_command_keys {
-                shard.adopt_context_event_key(object_key);
+                shard.adopt_object_key_allocations(object_key);
             }
             // Every
             // write records a WAL entry before any block is written.
@@ -3842,12 +3842,12 @@ fn capture_key_states(shard: &ShardState, keys: &[String]) -> Vec<serde_json::Va
                     .get(&**key)
                     .and_then(|series| serde_json::to_value(series.to_btree()).ok()),
             );
-            put("context_indexes", shard.context_indexes.get(key).and_then(|v| serde_json::to_value(v).ok()));
-            put("context_audits", shard.context_audits.get(key).and_then(|v| serde_json::to_value(v).ok()));
-            put("context_children", shard.context_children.get(key).and_then(|v| serde_json::to_value(v).ok()));
-            put("context_summaries", shard.context_summaries.get(key).and_then(|v| serde_json::to_value(v).ok()));
-            put("context_compressions", shard.context_compressions.get(key).and_then(|v| serde_json::to_value(v).ok()));
-            put("context_entities", shard.context_entities.get(key).and_then(|v| serde_json::to_value(v).ok()));
+            put("context_indexes", shard.context_indexes.get(&key[..]).and_then(|v| serde_json::to_value(v).ok()));
+            put("context_audits", shard.context_audits.get(&key[..]).and_then(|v| serde_json::to_value(v).ok()));
+            put("context_children", shard.context_children.get(&key[..]).and_then(|v| serde_json::to_value(v).ok()));
+            put("context_summaries", shard.context_summaries.get(&key[..]).and_then(|v| serde_json::to_value(v).ok()));
+            put("context_compressions", shard.context_compressions.get(&key[..]).and_then(|v| serde_json::to_value(v).ok()));
+            put("context_entities", shard.context_entities.get(&key[..]).and_then(|v| serde_json::to_value(v).ok()));
             serde_json::Value::Object(blob)
         })
         .collect()
@@ -5019,7 +5019,7 @@ fn maybe_auto_compress_context_node(
     ) {
         let series = shard
             .context_compressions
-            .entry(compression_key.clone())
+            .entry(std::sync::Arc::from(&compression_key[..]))
             .or_default();
         for (timestamp_ms, address) in addresses {
             series.insert(timestamp_ms, address);

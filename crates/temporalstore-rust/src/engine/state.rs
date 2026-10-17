@@ -82,6 +82,33 @@ const _: () = assert!(std::mem::size_of::<WalResidentBlock>() == 16);
 /// asserting it, so this carries no index format stamp.
 pub(super) type ModelKey = Arc<str>;
 
+/// Move one map's key onto the canonical allocation, if it is holding its own equal copy.
+///
+/// Factored out of `adopt_context_event_key` rather than copied per map: the body is identical for
+/// every `ModelKey`-keyed per-kind map, and four hand-written copies of a pointer comparison is
+/// four places for one of them to drift. The decision is taken before the move so the shared borrow
+/// ends before the mutable one.
+fn adopt_key_in<V>(
+    map: &mut HashMap<ModelKey, V>,
+    object_key: &str,
+    canonical: &ModelKey,
+) -> bool {
+    let moves = match map.get_key_value(object_key) {
+        Some((held, _)) => !Arc::ptr_eq(held, canonical),
+        None => false,
+    };
+    if !moves {
+        return false;
+    }
+    match map.remove(object_key) {
+        Some(value) => {
+            map.insert(Arc::clone(canonical), value);
+            true
+        }
+        None => false,
+    }
+}
+
 /// Why a context-event key adoption did or did not move the pair. Counted rather than reasoned
 /// about: a mechanism that is wired and still does nothing looks exactly like one that is not
 /// wired, and only the split between "no handle to take" and "took one" tells them apart.
@@ -484,9 +511,9 @@ pub(super) struct ShardState {
     #[serde(default)]
     pub(super) context_event_timeline: HashMap<ModelKey, BTreeMap<u64, u64>>,
     #[serde(default, skip_serializing)]
-    pub(super) context_indexes: HashMap<String, BTreeMap<u64, ElementEntry>>,
+    pub(super) context_indexes: HashMap<ModelKey, BTreeMap<u64, ElementEntry>>,
     #[serde(default)]
-    pub(super) context_audits: HashMap<String, BTreeMap<u64, ElementEntry>>,
+    pub(super) context_audits: HashMap<ModelKey, BTreeMap<u64, ElementEntry>>,
     // Summary-dirty tracking is intentionally in-memory only. Instead of appending a
     // persisted `ctx:dirty` block per event (which produced one dirty node per write and
     // unbounded dirty-block growth: a real e2e capture stored 47 dirty records for only 6
@@ -518,18 +545,18 @@ pub(super) struct ShardState {
     // per-entity key shape could not do: a HashMap cannot prefix-scan, so ContextQueryEntities
     // had to be handed every entity_hash by its caller.
     #[serde(default)]
-    pub(super) context_entities: HashMap<String, BTreeMap<u64, ElementEntry>>,
+    pub(super) context_entities: HashMap<ModelKey, BTreeMap<u64, ElementEntry>>,
     // No migration field is needed: the PERSISTED entry still carries the per-entity key
     // `ctx:entity:{tenant}:{node}:{entity_hash}`, which the load path splits back into
     // (collection key, entity hash). The on-disk shape is unchanged in both directions, so an
     // index written before this fold loads natively and one written after it stays readable by
     // an older binary.
     #[serde(default)]
-    pub(super) context_children: HashMap<String, BTreeMap<u64, ElementEntry>>,
+    pub(super) context_children: HashMap<ModelKey, BTreeMap<u64, ElementEntry>>,
     #[serde(default)]
-    pub(super) context_summaries: HashMap<String, BTreeMap<u64, ElementEntry>>,
+    pub(super) context_summaries: HashMap<ModelKey, BTreeMap<u64, ElementEntry>>,
     #[serde(default)]
-    pub(super) context_compressions: HashMap<String, BTreeMap<u64, ElementEntry>>,
+    pub(super) context_compressions: HashMap<ModelKey, BTreeMap<u64, ElementEntry>>,
     #[serde(default)]
     #[serde(rename = "slot_index")]
     pub(super) bucket_index: CoreIndex,
@@ -7560,21 +7587,18 @@ impl ShardState {
             .insert(ModelKey::from(object_key), OwnedTimestampedSeries::from(&series));
     }
 
-    /// Point the event pair at the page index's OWN key allocation, once that page is filed.
+    /// Point every `ModelKey`-keyed per-kind map at the page index's OWN key allocation.
     ///
-    /// The write path cannot do this where it files: it takes its handle BEFORE the page reaches
-    /// the lookup, so `any_shared_object_key` has nothing to hand back and the allocating arm
-    /// always wins. That is the same ordering that kept the dirty index on its own copy until
-    /// adoption moved to after the page was filed, so this is the same shape -- ask once the
-    /// thing you borrow from exists -- and it is called at the END of the write arm for that
-    /// reason and not earlier.
+    /// THE MAPS ARE LISTED HERE AND NOWHERE ELSE, which is the point of naming them at one site: a
+    /// map converted to `ModelKey` and not added below keeps allocating its own equal copy of every
+    /// key, and nothing fails -- the duplicate is invisible to a clone-based byte probe, because
+    /// cloning an `Arc` is a refcount bump. The pointer-identity probes are what catch it.
     ///
-    /// Both maps move together or neither does. They are keyed by one handle by construction, so
-    /// moving one and not the other would put back exactly the second allocation the pair exists
-    /// to avoid.
-    ///
-    /// Returns true when the pair moved onto the canonical allocation.
-    pub(super) fn adopt_context_event_key(&mut self, object_key: &str) -> bool {
+    /// CALLED FROM `engine.rs` AFTER THE BUCKET INDEX IS FILLED, not from the write arms. The write
+    /// files its maps while the page index does not yet hold the key, so an adoption at the write
+    /// site finds no handle to take -- counted, not assumed: the first attempt at the event pair
+    /// adopted 0 of 400 keys from there.
+    pub(super) fn adopt_object_key_allocations(&mut self, object_key: &str) -> bool {
         CONTEXT_EVENT_ADOPT_CALLS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         let Some(canonical) = self
             .bucket_index
@@ -7584,28 +7608,25 @@ impl ShardState {
             CONTEXT_EVENT_ADOPT_NO_HANDLE.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
             return false;
         };
-        // Decide against the held keys first, so the shared borrows end before the moves below
-        // take mutable ones.
-        let series_moves = match self.context_events_series.get_key_value(object_key) {
-            Some((held, _)) => !Arc::ptr_eq(held, &canonical),
-            None => false,
-        };
-        let timeline_moves = match self.context_event_timeline.get_key_value(object_key) {
-            Some((held, _)) => !Arc::ptr_eq(held, &canonical),
-            None => false,
-        };
-        if !series_moves && !timeline_moves {
-            return false;
+        let mut moved = false;
+        // The event pair moves together or not at all: they are keyed by one handle by
+        // construction, so moving one and not the other restores the second allocation.
+        moved |= adopt_key_in(&mut self.context_events_series, object_key, &canonical);
+        moved |= adopt_key_in(&mut self.context_event_timeline, object_key, &canonical);
+        moved |= adopt_key_in(&mut self.context_indexes, object_key, &canonical);
+        moved |= adopt_key_in(&mut self.context_audits, object_key, &canonical);
+        moved |= adopt_key_in(&mut self.context_children, object_key, &canonical);
+        moved |= adopt_key_in(&mut self.context_summaries, object_key, &canonical);
+        moved |= adopt_key_in(&mut self.context_compressions, object_key, &canonical);
+        moved |= adopt_key_in(&mut self.context_entities, object_key, &canonical);
+        // `context_nodes` was ALREADY `ModelKey`-keyed before this change and was still
+        // missing from this list, which is the failure the note above describes: a map that
+        // CAN share and is not listed here keeps its own equal copy and nothing fails.
+        moved |= adopt_key_in(&mut self.context_nodes, object_key, &canonical);
+        if moved {
+            CONTEXT_EVENT_ADOPT_MOVED.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         }
-        if let Some(series) = self.context_events_series.remove(object_key) {
-            self.context_events_series
-                .insert(Arc::clone(&canonical), series);
-        }
-        if let Some(index) = self.context_event_timeline.remove(object_key) {
-            self.context_event_timeline.insert(canonical, index);
-        }
-        CONTEXT_EVENT_ADOPT_MOVED.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-        true
+        moved
     }
 
     /// Drain the legacy top-level event map into the array map at decode.

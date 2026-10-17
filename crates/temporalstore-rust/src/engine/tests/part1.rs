@@ -3734,7 +3734,7 @@ fn what_reading_one_summary_actually_costs() {
             let key = super::context::context_summary_key(7201, 60, 2);
             let series = shard
                 .context_summaries
-                .get(&key)
+                .get(&key[..])
                 .expect("the summary series must exist, or this measures nothing");
             let address = series
                 .iter()
@@ -3802,7 +3802,7 @@ fn what_reading_one_summary_actually_costs() {
                     let key = super::context::context_summary_key(7201, node_hash, 2);
                     shard
                         .context_summaries
-                        .get(&key)
+                        .get(&key[..])
                         .and_then(|series| series.iter().next())
                         .map(|(_, address)| {
                             (
