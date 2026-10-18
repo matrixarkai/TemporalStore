@@ -4291,3 +4291,144 @@ fn why_there_are_many_per_key_maps_and_not_one() {
          changed and the conclusion has to be re-derived"
     );
 }
+
+/// WHAT CONSOLIDATING THE THREE HOLDERS OF A RAW KEY WOULD COST, AND AT WHAT OVERLAP IT PAYS.
+///
+/// `why_there_are_many_per_key_maps_and_not_one` shows a raw key landing in `strings`, `features`
+/// and `control_state_selection`. The obvious next move is one entry per key instead of three, and
+/// the obvious place is the consolidated map -- except that `ObjectRecord` is 24 bytes carrying a
+/// deadline word and a page-address word, and nothing else. It cannot hold an 8-byte series or a
+/// 40-byte selection value: those maps are DOMAIN-valued, not address-valued, so they cannot fold
+/// into `ObjectSlot` without widening it.
+///
+/// So the question is what a PURPOSE-BUILT consolidated entry would cost, and the answer has two
+/// arms rather than one number:
+///
+///   * a key held by all three maps pays one key field instead of three, and one table instead of
+///     three -- the win;
+///   * a key held by ONE map pays the slots of the two values it does not have -- the loss.
+///
+/// Which dominates is a property of the WORKLOAD, not of the design, so this measures both arms and
+/// prints the overlap fraction where they cross. A design chosen without that fraction is chosen on
+/// the arm whoever argued for it happened to measure.
+///
+/// rust-internal: measures this crate's own resident structures, no product behaviour
+///
+///   cargo test --features alloc-probe -p temporalstore-rust --lib what_consolidating_three_holders_would_cost -- --ignored --nocapture
+#[test]
+#[cfg(feature = "alloc-probe")]
+#[ignore = "builds four map shapes at 20,000 keys; run by name"]
+fn what_consolidating_three_holders_would_cost() {
+    use crate::engine::timestamped_series::OwnedTimestampedSeries;
+    const KEYS: usize = 20_000;
+
+    // The union a consolidated entry would have to hold: every value, each optional, because a key
+    // present in one map has nothing for the other two.
+    // `Clone` because `deep_heap_bytes` measures by cloning -- the probe cannot weigh a shape
+    // it cannot copy.
+    #[allow(dead_code)]
+    #[derive(Clone)]
+    struct Consolidated {
+        address: Option<ElementEntry>,
+        series: Option<OwnedTimestampedSeries>,
+        selection: Option<(u64, Vec<u8>, u8)>,
+    }
+
+    let key = |i: usize| -> std::sync::Arc<str> { std::sync::Arc::from(format!("k{i:08}").as_str()) };
+    let address = |i: usize| ElementEntry::from_parts(1, i as u64 * 64, 64, Some(0), Some(i as u64));
+    let series = |i: usize| {
+        let mut s = OwnedTimestampedSeries::default();
+        s.insert(i as u64, address(i));
+        s
+    };
+    let selection = || (7u64, vec![b's'; 8], 1u8);
+
+    // ARM A: three maps, one entry each, every key in all three. Keys SHARED, because that is the
+    // state on this branch -- the adoption puts all three holders on one allocation, so the only
+    // thing three maps still cost over one is the key FIELD and the table, not the characters.
+    let shared: Vec<std::sync::Arc<str>> = (0..KEYS).map(key).collect();
+    let mut m_strings: HashMap<std::sync::Arc<str>, ElementEntry> = HashMap::new();
+    let mut m_series: HashMap<std::sync::Arc<str>, OwnedTimestampedSeries> = HashMap::new();
+    let mut m_selection: HashMap<std::sync::Arc<str>, (u64, Vec<u8>, u8)> = HashMap::new();
+    for (i, k) in shared.iter().enumerate() {
+        m_strings.insert(std::sync::Arc::clone(k), address(i));
+        m_series.insert(std::sync::Arc::clone(k), series(i));
+        m_selection.insert(std::sync::Arc::clone(k), selection());
+    }
+    let three_maps =
+        deep_heap_bytes(&m_strings) + deep_heap_bytes(&m_series) + deep_heap_bytes(&m_selection);
+
+    // ARM B: one map, one entry per key, all three values present.
+    let mut m_one: HashMap<std::sync::Arc<str>, Consolidated> = HashMap::new();
+    for (i, k) in shared.iter().enumerate() {
+        m_one.insert(
+            std::sync::Arc::clone(k),
+            Consolidated {
+                address: Some(address(i)),
+                series: Some(series(i)),
+                selection: Some(selection()),
+            },
+        );
+    }
+    let one_map_full = deep_heap_bytes(&m_one);
+
+    // ARM C: the LOSING arm -- every key in one map only, three maps.
+    let mut c_strings: HashMap<std::sync::Arc<str>, ElementEntry> = HashMap::new();
+    for (i, k) in shared.iter().enumerate() {
+        c_strings.insert(std::sync::Arc::clone(k), address(i));
+    }
+    let three_maps_no_overlap = deep_heap_bytes(&c_strings);
+
+    // ARM D: the same keys in the consolidated shape, two slots empty.
+    let mut d_one: HashMap<std::sync::Arc<str>, Consolidated> = HashMap::new();
+    for (i, k) in shared.iter().enumerate() {
+        d_one.insert(
+            std::sync::Arc::clone(k),
+            Consolidated { address: Some(address(i)), series: None, selection: None },
+        );
+    }
+    let one_map_sparse = deep_heap_bytes(&d_one);
+
+    println!();
+    println!("  {KEYS} keys, key allocations SHARED in every arm (so this prices fields and tables)");
+    println!(
+        "    widths: ElementEntry {} B, OwnedTimestampedSeries {} B, selection {} B, Consolidated {} B",
+        std::mem::size_of::<ElementEntry>(),
+        std::mem::size_of::<OwnedTimestampedSeries>(),
+        std::mem::size_of::<(u64, Vec<u8>, u8)>(),
+        std::mem::size_of::<Consolidated>()
+    );
+    println!();
+    println!("  FULL OVERLAP -- every key in all three:");
+    println!("    three maps      {three_maps:>10} B   {:>7.1} B/key", three_maps as f64 / KEYS as f64);
+    println!("    one map         {one_map_full:>10} B   {:>7.1} B/key", one_map_full as f64 / KEYS as f64);
+    let win = three_maps as f64 - one_map_full as f64;
+    println!("    consolidation {:>+12.1} B   {:>+7.1} B/key", win, win / KEYS as f64);
+    println!();
+    println!("  NO OVERLAP -- every key in one map only:");
+    println!(
+        "    one bare map    {three_maps_no_overlap:>10} B   {:>7.1} B/key",
+        three_maps_no_overlap as f64 / KEYS as f64
+    );
+    println!(
+        "    one map, sparse {one_map_sparse:>10} B   {:>7.1} B/key",
+        one_map_sparse as f64 / KEYS as f64
+    );
+    let loss = three_maps_no_overlap as f64 - one_map_sparse as f64;
+    println!("    consolidation {:>+12.1} B   {:>+7.1} B/key", loss, loss / KEYS as f64);
+    println!();
+    let per_key_win = win / KEYS as f64;
+    let per_key_loss = -loss / KEYS as f64;
+    if per_key_win > 0.0 && per_key_loss > 0.0 {
+        let breakeven = per_key_loss / (per_key_win + per_key_loss);
+        println!(
+            "  BREAK-EVEN: consolidation pays once more than {:.1}% of keys are held by all three.",
+            100.0 * breakeven
+        );
+        println!("  Below that fraction it costs more than the three maps it replaces.");
+    } else {
+        println!("  One arm does not trade -- read the two figures above rather than a fraction.");
+    }
+
+    assert!(three_maps > 0 && one_map_full > 0, "a zero figure cannot be compared");
+}
