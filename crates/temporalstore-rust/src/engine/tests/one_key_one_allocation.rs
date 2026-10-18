@@ -90,6 +90,19 @@ fn a_key_held_by_several_maps_is_one_allocation() {
                 timestamp_ms: 1_787_270_070_000 + index as u64,
                 amount: 1,
             },
+            // THE SEVENTH HOLDER, and it was invisible to this guard until it was named. The
+            // distinct-change map is filled by `hll::record_change` with
+            // `.entry(key.to_string())` -- a fresh allocation per key, from a `&str` -- and its
+            // key is this same raw object key. A guard that collects from a list of map names
+            // cannot see a holder that is not on the list, which is the standing risk its own
+            // doc names and this is that risk arriving.
+            Command::ControlStateChangeAdd {
+                key: raw.clone(),
+                timestamp_ms: 1_787_270_070_000 + index as u64,
+                value: format!("member-{index}").into_bytes(),
+                precision_ms: None,
+                ttl_ms: None,
+            },
         ] {
             let response = engine.execute(ExecuteRequest {
                 shard_id: 1,
@@ -160,6 +173,14 @@ fn a_key_held_by_several_maps_is_one_allocation() {
                 .map(|k| (&**k, k.as_ptr() as usize))
                 .collect(),
         ),
+        (
+            "control_state_changes",
+            shard
+                .control_state_changes
+                .keys()
+                .map(|k| (&**k, k.as_ptr() as usize))
+                .collect(),
+        ),
     ] {
         for (text, ptr) in keys {
             held.entry(text).or_default().push((name, ptr));
@@ -171,15 +192,15 @@ fn a_key_held_by_several_maps_is_one_allocation() {
     assert_eq!(
         KEYS,
         multi.len(),
-        "the fixture wrote {KEYS} keys through six families but only {} ended up in more than one \
-         map, so this run could not have detected a duplicate at all. Held: {:?}",
+        "the fixture wrote {KEYS} keys through seven families but only {} ended up in more than \
+         one map, so this run could not have detected a duplicate at all. Held: {:?}",
         multi.len(),
         held
     );
     assert!(
-        multi.iter().all(|(_, h)| h.len() == 6),
-        "a key reached fewer than six maps, so one of the six commands stopped writing its map \
-         and this guard silently stopped covering it: {:?}",
+        multi.iter().all(|(_, h)| h.len() == 7),
+        "a key reached fewer than seven maps, so one of the seven commands stopped writing its \
+         map and this guard silently stopped covering it: {:?}",
         multi
     );
 

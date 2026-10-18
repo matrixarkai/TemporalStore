@@ -422,8 +422,19 @@ pub(super) struct ShardState {
     /// the stamp refuses the index rather than letting a decode decide, and the load falls back to
     /// WAL replay.
     #[serde(default)]
+    /// KEYED BY A SHARED HANDLE, like every other map that holds a raw object key.
+    ///
+    /// It was `String`-keyed, and `hll::record_change` filled it with
+    /// `.entry(key.to_string())` -- a fresh allocation per key. Measured by the default-run
+    /// guard: SEVEN holders of one raw key text reporting TWO allocations, at 8 of 8 keys, with
+    /// this map owning the second. It was invisible to that guard until it was named in it,
+    /// because the guard collects pointers out of a list of map names and this was not on the
+    /// list -- the staleness its own doc warns about, arriving.
+    ///
+    /// The stored shape does not move: `Arc<str>` serialises exactly as `String` does, which is
+    /// the same argument `control_state`'s conversion made, so no format stamp is owed.
     pub(super) control_state_changes:
-        HashMap<String, BTreeMap<u64, super::hll::DistinctBucket>>,
+        HashMap<ModelKey, BTreeMap<u64, super::hll::DistinctBucket>>,
     #[serde(default, alias = "control_state_fol")]
     pub(super) control_state_selection: HashMap<ModelKey, ControlStateSelectionValue>,
     // UUID idempotency ledger for control-state writes: uuid -> expiry_ms. Mirrors
@@ -7789,6 +7800,12 @@ impl ShardState {
         moved |= adopt_key_in(&mut self.buckets, object_key, &canonical);
         moved |= adopt_key_in(&mut self.features, object_key, &canonical);
         moved |= adopt_key_in(&mut self.control_state_selection, object_key, &canonical);
+        // `control_state_changes` TOO. Seven holders of one raw key text reported TWO
+        // allocations before this line, at 8 of 8 keys, with this map owning the second --
+        // measured by `a_key_held_by_several_maps_is_one_allocation` once the map was named in
+        // it. Nothing failed while it owned that copy, because the characters are equal either
+        // way and a clone-based byte probe cannot see a duplicate.
+        moved |= adopt_key_in(&mut self.control_state_changes, object_key, &canonical);
         if moved {
             CONTEXT_EVENT_ADOPT_MOVED.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         }
