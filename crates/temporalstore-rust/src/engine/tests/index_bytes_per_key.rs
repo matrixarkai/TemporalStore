@@ -5459,3 +5459,159 @@ fn what_repeated_field_names_cost_the_model_maps() {
         "an arm allocated nothing, which cannot be right for {fields} fields"
     );
 }
+
+/// WHAT THE ONE CONSTANT FIELD NAME COSTS AT THE SHAPE THE PRODUCT ACTUALLY WRITES.
+///
+/// # WHY THIS IS NOT THE FIGURE ALREADY RECORDED
+///
+/// `what_repeated_field_names_cost_the_model_maps` priced field-name sharing on a SCHEMA: five
+/// distinct names of ten to sixteen characters, 38.4 bytes saved per field. That is the right
+/// shape for the Redis-compatible surface and the wrong one for the dominant arm, and
+/// `hash_field_map`'s own module doc says why: `write_context_node` is the one producer of a
+/// context-node page and it files that page under the single constant `CONTEXT_NODE_FIELD`
+/// (`"meta"`), so the fields-per-hash histogram was p50 = p90 = p99 = MAX = 1 at both 4,000 and
+/// 40,000 nodes, with a single distinct occupancy at 100% of keys.
+///
+/// So the dominant arm is not "a few short names repeated". It is ONE name, four characters long,
+/// copied once per object in the store. That is a different measurement, and the answer could have
+/// gone either way: four characters is small enough that the characters are not the cost, and what
+/// is left is the 24-byte `String` struct against a 16-byte handle plus one allocation per entry
+/// against one for the whole shard.
+///
+/// # AND THE VERDICT IS REQUIRED TO HOLD AT BOTH ARMS
+///
+/// A real store uses both surfaces, and the module doc records the trap: a mixed corpus measured a
+/// mean of 1.98 fields per hash over a population containing no hash holding two. So this measures
+/// the narrow arm AND the wide one, and reports both rather than averaging them.
+///
+/// # WHAT READING THE WRITE SITES ADDED TO THE FIGURE
+///
+/// The four sites that install a hash element were read rather than assumed, and the wide arm is
+/// worse than this probe's own `owned` column says. All three Redis-surface sites pass
+/// `Some(field.clone())` as the bucket-index COMPONENT and `field.clone()` again as the map's
+/// element -- the same characters allocated twice per write, one of which this probe does not
+/// even count. The context-node site borrows the constant for the component and allocates it
+/// once for the element. A single interned handle serves both positions at every site.
+///
+/// rust-internal: measures this crates own resident structures, no product behaviour
+///
+///   cargo test --features alloc-probe -p temporalstore-rust --lib what_the_one_constant_field_name -- --ignored --nocapture
+#[test]
+#[cfg(feature = "alloc-probe")]
+#[ignore = "builds four field-map shapes at 4,000 hashes; run by name, and ALONE -- the allocation \
+            counters are process-global"]
+fn what_the_one_constant_field_name_costs_at_the_shape_the_product_writes() {
+    const HASHES: usize = 4_000;
+    // The constant the write path spells, read from the crate rather than written out here, so a
+    // change to it cannot leave this probe pricing a name nothing files.
+    let narrow: &[&str] = &[crate::engine::constants::CONTEXT_NODE_FIELD];
+    // The wide arm, which only the Redis-compatible surface produces. Sixty-four is the occupancy
+    // the container comparison in `model_map_container_cost` reports its second figure at.
+    let wide_names: Vec<String> = (0..64).map(|index| format!("field-{index:04}")).collect();
+    let wide: Vec<&str> = wide_names.iter().map(|name| &name[..]).collect();
+
+    let address = |i: usize| ElementEntry::from_parts(1, i as u64 * 64, 48, None, None);
+
+    // AS IT IS: `Vec<(String, ElementEntry)>`, one owned name per field per hash.
+    let owned = |names: &[&str]| {
+        let probe = Probe::start();
+        let mut maps: Vec<Vec<(String, ElementEntry)>> = Vec::with_capacity(HASHES);
+        for object in 0..HASHES {
+            let mut fields: Vec<(String, ElementEntry)> = Vec::with_capacity(names.len());
+            for (slot, name) in names.iter().enumerate() {
+                fields.push((name.to_string(), address(object * names.len() + slot)));
+            }
+            maps.push(fields);
+        }
+        std::hint::black_box(&maps);
+        probe.stop()
+    };
+
+    // POOLED, the way `bucket_index.kind_pool` already shares a component name: one handle per
+    // distinct name for the whole shard, every entry holding a clone of it. The pool itself is
+    // measured INSIDE the probe, so its cost is charged here and not hidden.
+    let pooled = |names: &[&str]| {
+        let probe = Probe::start();
+        let mut pool: std::collections::HashSet<std::sync::Arc<str>> =
+            std::collections::HashSet::new();
+        for name in names {
+            pool.insert(std::sync::Arc::from(*name));
+        }
+        let handles: Vec<std::sync::Arc<str>> = names
+            .iter()
+            .map(|name| pool.get(&name[..]).expect("just inserted").clone())
+            .collect();
+        let mut maps: Vec<Vec<(std::sync::Arc<str>, ElementEntry)>> = Vec::with_capacity(HASHES);
+        for object in 0..HASHES {
+            let mut fields: Vec<(std::sync::Arc<str>, ElementEntry)> =
+                Vec::with_capacity(names.len());
+            for (slot, handle) in handles.iter().enumerate() {
+                fields.push((
+                    std::sync::Arc::clone(handle),
+                    address(object * names.len() + slot),
+                ));
+            }
+            maps.push(fields);
+        }
+        std::hint::black_box((&maps, &pool));
+        probe.stop()
+    };
+
+    let arms = [
+        ("narrow (1 constant field)", narrow.to_vec(), narrow.len()),
+        ("wide (64 distinct fields)", wide.clone(), wide.len()),
+    ];
+
+    println!();
+    println!("  {HASHES} hashes per arm, field name taken from the crate constant where it is one");
+    for (label, names, width) in arms {
+        let fields = HASHES * width;
+        let a = owned(&names);
+        let b = pooled(&names);
+        let per = |bytes: u64| bytes as f64 / fields as f64;
+        println!();
+        println!("  {label} -- {fields} fields");
+        println!("    shape      allocations        bytes   per field   allocs per field");
+        println!(
+            "    owned      {:>11}   {:>10}   {:>9.1}   {:>16.2}",
+            a.allocs,
+            a.chunk_bytes,
+            per(a.chunk_bytes),
+            a.allocs as f64 / fields as f64
+        );
+        println!(
+            "    pooled     {:>11}   {:>10}   {:>9.1}   {:>16.2}",
+            b.allocs,
+            b.chunk_bytes,
+            per(b.chunk_bytes),
+            b.allocs as f64 / fields as f64
+        );
+        println!(
+            "    saving     {:>11}   {:>10}   {:>9.1}   {:>16.2}",
+            a.allocs as i64 - b.allocs as i64,
+            a.chunk_bytes as i64 - b.chunk_bytes as i64,
+            per(a.chunk_bytes) - per(b.chunk_bytes),
+            (a.allocs as f64 - b.allocs as f64) / fields as f64
+        );
+        assert!(
+            a.allocs > 0 && b.allocs > 0,
+            "an arm of {label} allocated nothing, which cannot be right for {fields} fields"
+        );
+    }
+
+    println!();
+    println!("  THE MECHANISM IS ALREADY IN THE CRATE, which is what makes this a conversion");
+    println!("  rather than a design: `bucket_index.kind_pool` interns COMPONENT names through");
+    println!("  `intern_shared`, and `install_element` takes `&mut ShardState`, so the pool is");
+    println!("  reachable from the write site without a new lock, a static, or a pool per");
+    println!("  object -- which were the three routes a per-map pool was refused for.");
+    println!();
+    println!("  AND THE FIELD NAME IS THE COMPONENT, READ AT ALL FOUR WRITE SITES RATHER THAN");
+    println!("  ASSUMED. The three Redis-surface sites in `execute_on_shard` pass");
+    println!("  `Some(field.clone())` as the component AND `field.clone()` as the element: the");
+    println!("  same characters, allocated TWICE per write. The context-node site passes");
+    println!("  `CONTEXT_NODE_FIELD` borrowed for the component and its `.to_string()` for the");
+    println!("  element -- one allocation per write of a four-byte constant. So the narrow arm");
+    println!("  pays once per object and the wide arm twice per field, and one interned handle");
+    println!("  serves both positions at every site.");
+}
