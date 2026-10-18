@@ -271,7 +271,7 @@ pub(super) struct ShardState {
     /// crash forgetting a window's worth of members re-admits a duplicate rather than
     /// dropping a legitimate first ingest.
     #[serde(default, with = "super::seen_index_serde")]
-    pub(super) seen: HashMap<String, SeenSet>,
+    pub(super) seen: HashMap<ModelKey, SeenSet>,
     /// Token buckets: key -> (tokens remaining, last refill ms). Config rides each command,
     /// never the store -- the caller owns policy, which is exactly what a quota layer wants.
     /// No blocks back this state: it persists only with the shard index snapshot, so a crash
@@ -279,7 +279,7 @@ pub(super) struct ShardState {
     /// limiter that briefly over-admits after a crash beats one that starves recovered
     /// tenants on stale counts.
     #[serde(default)]
-    pub(super) buckets: HashMap<String, (f64, u64)>,
+    pub(super) buckets: HashMap<ModelKey, (f64, u64)>,
     /// Sorted sets: member -> (total-order score bits, element block). The score-ordered view
     /// is derived per query -- V1 accepts the per-range sort; the upgrade path is a second
     /// in-memory map rebuilt at load, never a second persisted structure (the index component
@@ -7645,6 +7645,11 @@ impl ShardState {
         // minted, while the maps adopted here later converged on the page index's
         // allocation. Three holders, two allocations, and no byte probe would have said so.
         moved |= adopt_key_in(&mut self.strings, object_key, &canonical);
+        // `seen` and `buckets` too: a raw key used for a string, a series, a selection, a
+        // seen-set and a rate bucket lands in FIVE maps, and the pointer guard measured
+        // THREE allocations before these two joined -- each was holding its own copy.
+        moved |= adopt_key_in(&mut self.seen, object_key, &canonical);
+        moved |= adopt_key_in(&mut self.buckets, object_key, &canonical);
         moved |= adopt_key_in(&mut self.features, object_key, &canonical);
         moved |= adopt_key_in(&mut self.control_state_selection, object_key, &canonical);
         if moved {

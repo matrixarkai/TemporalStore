@@ -7,7 +7,7 @@ use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
 use super::state::SeenSet;
 
-pub fn serialize<S>(value: &HashMap<String, SeenSet>, serializer: S) -> Result<S::Ok, S::Error>
+pub fn serialize<S>(value: &HashMap<std::sync::Arc<str>, SeenSet>, serializer: S) -> Result<S::Ok, S::Error>
 where
     S: Serializer,
 {
@@ -26,7 +26,7 @@ where
     encoded.serialize(serializer)
 }
 
-pub fn deserialize<'de, D>(deserializer: D) -> Result<HashMap<String, SeenSet>, D::Error>
+pub fn deserialize<'de, D>(deserializer: D) -> Result<HashMap<std::sync::Arc<str>, SeenSet>, D::Error>
 where
     D: Deserializer<'de>,
 {
@@ -39,7 +39,9 @@ where
                 seen.by_time.insert((seen_at, member.clone()), ());
                 seen.by_member.insert(member, seen_at);
             }
-            (key, seen)
+            // The stored form carries a `String` key; the map holds a `ModelKey` so it can
+            // share one allocation with the page index, so convert at the boundary.
+            (std::sync::Arc::from(key.as_str()), seen)
         })
         .collect())
 }

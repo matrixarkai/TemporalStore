@@ -1637,7 +1637,7 @@ pub(crate) fn execute_on_shard(
                 Some(now),
                 false,
             );
-            let seen = shard.seen.entry(key).or_default();
+            let seen = shard.seen.entry(std::sync::Arc::from(&key[..])).or_default();
             // Bounded sweep from the time-ordered front: enough to keep pace with any
             // sustained rate, never enough to stall a hot call on a huge backlog.
             for _ in 0..128 {
@@ -1680,7 +1680,7 @@ pub(crate) fn execute_on_shard(
                 };
             }
             CommandResponse::Integer {
-                value: shard.seen.get(&key).map_or(0, |seen| seen.by_member.len()) as i64,
+                value: shard.seen.get(&key[..]).map_or(0, |seen| seen.by_member.len()) as i64,
             }
         }
         Command::BucketTake {
@@ -1697,7 +1697,7 @@ pub(crate) fn execute_on_shard(
             // caller whose limit was meant to have been discarded.
             remove_if_expired(shard, &key);
             let now = resolve_now_ms();
-            let current = shard.buckets.get(&key).copied();
+            let current = shard.buckets.get(&key[..]).copied();
             let (allowed, remaining, retry_after_ms, next) =
                 bucket_take(current, now, tokens, capacity, refill_per_sec);
             // The outcome is the bucket the take LEFT BEHIND -- tokens and the refill moment --
@@ -1748,7 +1748,7 @@ pub(crate) fn execute_on_shard(
                 None,
                 false,
             );
-            shard.buckets.insert(key, next);
+            shard.buckets.insert(std::sync::Arc::from(&key[..]), next);
             mutated = true;
             CommandResponse::Members {
                 members: bucket_answer(allowed, remaining, retry_after_ms),
@@ -1767,7 +1767,7 @@ pub(crate) fn execute_on_shard(
                 mutated = true;
             }
             let now = resolve_now_ms();
-            let current = shard.buckets.get(&key).copied();
+            let current = shard.buckets.get(&key[..]).copied();
             let (allowed, remaining, retry_after_ms, _) =
                 bucket_take(current, now, tokens, capacity, refill_per_sec);
             CommandResponse::Members {

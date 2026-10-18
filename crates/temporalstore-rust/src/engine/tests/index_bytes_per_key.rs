@@ -4163,6 +4163,29 @@ fn why_there_are_many_per_key_maps_and_not_one() {
                 ttl_ms: 0,
                 selection_type: crate::types::ControlStateSelectionType::Last,
             },
+            // THE REMAINING MAPS WITH WRITERS, so this covers every per-key map a non-context
+            // write can reach rather than the four the first version happened to drive. The last
+            // one is a QUERY on purpose: `FeatureAggQuery` caches its decoded answer in
+            // `feature_values` under the same key `features` is keyed by, so a read is what puts
+            // a second holder on the key.
+            Command::SeenCheck {
+                key: raw.clone(),
+                member: vec![b'm'; 8],
+                window_ms: 60_000,
+            },
+            Command::BucketTake {
+                key: raw.clone(),
+                tokens: 1.0,
+                capacity: 10.0,
+                refill_per_sec: 1.0,
+            },
+            Command::FeatureAggQuery {
+                key: raw.clone(),
+                start_ms: 0,
+                end_ms: u64::MAX,
+                aggregator: "sum".to_string(),
+                count: None,
+            },
         ];
         for command in commands {
             let response = engine.execute(ExecuteRequest { shard_id: 1, command });
@@ -4210,8 +4233,8 @@ fn why_there_are_many_per_key_maps_and_not_one() {
             "feature_rollups",
             shard.feature_rollups.keys().map(|k| (k.as_str(), k.as_ptr() as usize)).collect(),
         ),
-        ("seen", shard.seen.keys().map(|k| (k.as_str(), k.as_ptr() as usize)).collect()),
-        ("buckets", shard.buckets.keys().map(|k| (k.as_str(), k.as_ptr() as usize)).collect()),
+        ("seen", shard.seen.keys().map(|k| (&**k, k.as_ptr() as usize)).collect()),
+        ("buckets", shard.buckets.keys().map(|k| (&**k, k.as_ptr() as usize)).collect()),
         (
             "expires_at_ms",
             shard.expires_at_ms.keys().map(|k| (&**k, k.as_ptr() as usize)).collect(),
@@ -4221,7 +4244,7 @@ fn why_there_are_many_per_key_maps_and_not_one() {
     let mut holders_of: std::collections::BTreeMap<&str, Vec<(&str, usize)>> =
         std::collections::BTreeMap::new();
     println!();
-    println!("  {KEYS} raw keys, each written through four families");
+    println!("  {KEYS} raw keys, each written through seven commands across every writable per-key map");
     println!("  map                            keys");
     for (name, keys) in &holders {
         println!("  {name:30} {:>5}", keys.len());
