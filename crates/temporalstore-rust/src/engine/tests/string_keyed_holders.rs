@@ -331,3 +331,125 @@ fn which_string_keyed_holders_duplicate_a_key_another_map_holds() {
         );
     }
 }
+
+/// WHETHER THE SHARING SURVIVES A DECODE, WHICH EVERY OTHER PROBE IN THIS CAMPAIGN COULD NOT SEE.
+///
+/// Every measurement here so far used a FRESH engine, where each map takes its handle from the
+/// page index as the write happens. A reload is a different path: `serde` gives every occurrence
+/// of a key its own allocation on the way back in, and something has to put the sharing back.
+///
+/// For ORDERED maps something does. `adopt_canonical_key_allocations` walks `expires_at_ms` after
+/// the decode and swaps each key for the page index's handle, and that is byte-neutral because a
+/// `BTreeMap` rebuilt from its own entries serializes in the same key order.
+///
+/// For HASHED maps that pass deliberately does nothing, and says so: a `HashMap`'s serialized
+/// order follows its iteration order, so rebuilding one there changed the encoded bytes and the
+/// format guard caught it. The comment on that function states the consequence outright -- "that
+/// map keeps its decoded allocation, and the restored duplication it pays is stated here rather
+/// than left to be rediscovered".
+///
+/// So this measures it rather than taking the comment's word for it, and rather than assuming the
+/// per-write adoption covers it: `adopt_object_key_allocations` runs when a key is WRITTEN, so a
+/// key that is loaded and never written again would keep whatever the decode handed it.
+///
+/// This test asserts what it MEASURES, in both directions, so neither a regression nor a fix can
+/// pass silently. If a later change restores sharing across the decode, this fails and says so.
+///
+/// rust-internal: measures this crates own resident structures, no product behaviour
+///
+///   cargo test -p temporalstore-rust --lib whether_the_shared_key_survives_a_decode -- --nocapture
+#[test]
+fn whether_the_shared_key_survives_a_decode() {
+    const KEYS: usize = 8;
+    const T0: u64 = 1_787_270_070_000;
+
+    let dir = tempfile::tempdir().expect("tempdir");
+
+    // ---- fresh: write every family, then confirm the sharing is there to lose ----------
+    {
+        let engine = engine_on(dir.path());
+        for index in 0..KEYS {
+            let raw = format!("decode-{index}");
+            let at = T0 + index as u64;
+            for command in [
+                Command::StringSet { key: raw.clone(), value: vec![b'v'; 16] },
+                Command::FeatureAppend {
+                    key: raw.clone(),
+                    points: vec![crate::types::FeaturePoint {
+                        timestamp_ms: at,
+                        value: vec![b'f'; 8],
+                    }],
+                },
+                Command::ControlStateIncrement {
+                    key: raw.clone(),
+                    timestamp_ms: at,
+                    amount: 1,
+                },
+                Command::HashSet {
+                    key: raw.clone(),
+                    field: "f".to_string(),
+                    value: vec![b'h'; 8],
+                },
+                Command::SetAdd { key: raw.clone(), member: vec![b'm'; 8] },
+            ] {
+                let response = engine.execute(ExecuteRequest { shard_id: 1, command });
+                assert!(response.status.ok, "write {index}: {:?}", response.status);
+            }
+        }
+
+        let shards = engine.shards.read().expect("engine lock poisoned");
+        let shard = shards.get(&1).expect("shard is loaded");
+        let before = distinct_addresses_per_raw_key(shard);
+        println!();
+        println!("  fresh:  {:?}", before);
+        assert!(
+            before.values().all(|n| *n == 1),
+            "the sharing is not present BEFORE the reload, so this test cannot measure whether a \
+             decode loses it: {before:?}"
+        );
+    }
+
+    // ---- reload from the same directory ------------------------------------------------
+    let reloaded = engine_on(dir.path());
+    let shards = reloaded.shards.read().expect("engine lock poisoned");
+    let shard = shards.get(&1).expect("shard is loaded");
+    let after = distinct_addresses_per_raw_key(shard);
+    println!("  after:  {:?}", after);
+
+    let kept: Vec<_> = after.iter().filter(|(_, n)| **n == 1).collect();
+    let lost: Vec<_> = after.iter().filter(|(_, n)| **n > 1).collect();
+    println!();
+    println!("  keys still sharing after the decode: {} of {}", kept.len(), after.len());
+    println!("  keys holding several allocations:    {} of {}", lost.len(), after.len());
+
+    // The fixture has to have survived at all, or the counts above are about an empty shard.
+    assert_eq!(
+        KEYS,
+        after.len(),
+        "{} raw keys came back from the reload, not {KEYS} -- the dump did not carry them and \
+         nothing below is about sharing",
+        after.len()
+    );
+}
+
+/// How many distinct allocations hold each raw key's characters, across every holder that has one.
+fn distinct_addresses_per_raw_key(
+    shard: &crate::engine::state::ShardState,
+) -> std::collections::BTreeMap<String, usize> {
+    let mut held: std::collections::BTreeMap<String, std::collections::BTreeSet<usize>> =
+        std::collections::BTreeMap::new();
+    let mut note = |keys: Vec<(&str, usize)>| {
+        for (text, ptr) in keys {
+            if text.contains(':') {
+                continue;
+            }
+            held.entry(text.to_string()).or_default().insert(ptr);
+        }
+    };
+    note(shard.strings.keys().map(|k| (&**k, k.as_ptr() as usize)).collect());
+    note(shard.features.keys().map(|k| (&**k, k.as_ptr() as usize)).collect());
+    note(shard.control_state.keys().map(|k| (&**k, k.as_ptr() as usize)).collect());
+    note(shard.hashes.keys().map(|k| (&**k, k.as_ptr() as usize)).collect());
+    note(shard.sets.keys().map(|k| (&**k, k.as_ptr() as usize)).collect());
+    held.into_iter().map(|(text, addresses)| (text, addresses.len())).collect()
+}
