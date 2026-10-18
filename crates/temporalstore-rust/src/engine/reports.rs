@@ -3481,12 +3481,23 @@ impl Default for StorageManagerCycleRequest {
             shard_id: 0,
             selected_dump_buckets: Vec::new(),
             dry_run: false,
-            // NO BOUND BY DEFAULT. The measured effect of a bound is large -- the per-key index
-            // falls from 223.2 to 26.6 B/key -- but the right number is the resident index a
-            // deployment is willing to hold per shard, and that is not a constant this crate can
-            // know. Zero means no bound, as it does on every other bound on this request, so the
-            // trigger is reachable by setting one number and does nothing until someone does.
-            index_resident_limit_bytes: 0,
+            // SIXTY-FOUR MEBIBYTES OF RESIDENT INDEX PER SHARD, and here is the arithmetic rather
+            // than a round number chosen for looking like one. The quantity this bounds is
+            // `bucket_index_resident_bytes`, which is pages x `size_of::<BlockIndex>()`; measured,
+            // a 40,040-key shard with 40,080 pages holds 1,430,016 B of it, so 64 MiB is about
+            // 1.8 million pages -- roughly a 1.8-million-key shard before the bound first fires.
+            //
+            // So it is a CAP, not a scheduler: a shard under that size never notices it, and one
+            // over it dumps and releases its page lists instead of growing without limit. That is
+            // the behaviour the comparison design gets from a space-amplification bound, and the
+            // measured effect when it does fire is the whole index going 301.2 -> 105.5 B/key with
+            // every read still answering.
+            //
+            // It is safe to have ON because of what it reads: this shard's own index bytes and
+            // nothing else. The wide eviction gate is off by default precisely because its signal
+            // is mostly other shards' cache -- 99.95% of it on a ten-key shard -- and that defect
+            // is the one this entry point does not have.
+            index_resident_limit_bytes: 64 * 1024 * 1024,
             enable_prepare: true,
             enable_wal_reclaim: true,
             enable_evict: true,

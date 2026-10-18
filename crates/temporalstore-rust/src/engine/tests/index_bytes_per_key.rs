@@ -3789,3 +3789,82 @@ fn what_the_feature_series_would_cost_as_an_owned_array() {
          free"
     );
 }
+
+/// WHAT THE `strings` MAP COSTS, AND WHERE ITS 54.0 B/KEY ACTUALLY GOES.
+///
+/// After the resident bound fires, `strings` is the largest row left in the index -- 54.0 B/key at
+/// a 40,040-key corpus -- and the entry it holds is 32 bytes: a 16-byte `Arc<str>` fat pointer and
+/// a 16-byte `ElementEntry`. So the row is 1.69x its own payload, and the question this answers is
+/// whether that is distributed slack a different container would avoid, or something intrinsic.
+///
+/// THE ANSWER IS CAPACITY ROUNDING, and it is worth pricing rather than guessing at: a hash table
+/// rounds to a power of two, so 40,000 entries live in 65,536 slots at a 61% load and the unused
+/// 39% is paid in full. A B-tree has no power-of-two step; it pays node headers instead. Which
+/// wins is an empirical question about THESE widths, and a previous swap of this kind measured a
+/// 1.93x REGRESSION, so the measurement comes before the change.
+///
+/// rust-internal: measures this crate's own resident structures, no product behaviour
+#[test]
+#[cfg(feature = "alloc-probe")]
+fn where_the_string_maps_bytes_go_and_whether_a_btree_would_be_smaller() {
+    const KEYS: usize = 40_000;
+    const LIVE_KEYS: f64 = 40_040.0;
+
+    let entry = |i: usize| -> (std::sync::Arc<str>, ElementEntry) {
+        (
+            std::sync::Arc::from(format!("own-{i:08}").as_str()),
+            ElementEntry::from_parts(1, i as u64 * 64, 64, Some(0), Some(i as u64)),
+        )
+    };
+
+    let mut hash: HashMap<std::sync::Arc<str>, ElementEntry> = HashMap::new();
+    for i in 0..KEYS {
+        let (key, address) = entry(i);
+        hash.insert(key, address);
+    }
+    let mut presized: HashMap<std::sync::Arc<str>, ElementEntry> = HashMap::with_capacity(KEYS);
+    for i in 0..KEYS {
+        let (key, address) = entry(i);
+        presized.insert(key, address);
+    }
+    let mut tree: BTreeMap<std::sync::Arc<str>, ElementEntry> = BTreeMap::new();
+    for i in 0..KEYS {
+        let (key, address) = entry(i);
+        tree.insert(key, address);
+    }
+
+    // Measured WITHOUT the key payloads, which every candidate holds identically: a clone-based
+    // probe cannot see an `Arc` payload anyway, so what comes back is the table or the nodes.
+    let hash_bytes = deep_heap_bytes(&hash);
+    let presized_bytes = deep_heap_bytes(&presized);
+    let tree_bytes = deep_heap_bytes(&tree);
+    let payload = (KEYS * (std::mem::size_of::<std::sync::Arc<str>>()
+        + std::mem::size_of::<ElementEntry>())) as f64;
+
+    println!();
+    println!("  {KEYS} entries, payload is {} B each ({payload:.0} B total):",
+        std::mem::size_of::<std::sync::Arc<str>>() + std::mem::size_of::<ElementEntry>());
+    for (name, bytes, capacity) in [
+        ("HashMap, grown", hash_bytes, Some(hash.capacity())),
+        ("HashMap, pre-sized", presized_bytes, Some(presized.capacity())),
+        ("BTreeMap", tree_bytes, None),
+    ] {
+        println!(
+            "    {name:<20} {bytes:>10} B   {:>6.1} B/key at 40,040   {:>5.2}x payload{}",
+            bytes as f64 / LIVE_KEYS,
+            bytes as f64 / payload,
+            match capacity {
+                Some(c) => format!("   capacity {c}, load {:.0}%", 100.0 * KEYS as f64 / c as f64),
+                None => String::new(),
+            }
+        );
+    }
+    let best = tree_bytes.min(presized_bytes);
+    println!(
+        "    the best alternative is worth {:>5.1} B/key against the grown table",
+        (hash_bytes.saturating_sub(best)) as f64 / LIVE_KEYS
+    );
+
+    assert_eq!(16, std::mem::size_of::<ElementEntry>(), "the address width moved");
+    assert!(hash_bytes > 0 && tree_bytes > 0, "a zero figure cannot be compared");
+}
