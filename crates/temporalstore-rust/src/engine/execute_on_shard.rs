@@ -120,7 +120,12 @@ fn stage_component_outcome(
     super::block_in_wal::stage_outcome(crate::wal::WalOutcomeItem {
         kind: kind.to_string(),
         object_key: object_key.to_string(),
-        component: component.clone(),
+        // MOVED, NOT CLONED. `component` is taken BY VALUE -- it is already the caller's
+        // allocation handed over -- and this function ends here, so nothing reads it after.
+        // Cloning it allocated a second copy of the same characters on every staged component
+        // outcome: every hash field, set member, zset member, list element and context entity
+        // write. `stage_meta_outcome` next door already moves its owned arguments.
+        component,
         object_id: stable_block_object_id(shard_id, kind, object_key),
         routing_bucket,
         address,

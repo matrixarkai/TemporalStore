@@ -5615,3 +5615,185 @@ fn what_the_one_constant_field_name_costs_at_the_shape_the_product_writes() {
     println!("  pays once per object and the wide arm twice per field, and one interned handle");
     println!("  serves both positions at every site.");
 }
+
+/// WHAT ONE HASH FIELD WRITE ALLOCATES, END TO END.
+///
+/// # WHY A WHOLE-PATH FIGURE AND NOT A SYNTHETIC ONE
+///
+/// The per-structure probes in this file build a container and measure it. That answers what a
+/// shape costs; it cannot answer whether a saving reaches a caller. A field name is now a shared
+/// handle, the element position takes it from `kind_pool`, and the bucket index's COMPONENT
+/// position was being cloned from an owned parameter that nothing read afterwards -- three changes
+/// whose combined effect on a real write is not the sum of three synthetic probes.
+///
+/// So this drives `HashSet` through the engine and counts. One number, on the path a caller uses.
+///
+/// # WHAT IT IS NOT
+///
+/// It is not an A/B. A single binary cannot run the write path twice with different code in it, so
+/// this records the figure and the breakdown that explains it; the before-and-after lives in the
+/// change's own measurement, taken by running this probe on each side.
+///
+/// rust-internal: measures this crates own write path, no product behaviour
+///
+///   cargo test --features alloc-probe -p temporalstore-rust --lib what_one_hash_field_write_allocates -- --ignored --nocapture
+#[test]
+#[cfg(feature = "alloc-probe")]
+#[ignore = "drives 2,000 hash field writes under the counting allocator; run by name, and ALONE -- \
+            the allocation counters are process-global"]
+fn what_one_hash_field_write_allocates() {
+    use crate::types::{Command, ExecuteRequest};
+
+    const OBJECTS: usize = 500;
+    const FIELDS: usize = 4;
+
+    let dir = tempfile::tempdir().expect("tempdir");
+    let engine = std::sync::Arc::new(crate::TemporalEngine::with_local_dirs(
+        64 * 1024 * 1024,
+        dir.path().join("cache"),
+        dir.path().join("pages"),
+        dir.path().join("indexes"),
+    ));
+    engine.load_shard(1);
+
+    // WARM FIRST, so the figure is a steady-state write rather than the first write's one-off
+    // structure building. A probe that counts the first write of a fresh shard measures the shard's
+    // construction and calls it a write.
+    for field in 0..FIELDS {
+        let response = engine.execute(ExecuteRequest {
+            shard_id: 1,
+            command: Command::HashSet {
+                key: "warm-up".to_string(),
+                field: format!("f{field}"),
+                value: vec![b'v'; 32],
+            },
+        });
+        assert!(response.status.ok, "warm-up: {:?}", response.status);
+    }
+
+    let probe = Probe::start();
+    for object in 0..OBJECTS {
+        for field in 0..FIELDS {
+            let response = engine.execute(ExecuteRequest {
+                shard_id: 1,
+                command: Command::HashSet {
+                    key: format!("hashwrite-{object:06}"),
+                    field: format!("f{field}"),
+                    value: vec![b'v'; 32],
+                },
+            });
+            assert!(response.status.ok, "write {object}/{field}: {:?}", response.status);
+        }
+    }
+    let counts = probe.stop();
+
+    // AND A SECOND ARM, ON THE PATH THAT ACTUALLY ROUTES THROUGH `stage_component_outcome`.
+    //
+    // The hash write does not: `install_element` moves its owned component into the bucket-index
+    // filing and `install_element_staged_only` stages through `stage_outcome_attested`. The four
+    // callers of `stage_component_outcome` are `ControlStateIncrement`, `ControlStateChangeAdd`,
+    // `ControlStateSelectionSet` and `ContextUpsertEntity`. That is worth measuring separately,
+    // because a figure taken on the wrong path reads as a refutation of a change that is simply
+    // somewhere else -- which is exactly what the first run of this probe did.
+    for index in 0..FIELDS {
+        let response = engine.execute(ExecuteRequest {
+            shard_id: 1,
+            command: Command::ControlStateIncrement {
+                key: "counter-warm".to_string(),
+                timestamp_ms: 1_787_270_070_000 + index as u64,
+                amount: 1,
+            },
+        });
+        assert!(response.status.ok, "counter warm-up: {:?}", response.status);
+    }
+    let counter_probe = Probe::start();
+    for object in 0..OBJECTS {
+        let response = engine.execute(ExecuteRequest {
+            shard_id: 1,
+            command: Command::ControlStateIncrement {
+                key: format!("counter-{object:06}"),
+                timestamp_ms: 1_787_270_070_000 + object as u64,
+                amount: 1,
+            },
+        });
+        assert!(response.status.ok, "counter {object}: {:?}", response.status);
+    }
+    let counter_counts = counter_probe.stop();
+    println!();
+    println!("  {OBJECTS} control-state increments (through stage_component_outcome), warmed first");
+    println!("    allocations      : {}", counter_counts.allocs);
+    println!(
+        "    allocations/write: {:.2}",
+        counter_counts.allocs as f64 / OBJECTS as f64
+    );
+    println!("    chunk bytes      : {}", counter_counts.chunk_bytes);
+    println!(
+        "    bytes/write      : {:.1}",
+        counter_counts.chunk_bytes as f64 / OBJECTS as f64
+    );
+    assert!(
+        counter_counts.allocs > 0,
+        "the counter path allocated nothing for {OBJECTS} increments"
+    );
+
+    let writes = OBJECTS * FIELDS;
+    println!();
+    println!("  {writes} hash field writes ({OBJECTS} objects x {FIELDS} fields), warmed first");
+    println!("    allocations      : {}", counts.allocs);
+    println!("    allocations/write: {:.2}", counts.allocs as f64 / writes as f64);
+    println!("    chunk bytes      : {}", counts.chunk_bytes);
+    println!("    bytes/write      : {:.1}", counts.chunk_bytes as f64 / writes as f64);
+
+    // DENOMINATOR, asserted: the writes have to have landed, or the figure is of nothing.
+    let (objects_held, fields_held) = {
+        let shards = engine.shards.read().expect("engine lock poisoned");
+        let shard = shards.get(&1).expect("shard is loaded");
+        (
+            shard.hashes.len(),
+            shard.hashes.iter().map(|(_, f)| f.len()).sum::<usize>(),
+        )
+    };
+    println!("    objects held     : {objects_held}");
+    println!("    fields held      : {fields_held}");
+    assert_eq!(
+        OBJECTS + 1,
+        objects_held,
+        "the shard holds {objects_held} hash objects for {OBJECTS} written plus one warm-up, so \
+         the fixture did not write what it claims and the per-write figure divides by the wrong \
+         number"
+    );
+    assert_eq!(
+        writes + FIELDS,
+        fields_held,
+        "the shard holds {fields_held} fields for {} written, so fields were overwritten or lost",
+        writes + FIELDS
+    );
+    assert!(
+        counts.allocs > 0,
+        "the write path allocated nothing for {writes} writes, which cannot be right -- the probe \
+         is not seeing the allocator"
+    );
+
+    // AND THE FIELD NAME IS STILL ONE ALLOCATION PER DISTINCT NAME, not one per write. This is the
+    // invariant the shared handle bought, restated here because a per-write figure that quietly
+    // included a name allocation per write would look like a regression in this probe and read as
+    // noise.
+    let distinct_name_allocations = {
+        let shards = engine.shards.read().expect("engine lock poisoned");
+        let shard = shards.get(&1).expect("shard is loaded");
+        let mut addresses = std::collections::HashSet::new();
+        for (_, fields) in shard.hashes.iter() {
+            for name in fields.keys() {
+                addresses.insert(name.as_ptr() as usize);
+            }
+        }
+        addresses.len()
+    };
+    println!("    distinct field-name allocations: {distinct_name_allocations} for {FIELDS} names");
+    assert_eq!(
+        FIELDS, distinct_name_allocations,
+        "{distinct_name_allocations} allocations hold {FIELDS} distinct field names across \
+         {objects_held} objects. One per name is what the pooled handle bought; one per object is \
+         what it replaced"
+    );
+}
