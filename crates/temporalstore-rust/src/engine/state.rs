@@ -7279,6 +7279,48 @@ fn repack_nested<MK, K: Ord, V>(map: &mut HashMap<MK, BTreeMap<K, V>>) {
 /// hashed map cannot be replaced in place either, so there is no byte-neutral way to do it in this
 /// pass at all -- that map keeps its decoded allocation, and the restored duplication it pays is
 /// stated here rather than left to be rediscovered.
+/// The same adoption for a HASHED map, re-keyed IN PLACE.
+///
+/// THE REFUSAL ABOVE WAS ABOUT A REBUILD, NOT ABOUT A RE-KEY, and that distinction is the whole of
+/// this function. Draining a `HashMap` into a fresh one changes its capacity and its insertion
+/// order, so it changes the serialized bytes -- which is what happened when `strings` was rebuilt
+/// in this pass and the format guard caught it. Swapping ONE entry's key for a different handle
+/// holding the SAME CHARACTERS is a different operation: the hash is identical, so the probe
+/// sequence is identical, and the `remove` leaves a tombstone that the following `insert` of that
+/// same hash reclaims -- putting the entry back where it was.
+///
+/// Measured rather than argued, because the argument above is exactly the kind that sounds right
+/// either way: `whether_rekeying_a_hashed_map_in_place_moves_its_bytes` re-keys 512 keys one at a
+/// time and finds the encoding **byte-identical**, 9859 bytes before and after, with iteration
+/// order unchanged. So this owes no index-format stamp, and the behaviour it restores is the
+/// sharing a decode had been discarding -- 0 of 8 keys still shared across a reload before it,
+/// measured by `whether_the_shared_key_survives_a_decode`.
+fn adopt_canonical_key_allocations_in_hashed<V>(
+    map: &mut HashMap<ModelKey, V>,
+    lookup: &ObjectBlockLookup,
+) -> usize {
+    // The keys to move, collected first: the map cannot be read for a canonical handle and written
+    // in the same breath, and re-keying while iterating is not something a `HashMap` allows.
+    let moves: Vec<(ModelKey, ModelKey)> = map
+        .keys()
+        .filter_map(|held| {
+            lookup
+                .any_shared_object_key(held)
+                .filter(|canonical| !Arc::ptr_eq(held, canonical))
+                .map(|canonical| (Arc::clone(held), canonical))
+        })
+        .collect();
+
+    let mut adopted = 0usize;
+    for (held, canonical) in moves {
+        if let Some(value) = map.remove(&*held) {
+            map.insert(canonical, value);
+            adopted += 1;
+        }
+    }
+    adopted
+}
+
 fn adopt_canonical_key_allocations(
     expires_at_ms: &mut BTreeMap<Arc<str>, u64>,
     lookup: &ObjectBlockLookup,
@@ -7300,6 +7342,21 @@ fn adopt_canonical_key_allocations(
 
     adopted
 }
+
+/// HOW MANY TIMES THE DECODE PASS RAN, AND HOW MANY KEYS IT ADOPTED.
+///
+/// NOT diagnostic scaffolding -- `whether_the_shared_key_survives_a_dump_and_install` asserts on
+/// the call count, and without it that test cannot tell a decode it reached from one it did not.
+///
+/// That distinction is why these exist. "The pass ran and found nothing to adopt" and "the pass
+/// never ran" produce the SAME end-to-end figure, and an earlier change read the second as the
+/// first: it attributed a reopen's lost sharing to this pass, which a reopen with no dump never
+/// reaches at all. A probe that sees only the final count cannot separate those two, so the count
+/// is exported and asserted instead of inferred.
+pub(super) static REPACK_CALLS: std::sync::atomic::AtomicUsize =
+    std::sync::atomic::AtomicUsize::new(0);
+pub(super) static REPACK_ADOPTED_HASHED: std::sync::atomic::AtomicUsize =
+    std::sync::atomic::AtomicUsize::new(0);
 
 pub(super) fn repack_decoded_btrees(state: &mut ShardState) {
     let ShardState {
@@ -7375,6 +7432,21 @@ pub(super) fn repack_decoded_btrees(state: &mut ShardState) {
     // decode is both the cause and the only moment at which the whole structure is in hand.
     let _adopted =
         adopt_canonical_key_allocations(expires_at_ms, &bucket_index.object_block_lookup);
+    // AND THE HASHED MAPS, which this pass used to leave with their decoded allocations. See
+    // `adopt_canonical_key_allocations_in_hashed`: an in-place re-key is byte-neutral, measured,
+    // so there is no format stamp owed and no reason to leave the duplication behind.
+    REPACK_CALLS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let _adopted_hashed = adopt_canonical_key_allocations_in_hashed(
+        strings,
+        &bucket_index.object_block_lookup,
+    ) + adopt_canonical_key_allocations_in_hashed(
+        features,
+        &bucket_index.object_block_lookup,
+    ) + adopt_canonical_key_allocations_in_hashed(
+        control_state,
+        &bucket_index.object_block_lookup,
+    );
+    REPACK_ADOPTED_HASHED.fetch_add(_adopted_hashed, std::sync::atomic::Ordering::Relaxed);
 
     repack_btree_map(wal_resident_blocks);
     repack_btree_map(expires_at_ms);
@@ -7930,14 +8002,26 @@ mod does_the_sharing_survive_a_decode {
             without_pass > 1,
             "a decode must scatter the allocations, or this test proves nothing about the pass"
         );
-        // THE CLAIM NARROWS WITH THE PASS. `strings` is a hashed map and cannot take part -- see
-        // the note on `adopt_canonical_key_allocations` -- so it keeps its decoded allocation and
-        // the ordered deadline map adopts the page index's. Two, therefore, not one: the pass
-        // removes one of the three a decode scattered, and asserting one here would assert a
-        // behaviour this pass deliberately does not have.
+        // ONE, AND THIS ASSERTION USED TO SAY TWO.
+        //
+        // It read: "`strings` is a hashed map and cannot take part -- so it keeps its decoded
+        // allocation [..] asserting one here would assert a behaviour this pass deliberately does
+        // not have." The premise was that a hashed map cannot be re-keyed without moving the
+        // stored bytes. That is true of a REBUILD, which is the operation that was tried and
+        // caught; it is not true of an in-place re-key, where the characters are identical so the
+        // hash is identical, the probe sequence is identical, and the `remove`'s tombstone is
+        // reclaimed by the `insert` that follows it.
+        //
+        // Measured before changing this: `whether_rekeying_a_hashed_map_in_place_moves_its_bytes`
+        // re-keys 512 keys one at a time and the encoding is byte-identical, 9859 bytes either
+        // way, iteration order unchanged -- so no index-format stamp is owed. The repository's own
+        // byte guard, `a_decode_puts_back_exactly_the_series_that_were_encoded`, passes with the
+        // hashed pass wired in, which is the check that would redden with "the stored form moved".
+        //
+        // So the pass now collapses all three allocations a decode scattered, not two of them.
         assert_eq!(
-            with_pass, 2,
-            "the ordered map must adopt the page index's handle, leaving the hashed map's own"
+            with_pass, 1,
+            "every holder must adopt the page index's handle: the ordered map and the hashed ones"
         );
         assert!(
             with_pass < without_pass,

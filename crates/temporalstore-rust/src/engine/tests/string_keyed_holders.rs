@@ -332,7 +332,18 @@ fn which_string_keyed_holders_duplicate_a_key_another_map_holds() {
     }
 }
 
-/// WHETHER THE SHARING SURVIVES A DECODE, WHICH EVERY OTHER PROBE IN THIS CAMPAIGN COULD NOT SEE.
+/// WHETHER THE SHARING SURVIVES A REOPEN WITH NO DUMP -- WHICH IS **NOT** A DECODE.
+///
+/// THE NAME OF THIS TEST IS WRONG AND IS KEPT ONLY SO THE CORRECTION IS FINDABLE. It measures a
+/// write, a drop and a reopen, and a reopen with no dump has no index image to read: every caller
+/// of `decode_index_bytes` reads `manifest.index_bytes`. Instrumented, `repack_decoded_btrees`
+/// runs **zero times** here, so nothing this test shows is evidence about the decode path or about
+/// `adopt_canonical_key_allocations`. An earlier change attributed this figure to exactly that
+/// pass, which was reading a real limitation of some other path into this one.
+///
+/// `whether_the_shared_key_survives_a_dump_and_install` is the arm that reaches a decode, and
+/// there the sharing SURVIVES. What this one measures is the recovery path a reopen without a dump
+/// takes, where it does not -- a separate finding with a cause still to be found.
 ///
 /// Every measurement here so far used a FRESH engine, where each map takes its handle from the
 /// page index as the write happens. A reload is a different path: `serde` gives every occurrence
@@ -410,7 +421,14 @@ fn whether_the_shared_key_survives_a_decode() {
     }
 
     // ---- reload from the same directory ------------------------------------------------
+    let calls_before = crate::engine::state::REPACK_CALLS.load(std::sync::atomic::Ordering::Relaxed);
     let reloaded = engine_on(dir.path());
+    let calls_after = crate::engine::state::REPACK_CALLS.load(std::sync::atomic::Ordering::Relaxed);
+    let adopted =
+        crate::engine::state::REPACK_ADOPTED_HASHED.load(std::sync::atomic::Ordering::Relaxed);
+    println!();
+    println!("  decode pass ran {} time(s) during the reload", calls_after - calls_before);
+    println!("  hashed keys it adopted: {adopted}");
     let shards = reloaded.shards.read().expect("engine lock poisoned");
     let shard = shards.get(&1).expect("shard is loaded");
     let after = distinct_addresses_per_raw_key(shard);
@@ -680,5 +698,213 @@ fn what_the_tombstone_path_files_and_what_it_allocates() {
         !rows.is_empty(),
         "the delete wrote no tombstone row naming `{raw}`, so there is nothing here to ask about \
          sharing -- the fixture stopped reaching the tombstone path"
+    );
+}
+
+/// WHETHER RE-KEYING A HASHED MAP IN PLACE MOVES ITS STORED BYTES.
+///
+/// This is the one thing standing between the decode path and keeping its key sharing.
+/// `whether_the_shared_key_survives_a_decode` measures that a reload leaves every hashed holder
+/// with its own allocation -- 0 of 8 keys still sharing -- and the pass that would fix it,
+/// `adopt_canonical_key_allocations`, deliberately handles only ORDERED maps. The reason given is
+/// that a `HashMap`'s serialized order follows its iteration order, so touching one there moved
+/// the encoded bytes and the format guard caught it.
+///
+/// BUT THE OPERATION THAT WAS CAUGHT WAS A REBUILD, NOT A RE-KEY. Draining a map into a fresh one
+/// changes capacity and insertion order, and of course moves the bytes. Swapping one entry's key
+/// for a different `Arc` holding the SAME CHARACTERS is a different operation: the hash is
+/// identical, so the probe sequence is identical, and a `remove` leaves a tombstone that the
+/// following `insert` of that same hash should reclaim -- which would put the entry back in the
+/// slot it came from and leave iteration order untouched.
+///
+/// If that holds, the decode-path fix needs no index-format stamp at all, and the refusal was
+/// about the wrong operation. If it does not hold, the refusal stands on measured ground instead
+/// of on a reasonable-sounding argument. Either answer is worth having, so this measures the
+/// BYTES rather than arguing about the data structure.
+///
+/// The map is built the way the decode builds one -- every key its own allocation -- and then
+/// re-keyed onto shared handles, exactly as an adoption pass would.
+///
+/// rust-internal: measures this crates own resident structures, no product behaviour
+///
+///   cargo test -p temporalstore-rust --lib whether_rekeying_a_hashed_map -- --nocapture
+#[test]
+fn whether_rekeying_a_hashed_map_in_place_moves_its_bytes() {
+    // Enough keys to exercise several growth steps and plenty of probe collisions; small enough
+    // to encode in a test.
+    const KEYS: usize = 512;
+
+    let texts: Vec<String> = (0..KEYS).map(|i| format!("decode-key-{i:05}")).collect();
+    // What a decode produces: every key its OWN allocation, even where the text repeats elsewhere.
+    let mut map: std::collections::HashMap<std::sync::Arc<str>, u64> =
+        std::collections::HashMap::new();
+    for (i, text) in texts.iter().enumerate() {
+        map.insert(std::sync::Arc::from(&text[..]), i as u64);
+    }
+
+    let before_order: Vec<String> = map.keys().map(|k| k.to_string()).collect();
+    let before_bytes = rmp_serde::to_vec(&map).expect("the map encodes");
+
+    // What an adoption pass would do: swap each key for a shared handle holding the same
+    // characters. One entry at a time, in place -- NOT a rebuild into a fresh map.
+    let canonical: Vec<std::sync::Arc<str>> =
+        texts.iter().map(|text| std::sync::Arc::from(&text[..])).collect();
+    let mut rekeyed = 0usize;
+    for handle in &canonical {
+        let moves = match map.get_key_value(&**handle) {
+            Some((held, _)) => !std::sync::Arc::ptr_eq(held, handle),
+            None => false,
+        };
+        if !moves {
+            continue;
+        }
+        if let Some(value) = map.remove(&**handle) {
+            map.insert(std::sync::Arc::clone(handle), value);
+            rekeyed += 1;
+        }
+    }
+
+    let after_order: Vec<String> = map.keys().map(|k| k.to_string()).collect();
+    let after_bytes = rmp_serde::to_vec(&map).expect("the map encodes");
+
+    println!();
+    println!("  {KEYS} keys, {rekeyed} re-keyed in place");
+    println!("  encoded bytes before: {}", before_bytes.len());
+    println!("  encoded bytes after:  {}", after_bytes.len());
+    println!(
+        "  byte-identical:       {}",
+        if before_bytes == after_bytes { "YES" } else { "NO" }
+    );
+    println!(
+        "  iteration order kept: {}",
+        if before_order == after_order { "YES" } else { "NO" }
+    );
+    if before_order != after_order {
+        let moved = before_order
+            .iter()
+            .zip(after_order.iter())
+            .filter(|(a, b)| a != b)
+            .count();
+        println!("  positions that differ: {moved} of {KEYS}");
+    }
+
+    // The fixture has to have actually re-keyed, or this measures nothing.
+    assert_eq!(
+        KEYS, rekeyed,
+        "only {rekeyed} of {KEYS} keys were re-keyed, so this run does not exercise the operation \
+         the decode-path fix would perform"
+    );
+    // Every key must still be present and answer the same value -- a re-key that loses an entry
+    // would make the byte comparison meaningless.
+    assert_eq!(KEYS, map.len(), "the re-key changed the map's length");
+    for (i, text) in texts.iter().enumerate() {
+        assert_eq!(
+            Some(&(i as u64)),
+            map.get(&text[..]),
+            "`{text}` does not answer its value after the re-key"
+        );
+    }
+    // And every key must now be the shared handle, or the pass did not do its job.
+    for handle in &canonical {
+        let (held, _) = map.get_key_value(&**handle).expect("the key is present");
+        assert!(
+            std::sync::Arc::ptr_eq(held, handle),
+            "a key is not the shared handle after the re-key"
+        );
+    }
+
+    // The RESULT is printed, not pinned. Whether the bytes move decides whether the decode-path
+    // fix needs an index-format stamp, and that is a finding to report rather than a property to
+    // assert -- pinning either answer here would turn a measurement into a requirement.
+}
+
+/// WHETHER THE SHARING SURVIVES A DUMP AND INSTALL -- THE PATH THAT ACTUALLY DECODES AN INDEX.
+///
+/// `whether_the_shared_key_survives_a_decode` is named for a decode it never reaches. It writes,
+/// drops the engine and reopens -- and a reopen with no dump has no index image to read, so
+/// recovery comes from elsewhere and `repack_decoded_btrees` runs **zero times**. Measured with a
+/// counter, because "the pass ran and found nothing" and "the pass never ran" produce the same
+/// figure and cannot be told apart from the outside.
+///
+/// Every caller of `decode_index_bytes` reads `manifest.index_bytes`, so the decode path needs a
+/// DUMP. This arm takes one, installs it, and asks the question of the path that genuinely decodes
+/// an index -- which is the path `adopt_canonical_key_allocations` and its hashed sibling live on.
+///
+/// rust-internal: measures this crates own resident structures, no product behaviour
+///
+///   cargo test -p temporalstore-rust --lib whether_the_shared_key_survives_a_dump -- --nocapture
+#[test]
+fn whether_the_shared_key_survives_a_dump_and_install() {
+    const KEYS: usize = 8;
+    const T0: u64 = 1_787_270_070_000;
+
+    let dir = tempfile::tempdir().expect("tempdir");
+    let engine = engine_on(dir.path());
+
+    for index in 0..KEYS {
+        let raw = format!("dumped-{index}");
+        let at = T0 + index as u64;
+        for command in [
+            Command::StringSet { key: raw.clone(), value: vec![b'v'; 16] },
+            Command::FeatureAppend {
+                key: raw.clone(),
+                points: vec![crate::types::FeaturePoint { timestamp_ms: at, value: vec![b'f'; 8] }],
+            },
+            Command::ControlStateIncrement { key: raw.clone(), timestamp_ms: at, amount: 1 },
+        ] {
+            let response = engine.execute(ExecuteRequest { shard_id: 1, command });
+            assert!(response.status.ok, "write {index}: {:?}", response.status);
+        }
+    }
+
+    let before = {
+        let shards = engine.shards.read().expect("engine lock poisoned");
+        let shard = shards.get(&1).expect("shard is loaded");
+        distinct_addresses_per_raw_key(shard)
+    };
+    println!();
+    println!("  fresh:  {before:?}");
+    assert!(
+        before.values().all(|n| *n == 1),
+        "the sharing is not present before the dump, so this cannot measure whether a decode \
+         keeps it: {before:?}"
+    );
+
+    let calls_before = crate::engine::state::REPACK_CALLS.load(std::sync::atomic::Ordering::Relaxed);
+    let manifest = engine
+        .create_bucket_dump_manifest(1, Vec::new())
+        .expect("the dump manifest persists");
+    engine
+        .install_bucket_dump_manifest(&manifest)
+        .expect("the dump manifest installs");
+    let calls_after = crate::engine::state::REPACK_CALLS.load(std::sync::atomic::Ordering::Relaxed);
+    let adopted =
+        crate::engine::state::REPACK_ADOPTED_HASHED.load(std::sync::atomic::Ordering::Relaxed);
+
+    let after = {
+        let shards = engine.shards.read().expect("engine lock poisoned");
+        let shard = shards.get(&1).expect("shard is loaded");
+        distinct_addresses_per_raw_key(shard)
+    };
+
+    println!("  after:  {after:?}");
+    println!();
+    println!("  decode pass ran {} time(s)", calls_after - calls_before);
+    println!("  hashed keys it adopted: {adopted}");
+    let sharing = after.values().filter(|n| **n == 1).count();
+    println!("  keys sharing one allocation: {} of {}", sharing, after.len());
+
+    // The install has to have gone through a decode, or this arm measures the same nothing the
+    // other one did. THIS is the assertion that the other probe was missing.
+    assert!(
+        calls_after > calls_before,
+        "the dump install did not reach `repack_decoded_btrees`, so this arm is not measuring the \
+         decode path either -- find the path that does before reading anything into the figures"
+    );
+    assert_eq!(
+        KEYS,
+        after.len(),
+        "{} raw keys survived the install, not {KEYS}",
+        after.len()
     );
 }
