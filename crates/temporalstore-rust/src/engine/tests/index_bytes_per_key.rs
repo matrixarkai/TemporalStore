@@ -4994,3 +4994,145 @@ fn what_the_composed_entity_key_costs_the_walk() {
     );
     assert!(counts.allocs > 0, "the walk allocated nothing, which cannot be right");
 }
+
+/// WHICH ARM THE LAST ALLOCATION PER ENTRY BELONGS TO, MEASURED PER ARM INSTEAD OF GUESSED.
+///
+/// The whole-shard walk sits at 1.00 allocations per entry and I have now been wrong TWICE about
+/// what that one is. I said it was the component's intermediate `String` -- it is not, because
+/// every container kind converges on the page and no live arm emits a component at all. I ruled out
+/// the `ElementEntry` clone by reading, which is right as far as it goes: that type is all inline
+/// fields.
+///
+/// Two wrong decompositions is enough to stop deriving one. This walks ONE kind at a time, so the
+/// per-entry figure is attributable by construction rather than by arithmetic over a mixed total:
+/// a shard holding only strings, then only features, then only hashes.
+///
+/// What the arms do differently, and therefore what the comparison can separate:
+///
+///   strings    one entry per object, key lent, no component, no inner collection
+///   features   goes through `visit_timestamped_series`, which builds a collection of unique
+///              addresses per series before emitting
+///   hashes     goes through `emit_one_entry_a_page`, which builds a `BTreeSet` of pages per key
+///              to dedup them
+///
+/// So if the residual is per-SERIES rather than per-entry, the arms with an inner collection will
+/// show it and the strings arm will not.
+///
+/// rust-internal: measures this crates own resident structures, no product behaviour
+///
+///   cargo test --features alloc-probe -p temporalstore-rust --lib which_arm_the_last_allocation -- --ignored --nocapture
+#[test]
+#[cfg(feature = "alloc-probe")]
+#[ignore = "walks three single-kind shards; run by name, and ALONE -- the allocation counters are \
+            process-global"]
+fn which_arm_the_last_allocation_per_entry_belongs_to() {
+    use std::collections::BTreeMap;
+    const KEYS: usize = 1_000;
+    const T0: u64 = 1_787_270_070_000;
+
+    let address = |i: usize| ElementEntry::from_parts(1, i as u64 * 64, 48, None, None);
+
+    // ---- strings: one entry per object, nothing nested -------------------------------
+    let strings_only = {
+        let mut shard = crate::engine::state::ShardState::default();
+        for i in 0..KEYS {
+            shard
+                .strings
+                .insert(std::sync::Arc::from(format!("s-{i:06}").as_str()), address(i));
+        }
+        let probe = Probe::start();
+        let entries =
+            crate::engine::storage_bucket_internals::collect_model_live_block_entries(&shard);
+        let counts = probe.stop();
+        let n = entries.len();
+        std::hint::black_box(&entries);
+        (n, counts.allocs, counts.chunk_bytes)
+    };
+
+    // ---- features: through `visit_timestamped_series`, one address each ---------------
+    let features_only = {
+        let mut shard = crate::engine::state::ShardState::default();
+        for i in 0..KEYS {
+            let mut series = crate::engine::timestamped_series::OwnedTimestampedSeries::default();
+            series.insert(T0 + i as u64, address(i));
+            shard
+                .features
+                .insert(std::sync::Arc::from(format!("f-{i:06}").as_str()), series);
+        }
+        let probe = Probe::start();
+        let entries =
+            crate::engine::storage_bucket_internals::collect_model_live_block_entries(&shard);
+        let counts = probe.stop();
+        let n = entries.len();
+        std::hint::black_box(&entries);
+        (n, counts.allocs, counts.chunk_bytes)
+    };
+
+    // ---- hashes: through `emit_one_entry_a_page`, one field each ----------------------
+    let hashes_only = {
+        let mut shard = crate::engine::state::ShardState::default();
+        for i in 0..KEYS {
+            shard.hashes.insert_element_for_test(
+                &format!("h-{i:06}"),
+                "field".to_string(),
+                address(i),
+            );
+        }
+        let probe = Probe::start();
+        let entries =
+            crate::engine::storage_bucket_internals::collect_model_live_block_entries(&shard);
+        let counts = probe.stop();
+        let n = entries.len();
+        std::hint::black_box(&entries);
+        (n, counts.allocs, counts.chunk_bytes)
+    };
+
+    println!();
+    println!("  {KEYS} keys per arm, one entry each, walked on a single-kind shard");
+    println!();
+    println!("    arm        entries   allocations   per entry   bytes/entry");
+    for (name, (n, allocs, bytes)) in [
+        ("strings", strings_only),
+        ("features", features_only),
+        ("hashes", hashes_only),
+    ] {
+        println!(
+            "    {name:<10} {n:>7}   {allocs:>11}   {:>9.2}   {:>11.1}",
+            allocs as f64 / n.max(1) as f64,
+            bytes as f64 / n.max(1) as f64
+        );
+    }
+    println!();
+    println!("  An arm at ~0 per entry has nothing left to charge. An arm at ~1 is paying for");
+    println!("  something once per entry, and the shapes above say what is available to pay for:");
+    println!("  an inner collection per series, or the entry itself.");
+    println!();
+    println!("  MEASURED: strings 0.01, hashes 1.01, features 2.01. The mixed walk's 1.00 is the");
+    println!("  average of those three and nothing else -- (0.01 + 2.01 + 1.01) / 3 = 1.01.");
+    println!("  strings pays NOTHING: its key is lent, it has no component and nothing nested.");
+    println!("  hashes pays once, for `emit_one_entry_a_page`'s dedup set per key.");
+    println!("  features pays TWICE, and `unique_timestamped_kv_block_addresses` is why:");
+    println!("      .collect::<HashSet<_>>().into_iter().collect::<Vec<_>>()");
+    println!("  a hash set to dedup, then a vector to sort.");
+    println!();
+    println!("  COLLAPSING THOSE TWO IS A DESIGN DECISION, NOT A REFACTOR. Sort-then-dedup needs a");
+    println!("  TOTAL ORDER over every identity field of `ElementEntry`, which derives PartialEq,");
+    println!("  Eq and Hash but deliberately NOT Ord. Sorting by the three documented keys leaves");
+    println!("  entries differing in `block_id` comparing Equal, so a stable sort can interleave");
+    println!("  them as A, B, A and `dedup()` -- which removes only CONSECUTIVE duplicates --");
+    println!("  keeps the second A. A hand-written comparator that misses a field is worse still:");
+    println!("  two distinct entries compare Equal and dedup drops one, which is data loss on a");
+    println!("  walk that feeds rebuilds. The current shape is correct BY CONSTRUCTION because it");
+    println!("  dedups on the derived Eq/Hash. Giving the wire type an Ord is the decision.");
+
+    for (name, (n, _, _)) in [
+        ("strings", strings_only),
+        ("features", features_only),
+        ("hashes", hashes_only),
+    ] {
+        assert_eq!(
+            KEYS, n,
+            "the {name} arm produced {n} entries, not {KEYS} -- that arm is not being measured"
+        );
+    }
+}
