@@ -4780,6 +4780,23 @@ fn upsert_bucket_index_block_inner(
         .bucket_index
         .object_block_lookup
         .shared_object_key(kind, object_key)
+        // AND THEN ANY OTHER KIND, BEFORE GIVING UP AND ALLOCATING.
+        //
+        // `shared_object_key` looks inside ONE kind's inner map, so the first block of each kind
+        // answered `None` here and allocated the key text again. Measured: a key written as a
+        // string, a feature, a counter, a hash, a set, a zset and a list was filed under seven
+        // kinds and held in SEVEN allocations, while the twenty model maps that adopt from this
+        // index all converged on one of them -- `how_many_allocations_the_page_index_itself_holds`.
+        //
+        // The scan costs nothing on the path that used to succeed: it runs only where the old code
+        // was about to allocate, and it is bounded by the KIND count rather than the object count,
+        // which is a constant head for the whole shard.
+        .or_else(|| {
+            shard
+                .bucket_index
+                .object_block_lookup
+                .any_shared_object_key(object_key)
+        })
         .unwrap_or_else(|| Arc::from(object_key));
     let entry = LiveBlockEntry {
         object_key: shared_object_key,
@@ -5225,7 +5242,26 @@ pub(super) fn sync_bucket_index_object_blocks_with_mode(
     // Hoisted: neither changes across iterations, and each cost a String plus an Arc that copies
     // it -- four allocations per address published, for two values. Cloning an Arc is a refcount
     // bump.
-    let object_key_arc: Arc<str> = Arc::from(object_key);
+    //
+    // AND BORROWED FROM THE INDEX BEFORE IT IS MINTED. Hoisting took this from one allocation per
+    // address to one per call; asking the index first takes the common case to NONE. This site is
+    // why `how_many_allocations_the_page_index_itself_holds` measured two allocations rather than
+    // one after the upsert path started borrowing: six kinds shared and `string` did not, because
+    // it arrives through here and this line minted unconditionally.
+    //
+    // Own kind first, which is the cheap lookup and the common case, then any other kind, which
+    // is bounded by the KIND count and not by the object count.
+    let object_key_arc: Arc<str> = shard
+        .bucket_index
+        .object_block_lookup
+        .shared_object_key(kind, object_key)
+        .or_else(|| {
+            shard
+                .bucket_index
+                .object_block_lookup
+                .any_shared_object_key(object_key)
+        })
+        .unwrap_or_else(|| Arc::from(object_key));
     let entry_kind = stored_model_kind(kind);
     for address in unique_addresses.into_values() {
         let routing_bucket =

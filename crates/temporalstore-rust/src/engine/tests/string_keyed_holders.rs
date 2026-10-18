@@ -453,3 +453,101 @@ fn distinct_addresses_per_raw_key(
     note(shard.sets.keys().map(|k| (&**k, k.as_ptr() as usize)).collect());
     held.into_iter().map(|(text, addresses)| (text, addresses.len())).collect()
 }
+
+/// HOW MANY ALLOCATIONS OF ONE KEY TEXT THE PAGE INDEX ITSELF HOLDS.
+///
+/// Everything else in this campaign measured the MODEL maps -- the resident maps that answer
+/// reads -- and they now agree on one allocation, taken from the page index. This asks about the
+/// page index itself, which is the thing they all borrow from.
+///
+/// `ObjectBlockLookup` is NESTED: `by_model` maps a model kind to a map of object key to refs. The
+/// filing path takes its handle with `shared_object_key(kind, object_key)`, which looks inside
+/// ONE kind's inner map. For a key being filed under a kind that does not hold it yet that answers
+/// `None`, and the caller allocates:
+///
+///     .shared_object_key(kind, object_key)
+///     .unwrap_or_else(|| Arc::from(object_key))
+///
+/// So the first block of each KIND allocates the key again. The doc on that function explains the
+/// problem it was built for -- a container's hundredth field pointing at the copy its first field
+/// made, where before each of a hundred made its own -- and that problem is per-kind. Sharing
+/// ACROSS kinds was never part of it.
+///
+/// `any_shared_object_key`, which every model map adopts from, scans the kinds and returns the
+/// FIRST handle it finds. So the model maps all converge on one of these allocations while the
+/// index keeps the rest.
+///
+/// This measures how many there are. `key_ptr` exists for exactly this question -- its own doc says
+/// it is there "so a test can assert that a block and this map point at one copy of the object
+/// identity rather than two equal ones. Contents cannot tell those apart; pointers can."
+///
+/// rust-internal: measures this crates own resident structures, no product behaviour
+///
+///   cargo test -p temporalstore-rust --lib how_many_allocations_the_page_index -- --nocapture
+#[test]
+fn how_many_allocations_the_page_index_itself_holds() {
+    const T0: u64 = 1_787_270_070_000;
+    // Every kind this fixture can reach with one key, and the command that files it there.
+    const KINDS: &[&str] = &["string", "feature", "control_state", "hash", "set", "zset", "list"];
+
+    let dir = tempfile::tempdir().expect("tempdir");
+    let engine = engine_on(dir.path());
+    let raw = "indexed-key".to_string();
+
+    for command in [
+        Command::StringSet { key: raw.clone(), value: vec![b'v'; 16] },
+        Command::FeatureAppend {
+            key: raw.clone(),
+            points: vec![crate::types::FeaturePoint { timestamp_ms: T0, value: vec![b'f'; 8] }],
+        },
+        Command::ControlStateIncrement { key: raw.clone(), timestamp_ms: T0, amount: 1 },
+        Command::HashSet { key: raw.clone(), field: "f".to_string(), value: vec![b'h'; 8] },
+        Command::SetAdd { key: raw.clone(), member: vec![b'm'; 8] },
+        Command::ZSetAdd { key: raw.clone(), member: vec![b'z'; 8], score: 1.0 },
+        Command::ListPush { key: raw.clone(), member: vec![b'l'; 8], left: true },
+    ] {
+        let response = engine.execute(ExecuteRequest { shard_id: 1, command });
+        assert!(response.status.ok, "write failed: {:?}", response.status);
+    }
+
+    let shards = engine.shards.read().expect("engine lock poisoned");
+    let shard = shards.get(&1).expect("shard is loaded");
+    let lookup = &shard.bucket_index.object_block_lookup;
+
+    println!();
+    let mut filed: Vec<(&str, usize)> = Vec::new();
+    for kind in KINDS {
+        match lookup.key_ptr(kind, &raw) {
+            Some(ptr) => {
+                println!("  {kind:<16} {:#x}", ptr as usize);
+                filed.push((kind, ptr as usize));
+            }
+            None => println!("  {kind:<16} (not filed under this kind)"),
+        }
+    }
+
+    let distinct: std::collections::BTreeSet<usize> = filed.iter().map(|(_, p)| *p).collect();
+    println!();
+    println!(
+        "  one key text, filed under {} kind(s), held in {} allocation(s)",
+        filed.len(),
+        distinct.len()
+    );
+    // What every model map borrows, for comparison: it is one of the above, not a further copy.
+    let adopted = lookup.any_shared_object_key(&raw).expect("the key is filed");
+    let adopted_ptr = adopted.as_ptr() as usize;
+    println!("  what the model maps adopt:   {adopted_ptr:#x}");
+    assert!(
+        filed.iter().any(|(_, p)| *p == adopted_ptr),
+        "the handle the model maps adopt is not one of the index's own allocations, which would \
+         mean a further copy nobody accounted for: {adopted_ptr:#x} vs {filed:?}"
+    );
+
+    // The fixture must have reached several kinds, or there is nothing to compare.
+    assert!(
+        filed.len() >= 5,
+        "the key was filed under only {} kind(s) ({filed:?}), so this run cannot say whether the \
+         index holds one allocation per kind",
+        filed.len()
+    );
+}
