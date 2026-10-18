@@ -3563,9 +3563,32 @@ fn visit_model_live_blocks(
         }
         for (key, members) in &shard.zsets {
             if zset_names_a_page {
-                // UNREACHED TODAY: `index_entry_names_a_page` answers false for zset, because a
-                // zset component carries the SCORE and dropping it deletes data. Kept so the arm
-                // exists the moment the score moves off the component.
+                // THIS IS THE BRANCH THAT RUNS, and the note here used to say the opposite.
+                //
+                // It read: "UNREACHED TODAY: `index_entry_names_a_page` answers false for zset,
+                // because a zset component carries the SCORE and dropping it deletes data. Kept so
+                // the arm exists the moment the score moves off the component."
+                //
+                // The score DID move off the component -- see the note in the `else` arm below and
+                // `zset_component` -- and `index_entry_names_a_page` was updated to answer true for
+                // zset along with the other three container kinds. The comment was not. So it named
+                // the live branch unreachable and, by implication, the dead one live.
+                //
+                // Which way round this sits is not cosmetic: every container kind now converges on
+                // the PAGE, so no live arm of this walk emits a component at all, and the
+                // `Some(component)` branches below are unreachable today. A reader costing out the
+                // component's allocations would be pricing code that never executes -- which is
+                // exactly the mistake this note caused.
+                //
+                // AND THE CLAIM IS ENFORCED, not just asserted here:
+                // `the_shared_predicate_names_every_container_kind_and_nothing_else` pins all four
+                // container kinds as page-named in both directions, so if that ever changes the
+                // `else` arms become live and this note stops being true -- with a failing test
+                // rather than a silent inversion.
+                //
+                // That test's own doc records the predicate going through exactly this cleanup
+                // once before: "the old name itself asserted the false claim, which is why it
+                // could not stay". This comment is a survivor of that pass.
                 emit_one_entry_a_page(
                     ModelKind::Zset,
                     key,
