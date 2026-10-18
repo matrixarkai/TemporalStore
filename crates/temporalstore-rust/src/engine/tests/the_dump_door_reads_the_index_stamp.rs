@@ -97,7 +97,7 @@ fn a_real_dump_manifest() -> DumpFixture {
             ROW_TIMESTAMP_MS,
             ElementEntry::from_parts(1, 4_096, 128, Some(3), Some(7)),
         );
-        shard.features.insert(SERIES_KEY.to_string(), series);
+        shard.features.insert(SERIES_KEY.to_string(), series.into());
     }
     let manifest = engine
         .create_bucket_dump_manifest(SHARD, Vec::new())
@@ -227,7 +227,7 @@ fn engine_over_a_planted_base_index(stamp: u32) -> (tempfile::TempDir, TemporalE
         ROW_TIMESTAMP_MS,
         ElementEntry::from_parts(1, 4_096, 128, Some(3), Some(7)),
     );
-    state.features.insert(SERIES_KEY.to_string(), series);
+    state.features.insert(SERIES_KEY.to_string(), series.into());
     let image = serde_json::to_vec(&state).expect("the image serializes");
 
     let dir = tempfile::tempdir().expect("tempdir");

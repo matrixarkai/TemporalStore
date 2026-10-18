@@ -341,7 +341,7 @@ fn door_three_the_index_log_fold_cannot_deliver_the_retired_map() {
     let mut shard = ShardState::default();
     shard.features.insert(
         SERIES_KEY.to_string(),
-        BTreeMap::from([(1u64, ElementEntry::from_parts(1, 0, 8, Some(0), Some(0)))]),
+        BTreeMap::from([(1u64, ElementEntry::from_parts(1, 0, 8, Some(0), Some(0)))]).into(),
     );
     assert!(
         shard.features.contains_key(SERIES_KEY),

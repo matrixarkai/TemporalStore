@@ -970,7 +970,9 @@ pub(super) fn timestamped_kv_series<'a>(
     use std::borrow::Cow;
     let mut series = Vec::new();
     for (key, timeline) in &shard.features {
-        series.push(("feature", key.as_str(), Cow::Borrowed(timeline)));
+        // MATERIALISED, because this report is written against the stored B-tree shape and the
+        // map holds the array. One allocation per series on a reporting path, not a serving one.
+        series.push(("feature", key.as_str(), Cow::Owned(timeline.to_btree())));
     }
     // Since the event rekey, context_events is keyed by EVENT ID; the timestamps live in
     // context_event_timeline (timeline key -> event id). The validator compares index keys

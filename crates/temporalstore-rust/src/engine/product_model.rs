@@ -9,6 +9,7 @@
 //! first/last, Distinct cardinality, Selection first/last). Write paths live in
 //! the engine's execute path; this module is the read/aggregation side.
 
+use super::timestamped_series::TimestampedSeries as _;
 use std::collections::BTreeMap;
 
 use crate::block_store::{ElementEntry, BlockStore};
@@ -90,7 +91,7 @@ pub(super) fn sequence_rows_in_range(
                         cache,
                         block_store,
                         shard_id,
-                        *timestamp_ms,
+                        timestamp_ms,
                         address,
                         PageIdentity::of(shard_id, "feature", key, None),
                         Some(routing_bucket),

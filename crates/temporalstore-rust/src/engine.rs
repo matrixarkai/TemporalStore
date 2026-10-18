@@ -3820,7 +3820,16 @@ fn capture_key_states(shard: &ShardState, keys: &[String]) -> Vec<serde_json::Va
                     }
                 }
             };
-            put("features", shard.features.get(key).and_then(|v| serde_json::to_value(v).ok()));
+            // THE BLOB KEEPS THE STORED SHAPE. The map holds the owned array; the capture field has
+        // always been the B-tree object, and changing it here would change the blob format for
+        // a representation change that is supposed to be invisible outside the map.
+        put(
+            "features",
+            shard
+                .features
+                .get(key)
+                .and_then(|v| serde_json::to_value(v.to_btree()).ok()),
+        );
             put("expires_at_ms", shard.expires_at_ms.get(key.as_str()).and_then(|v| serde_json::to_value(v).ok()));
             put("control_state_changes", shard.control_state_changes.get(key).and_then(|v| serde_json::to_value(v).ok()));
             put("control_state_selection", shard.control_state_selection.get(key).and_then(|v| serde_json::to_value(v).ok()));
@@ -3881,7 +3890,14 @@ fn apply_key_states(shard: &mut ShardState, key_states: &[serde_json::Value]) {
         {
             continue;
         }
-        apply_key_state_field(&mut shard.features, key, blob.get("features"));
+        // The type parameter is named because this map implements `KeyedState` for two value
+        // types, exactly as the event map does: the blob carries the B-tree shape and the map
+        // holds the array.
+        apply_key_state_field::<std::collections::BTreeMap<u64, ElementEntry>, _>(
+            &mut shard.features,
+            key,
+            blob.get("features"),
+        );
         // DIRECT WRITE TO `expires_at_ms` -- the deadline-ordered mirror is invalidated at the
         // end of this function. See the note there.
         apply_key_state_field(&mut shard.expires_at_ms, key, blob.get("expires_at_ms"));
@@ -4239,6 +4255,24 @@ impl<V> KeyedState<V> for std::collections::HashMap<state::ModelKey, V> {
 /// It does not overlap the blanket `impl<V> KeyedState<V> for HashMap<ModelKey, V>`: that one gives
 /// this map `KeyedState<OwnedTimestampedSeries>`, and this gives it `KeyedState<BTreeMap<..>>`.
 /// Different type parameter, same `Self`, so the call site names which one it means.
+/// THE SAME CONVERSION FOR THE `String`-KEYED ARRAY MAP, which is `features`.
+///
+/// It does not overlap the blanket `impl<V> KeyedState<V> for HashMap<String, V>`: that one gives
+/// this map `KeyedState<OwnedTimestampedSeries>`, and this gives it `KeyedState<BTreeMap<..>>`.
+/// Different type parameter, so the call site names which one it means -- and it has to, because
+/// the capture blob carries the stored B-tree shape while the map holds the array.
+impl KeyedState<std::collections::BTreeMap<u64, ElementEntry>>
+    for std::collections::HashMap<String, timestamped_series::OwnedTimestampedSeries>
+{
+    fn insert_entry(&mut self, key: &str, value: std::collections::BTreeMap<u64, ElementEntry>) {
+        self.insert(key.to_string(), value.into());
+    }
+
+    fn remove_entry(&mut self, key: &str) {
+        self.remove(key);
+    }
+}
+
 impl KeyedState<std::collections::BTreeMap<u64, ElementEntry>>
     for std::collections::HashMap<state::ModelKey, timestamped_series::OwnedTimestampedSeries>
 {
@@ -7179,7 +7213,7 @@ fn object_manager_stats(
             + shard.sets.values().map(BTreeMap::len).sum::<usize>()
             + shard.lists.values().map(BTreeMap::len).sum::<usize>()
             + shard.zsets.values().map(BTreeMap::len).sum::<usize>()
-            + shard.features.values().map(BTreeMap::len).sum::<usize>()
+            + shard.features.values().map(|series| series.len()).sum::<usize>()
             + shard.context_nodes.len()
             + shard
                 .context_events()
@@ -7291,7 +7325,7 @@ fn object_manager_stats(
         + shard.sets.values().map(BTreeMap::len).sum::<usize>()
         + shard.lists.values().map(BTreeMap::len).sum::<usize>()
         + shard.zsets.values().map(BTreeMap::len).sum::<usize>()
-        + shard.features.values().map(BTreeMap::len).sum::<usize>()
+        + shard.features.values().map(|series| series.len()).sum::<usize>()
         + shard.context_nodes.len()
         + shard
             .context_events()

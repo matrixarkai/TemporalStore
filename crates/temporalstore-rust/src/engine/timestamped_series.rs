@@ -691,3 +691,58 @@ mod a_short_series_does_not_hold_a_buffer_it_is_not_using {
         );
     }
 }
+
+/// Serialize a map of owned arrays in the B-TREE SHAPE IT HAS ALWAYS HAD ON THE WIRE.
+///
+/// # WHY THIS EXISTS RATHER THAN A COMPATIBILITY FIELD
+///
+/// [`OwnedTimestampedSeries`] carries no `Serialize`/`Deserialize`, on purpose, so the usual way
+/// for a map to adopt it is a second field under the old wire key plus a decode fold -- which is a
+/// FORMAT change, with an old image and a new one to keep straight. A map whose stored shape is
+/// `{key: {timestamp: address}}` does not need that: the array holds exactly the same pairs in
+/// exactly the same order, so it can be written AS that object and read back from it. The image is
+/// byte-identical before and after, which is the whole point -- no stamp is owed, no fold runs, and
+/// an older binary reads a newer image.
+///
+/// THE WRITE ALLOCATES NOTHING. `collect_map` is handed the array's own iterator, so a dump does
+/// not build a temporary `BTreeMap` per series on the way out. Going through `to_btree()` would
+/// have been shorter and would have put one allocation per series into every dump.
+pub(super) mod as_btree_maps {
+    use super::{ElementEntry, OwnedTimestampedSeries};
+    use std::collections::{BTreeMap, HashMap};
+
+    struct AsStoredMap<'a>(&'a OwnedTimestampedSeries);
+
+    impl serde::Serialize for AsStoredMap<'_> {
+        fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+        where
+            S: serde::Serializer,
+        {
+            serializer.collect_map(self.0.iter())
+        }
+    }
+
+    pub(in crate::engine) fn serialize<S>(
+        map: &HashMap<String, OwnedTimestampedSeries>,
+        serializer: S,
+    ) -> Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        serializer.collect_map(map.iter().map(|(key, series)| (key, AsStoredMap(series))))
+    }
+
+    pub(in crate::engine) fn deserialize<'de, D>(
+        deserializer: D,
+    ) -> Result<HashMap<String, OwnedTimestampedSeries>, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        let stored: HashMap<String, BTreeMap<u64, ElementEntry>> =
+            serde::Deserialize::deserialize(deserializer)?;
+        Ok(stored
+            .into_iter()
+            .map(|(key, series)| (key, OwnedTimestampedSeries::from(series)))
+            .collect())
+    }
+}

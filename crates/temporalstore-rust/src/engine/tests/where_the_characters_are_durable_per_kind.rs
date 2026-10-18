@@ -180,7 +180,7 @@ fn shard_with_one_object_of_every_kind(suffix: &str) -> ShardState {
     series.insert(1_000u64, address());
     shard
         .features
-        .insert(key_for("feature", suffix), series.clone());
+        .insert(key_for("feature", suffix), series.clone().into());
     shard.insert_control_state_block(
         key_for("control_state", suffix).as_str().into(),
         {
