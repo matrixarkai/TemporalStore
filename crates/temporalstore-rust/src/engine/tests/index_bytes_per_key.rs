@@ -4219,7 +4219,7 @@ fn why_there_are_many_per_key_maps_and_not_one() {
         ("features", shard.features.keys().map(|k| (&**k, k.as_ptr() as usize)).collect()),
         (
             "control_state",
-            shard.control_state.keys().map(|k| (k.as_str(), k.as_ptr() as usize)).collect(),
+            shard.control_state.keys().map(|k| (&**k, k.as_ptr() as usize)).collect(),
         ),
         (
             "control_state_selection",
@@ -4466,4 +4466,196 @@ fn what_consolidating_three_holders_would_cost() {
     }
 
     assert!(three_maps > 0 && one_map_full > 0, "a zero figure cannot be compared");
+}
+
+/// WHAT MAKING `control_state`s KEY A SHARED HANDLE COSTS AND SAVES, BOTH HALVES SEPARATELY.
+///
+/// `which_string_keyed_holders_duplicate_a_key_another_map_holds` shows the raw-keyed half of
+/// `control_state` owning a second copy of characters three other maps already agreed on, 8 of 8
+/// keys. Converting the key to `ModelKey` lets that half share. But one map cannot have two key
+/// types, so the DECORATED half -- `control_state:<family>:<key>`, which no other map holds --
+/// is converted too, and for that half sharing is impossible. It can only cost.
+///
+/// So the change has two arms, and a single average would hide one of them:
+///
+///   * raw half: the inline key field goes 24 -> 16 bytes AND the characters stop being a second
+///     allocation, because the handle is the one the page index already owns;
+///   * decorated half: the inline field still goes 24 -> 16, but the characters are STILL one
+///     allocation, now with two counter words ahead of them.
+///
+/// # THE DECORATED HALF WAS PREDICTED TO COST AND IT DOES NOT
+///
+/// This test was written expecting the decorated half to be a LOSS -- the two counter words an
+/// `Arc<str>` puts ahead of the bytes looked like they would cross an allocator rounding step
+/// that the `String` did not. Measured at 20,000 keys, that is wrong: the decorated half improves
+/// by a flat **10.2 B/key** at every key length tried, because the 8 bytes the inline field gives
+/// up (24 -> 16, a fat pointer rather than ptr/len/capacity) shrinks the table as well, and at
+/// these lengths `len + 16` lands in the same bin as `len` did.
+///
+/// So there is no overlap fraction to satisfy: the conversion pays on BOTH kinds of key, and the
+/// `println!` below reports that rather than a break-even. The assert at the end pins the only
+/// thing that must still hold -- that the raw-half saving GROWS with key length, because that is
+/// the signature of a character allocation that stopped happening rather than of an inline field
+/// that merely got smaller.
+///
+/// Measured, `chunk_bytes`, 20,000 keys:
+///
+///   key length    raw half            decorated half
+///   8             401.0 -> 342.4      400.6 -> 390.4
+///   24            400.6 -> 342.4      416.6 -> 406.4
+///   48            432.6 -> 342.4      448.6 -> 438.4
+///
+/// Two things to read carefully there. The raw-half saving is a STEP, not a slope: 58.6 at length
+/// 8 and 58.2 at 24 are the same figure, and it jumps to 90.2 at 48 -- so quoting one number as
+/// "the saving" is quoting one cell. And the ~400 B/key absolute is almost all the one-point
+/// `BTreeMap` value, not the key; only the differences between arms are about the key.
+///
+/// # WHY THIS MEASURES BY BUILDING AND NOT BY `deep_heap_bytes`
+///
+/// `deep_heap_bytes` measures by CLONING, and cloning an `Arc` is a refcount bump -- so it cannot
+/// see an `Arc` payload at all. For the shared arm that happens to be right, because those
+/// characters genuinely belong to the page index rather than to this map. For the DECORATED arm it
+/// is wrong in the direction that flatters the change: that map owns its `Arc` outright, and a
+/// clone probe would report its characters as free. So every arm here is built under the counting
+/// allocator instead, with the key texts materialised OUTSIDE the probe, so each arm is charged
+/// for exactly one key allocation of its own kind and nothing else.
+///
+/// The figure is `chunk_bytes`, what the allocator actually set aside, NOT the `alloc_bytes` that
+/// `deep_heap_bytes` and therefore most published figures in this file report. That is deliberate
+/// here -- an `Arc<str>` adds two counter words to the request, which is exactly the kind of thing
+/// that crosses a rounding step and would be invisible in the requested figure -- but it means a
+/// number from this test is NOT directly comparable with a B/key figure from the others.
+///
+/// rust-internal: measures this crates own resident structures, no product behaviour
+///
+///   cargo test --features alloc-probe -p temporalstore-rust --lib what_a_shared_control_state_key_costs -- --ignored --nocapture
+#[test]
+#[cfg(feature = "alloc-probe")]
+#[ignore = "builds four map shapes at three key lengths; run by name, and ALONE -- the \n           allocation counters are process-global, so a test running beside this one is \n           counted into its arms"]
+fn what_a_shared_control_state_key_costs_on_each_half() {
+    const KEYS: usize = 20_000;
+
+    println!();
+    println!("  {KEYS} keys per arm, built under the counting allocator (not cloned)");
+
+    let mut rows: Vec<(usize, f64, f64)> = Vec::new();
+
+    // Key lengths that matter: the allocator rounds, so a figure at one length is one point on a
+    // step function. 8 is short; 24 and 48 carry Arc<str>s two-refcount header into further bins,
+    // and 48 is a realistic object key.
+    for key_len in [8usize, 24, 48] {
+        let pad = |mut s: String| {
+            while s.len() < key_len {
+                s.push('x');
+            }
+            s
+        };
+        // Materialised OUTSIDE every probe: these stand for text the caller already has.
+        let raw_texts: Vec<String> = (0..KEYS).map(|i| pad(format!("k{i:07}"))).collect();
+        let dec_texts: Vec<String> =
+            raw_texts.iter().map(|k| format!("control_state:h:{k}")).collect();
+        // The handles the page index owns. The shared arm borrows from here, which is what
+        // adoption does -- so these characters are not charged to the map under test, exactly as
+        // they are not charged in the engine.
+        let handles: Vec<std::sync::Arc<str>> =
+            raw_texts.iter().map(|k| std::sync::Arc::from(&k[..])).collect();
+
+        let series = |i: usize| {
+            let mut m = std::collections::BTreeMap::new();
+            m.insert(i as u64, i as i64);
+            m
+        };
+
+        // Every arm allocates the same table and the same series, so the difference between two
+        // arms is the key and only the key.
+        let owned_keys = |texts: &Vec<String>| -> u64 {
+            let probe = Probe::start();
+            let mut map: HashMap<String, std::collections::BTreeMap<u64, i64>> = HashMap::new();
+            for (i, text) in texts.iter().enumerate() {
+                map.insert(text.clone(), series(i));
+            }
+            std::hint::black_box(&map);
+            probe.stop().chunk_bytes
+        };
+        let minted_arc_keys = |texts: &Vec<String>| -> u64 {
+            let probe = Probe::start();
+            let mut map: HashMap<std::sync::Arc<str>, std::collections::BTreeMap<u64, i64>> =
+                HashMap::new();
+            for (i, text) in texts.iter().enumerate() {
+                map.insert(std::sync::Arc::from(&text[..]), series(i));
+            }
+            std::hint::black_box(&map);
+            probe.stop().chunk_bytes
+        };
+
+        let raw_owned = owned_keys(&raw_texts);
+        let raw_shared = {
+            let probe = Probe::start();
+            let mut map: HashMap<std::sync::Arc<str>, std::collections::BTreeMap<u64, i64>> =
+                HashMap::new();
+            for (i, handle) in handles.iter().enumerate() {
+                map.insert(std::sync::Arc::clone(handle), series(i));
+            }
+            std::hint::black_box(&map);
+            probe.stop().chunk_bytes
+        };
+        let dec_owned = owned_keys(&dec_texts);
+        let dec_minted = minted_arc_keys(&dec_texts);
+
+        let per = |bytes: u64| bytes as f64 / KEYS as f64;
+        let raw_win = per(raw_owned) - per(raw_shared);
+        let dec_cost = per(dec_minted) - per(dec_owned);
+        rows.push((key_len, raw_win, dec_cost));
+
+        println!();
+        println!("  key length {key_len}");
+        println!(
+            "    raw half        String {:>7.1}  ->  shared {:>7.1} B/key   {:+7.1}",
+            per(raw_owned),
+            per(raw_shared),
+            -raw_win
+        );
+        println!(
+            "    decorated half  String {:>7.1}  ->  minted {:>7.1} B/key   {:+7.1}",
+            per(dec_owned),
+            per(dec_minted),
+            dec_cost
+        );
+        if raw_win > 0.0 && dec_cost > 0.0 {
+            // net = f * raw_win - (1 - f) * dec_cost = 0
+            println!(
+                "    pays once more than {:.1}% of keys arrive through the counter commands",
+                100.0 * dec_cost / (raw_win + dec_cost)
+            );
+        } else if dec_cost <= 0.0 {
+            println!("    both halves improve at this length -- there is no ratio to satisfy");
+        } else {
+            println!("    the raw half does not improve here; read the two rows, not a ratio");
+        }
+
+        assert!(
+            raw_owned > 0 && raw_shared > 0 && dec_owned > 0 && dec_minted > 0,
+            "a zero figure cannot be compared at key length {key_len}"
+        );
+        // If the shared arm is not smaller, the handles were copied rather than borrowed and
+        // every figure above is measuring something else.
+        assert!(
+            raw_shared < raw_owned,
+            "the shared arm is not smaller at key length {key_len} ({raw_shared} vs {raw_owned}), \
+             so the handle was not actually borrowed"
+        );
+    }
+
+    // The saving must GROW with key length -- it is one character allocation that stops
+    // happening. Flat would mean the figure is the inline field only and the sharing is not
+    // working.
+    assert!(
+        rows[2].1 > rows[0].1,
+        "the raw-half saving did not grow from key length {} to {} ({:.1} vs {:.1} B/key), so it \
+         is not the characters that stopped being allocated",
+        rows[0].0,
+        rows[2].0,
+        rows[0].1,
+        rows[2].1
+    );
 }

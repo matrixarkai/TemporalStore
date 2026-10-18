@@ -6712,7 +6712,7 @@ pub(super) fn reconcile_secondary_views_from_bucket_index(
     let mut zsets = HashMap::<String, BTreeMap<Vec<u8>, (u64, ElementEntry)>>::new();
     let mut features =
         HashMap::<std::sync::Arc<str>, super::timestamped_series::OwnedTimestampedSeries>::new();
-    let mut control_state = HashMap::<String, BTreeMap<u64, i64>>::new();
+    let mut control_state = HashMap::<super::state::ModelKey, BTreeMap<u64, i64>>::new();
     let mut control_state_blocks = HashMap::new();
     let mut context_events =
         HashMap::<std::sync::Arc<str>, super::timestamped_series::OwnedTimestampedSeries>::new();
@@ -6827,7 +6827,7 @@ pub(super) fn reconcile_secondary_views_from_bucket_index(
                         warm_batch.push((key, bytes.clone()));
                     }
                     if let Ok(series) = serde_json::from_slice::<BTreeMap<u64, i64>>(&bytes) {
-                        control_state.insert(entry.object_key.clone().to_string(), series);
+                        control_state.insert(std::sync::Arc::from(&entry.object_key[..]), series);
                     }
                 }
                 control_state_blocks.insert(entry.object_key.as_ref().into(), entry.address);

@@ -211,7 +211,7 @@ fn control_state_manager_series<'a>(
     } else {
         ControlStateFamily::Counter
     };
-    shard.control_state.get(&control_state_family_key(family, key))
+    shard.control_state.get(&control_state_family_key(family, key)[..])
 }
 
 /// Dispatch a Control State MANAGER request. Mirrors the `Manager`/`CPCManager`
@@ -285,7 +285,7 @@ fn control_state_manager_summary_entries(shard: &ShardState, key: &str) -> Vec<(
         let family_key = control_state_family_key(family, key);
         let values = shard
             .control_state
-            .get(&family_key)
+            .get(&family_key[..])
             .map(|series| series.values().copied().collect::<Vec<_>>())
             .unwrap_or_default();
         entries.push((

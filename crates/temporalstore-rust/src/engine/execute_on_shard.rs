@@ -2820,7 +2820,7 @@ pub(crate) fn execute_on_shard(
             let resulting = {
                 let counter = shard
                     .control_state
-                    .entry(key.clone())
+                    .entry(std::sync::Arc::from(&key[..]))
                     .or_default()
                     .entry(timestamp_ms)
                     .or_default();
@@ -2868,7 +2868,7 @@ pub(crate) fn execute_on_shard(
                 .unwrap_or(timestamp_ms);
             *shard
                 .control_state
-                .entry(key.clone())
+                .entry(std::sync::Arc::from(&key[..]))
                 .or_default()
                 .entry(bucket_ms)
                 .or_default() += amount;
@@ -2973,7 +2973,7 @@ pub(crate) fn execute_on_shard(
             } else {
                 shard
                     .control_state
-                    .get(&key)
+                    .get(&key[..])
                     .map(|series| {
                         series
                             .range(crate::engine::timestamp_range_bounds(start_ms, end_ms))
@@ -3008,7 +3008,7 @@ pub(crate) fn execute_on_shard(
             } else {
                 let values = shard
                     .control_state
-                    .get(&key)
+                    .get(&key[..])
                     .map(|series| {
                         series
                             .range(crate::engine::timestamp_range_bounds(start_ms, end_ms))
@@ -3036,7 +3036,7 @@ pub(crate) fn execute_on_shard(
             }
             let points = shard
                 .control_state
-                .get(&key)
+                .get(&key[..])
                 .map(|series| {
                     series
                         .range(crate::engine::timestamp_range_bounds(start_ms, end_ms))
@@ -3060,7 +3060,7 @@ pub(crate) fn execute_on_shard(
             let key = control_state_family_key(family, &key);
             *shard
                 .control_state
-                .entry(key.clone())
+                .entry(std::sync::Arc::from(&key[..]))
                 .or_default()
                 .entry(timestamp_ms)
                 .or_default() += amount;
@@ -3091,7 +3091,7 @@ pub(crate) fn execute_on_shard(
         } => {
             remove_if_expired(shard, &key);
             let key = control_state_family_key(family, &key);
-            let series = shard.control_state.entry(key.clone()).or_default();
+            let series = shard.control_state.entry(std::sync::Arc::from(&key[..])).or_default();
             *series.entry(timestamp_ms).or_default() += amount;
             let values = series
                 .range(crate::engine::timestamp_range_bounds(start_ms, end_ms))
@@ -3150,7 +3150,7 @@ pub(crate) fn execute_on_shard(
                 .filter(|precision_ms| *precision_ms > 0)
                 .map(|precision_ms| timestamp_ms - timestamp_ms % precision_ms)
                 .unwrap_or(timestamp_ms);
-            let series = shard.control_state.entry(key.clone()).or_default();
+            let series = shard.control_state.entry(std::sync::Arc::from(&key[..])).or_default();
             if !is_duplicate {
                 *series.entry(bucket_ms).or_default() += amount;
             }
@@ -3159,7 +3159,7 @@ pub(crate) fn execute_on_shard(
             } else {
                 let values = shard
                     .control_state
-                    .get(&key)
+                    .get(&key[..])
                     .map(|series| {
                         series
                             .range(crate::engine::timestamp_range_bounds(start_ms, end_ms))
@@ -3231,7 +3231,7 @@ pub(crate) fn execute_on_shard(
             } else {
                 let values = shard
                     .control_state
-                    .get(&key)
+                    .get(&key[..])
                     .map(|series| {
                         series
                             .range(crate::engine::timestamp_range_bounds(start_ms, end_ms))
@@ -3382,7 +3382,7 @@ pub(crate) fn execute_on_shard(
             ] {
                 let family_key = control_state_family_key(family, &key);
                 let name = control_state_family_name(family);
-                let series = shard.control_state.get(&family_key);
+                let series = shard.control_state.get(&family_key[..]);
                 let all_values = series
                     .map(|series| series.values().copied().collect::<Vec<_>>())
                     .unwrap_or_default();

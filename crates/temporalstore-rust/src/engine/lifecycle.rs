@@ -2360,7 +2360,7 @@ impl TemporalEngine {
                 };
                 shard
                     .control_state
-                    .entry(item.object_key.clone())
+                    .entry(std::sync::Arc::from(&item.object_key[..]))
                     .or_default()
                     .insert(bucket_ms, total);
                 true

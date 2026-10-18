@@ -425,6 +425,7 @@ mod what_the_core_index_puts_on_the_wire;
 mod the_write_path_leaves_the_bucket_ttl_alone;
 mod marking_an_object_dirty_reaches_its_pages;
 mod one_key_one_allocation;
+mod string_keyed_holders;
 mod one_record_per_object;
 mod the_expiry_pair_shares_one_allocation;
 mod one_key_two_kinds;

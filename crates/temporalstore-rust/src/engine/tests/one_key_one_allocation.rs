@@ -81,6 +81,15 @@ fn a_key_held_by_several_maps_is_one_allocation() {
                 capacity: 10.0,
                 refill_per_sec: 1.0,
             },
+            // The counter command, and it is here because its ABSENCE is what let a duplicate
+            // live: with nothing writing `control_state`, that map reported zero keys, which
+            // reads exactly like a map with nothing to share. It was in fact holding a second
+            // copy of these characters, for every key.
+            Command::ControlStateIncrement {
+                key: raw.clone(),
+                timestamp_ms: 1_787_270_070_000 + index as u64,
+                amount: 1,
+            },
         ] {
             let response = engine.execute(ExecuteRequest {
                 shard_id: 1,
@@ -139,6 +148,18 @@ fn a_key_held_by_several_maps_is_one_allocation() {
                 .map(|k| (&**k, k.as_ptr() as usize))
                 .collect(),
         ),
+        // Only the RAW-keyed entries of this map can ever share. The family operators file a
+        // decorated `control_state:<family>:<key>` that no other map holds, so those are
+        // filtered out rather than counted as holders that failed to share.
+        (
+            "control_state",
+            shard
+                .control_state
+                .keys()
+                .filter(|k| !k.contains(':'))
+                .map(|k| (&**k, k.as_ptr() as usize))
+                .collect(),
+        ),
     ] {
         for (text, ptr) in keys {
             held.entry(text).or_default().push((name, ptr));
@@ -150,14 +171,14 @@ fn a_key_held_by_several_maps_is_one_allocation() {
     assert_eq!(
         KEYS,
         multi.len(),
-        "the fixture wrote {KEYS} keys through five families but only {} ended up in more than one \
+        "the fixture wrote {KEYS} keys through six families but only {} ended up in more than one \
          map, so this run could not have detected a duplicate at all. Held: {:?}",
         multi.len(),
         held
     );
     assert!(
-        multi.iter().all(|(_, h)| h.len() == 5),
-        "a key reached fewer than five maps, so one of the five commands stopped writing its map \
+        multi.iter().all(|(_, h)| h.len() == 6),
+        "a key reached fewer than six maps, so one of the six commands stopped writing its map \
          and this guard silently stopped covering it: {:?}",
         multi
     );

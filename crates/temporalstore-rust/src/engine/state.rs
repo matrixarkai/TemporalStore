@@ -310,7 +310,21 @@ pub(super) struct ShardState {
     /// The stored image does not move: see [`super::timestamped_series::as_btree_maps`].
     #[serde(with = "super::timestamped_series::as_btree_maps")]
     pub(super) features: HashMap<ModelKey, OwnedTimestampedSeries>,
-    pub(super) control_state: HashMap<String, BTreeMap<u64, i64>>,
+    /// THE KEY IS A SHARED HANDLE, AND ONLY HALF OF THEM CAN ACTUALLY SHARE.
+    ///
+    /// This map holds two kinds of key. The counter commands file the RAW object key, which
+    /// `strings`, `features` and `control_state_selection` may hold too -- measured at 8 of 8
+    /// keys in `which_string_keyed_holders_duplicate_a_key_another_map_holds`, where those three
+    /// agreed on one allocation and this map owned a second copy of the same characters. The
+    /// family operators file a DECORATED key (`control_state:<family>:<key>`) that no other map
+    /// holds, so that half has nothing to share with and converting it buys nothing.
+    ///
+    /// Both halves are `ModelKey` because one map cannot have two key types; the saving is per
+    /// RAW key, not per entry, and that probe asserts the split so the two denominators cannot
+    /// drift into each other unnoticed.
+    ///
+    /// The stored image does not move: `Arc<str>` serializes as the same string a `String` did.
+    pub(super) control_state: HashMap<ModelKey, BTreeMap<u64, i64>>,
     /// Counter-series blocks, one per control-state object key.
     ///
     /// THE VALUE IS A RECORD RATHER THAN A BARE ADDRESS, and this is the first map to hold one.
@@ -7649,6 +7663,13 @@ impl ShardState {
         // minted, while the maps adopted here later converged on the page index's
         // allocation. Three holders, two allocations, and no byte probe would have said so.
         moved |= adopt_key_in(&mut self.strings, object_key, &canonical);
+        // `control_state` TOO, for its RAW-keyed half. The counter commands file the raw object
+        // key, so it is a fourth holder of characters `strings`, `features` and
+        // `control_state_selection` already agreed on -- measured at 8 of 8 keys, four holders
+        // and TWO allocations, with this map owning the second. Its decorated half
+        // (`control_state:<family>:<key>`) never matches `object_key`, so this line is a no-op
+        // for those and the saving is per raw key rather than per entry.
+        moved |= adopt_key_in(&mut self.control_state, object_key, &canonical);
         // `seen` and `buckets` too: a raw key used for a string, a series, a selection, a
         // seen-set and a rate bucket lands in FIVE maps, and the pointer guard measured
         // THREE allocations before these two joined -- each was holding its own copy.

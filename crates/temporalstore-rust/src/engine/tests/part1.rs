@@ -1491,7 +1491,7 @@ fn live_block_slab_ids_scan_all_index_backed_data_models() {
         );
     shard
         .control_state
-        .entry("control_state".to_string())
+        .entry(std::sync::Arc::from("control_state"))
         .or_default()
         .insert(14, 1);
 
