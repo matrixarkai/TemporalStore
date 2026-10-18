@@ -4612,14 +4612,28 @@ pub(super) fn insert_container_tombstone_entry(
     if let Some(bucket) = shard.bucket_index.bucket_map.get_mut(&routing_bucket) {
         classify_bucket_layout_in_place(bucket);
     }
-    shard
-        .bucket_index
-        .insert_object_block_lookup(
-            routing_bucket,
-            block_ref_key,
-            &Arc::from(object_key),
-            &page,
-        );
+    // THIS CALL COULD NOT DO ANYTHING, AND MINTING ITS ARGUMENT COST AN ALLOCATION.
+    //
+    // It used to read:
+    //
+    //     .insert_object_block_lookup(routing_bucket, block_ref_key, &Arc::from(object_key), &page)
+    //
+    // `page` is built `deleted: true` a few lines up, and the first statement of
+    // `insert_object_block_lookup` is `if page.deleted { return; }` -- for the reason given on it,
+    // that a deleted page is never in the object lookup. So the only possible outcome was to
+    // return, while the `Arc::from(object_key)` handed to it was allocated and immediately
+    // dropped: one allocation and one free per tombstoned container element.
+    //
+    // Measured rather than read off the source: `what_the_tombstone_path_files_and_what_it_
+    // allocates` deletes one field of a two-field hash and finds the object's filed ref count
+    // unchanged at 2 across the delete, which is the early return being taken.
+    //
+    // The assert keeps the reasoning attached to the fact it depends on. If this page ever stops
+    // being a deleted one, the filing above was removed deliberately and has to come back.
+    debug_assert!(
+        page.deleted,
+        "a tombstone page is no longer `deleted`, so the object-lookup filing removed here is          needed again: a non-deleted page DOES belong in the lookup"
+    );
     shard.buckets_pending_flag_refresh.insert(routing_bucket);
 }
 

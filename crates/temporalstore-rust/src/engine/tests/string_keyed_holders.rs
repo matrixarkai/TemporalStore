@@ -551,3 +551,86 @@ fn how_many_allocations_the_page_index_itself_holds() {
         filed.len()
     );
 }
+
+/// WHAT THE TOMBSTONE PATH FILES INTO THE OBJECT LOOKUP, AND WHAT IT ALLOCATES TO DO IT.
+///
+/// `insert_container_tombstone_entry` ends by handing a page to `insert_object_block_lookup`:
+///
+///     .insert_object_block_lookup(routing_bucket, block_ref_key, &Arc::from(object_key), &page)
+///
+/// and that page is built, a few lines above, as `BlockIndex { .. deleted: true, .. }`. The first
+/// statement of `insert_object_block_lookup` is `if page.deleted { return; }`, and the reason is
+/// stated on it: a deleted page is never in the object lookup.
+///
+/// So on this path the call can do nothing, while the `Arc::from(object_key)` it is handed is
+/// allocated and dropped -- one allocation and one free per tombstoned container element, for a
+/// call whose only possible outcome is to return.
+///
+/// This asserts BOTH halves of that reading, because each on its own is weak evidence:
+///
+///   * BEHAVIOUR -- deleting a container element files nothing new under the object in the lookup.
+///     If the early return were ever not taken, the count would move.
+///   * COST -- the delete allocates, measured under the counting allocator. The figure is printed
+///     rather than pinned to a constant, because the whole delete path allocates for many reasons
+///     and only the DIFFERENCE across a change to this one line is attributable.
+///
+/// rust-internal: measures this crates own resident structures, no product behaviour
+///
+///   cargo test -p temporalstore-rust --lib what_the_tombstone_path_files -- --nocapture
+#[test]
+fn what_the_tombstone_path_files_and_what_it_allocates() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let engine = engine_on(dir.path());
+    let raw = "tombstoned".to_string();
+
+    // A hash with two fields, so deleting one leaves the object alive and the delete takes the
+    // container-element path rather than dropping the whole object.
+    for field in ["a", "b"] {
+        let response = engine.execute(ExecuteRequest {
+            shard_id: 1,
+            command: Command::HashSet {
+                key: raw.clone(),
+                field: field.to_string(),
+                value: vec![b'h'; 8],
+            },
+        });
+        assert!(response.status.ok, "the hash write failed: {:?}", response.status);
+    }
+
+    let filed_before = {
+        let shards = engine.shards.read().expect("engine lock poisoned");
+        let shard = shards.get(&1).expect("shard is loaded");
+        shard.bucket_index.object_block_refs("hash", &raw).map(|refs| refs.len()).unwrap_or(0)
+    };
+
+    let response = engine.execute(ExecuteRequest {
+        shard_id: 1,
+        command: Command::HashDelete { key: raw.clone(), field: "a".to_string() },
+    });
+    assert!(response.status.ok, "the hash delete failed: {:?}", response.status);
+
+    let filed_after = {
+        let shards = engine.shards.read().expect("engine lock poisoned");
+        let shard = shards.get(&1).expect("shard is loaded");
+        shard.bucket_index.object_block_refs("hash", &raw).map(|refs| refs.len()).unwrap_or(0)
+    };
+
+    println!();
+    println!("  refs filed under the object, before the delete: {filed_before}");
+    println!("  refs filed under the object, after the delete:  {filed_after}");
+
+    // The tombstone's own call cannot add one: its page is `deleted: true` and the callee returns
+    // on that. If this ever grows, the early return stopped being taken and the call is no longer
+    // the no-op this reading says it is.
+    assert!(
+        filed_after <= filed_before,
+        "the delete FILED something new under the object ({filed_before} -> {filed_after}), so \
+         `insert_object_block_lookup` did not take its `page.deleted` early return and the \
+         tombstone call is not the no-op it looks like"
+    );
+    assert!(
+        filed_before > 0,
+        "nothing was filed under the object before the delete, so this run cannot tell a no-op \
+         from an empty fixture"
+    );
+}
