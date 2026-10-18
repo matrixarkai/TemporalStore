@@ -5136,3 +5136,92 @@ fn which_arm_the_last_allocation_per_entry_belongs_to() {
         );
     }
 }
+
+/// THE SERIES DEDUP KEEPS ONE OF EACH DISTINCT ENTRY, INCLUDING THE CASE A NAIVE `dedup()` BREAKS.
+///
+/// `unique_timestamped_kv_block_addresses` used to dedup through a `HashSet` and then sort in a
+/// `Vec` -- two allocations per series, and the whole of the features arm's walk cost. It now
+/// collects once, sorts by (slab, offset, length), and dedups by the DERIVED `PartialEq` within
+/// each run of equal sort keys.
+///
+/// That is safe for a reason worth pinning rather than asserting: two FULLY equal entries agree on
+/// the three sort keys, so they land in the same contiguous group, and a group scan with the
+/// derived comparison cannot miss a field. What is NOT safe, and what this test exists to catch,
+/// is the obvious shortcut -- `sort_by(three keys)` then `dedup()`. `dedup()` removes only
+/// CONSECUTIVE duplicates, and entries differing in `block_id` compare Equal under that sort, so a
+/// stable sort can order them `A, B, A` and the second `A` survives.
+///
+/// So the fixture below is exactly that arrangement: two entries naming one page and differing in
+/// their block id, with a repeat of the first. A correct dedup returns TWO entries; a `dedup()`
+/// after that sort returns three.
+///
+/// rust-internal: measures this crates own resident structures, no product behaviour
+///
+///   cargo test -p temporalstore-rust --lib the_series_dedup_keeps_one_of_each -- --nocapture
+#[test]
+fn the_series_dedup_keeps_one_of_each_distinct_entry() {
+    use crate::engine::storage_reporting::unique_timestamped_kv_block_addresses;
+    use crate::engine::timestamped_series::OwnedTimestampedSeries;
+
+    // One page -- same slab, offset and length -- carrying two different block ids, and the first
+    // id seen again at a later timestamp. Under the sort these three compare Equal to each other,
+    // which is the whole point.
+    let page_a_id5 = ElementEntry::from_parts(7, 4_096, 64, Some(5), None);
+    let page_a_id9 = ElementEntry::from_parts(7, 4_096, 64, Some(9), None);
+    assert_ne!(
+        page_a_id5, page_a_id9,
+        "the fixture needs two DISTINCT entries on one page, or it tests nothing"
+    );
+
+    let mut series = OwnedTimestampedSeries::default();
+    series.insert(1_787_270_070_001, page_a_id5.clone());
+    series.insert(1_787_270_070_002, page_a_id9.clone());
+    series.insert(1_787_270_070_003, page_a_id5.clone());
+
+    let unique = unique_timestamped_kv_block_addresses(&series);
+
+    println!();
+    println!("  three addresses in, {} out", unique.len());
+    for entry in &unique {
+        println!(
+            "    slab {} offset {} length {} block_id {:?}",
+            entry.block_slab_id(),
+            entry.offset(),
+            entry.length(),
+            entry.block_id()
+        );
+    }
+
+    assert_eq!(
+        2,
+        unique.len(),
+        "the dedup returned {} entries for two distinct addresses. Three means the repeat of the \
+         first survived -- which is what `sort_by(three keys)` followed by `dedup()` does, because \
+         the two block ids compare Equal under that sort and leave A, B, A with no consecutive \
+         pair. One means two distinct entries were merged, which is data loss.",
+        unique.len()
+    );
+    assert!(
+        unique.iter().any(|entry| *entry == page_a_id5),
+        "the entry with block id 5 is missing: {unique:?}"
+    );
+    assert!(
+        unique.iter().any(|entry| *entry == page_a_id9),
+        "the entry with block id 9 is missing: {unique:?}"
+    );
+
+    // AND THE ORDER THE CALLERS READ IS UNCHANGED: sorted by slab, then offset, then length.
+    for pair in unique.windows(2) {
+        let (left, right) = (&pair[0], &pair[1]);
+        let ordered = (
+            left.block_slab_id(),
+            left.offset(),
+            left.length(),
+        ) <= (
+            right.block_slab_id(),
+            right.offset(),
+            right.length(),
+        );
+        assert!(ordered, "the result is not sorted by (slab, offset, length): {unique:?}");
+    }
+}

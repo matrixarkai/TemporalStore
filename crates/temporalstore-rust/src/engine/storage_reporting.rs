@@ -949,18 +949,59 @@ pub(super) fn collect_live_block_addresses(shard: &ShardState) -> Vec<ElementEnt
 pub(super) fn unique_timestamped_kv_block_addresses(
     series: &impl super::timestamped_series::TimestampedSeries,
 ) -> Vec<ElementEntry> {
-    let mut addresses = series
-        .addresses()
-        .cloned()
-        .collect::<HashSet<_>>()
-        .into_iter()
-        .collect::<Vec<_>>();
+    // ONE COLLECTION, NOT TWO, AND NO TOTAL ORDER REQUIRED.
+    //
+    // This built a `HashSet` to dedup and then a `Vec` to sort -- two allocations per series,
+    // measured as the whole of the features arm's cost: 2.01 allocations per walked entry against
+    // 0.01 for the arms with nothing nested (`which_arm_the_last_allocation_per_entry_belongs_to`).
+    //
+    // I FIRST RECORDED THIS AS NEEDING AN `Ord` ON `ElementEntry` AND THAT WAS WRONG. The worry was
+    // real: sorting by the three keys below leaves entries that differ in `block_id` comparing
+    // Equal, so `dedup()` -- which drops only CONSECUTIVE duplicates -- can be handed `A, B, A` and
+    // keep the second `A`. A hand-written total order risks missing a field, and a missed field
+    // makes two distinct entries compare Equal, so dedup drops one: data loss on a walk that feeds
+    // rebuilds.
+    //
+    // But neither is necessary. Two FULLY equal entries necessarily agree on the three sort keys,
+    // so after sorting they are in the same contiguous group -- and deduping by the derived
+    // `PartialEq` WITHIN each group is exactly what the `HashSet` did. The comparison stays the
+    // derived one, so no field can be missed by construction.
+    //
+    // The scan is quadratic inside a group and linear overall, because a group is the set of
+    // entries sharing slab, offset AND length: in practice one, and never large enough to matter
+    // beside the sort it rides on.
+    let mut addresses = series.addresses().cloned().collect::<Vec<_>>();
     addresses.sort_by(|left, right| {
         left.block_slab_id()
             .cmp(&right.block_slab_id())
             .then(left.offset().cmp(&right.offset()))
             .then(left.length().cmp(&right.length()))
     });
+    let same_page = |left: &ElementEntry, right: &ElementEntry| {
+        left.block_slab_id() == right.block_slab_id()
+            && left.offset() == right.offset()
+            && left.length() == right.length()
+    };
+    let mut write = 0usize;
+    let mut group_start = 0usize;
+    for read in 0..addresses.len() {
+        // Cloning is free here and that is why this shape is available: `ElementEntry` is all
+        // inline fields -- an address word, a length, a block id and flag bits -- with nothing on
+        // the heap, so a copy costs no allocation.
+        let candidate = addresses[read].clone();
+        if write > group_start && !same_page(&addresses[write - 1], &candidate) {
+            group_start = write;
+        }
+        if addresses[group_start..write]
+            .iter()
+            .any(|kept| *kept == candidate)
+        {
+            continue;
+        }
+        addresses[write] = candidate;
+        write += 1;
+    }
+    addresses.truncate(write);
     addresses
 }
 
