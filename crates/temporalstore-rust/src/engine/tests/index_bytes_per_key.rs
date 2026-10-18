@@ -4791,3 +4791,128 @@ fn what_four_collection_maps_sharing_one_key_costs() {
         rows[2].0
     );
 }
+
+/// WHAT A WHOLE-SHARD LIVE-BLOCK WALK ALLOCATES PER ENTRY, AND WHAT THE KEY COSTS OF THAT.
+///
+/// `collect_model_live_block_entries` walks every live block on the shard and builds a
+/// `LiveBlockEntry` for each. The key reaches it as a `&str`, because `visit_model_live_blocks`
+/// hands its `emit` closure `(ModelKind, &str, Option<&str>, &ElementEntry)` -- so the handle the
+/// model map holds is gone by the time the entry is built, and the entry is built with
+///
+///     live_block_entry(object_key.to_string(), ..)        // one allocation
+///     -> LiveBlockEntry { object_key: Arc::from(object_key.into()), .. }   // and another
+///
+/// TWO allocations of the same characters per entry, where cloning the map's own handle would be
+/// none. Same shape as the tombstone row -- a `&str` discarding a handle the caller already held
+/// -- but at a CLOSURE boundary shared by fifteen arms, so the fix is wider than a signature.
+///
+/// Which is why this measures first. The walk is `WholeShardEntries`, so the cost is per live
+/// block on the shard, and whether that is worth a fifteen-arm change is a number rather than an
+/// opinion.
+///
+/// # MEASURED: TWO OF THE THREE ALLOCATIONS PER ENTRY ARE THE KEY
+///
+///     6000 live block entries from 2000 keys across three kinds
+///     18,014 allocations = 3.00 per entry, 322.1 bytes per entry
+///     the key's two allocations: at most 58.0 bytes per entry
+///
+/// So **67% of the allocation COUNT and 18% of the bytes**. That makes it a throughput finding for
+/// the dump and rebuild paths that run this walk, more than a footprint one -- worth saying both
+/// ways round, because a campaign measuring resident bytes would have called 18% marginal and
+/// stopped.
+///
+/// # AND WHY THE FIX IS NOT JUST A SIGNATURE
+///
+/// Fourteen of the arms iterate a `ModelKey`-keyed map and could pass the handle they already
+/// hold. One cannot: the `context_entities` arm COMPOSES its key from the collection key and the
+/// entity hash and emits `composed.as_str()`, so there is no handle in existence to pass. A
+/// uniform `&ModelKey` parameter is therefore impossible, and the shape that works is a small
+///
+///     enum KeyRef<'a> { Shared(&'a ModelKey), Borrowed(&'a str) }
+///
+/// with `live_block_entry` cloning the handle where there is one and minting where there is not.
+/// That is a fifteen-arm change on the walk that feeds dumps and rebuilds, so it is left as a
+/// separate reviewed change rather than folded in behind this measurement -- the number is here so
+/// the decision can be made on it.
+///
+/// rust-internal: measures this crates own resident structures, no product behaviour
+///
+///   cargo test --features alloc-probe -p temporalstore-rust --lib what_a_whole_shard_live_block_walk -- --ignored --nocapture
+#[test]
+#[cfg(feature = "alloc-probe")]
+#[ignore = "seeds a shard and walks every live block; run by name, and ALONE -- the allocation \
+            counters are process-global"]
+fn what_a_whole_shard_live_block_walk_allocates_per_entry() {
+    const KEYS: usize = 2_000;
+    const T0: u64 = 1_787_270_070_000;
+
+    let dir = tempfile::tempdir().expect("tempdir");
+    let engine = std::sync::Arc::new(crate::TemporalEngine::with_local_dirs(
+        64 * 1024 * 1024,
+        dir.path().join("cache"),
+        dir.path().join("pages"),
+        dir.path().join("indexes"),
+    ));
+    engine.load_shard(1);
+
+    // A spread of kinds, so the walk crosses several arms rather than one.
+    for index in 0..KEYS {
+        let raw = format!("walked-{index:06}");
+        for command in [
+            crate::types::Command::StringSet { key: raw.clone(), value: vec![b'v'; 16] },
+            crate::types::Command::FeatureAppend {
+                key: raw.clone(),
+                points: vec![crate::types::FeaturePoint {
+                    timestamp_ms: T0 + index as u64,
+                    value: vec![b'f'; 8],
+                }],
+            },
+            crate::types::Command::HashSet {
+                key: raw.clone(),
+                field: "f".to_string(),
+                value: vec![b'h'; 8],
+            },
+        ] {
+            let response = engine
+                .execute(crate::types::ExecuteRequest { shard_id: 1, command });
+            assert!(response.status.ok, "write {index}: {:?}", response.status);
+        }
+    }
+
+    let shards = engine.shards.read().expect("engine lock poisoned");
+    let shard = shards.get(&1).expect("shard is loaded");
+
+    let probe = Probe::start();
+    let entries = crate::engine::storage_bucket_internals::collect_model_live_block_entries(shard);
+    let counts = probe.stop();
+    let walked = entries.len();
+    std::hint::black_box(&entries);
+
+    println!();
+    println!("  {KEYS} keys written across three kinds");
+    println!("  live block entries the walk produced: {walked}");
+    println!("  allocations: {}", counts.allocs);
+    println!("  bytes (chunk): {}", counts.chunk_bytes);
+    if walked > 0 {
+        println!("    per entry: {:.2} allocations", counts.allocs as f64 / walked as f64);
+        println!(
+            "    per entry: {:.1} bytes",
+            counts.chunk_bytes as f64 / walked as f64
+        );
+        // What the key alone would stop costing: the String and the Arc built from it. The figure
+        // to compare a fifteen-arm change against.
+        println!(
+            "    of which the key's two allocations are at most {:.1} bytes per entry",
+            (2 * (16 + "walked-000000".len())) as f64
+        );
+    }
+
+    assert!(
+        walked > 0,
+        "the walk produced no entries, so this measures nothing about a whole-shard walk"
+    );
+    assert!(
+        counts.allocs > 0,
+        "the walk allocated nothing, which cannot be right for {walked} entries"
+    );
+}
