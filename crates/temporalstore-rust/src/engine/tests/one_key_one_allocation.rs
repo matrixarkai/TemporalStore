@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 MatrixArkAI
+
 //! ONE KEY, ONE ALLOCATION -- the one-copy invariant, in a test a DEFAULT run executes.
 //!
 //! # WHY THIS FILE EXISTS BESIDE THE PROBES THAT ALREADY CHECK THIS
