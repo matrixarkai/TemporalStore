@@ -633,4 +633,52 @@ fn what_the_tombstone_path_files_and_what_it_allocates() {
         "nothing was filed under the object before the delete, so this run cannot tell a no-op \
          from an empty fixture"
     );
+
+    // ---- AND THE ROW THE DELETE DOES WRITE: does its key share? --------------------------
+    //
+    // `record_tombstone_element` pushes a `TombstoneElement { object_key: Arc::from(object_key),
+    // .. }` onto a RESIDENT vector hanging off the bucket, so unlike the no-op above this one
+    // keeps what it allocates. The question is whether it had to allocate at all: the object is
+    // still alive here -- a two-field hash with one field left -- so the page index still holds a
+    // handle for it.
+    //
+    // This is measured and printed either way rather than assumed, because the answer depends on
+    // ordering: the row is written while the delete is in flight, and whether the lookup still
+    // holds the key at that moment is not something to reason about from the source.
+    let shards = engine.shards.read().expect("engine lock poisoned");
+    let shard = shards.get(&1).expect("shard is loaded");
+    let indexed = shard
+        .bucket_index
+        .object_block_lookup
+        .any_shared_object_key(&raw)
+        .map(|handle| handle.as_ptr() as usize);
+    let rows: Vec<usize> = shard
+        .bucket_index
+        .bucket_map
+        .values()
+        .flat_map(|bucket| bucket.tombstone_elements.iter())
+        .filter(|row| &*row.object_key == raw.as_str())
+        .map(|row| row.object_key.as_ptr() as usize)
+        .collect();
+
+    println!();
+    match indexed {
+        Some(ptr) => println!("  the index still holds the key at {ptr:#x}"),
+        None => println!("  the index no longer holds the key"),
+    }
+    println!("  tombstone rows naming this key: {}", rows.len());
+    for ptr in &rows {
+        let verdict = match indexed {
+            Some(indexed_ptr) if *ptr == indexed_ptr => "shared",
+            Some(_) => "MINTS ",
+            None => "sole  ",
+        };
+        println!("      {verdict}  {ptr:#x}");
+    }
+
+    assert!(
+        !rows.is_empty(),
+        "the delete wrote no tombstone row naming `{raw}`, so there is nothing here to ask about \
+         sharing -- the fixture stopped reaching the tombstone path"
+    );
 }

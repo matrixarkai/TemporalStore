@@ -606,7 +606,14 @@ fn the_identity_beside_a_deleted_page_is_its_tombstone_row_and_it_composes_the_s
         let object_key: std::sync::Arc<str> = std::sync::Arc::from(OBJECT);
         let live_handle = node.insert_page(&object_key, live.clone(), block_slab_live);
         let dead_handle = node.insert_page(&object_key, dead.clone(), block_slab_live);
-        node.record_tombstone_element(OBJECT, stored_model_kind(KIND), ELEMENT, &dead.address);
+        // The SAME handle the two pages were filed with, which is what the production path
+        // now does: the row clones a handle rather than minting from the characters.
+        node.record_tombstone_element(
+            &object_key,
+            stored_model_kind(KIND),
+            ELEMENT,
+            &dead.address,
+        );
         (live_handle, dead_handle)
     };
     assert_ne!(

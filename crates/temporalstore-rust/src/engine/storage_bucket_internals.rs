@@ -4601,9 +4601,32 @@ pub(super) fn insert_container_tombstone_entry(
     // already returned above. This was `if let Some(component) = component`, under a note saying a
     // removal with no component files no row and that this was honest rather than lossy. It was --
     // but what it left behind was a PAGE with no row, which is the half that cannot be served.
+    // THE HANDLE, READ BEFORE THE `&mut` BORROW BELOW. This is the one caller of
+    // `record_tombstone_element` that genuinely starts from a `&str`: the two rebuild callers pass
+    // a block entry's own `Arc<str>` and hand it straight through. Measured before this existed,
+    // the row held the key at a different address from the index while the object was still alive.
+    //
+    // Own kind first, then any kind, then allocate -- the same order the block upsert and the
+    // address sync use, and for the same reason: the scan is bounded by the KIND count, which is a
+    // constant head for the shard.
+    //
+    // The `unwrap_or_else` arm is reachable and correct. A tombstone can be the last thing left
+    // naming an object, and then this row IS the identity -- which is what the note above says
+    // about a deleted page never being in the object lookup.
+    let shared_object_key = shard
+        .bucket_index
+        .object_block_lookup
+        .shared_object_key(kind, object_key)
+        .or_else(|| {
+            shard
+                .bucket_index
+                .object_block_lookup
+                .any_shared_object_key(object_key)
+        })
+        .unwrap_or_else(|| Arc::from(object_key));
     if let Some(bucket) = shard.bucket_index.bucket_map.get_mut(&routing_bucket) {
         bucket.record_tombstone_element(
-            object_key,
+            &shared_object_key,
             stored_model_kind(kind),
             named_element,
             &address,

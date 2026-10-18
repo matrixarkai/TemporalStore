@@ -3963,7 +3963,7 @@ fn a_bucket_nodes_tombstone_rows_survive_the_wire() {
         crate::block_store::ElementEntry::from_parts(3, 128, 48, Some(2), Some(99));
     let mut node = wire_fixture(Some(5_000));
     node.record_tombstone_element(
-        "tw/set",
+        &std::sync::Arc::from("tw/set"),
         crate::engine::storage_bucket_internals::stored_model_kind("set"),
         "6d2d31",
         &address,

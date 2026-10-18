@@ -5082,9 +5082,22 @@ impl BucketNode {
     /// ELEMENT REMOVED and not one per removal issued -- four removals of one member must leave
     /// one row, which is the bound a nameless tombstone could not state and which was measured
     /// growing per removal when it could not.
+    /// THE IDENTITY ARRIVES AS A HANDLE, BECAUSE TWO OF THE THREE CALLERS ALREADY HELD ONE.
+    ///
+    /// This took `&str` and finished with `object_key: Arc::from(object_key)`, so the row owned
+    /// a second copy of characters something else already had. Measured: with the object still
+    /// alive, the page index held the key at one address and the row it wrote held it at
+    /// another -- `what_the_tombstone_path_files_and_what_it_allocates`.
+    ///
+    /// The waste was plainest at the two rebuild callers, which pass `&element.object_key` -- a
+    /// block entry's own shared handle -- and had it re-minted from under them. A `&str`
+    /// parameter discarded the sharing at the boundary, which is a different failure from not
+    /// looking the handle up: here the caller had already paid for it. Those two now hand it
+    /// straight through and need no change at the call site. The third caller,
+    /// `insert_container_tombstone_entry`, takes one from the lookup before its `&mut` borrow.
     pub(super) fn record_tombstone_element(
         &mut self,
-        object_key: &str,
+        object_key: &Arc<str>,
         model_id: crate::engine::storage_bucket_internals::StoredModelKind,
         component: &str,
         address: &ElementEntry,
@@ -5092,14 +5105,15 @@ impl BucketNode {
         let page = tombstone_page_key(address);
         if let Some(row) = self.tombstone_elements.iter_mut().find(|row| {
             row.model_id == model_id
-                && &*row.object_key == object_key
+                && &*row.object_key == &**object_key
                 && &*row.component == component
         }) {
             row.page = page;
             return;
         }
         self.tombstone_elements.push(TombstoneElement {
-            object_key: Arc::from(object_key),
+            // CLONING A HANDLE, NOT COPYING CHARACTERS. This was `Arc::from(object_key)`.
+            object_key: Arc::clone(object_key),
             model_id,
             component: Arc::from(component),
             page,
