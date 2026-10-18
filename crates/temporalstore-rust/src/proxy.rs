@@ -5396,122 +5396,19 @@ mod tests {
         }
     }
 
-    /// Every proxy route the shipped Python SDK calls is one the proxy answers.
-    ///
-    /// `sdk/python/` is not a document, it is code people run. A method that posts to a path the
-    /// dispatcher does not know fails at the user, and nothing in this repo compiles the SDK, so
-    /// only a check like this one can see it.
-    ///
-    /// `ingest_client.py` is excluded on purpose: its `/api/*` paths belong to a different
-    /// service, not to this proxy. The two files named here are the ones that talk to the proxy.
-    #[test]
-    fn every_proxy_route_the_python_sdk_calls_is_served() {
-        let sdk = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../sdk/python/temporalstore");
-        let mut routes: Vec<String> = Vec::new();
-        for file in ["proxy_client.py", "features.py"] {
-            let text = std::fs::read_to_string(sdk.join(file))
-                .unwrap_or_else(|err| panic!("the shipped SDK file {file} must be readable: {err}"));
-            // Every "/..." literal in the file.
-            let bytes: Vec<char> = text.chars().collect();
-            let mut i = 0;
-            while i < bytes.len() {
-                if bytes[i] == '"' {
-                    if let Some(end) = bytes[i + 1..].iter().position(|c| *c == '"') {
-                        let literal: String = bytes[i + 1..i + 1 + end].iter().collect();
-                        if literal.starts_with('/')
-                            && literal.len() > 1
-                            && literal.chars().all(|c| c.is_ascii_alphanumeric() || "/_".contains(c))
-                        {
-                            routes.push(literal);
-                        }
-                        i += end + 2;
-                        continue;
-                    }
-                }
-                i += 1;
-            }
-        }
-        // The Rust SDK is the other published proxy client. `sdk/README.md` says both are
-        // "Proxy SDKs -- pure-language HTTP/JSON clients that call a TemporalStore proxy", and its
-        // shipped example connects to one, so every route it names has to be served too.
-        let rust_sdk = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("../../sdk/rust/temporalstore/src");
-        if let Ok(entries) = std::fs::read_dir(&rust_sdk) {
-            for entry in entries.flatten() {
-                let path = entry.path();
-                if path.extension().and_then(|e| e.to_str()) != Some("rs") {
-                    continue;
-                }
-                let text = std::fs::read_to_string(&path).unwrap_or_default();
-                let chars: Vec<char> = text.chars().collect();
-                let mut i = 0;
-                while i < chars.len() {
-                    if chars[i] == '"' {
-                        if let Some(end) = chars[i + 1..].iter().position(|c| *c == '"') {
-                            let literal: String = chars[i + 1..i + 1 + end].iter().collect();
-                            if literal.starts_with('/')
-                                && literal.len() > 1
-                                && literal.chars().all(|c| c.is_ascii_alphanumeric() || "/_".contains(c))
-                            {
-                                routes.push(literal);
-                            }
-                            i += end + 2;
-                            continue;
-                        }
-                    }
-                    i += 1;
-                }
-            }
-        }
+    // THE PYTHON SDK CROSS-CHECK IS GONE WITH THE SDK, AND THAT IS A LOSS, NOT A TIDY-UP.
+    //
+    // `every_proxy_route_the_python_sdk_calls_is_served` read `sdk/python/temporalstore/` and
+    // asserted that every path the shipped client POSTs to is a path this dispatcher knows. Its
+    // own doc said why it had to live here: nothing in this repo compiles the SDK, so a route
+    // renamed on one side and not the other failed at the USER and nowhere else.
+    //
+    // The SDK now lives in the Python repository and the route table lives here, so the check
+    // cannot run in either repository alone -- it needs both trees at once. Deleting it is
+    // therefore giving something up, and it is recorded here rather than in a commit message so
+    // that whoever reinstates the pairing (a submodule, a vendored copy of the two client files,
+    // or a cross-repo job) finds the reason it was needed.
 
-        routes.sort();
-        routes.dedup();
-
-        assert!(
-            routes.len() >= 15,
-            "found only {} route literals in the shipped SDK, so this test would be checking              almost nothing: {routes:?}",
-            routes.len()
-        );
-
-        let proxy = scoped_proxy(ProxyOptions::default());
-        let mut unserved: Vec<String> = Vec::new();
-        for route in &routes {
-            // A route the proxy knows answers something other than 404 to one of these.
-            let post = proxy
-                .handle(crate::proxy::HttpRequest {
-                    method: "POST".to_string(),
-                    path: route.clone(),
-                    body: b"{}".to_vec(),
-                })
-                .0;
-            let get = proxy
-                .handle(crate::proxy::HttpRequest {
-                    method: "GET".to_string(),
-                    path: route.clone(),
-                    body: Vec::new(),
-                })
-                .0;
-            if post == 404 && get == 404 {
-                unserved.push(route.clone());
-            }
-        }
-
-        // Three routes the proxy has never served. Whether to add them or to drop the methods is
-        // a product decision, not a test's to make -- so they are named here rather than silently
-        // skipped, and the assertion is EXACT in both directions: implement one and this fails
-        // telling you to take it off the list, add a new dead route and it fails too.
-        let mut known_unimplemented = vec![
-            "/ProxyService/ControlStateCPCQuery".to_string(),
-            "/ProxyService/ControlStateCPCSet".to_string(),
-            "/ProxyService/ControlStateHquery".to_string(),
-        ];
-        known_unimplemented.sort();
-        unserved.sort();
-        assert_eq!(
-            unserved, known_unimplemented,
-            "the set of SDK routes the proxy does not serve has moved. A route that is now served              must come off this list; a route that has stopped being served is an SDK method that              cannot work"
-        );
-    }
 
     /// Every route the operational surface report claims is covered is one the proxy answers.
     ///
