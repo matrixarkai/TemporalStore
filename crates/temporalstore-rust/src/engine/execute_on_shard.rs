@@ -4275,7 +4275,7 @@ pub(crate) fn execute_on_shard(
             let object_key = context_dirty_key(tenant_hash, node_hash);
             let entry = shard
                 .context_dirty_index
-                .entry(object_key.clone())
+                .entry(crate::engine::state::DirtyMark::summary(tenant_hash, node_hash))
                 .or_default();
             if entry.mark_count == 0 {
                 entry.node_hash = node_hash;
@@ -4304,7 +4304,7 @@ pub(crate) fn execute_on_shard(
             let object_key = context_dirty_key(tenant_hash, node_hash);
             let nodes = shard
                 .context_dirty_index
-                .get(&object_key)
+                .get(&crate::engine::state::DirtyMark::summary(tenant_hash, node_hash))
                 .filter(|entry| {
                     entry.mark_count > 0
                         && entry.last_event_time_ms >= start_time_ms
@@ -4339,11 +4339,16 @@ pub(crate) fn execute_on_shard(
             // (never written to the block store) and re-derived after restart.
             let object_key = context_embedding_dirty_key(tenant_hash, node_hash);
             if clear {
-                shard.context_dirty_index.remove(&object_key);
+                shard
+                    .context_dirty_index
+                    .remove(&crate::engine::state::DirtyMark::embedding(
+                        tenant_hash,
+                        node_hash,
+                    ));
             } else {
                 let entry = shard
                     .context_dirty_index
-                    .entry(object_key.clone())
+                    .entry(crate::engine::state::DirtyMark::embedding(tenant_hash, node_hash))
                     .or_default();
                 if entry.mark_count == 0 {
                     entry.tenant_hash = tenant_hash;
@@ -4380,13 +4385,15 @@ pub(crate) fn execute_on_shard(
                 let mut entries: Vec<_> = shard
                     .context_dirty_index
                     .iter()
-                    .filter(|(object_key, entry)| {
-                        // THE PREFIX FIRST. One map now holds both flavours of dirtiness, and
-                        // `tenant_hash` is left ZERO for summary entries -- so the tenant clause
-                        // below admits them on an all-tenant drain. Without this predicate such a
-                        // drain would hand summary entries out as embedding work. See
-                        // `is_embedding_dirty_key`.
-                        super::context::is_embedding_dirty_key(object_key)
+                    .filter(|(mark, entry)| {
+                        // THE FLAVOUR IS A FIELD NOW. This read the key's PREFIX, and its comment
+                        // explained that the test was load-bearing because `tenant_hash` is
+                        // left zero on summary marks, so the tenant clause below would admit
+                        // them on an all-tenant drain. The key carries the tenant for BOTH
+                        // flavours now, so the two cannot be confused whether or not this
+                        // clause is here -- it stays because the drain still wants only one
+                        // flavour, not because the other one would leak through.
+                        mark.flavour == crate::engine::state::DirtyFlavour::Embedding
                             && entry.mark_count > 0
                             && entry.last_event_time_ms >= start_time_ms
                             && entry.first_event_time_ms <= end_time_ms
@@ -4411,7 +4418,7 @@ pub(crate) fn execute_on_shard(
                 if let Some(entry) =
                     shard
                         .context_dirty_index
-                        .get(&object_key)
+                        .get(&crate::engine::state::DirtyMark::embedding(tenant_hash, node_hash))
                         .filter(|entry| {
                             entry.mark_count > 0
                                 && entry.last_event_time_ms >= start_time_ms

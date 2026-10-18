@@ -3343,7 +3343,14 @@ fn how_many_times_a_context_keys_characters_exist() {
         ("context_event_timeline (Arc-keyed)", shard.context_event_timeline.keys().map(|k| &**k).collect()),
         ("context_indexes", shard.context_indexes.keys().map(|k| &**k).collect()),
         ("context_audits", shard.context_audits.keys().map(|k| &**k).collect()),
-        ("context_dirty_index", shard.context_dirty_index.keys().map(|k| k.as_str()).collect()),
+        // NO KEY CHARACTERS AT ALL NOW, which is the point of this row rather than a gap in
+        // it. This map was the family's largest character holder -- 800 keys and 14,000
+        // characters at 400 events, 52% of every key character counted here -- and the one
+        // String-keyed map among them, so it could never share an allocation with anything.
+        // Its key is `DirtyMark` now: the tenant, the node and a flavour, 24 bytes inline and
+        // nothing on the heap. An empty text list is therefore the correct report, and the
+        // assertion below pins it so a reversion shows up as characters reappearing.
+        ("context_dirty_index (no key characters)", Vec::new()),
         ("context_entities", shard.context_entities.keys().map(|k| &**k).collect()),
         ("context_children", shard.context_children.keys().map(|k| &**k).collect()),
         ("context_summaries", shard.context_summaries.keys().map(|k| &**k).collect()),

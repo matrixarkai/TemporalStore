@@ -100,19 +100,17 @@ pub(super) fn context_embedding_dirty_key(tenant_hash: u64, node_hash: u64) -> S
 /// The prefix the key above carries, named once so the predicate below cannot drift from it.
 pub(super) const EMBEDDING_DIRTY_PREFIX: &str = "ctx:embdirty:";
 
-/// Whether a dirty-index key is an EMBEDDING key rather than a summary one.
-///
-/// ONE MAP HOLDS BOTH FLAVOURS, so a scan has to say which it wants. The two key spaces are
-/// mutually non-prefixing -- `ctx:dirty:` and `ctx:embdirty:` differ at the fifth character -- so
-/// this is exact rather than a heuristic.
-///
-/// AND IT IS LOAD-BEARING, not cosmetic. `ContextDirtyEntry::tenant_hash` is left ZERO for
-/// summary-dirty entries, and the embedding drain's own filter admits everything when it is asked
-/// for all tenants (`tenant_hash == 0`). Without this predicate an all-tenant drain would collect
-/// summary entries and hand them out as embedding work.
-pub(super) fn is_embedding_dirty_key(object_key: &str) -> bool {
-    object_key.starts_with(EMBEDDING_DIRTY_PREFIX)
-}
+// `is_embedding_dirty_key` WAS HERE, and the typed dirty key retired it.
+//
+// It recovered a mark's flavour from its key's prefix, and its own doc called that
+// load-bearing: `ContextDirtyEntry::tenant_hash` was left ZERO on summary marks, so an
+// all-tenant embedding drain would have collected them without the prefix test. `DirtyMark`
+// carries the tenant for BOTH flavours and the flavour as a field, so there is no asymmetry
+// left to guard and no prefix left to parse.
+//
+// The PREFIX itself stays, below, because the command surface still builds these key strings:
+// `client/commands.rs` and `command_validation.rs` advertise the object key a command touches,
+// which is a different job from keying a resident map.
 
 pub(super) fn context_entity_key(tenant_hash: u64, node_hash: u64, entity_hash: u64) -> String {
     context_key_3("ctx:entity:", tenant_hash, node_hash, entity_hash)
@@ -1356,34 +1354,16 @@ pub(super) fn build_context_compression_event(
 
 #[cfg(test)]
 mod one_map_two_flavours_of_dirtiness {
-    use super::{
-        context_dirty_key, context_embedding_dirty_key, is_embedding_dirty_key,
-        EMBEDDING_DIRTY_PREFIX,
-    };
+    use super::{context_dirty_key, context_embedding_dirty_key, EMBEDDING_DIRTY_PREFIX};
 
-    /// THE DISCRIMINATOR, IN BOTH DIRECTIONS.
+    /// THE TWO KEY SPACES ARE MUTUALLY NON-PREFIXING, and this test outlived the predicate it
+    /// was written for.
     ///
-    /// One map holds summary-dirty and embedding-dirty entries, so a scan that wants one flavour
-    /// must be able to reject the other. A predicate that answered `true` for everything would
-    /// satisfy the first assertion alone, so the second is what gives the first any content.
-    #[test]
-    fn an_embedding_key_is_recognised_and_a_summary_key_is_not() {
-        let embedding = context_embedding_dirty_key(11, 42);
-        let summary = context_dirty_key(11, 42);
-
-        assert!(
-            is_embedding_dirty_key(&embedding),
-            "an embedding key must be recognised: {embedding}"
-        );
-        assert!(
-            !is_embedding_dirty_key(&summary),
-            "a SUMMARY key must be rejected, or an all-tenant embedding drain collects it: {summary}"
-        );
-    }
-
-    /// THE TWO KEY SPACES ARE MUTUALLY NON-PREFIXING, which is what makes the predicate exact
-    /// rather than a heuristic. If one prefix ever became a prefix of the other, `starts_with`
-    /// would start answering for both and this reddens before that reaches a scan.
+    /// It used to be the reason `is_embedding_dirty_key` was exact rather than a heuristic. That
+    /// predicate is gone -- the flavour is a field on `DirtyMark` now -- but the two key BUILDERS
+    /// are not: the command surface still emits both key spaces as the object key a command
+    /// touches. So the property still matters, for a different reason: a reader handed one of
+    /// these strings must not be able to take it for the other.
     #[test]
     fn neither_prefix_is_a_prefix_of_the_other() {
         let embedding = context_embedding_dirty_key(1, 2);

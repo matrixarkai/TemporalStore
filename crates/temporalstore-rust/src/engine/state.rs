@@ -15,9 +15,57 @@ use super::control_rollup::RollupEntry;
 use super::hll::Hll;
 use super::hash_field_map::HashFieldMap;
 
+/// WHICH FLAVOUR OF DIRTINESS A MARK IS, as a field rather than as a key prefix.
+///
+/// One map holds both, and it used to tell them apart by testing whether the key began
+/// `ctx:embdirty:`. That worked and was documented as load-bearing, which is the tell: a
+/// boolean spelled as a string prefix has to be parsed back out, and the parse is what every
+/// reader then depends on.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub(super) enum DirtyFlavour {
+    /// A node whose SUMMARY is stale.
+    Summary,
+    /// A node whose EMBEDDING is stale.
+    Embedding,
+}
+
+/// THE KEY OF ONE DIRTY MARK: the two integers it is about, and which flavour it is.
+///
+/// This replaced `String`. The string was `ctx:dirty:{tenant}:{node}` or
+/// `ctx:embdirty:{tenant}:{node}` -- a heap allocation per mark spelling two integers that
+/// `ContextDirtyEntry` already carries as fields, plus a prefix standing in for the flavour.
+/// Measured at 400 context events: 800 keys holding 14,000 characters, 52% of every key
+/// character in the context family, in the one map of that family that could not share an
+/// allocation with anything because it was the only String-keyed one.
+///
+/// ORDERED, because a bounded drain sorts its candidates for a stable pass across calls. The
+/// derived order is (tenant, node, flavour), which is not the lexicographic order of the old
+/// keys -- a drain's ORDER is an implementation detail it only needs to be STABLE in, and the
+/// test over it asserts stability rather than a particular sequence.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub(super) struct DirtyMark {
+    pub(super) tenant_hash: u64,
+    pub(super) node_hash: u64,
+    pub(super) flavour: DirtyFlavour,
+}
+
+impl DirtyMark {
+    pub(super) fn summary(tenant_hash: u64, node_hash: u64) -> Self {
+        Self { tenant_hash, node_hash, flavour: DirtyFlavour::Summary }
+    }
+
+    pub(super) fn embedding(tenant_hash: u64, node_hash: u64) -> Self {
+        Self { tenant_hash, node_hash, flavour: DirtyFlavour::Embedding }
+    }
+}
+
+/// Twenty-four bytes and no heap at all, pinned as an equality so a field added without
+/// thought shows up here rather than in a footprint report.
+const _: () = assert!(std::mem::size_of::<DirtyMark>() == 24);
+
 /// In-memory, coalesced summary-dirty entry.
 ///
-/// One entry per dirty object key (`ctx:dirty:{tenant}:{node}`). Repeated
+/// One entry per `DirtyMark` -- a tenant, a node and a flavour. Repeated
 /// `ContextMarkSummaryDirty` commands for the same node update this single entry
 /// in place instead of appending a new persisted marker, so the number of dirty
 /// records is bounded by the number of distinct dirty nodes rather than the number
@@ -539,22 +587,38 @@ pub(super) struct ShardState {
     pub(super) context_indexes: HashMap<ModelKey, BTreeMap<u64, ElementEntry>>,
     #[serde(default)]
     pub(super) context_audits: HashMap<ModelKey, BTreeMap<u64, ElementEntry>>,
-    // Summary-dirty tracking is intentionally in-memory only. Instead of appending a
-    // persisted `ctx:dirty` block per event (which produced one dirty node per write and
-    // unbounded dirty-block growth: a real e2e capture stored 47 dirty records for only 6
-    // events), we keep a coalescing hashmap keyed by dirty object key so repeated edits to
-    // the same node collapse into a single entry. This map is `#[serde(skip)]`: it is
-    // ephemeral and may be lost on restart, which is acceptable because the async summary
-    // worker re-marks nodes on the next event and stale summaries are self-healing.
-    // AND IT HOLDS THE EMBEDDING-DIRTY ENTRIES TOO, under `ctx:embdirty:{tenant}:{node}`.
-    // They were a second map of the same type over the same key shape, differing only in the
-    // prefix the key already carries -- one map per attribute where the attribute is a flavour of
-    // dirtiness. A scan that wants one flavour asks `is_embedding_dirty_key`, which is load-bearing
-    // rather than cosmetic: `tenant_hash` is left zero for summary entries and the embedding
-    // drain's filter admits everything when asked for all tenants, so without the predicate an
-    // all-tenant drain would hand summary entries out as embedding work.
+    // IN-MEMORY ONLY, AND COALESCING, which are two decisions with a measurement behind each.
+    //
+    // EPHEMERAL: this map is `#[serde(skip)]`, so a restart loses it, and that is acceptable
+    // because the async summary worker re-marks nodes on the next event and stale summaries are
+    // self-healing. What it replaced was a persisted `ctx:dirty` block per event -- a real
+    // end-to-end capture stored 47 dirty records for only 6 events, because nothing coalesced.
+    //
+    // COALESCING: one entry per (tenant, node, flavour), so repeated edits to one node collapse
+    // into a single row and the record count is bounded by distinct dirty nodes rather than by
+    // events.
+    //
+    // ONE MAP FOR BOTH FLAVOURS. Summary-dirty and embedding-dirty were two maps of the same type
+    // over the same key shape -- one map per attribute, where the attribute was a flavour of
+    // dirtiness -- and they are one map now with the flavour as a field on the key.
+    //
+    // AND THE KEY IS THE THREE VALUES IT IS ABOUT, not a string of them. It used to be
+    // `ctx:dirty:{tenant}:{node}` or `ctx:embdirty:{tenant}:{node}`: a heap allocation per mark
+    // spelling two integers `ContextDirtyEntry` already carries as fields, with a prefix standing
+    // in for the flavour. Measured at 400 context events, that was 800 keys holding 14,000
+    // characters -- 52% of every key character in the context family, in the only String-keyed map
+    // among them, so it could never share an allocation with anything. `DirtyMark` is 24 bytes
+    // inline and nothing on the heap.
+    //
+    // IT ALSO REMOVED A TRAP RATHER THAN GUARDING ONE. The summary-mark site never set
+    // `tenant_hash` on the row -- it was left ZERO -- and the embedding drain's tenant clause
+    // admits everything when asked for all tenants, so a prefix test was the only thing stopping
+    // an all-tenant drain handing summary entries out as embedding work. Its own doc called that
+    // load-bearing, which was true and is the tell: a boolean spelled as a string prefix has to be
+    // parsed back, and every reader then depends on the parse. The key carries the tenant for both
+    // flavours now, so the two cannot be confused whether or not a drain filters on flavour.
     #[serde(skip)]
-    pub(super) context_dirty_index: HashMap<String, ContextDirtyEntry>,
+    pub(super) context_dirty_index: HashMap<DirtyMark, ContextDirtyEntry>,
     // Per-node temporal-compression high-water mark: the latest event time already
     // folded into a ContextCompressionEvent for this event object key. In-memory and
     // ephemeral (serde-skipped); on loss the auto-compression trigger re-compresses
