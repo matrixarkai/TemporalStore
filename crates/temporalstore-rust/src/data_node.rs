@@ -892,8 +892,12 @@ pub struct StorageManagerOptions {
     /// term at about 4.5x the index term at every corpus size it tried. So a value set here is not a
     /// property of the shard it gates: raising it to stop an idle shard evicting also stops a fat one,
     /// and lowering it to catch a fat one makes idle shards evict whenever the node's cache is warm.
-    /// That is why the default is still 0 with the stage off rather than a chosen number -- see
-    /// `enable_evict_stays_off_because_its_gate_reads_other_shards_memory`.
+    /// That is why this is ONE rather than a chosen number: the stage is on now, and a value
+    /// picked off this signal would have its trigger point set by other shards either way, so
+    /// the field holds the cycle request's considered value instead of an accidental 0. What
+    /// bounds a round is `eviction_batch_limit` and `eviction_count_limit`, not this -- see
+    /// `enable_evict_is_on_and_its_gate_still_reads_other_shards_memory`, which measures a round
+    /// taking victims once and then finding none.
     #[serde(default)]
     pub eviction_memory_pressure_threshold: u64,
     /// How many buckets one evict stage may take. 0 means no limit.
@@ -1053,16 +1057,41 @@ impl Default for StorageManagerOptions {
             enable_block_compaction: true,
             enable_index_gc: true,
             enable_metrics_reap: true,
-            // Off, unlike every stage above it. See the field doc: this makes eviction REACHABLE
-            // from the periodic loop; enabling it by default is a separate decision.
-            enable_evict: false,
-            eviction_memory_pressure_threshold: 0,
+            // ON, with the other eight. This was the one stage of nine that defaulted off, and
+            // turning it on changes what a shipped server does every round -- so what it now
+            // does, and what it costs, is stated here rather than implied.
+            //
+            // WHAT THE ROUND DOES NOW. `eviction_dump_before_evict` is already true below, and
+            // that is what makes this worth turning on at all: a release requires every block in
+            // the bucket clean and undeleted, and a bucket written and not yet dumped is dirty,
+            // so WITHOUT the dump the actuator refuses every candidate -- measured at 16 of 16
+            // refused and 0 buckets released, against 4 released with the dump on. So the round
+            // dumps, then releases the resident page lists that makes releasable.
+            //
+            // WHAT BOUNDS IT, since the gate does not. `eviction_batch_limit` is 16 buckets and
+            // `eviction_count_limit` is 100 objects per round, so a round's work is bounded by
+            // those rather than by the store. What is NOT a bound is the pressure threshold: the
+            // considered value next door on the cycle request is ONE BYTE, so the gate passes on
+            // any pressure at all. Taking that value rather than 0 is not a tightening -- both
+            // fire -- it is this field holding a considered number instead of an accidental one,
+            // which is the same argument `eviction_batch_limit` below was given.
+            //
+            // AND THE OBJECTION THIS DOES NOT ANSWER, recorded rather than buried. The wide
+            // gate's signal sums four PROCESS-WIDE cache terms with one per-shard index term; a
+            // ten-key shard's gate was measured reading 2,685,344 B of which 99.95% was an
+            // eight-thousand-key shard's cache. With the threshold at one byte the gate fires
+            // regardless, so that contamination changes nothing about WHETHER a round runs --
+            // but this stage is not shard-isolated, and `apply_index_resident_bound` remains the
+            // per-shard trigger for anyone who wants one.
+            enable_evict: true,
+            eviction_memory_pressure_threshold:
+                crate::engine::reports::DEFAULT_STORAGE_MANAGER_EVICTION_THRESHOLD,
             // The CYCLE's value, not 0. Both pipelines run the same stages, and where they
             // disagree on a bound the periodic one -- the loop a server actually starts -- was
             // the unbounded side. 0 here was mine (#1467) and I justified it as "preserve current
             // behaviour", which was the weaker reading: the choice was never change-vs-no-change,
             // it was between a considered value that already existed next door and an accidental
-            // one. Only reachable when `enable_evict` is on, which is still off by default.
+            // one. Reached on every round now that `enable_evict` defaults on.
             eviction_batch_limit: crate::engine::reports::DEFAULT_EVICTION_BATCH_LIMIT,
             // ON, and the one of the two objections to `enable_evict` that measurement settles.
             //

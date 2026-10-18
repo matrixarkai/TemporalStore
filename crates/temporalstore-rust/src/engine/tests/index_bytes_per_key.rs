@@ -3523,7 +3523,9 @@ fn how_many_times_a_context_keys_characters_exist() {
 /// `memory_pressure_threshold = 0`, which is not a trigger an operator can deploy: the gate it
 /// passes through sums four PROCESS-WIDE cache terms with one per-shard index term, so a constant
 /// threshold fires on an idle shard whenever a busy one shares the process. That is measured in
-/// `the_evict_gates_cache_terms_are_process_wide_not_shard` and is why `enable_evict` defaults off.
+/// `the_evict_gates_cache_terms_are_process_wide_not_shard`, and was the argument for
+/// `enable_evict` defaulting off; the flag defaults on now by direction, with that objection
+/// recorded as unretired rather than answered.
 ///
 /// `apply_index_resident_bound` narrows the signal to `bucket_index_resident_bytes`, which is
 /// per-shard and is the only term a release can reduce. This measures what that bound recovers AND
