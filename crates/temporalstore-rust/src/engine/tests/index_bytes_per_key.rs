@@ -5314,3 +5314,131 @@ fn what_interning_the_composed_entity_key_would_trade() {
         "the pool allocated nothing, which cannot be right for {entities} keys"
     );
 }
+
+/// WHAT REPEATED FIELD NAMES COST THE MODEL MAPS, ON AN AXIS THIS CAMPAIGN NEVER MEASURED.
+///
+/// Every figure in this campaign has been about the object KEY. A hash object's FIELD names are a
+/// second axis of the same invariant, and they are not shared at all: `HashFieldMap` holds
+/// `Vec<(String, ElementEntry)>`, so each object owns a `String` per field. A `status` field across
+/// ten thousand objects is ten thousand copies of one short name.
+///
+/// The index side already shares them. `intern_shared` draws component names from `kind_pool`, and
+/// its own doc explains why the pool is CAPPED at 64: "a component name is not [bounded] -- it
+/// comes from the caller -- and the cap is what makes sharing it safe anyway: past the cap a name
+/// still works, it just allocates as it did before." So the mechanism and the safety argument both
+/// exist; only the model side does not use them.
+///
+/// This prices the duplication before anything proposes removing it, on the shape that makes it
+/// worst: many objects drawing field names from a small set, which is what a schema looks like.
+///
+/// rust-internal: measures this crates own resident structures, no product behaviour
+///
+///   cargo test --features alloc-probe -p temporalstore-rust --lib what_repeated_field_names_cost -- --ignored --nocapture
+#[test]
+#[cfg(feature = "alloc-probe")]
+#[ignore = "builds two field-map shapes at 4,000 objects; run by name, and ALONE -- the allocation \
+            counters are process-global"]
+fn what_repeated_field_names_cost_the_model_maps() {
+    const OBJECTS: usize = 4_000;
+    // A schema's worth of names, drawn from a small set -- which is the point.
+    const NAMES: &[&str] = &[
+        "status",
+        "updated_at",
+        "owner",
+        "retention_class",
+        "last_seen_region",
+    ];
+
+    let address = |i: usize| ElementEntry::from_parts(1, i as u64 * 64, 48, None, None);
+
+    // AS IT IS: one owned `String` per field per object.
+    let owned = {
+        let probe = Probe::start();
+        let mut maps: Vec<Vec<(String, ElementEntry)>> = Vec::with_capacity(OBJECTS);
+        for object in 0..OBJECTS {
+            let mut fields: Vec<(String, ElementEntry)> = Vec::with_capacity(NAMES.len());
+            for (slot, name) in NAMES.iter().enumerate() {
+                fields.push((name.to_string(), address(object * NAMES.len() + slot)));
+            }
+            maps.push(fields);
+        }
+        std::hint::black_box(&maps);
+        probe.stop()
+    };
+
+    // SHARED, the way the index already shares a component: one handle per distinct name, taken
+    // from a pool, and every object holding a clone of it.
+    let shared = {
+        let probe = Probe::start();
+        let mut pool: std::collections::HashSet<std::sync::Arc<str>> =
+            std::collections::HashSet::new();
+        for name in NAMES {
+            pool.insert(std::sync::Arc::from(*name));
+        }
+        let handles: Vec<std::sync::Arc<str>> = NAMES
+            .iter()
+            .map(|name| pool.get(&name[..]).expect("just inserted").clone())
+            .collect();
+        let mut maps: Vec<Vec<(std::sync::Arc<str>, ElementEntry)>> = Vec::with_capacity(OBJECTS);
+        for object in 0..OBJECTS {
+            let mut fields: Vec<(std::sync::Arc<str>, ElementEntry)> =
+                Vec::with_capacity(NAMES.len());
+            for (slot, handle) in handles.iter().enumerate() {
+                fields.push((
+                    std::sync::Arc::clone(handle),
+                    address(object * NAMES.len() + slot),
+                ));
+            }
+            maps.push(fields);
+        }
+        std::hint::black_box((&maps, &pool));
+        probe.stop()
+    };
+
+    let fields = OBJECTS * NAMES.len();
+    let per = |bytes: u64| bytes as f64 / fields as f64;
+
+    println!();
+    println!(
+        "  {OBJECTS} objects x {} field names = {fields} fields, {} distinct names",
+        NAMES.len(),
+        NAMES.len()
+    );
+    println!();
+    println!("    shape      allocations        bytes   per field");
+    println!(
+        "    owned      {:>11}   {:>10}   {:>9.1}",
+        owned.allocs,
+        owned.chunk_bytes,
+        per(owned.chunk_bytes)
+    );
+    println!(
+        "    shared     {:>11}   {:>10}   {:>9.1}",
+        shared.allocs,
+        shared.chunk_bytes,
+        per(shared.chunk_bytes)
+    );
+    println!(
+        "    saving     {:>11}   {:>10}   {:>9.1}",
+        owned.allocs as i64 - shared.allocs as i64,
+        owned.chunk_bytes as i64 - shared.chunk_bytes as i64,
+        per(owned.chunk_bytes) - per(shared.chunk_bytes)
+    );
+    println!();
+    println!("  A `String` field is 24 bytes of inline struct plus its characters; a shared handle");
+    println!("  is 16 inline and no characters at all beyond the one pooled copy. Unlike interning");
+    println!("  the composed entity key, THIS pool is bounded by the schema rather than by the");
+    println!("  corpus -- which is the same argument `kind_pool`'s cap already makes.");
+
+    assert!(
+        shared.chunk_bytes < owned.chunk_bytes,
+        "the shared shape is not smaller ({} vs {}), so the comparison is measuring something \
+         other than the field name",
+        shared.chunk_bytes,
+        owned.chunk_bytes
+    );
+    assert!(
+        owned.allocs > 0 && shared.allocs > 0,
+        "an arm allocated nothing, which cannot be right for {fields} fields"
+    );
+}
