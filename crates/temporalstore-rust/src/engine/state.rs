@@ -298,7 +298,18 @@ pub(super) struct ShardState {
     // explicitly instead of defaulting to it.
     #[serde(default)]
     pub(super) lists: super::recorded_map::RecordedMap<super::recorded_map::ListKind>,
-    pub(super) features: HashMap<String, BTreeMap<u64, ElementEntry>>,
+    /// Feature series as an OWNED SORTED ARRAY, written in the B-tree shape it has always had.
+    ///
+    /// Measured: a `BTreeMap` of 1,000 points costs **49.1 B a point** where the payload is 24 --
+    /// `(u64, ElementEntry)` with a 16-byte entry -- and the array costs **24.0 B a point, exactly
+    /// the payload**. At a 40,040-key corpus that is this row going 49.1 -> 24.0 B/key, which is
+    /// 25.0 B/key off the resident index and the largest single row left in it.
+    /// `what_the_feature_series_would_cost_as_an_owned_array` is that measurement and asserts the
+    /// array stays the smaller of the two.
+    ///
+    /// The stored image does not move: see [`super::timestamped_series::as_btree_maps`].
+    #[serde(with = "super::timestamped_series::as_btree_maps")]
+    pub(super) features: HashMap<String, OwnedTimestampedSeries>,
     pub(super) control_state: HashMap<String, BTreeMap<u64, i64>>,
     /// Counter-series blocks, one per control-state object key.
     ///
@@ -7342,7 +7353,9 @@ pub(super) fn repack_decoded_btrees(state: &mut ShardState) {
     sets.repack_decoded();
     zsets.repack_decoded();
     lists.repack_decoded();
-    repack_nested(features);
+    // `features` is an owned sorted array now, built by `collect` at decode, so there is no
+    // half-empty B-tree node to repack and nothing here to do for it.
+    let _ = &features;
     repack_nested(control_state);
     repack_nested(context_event_timeline);
     repack_nested(context_indexes);

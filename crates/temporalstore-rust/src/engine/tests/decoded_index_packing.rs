@@ -132,16 +132,20 @@ fn encoded_index(
 
 /// The same entries, packed in one go: `collect` into a `BTreeMap` sorts and bulk-builds, so every
 /// leaf is filled.
-fn packed_like(
-    map: &HashMap<String, BTreeMap<u64, ElementEntry>>,
+// GENERIC OVER THE SERIES, through the trait, because `features` holds the owned array while the
+// other kinds still hold B-trees -- and this control is about the PACKING of the map it returns,
+// not about which representation the series arrived in. `points()` promises ascending order, so
+// the rebuilt B-tree is identical either way.
+fn packed_like<S: crate::engine::timestamped_series::TimestampedSeries>(
+    map: &HashMap<String, S>,
 ) -> HashMap<String, BTreeMap<u64, ElementEntry>> {
     map.iter()
         .map(|(key, series)| {
             (
                 key.clone(),
                 series
-                    .iter()
-                    .map(|(at, address)| (*at, address.clone()))
+                    .points()
+                    .map(|(at, address)| (at, address.clone()))
                     .collect::<BTreeMap<u64, ElementEntry>>(),
             )
         })

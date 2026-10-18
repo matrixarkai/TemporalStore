@@ -3454,3 +3454,599 @@ fn how_many_times_a_context_keys_characters_exist() {
         "no context keys landed -- the write path did not populate these maps"
     );
 }
+
+/// WHAT A PER-SHARD RESIDENT BOUND RECOVERS, AND THAT ITS SIGNAL IS THIS SHARD'S OWN BYTES.
+///
+/// `what_a_dump_then_release_recovers_on_the_shipped_routing_range` proves a dump-then-release
+/// recovers the bulk of the derived index. It drives that sequence by hand, with
+/// `memory_pressure_threshold = 0`, which is not a trigger an operator can deploy: the gate it
+/// passes through sums four PROCESS-WIDE cache terms with one per-shard index term, so a constant
+/// threshold fires on an idle shard whenever a busy one shares the process. That is measured in
+/// `the_evict_gates_cache_terms_are_process_wide_not_shard` and is why `enable_evict` defaults off.
+///
+/// `apply_index_resident_bound` narrows the signal to `bucket_index_resident_bytes`, which is
+/// per-shard and is the only term a release can reduce. This measures what that bound recovers AND
+/// pins that it read the narrow signal -- `pressure_before` must equal this shard's own index
+/// bytes, not a process-wide sum.
+///
+/// THE GUARD IS BIDIRECTIONAL, because "it fired" alone is satisfied by a gate that always fires:
+/// a bound of 0 must report disabled, a bound ABOVE this shard's bytes must refuse, and only a
+/// bound BELOW them may release anything.
+///
+/// rust-internal: measures this crate's own resident structures, no product behaviour
+///
+///   cargo test --features alloc-probe -p temporalstore-rust --lib what_a_per_shard_resident_bound_recovers -- --ignored --nocapture
+#[test]
+#[cfg(feature = "alloc-probe")]
+#[ignore = "seeds 40,000 records then dumps and releases under the counting allocator; run by name"]
+fn what_a_per_shard_resident_bound_recovers() {
+    const SHIPPED_END: u32 = 1023;
+
+    let dir = tempfile::tempdir().expect("tempdir");
+    let engine = probe_engine_on(dir.path(), SHIPPED_END);
+    probe_seed(&engine, 40_000, 40, 1_000, 0);
+
+    let probe_keys: Vec<String> = (0..16).map(|i| format!("s{i}")).collect();
+    let readable = |engine: &TemporalEngine| -> usize {
+        probe_keys
+            .iter()
+            .filter(|key| {
+                matches!(
+                    engine
+                        .execute(ExecuteRequest {
+                            shard_id: 1,
+                            command: Command::StringGet { key: (*key).clone() },
+                        })
+                        .response,
+                    crate::types::CommandResponse::Bytes { value: Some(_) }
+                )
+            })
+            .count()
+    };
+    let snapshot = |engine: &TemporalEngine| -> (u64, u64, u64, u64, usize, usize, usize, usize) {
+        let shards = engine.shards.read().expect("engine lock poisoned");
+        let shard = shards.get(&1).expect("shard is loaded");
+        (
+            deep_heap_bytes(&shard.bucket_index.bucket_map),
+            deep_heap_bytes(&shard.bucket_index.object_block_lookup),
+            deep_heap_bytes(&shard.dirty_objects),
+            deep_heap_bytes(shard),
+            shard.strings.len() + shard.features.len(),
+            shard.bucket_index.bucket_map.values().count(),
+            shard
+                .bucket_index
+                .bucket_map
+                .values()
+                .map(|b| b.block_index.len())
+                .sum(),
+            shard.bucket_index.released_buckets.len(),
+        )
+    };
+
+    // THE WHOLE-INDEX TOTAL, COMPUTED THE WAY THE COMPOSITION PROBE COMPUTES IT, so the figure
+    // after the bound is a MEASUREMENT of the same quantity rather than a subtraction of line
+    // items from a number taken in another run. Same three terms, same helpers: the whole
+    // `ShardState` plus each side's `Arc<str>` payloads counted once each.
+    let index_total = |engine: &TemporalEngine| -> (u64, u64, u64, u64) {
+        let shards = engine.shards.read().expect("engine lock poisoned");
+        let shard = shards.get(&1).expect("shard is loaded");
+        let whole = deep_heap_bytes(shard);
+        let (arc, _n) = arc_payload_bytes(&shard.bucket_index);
+        let (dirty_arc, _m, _s) = dirty_arc_payload_bytes(shard);
+        (whole + arc + dirty_arc, whole, arc, dirty_arc)
+    };
+    // Strings hold one address each and each series holds its points. The model maps keep every
+    // address across a release, so this denominator does not move with the bound.
+    const LIVE_ADDRESSES: u64 = 40_000 + 40 * 1_000;
+
+    // THE INDEX AT THE SAME SCOPE THE COMPARISON FIGURE USES, which is the only way the two
+    // numbers mean anything beside each other. That figure is an INDEX NODE per key -- a tree node
+    // wrapping a slot struct, reported by the allocator -- and it does NOT include the data the
+    // records hold. Our `TOTAL live heap` row DOES: `strings` and `features` are the model maps,
+    // the records themselves, and on this fixture they are most of it. Putting a data-inclusive
+    // total beside a node-only figure is the scope error that gets caught every time it is made.
+    //
+    // So this sums only the per-key INDEX structures: the whole bucket index measured in one call
+    // (its map, its object lookup and the rest of `CoreIndex`), the dirty index, the recency row,
+    // and the key payloads each side holds once.
+    let index_only = |engine: &TemporalEngine| -> (u64, u64, u64, u64, u64) {
+        let shards = engine.shards.read().expect("engine lock poisoned");
+        let shard = shards.get(&1).expect("shard is loaded");
+        let bucket_index = deep_heap_bytes(&shard.bucket_index);
+        let dirty = deep_heap_bytes(&shard.dirty_objects);
+        let recency = deep_heap_bytes(&shard.bucket_recency);
+        let (arc, _n) = arc_payload_bytes(&shard.bucket_index);
+        let (dirty_arc, _m, _s) = dirty_arc_payload_bytes(shard);
+        (
+            bucket_index + dirty + recency + arc + dirty_arc,
+            bucket_index,
+            dirty,
+            recency,
+            arc + dirty_arc,
+        )
+    };
+
+    let (bm0, lk0, dr0, whole0, keys, buckets0, pages0, released0) = snapshot(&engine);
+    let resident0 = engine.bucket_index_resident_bytes(1);
+    let read0 = readable(&engine);
+    let (total0, w0, a0, d0) = index_total(&engine);
+    let (idx0, bi0, di0, rc0, ap0) = index_only(&engine);
+
+    assert_eq!(40_040, keys, "denominator: the fixture did not seed the corpus it reports");
+    assert!(buckets0 < keys, "denominator: one bucket per key means this is the LEGACY range");
+    assert_eq!(0, released0, "denominator: the fixture starts with nothing released");
+    assert_eq!(probe_keys.len(), read0, "the fixture cannot read its own keys BEFORE the sequence");
+    assert!(resident0 > 0, "denominator: a zero resident figure cannot be bounded");
+
+    println!("=== before: {keys} keys, {buckets0} buckets, {pages0} pages ===");
+    println!("  this shard's own index resident bytes: {resident0}");
+
+    // --- CONTROL 1: a bound of zero is disabled and walks nothing. ---
+    let disabled = engine.apply_index_resident_bound(1, 0, 0);
+    assert_eq!(
+        "index_resident_bound_disabled", disabled.skipped_reason,
+        "a bound of 0 must mean disabled, so this is free to call on a deployment that set none"
+    );
+    assert_eq!(0, disabled.bucket_index_buckets_released, "a disabled bound released something");
+
+    // --- CONTROL 2: a bound ABOVE this shard's own bytes must refuse. ---
+    //
+    // This is the assertion that separates a narrow gate from the wide one. The wide gate handed
+    // this same number would OPEN, because its pressure is dominated by cache terms a release
+    // cannot reduce; the narrow gate sees only the index and declines.
+    let above = resident0.saturating_mul(2);
+    let refused = engine.apply_index_resident_bound(1, above, 0);
+    assert_eq!(
+        "index_resident_below_bound", refused.skipped_reason,
+        "a bound of {above} B is above this shard's {resident0} B of index and must refuse"
+    );
+    assert_eq!(0, refused.bucket_index_buckets_released, "a refused bound released something");
+    assert_eq!(
+        resident0, refused.pressure_before,
+        "the gate reported {} B of pressure where this shard's index is {resident0} B -- it read a \
+         signal wider than the shard, which is the contamination this entry point exists to avoid",
+        refused.pressure_before
+    );
+
+    // --- AND THE BOUND THAT FIRES: below this shard's own bytes. ---
+    let bound = resident0 / 2;
+    let report = engine.apply_index_resident_bound(1, bound, 0);
+    assert!(
+        report.skipped_reason.is_empty(),
+        "a bound of {bound} B under {resident0} B of index should have opened, not skipped on {:?}",
+        report.skipped_reason
+    );
+    assert_eq!(
+        resident0, report.pressure_before,
+        "the firing gate read {} B where this shard's index is {resident0} B",
+        report.pressure_before
+    );
+
+    let (bm1, lk1, dr1, whole1, keys1, buckets1, pages1, released1) = snapshot(&engine);
+    let resident1 = engine.bucket_index_resident_bytes(1);
+    let read1 = readable(&engine);
+
+    println!("=== after the bound fired: {buckets1} buckets, {pages1} pages, {released1} released ===");
+    let row = |name: &str, before: u64, after: u64| {
+        println!(
+            "  {name:<28} {before:>10} -> {after:>10} B   recovered {:>10} B  {:>8.1} B/key  {:>6.1}%",
+            before.saturating_sub(after),
+            before.saturating_sub(after) as f64 / keys as f64,
+            if before == 0 { 0.0 } else { 100.0 * before.saturating_sub(after) as f64 / before as f64 }
+        );
+    };
+    row("bucket_map", bm0, bm1);
+    row("object_block_lookup", lk0, lk1);
+    row("dirty_objects", dr0, dr1);
+    row("whole ShardState", whole0, whole1);
+    println!("  modelled resident {resident0} -> {resident1} B, bound was {bound} B");
+    println!("  pages {pages0} -> {pages1}, buckets {buckets0} -> {buckets1}, keys {keys} -> {keys1}");
+    println!("  reads: {read0} of {} before, {read1} after", probe_keys.len());
+
+    // --- THE RE-MEASURED WHOLE-INDEX TOTAL, which is the figure that answers "how big is the
+    // index now" rather than "how much did these three rows give back". ---
+    let (total1, w1, a1v, d1) = index_total(&engine);
+    println!();
+    println!("  WHOLE-INDEX TOTAL, re-measured rather than derived:");
+    println!(
+        "    before    {total0:>10} B   {:>8.1} B/key   {:>8.1} B/address   (whole {w0}, arc {a0}, dirty-arc {d0})",
+        total0 as f64 / keys as f64,
+        total0 as f64 / LIVE_ADDRESSES as f64
+    );
+    println!(
+        "    after     {total1:>10} B   {:>8.1} B/key   {:>8.1} B/address   (whole {w1}, arc {a1v}, dirty-arc {d1})",
+        total1 as f64 / keys as f64,
+        total1 as f64 / LIVE_ADDRESSES as f64
+    );
+    println!(
+        "    recovered {:>10} B   {:>8.1} B/key   {:>6.1}% of the whole index",
+        total0.saturating_sub(total1),
+        total0.saturating_sub(total1) as f64 / keys as f64,
+        100.0 * total0.saturating_sub(total1) as f64 / total0 as f64
+    );
+    // --- AND THE INDEX AT THE COMPARISON'S OWN SCOPE: no model data. ---
+    let (idx1, bi1, di1, rc1, ap1) = index_only(&engine);
+    println!();
+    println!("  INDEX ONLY -- per-key index structures, excluding the model data maps:");
+    println!(
+        "    before    {idx0:>10} B   {:>8.1} B/key   (bucket index {bi0}, dirty {di0}, recency {rc0}, key payloads {ap0})",
+        idx0 as f64 / keys as f64
+    );
+    println!(
+        "    after     {idx1:>10} B   {:>8.1} B/key   (bucket index {bi1}, dirty {di1}, recency {rc1}, key payloads {ap1})",
+        idx1 as f64 / keys as f64
+    );
+    println!(
+        "    the model data this EXCLUDES, for scope: strings + features = {} B ({:.1} B/key)",
+        total1.saturating_sub(idx1).saturating_sub(0),
+        total1.saturating_sub(idx1) as f64 / keys as f64
+    );
+    assert!(
+        idx1 < idx0,
+        "the index-only subtotal did not fall ({idx0} -> {idx1})"
+    );
+
+    assert!(
+        total1 < total0,
+        "the whole-index total did not fall ({total0} -> {total1}), so the per-term recoveries          above did not add up to anything at the index level"
+    );
+
+    // --- CORRECTNESS, NOT NEGOTIABLE. ---
+    assert_eq!(
+        probe_keys.len(),
+        read1,
+        "the bound made {} of {} keys unreadable, which makes every figure above worthless",
+        probe_keys.len() - read1,
+        probe_keys.len()
+    );
+    assert_eq!(keys, keys1, "the key count moved, which is data loss rather than reclaim");
+
+    // --- NON-VACUITY: every assertion above is satisfied by a bound that recovered nothing. ---
+    assert!(
+        released1 > 0,
+        "the bound opened and released nothing, so this measured the bare-release case"
+    );
+    assert!(
+        resident1 < resident0,
+        "the bound opened, released {released1} buckets, and this shard's own resident figure did \
+         not fall ({resident0} -> {resident1}) -- so the quantity the bound is written against is \
+         not the quantity the release reduces, which would make the bound unable to ever satisfy \
+         itself"
+    );
+}
+
+/// WHAT THE FEATURE SERIES WOULD COST AS AN OWNED ARRAY INSTEAD OF A B-TREE.
+///
+/// `features` is the largest single row left in the index after the resident bound fires -- 49.1
+/// B/key at a 40,040-key corpus -- and it holds 40 series of 1,000 addresses each. The row is
+/// CONTAINER, not payload: a point is `(u64, ElementEntry)` and `ElementEntry` is 16 bytes, so the
+/// payload is 24 bytes a point and the B-tree charges about twice that.
+///
+/// This prices the swap before anyone pays for it. The conversion is not a type swap --
+/// `OwnedTimestampedSeries` deliberately has no serde impl, so an adopting map needs a
+/// compatibility field and a decode fold -- so the saving has to be worth that before the slice is
+/// worth writing. Measured here rather than computed from `size_of`, because the allocator's
+/// rounding and the B-tree's fill are exactly what a `size_of` account gets wrong.
+///
+/// rust-internal: measures this crate's own resident structures, no product behaviour
+#[test]
+#[cfg(feature = "alloc-probe")]
+fn what_the_feature_series_would_cost_as_an_owned_array() {
+    const POINTS: u64 = 1_000;
+    const SERIES: usize = 40;
+    const LIVE_KEYS: f64 = 40_040.0;
+
+    let point = |i: u64| -> (u64, ElementEntry) {
+        (i, ElementEntry::from_parts(1, i * 64, 64, Some(i & u64::from(u16::MAX)), Some(i)))
+    };
+
+    let mut trees: Vec<BTreeMap<u64, ElementEntry>> = Vec::with_capacity(SERIES);
+    for _ in 0..SERIES {
+        let mut tree = BTreeMap::new();
+        for i in 0..POINTS {
+            let (at, address) = point(i);
+            tree.insert(at, address);
+        }
+        trees.push(tree);
+    }
+    let mut arrays: Vec<crate::engine::timestamped_series::OwnedTimestampedSeries> =
+        Vec::with_capacity(SERIES);
+    for _ in 0..SERIES {
+        let mut array = crate::engine::timestamped_series::OwnedTimestampedSeries::default();
+        for i in 0..POINTS {
+            let (at, address) = point(i);
+            array.insert(at, address);
+        }
+        arrays.push(array);
+    }
+
+    let tree_bytes = deep_heap_bytes(&trees);
+    let array_bytes = deep_heap_bytes(&arrays);
+    let points = SERIES as f64 * POINTS as f64;
+    println!();
+    println!("  {SERIES} series x {POINTS} points, payload is 24 B a point:");
+    println!(
+        "    BTreeMap      {tree_bytes:>10} B   {:>6.1} B/point   {:>6.1} B/key at 40,040 keys",
+        tree_bytes as f64 / points,
+        tree_bytes as f64 / LIVE_KEYS
+    );
+    println!(
+        "    owned array   {array_bytes:>10} B   {:>6.1} B/point   {:>6.1} B/key at 40,040 keys",
+        array_bytes as f64 / points,
+        array_bytes as f64 / LIVE_KEYS
+    );
+    println!(
+        "    the swap is worth {:>6.1} B/key, taking the measured features row from 49.1 to {:.1}",
+        (tree_bytes.saturating_sub(array_bytes)) as f64 / LIVE_KEYS,
+        array_bytes as f64 / LIVE_KEYS
+    );
+
+    assert_eq!(16, std::mem::size_of::<ElementEntry>(), "the address width moved");
+    assert!(
+        array_bytes < tree_bytes,
+        "the owned array ({array_bytes} B) is not smaller than the B-tree ({tree_bytes} B), so the \
+         conversion would be churn -- and the compatibility field and decode fold it needs are not \
+         free"
+    );
+}
+
+/// WHAT THE `strings` MAP COSTS, AND WHERE ITS 54.0 B/KEY ACTUALLY GOES.
+///
+/// After the resident bound fires, `strings` is the largest row left in the index -- 54.0 B/key at
+/// a 40,040-key corpus -- and the entry it holds is 32 bytes: a 16-byte `Arc<str>` fat pointer and
+/// a 16-byte `ElementEntry`. So the row is 1.69x its own payload, and the question this answers is
+/// whether that is distributed slack a different container would avoid, or something intrinsic.
+///
+/// THE ANSWER IS CAPACITY ROUNDING, and it is worth pricing rather than guessing at: a hash table
+/// rounds to a power of two, so 40,000 entries live in 65,536 slots at a 61% load and the unused
+/// 39% is paid in full. A B-tree has no power-of-two step; it pays node headers instead. Which
+/// wins is an empirical question about THESE widths, and a previous swap of this kind measured a
+/// 1.93x REGRESSION, so the measurement comes before the change.
+///
+/// rust-internal: measures this crate's own resident structures, no product behaviour
+#[test]
+#[cfg(feature = "alloc-probe")]
+fn where_the_string_maps_bytes_go_and_whether_a_btree_would_be_smaller() {
+    const KEYS: usize = 40_000;
+    const LIVE_KEYS: f64 = 40_040.0;
+
+    let entry = |i: usize| -> (std::sync::Arc<str>, ElementEntry) {
+        (
+            std::sync::Arc::from(format!("own-{i:08}").as_str()),
+            ElementEntry::from_parts(1, i as u64 * 64, 64, Some(0), Some(i as u64)),
+        )
+    };
+
+    let mut hash: HashMap<std::sync::Arc<str>, ElementEntry> = HashMap::new();
+    for i in 0..KEYS {
+        let (key, address) = entry(i);
+        hash.insert(key, address);
+    }
+    let mut presized: HashMap<std::sync::Arc<str>, ElementEntry> = HashMap::with_capacity(KEYS);
+    for i in 0..KEYS {
+        let (key, address) = entry(i);
+        presized.insert(key, address);
+    }
+    let mut tree: BTreeMap<std::sync::Arc<str>, ElementEntry> = BTreeMap::new();
+    for i in 0..KEYS {
+        let (key, address) = entry(i);
+        tree.insert(key, address);
+    }
+
+    // Measured WITHOUT the key payloads, which every candidate holds identically: a clone-based
+    // probe cannot see an `Arc` payload anyway, so what comes back is the table or the nodes.
+    let hash_bytes = deep_heap_bytes(&hash);
+    let presized_bytes = deep_heap_bytes(&presized);
+    let tree_bytes = deep_heap_bytes(&tree);
+    let payload = (KEYS * (std::mem::size_of::<std::sync::Arc<str>>()
+        + std::mem::size_of::<ElementEntry>())) as f64;
+
+    println!();
+    println!("  {KEYS} entries, payload is {} B each ({payload:.0} B total):",
+        std::mem::size_of::<std::sync::Arc<str>>() + std::mem::size_of::<ElementEntry>());
+    for (name, bytes, capacity) in [
+        ("HashMap, grown", hash_bytes, Some(hash.capacity())),
+        ("HashMap, pre-sized", presized_bytes, Some(presized.capacity())),
+        ("BTreeMap", tree_bytes, None),
+    ] {
+        println!(
+            "    {name:<20} {bytes:>10} B   {:>6.1} B/key at 40,040   {:>5.2}x payload{}",
+            bytes as f64 / LIVE_KEYS,
+            bytes as f64 / payload,
+            match capacity {
+                Some(c) => format!("   capacity {c}, load {:.0}%", 100.0 * KEYS as f64 / c as f64),
+                None => String::new(),
+            }
+        );
+    }
+    let best = tree_bytes.min(presized_bytes);
+    println!(
+        "    the best alternative is worth {:>5.1} B/key against the grown table",
+        (hash_bytes.saturating_sub(best)) as f64 / LIVE_KEYS
+    );
+
+    assert_eq!(16, std::mem::size_of::<ElementEntry>(), "the address width moved");
+    assert!(hash_bytes > 0 && tree_bytes > 0, "a zero figure cannot be compared");
+}
+
+/// WHAT ONE KEY WITH ONE PAGE COSTS, which is the denominator a per-key index figure uses.
+///
+/// Every figure in this file so far is taken on a fixture that seeds 40,000 strings AND 40 series
+/// of 1,000 points -- about TWO stored addresses per live key. A per-key index cost measured there
+/// is not comparable to one measured on a corpus of single-page objects, because half the addresses
+/// belong to forty keys. The honest matched measurement is one address per key, and this is it.
+///
+/// No feature series at all, so every live key owns exactly one page: `live_keys == pages`, which
+/// is asserted rather than assumed because the whole figure divides by it.
+///
+/// rust-internal: measures this crate's own resident structures, no product behaviour
+///
+///   cargo test --features alloc-probe -p temporalstore-rust --lib what_one_key_with_one_page_costs -- --ignored --nocapture
+#[test]
+#[cfg(feature = "alloc-probe")]
+#[ignore = "seeds 40,000 single-page records then bounds the index; run by name"]
+fn what_one_key_with_one_page_costs() {
+    const SHIPPED_END: u32 = 1023;
+    const KEYS: usize = 40_000;
+
+    let dir = tempfile::tempdir().expect("tempdir");
+    let engine = probe_engine_on(dir.path(), SHIPPED_END);
+    probe_seed(&engine, KEYS, 0, 0, 0);
+
+    let probe_keys: Vec<String> = (0..16).map(|i| format!("s{i}")).collect();
+    let readable = |engine: &TemporalEngine| -> usize {
+        probe_keys
+            .iter()
+            .filter(|key| {
+                matches!(
+                    engine
+                        .execute(ExecuteRequest {
+                            shard_id: 1,
+                            command: Command::StringGet { key: (*key).clone() },
+                        })
+                        .response,
+                    crate::types::CommandResponse::Bytes { value: Some(_) }
+                )
+            })
+            .count()
+    };
+    let total = |engine: &TemporalEngine| -> (u64, usize, usize) {
+        let shards = engine.shards.read().expect("engine lock poisoned");
+        let shard = shards.get(&1).expect("shard is loaded");
+        let whole = deep_heap_bytes(shard);
+        let (arc, _n) = arc_payload_bytes(&shard.bucket_index);
+        let (dirty_arc, _m, _s) = dirty_arc_payload_bytes(shard);
+        let pages: usize = shard
+            .bucket_index
+            .bucket_map
+            .values()
+            .map(|b| b.block_index.len())
+            .sum();
+        (whole + arc + dirty_arc, shard.strings.len(), pages)
+    };
+
+    let (before, keys0, pages0) = total(&engine);
+    let read0 = readable(&engine);
+    assert_eq!(KEYS, keys0, "denominator: the fixture did not seed the corpus it reports");
+    assert_eq!(
+        keys0, pages0,
+        "denominator: {pages0} pages over {keys0} keys is not one page per key, so this is not the \
+         single-page regime it claims to measure"
+    );
+    assert_eq!(probe_keys.len(), read0, "the fixture cannot read its own keys before the bound");
+    assert_eq!(
+        0,
+        engine
+            .shards
+            .read()
+            .expect("engine lock poisoned")
+            .get(&1)
+            .expect("shard")
+            .features
+            .len(),
+        "denominator: a feature series would put a second address on some key"
+    );
+
+    let resident = engine.bucket_index_resident_bytes(1);
+    let report = engine.apply_index_resident_bound(1, resident / 2, 0);
+    assert!(report.skipped_reason.is_empty(), "the bound did not open: {:?}", report.skipped_reason);
+
+    let (after, keys1, pages1) = total(&engine);
+    let read1 = readable(&engine);
+
+    println!();
+    println!("  ONE KEY, ONE PAGE -- {keys0} keys, {pages0} pages before, {pages1} after");
+    println!(
+        "    before   {before:>10} B   {:>6.1} B/key   (= B/page, one page a key)",
+        before as f64 / keys0 as f64
+    );
+    println!(
+        "    after    {after:>10} B   {:>6.1} B/key   recovered {:>6.1} B/key, {:>5.1}%",
+        after as f64 / keys0 as f64,
+        before.saturating_sub(after) as f64 / keys0 as f64,
+        100.0 * before.saturating_sub(after) as f64 / before as f64
+    );
+    println!("    reads {read0} of {} before, {read1} after", probe_keys.len());
+
+    assert_eq!(probe_keys.len(), read1, "the bound made keys unreadable");
+    assert_eq!(keys0, keys1, "the key count moved, which is data loss rather than reclaim");
+    assert!(after < before, "the total did not fall ({before} -> {after})");
+}
+
+/// WHAT THE DEFAULT CONFIGURATION ACTUALLY DOES TO A 40,000-KEY SHARD, which is not the same
+/// question as what the bound delivers when it fires.
+///
+/// `what_one_key_with_one_page_costs` fires the bound DIRECTLY, at half the shard's own resident
+/// index, and measures 76.8 B/key afterwards. That is what the mechanism is worth. It is NOT what
+/// a deployment running defaults sees, and conflating the two would be the more flattering of the
+/// two readings -- so this runs the default cycle, untouched, and records the verdict.
+///
+/// THE DEFAULT IS A CAP, NOT A SCHEDULE. It bounds the resident index at 64 MiB a shard. A
+/// 40,000-key single-page shard holds about 1.4 MB of it, so the default DECLINES here, and that
+/// is correct: a cap that fired at 2% of its limit would be a thrash, not a bound. The figure a
+/// deployment at this size sees is therefore the unbounded one, and an operator wanting the
+/// bounded figure sets the limit below that shard's own resident index.
+///
+/// Written down as a test rather than a comment because the alternative is a claim in a commit
+/// message that nothing checks.
+///
+/// rust-internal: measures this crate's own resident structures, no product behaviour
+#[test]
+#[cfg(feature = "alloc-probe")]
+#[ignore = "seeds 40,000 single-page records and runs the default cycle; run by name"]
+fn what_the_default_configuration_does_to_a_forty_thousand_key_shard() {
+    const SHIPPED_END: u32 = 1023;
+    const KEYS: usize = 40_000;
+
+    let dir = tempfile::tempdir().expect("tempdir");
+    let engine = probe_engine_on(dir.path(), SHIPPED_END);
+    probe_seed(&engine, KEYS, 0, 0, 0);
+
+    let total = |engine: &TemporalEngine| -> u64 {
+        let shards = engine.shards.read().expect("engine lock poisoned");
+        let shard = shards.get(&1).expect("shard is loaded");
+        let (arc, _n) = arc_payload_bytes(&shard.bucket_index);
+        let (dirty_arc, _m, _s) = dirty_arc_payload_bytes(shard);
+        deep_heap_bytes(shard) + arc + dirty_arc
+    };
+
+    let defaults = crate::engine::reports::StorageManagerCycleRequest::default();
+    let limit = defaults.index_resident_limit_bytes;
+    let resident = engine.bucket_index_resident_bytes(1);
+    let before = total(&engine);
+
+    println!();
+    println!("  DEFAULT CONFIGURATION on a {KEYS}-key single-page shard:");
+    println!("    default index_resident_limit_bytes : {limit} B ({} MiB)", limit / (1024 * 1024));
+    println!("    this shard's own resident index    : {resident} B");
+    println!(
+        "    so the default {} here",
+        if resident >= limit { "FIRES" } else { "DECLINES" }
+    );
+
+    let report = engine.apply_index_resident_bound(1, limit, defaults.eviction_batch_limit);
+    let after = total(&engine);
+    println!("    verdict                            : {:?}", report.skipped_reason);
+    println!(
+        "    index total                        : {before} -> {after} B   ({:.1} -> {:.1} B/key)",
+        before as f64 / KEYS as f64,
+        after as f64 / KEYS as f64
+    );
+    println!(
+        "    the shard would have to hold about {:.0}x this many keys for the default to fire",
+        limit as f64 / resident as f64
+    );
+
+    // THE HONEST PAIR, asserted so neither half can be quoted without the other.
+    assert!(limit > 0, "the default bound is disabled, so nothing bounds a growing index");
+    assert!(
+        resident < limit,
+        "this corpus is at or above the default bound, so the default DOES fire here and the \
+         prose above is wrong"
+    );
+    assert_eq!(
+        "index_resident_below_bound", report.skipped_reason,
+        "the default declined for a reason other than being below the bound"
+    );
+    assert_eq!(before, after, "the default declined and yet the index moved");
+}

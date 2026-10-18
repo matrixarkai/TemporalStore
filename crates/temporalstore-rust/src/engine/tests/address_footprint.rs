@@ -346,26 +346,29 @@ fn census(engine: &TemporalEngine, shard_id: ShardId) -> AddressCensus {
         c.in_owned_array += c.total - before;
         c.note("context_events", c.total - before);
     }
-    // THE ITERATOR IS TYPE-ERASED, NOT THE MAP, and that is the whole trick. These maps no
-    // longer agree on a key type -- the context kinds are keyed by `ModelKey` so they can share
-    // one allocation with the page index, while `features` keeps its `String` key -- and an array
-    // literal demands one element type. Boxing `values()` erases the key, which is sound here
-    // because this walk never looks at a key.
-    for (name, series_of) in [
-        ("features", Box::new(shard.features.values())
-            as Box<dyn Iterator<Item = &BTreeMap<u64, ElementEntry>>>),
-        ("context_indexes", Box::new(shard.context_indexes.values())),
-        ("context_audits", Box::new(shard.context_audits.values())),
-        ("context_entities", Box::new(shard.context_entities.values())),
-        ("context_children", Box::new(shard.context_children.values())),
-        ("context_summaries", Box::new(shard.context_summaries.values())),
-        ("context_compressions", Box::new(shard.context_compressions.values())),
+    // FLATTENED TO ADDRESSES AND TYPE-ERASED, so the value type stops mattering: `features` holds
+    // the owned array now and the context kinds still hold B-trees, and an array literal demands
+    // one element type. Both representations expose `values()` over `&ElementEntry`, which is all
+    // this walk looks at.
+    for (name, addresses) in [
+        (
+            "features",
+            Box::new(shard.features.values().flat_map(|series| series.values()))
+                as Box<dyn Iterator<Item = &ElementEntry>>,
+        ),
+        ("context_indexes", Box::new(shard.context_indexes.values().flat_map(|s| s.values()))),
+        ("context_audits", Box::new(shard.context_audits.values().flat_map(|s| s.values()))),
+        ("context_entities", Box::new(shard.context_entities.values().flat_map(|s| s.values()))),
+        ("context_children", Box::new(shard.context_children.values().flat_map(|s| s.values()))),
+        ("context_summaries", Box::new(shard.context_summaries.values().flat_map(|s| s.values()))),
+        (
+            "context_compressions",
+            Box::new(shard.context_compressions.values().flat_map(|s| s.values())),
+        ),
     ] {
         let before = c.total;
-        for series in series_of {
-            for address in series.values() {
-                c.observe(address);
-            }
+        for address in addresses {
+            c.observe(address);
         }
         c.in_btree += c.total - before;
         c.note(name, c.total - before);
@@ -1175,22 +1178,19 @@ fn duplication_census(engine: &TemporalEngine, shard_id: ShardId) -> Duplication
             d.observe_model(address);
         }
     }
-    // Same type-erasure as the walk above, for the same reason: one array literal cannot hold
-    // maps with two different key types, and this walk never looks at a key.
-    for series_of in [
-        Box::new(shard.features.values())
-            as Box<dyn Iterator<Item = &BTreeMap<u64, ElementEntry>>>,
-        Box::new(shard.context_indexes.values()),
-        Box::new(shard.context_audits.values()),
-        Box::new(shard.context_entities.values()),
-        Box::new(shard.context_children.values()),
-        Box::new(shard.context_summaries.values()),
-        Box::new(shard.context_compressions.values()),
+    // Same flattening as the walk above, for the same reason.
+    for addresses in [
+        Box::new(shard.features.values().flat_map(|s| s.values()))
+            as Box<dyn Iterator<Item = &ElementEntry>>,
+        Box::new(shard.context_indexes.values().flat_map(|s| s.values())),
+        Box::new(shard.context_audits.values().flat_map(|s| s.values())),
+        Box::new(shard.context_entities.values().flat_map(|s| s.values())),
+        Box::new(shard.context_children.values().flat_map(|s| s.values())),
+        Box::new(shard.context_summaries.values().flat_map(|s| s.values())),
+        Box::new(shard.context_compressions.values().flat_map(|s| s.values())),
     ] {
-        for series in series_of {
-            for address in series.values() {
-                d.observe_model(address);
-            }
+        for address in addresses {
+            d.observe_model(address);
         }
     }
     for bucket in shard.bucket_index.bucket_map.values() {
@@ -1389,20 +1389,19 @@ fn series_lengths(engine: &TemporalEngine, shard_id: ShardId) -> SeriesLengthCen
     for series in shard.context_events().values() {
         c.observe(series.len());
     }
-    // Same type-erasure as the walk above, for the same reason: one array literal cannot hold
-    // maps with two different key types, and this walk never looks at a key.
-    for series_of in [
-        Box::new(shard.features.values())
-            as Box<dyn Iterator<Item = &BTreeMap<u64, ElementEntry>>>,
-        Box::new(shard.context_indexes.values()),
-        Box::new(shard.context_audits.values()),
-        Box::new(shard.context_entities.values()),
-        Box::new(shard.context_children.values()),
-        Box::new(shard.context_summaries.values()),
-        Box::new(shard.context_compressions.values()),
+    // Erased to the LENGTHS, which is all this census observes, so the two representations can
+    // ride in one literal: `features` holds the owned array and the context kinds hold B-trees.
+    for lengths in [
+        Box::new(shard.features.values().map(|s| s.len())) as Box<dyn Iterator<Item = usize>>,
+        Box::new(shard.context_indexes.values().map(|s| s.len())),
+        Box::new(shard.context_audits.values().map(|s| s.len())),
+        Box::new(shard.context_entities.values().map(|s| s.len())),
+        Box::new(shard.context_children.values().map(|s| s.len())),
+        Box::new(shard.context_summaries.values().map(|s| s.len())),
+        Box::new(shard.context_compressions.values().map(|s| s.len())),
     ] {
-        for series in series_of {
-            c.observe(series.len());
+        for length in lengths {
+            c.observe(length);
         }
     }
     c
@@ -1779,7 +1778,9 @@ fn the_bucket_index_holds_one_page_out_of_line_and_the_series_maps_hold_none() {
     // narrowable one at a time. Inverted and not deleted, because deleting a guard whose premise
     // changed is how the guard is lost -- and it is most tempting exactly when the change is going
     // well. The count below is still the denominator.
-    fn one_container<K>(_: &std::collections::HashMap<K, BTreeMap<u64, ElementEntry>>) {}
+    // Generic over the VALUE as well, because `features` holds the owned array now while the
+    // context kinds still hold B-trees, and this assertion is about the map not the series.
+    fn one_container<K, V>(_: &std::collections::HashMap<K, V>) {}
     let dir = tempfile::tempdir().expect("tempdir");
     let engine = new_engine(dir.path());
     let shards = engine.shards.read().expect("engine lock poisoned");

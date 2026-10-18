@@ -2,6 +2,7 @@
 // Copyright 2026 MatrixArkAI
 
 //! Standalone per-shard command execution extracted from engine.rs.
+use super::timestamped_series::TimestampedSeries as _;
 use super::*;
 
 /// THE SERVED-PATH DIVERGENCE COUNTER FOR THE HASH WHOLE-OBJECT READ.
@@ -2428,7 +2429,7 @@ pub(crate) fn execute_on_shard(
                                         cache,
                                         block_store,
                                         shard_id,
-                                        *timestamp_ms,
+                                        timestamp_ms,
                                         address,
                                         PageIdentity::of(shard_id, "feature", &key, None),
                                         &mut page_cache,
@@ -2478,7 +2479,7 @@ pub(crate) fn execute_on_shard(
                                 cache,
                                 block_store,
                                 shard_id,
-                                *timestamp_ms,
+                                timestamp_ms,
                                 address,
                                 PageIdentity::of(shard_id, "feature", &key, None),
                                 &mut page_cache,
@@ -2516,7 +2517,7 @@ pub(crate) fn execute_on_shard(
                 block_routing_bucket(&key, start_routing_bucket, end_routing_bucket);
             let replaced = series
                 .range(crate::engine::timestamp_range_bounds(start_ms, end_ms))
-                .map(|(timestamp_ms, _)| *timestamp_ms)
+                .map(|(timestamp_ms, _)| timestamp_ms)
                 .collect::<Vec<_>>();
             mutated |= drop_timestamped_points(
                 shard_id,
@@ -2669,7 +2670,7 @@ pub(crate) fn execute_on_shard(
                                     cache,
                                     block_store,
                                     shard_id,
-                                    *timestamp_ms,
+                                    timestamp_ms,
                                     address,
                                     PageIdentity::of(shard_id, "feature", &key, None),
                                     Some(block_routing_bucket(
@@ -2765,7 +2766,7 @@ pub(crate) fn execute_on_shard(
                                 cache,
                                 block_store,
                                 shard_id,
-                                *timestamp_ms,
+                                timestamp_ms,
                                 address,
                                 PageIdentity::of(shard_id, "feature", &key, None),
                                 Some(block_routing_bucket(

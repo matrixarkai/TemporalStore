@@ -3617,15 +3617,18 @@ mod batch_truncation_tests {
 /// Generic over the KEY so that maps keyed by `ModelKey` and maps keyed by `String` can both be
 /// rendered by one body. They used to ride in an array literal, which forces a single element type
 /// and so would have required converting every map in the list the moment one of them changed.
-fn append_series_shape<K: Ord + std::fmt::Display>(
-    out: &mut String,
-    kind: &str,
-    series: &std::collections::HashMap<K, std::collections::BTreeMap<u64, crate::block_store::ElementEntry>>,
-) {
+fn append_series_shape<K, S>(out: &mut String, kind: &str, series: &std::collections::HashMap<K, S>)
+where
+    K: Ord + std::fmt::Display,
+    S: super::timestamped_series::TimestampedSeries,
+{
     let mut keys: Vec<_> = series.iter().collect();
     keys.sort_by(|left, right| left.0.cmp(right.0));
     for (key, entries) in keys {
-        for (stored_key, address) in entries {
+        // THROUGH THE TRAIT, NOT THE CONTAINER, so a map holding the owned array and a map holding
+        // a B-tree render identically. `points()` promises ascending order, which is the only
+        // property this shape depends on.
+        for (stored_key, address) in entries.points() {
             out.push_str(&format!(
                 "{kind} {key} at={stored_key} slab={} off={} len={}
 ",
