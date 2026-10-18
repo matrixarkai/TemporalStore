@@ -3750,25 +3750,35 @@ fn visit_model_live_blocks(
 /// is reached only once the series is known to hold at least one accepted address. Asking that
 /// first costs a field read per point and no allocation, and the answer it gates on is exactly the
 /// answer the caller would otherwise reach after allocating.
-fn visit_timestamped_series<K, S>(
-    map: &HashMap<K, S>,
+/// AND THIS ARM LENDS TOO, ONCE THE GENERIC STOPS BEING WIDER THAN ITS USE.
+///
+/// The key parameter was `K: Borrow<str>`, which is why this arm could not lend: a `Borrow` bound
+/// yields `&str` and nothing more, so the handle was unreachable even where the caller held one.
+///
+/// Every one of the seven callers passes a `HashMap<ModelKey, _>` -- `features`, the event series
+/// through `context_events()`, and the five context maps. The bound admitted key types nothing
+/// actually uses, and that admission cost an allocation per entry on the whole-shard walk. Narrowed
+/// to the one key type in use, the arm can hand over the handle it has.
+///
+/// This leaves exactly ONE arm that cannot lend, and it cannot for a reason no signature can fix:
+/// `context_entities` COMPOSES its key from the collection key and the entity hash, so the key it
+/// emits exists nowhere to be borrowed from.
+fn visit_timestamped_series<S>(
+    map: &HashMap<ModelKey, S>,
     kind: ModelKind,
     accept: &impl Fn(&str, &ElementEntry) -> bool,
     emit: &mut impl FnMut(ModelKind, KeyRef<'_>, Option<&str>, &ElementEntry),
 ) where
-    K: std::borrow::Borrow<str>,
     S: super::timestamped_series::TimestampedSeries,
 {
-    for (key, series) in map {
-        let key: &str = key.borrow();
+    for (handle, series) in map {
+        let key: &str = handle;
         if !series.addresses().any(|address| accept(key, address)) {
             continue;
         }
         for address in unique_timestamped_kv_block_addresses(series) {
             if accept(key, &address) {
-                // GENERIC over the map's key type, reaching `&str` through `Borrow`, so this
-                // arm has no `&ModelKey` to lend either.
-                emit(kind, KeyRef::Borrowed(key), None, &address);
+                emit(kind, KeyRef::Shared(handle), None, &address);
             }
         }
     }
