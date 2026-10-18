@@ -1490,8 +1490,27 @@ impl TemporalEngine {
                 ));
             }
         }
+        // `features` holds the owned array now, so it no longer shares a value type with the five
+        // context kinds and cannot ride in an array literal with them -- a literal demands one
+        // element type. Its own pass, through the trait, renders byte-identically because
+        // `points()` promises the same ascending order the B-tree iteration had.
+        {
+            use super::timestamped_series::TimestampedSeries as _;
+            let mut feature_keys: Vec<_> = shard.features.iter().collect();
+            feature_keys.sort_by(|left, right| left.0.cmp(right.0));
+            for (key, entries) in feature_keys {
+                for (stored_key, address) in entries.points() {
+                    out.push_str(&format!(
+                        "feature {key} at={stored_key} slab={} off={} len={}
+",
+                        address.block_slab_id(),
+                        address.offset(),
+                        address.length()
+                    ));
+                }
+            }
+        }
         for (kind, series) in [
-            ("feature", &shard.features),
             ("context_index", &shard.context_indexes),
             ("context_audit", &shard.context_audits),
             ("context_child", &shard.context_children),
