@@ -2391,7 +2391,7 @@ impl TemporalEngine {
                     _ => return false,
                 };
                 shard.control_state_selection.insert(
-                    item.object_key.clone(),
+                    std::sync::Arc::from(&item.object_key[..]),
                     super::state::ControlStateSelectionValue {
                         occur_time_ms: item.ttl.unwrap_or_default(),
                         value,

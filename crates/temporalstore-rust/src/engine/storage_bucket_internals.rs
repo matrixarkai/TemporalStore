@@ -6711,7 +6711,7 @@ pub(super) fn reconcile_secondary_views_from_bucket_index(
     let mut lists = HashMap::<String, BTreeMap<i64, ElementEntry>>::new();
     let mut zsets = HashMap::<String, BTreeMap<Vec<u8>, (u64, ElementEntry)>>::new();
     let mut features =
-        HashMap::<String, super::timestamped_series::OwnedTimestampedSeries>::new();
+        HashMap::<std::sync::Arc<str>, super::timestamped_series::OwnedTimestampedSeries>::new();
     let mut control_state = HashMap::<String, BTreeMap<u64, i64>>::new();
     let mut control_state_blocks = HashMap::new();
     let mut context_events =
@@ -8682,7 +8682,7 @@ mod model_kind_registry_guards {
             .insert_elements_for_test("t", BTreeMap::from([(vec![2u8], at.clone())]));
         shard
             .features
-            .insert("f".to_string(), BTreeMap::from([(1u64, at.clone())]).into());
+            .insert("f".into(), BTreeMap::from([(1u64, at.clone())]).into());
         shard.insert_control_state_block("c".into(), {
             // Through `set_address`, like production. Building a record by hand here would make
             // the fixture the one place the narrow door is bypassed.

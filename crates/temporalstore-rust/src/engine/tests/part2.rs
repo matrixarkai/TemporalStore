@@ -4286,7 +4286,7 @@ fn feature_recovery_reports_duplicate_timestamps_inside_packed_block() {
         let shard = shards.get_mut(&1).expect("loaded shard");
         let series = shard
             .features
-            .entry("layout-feature".to_string())
+            .entry("layout-feature".into())
             .or_default();
         series.insert(10, address.clone());
         series.insert(20, address);
@@ -4337,7 +4337,7 @@ fn feature_recovery_reports_corrupt_packed_timestamped_block() {
         let shard = shards.get_mut(&1).expect("loaded shard");
         shard
             .features
-            .entry("corrupt-feature".to_string())
+            .entry("corrupt-feature".into())
             .or_default()
             .insert(10, address);
     }
@@ -4400,7 +4400,7 @@ fn feature_recovery_reports_unsupported_packed_timestamped_block_version() {
         let shard = shards.get_mut(&1).expect("loaded shard");
         shard
             .features
-            .entry("versioned-feature".to_string())
+            .entry("versioned-feature".into())
             .or_default()
             .insert(10, address);
     }

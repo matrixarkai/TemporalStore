@@ -530,7 +530,7 @@ pub(super) fn validate_command_preconditions(
         Command::FeatureAppend { key, points } => {
             let current = shard
                 .features
-                .get(key)
+                .get(&key[..])
                 .map(|series| series.len())
                 .unwrap_or(0);
             if current.saturating_add(points.len()) > FEATURE_ADD_HARD_MAX_SIZE {
@@ -550,7 +550,7 @@ pub(super) fn validate_command_preconditions(
             }
             let current = shard
                 .features
-                .get(key)
+                .get(&key[..])
                 .map(|series| series.len())
                 .unwrap_or(0);
             if current.saturating_add(points.len()) > FEATURE_ADD_HARD_MAX_SIZE {
@@ -563,7 +563,7 @@ pub(super) fn validate_command_preconditions(
         Command::FeatureReplace { key, points, .. } => {
             let current = shard
                 .features
-                .get(key)
+                .get(&key[..])
                 .map(|series| series.len())
                 .unwrap_or(0);
             if current.saturating_add(points.len()) > FEATURE_ADD_HARD_MAX_SIZE {

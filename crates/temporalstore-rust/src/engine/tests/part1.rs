@@ -1475,7 +1475,7 @@ fn live_block_slab_ids_scan_all_index_backed_data_models() {
     );
     shard
         .features
-        .entry("feature".to_string())
+        .entry("feature".into())
         .or_default()
         .insert(
             10,
@@ -1483,7 +1483,7 @@ fn live_block_slab_ids_scan_all_index_backed_data_models() {
         );
     shard
         .features
-        .entry("sequence".to_string())
+        .entry("sequence".into())
         .or_default()
         .insert(
             11,

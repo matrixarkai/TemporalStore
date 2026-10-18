@@ -1649,7 +1649,7 @@ fn expiry_scan_budget(limit: usize) -> usize {
                 &self.cache,
                 shard_id,
                 "feature",
-                key.as_str(),
+                &key[..],
                 series,
                 &mut rewrite_stats,
                 routing_bucket,

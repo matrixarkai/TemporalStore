@@ -723,7 +723,7 @@ pub(super) mod as_btree_maps {
     }
 
     pub(in crate::engine) fn serialize<S>(
-        map: &HashMap<String, OwnedTimestampedSeries>,
+        map: &HashMap<std::sync::Arc<str>, OwnedTimestampedSeries>,
         serializer: S,
     ) -> Result<S::Ok, S::Error>
     where
@@ -734,11 +734,11 @@ pub(super) mod as_btree_maps {
 
     pub(in crate::engine) fn deserialize<'de, D>(
         deserializer: D,
-    ) -> Result<HashMap<String, OwnedTimestampedSeries>, D::Error>
+    ) -> Result<HashMap<std::sync::Arc<str>, OwnedTimestampedSeries>, D::Error>
     where
         D: serde::Deserializer<'de>,
     {
-        let stored: HashMap<String, BTreeMap<u64, ElementEntry>> =
+        let stored: HashMap<std::sync::Arc<str>, BTreeMap<u64, ElementEntry>> =
             serde::Deserialize::deserialize(deserializer)?;
         Ok(stored
             .into_iter()

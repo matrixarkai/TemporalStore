@@ -309,7 +309,7 @@ pub(super) struct ShardState {
     ///
     /// The stored image does not move: see [`super::timestamped_series::as_btree_maps`].
     #[serde(with = "super::timestamped_series::as_btree_maps")]
-    pub(super) features: HashMap<String, OwnedTimestampedSeries>,
+    pub(super) features: HashMap<ModelKey, OwnedTimestampedSeries>,
     pub(super) control_state: HashMap<String, BTreeMap<u64, i64>>,
     /// Counter-series blocks, one per control-state object key.
     ///
@@ -411,7 +411,7 @@ pub(super) struct ShardState {
     pub(super) control_state_changes:
         HashMap<String, BTreeMap<u64, super::hll::DistinctBucket>>,
     #[serde(default, alias = "control_state_fol")]
-    pub(super) control_state_selection: HashMap<String, ControlStateSelectionValue>,
+    pub(super) control_state_selection: HashMap<ModelKey, ControlStateSelectionValue>,
     // UUID idempotency ledger for control-state writes: uuid -> expiry_ms. Mirrors
     // the control_state 300s dedup window so at-least-once queue replays do not
     // double-count. Lazily garbage-collected on write; in-memory + serde-default so
@@ -7636,6 +7636,17 @@ impl ShardState {
         // missing from this list, which is the failure the note above describes: a map that
         // CAN share and is not listed here keeps its own equal copy and nothing fails.
         moved |= adopt_key_in(&mut self.context_nodes, object_key, &canonical);
+        // NOT CONTEXT MAPS, AND THEY BELONG HERE ANYWAY. A raw key written as a string, a
+        // feature series and a selection lands in all three of those maps -- measured, 64 of 64
+        // keys in `why_there_are_many_per_key_maps_and_not_one` -- and only `strings` could
+        // share, so the other two each owned a second and third copy of the same characters.
+        // `strings` TOO, and leaving it out is what the pointer guard caught. It takes its
+        // handle at its own write site, which runs BEFORE the page index holds one -- so it
+        // minted, while the maps adopted here later converged on the page index's
+        // allocation. Three holders, two allocations, and no byte probe would have said so.
+        moved |= adopt_key_in(&mut self.strings, object_key, &canonical);
+        moved |= adopt_key_in(&mut self.features, object_key, &canonical);
+        moved |= adopt_key_in(&mut self.control_state_selection, object_key, &canonical);
         if moved {
             CONTEXT_EVENT_ADOPT_MOVED.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         }

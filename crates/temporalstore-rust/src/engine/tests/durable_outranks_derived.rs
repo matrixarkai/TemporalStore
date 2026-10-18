@@ -1872,7 +1872,7 @@ fn a_container_carry_does_not_clear_the_key_state_it_does_not_name() {
         .insert(std::sync::Arc::from("carry-ttl"), 1_800_000_000_000u64);
     shard
         .features
-        .entry("carry-ttl".to_string())
+        .entry("carry-ttl".into())
         .or_default()
         .insert(11u64, address.clone());
 

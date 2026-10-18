@@ -4111,3 +4111,183 @@ fn what_the_default_configuration_does_to_a_forty_thousand_key_shard() {
     );
     assert_eq!(before, after, "the default declined and yet the index moved");
 }
+
+/// WHY THERE ARE TWENTY-SIX PER-KEY MAPS AND NOT ONE, measured on one key written four ways.
+///
+/// The consolidation question is not "could these maps be merged" but "would merging them save
+/// anything", and that turns entirely on whether one KEY TEXT is held by several of them. A record
+/// folded into the consolidated map pays `ObjectSlot` at 32 bytes where a bare address map pays
+/// `ElementEntry` at 16 -- so consolidating a key that lives in exactly ONE map makes it BIGGER by
+/// 16 bytes, and only a key living in several maps gets smaller by losing the other entries.
+///
+/// So this writes the SAME raw key through four families and counts the holders of every key text
+/// the shard ends up with. The answer is a property of how the keys are DERIVED, not of the
+/// containers: each family prefixes the raw key with its own name, so the texts are disjoint.
+///
+/// rust-internal: measures this crate's own resident structures, no product behaviour
+///
+///   cargo test --features alloc-probe -p temporalstore-rust --lib why_there_are_many_per_key_maps -- --ignored --nocapture
+#[test]
+#[cfg(feature = "alloc-probe")]
+#[ignore = "writes one key through four families; run by name"]
+fn why_there_are_many_per_key_maps_and_not_one() {
+    const KEYS: usize = 64;
+
+    let dir = tempfile::tempdir().unwrap();
+    let engine = probe_engine_on(dir.path(), crate::DEFAULT_END_ROUTING_BUCKET);
+
+    for index in 0..KEYS {
+        let raw = format!("k{index:04}");
+        let commands = vec![
+            Command::StringSet { key: raw.clone(), value: vec![b'v'; 32] },
+            Command::FeatureAppend {
+                key: raw.clone(),
+                points: vec![crate::types::FeaturePoint {
+                    timestamp_ms: 1_787_270_070_000 + index as u64,
+                    value: vec![b'f'; 8],
+                }],
+            },
+            Command::ControlStateSetAndGet {
+                family: crate::types::ControlStateFamily::Counter,
+                key: raw.clone(),
+                timestamp_ms: 1_787_270_070_000 + index as u64,
+                amount: 1,
+                start_ms: 0,
+                end_ms: u64::MAX,
+                aggregator: "sum".to_string(),
+            },
+            Command::ControlStateSelectionSet {
+                key: raw.clone(),
+                value: vec![b's'; 8],
+                occur_time_ms: 1_787_270_070_000 + index as u64,
+                ttl_ms: 0,
+                selection_type: crate::types::ControlStateSelectionType::Last,
+            },
+        ];
+        for command in commands {
+            let response = engine.execute(ExecuteRequest { shard_id: 1, command });
+            assert!(response.status.ok, "write {index}: {:?}", response.status);
+        }
+    }
+
+    let shards = engine.shards.read().expect("engine lock poisoned");
+    let shard = shards.get(&1).expect("loaded shard");
+
+    // Every per-key map a non-context write can land in, with the key TEXTS it holds.
+    // EACH KEY CARRIES ITS DATA POINTER, which is what makes this check representation-agnostic.
+    // A `String` key and an `Arc<str>` key both expose the address of their characters, so "do
+    // these two maps hold ONE allocation or two equal ones" is answerable without knowing, or
+    // maintaining a list of, which maps are keyed by what. An allowlist of map names goes stale
+    // the moment a map is converted; a pointer does not.
+    let holders: Vec<(&str, Vec<(&str, usize)>)> = vec![
+        ("strings", shard.strings.keys().map(|k| (&**k, k.as_ptr() as usize)).collect()),
+        ("features", shard.features.keys().map(|k| (&**k, k.as_ptr() as usize)).collect()),
+        (
+            "control_state",
+            shard.control_state.keys().map(|k| (k.as_str(), k.as_ptr() as usize)).collect(),
+        ),
+        (
+            "control_state_selection",
+            shard
+                .control_state_selection
+                .keys()
+                .map(|k| (&**k, k.as_ptr() as usize))
+                .collect(),
+        ),
+        (
+            "control_state_uuid",
+            shard.control_state_uuid.keys().map(|k| (k.as_str(), k.as_ptr() as usize)).collect(),
+        ),
+        (
+            "control_state_rollups",
+            shard.control_state_rollups.keys().map(|k| (k.as_str(), k.as_ptr() as usize)).collect(),
+        ),
+        (
+            "feature_values",
+            shard.feature_values.keys().map(|k| (k.as_str(), k.as_ptr() as usize)).collect(),
+        ),
+        (
+            "feature_rollups",
+            shard.feature_rollups.keys().map(|k| (k.as_str(), k.as_ptr() as usize)).collect(),
+        ),
+        ("seen", shard.seen.keys().map(|k| (k.as_str(), k.as_ptr() as usize)).collect()),
+        ("buckets", shard.buckets.keys().map(|k| (k.as_str(), k.as_ptr() as usize)).collect()),
+        (
+            "expires_at_ms",
+            shard.expires_at_ms.keys().map(|k| (&**k, k.as_ptr() as usize)).collect(),
+        ),
+    ];
+
+    let mut holders_of: std::collections::BTreeMap<&str, Vec<(&str, usize)>> =
+        std::collections::BTreeMap::new();
+    println!();
+    println!("  {KEYS} raw keys, each written through four families");
+    println!("  map                            keys");
+    for (name, keys) in &holders {
+        println!("  {name:30} {:>5}", keys.len());
+        for (text, ptr) in keys {
+            holders_of.entry(text).or_default().push((*name, *ptr));
+        }
+    }
+
+    let mut by_holders: std::collections::BTreeMap<usize, usize> =
+        std::collections::BTreeMap::new();
+    for maps in holders_of.values() {
+        *by_holders.entry(maps.len()).or_insert(0) += 1;
+    }
+    println!();
+    println!("  distinct key texts: {}", holders_of.len());
+    for (n, how_many) in &by_holders {
+        println!("    {how_many} texts are held by {n} map(s)");
+    }
+    let shareable: usize = holders_of.values().filter(|m| m.len() > 1).count();
+    println!("  texts held by MORE THAN ONE map -- the only consolidation candidates: {shareable}");
+    println!();
+    println!("  a sample of the texts one raw key turns into:");
+    for (text, maps) in holders_of.iter().filter(|(t, _)| t.contains("k0000")) {
+        println!("    {text:38} <- {maps:?}");
+    }
+    println!();
+    println!(
+        "  widths: ElementEntry {} B, ObjectRecord {} B, ObjectSlot {} B -- so folding a key that",
+        std::mem::size_of::<ElementEntry>(),
+        std::mem::size_of::<crate::engine::object_record::ObjectRecord>(),
+        std::mem::size_of::<crate::engine::object_record::ObjectSlot>()
+    );
+    println!("  lives in ONE map into the consolidated map makes it larger, not smaller.");
+
+    // THE GUARD: one key text, one allocation, whatever holds it.
+    //
+    // Measured by POINTER, so it cannot be satisfied by two maps holding equal copies. Any text
+    // whose holders report more than one distinct address has its characters stored once per
+    // address, and a clone-based byte probe will never say so, because cloning an `Arc` is a
+    // refcount bump.
+    let mut duplicated: Vec<(&str, Vec<(&str, usize)>)> = holders_of
+        .iter()
+        .filter(|(_, held)| {
+            held.iter().map(|(_, ptr)| *ptr).collect::<std::collections::HashSet<_>>().len() > 1
+        })
+        .map(|(text, held)| (*text, held.clone()))
+        .collect();
+    duplicated.sort();
+    println!();
+    println!(
+        "  by ALLOCATION: {} of {} texts are stored more than once",
+        duplicated.len(),
+        holders_of.len()
+    );
+    assert!(
+        duplicated.is_empty(),
+        "{} key texts are stored more than once -- the holders report different addresses for the          same characters: {:?}. A map holding a key another map already holds must take a          `ModelKey` and join `adopt_object_key_allocations`.",
+        duplicated.len(),
+        &duplicated[..duplicated.len().min(3)]
+    );
+
+    assert!(!holders_of.is_empty(), "no keys landed -- the write path populated nothing");
+    assert!(
+        std::mem::size_of::<crate::engine::object_record::ObjectSlot>()
+            > std::mem::size_of::<ElementEntry>(),
+        "the consolidated slot is no longer wider than a bare address, so the arithmetic above \
+         changed and the conclusion has to be re-derived"
+    );
+}
