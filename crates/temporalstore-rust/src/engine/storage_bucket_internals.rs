@@ -354,12 +354,20 @@ pub(super) struct StorageBlockOwnershipValidation {
 /// (`what_a_whole_shard_live_block_walk_allocates_per_entry`).
 ///
 /// A uniform `&ModelKey` parameter is impossible, and that is the whole reason this is an enum.
-/// Nine arms iterate a `ModelKey`-keyed map and have a handle to lend. Two cannot:
+/// Every arm but one lends the handle it holds. The exception is the `context_entities` arm, which
+/// COMPOSES its key from the collection key and the entity hash -- so the key it emits exists
+/// nowhere to be borrowed, and no signature reaches that.
 ///
-///   * the `context_entities` arm COMPOSES its key from the collection key and the entity hash,
-///     so the key it emits does not exist anywhere to be borrowed;
-///   * the timestamped-series arm is generic over its map's key type and reaches `&str` through
-///     `Borrow`, so it cannot produce a `&ModelKey` at all.
+/// THIS LIST USED TO NAME TWO EXCEPTIONS AND IT WAS WRONG WITHIN TWO CHANGES. It also named the
+/// timestamped-series arm, "generic over its map's key type and reaches `&str` through `Borrow`, so
+/// it cannot produce a `&ModelKey` at all". That was true of the signature as written and not of
+/// the code: all seven of its callers pass a `HashMap<ModelKey, _>`, so the bound was wider than
+/// any of its uses, and narrowing it let the arm lend with zero call-site edits. The deferral was
+/// an inference about callers I had not checked.
+///
+/// The same mistake sat in `emit_one_entry_a_page`'s note, which claimed its callers had no handle
+/// and was corrected the same way. Two stale claims in this file, both mine, both written while
+/// generalising from the arms I had looked at to the ones I had not.
 ///
 /// So the enum carries whichever the arm actually has, and the caller decides what to do with it:
 /// `as_str` to inspect, `to_handle` to keep. A handle-lending arm costs the caller a refcount bump
@@ -3516,10 +3524,19 @@ fn visit_model_live_blocks(
                     address.length(),
                 ))
             {
-                // `emit_one_entry_a_page` takes its key as `&str`, so this shared helper has no
-                // handle to lend either -- a guess that it did was corrected by the compiler.
-                // Changing ITS parameter is a separate question from the walk's: every caller of
-                // it would have to have a handle, and the composed and generic arms do not.
+                // THIS NOTE WAS STALE AND CONTRADICTED THE LINE UNDER IT, and it was mine.
+                //
+                // It read: "`emit_one_entry_a_page` takes its key as `&str`, so this shared helper
+                // has no handle to lend either [..] changing ITS parameter is a separate question
+                // from the walk's: every caller of it would have to have a handle, and the composed
+                // and generic arms do not."
+                //
+                // Written while the parameter WAS `&str`, and left behind when it became
+                // `&ModelKey` one change later -- so it sat directly above a `KeyRef::Shared`
+                // saying no handle was available. The deferral it recorded was also wrong on its
+                // own terms: it generalised from the walk's arms to this helper's callers, and all
+                // four of those (hash, zset, list, set) iterate a `ModelKey`-keyed map. Checking
+                // beat the inference; the signature changed with zero call-site edits.
                 emit(kind, KeyRef::Shared(key), None, address);
             }
         }
