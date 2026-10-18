@@ -81,7 +81,11 @@ fn write_and_flush(engine: &TemporalEngine) {
             value: b"v".to_vec(),
         },
     });
-    assert!(answer.status.ok, "the setup write failed: {}", answer.status.message);
+    assert!(
+        answer.status.ok,
+        "the setup write failed: {}",
+        answer.status.message
+    );
     engine.flush_shard_index(7);
 }
 
@@ -124,10 +128,7 @@ fn a_stale_stamped_base_index_does_not_deliver_a_context_node_entry() {
     let dir = tempfile::tempdir().expect("tempdir");
     let engine = engine_at(dir.path());
     write_and_flush(&engine);
-    plant_in_base_index(
-        dir.path(),
-        crate::engine::SHARD_INDEX_FORMAT_VERSION - 1,
-    );
+    plant_in_base_index(dir.path(), crate::engine::SHARD_INDEX_FORMAT_VERSION - 1);
     drop(engine);
 
     reset_index_load_path_counts();
@@ -285,10 +286,20 @@ fn the_dump_manifest_door_refuses_a_stale_stamped_index_image() {
          integrity bindings is failing instead, so this arm is no longer driving the door it \
          names"
     );
+    // DERIVED FROM THE CONSTANT, NOT WRITTEN OUT. This assertion held two literals -- "13"
+    // and "14" -- and `SHARD_INDEX_FORMAT_VERSION` has moved since they were written, so it
+    // has been failing on a tree where the door it checks works perfectly: the refusal names
+    // 14 and 15 and the test demanded 13 and 14. A guard that pins a version it does not own
+    // stops describing the code at the next bump, and a red that means nothing is worse than
+    // no guard at all -- the next real red reads as the same noise.
+    let current = crate::engine::SHARD_INDEX_FORMAT_VERSION;
+    let stored = current - 1;
     assert!(
-        refusal.message.contains("13") && refusal.message.contains("14"),
-        "the stamp refusal names neither the stored stamp nor the current one: {refusal:?}. Both \
-         belong in it -- an operator reading this has to know which index they are holding"
+        refusal.message.contains(&stored.to_string())
+            && refusal.message.contains(&current.to_string()),
+        "the stamp refusal names neither the stored stamp ({stored}) nor the current one \
+         ({current}): {refusal:?}. Both belong in it -- an operator reading this has to know \
+         which index they are holding"
     );
     assert!(
         !planted_arrived(&engine),

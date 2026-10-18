@@ -2576,13 +2576,23 @@ pub(crate) fn eager_cache_warm_on_load() -> bool {
 /// question is a real one rather than a formality.
 ///
 /// WHAT SETTLES IT IS THE REFUSAL FLOOR, NOT THE SIZE OF THE CHANGE. `persistence` refuses an index
-/// stamped BELOW this constant and falls back to WAL replay, with `<` -- so the set of indexes this
-/// binary will decode at all is exactly those stamped 12. Twelve was stamped BY the commit that
+/// stamped BELOW this constant and falls back to WAL replay, with `<` -- so when this was written
+/// the set of indexes this binary would decode at all was exactly those stamped 12. Twelve was
+/// stamped BY the commit that
 /// made hash and zset page-named, which is the commit after which nothing files an element name on
 /// an entry. So every index this binary accepts was written by a binary that filed no element name,
 /// and the key this step stops writing is a key no accepted index contains. An index that really
 /// does carry one is stamped 10 or lower, is refused before a byte is decoded, and is rebuilt from
 /// the WAL.
+///
+/// THE CONSTANT HAS MOVED SINCE, AND THE ARGUMENT SURVIVES THE MOVE -- said here because the
+/// paragraph above reads as present tense and its number is not. The floor only ever RISES, and
+/// the claim it rests on is about the floor's lower bound: every index this binary accepts was
+/// written at or above 12, so it was written by a binary filing no element name. A later bump
+/// narrows that set further and cannot admit an older image. What a bump DOES invalidate is any
+/// assertion that wrote the pair of numbers out by hand instead of deriving them -- one in
+/// `engine::tests::context_node_map_arrival` did, and went red for two bumps while the door it
+/// checks worked.
 ///
 /// THE DIRECTION THAT WOULD HAVE NEEDED A NUMBER IS THE OPPOSITE ONE: a binary BEFORE the collapse
 /// reading an index written after it. That is what 11 and 12 above already stop, and they stop it
