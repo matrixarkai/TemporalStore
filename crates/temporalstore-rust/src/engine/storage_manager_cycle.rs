@@ -618,6 +618,19 @@ impl TemporalEngine {
                     request.eviction_delete_drop,
                 )
             })
+        } else if request.index_resident_limit_bytes > 0 && !request.dry_run {
+            // THE NARROW BOUND RUNS WITH THE WIDE STAGE OFF, which is the whole reason it is a
+            // separate arm. `enable_evict` gates a signal that is mostly other shards' cache, so
+            // it defaults off and should stay off; a bound that reads only THIS shard's resident
+            // index has none of that defect and must not inherit being disabled by it.
+            //
+            // It reports through the same field because it reaches the same release, so an
+            // operator reads one eviction report either way -- `mode` says which gate opened.
+            Some(self.apply_index_resident_bound(
+                request.shard_id,
+                request.index_resident_limit_bytes,
+                request.eviction_batch_limit,
+            ))
         } else {
             None
         };

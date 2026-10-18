@@ -3354,6 +3354,23 @@ pub struct StorageManagerCycleRequest {
     pub eviction_batch_limit: usize,
     #[serde(default)]
     pub eviction_dump_before_evict: bool,
+    /// Dump and release a shard's resident page lists once THAT SHARD'S OWN index passes this
+    /// many bytes. **Zero means no bound**, as it does on every other bound here.
+    ///
+    /// GATED ON ITSELF, NOT ON `enable_evict`, and that is the point of it. The eviction stage's
+    /// own gate sums four PROCESS-WIDE cache terms with one per-shard index term, so a ten-key
+    /// shard's gate reads a busy shard's cache -- measured at 99.95% of the signal -- which is why
+    /// `enable_evict` defaults off and should stay off. This bound reads
+    /// `bucket_index_resident_bytes` and nothing else: per-shard, and the only term a release can
+    /// reduce. Making it inherit the wide gate's disabled state would hide a safe trigger behind an
+    /// unsafe one.
+    ///
+    /// Measured at 40,040 keys on the shipped routing range: the per-key index falls from 223.2 to
+    /// 26.6 B/key and the whole resident index from 326.3 to 130.6 B/key, with every read still
+    /// answering. The shard's own index figure was 1,430,016 B there, so a bound below that fires;
+    /// a deployment sizing this picks the resident index it is willing to hold per shard.
+    #[serde(default)]
+    pub index_resident_limit_bytes: u64,
     #[serde(default)]
     pub eviction_delete_drop: bool,
     #[serde(default)]
@@ -3464,6 +3481,12 @@ impl Default for StorageManagerCycleRequest {
             shard_id: 0,
             selected_dump_buckets: Vec::new(),
             dry_run: false,
+            // NO BOUND BY DEFAULT. The measured effect of a bound is large -- the per-key index
+            // falls from 223.2 to 26.6 B/key -- but the right number is the resident index a
+            // deployment is willing to hold per shard, and that is not a constant this crate can
+            // know. Zero means no bound, as it does on every other bound on this request, so the
+            // trigger is reachable by setting one number and does nothing until someone does.
+            index_resident_limit_bytes: 0,
             enable_prepare: true,
             enable_wal_reclaim: true,
             enable_evict: true,
