@@ -888,7 +888,7 @@ impl TemporalEngine {
                                 crate::wal_record::is_wal_resident(address.block_slab_id()).then(|| {
                                     (
                                         PublishTarget::Hash {
-                                            key: key.clone(),
+                                            key: key.to_string(),
                                             field: field.clone(),
                                         },
                                         address.clone(),

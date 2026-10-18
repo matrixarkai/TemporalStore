@@ -7670,6 +7670,15 @@ impl ShardState {
         // (`control_state:<family>:<key>`) never matches `object_key`, so this line is a no-op
         // for those and the saving is per raw key rather than per entry.
         moved |= adopt_key_in(&mut self.control_state, object_key, &canonical);
+        // THE FOUR RECORDED KINDS. Each was measured holding its OWN copy of this text while
+        // the maps above agreed on one -- eight holders, FIVE allocations, 8 of 8 keys. They go
+        // through a declared operation rather than `adopt_key_in` because `RecordedMap` keeps its
+        // map private, which is the invariant that kept them unconverted: nothing outside that
+        // module can re-key them, so the adoption had to be declared there.
+        moved |= self.hashes.adopt_key(object_key, &canonical);
+        moved |= self.sets.adopt_key(object_key, &canonical);
+        moved |= self.zsets.adopt_key(object_key, &canonical);
+        moved |= self.lists.adopt_key(object_key, &canonical);
         // `seen` and `buckets` too: a raw key used for a string, a series, a selection, a
         // seen-set and a rate bucket lands in FIVE maps, and the pointer guard measured
         // THREE allocations before these two joined -- each was holding its own copy.

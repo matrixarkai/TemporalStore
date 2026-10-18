@@ -1847,7 +1847,7 @@ pub(super) fn rebuild_unserialized_model_maps_from_bucket_index(shard: &mut Shar
     // every durable element whose page the settled index no longer holds would be restored. An
     // empty derived view is passed instead, so the merge contributes nothing and the live-page
     // refusal still runs, which is the half this function keeps.
-    let hashes = HashMap::<String, super::hash_field_map::HashFieldMap>::new();
+    let hashes = HashMap::<super::state::ModelKey, super::hash_field_map::HashFieldMap>::new();
     // THE SAME LIVE-ADDRESS SET THE RECONCILE BUILDS, and built from the same walk the derived view
     // below is built from, so the filter can only ever remove what the derived view also lacks.
     let walked = collect_bucket_index_live_block_entries(shard);
@@ -6706,10 +6706,10 @@ pub(super) fn reconcile_secondary_views_from_bucket_index(
     let mut saw_context_compressions = false;
 
     let mut strings = HashMap::new();
-    let mut hashes = HashMap::<String, super::hash_field_map::HashFieldMap>::new();
-    let mut sets = HashMap::<String, BTreeMap<Vec<u8>, ElementEntry>>::new();
-    let mut lists = HashMap::<String, BTreeMap<i64, ElementEntry>>::new();
-    let mut zsets = HashMap::<String, BTreeMap<Vec<u8>, (u64, ElementEntry)>>::new();
+    let mut hashes = HashMap::<super::state::ModelKey, super::hash_field_map::HashFieldMap>::new();
+    let mut sets = HashMap::<super::state::ModelKey, BTreeMap<Vec<u8>, ElementEntry>>::new();
+    let mut lists = HashMap::<super::state::ModelKey, BTreeMap<i64, ElementEntry>>::new();
+    let mut zsets = HashMap::<super::state::ModelKey, BTreeMap<Vec<u8>, (u64, ElementEntry)>>::new();
     let mut features =
         HashMap::<std::sync::Arc<str>, super::timestamped_series::OwnedTimestampedSeries>::new();
     let mut control_state = HashMap::<super::state::ModelKey, BTreeMap<u64, i64>>::new();

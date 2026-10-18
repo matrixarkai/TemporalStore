@@ -4659,3 +4659,135 @@ fn what_a_shared_control_state_key_costs_on_each_half() {
         rows[2].1
     );
 }
+
+/// WHAT THE FOUR COLLECTION MAPS SHARING ONE KEY IS WORTH, MEASURED AND NOT MULTIPLIED.
+///
+/// `which_string_keyed_holders_duplicate_a_key_another_map_holds` measured a raw key held by eight
+/// holders at FIVE allocations: four adopted maps agreeing on one, and `hashes`, `sets`, `zsets`
+/// and `lists` each owning a copy. All four share the handle now.
+///
+/// The arithmetic temptation is to take the one-map figure from
+/// `what_a_shared_control_state_key_costs_on_each_half` and multiply it by four. That would be
+/// wrong twice over: the four value types differ (`HashFieldMap`, two `BTreeMap<Vec<u8>, _>`
+/// shapes and a `BTreeMap<i64, _>`), so the entry widths and therefore the table growth differ
+/// per map; and the saving is a STEP in key length, so four steps need not land on the same one.
+/// A footprint total is re-measured, never derived.
+///
+/// So this builds all four maps, with their real value types, in both key shapes.
+///
+/// rust-internal: measures this crates own resident structures, no product behaviour
+///
+///   cargo test --features alloc-probe -p temporalstore-rust --lib what_four_collection_maps_sharing -- --ignored --nocapture
+#[test]
+#[cfg(feature = "alloc-probe")]
+#[ignore = "builds eight map shapes at three key lengths; run by name, and ALONE -- the allocation \
+            counters are process-global"]
+fn what_four_collection_maps_sharing_one_key_costs() {
+    use std::collections::BTreeMap;
+    const KEYS: usize = 20_000;
+
+    println!();
+    println!("  {KEYS} keys in EACH of four maps, built under the counting allocator");
+    println!("  (chunk_bytes, so not comparable with the alloc_bytes figures elsewhere here)");
+
+    let mut rows: Vec<(usize, f64)> = Vec::new();
+
+    for key_len in [8usize, 24, 48] {
+        let pad = |mut s: String| {
+            while s.len() < key_len {
+                s.push('x');
+            }
+            s
+        };
+        let texts: Vec<String> = (0..KEYS).map(|i| pad(format!("k{i:07}"))).collect();
+        let handles: Vec<std::sync::Arc<str>> =
+            texts.iter().map(|k| std::sync::Arc::from(&k[..])).collect();
+
+        // The four real value shapes, one element each -- the element count is held equal across
+        // both arms so the difference is the key.
+        let set_v = |i: usize| {
+            let mut m: BTreeMap<Vec<u8>, ElementEntry> = BTreeMap::new();
+            m.insert(vec![b'm'; 8], ElementEntry::from_parts(1, i as u64, 8, None, None));
+            m
+        };
+        let list_v = |i: usize| {
+            let mut m: BTreeMap<i64, ElementEntry> = BTreeMap::new();
+            m.insert(i as i64, ElementEntry::from_parts(1, i as u64, 8, None, None));
+            m
+        };
+        let zset_v = |i: usize| {
+            let mut m: BTreeMap<Vec<u8>, (u64, ElementEntry)> = BTreeMap::new();
+            m.insert(
+                vec![b'z'; 8],
+                (1u64, ElementEntry::from_parts(1, i as u64, 8, None, None)),
+            );
+            m
+        };
+
+        let owned = {
+            let probe = Probe::start();
+            let mut sets: HashMap<String, BTreeMap<Vec<u8>, ElementEntry>> = HashMap::new();
+            let mut lists: HashMap<String, BTreeMap<i64, ElementEntry>> = HashMap::new();
+            let mut zsets: HashMap<String, BTreeMap<Vec<u8>, (u64, ElementEntry)>> = HashMap::new();
+            let mut hashes: HashMap<String, BTreeMap<Vec<u8>, ElementEntry>> = HashMap::new();
+            for (i, text) in texts.iter().enumerate() {
+                sets.insert(text.clone(), set_v(i));
+                lists.insert(text.clone(), list_v(i));
+                zsets.insert(text.clone(), zset_v(i));
+                hashes.insert(text.clone(), set_v(i));
+            }
+            std::hint::black_box((&sets, &lists, &zsets, &hashes));
+            probe.stop().chunk_bytes
+        };
+
+        let shared = {
+            let probe = Probe::start();
+            let mut sets: HashMap<std::sync::Arc<str>, BTreeMap<Vec<u8>, ElementEntry>> =
+                HashMap::new();
+            let mut lists: HashMap<std::sync::Arc<str>, BTreeMap<i64, ElementEntry>> =
+                HashMap::new();
+            let mut zsets: HashMap<std::sync::Arc<str>, BTreeMap<Vec<u8>, (u64, ElementEntry)>> =
+                HashMap::new();
+            let mut hashes: HashMap<std::sync::Arc<str>, BTreeMap<Vec<u8>, ElementEntry>> =
+                HashMap::new();
+            for (i, handle) in handles.iter().enumerate() {
+                sets.insert(std::sync::Arc::clone(handle), set_v(i));
+                lists.insert(std::sync::Arc::clone(handle), list_v(i));
+                zsets.insert(std::sync::Arc::clone(handle), zset_v(i));
+                hashes.insert(std::sync::Arc::clone(handle), set_v(i));
+            }
+            std::hint::black_box((&sets, &lists, &zsets, &hashes));
+            probe.stop().chunk_bytes
+        };
+
+        let per = |b: u64| b as f64 / KEYS as f64;
+        let saving = per(owned) - per(shared);
+        rows.push((key_len, saving));
+        println!();
+        println!("  key length {key_len}");
+        println!("    four maps, own copies   {:>8.1} B/key", per(owned));
+        println!("    four maps, one handle   {:>8.1} B/key", per(shared));
+        println!("    saving                  {:>8.1} B/key", saving);
+
+        assert!(
+            shared < owned,
+            "the shared arm is not smaller at key length {key_len} ({shared} vs {owned}), so the \
+             handles were copied rather than borrowed"
+        );
+    }
+
+    println!();
+    println!("  The saving is a STEP in key length, not a slope -- read the row, not an average:");
+    for (len, saving) in &rows {
+        println!("    key length {len:>3}  ->  {saving:>7.1} B/key");
+    }
+    assert!(
+        rows[2].1 > rows[0].1,
+        "the saving did not grow with key length ({:.1} at {} vs {:.1} at {}), so it is not four \
+         character allocations that stopped happening",
+        rows[0].1,
+        rows[0].0,
+        rows[2].1,
+        rows[2].0
+    );
+}

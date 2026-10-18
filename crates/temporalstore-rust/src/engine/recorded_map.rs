@@ -63,6 +63,7 @@
 //! surface with a runtime check, or into a comment saying "only hash does this", would have thrown
 //! away the only part of this that two instances established.
 
+use super::state::ModelKey;
 use std::collections::{HashMap, HashSet};
 
 use crate::block_store::ElementEntry;
@@ -95,7 +96,7 @@ pub(super) trait RecordedKind: Sized + 'static {
     /// So the codec is a REQUIRED associated function. A kind added later cannot inherit a wrong
     /// default; it has to say which encoding it uses, and saying "the plain map" is one line.
     fn serialize_entries<S>(
-        entries: &HashMap<String, Self::Elements>,
+        entries: &HashMap<ModelKey, Self::Elements>,
         serializer: S,
     ) -> Result<S::Ok, S::Error>
     where
@@ -103,7 +104,7 @@ pub(super) trait RecordedKind: Sized + 'static {
 
     fn deserialize_entries<'de, D>(
         deserializer: D,
-    ) -> Result<HashMap<String, Self::Elements>, D::Error>
+    ) -> Result<HashMap<ModelKey, Self::Elements>, D::Error>
     where
         D: serde::Deserializer<'de>;
 
@@ -149,7 +150,14 @@ pub(super) trait RepacksAfterDecode: RecordedKind {}
 pub(super) struct RecordedMap<K: RecordedKind> {
     /// PRIVATE, AND THE WHOLE POINT. Do not add an accessor returning `&mut` to this.
     /// `engine::tests::recorded_map_invariant` fails if the module grows one.
-    entries: HashMap<String, K::Elements>,
+    ///
+    /// THE KEY IS A SHARED HANDLE. All four kinds were measured holding their OWN copy of a key
+    /// text four other maps had already agreed on -- eight holders of one text reporting FIVE
+    /// allocations, at 8 of 8 keys, in
+    /// `which_string_keyed_holders_duplicate_a_key_another_map_holds`. Being private is what kept
+    /// that true for so long: the key could not be converted from outside this module, so the
+    /// adoption had to arrive as a declared operation here. See `adopt_key` below.
+    entries: HashMap<ModelKey, K::Elements>,
 }
 
 impl<K: RecordedKind> Default for RecordedMap<K> {
@@ -471,6 +479,39 @@ pub(super) trait RemovableElementMap: ElementMap {
 // ---------------------------------------------------------------------------------------------
 
 impl<K: RecordedKind> RecordedMap<K> {
+    /// Move this object's entry onto the shared key handle the page index owns, returning whether
+    /// anything moved.
+    ///
+    /// A DECLARED OPERATION RATHER THAN A `&mut` ACCESSOR. The invariant this module exists to
+    /// hold is that the complete set of things which can change `entries` is declared here; an
+    /// accessor handing out `&mut` would end that, and `recorded_map_invariant` would fail. So
+    /// adoption is one named operation with one job.
+    ///
+    /// It re-keys and does not touch the value, so it cannot change what any read answers -- the
+    /// text is equal by definition, or the lookup that found it would not have. What changes is
+    /// how many allocations hold that text: before this existed, all four kinds owned their own
+    /// copy of a key the adopted maps already shared.
+    ///
+    /// Call it AFTER the page is filed. Before that the page index holds no handle to borrow, the
+    /// caller has nothing to pass, and the entry keeps the copy it minted at its write site --
+    /// which is exactly how a wired sharing mechanism went 0 for 40,040 once before.
+    pub(super) fn adopt_key(&mut self, object_key: &str, canonical: &ModelKey) -> bool {
+        let moves = match self.entries.get_key_value(object_key) {
+            Some((held, _)) => !std::sync::Arc::ptr_eq(held, canonical),
+            None => false,
+        };
+        if !moves {
+            return false;
+        }
+        match self.entries.remove(object_key) {
+            Some(value) => {
+                self.entries.insert(std::sync::Arc::clone(canonical), value);
+                true
+            }
+            None => false,
+        }
+    }
+
     pub(super) fn get(&self, object_key: &str) -> Option<&K::Elements> {
         self.entries.get(object_key)
     }
@@ -487,7 +528,7 @@ impl<K: RecordedKind> RecordedMap<K> {
         self.entries.is_empty()
     }
 
-    pub(super) fn keys(&self) -> impl Iterator<Item = &String> {
+    pub(super) fn keys(&self) -> impl Iterator<Item = &ModelKey> {
         self.entries.keys()
     }
 
@@ -495,7 +536,7 @@ impl<K: RecordedKind> RecordedMap<K> {
         self.entries.values()
     }
 
-    pub(super) fn iter(&self) -> impl Iterator<Item = (&String, &K::Elements)> {
+    pub(super) fn iter(&self) -> impl Iterator<Item = (&ModelKey, &K::Elements)> {
         self.entries.iter()
     }
 
@@ -506,7 +547,7 @@ impl<K: RecordedKind> RecordedMap<K> {
     /// surface test's matcher is anchored on `&mut` returns for exactly that reason. `sets` and
     /// `zsets` need it because their field carried a `with =` codec that a `transparent` wrapper
     /// would have silently changed.
-    pub(super) fn entries(&self) -> &HashMap<String, K::Elements> {
+    pub(super) fn entries(&self) -> &HashMap<ModelKey, K::Elements> {
         &self.entries
     }
 
@@ -552,8 +593,8 @@ impl<K: RecordedKind> RecordedMap<K> {
 }
 
 impl<'a, K: RecordedKind> IntoIterator for &'a RecordedMap<K> {
-    type Item = (&'a String, &'a K::Elements);
-    type IntoIter = std::collections::hash_map::Iter<'a, String, K::Elements>;
+    type Item = (&'a ModelKey, &'a K::Elements);
+    type IntoIter = std::collections::hash_map::Iter<'a, ModelKey, K::Elements>;
 
     fn into_iter(self) -> Self::IntoIter {
         self.entries.iter()
@@ -575,7 +616,7 @@ impl<K: RecordedKind> RecordedMap<K> {
             value,
         } = recorded;
         self.entries
-            .entry(object_key)
+            .entry(std::sync::Arc::from(&object_key[..]))
             .or_default()
             .insert_element(element, value);
     }
@@ -598,18 +639,18 @@ impl<K: RecordedKind> RecordedMap<K> {
             object_key,
             element,
         } = recorded;
-        let Some(elements) = self.entries.get_mut(&object_key) else {
+        let Some(elements) = self.entries.get_mut(&object_key[..]) else {
             return false;
         };
         let removed = elements.remove_element(&element);
         if elements.is_empty_map() {
-            self.entries.remove(&object_key);
+            self.entries.remove(&object_key[..]);
         }
         removed
     }
 
     fn remove_object(&mut self, recorded: RecordedObjectRemoval<K>) -> bool {
-        self.entries.remove(&recorded.object_key).is_some()
+        self.entries.remove(&recorded.object_key[..]).is_some()
     }
 }
 
@@ -626,7 +667,7 @@ impl<K: RecordedKind> RecordedMap<K> {
     /// while each kind had its own container -- `hashes` got it from `#[serde(transparent)]` and
     /// `sets` from a hand-written impl, so neither named it -- and collapsing the two is what
     /// surfaced it as a path. Naming it is strictly better than a derive doing it silently.
-    pub(super) fn from_decoded(entries: HashMap<String, K::Elements>) -> Self {
+    pub(super) fn from_decoded(entries: HashMap<ModelKey, K::Elements>) -> Self {
         Self { entries }
     }
 
@@ -639,7 +680,7 @@ impl<K: RecordedKind> RecordedMap<K> {
     /// Logging here would be backwards -- the record is what this read FROM.
     pub(super) fn reconcile_from_durable(
         &mut self,
-        derived: HashMap<String, K::Elements>,
+        derived: HashMap<ModelKey, K::Elements>,
         live: &HashSet<LiveBlockKey>,
         resurrections_refused: &mut usize,
     ) where
@@ -713,7 +754,7 @@ impl<K: RecordedKind> RecordedMap<K> {
     ) -> impl Iterator<Item = (&str, ElementValuesMut<'_, K>)> {
         self.entries
             .iter_mut()
-            .map(|(object_key, elements)| (object_key.as_str(), ElementValuesMut { elements }))
+            .map(|(object_key, elements)| (&**object_key, ElementValuesMut { elements }))
     }
 }
 
@@ -736,7 +777,7 @@ impl<K: ReplaysInstallsUnrecorded> RecordedMap<K> {
         value: <K::Elements as ElementMap>::Value,
     ) {
         self.entries
-            .entry(object_key.to_string())
+            .entry(std::sync::Arc::from(object_key))
             .or_default()
             .insert_element(element, value);
     }
@@ -858,7 +899,7 @@ impl RecordedKind for HashKind {
     /// `String` to `HashFieldMap`, and `HashFieldMap` itself round-trips through the same MAP shape
     /// the bare `HashMap` used. So the bytes are unchanged by construction.
     fn serialize_entries<S>(
-        entries: &HashMap<String, Self::Elements>,
+        entries: &HashMap<ModelKey, Self::Elements>,
         serializer: S,
     ) -> Result<S::Ok, S::Error>
     where
@@ -869,7 +910,7 @@ impl RecordedKind for HashKind {
 
     fn deserialize_entries<'de, D>(
         deserializer: D,
-    ) -> Result<HashMap<String, Self::Elements>, D::Error>
+    ) -> Result<HashMap<ModelKey, Self::Elements>, D::Error>
     where
         D: serde::Deserializer<'de>,
     {
@@ -913,7 +954,7 @@ impl RecordedKind for SetKind {
     /// sequence of pairs instead, and it also sorts the outer keys into a `BTreeMap`, which is why
     /// this field's encoding is deterministic where `hashes`'s is not.
     fn serialize_entries<S>(
-        entries: &HashMap<String, Self::Elements>,
+        entries: &HashMap<ModelKey, Self::Elements>,
         serializer: S,
     ) -> Result<S::Ok, S::Error>
     where
@@ -924,7 +965,7 @@ impl RecordedKind for SetKind {
 
     fn deserialize_entries<'de, D>(
         deserializer: D,
-    ) -> Result<HashMap<String, Self::Elements>, D::Error>
+    ) -> Result<HashMap<ModelKey, Self::Elements>, D::Error>
     where
         D: serde::Deserializer<'de>,
     {
@@ -971,7 +1012,7 @@ impl RecordedKind for ZSetKind {
     /// associated function with no default precisely so a new kind cannot acquire the wrong one in
     /// silence, which is the defect a blanket impl produced for `sets`.
     fn serialize_entries<S>(
-        entries: &HashMap<String, Self::Elements>,
+        entries: &HashMap<ModelKey, Self::Elements>,
         serializer: S,
     ) -> Result<S::Ok, S::Error>
     where
@@ -982,7 +1023,7 @@ impl RecordedKind for ZSetKind {
 
     fn deserialize_entries<'de, D>(
         deserializer: D,
-    ) -> Result<HashMap<String, Self::Elements>, D::Error>
+    ) -> Result<HashMap<ModelKey, Self::Elements>, D::Error>
     where
         D: serde::Deserializer<'de>,
     {
@@ -1030,7 +1071,7 @@ impl RecordedKind for ListKind {
     /// `with =`. An `i64` key has a string form a JSON object can carry, which is exactly why this
     /// kind never needed the codec `sets` and `zsets` do. Stated explicitly all the same.
     fn serialize_entries<S>(
-        entries: &HashMap<String, Self::Elements>,
+        entries: &HashMap<ModelKey, Self::Elements>,
         serializer: S,
     ) -> Result<S::Ok, S::Error>
     where
@@ -1041,7 +1082,7 @@ impl RecordedKind for ListKind {
 
     fn deserialize_entries<'de, D>(
         deserializer: D,
-    ) -> Result<HashMap<String, Self::Elements>, D::Error>
+    ) -> Result<HashMap<ModelKey, Self::Elements>, D::Error>
     where
         D: serde::Deserializer<'de>,
     {
@@ -1204,13 +1245,13 @@ impl<K: RecordedKind> RecordedMap<K> {
         value: <K::Elements as ElementMap>::Value,
     ) {
         self.entries
-            .entry(object_key.to_string())
+            .entry(std::sync::Arc::from(object_key))
             .or_default()
             .insert_element(element, value);
     }
 
     pub(super) fn insert_elements_for_test(&mut self, object_key: &str, elements: K::Elements) {
-        self.entries.insert(object_key.to_string(), elements);
+        self.entries.insert(std::sync::Arc::from(object_key), elements);
     }
 
     pub(super) fn remove_for_test(&mut self, object_key: &str) -> Option<K::Elements> {
@@ -1225,11 +1266,11 @@ impl<K: RecordedKind> RecordedMap<K> {
         self.entries.get_mut(object_key)
     }
 
-    pub(super) fn take_for_test(&mut self) -> HashMap<String, K::Elements> {
+    pub(super) fn take_for_test(&mut self) -> HashMap<ModelKey, K::Elements> {
         std::mem::take(&mut self.entries)
     }
 
-    pub(super) fn restore_for_test(&mut self, entries: HashMap<String, K::Elements>) {
+    pub(super) fn restore_for_test(&mut self, entries: HashMap<ModelKey, K::Elements>) {
         self.entries = entries;
     }
 }

@@ -14,6 +14,10 @@
 //!   control_state          control_state_uuid     control_state_rollups   feature_values
 //!   feature_rollups        context_events_compat  context_dirty_index
 //!
+//! All of them are resolved now -- `control_state` converted, the other six measured and
+//! refused for a stated reason -- and so are the four `RecordedMap` kinds this file later caught
+//! minting their own copy: `hashes`, `sets`, `zsets` and `lists` share the handle too.
+//!
 //! What matters is not that they are `String`-keyed. It is whether the TEXT they hold is text some
 //! `ModelKey` map holds too: a key with one holder has nothing to share with and converting it is
 //! pure churn. So this drives every family that writes any of the seven, through the SAME raw key,
@@ -275,66 +279,55 @@ fn which_string_keyed_holders_duplicate_a_key_another_map_holds() {
     println!();
     println!("  duplicated texts: {} of {}", duplicated.len(), held.len());
 
-    // ---- THE KNOWN MINTERS, PINNED IN BOTH DIRECTIONS -----------------------------------
+    // ---- NO HOLDER MINTS ITS OWN COPY ANY MORE -------------------------------------------
     //
-    // Four maps still own a second copy of every raw key text: `hashes`, `sets`, `zsets` and
-    // `lists`. Measured here at 8 of 8 keys each -- eight holders of one text reporting FIVE
-    // allocations, where the four adopted maps report one between them:
+    // This block used to pin four known minters -- `hashes`, `sets`, `zsets` and `lists` -- each
+    // owning a second copy of a key text the other four holders had already agreed on. Eight
+    // holders of one text reported FIVE allocations. They are converted now, so the pinning is
+    // retired and the plain invariant takes over: one text, one allocation, whoever holds it.
     //
-    //     holder-0   8 holder(s), 5 allocation(s)
-    //         shared  strings / features / control_state_selection / control_state
-    //         MINTS   hashes / sets / zsets / lists
-    //
-    // They are not on the adopted list for a structural reason rather than an oversight. All
-    // four are `RecordedMap<K>`, whose `entries` map is PRIVATE by design -- the module's own
-    // doc calls that single fact the invariant, and `recorded_map_invariant` fails if anyone
-    // adds a `&mut` accessor. So the key cannot be converted from outside that module: it needs
-    // one new declared operation there, and the per-kind wire codecs (`set_index_serde` and its
-    // siblings) have to come through unchanged. That is its own change, not a line in this one.
-    //
-    // This assert pins the set BOTH WAYS so neither direction can pass silently: a map that
-    // starts minting fails it, and so does one that stops. If you fix one of the four, this test
-    // failing is the reminder to move it from this list to `duplicated.is_empty()`.
-    let minters: std::collections::BTreeSet<&str> =
-        duplicate_holders.keys().copied().collect();
-    let known: std::collections::BTreeSet<&str> =
-        ["hashes", "lists", "sets", "zsets"].into_iter().collect();
-    assert_eq!(
-        known, minters,
-        "the set of maps minting their own copy of a shared key changed. Newly minting: {:?}. No \
-         longer minting: {:?}. A map that CAN share and does not keeps its own equal copy and \
-         nothing else fails, because cloning an `Arc` is a refcount bump -- so this list is the \
-         only thing standing between that and silence.",
-        minters.difference(&known).collect::<Vec<_>>(),
-        known.difference(&minters).collect::<Vec<_>>()
+    // The pinning was deliberately two-directional, and this is the step it existed to force. A
+    // baseline that only forbids NEW minters would have let the conversion land with this test
+    // still green and the list of four quietly stale, which is how a guard stops describing the
+    // code without anybody noticing.
+    assert!(
+        duplicate_holders.is_empty(),
+        "{} holder(s) mint their own copy of a key text another holder already has: {:?}. A map \
+         that CAN share and does not keeps an equal copy and nothing else fails, because cloning \
+         an `Arc` is a refcount bump. A `String`-keyed holder needs a `ModelKey` and a place in \
+         `ShardState::adopt_object_key_allocations`; a `RecordedMap` kind needs its `adopt_key` \
+         called there, because its map is private and nothing outside that module can re-key it.",
+        duplicate_holders.len(),
+        duplicate_holders
     );
     assert!(
-        duplicate_holders.values().all(|n| *n == KEYS),
-        "a known minter stopped minting for SOME keys but not all, which is a third state this \
-         pinning does not describe: {duplicate_holders:?}"
+        duplicated.is_empty(),
+        "{} key texts are stored more than once: {:?}",
+        duplicated.len(),
+        &duplicated[..duplicated.len().min(4)]
     );
-    // And the four adopted holders must still agree with each other. This is the part that would
-    // regress if `adopt_object_key_allocations` lost an entry: the four below share one
-    // allocation, so a raw key's distinct-address count is exactly 1 + the number of minters.
-    let adopted_share: Vec<_> = held
-        .iter()
-        .filter(|(text, _)| !text.contains(':'))
-        .filter(|(_, holders)| {
+
+    // The raw keys must be ONE allocation across all eight holders. Asserted as a count rather
+    // than as "no duplicates" so the figure in the doc comment above cannot drift from the code:
+    // eight holders, one allocation.
+    for (text, holders) in held.iter().filter(|(text, _)| !text.contains(':')) {
+        let addresses: std::collections::BTreeSet<usize> =
+            holders.iter().map(|(_, p)| *p).collect();
+        assert_eq!(
+            1,
+            addresses.len(),
+            "`{text}` is held by {} holders at {} addresses: {:?}",
+            holders.len(),
+            addresses.len(),
             holders
-                .iter()
-                .filter(|(name, _)| !known.contains(name))
-                .map(|(_, p)| *p)
-                .collect::<std::collections::HashSet<_>>()
-                .len()
-                != 1
-        })
-        .map(|(text, _)| text)
-        .collect();
-    assert!(
-        adopted_share.is_empty(),
-        "{} raw key texts are held at more than one address by the ADOPTED maps, so adoption \
-         regressed: {:?}",
-        adopted_share.len(),
-        &adopted_share[..adopted_share.len().min(3)]
-    );
+        );
+        assert_eq!(
+            8,
+            holders.len(),
+            "`{text}` reached {} holders, not the eight this fixture writes -- a command stopped \
+             writing its map and this measurement stopped covering it: {:?}",
+            holders.len(),
+            holders
+        );
+    }
 }

@@ -4053,7 +4053,7 @@ fn live_page_key(address: &ElementEntry) -> LiveBlockKey {
 /// view still produces the element from its block, so the outcome is the behaviour that predates
 /// this carry -- never a defaulted identity, which is the failure #1989 took out of three arms.
 fn merge_container_elements<M>(
-    outer: &mut std::collections::HashMap<String, M>,
+    outer: &mut std::collections::HashMap<state::ModelKey, M>,
     key: &str,
     value: Option<&serde_json::Value>,
     live: &std::collections::HashSet<LiveBlockKey>,
@@ -4077,7 +4077,11 @@ fn merge_container_elements<M>(
             continue;
         }
         outer
-            .entry(key.to_string())
+            // LIKE FOR LIKE: `to_string()` allocated the characters here too, so the
+            // allocation count is unchanged, and adoption converges this onto the
+            // page index's handle once the page is filed. Taking a handle here would
+            // be strictly better and needs the caller to hold one.
+            .entry(std::sync::Arc::from(key))
             .or_default()
             .insert_element(element, element_value);
     }
