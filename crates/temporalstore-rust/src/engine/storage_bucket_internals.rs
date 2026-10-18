@@ -3514,16 +3514,57 @@ fn visit_model_live_blocks(
         accept: &impl Fn(&str, &ElementEntry) -> bool,
         emit: &mut impl FnMut(ModelKind, KeyRef<'_>, Option<&str>, &ElementEntry),
     ) {
-        let mut emitted_pages: std::collections::BTreeSet<(u64, u64, u64)> =
-            std::collections::BTreeSet::new();
+        // THE SET WAITS FOR A SECOND PAGE, because most keys never have one.
+        //
+        // Measured per arm: this helper's dedup cost the hashes arm 1.01 allocations per entry,
+        // against 0.01 for the strings arm which has nothing nested
+        // (`which_arm_the_last_allocation_per_entry_belongs_to`). A `BTreeSet` does not allocate
+        // when it is created -- the first `insert` does -- so a key with ONE page was paying a
+        // node for a dedup that cannot matter: there is nothing to be a duplicate of.
+        //
+        // So the first page is held inline and the set is built only when a SECOND distinct page
+        // turns up. A one-page key allocates nothing; a multi-page key pays what it paid before,
+        // plus one comparison against the first page.
+        //
+        // The dedup key stays the page triple, NOT the whole `ElementEntry`: two entries can name
+        // one page and differ in their element, which is the whole reason this helper exists.
+        let mut first_page: Option<(u64, u64, u64)> = None;
+        let mut emitted_pages: Option<std::collections::BTreeSet<(u64, u64, u64)>> = None;
         for address in addresses {
-            if accept(key, address)
-                && emitted_pages.insert((
-                    address.block_slab_id(),
-                    address.offset(),
-                    address.length(),
-                ))
-            {
+            // ACCEPT FIRST, AND THE ORDER IS LOAD-BEARING. The original read
+            // `accept(..) && emitted_pages.insert(..)`, which short-circuits: a REJECTED address
+            // never marked its page as seen. Computing the dedup first would mark it, and then a
+            // later accepted address naming that page would be dropped -- a faster walk that
+            // loses entries. So the gate stays ahead of the state.
+            if !accept(key, address) {
+                continue;
+            }
+            let page = (
+                address.block_slab_id(),
+                address.offset(),
+                address.length(),
+            );
+            let is_new = match (&first_page, &mut emitted_pages) {
+                // Second and later pages, once the set exists.
+                (_, Some(seen)) => seen.insert(page),
+                // A repeat of the only page seen so far: nothing to allocate.
+                (Some(held), None) if *held == page => false,
+                // The second DISTINCT page: the set is worth building now, and it starts holding
+                // both so the dedup is complete from here on.
+                (Some(held), None) => {
+                    let mut seen = std::collections::BTreeSet::new();
+                    seen.insert(*held);
+                    let fresh = seen.insert(page);
+                    emitted_pages = Some(seen);
+                    fresh
+                }
+                // The first page of this key.
+                (None, None) => {
+                    first_page = Some(page);
+                    true
+                }
+            };
+            if is_new {
                 // THIS NOTE WAS STALE AND CONTRADICTED THE LINE UNDER IT, and it was mine.
                 //
                 // It read: "`emit_one_entry_a_page` takes its key as `&str`, so this shared helper
