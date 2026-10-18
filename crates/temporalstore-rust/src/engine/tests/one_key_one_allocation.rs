@@ -49,7 +49,10 @@ fn a_key_held_by_several_maps_is_one_allocation() {
     for index in 0..KEYS {
         let raw = format!("one-copy-{index}");
         for command in [
-            Command::StringSet { key: raw.clone(), value: vec![b'v'; 16] },
+            Command::StringSet {
+                key: raw.clone(),
+                value: vec![b'v'; 16],
+            },
             Command::FeatureAppend {
                 key: raw.clone(),
                 points: vec![crate::types::FeaturePoint {
@@ -64,7 +67,11 @@ fn a_key_held_by_several_maps_is_one_allocation() {
                 ttl_ms: 0,
                 selection_type: crate::types::ControlStateSelectionType::Last,
             },
-            Command::SeenCheck { key: raw.clone(), member: vec![b'm'; 8], window_ms: 60_000 },
+            Command::SeenCheck {
+                key: raw.clone(),
+                member: vec![b'm'; 8],
+                window_ms: 60_000,
+            },
             Command::BucketTake {
                 key: raw.clone(),
                 tokens: 1.0,
@@ -72,7 +79,10 @@ fn a_key_held_by_several_maps_is_one_allocation() {
                 refill_per_sec: 1.0,
             },
         ] {
-            let response = engine.execute(ExecuteRequest { shard_id: 1, command });
+            let response = engine.execute(ExecuteRequest {
+                shard_id: 1,
+                command,
+            });
             assert!(response.status.ok, "write {index}: {:?}", response.status);
         }
     }
@@ -88,15 +98,44 @@ fn a_key_held_by_several_maps_is_one_allocation() {
     for (name, keys) in [
         (
             "strings",
-            shard.strings.keys().map(|k| (&**k, k.as_ptr() as usize)).collect::<Vec<_>>(),
+            shard
+                .strings
+                .keys()
+                .map(|k| (&**k, k.as_ptr() as usize))
+                .collect::<Vec<_>>(),
         ),
-        ("features", shard.features.keys().map(|k| (&**k, k.as_ptr() as usize)).collect()),
+        (
+            "features",
+            shard
+                .features
+                .keys()
+                .map(|k| (&**k, k.as_ptr() as usize))
+                .collect(),
+        ),
         (
             "control_state_selection",
-            shard.control_state_selection.keys().map(|k| (&**k, k.as_ptr() as usize)).collect(),
+            shard
+                .control_state_selection
+                .keys()
+                .map(|k| (&**k, k.as_ptr() as usize))
+                .collect(),
         ),
-        ("seen", shard.seen.keys().map(|k| (&**k, k.as_ptr() as usize)).collect()),
-        ("buckets", shard.buckets.keys().map(|k| (&**k, k.as_ptr() as usize)).collect()),
+        (
+            "seen",
+            shard
+                .seen
+                .keys()
+                .map(|k| (&**k, k.as_ptr() as usize))
+                .collect(),
+        ),
+        (
+            "buckets",
+            shard
+                .buckets
+                .keys()
+                .map(|k| (&**k, k.as_ptr() as usize))
+                .collect(),
+        ),
     ] {
         for (text, ptr) in keys {
             held.entry(text).or_default().push((name, ptr));
@@ -124,7 +163,11 @@ fn a_key_held_by_several_maps_is_one_allocation() {
     let duplicated: Vec<_> = held
         .iter()
         .filter(|(_, h)| {
-            h.iter().map(|(_, p)| *p).collect::<std::collections::HashSet<_>>().len() > 1
+            h.iter()
+                .map(|(_, p)| *p)
+                .collect::<std::collections::HashSet<_>>()
+                .len()
+                > 1
         })
         .collect();
     assert!(
