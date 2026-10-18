@@ -631,3 +631,191 @@ fn every_adopted_context_map_holds_the_page_index_own_key() {
         &minted[..minted.len().min(4)]
     );
 }
+
+/// ONE FIELD NAME, ONE ALLOCATION -- across every object that uses it, and across a decode.
+///
+/// # WHY THE FIELD NAME NEEDS ITS OWN GUARD
+///
+/// Every other test in this file is about the object KEY. A hash's FIELD name is a second axis of
+/// the same invariant and it behaves differently in the way that matters: the product write path
+/// files every context node under ONE constant, `CONTEXT_NODE_FIELD` (`"meta"`), so the question
+/// is not whether two maps agree on a key but whether ten thousand objects agree on one
+/// four-character name. Before the conversion they did not -- one allocation per object, measured
+/// at 32.0 bytes and one allocation per field in
+/// `what_the_one_constant_field_name_costs_at_the_shape_the_product_writes`.
+///
+/// # AND THE DECODE HALF IS THE HALF THAT WOULD HAVE BEEN MISSED
+///
+/// The wire shape is a map of OWNED names -- that is what keeps the index format from moving -- so
+/// a decode mints a fresh handle per field with the pool taking no part in it. A guard that only
+/// looked at a freshly written shard would pass while every recovered shard held the duplication
+/// back, with nothing failing, because the names are equal either way. So this asserts the
+/// invariant on both sides of a dump and install, and asserts that the decode pass RAN -- a
+/// sharing mechanism that is wired and never fires looks exactly like one that works.
+///
+/// rust-internal: measures this crate's own resident structures, no product behaviour
+#[test]
+fn one_field_name_is_one_allocation_across_objects_and_across_a_decode() {
+    use crate::types::ContextNode;
+
+    const NODES: u64 = 16;
+    const TENANT: u64 = 7;
+    const NOW_MS: u64 = 1_787_270_070_000;
+
+    let dir = tempfile::tempdir().expect("tempdir");
+    let engine = engine_on(dir.path());
+
+    for node in 1..=NODES {
+        let response = engine.execute(ExecuteRequest {
+            shard_id: 1,
+            command: Command::ContextUpsertNode {
+                tenant_hash: TENANT,
+                node: Box::new(ContextNode {
+                    node_hash: node,
+                    parent_hash: 0,
+                    kind: 1,
+                    canonical_name: format!("node-{node}"),
+                    l0: format!("summary of node {node}"),
+                    status: 0,
+                    last_event_time_ms: NOW_MS,
+                    l1_ref: String::new(),
+                    raw_metadata_ref: String::new(),
+                    vector: Vec::new(),
+                    embedding_model_hash: 0,
+                    embedding_updated_at_ms: 0,
+                    summary_vector: Vec::new(),
+                    summary_vector_valid_from_ms: 0,
+                    summary_vector_model_hash: 0,
+                }),
+            },
+        });
+        assert!(response.status.ok, "node {node}: {:?}", response.status);
+    }
+
+    // How many DISTINCT addresses hold each field text, over every hash in the shard. A text in one
+    // allocation reports 1 however many objects carry it; a text each object owns reports one per
+    // object. Contents cannot tell those apart.
+    let per_text = |engine: &TemporalEngine| -> std::collections::BTreeMap<String, usize> {
+        let shards = engine.shards.read().expect("engine lock poisoned");
+        let shard = shards.get(&1).expect("shard is loaded");
+        let mut addresses: std::collections::BTreeMap<String, std::collections::HashSet<usize>> =
+            std::collections::BTreeMap::new();
+        for (_, fields) in shard.hashes.iter() {
+            for name in fields.keys() {
+                addresses
+                    .entry(name.to_string())
+                    .or_default()
+                    .insert(name.as_ptr() as usize);
+            }
+        }
+        addresses
+            .into_iter()
+            .map(|(text, ptrs)| (text, ptrs.len()))
+            .collect()
+    };
+
+    let field = crate::engine::constants::CONTEXT_NODE_FIELD;
+
+    // --- DENOMINATORS, because every claim below divides by them. ---
+    let fresh = per_text(&engine);
+    println!();
+    println!("  fresh:  {fresh:?}");
+    let total_fields: usize = {
+        let shards = engine.shards.read().expect("engine lock poisoned");
+        let shard = shards.get(&1).expect("shard is loaded");
+        shard.hashes.iter().map(|(_, fields)| fields.len()).sum()
+    };
+    assert_eq!(
+        NODES as usize, total_fields,
+        "the fixture wrote {NODES} nodes but the shard holds {total_fields} hash fields, so this \
+         is not the one-field-per-node shape the product write path produces: {fresh:?}"
+    );
+    assert!(
+        fresh.contains_key(field),
+        "no field is named {field:?}, which is the constant `write_context_node` files under, so \
+         this guard is measuring something else: {fresh:?}"
+    );
+
+    // --- THE INVARIANT, ON THE WRITE PATH. ---
+    assert_eq!(
+        Some(&1usize),
+        fresh.get(field),
+        "{NODES} objects share the field name {field:?} and it is held in {:?} separate \
+         allocations. One per object is what the pooled handle removed, and nothing fails when it \
+         comes back, because the names are equal either way",
+        fresh.get(field)
+    );
+
+    // --- AND ACROSS A DECODE, which mints its own handles by construction. ---
+    let calls_before =
+        crate::engine::state::REPACK_CALLS.load(std::sync::atomic::Ordering::Relaxed);
+    let adopted_before =
+        crate::engine::state::REPACK_ADOPTED_FIELDS.load(std::sync::atomic::Ordering::Relaxed);
+    let manifest = engine
+        .create_bucket_dump_manifest(1, Vec::new())
+        .expect("the dump manifest persists");
+    engine
+        .install_bucket_dump_manifest(&manifest)
+        .expect("the dump manifest installs");
+    let calls_after = crate::engine::state::REPACK_CALLS.load(std::sync::atomic::Ordering::Relaxed);
+    let adopted_after =
+        crate::engine::state::REPACK_ADOPTED_FIELDS.load(std::sync::atomic::Ordering::Relaxed);
+
+    let after = per_text(&engine);
+    println!("  after:  {after:?}");
+    println!(
+        "  decode pass ran {} time(s); field names adopted: {}",
+        calls_after - calls_before,
+        adopted_after - adopted_before
+    );
+
+    // The install has to have gone through a decode, or the assertion below is about the shard the
+    // write path left and says nothing about recovery.
+    assert!(
+        calls_after > calls_before,
+        "the install did not run the decode pass, so nothing here measures what a recovery holds"
+    );
+    let total_after: usize = {
+        let shards = engine.shards.read().expect("engine lock poisoned");
+        let shard = shards.get(&1).expect("shard is loaded");
+        shard.hashes.iter().map(|(_, fields)| fields.len()).sum()
+    };
+    assert_eq!(
+        NODES as usize, total_after,
+        "the decode served {total_after} hash fields for {NODES} nodes, so the recovery lost \
+         or duplicated rows and the allocation count below would be about the wrong \
+         population: {after:?}"
+    );
+    assert_eq!(
+        Some(&1usize),
+        after.get(field),
+        "after a dump and install the field name {field:?} is held in {:?} separate allocations. \
+         The wire shape is a map of owned names, so a decode mints one handle per field; \
+         `adopt_element_names` on the decode pass points them back at the pool, and this is what \
+         fails when that pass stops running, or runs before the pool it borrows from exists",
+        after.get(field)
+    );
+
+    // AND THE ORDER THE ADOPTION MUST NOT DISTURB, checked rather than argued. `HashFieldMap`
+    // keeps its entries sorted by field name and every lookup in it is a binary search, so an
+    // adoption that re-pointed a name and left the vector unsorted would not fail here -- it
+    // would fail later, as a field that is present and cannot be found. A handle to an equal
+    // string sorts identically, which is why this holds; reasoning of that shape is worth one
+    // assertion, and `adopt_field_names`'s own doc says this caller makes it.
+    {
+        let shards = engine.shards.read().expect("engine lock poisoned");
+        let shard = shards.get(&1).expect("shard is loaded");
+        let unsorted: Vec<String> = shard
+            .hashes
+            .iter()
+            .filter(|(_, fields)| !fields.is_sorted_by_field())
+            .map(|(key, _)| key.to_string())
+            .collect();
+        assert!(
+            unsorted.is_empty(),
+            "the field map of {} object(s) is no longer in field-name order after the adoption, \
+             so a binary search in it can miss a field that is present: {unsorted:?}",
+            unsorted.len()
+        );
+    }
+}

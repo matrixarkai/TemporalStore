@@ -741,7 +741,7 @@ impl TemporalEngine {
             shard_id,
             object_key,
             Some(field.to_string()),
-            field.to_string(),
+            std::sync::Arc::from(&field[..]),
             address.clone(),
             true,
             address,
@@ -1906,7 +1906,10 @@ impl TemporalEngine {
                         // cost of the element type being the key rather than a borrow of it.
                         shard
                             .hashes
-                            .replay_remove_element(&item.object_key, &field.to_string());
+                            .replay_remove_element(
+                                &item.object_key,
+                                &std::sync::Arc::from(&field[..]),
+                            );
                     }
                     ("set", Some(encoded)) => {
                         let Ok(member) = hex::decode(encoded) else {
@@ -2064,12 +2067,17 @@ impl TemporalEngine {
                     return false;
                 };
                 for field in fields {
+                    // FROM THE POOL, as the live write site does. Replay is where a key becomes
+                    // resident again after a restart, so a minted name here would put the store back
+                    // into the shape the conversion removed.
+                    let field_handle =
+                        super::state::intern_shared(&mut shard.bucket_index.kind_pool, &field);
                     super::recorded_map::install_element::<super::recorded_map::HashKind>(
                         shard,
                         shard_id,
                         &item.object_key,
                         Some(field.clone()),
-                        field.clone(),
+                        field_handle,
                         address.clone(),
                         true,
                         address.clone(),
@@ -2384,7 +2392,11 @@ impl TemporalEngine {
                 // source.
                 shard
                     .hashes
-                    .replay_install_element(&item.object_key, field, address);
+                    .replay_install_element(
+                        &item.object_key,
+                        std::sync::Arc::from(&field[..]),
+                        address,
+                    );
                 true
             }
             // The counter's RESULTING value at one bucket. Installing a result twice is the same

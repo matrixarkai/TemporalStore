@@ -7355,6 +7355,14 @@ fn adopt_canonical_key_allocations(
 /// is exported and asserted instead of inferred.
 pub(super) static REPACK_CALLS: std::sync::atomic::AtomicUsize =
     std::sync::atomic::AtomicUsize::new(0);
+/// How many hash FIELD names a decode pointed at the pool's copy.
+///
+/// Counted because a sharing mechanism that is wired and never fires looks exactly like one
+/// that works: the names are equal either way, every read answers, and only a pointer or this
+/// counter can tell the two apart.
+pub(super) static REPACK_ADOPTED_FIELDS: std::sync::atomic::AtomicUsize =
+    std::sync::atomic::AtomicUsize::new(0);
+
 pub(super) static REPACK_ADOPTED_HASHED: std::sync::atomic::AtomicUsize =
     std::sync::atomic::AtomicUsize::new(0);
 
@@ -7382,8 +7390,12 @@ pub(super) fn repack_decoded_btrees(state: &mut ShardState) {
         //
         // Not a B-tree at all: a hashed table has no insertion-order shape, and `HashFieldMap`
         // keeps a sorted vector whose length IS its capacity below its growth threshold.
+        //
+        // `hashes` IS BOUND, AND NOT FOR PACKING -- there is still nothing in it to pack, for
+        // the reason just given. It is bound because its FIELD NAMES come out of a decode as
+        // freshly minted handles and have to be pointed at the pool; see the adoption below.
         strings,
-        hashes: _,
+        hashes,
         buckets: _,
         objects: _,
         object_page_layouts: _,
@@ -7447,6 +7459,11 @@ pub(super) fn repack_decoded_btrees(state: &mut ShardState) {
         &bucket_index.object_block_lookup,
     );
     REPACK_ADOPTED_HASHED.fetch_add(_adopted_hashed, std::sync::atomic::Ordering::Relaxed);
+    // AND THE HASH FIELD NAMES. The wire shape is a map of owned names, so the decode minted a
+    // handle per field with the pool taking no part; without this a reloaded shard holds the
+    // duplication the conversion removed and nothing fails, because the names are equal.
+    let _adopted_fields = hashes.adopt_element_names(&mut bucket_index.kind_pool);
+    REPACK_ADOPTED_FIELDS.fetch_add(_adopted_fields, std::sync::atomic::Ordering::Relaxed);
 
     repack_btree_map(wal_resident_blocks);
     repack_btree_map(expires_at_ms);

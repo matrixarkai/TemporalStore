@@ -449,7 +449,7 @@ fn resident_hash_fields(engine: &TemporalEngine) -> BTreeSet<String> {
     shard
         .hashes
         .get(HASH_KEY)
-        .map(|fields| fields.iter().map(|(name, _)| name.clone()).collect())
+        .map(|fields| fields.iter().map(|(name, _)| name.to_string()).collect())
         .unwrap_or_default()
 }
 

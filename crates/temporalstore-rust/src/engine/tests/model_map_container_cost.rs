@@ -1303,7 +1303,7 @@ fn what_the_engine_resident_field_maps_cost_against_the_container_they_replaced(
                 .map(|fields| {
                     fields
                         .iter()
-                        .map(|(name, address)| (name.clone(), address.clone()))
+                        .map(|(name, address)| (name.to_string(), address.clone()))
                         .collect()
                 })
                 .collect();
@@ -1355,7 +1355,26 @@ fn what_the_engine_resident_field_maps_cost_against_the_container_they_replaced(
             .collect();
         let before_counts = probe.stop();
 
-        let after_input = pairs.clone();
+        // THE HANDLES ARE MINTED OUTSIDE THE PROBE WINDOW, exactly as the before arm's owned
+        // names are minted by its own `pairs.clone()` above. That is what keeps this a
+        // CONTAINER comparison after the field name became a shared handle: neither arm is
+        // charged for preparing its own names, so the delta is still the two shapes and the
+        // percentages this module publishes keep their meaning.
+        let after_input: Vec<Vec<(crate::engine::hash_field_map::FieldName, ElementEntry)>> =
+            pairs
+                .iter()
+                .map(|batch| {
+                    batch
+                        .iter()
+                        .map(|(name, address)| {
+                            (
+                                crate::engine::hash_field_map::FieldName::from(&name[..]),
+                                address.clone(),
+                            )
+                        })
+                        .collect()
+                })
+                .collect();
         let probe = Probe::start();
         let after: Vec<crate::engine::hash_field_map::HashFieldMap> = after_input
             .into_iter()
@@ -1580,19 +1599,19 @@ fn the_hash_field_map_holds_the_contract_the_table_held() {
     assert_eq!(None, fields.remove("absent"));
 
     // Inserted out of order, deliberately: end, front, middle.
-    assert_eq!(None, fields.insert("m".to_string(), ElementEntry::default()));
-    assert_eq!(None, fields.insert("a".to_string(), ElementEntry::default()));
-    assert_eq!(None, fields.insert("z".to_string(), ElementEntry::default()));
-    assert_eq!(None, fields.insert("n".to_string(), ElementEntry::default()));
+    assert_eq!(None, fields.insert(std::sync::Arc::from("m"), ElementEntry::default()));
+    assert_eq!(None, fields.insert(std::sync::Arc::from("a"), ElementEntry::default()));
+    assert_eq!(None, fields.insert(std::sync::Arc::from("z"), ElementEntry::default()));
+    assert_eq!(None, fields.insert(std::sync::Arc::from("n"), ElementEntry::default()));
     assert_eq!(4, fields.len());
     assert_eq!(
         vec!["a", "m", "n", "z"],
-        fields.keys().map(|k| k.as_str()).collect::<Vec<_>>(),
+        fields.keys().map(|k| &k[..]).collect::<Vec<_>>(),
         "the entries are not in field order, so an ordered iteration cannot be relied on"
     );
 
     // A replace returns what was there and does not change the population.
-    let replaced = fields.insert("m".to_string(), ElementEntry::default());
+    let replaced = fields.insert(std::sync::Arc::from("m"), ElementEntry::default());
     assert!(replaced.is_some(), "a replace did not return the old value");
     assert_eq!(4, fields.len(), "a replace changed the population");
 
@@ -1600,7 +1619,7 @@ fn the_hash_field_map_holds_the_contract_the_table_held() {
     assert!(fields.remove("m").is_some());
     assert_eq!(
         vec!["a", "n", "z"],
-        fields.keys().map(|k| k.as_str()).collect::<Vec<_>>()
+        fields.keys().map(|k| &k[..]).collect::<Vec<_>>()
     );
     assert!(!fields.contains_key("m"));
     assert!(fields.contains_key("n"));
@@ -1624,7 +1643,7 @@ fn the_hash_field_map_holds_the_contract_the_table_held() {
     );
     assert_eq!(
         vec!["dup", "other"],
-        built.keys().map(|k| k.as_str()).collect::<Vec<_>>()
+        built.keys().map(|k| &k[..]).collect::<Vec<_>>()
     );
 
     // And the same population through a real HashMap, so the two constructions agree.
@@ -1686,7 +1705,7 @@ fn the_hash_field_map_wire_shape_is_still_the_table_shape() {
     );
     assert_eq!(
         vec!["alpha", "beta"],
-        round.keys().map(|k| k.as_str()).collect::<Vec<_>>(),
+        round.keys().map(|k| &k[..]).collect::<Vec<_>>(),
         "a decoded container is not in field order"
     );
     assert!(
@@ -1732,7 +1751,7 @@ fn what_a_durable_hash_map_costs_the_compressed_checkpoint() {
     for i in 0..NARROW_HASHES {
         shard.hashes.insert_element_for_test(
             &format!("ctx:node:{i}"),
-            "meta".to_string(),
+            std::sync::Arc::from("meta"),
             ElementEntry::from_parts(1, (i as u64) * 512, 384, None, None),
         );
     }
@@ -1741,7 +1760,7 @@ fn what_a_durable_hash_map_costs_the_compressed_checkpoint() {
         let mut entry = crate::engine::hash_field_map::HashFieldMap::default();
         for f in 0..WIDE_FIELDS {
             entry.insert(
-                format!("field-{h}-{f}"),
+                std::sync::Arc::from(format!("field-{h}-{f}").as_str()),
                 ElementEntry::from_parts(2, ((h * WIDE_FIELDS + f) as u64) * 512, 384, None, None),
             );
         }

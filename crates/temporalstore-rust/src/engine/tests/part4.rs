@@ -5889,7 +5889,7 @@ fn every_field_of_a_hash_is_filed_in_the_bucket_index() {
             !shard.bucket_index.contains_object_block_address(
                 "hash",
                 "wide",
-                Some(field.as_str()),
+                Some(&field[..]),
                 address
             ),
             "the lookup answered for field {field} BY NAME. An entry carries no element name, so \

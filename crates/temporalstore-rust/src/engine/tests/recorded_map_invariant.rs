@@ -208,6 +208,21 @@ fn the_recorded_map_exposes_no_way_to_mutate_any_kind_without_a_record() {
         "adopt_key",
         // Reads, all borrows.
         "get",
+        // IN SOURCE ORDER, which is what the matcher returns -- so an entry goes where its
+        // DECLARATION is, not where it reads best in this list.
+        // THE SAME SHAPE ONE LEVEL DOWN, and the same answer. `adopt_element_names` points
+        // each ELEMENT name in each entry at a pooled copy of the identical text. It is
+        // bounded by `PoolableElementNames` rather than written for `hashes` by name, so a
+        // kind keyed by BYTES cannot be handed a pool of strings by mistake. Like
+        // `adopt_key` it replaces a handle with an equal one and touches no value, so no
+        // read can answer differently and there is nothing for a record to describe.
+        //
+        // WHY IT EXISTS AT ALL: the wire shape of a hash is a map of OWNED names, which is
+        // what keeps the index format from moving, so a decode mints one handle per field
+        // with the pool taking no part. Without this a recovered shard holds a copy of the
+        // one constant field name per object, and nothing fails, because the names are
+        // equal either way.
+        "adopt_element_names",
         "contains_key",
         "len",
         "is_empty",
@@ -254,6 +269,11 @@ fn the_recorded_map_exposes_no_way_to_mutate_any_kind_without_a_record() {
         "SetKind",
         "ZSetKind",
         "ListKind",
+        // THE BOUND ON THE ADOPTION ABOVE, and a level-two container declaring it gains no
+        // way to change what it holds: its one method re-points equal names. One
+        // implementor today, which is the point of the trait rather than an argument
+        // against it -- it is what keeps the decode pass from naming `hashes` directly.
+        "PoolableElementNames",
     ];
     let actual = exposed_surface(SOURCE);
     assert_eq!(
@@ -407,7 +427,7 @@ fn every_kind_records_exactly_once_through_the_one_operation() {
         TEST_SHARD,
         "rec-hash",
         Some("field-a".to_string()),
-        "field-a".to_string(),
+        std::sync::Arc::from("field-a"),
         an_address(),
         true,
         an_address(),
@@ -495,7 +515,7 @@ fn every_kind_records_exactly_once_through_the_one_operation() {
         "rec-node",
         "meta",
         7,
-        "meta".to_string(),
+        std::sync::Arc::from("meta"),
         an_address(),
         an_address(),
     );
@@ -560,7 +580,7 @@ fn reading_any_kind_hands_back_borrows_and_not_copies() {
         TEST_SHARD,
         "borrowed",
         Some("f".to_string()),
-        "f".to_string(),
+        std::sync::Arc::from("f"),
         an_address(),
         true,
         an_address(),
@@ -622,8 +642,8 @@ fn reading_any_kind_hands_back_borrows_and_not_copies() {
 fn every_kind_round_trip_uses_the_codec_its_field_always_used() {
     // HASH: a plain map, which is what the field always was.
     let mut hash_elements = crate::engine::hash_field_map::HashFieldMap::default();
-    hash_elements.insert("field-a".to_string(), an_address());
-    hash_elements.insert("field-b".to_string(), an_address());
+    hash_elements.insert(std::sync::Arc::from("field-a"), an_address());
+    hash_elements.insert(std::sync::Arc::from("field-b"), an_address());
     let mut hashes = RecordedMap::<HashKind>::default();
     hashes.insert_elements_for_test("h", hash_elements);
 

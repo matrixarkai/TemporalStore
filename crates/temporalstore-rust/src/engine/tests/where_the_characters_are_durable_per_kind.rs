@@ -163,7 +163,11 @@ fn shard_with_one_object_of_every_kind(suffix: &str) -> ShardState {
         .insert(key_for("string", suffix).as_str().into(), address());
     shard
         .hashes
-        .insert_element_for_test(&key_for("hash", suffix), "field-a".to_string(), address());
+        .insert_element_for_test(
+            &key_for("hash", suffix),
+            std::sync::Arc::from("field-a"),
+            address(),
+        );
     shard
         .sets
         .insert_element_for_test(&key_for("set", suffix), b"member-a".to_vec(), address());

@@ -264,6 +264,11 @@ fn write_context_node(
         // routing bucket, and `context_node_survives_reload` reads that entry back as
         // `("hash", Some("meta"), deleted=false)`. The distinction is between the index entry,
         // which exists, and the outcome record's kind, which is not `hash` on purpose.
+        // THE CONSTANT, INTERNED ONCE PER SHARD INSTEAD OF COPIED PER NODE. This is
+        // the write path the narrow arm of the measurement is about: every context
+        // node in a store files its page under this one four-character name.
+        let field_handle =
+            super::state::intern_shared(&mut shard.bucket_index.kind_pool, CONTEXT_NODE_FIELD);
         super::recorded_map::install_element_staged_only::<super::recorded_map::HashKind>(
             shard,
             shard_id,
@@ -271,7 +276,7 @@ fn write_context_node(
             object_key,
             CONTEXT_NODE_FIELD,
             routing_bucket,
-            CONTEXT_NODE_FIELD.to_string(),
+            field_handle,
             address.clone(),
             address,
         );
@@ -910,12 +915,17 @@ pub(crate) fn execute_on_shard(
                 async_storage,
                 block_ordinal,
             ) {
+                // ONE HANDLE FROM THE POOL, for the name this map keeps. The component
+                // argument below still carries its own owned copy; that position is the
+                // bucket index's and is converted separately.
+                let field_handle =
+                    super::state::intern_shared(&mut shard.bucket_index.kind_pool, &field);
                 super::recorded_map::install_element::<super::recorded_map::HashKind>(
                     shard,
                     shard_id,
                     &key,
                     Some(field.clone()),
-                    field.clone(),
+                    field_handle,
                     address.clone(),
                     true,
                     address,
@@ -1037,12 +1047,17 @@ pub(crate) fn execute_on_shard(
                     async_storage,
                     block_ordinal,
                 ) {
+                    // ONE HANDLE FROM THE POOL, for the name this map keeps. The component
+                    // argument below still carries its own owned copy; that position is the
+                    // bucket index's and is converted separately.
+                    let field_handle =
+                        super::state::intern_shared(&mut shard.bucket_index.kind_pool, &field);
                     super::recorded_map::install_element::<super::recorded_map::HashKind>(
                         shard,
                         shard_id,
                         &key,
                         Some(field.clone()),
-                        field.clone(),
+                        field_handle,
                         address.clone(),
                         true,
                         address,
@@ -1124,12 +1139,17 @@ pub(crate) fn execute_on_shard(
                 async_storage,
                 block_ordinal,
             ) {
+                // ONE HANDLE FROM THE POOL, for the name this map keeps. The component
+                // argument below still carries its own owned copy; that position is the
+                // bucket index's and is converted separately.
+                let field_handle =
+                    super::state::intern_shared(&mut shard.bucket_index.kind_pool, &field);
                 super::recorded_map::install_element::<super::recorded_map::HashKind>(
                     shard,
                     shard_id,
                     &key,
                     Some(field.clone()),
-                    field.clone(),
+                    field_handle,
                     address.clone(),
                     true,
                     address,
@@ -1184,7 +1204,7 @@ pub(crate) fn execute_on_shard(
                 .map(|fields| {
                     fields
                         .iter()
-                        .map(|(name, address)| (name.clone(), address.clone()))
+                        .map(|(name, address)| (name.to_string(), address.clone()))
                         .collect()
                 })
                 .unwrap_or_default();
@@ -1325,6 +1345,11 @@ pub(crate) fn execute_on_shard(
             // `shard.sets.contains_key(key)` on the line after the one it reads
             // `shard.hashes.contains_key(key)` on, so a set left holding an empty member map is
             // the same phantom by the same reader. `SetRemove` does the cleanup now too.
+            // FROM THE POOL RATHER THAN MINTED, even though this name is about to be
+            // dropped: the write already interned it, so this is a lookup, and minting
+            // here would allocate a copy whose only use is to be compared and discarded.
+            let field_handle =
+                super::state::intern_shared(&mut shard.bucket_index.kind_pool, &field);
             mutated |= super::recorded_map::remove_element::<super::recorded_map::HashKind>(
                 cache,
                 block_store,
@@ -1332,7 +1357,7 @@ pub(crate) fn execute_on_shard(
                 shard_id,
                 &key,
                 field.as_str(),
-                field.clone(),
+                field_handle,
                 start_routing_bucket,
                 end_routing_bucket,
                 async_storage,

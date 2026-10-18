@@ -5074,7 +5074,7 @@ fn which_arm_the_last_allocation_per_entry_belongs_to() {
         for i in 0..KEYS {
             shard.hashes.insert_element_for_test(
                 &format!("h-{i:06}"),
-                "field".to_string(),
+                std::sync::Arc::from("field"),
                 address(i),
             );
         }

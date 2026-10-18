@@ -63,6 +63,16 @@ use serde::{Deserialize, Serialize};
 
 use crate::block_store::ElementEntry;
 
+/// The field name as this map holds it: a SHARED handle, not an owned copy.
+///
+/// Measured in `what_the_one_constant_field_name_costs_at_the_shape_the_product_writes`: the
+/// product write path files every context node under the single constant `CONTEXT_NODE_FIELD`,
+/// so an owned name is that constant copied once per object -- 32.0 bytes and one allocation
+/// per field at the narrow arm, 40.0 bytes and one allocation at the wide one. The handles come
+/// from `bucket_index.kind_pool`, which already interned exactly these names for the bucket
+/// index's component position.
+pub(super) type FieldName = std::sync::Arc<str>;
+
 /// Up to this many entries the vector is grown to EXACTLY what it holds; at or above it, it doubles
 /// like any other `Vec`.
 ///
@@ -82,14 +92,14 @@ const EXACT_GROWTH_BELOW: usize = 8;
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(from = "HashMap<String, ElementEntry>", into = "HashMap<String, ElementEntry>")]
 pub(super) struct HashFieldMap {
-    entries: Vec<(String, ElementEntry)>,
+    entries: Vec<(FieldName, ElementEntry)>,
 }
 
 impl HashFieldMap {
     /// Where `field` is, or where it would go.
     fn slot(&self, field: &str) -> Result<usize, usize> {
         self.entries
-            .binary_search_by(|(name, _)| name.as_str().cmp(field))
+            .binary_search_by(|(name, _)| name[..].cmp(field))
     }
 
     /// THE SAME ANSWER AS [`HashFieldMap::entry`] NOW, and that is the migration arriving rather
@@ -144,8 +154,12 @@ impl HashFieldMap {
     ///
     /// Both columns are reported, at both corpus sizes, in
     /// `what_the_engine_resident_field_maps_cost_against_the_container_they_replaced`.
-    pub(super) fn insert(&mut self, field: String, address: ElementEntry) -> Option<ElementEntry> {
-        match self.slot(&field) {
+    pub(super) fn insert(
+        &mut self,
+        field: FieldName,
+        address: ElementEntry,
+    ) -> Option<ElementEntry> {
+        match self.slot(&field[..]) {
             Ok(at) => Some(
                 std::mem::replace(&mut self.entries[at].1, address)
                     ,
@@ -177,22 +191,22 @@ impl HashFieldMap {
         self.entries.is_empty()
     }
 
-    pub(super) fn iter(&self) -> impl Iterator<Item = (&String, &ElementEntry)> {
+    pub(super) fn iter(&self) -> impl Iterator<Item = (&FieldName, &ElementEntry)> {
         self.entries()
     }
 
     /// The level-two values themselves, for the steps that move the entry here.
-    pub(super) fn entries(&self) -> impl Iterator<Item = (&String, &ElementEntry)> {
+    pub(super) fn entries(&self) -> impl Iterator<Item = (&FieldName, &ElementEntry)> {
         self.entries.iter().map(|(name, entry)| (name, entry))
     }
 
-    pub(super) fn iter_mut(&mut self) -> impl Iterator<Item = (&String, &mut ElementEntry)> {
+    pub(super) fn iter_mut(&mut self) -> impl Iterator<Item = (&FieldName, &mut ElementEntry)> {
         self.entries
             .iter_mut()
             .map(|(name, entry)| (&*name, entry))
     }
 
-    pub(super) fn keys(&self) -> impl Iterator<Item = &String> {
+    pub(super) fn keys(&self) -> impl Iterator<Item = &FieldName> {
         self.entries.iter().map(|(name, _)| name)
     }
 
@@ -204,9 +218,46 @@ impl HashFieldMap {
         self.entries.iter_mut().map(|(_, entry)| entry)
     }
 
-    pub(super) fn retain(&mut self, mut keep: impl FnMut(&String, &mut ElementEntry) -> bool) {
+    pub(super) fn retain(
+        &mut self,
+        mut keep: impl FnMut(&FieldName, &mut ElementEntry) -> bool,
+    ) {
         self.entries
             .retain_mut(|(name, entry)| keep(name, entry));
+    }
+
+    /// POINT EVERY FIELD NAME AT THE POOL'S COPY, and answer how many moved.
+    ///
+    /// A DECODE IS THE CASE THIS EXISTS FOR. The wire shape is a map of owned names, so
+    /// `FromIterator` mints one handle per field and the pool has had no part in it -- which
+    /// would leave a reloaded shard holding exactly the duplication the conversion removed,
+    /// with nothing failing, because the names are equal either way. That is the same shape as
+    /// the object-key adoption next door, and it was found the same way: by asking what the
+    /// handle borrows from and whether that thing exists yet.
+    ///
+    /// IT DOES NOT SORT, AND MUST NOT NEED TO. The entries are kept in field-name order and a
+    /// handle to an equal string sorts identically, so re-pointing a name cannot disturb the
+    /// order every lookup here assumes. Asserted rather than assumed: the caller checks the
+    /// order is still sorted afterwards.
+    pub(super) fn adopt_field_names(
+        &mut self,
+        pool: &mut std::collections::HashSet<FieldName>,
+    ) -> usize {
+        let mut adopted = 0usize;
+        for (name, _) in self.entries.iter_mut() {
+            let pooled = super::state::intern_shared(pool, &name[..]);
+            if !std::sync::Arc::ptr_eq(name, &pooled) {
+                *name = pooled;
+                adopted += 1;
+            }
+        }
+        adopted
+    }
+
+    /// Whether the entries are still in field-name order, for the adoption above to assert.
+    #[cfg(test)]
+    pub(super) fn is_sorted_by_field(&self) -> bool {
+        self.entries.windows(2).all(|pair| pair[0].0 <= pair[1].0)
     }
 
     /// The exact-sized shape this container exists for: no spare capacity to carry.
@@ -222,10 +273,10 @@ impl HashFieldMap {
 /// collection. `insert_element` is the ordinary `insert`, so a folded element lands in field order
 /// like any other and the fold cannot leave the entries unsorted.
 impl super::ElementMap for HashFieldMap {
-    type Element = String;
+    type Element = FieldName;
     type Value = ElementEntry;
 
-    fn insert_element(&mut self, element: String, value: ElementEntry) {
+    fn insert_element(&mut self, element: FieldName, value: ElementEntry) {
         self.insert(element, value);
     }
 
@@ -235,8 +286,8 @@ impl super::ElementMap for HashFieldMap {
     /// vector and not a table: there is no `entry` API to hand back an occupied slot. Both halves
     /// binary-search, so this is two log n probes and not a scan, and the second runs only on the
     /// absent path where an insert was going to shift the tail anyway.
-    fn insert_element_if_absent(&mut self, element: String, value: ElementEntry) {
-        if !self.contains_key(element.as_str()) {
+    fn insert_element_if_absent(&mut self, element: FieldName, value: ElementEntry) {
+        if !self.contains_key(&element[..]) {
             self.insert(element, value);
         }
     }
@@ -244,9 +295,9 @@ impl super::ElementMap for HashFieldMap {
 
 impl FromIterator<(String, ElementEntry)> for HashFieldMap {
     fn from_iter<I: IntoIterator<Item = (String, ElementEntry)>>(iter: I) -> Self {
-        let mut entries: Vec<(String, ElementEntry)> = iter
+        let mut entries: Vec<(FieldName, ElementEntry)> = iter
             .into_iter()
-            .map(|(name, address)| (name, address))
+            .map(|(name, address)| (FieldName::from(&name[..]), address))
             .collect();
         // Sort, then drop earlier duplicates of a field so the result matches what repeated
         // `insert` would have left: the LAST value for a field wins, as it does in a table.
@@ -265,14 +316,14 @@ impl FromIterator<(String, ElementEntry)> for HashFieldMap {
 }
 
 impl<'a> IntoIterator for &'a HashFieldMap {
-    type Item = (&'a String, &'a ElementEntry);
+    type Item = (&'a FieldName, &'a ElementEntry);
     type IntoIter = std::iter::Map<
-        std::slice::Iter<'a, (String, ElementEntry)>,
-        fn(&'a (String, ElementEntry)) -> (&'a String, &'a ElementEntry),
+        std::slice::Iter<'a, (FieldName, ElementEntry)>,
+        fn(&'a (FieldName, ElementEntry)) -> (&'a FieldName, &'a ElementEntry),
     >;
 
     fn into_iter(self) -> Self::IntoIter {
-        fn split<'b>(pair: &'b (String, ElementEntry)) -> (&'b String, &'b ElementEntry) {
+        fn split<'b>(pair: &'b (FieldName, ElementEntry)) -> (&'b FieldName, &'b ElementEntry) {
             (&pair.0, &pair.1)
         }
         self.entries.iter().map(split as fn(_) -> _)
@@ -280,14 +331,14 @@ impl<'a> IntoIterator for &'a HashFieldMap {
 }
 
 impl IntoIterator for HashFieldMap {
-    type Item = (String, ElementEntry);
+    type Item = (FieldName, ElementEntry);
     type IntoIter = std::iter::Map<
-        std::vec::IntoIter<(String, ElementEntry)>,
-        fn((String, ElementEntry)) -> (String, ElementEntry),
+        std::vec::IntoIter<(FieldName, ElementEntry)>,
+        fn((FieldName, ElementEntry)) -> (FieldName, ElementEntry),
     >;
 
     fn into_iter(self) -> Self::IntoIter {
-        fn split(pair: (String, ElementEntry)) -> (String, ElementEntry) {
+        fn split(pair: (FieldName, ElementEntry)) -> (FieldName, ElementEntry) {
             (pair.0, pair.1)
         }
         self.entries.into_iter().map(split as fn(_) -> _)
@@ -305,11 +356,14 @@ impl From<HashMap<String, ElementEntry>> for HashFieldMap {
 }
 
 impl From<HashFieldMap> for HashMap<String, ElementEntry> {
+    /// THE ONE PLACE A HANDLE BECOMES AN OWNED NAME AGAIN, and it has to: the wire shape is
+    /// the table's, which is what keeps `SHARD_INDEX_FORMAT_VERSION` from moving. The cost is
+    /// one allocation per field at ENCODE time, which is a dump or an index write, not a serve.
     fn from(fields: HashFieldMap) -> Self {
         fields
             .entries
             .into_iter()
-            .map(|(name, entry)| (name, entry))
+            .map(|(name, entry)| (name.to_string(), entry))
             .collect()
     }
 }

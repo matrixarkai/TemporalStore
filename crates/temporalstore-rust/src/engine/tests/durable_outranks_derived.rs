@@ -2444,7 +2444,7 @@ fn a_recorded_outcome_without_its_element_name_replays_no_hash_field_at_all() {
             shards
                 .get(&1)
                 .and_then(|shard| shard.hashes.get(KEY))
-                .map(|held| held.keys().cloned().collect())
+                .map(|held| held.keys().map(|name| name.to_string()).collect())
                 .unwrap_or_default()
         } else {
             std::collections::BTreeSet::new()
@@ -2607,7 +2607,7 @@ fn the_shared_install_pairs_a_carried_page_to_an_outcome_by_an_id_that_cannot_di
         shards
             .get(&1)
             .and_then(|shard| shard.hashes.get(KEY))
-            .map(|held| held.keys().cloned().collect())
+            .map(|held| held.keys().map(|name| name.to_string()).collect())
             .unwrap_or_default()
     };
     println!("[pairing] installed={installed} fields={held:?} for {fields:?}");
@@ -2757,7 +2757,7 @@ fn a_replay_whose_page_is_unreachable_installs_from_the_outcomes_own_name() {
         shards
             .get(&1)
             .and_then(|shard| shard.hashes.get(KEY))
-            .map(|fields| fields.keys().cloned().collect())
+            .map(|fields| fields.keys().map(|name| name.to_string()).collect())
             .unwrap_or_default()
     } else {
         std::collections::BTreeSet::new()

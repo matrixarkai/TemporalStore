@@ -3021,7 +3021,7 @@ pub(super) fn sync_context_blocks_for_object(
         .hashes
         .get(object_key)
         .is_some_and(|fields| !fields.is_empty());
-    let hash_fields: Vec<(String, ElementEntry)> = shard
+    let hash_fields: Vec<(super::hash_field_map::FieldName, ElementEntry)> = shard
         .hashes
         .get(object_key)
         .map(|fields| {
@@ -3031,7 +3031,7 @@ pub(super) fn sync_context_blocks_for_object(
                     !shard.bucket_index.contains_object_block_address(
                         "hash",
                         object_key,
-                        Some(field.as_str()),
+                        Some(&field[..]),
                         address,
                     )
                 })
@@ -3047,7 +3047,9 @@ pub(super) fn sync_context_blocks_for_object(
             shard_id,
             "hash",
             object_key,
-            Some(field),
+            // The COMPONENT position is still an owned name; that one belongs to the
+            // bucket index and is converted separately.
+            Some(field.to_string()),
             address,
             true,
             false,
@@ -3614,7 +3616,12 @@ fn visit_model_live_blocks(
             } else {
                 for (field, address) in fields.iter() {
                     if accept(key, address) {
-                        emit(ModelKind::Hash, KeyRef::Shared(key), Some(field.as_str()), address);
+                        emit(
+                            ModelKind::Hash,
+                            KeyRef::Shared(key),
+                            Some(&field[..]),
+                            address,
+                        );
                     }
                 }
             }
@@ -8234,7 +8241,7 @@ mod release_refusal_guards {
         let held = address(7, 64);
         shard
             .hashes
-            .insert_element_for_test(&key, "field".to_string(), held.clone());
+            .insert_element_for_test(&key, std::sync::Arc::from("field"), held.clone());
         install_page(&mut shard, 7, &key, block(&key, "hash", Some("field"), held));
 
         let outcome = release_bucket_blocks(&mut shard, &[7]);
@@ -8413,7 +8420,7 @@ mod release_refusal_guards {
         let held = address(4, 64);
         shard
             .hashes
-            .insert_element_for_test(&kind_key, "field".to_string(), held.clone());
+            .insert_element_for_test(&kind_key, std::sync::Arc::from("field"), held.clone());
         install_page(&mut shard, 4, &kind_key, block(&kind_key, "hash", Some("field"), held));
         shard.strings.insert(std::sync::Arc::from(disagreement_key.as_str()), address(5, 4_096));
 

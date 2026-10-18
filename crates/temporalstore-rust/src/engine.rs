@@ -1613,10 +1613,10 @@ impl TemporalEngine {
                             &self.block_store,
                             request.shard_id,
                             address,
-                            PageIdentity::of(request.shard_id, "hash", key, Some(field.as_str())),
+                            PageIdentity::of(request.shard_id, "hash", key, Some(&field[..])),
                             Some(routing_bucket),
                         )
-                        .map(|value| (field.clone(), value))
+                        .map(|value| (field.to_string(), value))
                     })
                     .collect::<Vec<_>>();
                 entries.sort_by(|a, b| a.0.cmp(&b.0));
@@ -2711,7 +2711,11 @@ enum FastPathRead<'a> {
         /// the pair that tells their blocks apart. Borrowed, as `String`'s is: the plan is consumed
         /// inside the same call that built it.
         key: &'a str,
-        fields: Vec<(String, ElementEntry)>,
+        /// HANDLES, NOT OWNED NAMES. The plan is a snapshot taken under the shard
+        /// guard, so it has to copy the map's entries out; with a handle that copy is a
+        /// refcount bump per field instead of an allocation per field. The response
+        /// below still needs an owned name, and needed one before this change too.
+        fields: Vec<(crate::engine::hash_field_map::FieldName, ElementEntry)>,
         routing_bucket: u32,
     },
 }

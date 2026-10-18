@@ -89,7 +89,8 @@ fn the_level_two_value_is_a_type_and_the_stored_shape_did_not_move() {
     let bare: std::collections::HashMap<String, ElementEntry> = fields
         .iter()
         .map(|(name, addr)| (name.clone(), addr.clone()))
-        .collect();
+        .map(|(name, address)| (name.to_string(), address))
+            .collect();
 
     let got = serde_json::to_value(&fields).expect("the container serializes");
     let want = serde_json::to_value(&bare).expect("the bare map serializes");
@@ -134,7 +135,7 @@ fn the_level_two_value_is_a_type_and_the_stored_shape_did_not_move() {
 
     // THE PLANTED DIFFERENCE: the comparison must be sensitive to content.
     let mut altered = populated();
-    altered.insert("beta".to_string(), address(2, 4096, 999, 10));
+    altered.insert(std::sync::Arc::from("beta"), address(2, 4096, 999, 10));
     let altered_value = serde_json::to_value(&altered).expect("serializes");
     assert_ne!(
         got, altered_value,

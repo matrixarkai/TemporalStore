@@ -516,6 +516,25 @@ impl<K: RecordedKind> RecordedMap<K> {
         self.entries.get(object_key)
     }
 
+    /// Point every ELEMENT name in every entry at the pool's copy, and answer how many moved.
+    ///
+    /// Declared here for the same reason `adopt_key` is: `entries` is private to this module,
+    /// so the decode pass cannot reach into it from outside. Only `hashes` has a pooled element
+    /// name today -- the other three kinds are keyed by bytes -- so this is bounded by the
+    /// trait rather than written per kind.
+    pub(super) fn adopt_element_names(
+        &mut self,
+        pool: &mut std::collections::HashSet<std::sync::Arc<str>>,
+    ) -> usize
+    where
+        K::Elements: PoolableElementNames,
+    {
+        self.entries
+            .values_mut()
+            .map(|elements| elements.adopt_element_names(pool))
+            .sum()
+    }
+
     pub(super) fn contains_key(&self, object_key: &str) -> bool {
         self.entries.contains_key(object_key)
     }
@@ -1111,9 +1130,30 @@ impl RepacksAfterDecode for ListKind {}
 // a fold only ever inserts.
 // =============================================================================================
 
+/// AN ELEMENT MAP WHOSE ELEMENT NAME CAN COME FROM A POOL.
+///
+/// One implementor, and that is the point of the trait rather than an argument against it: it
+/// is what keeps the decode pass from naming `hashes` directly and from needing a `match` on
+/// the kind. The other three kinds are keyed by BYTES, which no pool of strings can hold.
+pub(super) trait PoolableElementNames {
+    fn adopt_element_names(
+        &mut self,
+        pool: &mut std::collections::HashSet<std::sync::Arc<str>>,
+    ) -> usize;
+}
+
+impl PoolableElementNames for super::hash_field_map::HashFieldMap {
+    fn adopt_element_names(
+        &mut self,
+        pool: &mut std::collections::HashSet<std::sync::Arc<str>>,
+    ) -> usize {
+        self.adopt_field_names(pool)
+    }
+}
+
 impl RemovableElementMap for super::hash_field_map::HashFieldMap {
-    fn remove_element(&mut self, element: &String) -> bool {
-        self.remove(element).is_some()
+    fn remove_element(&mut self, element: &super::hash_field_map::FieldName) -> bool {
+        self.remove(&element[..]).is_some()
     }
     fn is_empty_map(&self) -> bool {
         self.is_empty()
@@ -1144,7 +1184,7 @@ where
 }
 
 impl IterableMutElementMap for super::hash_field_map::HashFieldMap {
-    fn iter_values_mut(&mut self) -> impl Iterator<Item = (&String, &mut ElementEntry)> {
+    fn iter_values_mut(&mut self) -> impl Iterator<Item = (&super::hash_field_map::FieldName, &mut ElementEntry)> {
         self.iter_mut()
     }
 }
@@ -1160,14 +1200,19 @@ where
 }
 
 impl AddressedElementMap for super::hash_field_map::HashFieldMap {
-    fn element_address(&self, element: &String) -> Option<&ElementEntry> {
-        self.get(element.as_str())
+    fn element_address(&self, element: &super::hash_field_map::FieldName) -> Option<&ElementEntry> {
+        self.get(&element[..])
     }
 
-    fn any_element_other_than_at(&self, skip: &String, page: &ElementEntry) -> bool {
+    fn any_element_other_than_at(&self, skip: &super::hash_field_map::FieldName, page: &ElementEntry) -> bool {
         let page = super::live_page_key(page);
-        self.iter()
-            .any(|(field, address)| field != skip && super::live_page_key(address) == page)
+        // COMPARED BY TEXT, NOT BY HANDLE. Two handles for one field name are equal strings
+        // and unequal pointers, and `Arc<str>`'s `PartialEq` compares the strings -- but an
+        // explicit slice comparison says so at the site rather than relying on the reader
+        // knowing which of the two it is.
+        self.iter().any(|(field, address)| {
+            field[..] != skip[..] && super::live_page_key(address) == page
+        })
     }
 }
 

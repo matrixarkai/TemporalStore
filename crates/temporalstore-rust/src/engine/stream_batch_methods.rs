@@ -889,7 +889,7 @@ impl TemporalEngine {
                                     (
                                         PublishTarget::Hash {
                                             key: key.to_string(),
-                                            field: field.clone(),
+                                            field: field.to_string(),
                                         },
                                         address.clone(),
                                     )
@@ -916,7 +916,7 @@ impl TemporalEngine {
                                 (
                                     PublishTarget::Hash {
                                         key: key.clone(),
-                                        field: field.clone(),
+                                        field: field.to_string(),
                                     },
                                     address.clone(),
                                 )
@@ -1054,7 +1054,7 @@ impl TemporalEngine {
                             shard_id,
                             &key,
                             Some(field.clone()),
-                            field,
+                            std::sync::Arc::from(&field[..]),
                             published.clone(),
                             false,
                             published,

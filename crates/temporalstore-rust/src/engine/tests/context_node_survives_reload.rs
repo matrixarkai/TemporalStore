@@ -382,7 +382,7 @@ fn a_container_only_element_survives_the_reconcile_when_its_page_is_still_live()
 
     shard
         .hashes
-        .replay_install_element("orphan-object", "meta".to_string(), live_address);
+        .replay_install_element("orphan-object", std::sync::Arc::from("meta"), live_address);
 
     let orphan_before = shard
         .hashes
@@ -437,7 +437,7 @@ fn a_container_only_element_survives_the_reconcile_when_its_page_is_still_live()
     // page NOTHING holds, so the only live-set lookup that can decide it must fail.
     shard.hashes.replay_install_element(
         "orphan-dead-page",
-        "meta".to_string(),
+        std::sync::Arc::from("meta"),
         crate::engine::ElementEntry::from_parts(9_999, 1_234_567, 64, None, None),
     );
     assert!(
@@ -503,8 +503,8 @@ fn the_live_filter_keeps_an_unnamed_element_on_a_live_page_for_every_kind() {
         let mut persisted: HashMap<String, crate::engine::hash_field_map::HashFieldMap> =
             HashMap::new();
         let fields = persisted.entry("obj".to_string()).or_default();
-        fields.insert("on-live-page".to_string(), live_address.clone());
-        fields.insert("on-dead-page".to_string(), dead_address.clone());
+        fields.insert(std::sync::Arc::from("on-live-page"), live_address.clone());
+        fields.insert(std::sync::Arc::from("on-dead-page"), dead_address.clone());
         let mut refused = 0usize;
         let merged = crate::engine::storage_bucket_internals::fill_absent_elements(
             HashMap::new(),
