@@ -194,6 +194,18 @@ fn the_recorded_map_exposes_no_way_to_mutate_any_kind_without_a_record() {
         "drop_object",
         // What a level-2 container must supply, declared beside the operation that needs it.
         "RemovableElementMap",
+        // RE-KEYS AND CANNOT RECORD ANYTHING, which is why it is allowed to exist. It
+        // replaces one entry's key handle with an EQUAL one -- the text is equal by
+        // definition, or the lookup that found it would not have -- and leaves the value
+        // untouched, so no read can answer differently and there is nothing for a record
+        // to describe. What it changes is how many allocations hold that text.
+        //
+        // IT WAS MISSING FROM THIS LIST, AND THAT IS WHY THIS TEST WAS RED. The entry was
+        // added to `recorded_map` without being declared here, so the guard has been
+        // failing on a tree whose surface is exactly what it intends to pin -- and a red
+        // that means nothing is worse than no guard, because the next real addition reads
+        // as the same noise.
+        "adopt_key",
         // Reads, all borrows.
         "get",
         "contains_key",
