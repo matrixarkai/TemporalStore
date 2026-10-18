@@ -1792,7 +1792,50 @@ impl TemporalEngine {
         }
     }
 
+    /// Apply one replayed outcome, and then put its key allocations back together.
+    ///
+    /// WRAPPED RATHER THAN EDITED PER ARM, for the reason `decode_index_bytes` gives for the same
+    /// shape: the match below returns from a dozen arms, so an adoption written into each would be
+    /// a thing to remember. Written here it is a thing nobody can forget.
+    ///
+    /// WHY A REPLAY NEEDS THIS AT ALL. A `WalOutcomeItem` carries its `object_key` as a `String`,
+    /// so unlike the two rebuild paths there is no handle to pass through -- the record genuinely
+    /// carries characters, and every map the replay touches minted its own copy from them. Nothing
+    /// adopted afterwards: `adopt_object_key_allocations` had exactly ONE call site, on the write
+    /// path. Measured, a reopen recovering purely from the log came back with each key held in
+    /// FIVE allocations where a fresh write holds one.
+    ///
+    /// AFTER, NOT DURING, and that is the whole of the placement. The arms below file into the
+    /// bucket index -- `upsert_bucket_index_block`, `sync_bucket_index_object_blocks` -- and the
+    /// handle to borrow does not exist until they have. The write path's own adoption carries the
+    /// same note from the same mistake: an attempt at the end of the write arm found no handle on
+    /// 400 of 400 writes.
+    ///
+    /// The cost is one more uncontended lock acquisition per replayed item, on a load-time path
+    /// rather than a serving one. Stated rather than hidden: the alternative was adopting inside
+    /// each arm while the guard is still held, which trades that for a line every future arm has
+    /// to remember.
     pub(super) fn apply_outcome_item(
+        &self,
+        shard_id: ShardId,
+        item: &crate::wal::WalOutcomeItem,
+        carried: &[crate::wal::StagedBlock],
+    ) -> bool {
+        let applied = self.apply_outcome_item_inner(shard_id, item, carried);
+        if applied {
+            if let Some(shard) = self
+                .shards
+                .write()
+                .expect("engine lock poisoned")
+                .get_mut(&shard_id)
+            {
+                shard.adopt_object_key_allocations(&item.object_key);
+            }
+        }
+        applied
+    }
+
+    fn apply_outcome_item_inner(
         &self,
         shard_id: ShardId,
         item: &crate::wal::WalOutcomeItem,
