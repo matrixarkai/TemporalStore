@@ -3307,6 +3307,31 @@ fn how_many_times_a_context_keys_characters_exist() {
             },
         });
         assert!(response.status.ok, "event {index}: {:?}", response.status);
+
+        // AND MARK BOTH FLAVOURS OF DIRTY, so `context_dirty_index` is populated rather than
+        // empty. Without this the probe reported it at 0 keys and said nothing about whether its
+        // keys can be shared -- which is the question, since it is one of the last two maps on
+        // this shard still keyed by `String`.
+        for command in [
+            Command::ContextMarkSummaryDirty {
+                tenant_hash: 7,
+                node_hash: 1_000 + index,
+                event_time_ms: 1_787_270_070_000 + index,
+                reason: 1,
+                propagate_depth: 0,
+            },
+            Command::ContextMarkEmbeddingDirty {
+                tenant_hash: 7,
+                node_hash: 1_000 + index,
+                event_time_ms: 1_787_270_070_000 + index,
+                reason: 1,
+                propagate_depth: 0,
+                clear: false,
+            },
+        ] {
+            let marked = engine.execute(ExecuteRequest { shard_id: 1, command });
+            assert!(marked.status.ok, "mark {index}: {:?}", marked.status);
+        }
     }
 
     let shards = engine.shards.read().expect("engine lock poisoned");
@@ -3328,6 +3353,8 @@ fn how_many_times_a_context_keys_characters_exist() {
     ];
 
     let mut copies: std::collections::HashMap<&str, usize> = std::collections::HashMap::new();
+    let mut holders_of: std::collections::HashMap<&str, Vec<&str>> =
+        std::collections::HashMap::new();
     let mut characters = 0usize;
     println!();
     println!("  {EVENTS} context events written");
@@ -3340,9 +3367,17 @@ fn how_many_times_a_context_keys_characters_exist() {
         println!("  {name:34} {:>5}   {chars:>9}", keys.len());
         for k in keys {
             *copies.entry(k).or_insert(0) += 1;
+            holders_of.entry(k).or_insert_with(Vec::new).push(*name);
         }
     }
     let distinct = copies.len();
+    // KEYS THAT EXIST IN EXACTLY ONE MAP CANNOT BE SHARED WITH ANYTHING, and that is the end of
+    // the one-copy road rather than a gap in it. A key is shareable only if some OTHER structure
+    // holds the same characters; the dirty keys carry their own prefixes (`ctx:dirty:`,
+    // `ctx:embdirty:`), no other map is keyed by them, and they are never written to the block
+    // store so the page index does not hold them either. One holder, one allocation, nothing to
+    // adopt.
+    let single_holder = copies.values().filter(|n| **n == 1).count();
     let total_entries: usize = holders.iter().map(|(_, k)| k.len()).sum();
     let mut by_count: std::collections::BTreeMap<usize, usize> = std::collections::BTreeMap::new();
     for n in copies.values() {
@@ -3350,6 +3385,7 @@ fn how_many_times_a_context_keys_characters_exist() {
     }
     println!();
     println!("  distinct key texts: {distinct}; total map entries: {total_entries}");
+    println!("  key texts held by exactly ONE map: {single_holder} -- nothing to share with");
     for (n, how_many) in &by_count {
         println!("    {how_many} key texts exist in {n} map(s)");
     }
@@ -3447,6 +3483,31 @@ fn how_many_times_a_context_keys_characters_exist() {
          site from one handle. A shortfall means some caller went back to minting its own key, which \
          puts a second copy of every event key's characters back -- and it will NOT show up in the \
          per-key total, because a clone-based probe cannot see an `Arc` payload."
+    );
+
+    // THE GUARD THAT KEEPS ONE-COPY TRUE AS MAPS ARE ADDED.
+    //
+    // A key is shareable only when some OTHER structure holds the same characters, so the rule is
+    // NOT "every map should be `Arc`-keyed". The 800 dirty keys above live in exactly one map and
+    // have nothing to share with, which is why `context_dirty_index` keeping its `String` key
+    // costs nothing at all. The rule is: if a key text is held by MORE THAN ONE map, every holder
+    // must be able to share, or those characters exist twice -- and no clone-based byte probe will
+    // say so, because cloning an `Arc` is a refcount bump.
+    //
+    // So this fails when a `String`-keyed map starts holding a key another map already holds,
+    // which is exactly how a duplicate gets reintroduced after the adoption work.
+    let mut unshareable_duplicates: Vec<(&str, Vec<&str>)> = holders_of
+        .iter()
+        .filter(|(_, holders)| holders.len() > 1)
+        .filter(|(_, holders)| holders.iter().any(|name| !name.contains("Arc-keyed")))
+        .map(|(key, holders)| (*key, holders.clone()))
+        .collect();
+    unshareable_duplicates.sort();
+    assert!(
+        unshareable_duplicates.is_empty(),
+        "{} key texts are held by several maps where at least one CANNOT share, so those          characters exist more than once: {:?}. Either the new holder takes a `ModelKey` and joins          `adopt_object_key_allocations`, or it should not be keyed by the object key at all.",
+        unshareable_duplicates.len(),
+        &unshareable_duplicates[..unshareable_duplicates.len().min(4)]
     );
 
     assert!(
