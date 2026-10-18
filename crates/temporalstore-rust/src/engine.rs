@@ -5062,7 +5062,7 @@ fn maybe_auto_compress_context_node(
     }
     shard
         .context_compression_watermark
-        .insert(event_object_key.to_string(), window.end_ms);
+        .insert(std::sync::Arc::from(&event_object_key[..]), window.end_ms);
     invalidate_context_record(cache, shard_id, &compression_key);
     mutated
 }

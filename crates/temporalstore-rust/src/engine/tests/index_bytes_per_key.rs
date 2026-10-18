@@ -3348,7 +3348,7 @@ fn how_many_times_a_context_keys_characters_exist() {
         ("context_children", shard.context_children.keys().map(|k| &**k).collect()),
         ("context_summaries", shard.context_summaries.keys().map(|k| &**k).collect()),
         ("context_compressions", shard.context_compressions.keys().map(|k| &**k).collect()),
-        ("context_compression_watermark", shard.context_compression_watermark.keys().map(|k| k.as_str()).collect()),
+        ("context_compression_watermark (Arc-keyed)", shard.context_compression_watermark.keys().map(|k| &**k).collect()),
         ("context_nodes (Arc-keyed)", shard.context_nodes.keys().map(|k| &**k).collect()),
     ];
 

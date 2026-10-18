@@ -546,7 +546,7 @@ pub(super) struct ShardState {
     // ephemeral (serde-skipped); on loss the auto-compression trigger re-compresses
     // the oldest pending window idempotently (stable compression id per window).
     #[serde(skip)]
-    pub(super) context_compression_watermark: HashMap<String, u64>,
+    pub(super) context_compression_watermark: HashMap<ModelKey, u64>,
     // Entities are grouped by their OWNING NODE, not one map key per entity: the key is
     // `ctx:entity:{tenant}:{node}` (context_entity_collection_key) and the BTreeMap holds every
     // entity of that node. The inner u64 is the ENTITY HASH, not a timestamp -- unlike
@@ -7636,6 +7636,10 @@ impl ShardState {
         // missing from this list, which is the failure the note above describes: a map that
         // CAN share and is not listed here keeps its own equal copy and nothing fails.
         moved |= adopt_key_in(&mut self.context_nodes, object_key, &canonical);
+        // Keyed by the EVENT object key, so it is another holder of a key the event pair
+        // already holds. Found only by grepping from the crate root: the write is a
+        // multi-line `insert` in `engine.rs`, which a search rooted at `engine/` misses.
+        moved |= adopt_key_in(&mut self.context_compression_watermark, object_key, &canonical);
         // NOT CONTEXT MAPS, AND THEY BELONG HERE ANYWAY. A raw key written as a string, a
         // feature series and a selection lands in all three of those maps -- measured, 64 of 64
         // keys in `why_there_are_many_per_key_maps_and_not_one` -- and only `strings` could
