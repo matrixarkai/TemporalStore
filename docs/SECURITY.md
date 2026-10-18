@@ -2,7 +2,14 @@
 
 ## Supported Versions
 
-Security fixes target the active `rust-main` branch.
+Security fixes target `main`, this repository's default branch. The older `rust-main` name is
+retired and no branch by that name exists here.
+
+This file is the policy GitHub surfaces under **Security → Report a vulnerability**: GitHub
+resolves a policy from the repository root, `.github/`, or `docs/`, and this is the copy the
+open-source readiness contract requires, so it is the only one. A second copy at the root was
+added and removed in the same session once that was understood -- two policies that disagreed
+about which branch gets fixes is worse than one in a slightly less obvious place.
 
 ## Reporting A Vulnerability
 

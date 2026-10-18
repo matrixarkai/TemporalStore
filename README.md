@@ -265,9 +265,12 @@ Foundation (OSS) ─ MatrixCache (multi-layer cache) · MatrixRaft (Rust Raft co
 Storage backend (auto) ─ MatrixObject → shared filesystem → local + Raft
 ```
 
-Three Apache-2.0 repositories: [TemporalStore](https://github.com/matrixarkai/TemporalStore) ·
+Five Apache-2.0 repositories, all public and open to anyone in the world to use, fork and
+contribute to: [TemporalStore](https://github.com/matrixarkai/TemporalStore) ·
 [MatrixCache](https://github.com/matrixarkai/MatrixCache) ·
-[MatrixRaft](https://github.com/matrixarkai/MatrixRaft).
+[MatrixRaft](https://github.com/matrixarkai/MatrixRaft) ·
+[MatrixObject](https://github.com/matrixarkai/MatrixObject) ·
+[matrixark](https://github.com/matrixarkai/matrixark).
 
 ---
 
@@ -309,7 +312,7 @@ Out of scope unless separately re-added: alternate wire-protocol compatibility (
 
 ## Contributing
 
-See [CONTRIBUTING.md](docs/CONTRIBUTING.md) and [SECURITY.md](docs/SECURITY.md). Contributions target the `rust-main` branch. New product-behavior tests
+See [CONTRIBUTING.md](docs/CONTRIBUTING.md) and [SECURITY.md](docs/SECURITY.md). Contributions target `main`, which is this repository's default branch and the branch every change merges to; the older `rust-main` name is retired and no branch by that name exists here, so a pull request opened against it has nowhere to land. New product-behavior tests
 should reference a shared corpus case with `shared-corpus: <case_id>`; Rust-only implementation
 tests should be marked `rust-internal: <reason>`.
 
