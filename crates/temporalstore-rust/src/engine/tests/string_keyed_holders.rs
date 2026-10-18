@@ -77,6 +77,17 @@ fn which_string_keyed_holders_duplicate_a_key_another_map_holds() {
                 end_ms: T0 + 86_400_000,
                 aggregator: "sum".to_string(),
             },
+            // The four RecordedMap kinds. Their map is a private `HashMap<String, _>` inside
+            // `recorded_map`, so nothing outside that module can convert the key -- which is
+            // exactly why they were never looked at.
+            Command::HashSet {
+                key: raw.clone(),
+                field: "f".to_string(),
+                value: vec![b'h'; 8],
+            },
+            Command::SetAdd { key: raw.clone(), member: vec![b'm'; 8] },
+            Command::ZSetAdd { key: raw.clone(), member: vec![b'z'; 8], score: 1.0 },
+            Command::ListPush { key: raw.clone(), member: vec![b'l'; 8], left: true },
             // feature_values and feature_rollups: populated by the AGGREGATE QUERY, not the append
             Command::FeatureAggQuery {
                 key: raw.clone(),
@@ -134,6 +145,12 @@ fn which_string_keyed_holders_duplicate_a_key_another_map_holds() {
         "feature_rollups",
         shard.feature_rollups.keys().map(|k| (&**k, k.as_ptr() as usize)).collect(),
     );
+    // `RecordedMap` keeps its map private and exposes only `keys()`, so this is the one way to
+    // ask the question from outside that module.
+    record("hashes", shard.hashes.keys().map(|k| (&**k, k.as_ptr() as usize)).collect());
+    record("sets", shard.sets.keys().map(|k| (&**k, k.as_ptr() as usize)).collect());
+    record("zsets", shard.zsets.keys().map(|k| (&**k, k.as_ptr() as usize)).collect());
+    record("lists", shard.lists.keys().map(|k| (&**k, k.as_ptr() as usize)).collect());
 
     println!();
     println!("  {KEYS} raw keys, written through six families");
@@ -229,7 +246,11 @@ fn which_string_keyed_holders_duplicate_a_key_another_map_holds() {
         "control_state",
         "control_state_selection",
         "features",
+        "hashes",
+        "lists",
+        "sets",
         "strings",
+        "zsets",
     ]
     .into_iter()
     .collect();
@@ -251,13 +272,69 @@ fn which_string_keyed_holders_duplicate_a_key_another_map_holds() {
         })
         .map(|(text, _)| text)
         .collect();
+    println!();
+    println!("  duplicated texts: {} of {}", duplicated.len(), held.len());
+
+    // ---- THE KNOWN MINTERS, PINNED IN BOTH DIRECTIONS -----------------------------------
+    //
+    // Four maps still own a second copy of every raw key text: `hashes`, `sets`, `zsets` and
+    // `lists`. Measured here at 8 of 8 keys each -- eight holders of one text reporting FIVE
+    // allocations, where the four adopted maps report one between them:
+    //
+    //     holder-0   8 holder(s), 5 allocation(s)
+    //         shared  strings / features / control_state_selection / control_state
+    //         MINTS   hashes / sets / zsets / lists
+    //
+    // They are not on the adopted list for a structural reason rather than an oversight. All
+    // four are `RecordedMap<K>`, whose `entries` map is PRIVATE by design -- the module's own
+    // doc calls that single fact the invariant, and `recorded_map_invariant` fails if anyone
+    // adds a `&mut` accessor. So the key cannot be converted from outside that module: it needs
+    // one new declared operation there, and the per-kind wire codecs (`set_index_serde` and its
+    // siblings) have to come through unchanged. That is its own change, not a line in this one.
+    //
+    // This assert pins the set BOTH WAYS so neither direction can pass silently: a map that
+    // starts minting fails it, and so does one that stops. If you fix one of the four, this test
+    // failing is the reminder to move it from this list to `duplicated.is_empty()`.
+    let minters: std::collections::BTreeSet<&str> =
+        duplicate_holders.keys().copied().collect();
+    let known: std::collections::BTreeSet<&str> =
+        ["hashes", "lists", "sets", "zsets"].into_iter().collect();
+    assert_eq!(
+        known, minters,
+        "the set of maps minting their own copy of a shared key changed. Newly minting: {:?}. No \
+         longer minting: {:?}. A map that CAN share and does not keeps its own equal copy and \
+         nothing else fails, because cloning an `Arc` is a refcount bump -- so this list is the \
+         only thing standing between that and silence.",
+        minters.difference(&known).collect::<Vec<_>>(),
+        known.difference(&minters).collect::<Vec<_>>()
+    );
     assert!(
-        duplicated.is_empty(),
-        "{} key texts are stored more than once: {:?}. A `String`-keyed holder of a text some \
-         other map already holds must take a `ModelKey` and join \
-         `ShardState::adopt_object_key_allocations`; nothing else fails when it does not, because \
-         cloning an `Arc` is a refcount bump.",
-        duplicated.len(),
-        &duplicated[..duplicated.len().min(3)]
+        duplicate_holders.values().all(|n| *n == KEYS),
+        "a known minter stopped minting for SOME keys but not all, which is a third state this \
+         pinning does not describe: {duplicate_holders:?}"
+    );
+    // And the four adopted holders must still agree with each other. This is the part that would
+    // regress if `adopt_object_key_allocations` lost an entry: the four below share one
+    // allocation, so a raw key's distinct-address count is exactly 1 + the number of minters.
+    let adopted_share: Vec<_> = held
+        .iter()
+        .filter(|(text, _)| !text.contains(':'))
+        .filter(|(_, holders)| {
+            holders
+                .iter()
+                .filter(|(name, _)| !known.contains(name))
+                .map(|(_, p)| *p)
+                .collect::<std::collections::HashSet<_>>()
+                .len()
+                != 1
+        })
+        .map(|(text, _)| text)
+        .collect();
+    assert!(
+        adopted_share.is_empty(),
+        "{} raw key texts are held at more than one address by the ADOPTED maps, so adoption \
+         regressed: {:?}",
+        adopted_share.len(),
+        &adopted_share[..adopted_share.len().min(3)]
     );
 }
