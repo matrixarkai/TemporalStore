@@ -5225,3 +5225,92 @@ fn the_series_dedup_keeps_one_of_each_distinct_entry() {
         assert!(ordered, "the result is not sorted by (slab, offset, length): {unique:?}");
     }
 }
+
+/// WHAT INTERNING THE COMPOSED ENTITY KEY WOULD TRADE, PRICED ON BOTH SIDES.
+///
+/// The entity arm is the only one whose key cannot be lent: it COMPOSES the key from the collection
+/// key and the entity hash, so the key it emits exists nowhere to be borrowed. Its last allocation
+/// per entry is the `Arc` the consumer mints from those characters, and the standing suggestion for
+/// removing it is to intern the composed key in a pool.
+///
+/// I recorded that as a decision "with a measurable cost on both sides" and then left it open.
+/// This closes it, because the two sides are not symmetric and the asymmetry is the whole answer:
+///
+///   the SAVING is per walk        -- one allocation per entity entry, each time the walk runs,
+///                                    and the minted `Arc` is dropped as soon as the entry is
+///                                    consumed, so nothing accumulates today
+///   the COST is permanent         -- one pooled `Arc<str>` per DISTINCT composed key, resident
+///                                    for the life of the shard whether a walk ever runs again
+///
+/// So interning converts a transient, repeatable cost into a standing one. This prices the standing
+/// side, which is the half that cannot be undone by running the walk less often.
+///
+/// rust-internal: measures this crates own resident structures, no product behaviour
+///
+///   cargo test --features alloc-probe -p temporalstore-rust --lib what_interning_the_composed_entity_key -- --ignored --nocapture
+#[test]
+#[cfg(feature = "alloc-probe")]
+#[ignore = "builds an intern pool of composed keys; run by name, and ALONE -- the allocation \
+            counters are process-global"]
+fn what_interning_the_composed_entity_key_would_trade() {
+    const COLLECTIONS: usize = 200;
+    const PER_COLLECTION: usize = 10;
+    let entities = COLLECTIONS * PER_COLLECTION;
+
+    // The composed key as the arm builds it: `{collection_key}:{entity_hash}`.
+    let composed: Vec<String> = (0..COLLECTIONS)
+        .flat_map(|collection| {
+            (0..PER_COLLECTION).map(move |entity| {
+                format!("ctx:entity:tenant-a:node-{collection:05}:{entity}")
+            })
+        })
+        .collect();
+    let width = composed.first().map(|key| key.len()).unwrap_or(0);
+
+    // THE STANDING COST: a pool holding one handle per distinct composed key, which is what
+    // interning means. Measured as it is built, so the figure is the pool and not the fixture.
+    let probe = Probe::start();
+    let mut pool: std::collections::HashSet<std::sync::Arc<str>> =
+        std::collections::HashSet::new();
+    for key in &composed {
+        if !pool.contains(&key[..]) {
+            pool.insert(std::sync::Arc::from(&key[..]));
+        }
+    }
+    let counts = probe.stop();
+    std::hint::black_box(&pool);
+
+    println!();
+    println!("  {entities} distinct composed keys, {width} characters each");
+    println!();
+    println!("  THE STANDING COST of interning them:");
+    println!("    allocations: {}", counts.allocs);
+    println!("    bytes (chunk): {}", counts.chunk_bytes);
+    println!(
+        "    per entity: {:.1} bytes, resident for the life of the shard",
+        counts.chunk_bytes as f64 / entities as f64
+    );
+    println!();
+    println!("  THE SAVING, for comparison: 1 allocation per entity entry PER WALK, and the");
+    println!("  entity arm measures 1.01 allocations per entry today");
+    println!("  (`what_the_composed_entity_key_costs_the_walk`). The minted `Arc` is dropped as");
+    println!("  soon as the entry is consumed, so today's cost accumulates nothing.");
+    println!();
+    println!("  SO THE TRADE IS: pay {:.1} resident bytes per entity, forever, to stop",
+        counts.chunk_bytes as f64 / entities as f64);
+    println!("  allocating one Arc per entity on each walk. That pays only if the walk runs often");
+    println!("  enough to outweigh bytes that are never reclaimed -- and the walk is a dump,");
+    println!("  rebuild and reporting path, not a serving one.");
+
+    assert_eq!(
+        entities,
+        pool.len(),
+        "the pool holds {} keys for {entities} distinct composed keys, so this is not pricing one \
+         handle per key",
+        pool.len()
+    );
+    assert!(
+        counts.chunk_bytes > 0,
+        "the pool allocated nothing, which cannot be right for {entities} keys"
+    );
+}
