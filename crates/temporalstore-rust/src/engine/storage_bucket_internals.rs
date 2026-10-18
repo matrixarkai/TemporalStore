@@ -346,14 +346,56 @@ pub(super) struct StorageBlockOwnershipValidation {
     pub(super) missing_owner_block_refs: usize,
 }
 
+/// A key as a walk arm has it: a SHARED HANDLE where one exists, characters where none does.
+///
+/// WHY AN ENUM AND NOT A TYPE CHANGE. The `emit` closure took `&str`, which meant every arm handed
+/// over characters and `collect_model_live_block_entries` rebuilt a handle from them -- measured at
+/// two of the three allocations it makes per entry, 67% of the count on a whole-shard walk
+/// (`what_a_whole_shard_live_block_walk_allocates_per_entry`).
+///
+/// A uniform `&ModelKey` parameter is impossible, and that is the whole reason this is an enum.
+/// Nine arms iterate a `ModelKey`-keyed map and have a handle to lend. Two cannot:
+///
+///   * the `context_entities` arm COMPOSES its key from the collection key and the entity hash,
+///     so the key it emits does not exist anywhere to be borrowed;
+///   * the timestamped-series arm is generic over its map's key type and reaches `&str` through
+///     `Borrow`, so it cannot produce a `&ModelKey` at all.
+///
+/// So the enum carries whichever the arm actually has, and the caller decides what to do with it:
+/// `as_str` to inspect, `to_handle` to keep. A handle-lending arm costs the caller a refcount bump
+/// where it used to cost a `String` and an `Arc` built from it.
+#[derive(Clone, Copy)]
+pub(super) enum KeyRef<'a> {
+    Shared(&'a ModelKey),
+    Borrowed(&'a str),
+}
+
+impl<'a> KeyRef<'a> {
+    pub(super) fn as_str(self) -> &'a str {
+        match self {
+            KeyRef::Shared(handle) => handle,
+            KeyRef::Borrowed(text) => text,
+        }
+    }
+
+    /// The handle to keep. Free for a lending arm -- a refcount bump -- and one allocation for an
+    /// arm that had only characters, which is what it used to cost for every arm.
+    pub(super) fn to_handle(self) -> ModelKey {
+        match self {
+            KeyRef::Shared(handle) => Arc::clone(handle),
+            KeyRef::Borrowed(text) => Arc::from(text),
+        }
+    }
+}
+
 pub(super) fn live_block_entry(
-    object_key: impl Into<String>,
+    object_key: ModelKey,
     kind: impl AsRef<str>,
     component: Option<String>,
     address: ElementEntry,
 ) -> LiveBlockEntry {
     LiveBlockEntry {
-        object_key: Arc::from(object_key.into()),
+        object_key,
         kind: stored_model_kind(kind.as_ref()),
         component: component.map(Arc::from),
         // A block materialized in the block store carries a real page_id; a block
@@ -378,7 +420,7 @@ pub(super) fn live_block_entry(
 /// loaded on a narrow range does not hold. That fallback used to be unreachable because the address
 /// answered first; it is reachable now, so the walks that know have to say so.
 pub(super) fn live_block_entry_filed(
-    object_key: impl Into<String>,
+    object_key: ModelKey,
     kind: impl AsRef<str>,
     component: Option<String>,
     address: ElementEntry,
@@ -1751,12 +1793,16 @@ pub(super) fn promote_model_maps_to_bucket_index_authority(
                 // whole shard -- which is a correct index and a release that never survives one
                 // execute.
                 let released = shard.bucket_index.released_buckets.contains(
-                    &block_routing_bucket(object_key, start_routing_bucket, end_routing_bucket),
+                    &block_routing_bucket(
+                        object_key.as_str(),
+                        start_routing_bucket,
+                        end_routing_bucket,
+                    ),
                 );
                 if !released
                     && !shard.bucket_index.contains_object_block_address(
                         kind.as_str(),
-                        object_key,
+                        object_key.as_str(),
                         component,
                         address,
                     )
@@ -3409,7 +3455,7 @@ fn visit_model_live_blocks(
     shard: &ShardState,
     tally: ModelWalkTally,
     accept: impl Fn(&str, &ElementEntry) -> bool,
-    mut emit: impl FnMut(ModelKind, &str, Option<&str>, &ElementEntry),
+    mut emit: impl FnMut(ModelKind, KeyRef<'_>, Option<&str>, &ElementEntry),
 ) {
     // THE ARM LIST. Nested so that `visit_model_live_blocks` is the only thing in the tree that
     // can reach it, and so the count wraps all fifteen arms at once instead of being repeated
@@ -3449,7 +3495,7 @@ fn visit_model_live_blocks(
         key: &str,
         addresses: impl Iterator<Item = &'addr ElementEntry>,
         accept: &impl Fn(&str, &ElementEntry) -> bool,
-        emit: &mut impl FnMut(ModelKind, &str, Option<&str>, &ElementEntry),
+        emit: &mut impl FnMut(ModelKind, KeyRef<'_>, Option<&str>, &ElementEntry),
     ) {
         let mut emitted_pages: std::collections::BTreeSet<(u64, u64, u64)> =
             std::collections::BTreeSet::new();
@@ -3461,7 +3507,11 @@ fn visit_model_live_blocks(
                     address.length(),
                 ))
             {
-                emit(kind, key, None, address);
+                // `emit_one_entry_a_page` takes its key as `&str`, so this shared helper has no
+                // handle to lend either -- a guess that it did was corrected by the compiler.
+                // Changing ITS parameter is a separate question from the walk's: every caller of
+                // it would have to have a handle, and the composed and generic arms do not.
+                emit(kind, KeyRef::Borrowed(key), None, address);
             }
         }
     }
@@ -3469,11 +3519,11 @@ fn visit_model_live_blocks(
     fn arms(
         shard: &ShardState,
         accept: impl Fn(&str, &ElementEntry) -> bool,
-        mut emit: impl FnMut(ModelKind, &str, Option<&str>, &ElementEntry),
+        mut emit: impl FnMut(ModelKind, KeyRef<'_>, Option<&str>, &ElementEntry),
     ) {
         for (key, address) in &shard.strings {
             if accept(key, address) {
-                emit(ModelKind::String, key, None, address);
+                emit(ModelKind::String, KeyRef::Shared(key), None, address);
             }
         }
         // WHICH KINDS FILE A PAGE-NAMED ENTRY, ASKED ONCE FOR THE WHOLE WALK.
@@ -3497,7 +3547,7 @@ fn visit_model_live_blocks(
             } else {
                 for (field, address) in fields.iter() {
                     if accept(key, address) {
-                        emit(ModelKind::Hash, key, Some(field.as_str()), address);
+                        emit(ModelKind::Hash, KeyRef::Shared(key), Some(field.as_str()), address);
                     }
                 }
             }
@@ -3524,7 +3574,7 @@ fn visit_model_live_blocks(
                         // dropped from the pattern, so a future reader finds the score sitting
                         // right beside the render that no longer spells it.
                         let component = hex::encode(member);
-                        emit(ModelKind::Zset, key, Some(component.as_str()), address);
+                        emit(ModelKind::Zset, KeyRef::Shared(key), Some(component.as_str()), address);
                     }
                 }
             }
@@ -3540,7 +3590,7 @@ fn visit_model_live_blocks(
                 for (seq, address) in elements.iter() {
                     if accept(key, address) {
                         let component = format!("{:016x}", (*seq as u64).wrapping_sub(i64::MIN as u64));
-                        emit(ModelKind::List, key, Some(component.as_str()), address);
+                        emit(ModelKind::List, KeyRef::Shared(key), Some(component.as_str()), address);
                     }
                 }
             }
@@ -3582,7 +3632,7 @@ fn visit_model_live_blocks(
                 for (member, address) in members.iter() {
                     if accept(key, address) {
                         let component = hex::encode(member);
-                        emit(ModelKind::Set, key, Some(component.as_str()), address);
+                        emit(ModelKind::Set, KeyRef::Shared(key), Some(component.as_str()), address);
                     }
                 }
             }
@@ -3591,12 +3641,12 @@ fn visit_model_live_blocks(
         for (key, record) in shard.control_state_blocks() {
             let address = record.address();
             if accept(key, &address) {
-                emit(ModelKind::ControlState, key, None, &address);
+                emit(ModelKind::ControlState, KeyRef::Shared(key), None, &address);
             }
         }
         for (key, address) in &shard.context_nodes {
             if accept(key, address) {
-                emit(ModelKind::ContextNode, key, None, address);
+                emit(ModelKind::ContextNode, KeyRef::Shared(key), None, address);
             }
         }
         visit_timestamped_series(
@@ -3628,7 +3678,8 @@ fn visit_model_live_blocks(
                 // this function for what that costs.
                 let composed = format!("{collection_key}:{entity_hash}");
                 if accept(composed.as_str(), address) {
-                    emit(ModelKind::ContextEntity, composed.as_str(), None, address);
+                    // COMPOSED, so there is no handle in existence to lend.
+                    emit(ModelKind::ContextEntity, KeyRef::Borrowed(composed.as_str()), None, address);
                 }
             }
         }
@@ -3694,7 +3745,7 @@ fn visit_timestamped_series<K, S>(
     map: &HashMap<K, S>,
     kind: ModelKind,
     accept: &impl Fn(&str, &ElementEntry) -> bool,
-    emit: &mut impl FnMut(ModelKind, &str, Option<&str>, &ElementEntry),
+    emit: &mut impl FnMut(ModelKind, KeyRef<'_>, Option<&str>, &ElementEntry),
 ) where
     K: std::borrow::Borrow<str>,
     S: super::timestamped_series::TimestampedSeries,
@@ -3706,7 +3757,9 @@ fn visit_timestamped_series<K, S>(
         }
         for address in unique_timestamped_kv_block_addresses(series) {
             if accept(key, &address) {
-                emit(kind, key, None, &address);
+                // GENERIC over the map's key type, reaching `&str` through `Borrow`, so this
+                // arm has no `&ModelKey` to lend either.
+                emit(kind, KeyRef::Borrowed(key), None, &address);
             }
         }
     }
@@ -3721,7 +3774,10 @@ pub(super) fn collect_model_live_block_entries(shard: &ShardState) -> Vec<LiveBl
         |_, _| true,
         |kind, object_key, component, address| {
             entries.push(live_block_entry(
-                object_key.to_string(),
+                // THE HANDLE, LENT RATHER THAN REBUILT. This was `object_key.to_string()`, which
+                // the constructor then turned into an `Arc` -- two allocations of characters the
+                // map already held.
+                object_key.to_handle(),
                 kind.as_str(),
                 component.map(str::to_string),
                 address.clone(),
@@ -3757,7 +3813,8 @@ pub(super) fn collect_model_live_block_entries_in_bucket(
         },
         |kind, object_key, component, address| {
             entries.push(live_block_entry_filed(
-                object_key.to_string(),
+                // Lent, not rebuilt -- see `collect_model_live_block_entries`.
+                object_key.to_handle(),
                 kind.as_str(),
                 component.map(str::to_string),
                 address.clone(),
@@ -3802,14 +3859,19 @@ fn derive_released_block_identities(
             ))
         },
         |kind, object_key, component, address| {
-            let routing_bucket =
-                block_routing_bucket(object_key, start_routing_bucket, end_routing_bucket);
+            let routing_bucket = block_routing_bucket(
+                object_key.as_str(),
+                start_routing_bucket,
+                end_routing_bucket,
+            );
             derived
                 .entry(routing_bucket)
                 .or_default()
                 .insert(released_block_identity_owned(
                     kind.as_str().to_string(),
-                    object_key.to_string(),
+                    // An OWNED identity by construction -- this one wants characters, and saying
+                    // so is the point of the enum: an arm that keeps a String asks for one.
+                    object_key.as_str().to_string(),
                     component.map(str::to_string),
                     address,
                 ));
