@@ -4124,6 +4124,18 @@ fn what_the_default_configuration_does_to_a_forty_thousand_key_shard() {
 /// the shard ends up with. The answer is a property of how the keys are DERIVED, not of the
 /// containers: each family prefixes the raw key with its own name, so the texts are disjoint.
 ///
+/// A MAP SHOWING ZERO KEYS HERE IS NOT A MAP WITH NO WRITER, and reading it that way was an error
+/// made against this very output. `control_state_uuid`, `control_state_rollups` and
+/// `feature_rollups` report zero on this fixture and ALL THREE have production writers: the first
+/// through a multi-line chain (`shard` / `.control_state_uuid` / `.insert(..)`) that a single-line
+/// grep cannot match, the other two through `windowed_sum_series(&mut shard.., ..)`, which inserts
+/// into whatever map it is handed. `control_state_uuid` is also `#[serde(default)]`, so a stored
+/// image fills it with no code path involved at all.
+///
+/// So this probe answers "is this key duplicated", never "is this map dead". The second question
+/// needs the three checks a grep misses: multi-line chains, `&mut` escapes into helpers, and
+/// deserialization.
+///
 /// rust-internal: measures this crate's own resident structures, no product behaviour
 ///
 ///   cargo test --features alloc-probe -p temporalstore-rust --lib why_there_are_many_per_key_maps -- --ignored --nocapture
