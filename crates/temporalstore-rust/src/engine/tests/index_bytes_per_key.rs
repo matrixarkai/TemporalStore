@@ -3714,3 +3714,78 @@ fn what_a_per_shard_resident_bound_recovers() {
          itself"
     );
 }
+
+/// WHAT THE FEATURE SERIES WOULD COST AS AN OWNED ARRAY INSTEAD OF A B-TREE.
+///
+/// `features` is the largest single row left in the index after the resident bound fires -- 49.1
+/// B/key at a 40,040-key corpus -- and it holds 40 series of 1,000 addresses each. The row is
+/// CONTAINER, not payload: a point is `(u64, ElementEntry)` and `ElementEntry` is 16 bytes, so the
+/// payload is 24 bytes a point and the B-tree charges about twice that.
+///
+/// This prices the swap before anyone pays for it. The conversion is not a type swap --
+/// `OwnedTimestampedSeries` deliberately has no serde impl, so an adopting map needs a
+/// compatibility field and a decode fold -- so the saving has to be worth that before the slice is
+/// worth writing. Measured here rather than computed from `size_of`, because the allocator's
+/// rounding and the B-tree's fill are exactly what a `size_of` account gets wrong.
+///
+/// rust-internal: measures this crate's own resident structures, no product behaviour
+#[test]
+#[cfg(feature = "alloc-probe")]
+fn what_the_feature_series_would_cost_as_an_owned_array() {
+    const POINTS: u64 = 1_000;
+    const SERIES: usize = 40;
+    const LIVE_KEYS: f64 = 40_040.0;
+
+    let point = |i: u64| -> (u64, ElementEntry) {
+        (i, ElementEntry::from_parts(1, i * 64, 64, Some(i & u64::from(u16::MAX)), Some(i)))
+    };
+
+    let mut trees: Vec<BTreeMap<u64, ElementEntry>> = Vec::with_capacity(SERIES);
+    for _ in 0..SERIES {
+        let mut tree = BTreeMap::new();
+        for i in 0..POINTS {
+            let (at, address) = point(i);
+            tree.insert(at, address);
+        }
+        trees.push(tree);
+    }
+    let mut arrays: Vec<crate::engine::timestamped_series::OwnedTimestampedSeries> =
+        Vec::with_capacity(SERIES);
+    for _ in 0..SERIES {
+        let mut array = crate::engine::timestamped_series::OwnedTimestampedSeries::default();
+        for i in 0..POINTS {
+            let (at, address) = point(i);
+            array.insert(at, address);
+        }
+        arrays.push(array);
+    }
+
+    let tree_bytes = deep_heap_bytes(&trees);
+    let array_bytes = deep_heap_bytes(&arrays);
+    let points = SERIES as f64 * POINTS as f64;
+    println!();
+    println!("  {SERIES} series x {POINTS} points, payload is 24 B a point:");
+    println!(
+        "    BTreeMap      {tree_bytes:>10} B   {:>6.1} B/point   {:>6.1} B/key at 40,040 keys",
+        tree_bytes as f64 / points,
+        tree_bytes as f64 / LIVE_KEYS
+    );
+    println!(
+        "    owned array   {array_bytes:>10} B   {:>6.1} B/point   {:>6.1} B/key at 40,040 keys",
+        array_bytes as f64 / points,
+        array_bytes as f64 / LIVE_KEYS
+    );
+    println!(
+        "    the swap is worth {:>6.1} B/key, taking the measured features row from 49.1 to {:.1}",
+        (tree_bytes.saturating_sub(array_bytes)) as f64 / LIVE_KEYS,
+        array_bytes as f64 / LIVE_KEYS
+    );
+
+    assert_eq!(16, std::mem::size_of::<ElementEntry>(), "the address width moved");
+    assert!(
+        array_bytes < tree_bytes,
+        "the owned array ({array_bytes} B) is not smaller than the B-tree ({tree_bytes} B), so the \
+         conversion would be churn -- and the compatibility field and decode fold it needs are not \
+         free"
+    );
+}
