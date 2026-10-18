@@ -5429,6 +5429,23 @@ fn what_repeated_field_names_cost_the_model_maps() {
     println!("  is 16 inline and no characters at all beyond the one pooled copy. Unlike interning");
     println!("  the composed entity key, THIS pool is bounded by the schema rather than by the");
     println!("  corpus -- which is the same argument `kind_pool`'s cap already makes.");
+    println!();
+    println!("  AND THE CONVERSION IS ARCHITECTURAL, NOT A SIGNATURE CHANGE -- checked, because");
+    println!("  twice today I called something blocked and was wrong. `ElementMap::Element` is");
+    println!("  `String` for `HashFieldMap`, and the three `insert_element` sites sit inside");
+    println!("  `RecordedMap`'s generic operations, which hold `&mut` the map and NO access to the");
+    println!("  shard's `kind_pool`. That pool is deliberately \"owned by the index rather than a");
+    println!("  global, so the write path interns through the `&mut` it already holds and no lock");
+    println!("  appears on it\". So every route is a decision:");
+    println!();
+    println!("    thread the pool into RecordedMap's ops   changes the declared operation set,");
+    println!("                                             which is that module's stated invariant");
+    println!("    intern before the proof is built         changes ElementMap::Element to Arc<str>");
+    println!("                                             and the recorded-proof types with it");
+    println!("    a static pool                            adds the lock the codebase rejected");
+    println!();
+    println!("  A per-map pool is the option that LOOKS cheap and defeats the purpose: the saving");
+    println!("  above is cross-object sharing, and a pool per object shares nothing.");
 
     assert!(
         shared.chunk_bytes < owned.chunk_bytes,
