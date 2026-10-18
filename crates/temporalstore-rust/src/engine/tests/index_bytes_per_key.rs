@@ -4916,3 +4916,81 @@ fn what_a_whole_shard_live_block_walk_allocates_per_entry() {
         "the walk allocated nothing, which cannot be right for {walked} entries"
     );
 }
+
+/// WHAT THE COMPOSED ENTITY KEY COSTS THE WALK, AND WHETHER A HANDLE IS THE ONLY WAY TO FIX IT.
+///
+/// `what_a_whole_shard_live_block_walk_allocates_per_entry` reached 1.00 allocations per entry, and
+/// the one arm left out of that is `context_entities`. It cannot lend a handle for a reason no
+/// signature reaches: it COMPOSES its key inside the inner loop --
+///
+///     let composed = format!("{collection_key}:{entity_hash}");
+///
+/// -- so the key it emits exists nowhere to be borrowed. That was recorded as a floor.
+///
+/// IT IS NOT THE WHOLE FLOOR. A composed key costs TWO allocations per entry: the `format!` that
+/// builds it, and the `Arc` the consumer mints from it because there is no handle. Interning the
+/// composed key would remove the second and is a design question with its own footprint cost. The
+/// FIRST is a reused buffer -- no design change, no interning, no new resident bytes.
+///
+/// So this measures the arm on its own, before any of that, so the two halves can be told apart.
+/// The fixture writes `context_entities` directly rather than through a command, because the walk
+/// takes a `&ShardState` and the question is about the walk.
+///
+/// rust-internal: measures this crates own resident structures, no product behaviour
+///
+///   cargo test --features alloc-probe -p temporalstore-rust --lib what_the_composed_entity_key_costs -- --ignored --nocapture
+#[test]
+#[cfg(feature = "alloc-probe")]
+#[ignore = "builds a shard of entity series and walks it; run by name, and ALONE -- the allocation \
+            counters are process-global"]
+fn what_the_composed_entity_key_costs_the_walk() {
+    use std::collections::BTreeMap;
+    const COLLECTIONS: usize = 200;
+    const PER_COLLECTION: usize = 10;
+
+    let mut shard = crate::engine::state::ShardState::default();
+    for collection in 0..COLLECTIONS {
+        let collection_key: std::sync::Arc<str> =
+            std::sync::Arc::from(format!("ctx:entity:tenant-a:node-{collection:05}").as_str());
+        let mut series: BTreeMap<u64, ElementEntry> = BTreeMap::new();
+        for entity in 0..PER_COLLECTION {
+            series.insert(
+                entity as u64,
+                ElementEntry::from_parts(1, (collection * 64 + entity) as u64, 48, None, None),
+            );
+        }
+        shard.context_entities.insert(collection_key, series);
+    }
+
+    let probe = Probe::start();
+    let entries = crate::engine::storage_bucket_internals::collect_model_live_block_entries(&shard);
+    let counts = probe.stop();
+    let walked = entries.len();
+    std::hint::black_box(&entries);
+
+    println!();
+    println!("  {COLLECTIONS} collections x {PER_COLLECTION} entities");
+    println!("  entries the walk produced: {walked}");
+    println!("  allocations: {}", counts.allocs);
+    println!("  bytes (chunk): {}", counts.chunk_bytes);
+    if walked > 0 {
+        println!("    per entry: {:.2} allocations", counts.allocs as f64 / walked as f64);
+        println!(
+            "    per entry: {:.1} bytes",
+            counts.chunk_bytes as f64 / walked as f64
+        );
+    }
+    println!();
+    println!("  For comparison, the arms that lend a handle reach 1.00 allocations per entry.");
+    println!("  Two per entry here would be the `format!` plus the `Arc` minted from it: the");
+    println!("  first is a reused buffer, the second needs the composed key to be interned.");
+
+    assert_eq!(
+        COLLECTIONS * PER_COLLECTION,
+        walked,
+        "the walk produced {walked} entries, not {}, so the entity arm is not the thing being \
+         measured",
+        COLLECTIONS * PER_COLLECTION
+    );
+    assert!(counts.allocs > 0, "the walk allocated nothing, which cannot be right");
+}

@@ -3680,12 +3680,32 @@ fn visit_model_live_blocks(
         // `ctx:entity:{tenant}:{node}:{entity_hash}` key as before the fold -- the collection key
         // plus the BTree key reproduce it exactly. Keeping the on-disk key per entity is what makes
         // this change format-compatible in both directions.
+        // ONE BUFFER FOR THE WHOLE ARM, NOT ONE STRING PER ENTITY.
+        //
+        // This arm costs more per entry than any other, and it was measured rather than assumed:
+        // 3.01 allocations per entry against 1.00 for the arms that lend a handle
+        // (`what_the_composed_entity_key_costs_the_walk`). The two extra are the `format!` that
+        // builds the composed key and the `Arc` the consumer mints from it, because a composed key
+        // exists nowhere to be borrowed.
+        //
+        // The `format!` is the half that needs no design change. Writing into a buffer hoisted out
+        // of both loops stops allocating once it has grown to the longest key, where a fresh
+        // `format!` allocated for every entity. The other half -- the minted `Arc` -- needs the
+        // composed key to be interned, which is a footprint decision rather than a refactor and is
+        // deliberately not taken here.
+        let mut composed = String::new();
         for (collection_key, series) in &shard.context_entities {
             for (entity_hash, address) in series.iter() {
                 // COMPOSED BEFORE ACCEPT, and only on this arm. The block is filed under this
                 // composed key, so it is the string a bucket filter has to hash; see the note on
                 // this function for what that costs.
-                let composed = format!("{collection_key}:{entity_hash}");
+                composed.clear();
+                {
+                    use std::fmt::Write as _;
+                    // Writing into a `String` cannot fail; the result is consumed so a later
+                    // change to the format cannot silently start dropping the key.
+                    let _ = write!(composed, "{collection_key}:{entity_hash}");
+                }
                 if accept(composed.as_str(), address) {
                     // COMPOSED, so there is no handle in existence to lend.
                     emit(ModelKind::ContextEntity, KeyRef::Borrowed(composed.as_str()), None, address);
