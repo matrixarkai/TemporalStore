@@ -3490,9 +3490,18 @@ fn visit_model_live_blocks(
     /// page, which is the case this whole series is about. The set arm spelled this inline until
     /// now and calls this instead, so there is exactly ONE dedup in the projection and a kind
     /// added later cannot be given a subtly different one.
+    /// AND THIS HELPER LENDS TOO. Its key was `&str`, so the four kinds that reach their pages
+    /// through it -- hash, zset, list, set -- handed over characters even though every one of them
+    /// iterates a `ModelKey`-keyed map and had a handle in hand.
+    ///
+    /// It was the third of the three arms that could not lend, and the only one of those three
+    /// whose callers ALL have a handle: the composed key does not exist to be borrowed and the
+    /// generic arm cannot produce one, but these four simply were never asked. Deferring this as
+    /// "every caller would need a handle, and two provably do not" was true of the walk's arms in
+    /// general and NOT of this helper's callers -- checking beat the inference.
     fn emit_one_entry_a_page<'addr>(
         kind: ModelKind,
-        key: &str,
+        key: &ModelKey,
         addresses: impl Iterator<Item = &'addr ElementEntry>,
         accept: &impl Fn(&str, &ElementEntry) -> bool,
         emit: &mut impl FnMut(ModelKind, KeyRef<'_>, Option<&str>, &ElementEntry),
@@ -3511,7 +3520,7 @@ fn visit_model_live_blocks(
                 // handle to lend either -- a guess that it did was corrected by the compiler.
                 // Changing ITS parameter is a separate question from the walk's: every caller of
                 // it would have to have a handle, and the composed and generic arms do not.
-                emit(kind, KeyRef::Borrowed(key), None, address);
+                emit(kind, KeyRef::Shared(key), None, address);
             }
         }
     }
