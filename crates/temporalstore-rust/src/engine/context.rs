@@ -174,6 +174,26 @@ pub(super) struct ContextCompressionPolicy {
 impl Default for ContextCompressionPolicy {
     fn default() -> Self {
         Self {
+            // OFF, AND NOW FOR A MEASURED REASON RATHER THAN AN UNEXAMINED ONE.
+            //
+            // The trigger behind this flag was DEAD until the fix in `maybe_auto_compress_-
+            // context_node`: it read event times from the series keyed by `event_id_hash`
+            // instead of the timeline map, so every time came out 0 and the planner's pending
+            // slice was always empty. Nothing noticed, because this default kept anything from
+            // reaching it. So turning the flag on was, until now, a no-op.
+            //
+            // IT WORKS NOW, AND THE COST IS WHY IT STAYS OFF.
+            // `the_auto_compression_trigger_folds_a_window_and_keeps_the_raw_events` measures
+            // the record count at two sizes: 120 events produce 88 compression records and 200
+            // produce 168 -- exactly `events - keep_recent_events`, one stored record per write
+            // once a node is past the threshold. A node with ten thousand events would hold
+            // about ten thousand compression records beside its raw ones. The fold is
+            // non-destructive by design, so that state is ADDED rather than exchanged.
+            //
+            // That is a retention policy a deployment may well want -- a summary per window is
+            // cheaper to read than the window -- but it is not a footprint reduction and must
+            // not be defaulted on as if it were one. A deployment that wants it sets
+            // `MATRIXARK_CONTEXT_COMPRESSION_ENABLED`, and now gets a trigger that fires.
             enabled: false,
             max_raw_events_per_node: 64,
             keep_recent_events: 32,

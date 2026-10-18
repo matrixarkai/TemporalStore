@@ -819,3 +819,355 @@ fn one_field_name_is_one_allocation_across_objects_and_across_a_decode() {
         );
     }
 }
+
+/// THE EVENT SERIES IS KEYED BY EVENT ID, NOT BY TIMELINE KEY -- and the auto-compression trigger
+/// read it as though it were the other one.
+///
+/// # THE BUG THIS PINS
+///
+/// The write arm files two things per context event, into two maps, under two different key spaces:
+///
+///   `context_events_series`   point key = `event_id_hash`
+///   `context_event_timeline`  key = `context_timeline_key(event_time_ms, ..)` -> event id
+///
+/// `maybe_auto_compress_context_node` built its event times from the FIRST map and divided its keys
+/// by `CONTEXT_TIMELINE_FANOUT`, naming the variable `timeline_key`. An event id hash below the
+/// fanout divides to ZERO, so a node's whole history read as one repeated instant. The planner then
+/// takes the events strictly newer than the watermark; with every time 0 and the watermark 0 that
+/// slice is empty, so it returned None and the trigger never fired -- at any event count, for any
+/// node, on any store. It was invisible because the policy also defaults off, so nothing reached
+/// the line to be wrong.
+///
+/// # WHY THIS TEST IS PURE
+///
+/// The engine reads its policy from the environment, so an end-to-end check has to set a
+/// process-global and is `#[ignore]`d. This needs none of that: it builds both key spaces exactly
+/// as the write arm does and asks the planner the same question twice. It runs on a plain
+/// `cargo test`, which is what the dead path lacked.
+///
+/// rust-internal: exercises this crate's own key encoding, no product behaviour
+#[test]
+fn the_event_series_is_keyed_by_event_id_not_by_timeline_key() {
+    use crate::engine::constants::CONTEXT_TIMELINE_FANOUT;
+    use crate::engine::context::{context_timeline_key, plan_next_compression_window,
+        ContextCompressionPolicy};
+
+    const EVENTS: u64 = 120;
+    const NOW_MS: u64 = 1_787_270_070_000;
+
+    let policy = ContextCompressionPolicy {
+        enabled: true,
+        ..ContextCompressionPolicy::default()
+    };
+
+    // The two key spaces, built as the write arm builds them.
+    let event_ids: Vec<u64> = (0..EVENTS).map(|index| 1_000 + index).collect();
+    let timeline_keys: Vec<u64> = (0..EVENTS)
+        .map(|index| context_timeline_key(NOW_MS + index * 1_000, 1_000 + index))
+        .collect();
+
+    // WHAT THE OLD READ PRODUCED: every id below the fanout divides to zero.
+    let from_series: Vec<u64> = event_ids
+        .iter()
+        .map(|id| id / CONTEXT_TIMELINE_FANOUT)
+        .collect();
+    // WHAT THE TIMELINE PRODUCES: the times back, in order.
+    let from_timeline: Vec<u64> = timeline_keys
+        .iter()
+        .map(|key| key / CONTEXT_TIMELINE_FANOUT)
+        .collect();
+
+    println!();
+    println!("  {EVENTS} events, keep {}", policy.keep_recent_events);
+    println!(
+        "    from the SERIES   : {} distinct times, first {:?}",
+        {
+            let mut seen = from_series.clone();
+            seen.dedup();
+            seen.len()
+        },
+        &from_series[..3]
+    );
+    println!(
+        "    from the TIMELINE : {} distinct times, first {:?}",
+        {
+            let mut seen = from_timeline.clone();
+            seen.dedup();
+            seen.len()
+        },
+        &from_timeline[..3]
+    );
+
+    // --- THE KEY SPACES ARE NOT INTERCHANGEABLE, which is the whole finding. ---
+    assert!(
+        from_series.iter().all(|time| *time == 0),
+        "an event id no longer divides to zero under the fanout, so the specific failure this \
+         pins has changed shape -- re-read the trigger before trusting it: {:?}",
+        &from_series[..5]
+    );
+    assert_eq!(
+        EVENTS as usize,
+        {
+            let mut seen = from_timeline.clone();
+            seen.dedup();
+            seen.len()
+        },
+        "the timeline keys no longer recover one distinct time per event, so the fanout encoding \
+         has moved and the trigger's division is wrong again"
+    );
+    assert!(
+        from_timeline.windows(2).all(|pair| pair[0] < pair[1]),
+        "the timeline-derived times are not strictly ascending, and \
+         `plan_next_compression_window` requires sorted input"
+    );
+
+    // --- AND THE PLANNER'S ANSWER TO EACH, WHICH IS WHY THE TRIGGER WAS DEAD. ---
+    let planned_from_series = plan_next_compression_window(&policy, &from_series, 0, NOW_MS);
+    assert!(
+        planned_from_series.is_none(),
+        "the planner found a window in the series-derived times. It should not: with every time 0 \
+         and the watermark 0, the events strictly newer than the watermark are none. If this now \
+         answers Some, the planner's pending slice has changed and the trigger's old read was not \
+         the only thing broken"
+    );
+
+    let planned = plan_next_compression_window(&policy, &from_timeline, 0, NOW_MS)
+        .expect("the planner must find a window in the timeline-derived times");
+    println!(
+        "    planner on timeline times: start={} end={} count={}",
+        planned.start_ms, planned.end_ms, planned.count
+    );
+    assert_eq!(
+        NOW_MS, planned.start_ms,
+        "the window does not start at the oldest event, so the fold is not taking from the old end"
+    );
+    assert_eq!(
+        policy.window_size.min(EVENTS as usize - policy.keep_recent_events),
+        planned.count,
+        "the window is not bounded by `window_size`, so the one-window-per-call bound is not holding"
+    );
+}
+
+/// THE AUTO-COMPRESSION TRIGGER DOES WHAT ITS DOC CLAIMS, now that it runs by default.
+///
+/// # WHY THIS TEST EXISTS AT ALL
+///
+/// Nothing tested this path. No test in the tree set `MATRIXARK_CONTEXT_COMPRESSION_ENABLED`, and
+/// no test was named for auto-compression -- the only other mention of the flag was a comment in
+/// this very file explaining why `context_compression_watermark` is unreachable WHILE the flag is
+/// off. So when the default moved, the three claims the policy's doc makes had never been checked
+/// by anything. Each is checked here:
+///
+///   1  IT FIRES ONLY PAST THE THRESHOLD. `max_raw_events_per_node` is 64, so a node with fewer
+///      raw events is untouched. That is what keeps the default from acting on an ordinary node,
+///      and it is why the sibling guard in this file still measures an empty watermark map.
+///   2  IT KEEPS THE RECENT RAW EVENTS. `keep_recent_events` is 32, so the fold takes from the
+///      OLD end and leaves the newest alone.
+///   3  IT IS NON-DESTRUCTIVE. The doc says "raw events remain queryable/replayable (physical GC
+///      stays a separate concern)". That is the claim with the most riding on it -- a compression
+///      that quietly dropped what it folded would be data loss wearing the name of a retention
+///      policy -- so the raw events are read back AFTER the fold and counted.
+///
+/// # WHY THIS ONE IS IGNORED AND THE GUARD ABOVE IS NOT
+///
+/// The engine reads its compression policy from the environment, and the policy defaults OFF --
+/// for a measured reason, recorded beside the default. So driving the trigger end to end means
+/// setting a process-global variable, which every other test in this binary would inherit. That
+/// is the same hazard the allocation probes carry and it gets the same treatment: run by name,
+/// and alone.
+///
+/// `the_event_series_is_keyed_by_event_id_not_by_timeline_key` above needs none of that, which
+/// is why it is the standing guard and this is the demonstration.
+///
+/// rust-internal: measures this crate's own resident structures, no product behaviour
+#[test]
+#[ignore = "sets MATRIXARK_CONTEXT_COMPRESSION_ENABLED, which is process-global; run by name, \
+            and ALONE"]
+fn the_auto_compression_trigger_folds_a_window_and_keeps_the_raw_events() {
+    use crate::types::{CommandResponse, ContextEvent, ContextNode};
+
+    const TENANT: u64 = 7;
+    const NODE: u64 = 1;
+    const NOW_MS: u64 = 1_787_270_070_000;
+    // Past `max_raw_events_per_node` (64) so the trigger has a window to fold, and past
+    // `keep_recent_events` (32) by enough that the fold leaves the recent ones alone.
+    const EVENTS: u64 = 120;
+
+    let dir = tempfile::tempdir().expect("tempdir");
+    let engine = engine_on(dir.path());
+
+    // TURN IT ON, AND READ IT BACK OUT OF THE RUN rather than assuming the variable took. A
+    // guessed or mistyped setting leaves the arm silently not running, and a null result then
+    // reads as a refutation of the thing being measured.
+    std::env::set_var("MATRIXARK_CONTEXT_COMPRESSION_ENABLED", "1");
+    let policy = crate::engine::context::context_compression_policy_from_env();
+    assert!(
+        policy.enabled,
+        "setting MATRIXARK_CONTEXT_COMPRESSION_ENABLED did not enable the policy, so this test \
+         would pass by doing nothing"
+    );
+    assert!(
+        EVENTS > policy.max_raw_events_per_node as u64,
+        "the fixture writes {EVENTS} events and the threshold is {}, so the trigger would never \
+         fire and nothing below is about compression",
+        policy.max_raw_events_per_node
+    );
+
+    let upsert = engine.execute(ExecuteRequest {
+        shard_id: 1,
+        command: Command::ContextUpsertNode {
+            tenant_hash: TENANT,
+            node: Box::new(ContextNode {
+                node_hash: NODE,
+                parent_hash: 0,
+                kind: 1,
+                canonical_name: "compressed-node".to_string(),
+                l0: String::new(),
+                status: 0,
+                last_event_time_ms: NOW_MS,
+                l1_ref: String::new(),
+                raw_metadata_ref: String::new(),
+                vector: Vec::new(),
+                embedding_model_hash: 0,
+                embedding_updated_at_ms: 0,
+                summary_vector: Vec::new(),
+                summary_vector_valid_from_ms: 0,
+                summary_vector_model_hash: 0,
+            }),
+        },
+    });
+    assert!(upsert.status.ok, "the node upsert failed: {:?}", upsert.status);
+
+    for index in 0..EVENTS {
+        let response = engine.execute(ExecuteRequest {
+            shard_id: 1,
+            command: Command::ContextWriteEvent {
+                tenant_hash: TENANT,
+                node_hash: NODE,
+                event: Box::new(ContextEvent {
+                    event_id_hash: 1_000 + index,
+                    event_time_ms: NOW_MS + index * 1_000,
+                    ingestion_time_ms: NOW_MS + index * 1_000,
+                    kind: 0,
+                    event_type: 1,
+                    actor_hash: 0,
+                    status: 0,
+                    valid_until_ms: 0,
+                    confidence: 1.0,
+                    importance: 1.0,
+                    text: format!("event {index}"),
+                    source_ref: String::new(),
+                    related_node_hashes: Vec::new(),
+                    compact_attrs: Vec::new(),
+                    vector: Vec::new(),
+                }),
+                first_write_only: false,
+                cold_storage: false,
+            },
+        });
+        assert!(response.status.ok, "event {index}: {:?}", response.status);
+    }
+
+    // --- WHAT THE TRIGGER LEFT BEHIND. ---
+    let (watermark, compressions, raw_points) = {
+        let shards = engine.shards.read().expect("engine lock poisoned");
+        let shard = shards.get(&1).expect("shard is loaded");
+        let event_key = format!("ctx:event:{TENANT}:{NODE}");
+        let watermark = shard
+            .context_compression_watermark
+            .get(&event_key[..])
+            .copied();
+        let compressions: usize = shard
+            .context_compressions
+            .values()
+            .map(|series| series.len())
+            .sum();
+        let raw_points = shard
+            .context_events()
+            .get(&event_key[..])
+            .map(|series| series.len())
+            .unwrap_or(0);
+        (watermark, compressions, raw_points)
+    };
+
+    println!();
+    println!("  {EVENTS} raw events on one node, threshold {} keep {}",
+        policy.max_raw_events_per_node, policy.keep_recent_events);
+    println!("    compression records written : {compressions}");
+    println!("    watermark                   : {watermark:?}");
+    println!("    raw event points still held : {raw_points}");
+
+    // --- CLAIM 1: IT FIRED. ---
+    assert!(
+        compressions > 0,
+        "no compression record was written for a node {EVENTS} events past a threshold of {}, so \
+         the trigger does not fire even with the policy on -- the state this fix corrected, so it has regressed",
+        policy.max_raw_events_per_node
+    );
+    assert!(
+        watermark.is_some(),
+        "the compression watermark was never set, so a later round cannot tell which window it \
+         already folded and the fold is not idempotent across calls"
+    );
+
+    // --- CLAIM 2: IT IS BOUNDED, NOT A SWEEP. ---
+    //
+    // The doc says "Bounded to one window per call, so writes stay light". `window_size` is 32, so
+    // {EVENTS} events cannot have been folded into one record -- and if they had, the bound would
+    // be the thing that broke.
+    // AND THE FIGURE THAT DECIDED THE DEFAULT, asserted so it cannot drift out of the prose
+    // beside `ContextCompressionPolicy::default`. One record per write once the node is past
+    // `keep_recent_events`: measured 88 at 120 events and 168 at 200, both exactly
+    // `EVENTS - keep_recent_events`. The fold is non-destructive, so that state is ADDED to the
+    // raw events rather than exchanged for them -- which is why this is a retention policy a
+    // deployment may want and not a footprint reduction to default on.
+    assert_eq!(
+        EVENTS as usize - policy.keep_recent_events,
+        compressions,
+        "the record count is no longer `events - keep_recent_events`. That relationship is the \
+         cost argument recorded beside the policy default, so if it has changed, that argument \
+         needs re-reading rather than this assertion needs updating"
+    );
+
+    // --- CLAIM 3: NON-DESTRUCTIVE, WHICH IS THE ONE THAT MATTERS. ---
+    assert_eq!(
+        EVENTS as usize, raw_points,
+        "the raw event series holds {raw_points} of {EVENTS} points after the fold. The policy's \
+         doc says raw events remain queryable and replayable, with physical reclaim a separate \
+         concern -- so a fold that removed them is data loss wearing the name of a retention \
+         policy, not the behaviour this default was turned on for"
+    );
+
+    // AND READ BACK THROUGH THE QUERY, not just off the resident map, because what a caller sees
+    // is the claim. The resident series could be intact while the read path filtered the folded
+    // range out, and that would be the same loss from the caller's side.
+    let served = engine.execute(ExecuteRequest {
+        shard_id: 1,
+        command: Command::ContextQueryEvents {
+            tenant_hash: TENANT,
+            node_hash: NODE,
+            start_time_ms: NOW_MS,
+            end_time_ms: NOW_MS + EVENTS * 1_000 + 1,
+            limit: Some(EVENTS as usize * 2),
+            max_scan: Some(EVENTS as usize * 4),
+            current_valid_only: false,
+            as_of_ms: 0,
+            kinds: Vec::new(),
+            statuses: Vec::new(),
+            min_confidence: 0.0,
+            min_importance: 0.0,
+        },
+    });
+    assert!(served.status.ok, "the event query failed: {:?}", served.status);
+    let served_count = match served.response {
+        CommandResponse::ContextEvents { ref events, .. } => events.len(),
+        ref other => panic!("the query answered with {other:?} rather than events"),
+    };
+    println!("    raw events served by a query: {served_count}");
+    assert_eq!(
+        EVENTS as usize, served_count,
+        "a query over the whole window served {served_count} of {EVENTS} events after the fold, so \
+         the compression is destructive FROM THE CALLER'S SIDE even though the resident series \
+         still holds the points"
+    );
+}

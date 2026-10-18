@@ -5014,8 +5014,24 @@ fn maybe_auto_compress_context_node(
     if !policy.enabled {
         return false;
     }
-    let event_times: Vec<u64> = match shard.context_events().get(event_object_key) {
-        Some(series) => series
+    // FROM THE TIMELINE, NOT FROM THE SERIES, and the distinction is the whole trigger.
+    //
+    // This read `context_events()` and divided its keys by `CONTEXT_TIMELINE_FANOUT`, calling
+    // them `timeline_key`. They are not timeline keys. The write arm files the series point
+    // under `event_id_hash` and files the TIMELINE key in `context_event_timeline`, which maps
+    // timeline key -> event id. So the division was applied to a hash.
+    //
+    // WHAT THAT PRODUCED, MEASURED: 120 events on one node came out as 120 copies of time
+    // ZERO, because `event_id_hash / 1_048_576` is 0 for any hash below the fanout. The planner
+    // then takes `pending` as the events strictly newer than the watermark -- with every time 0
+    // and the watermark 0 that slice is EMPTY -- and returns None. The trigger could therefore
+    // never fire, at any event count, for any node, on any store. It was invisible because the
+    // policy also defaults off, so nothing reached this line to be wrong.
+    //
+    // `context_event_timeline` is a `BTreeMap`, so its keys come out ascending, which is what
+    // `plan_next_compression_window` requires of `event_times_sorted`.
+    let event_times: Vec<u64> = match shard.context_event_timeline.get(event_object_key) {
+        Some(timeline) => timeline
             .keys()
             .map(|timeline_key| timeline_key / CONTEXT_TIMELINE_FANOUT)
             .collect(),
