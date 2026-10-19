@@ -109,20 +109,33 @@ fn main() {
     // Automatic shard rebalancing: on a membership change (a node freezes/leaves,
     // or a fresh node joins) recompute placement and drive the target nodes to
     // load their shards, then rewrite the owner map so clients stop resolving to a
-    // dead node. OFF by default (TS_META_AUTO_REBALANCE) so single-node/standalone
-    // behavior is unchanged. Only the single-node backend is auto-driven here; the
-    // raft backend rebalances through its own membership machinery.
-    let _auto_rebalancer = if env_bool("TS_META_AUTO_REBALANCE", false) {
+    // dead node.
+    //
+    // ON by default now. What it ends is the condition where a shard whose owner is
+    // gone stays pointed at that dead owner until somebody intervenes -- clients keep
+    // resolving to it, and nothing in the system corrects the map on its own.
+    //
+    // THE LIMIT, SAID HERE RATHER THAN FOUND LATER: this is the SINGLE-NODE backend
+    // only. On the raft backend the flag is ignored with a warning below, so this
+    // default changes nothing for a raft deployment and does not make rebalancing
+    // exist there. A cluster on raft still has no shard rebalancer.
+    let _auto_rebalancer = if env_bool("TS_META_AUTO_REBALANCE", true) {
         match &backend {
             MetaBackend::Single(meta) => {
                 let interval_ms = env_u64("TS_META_AUTO_REBALANCE_INTERVAL_MS", detector_interval_ms);
                 let balance_load = env_bool("TS_META_AUTO_REBALANCE_BALANCE", true);
                 // Placement-aware planning honours each table's preferred
                 // location and balances per table, so a table cannot end up
-                // single-homed while total shard counts look even. OFF by
-                // default: it changes which server a shard lands on, which is
-                // behavior-visible.
-                let placement_aware = env_bool("TS_META_PLACEMENT_AWARE_REBALANCE", false);
+                // single-homed while total shard counts look even.
+                //
+                // ON with the loop, and deliberately not left off beneath it. The flat
+                // planner balances TOTAL shard counts and knows nothing about tables, so
+                // enabling the loop while leaving this off would ship the weaker planner as
+                // the default -- a cluster whose global counts look even with one table
+                // sitting entirely on one node. Both planners move shards, so the
+                // behaviour-visible step is the loop itself; given that step, this is the
+                // better of the two available answers rather than an extra risk.
+                let placement_aware = env_bool("TS_META_PLACEMENT_AWARE_REBALANCE", true);
                 info!(
                     interval_ms,
                     balance_load, placement_aware, "auto-rebalance enabled"
