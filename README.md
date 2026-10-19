@@ -147,6 +147,12 @@ speak RESP or HTTP), and live external object-store integration.
 
 ## Contributing
 
+**Anyone is welcome to contribute, and you do not need to ask first.** If something is wrong,
+unclear or missing, open an [issue](https://github.com/matrixarkai/TemporalStore/issues); if you
+would rather fix it yourself, send a
+[pull request](https://github.com/matrixarkai/TemporalStore/pulls). You need no connection to this
+project and no permission: the licence is Apache-2.0 and the fork button works for everyone.
+
 See [CONTRIBUTING.md](docs/CONTRIBUTING.md) and [SECURITY.md](docs/SECURITY.md). Contributions
 target `main`, this repository's default branch and the branch every change merges to. The
 older `rust-main` name is retired and no branch by that name exists here, so a pull request
